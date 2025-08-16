@@ -74,10 +74,12 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile.nvidia
+          file: ./Dockerfile
           push: false # Do not push yet, just build
           tags: ${{ steps.docker_tags.outputs.test_tag }}
           load: true # Load image into Docker daemon for immediate use
+          build-args: |
+            BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 
       - name: Run Flask App Container Health Check
         run: |
@@ -223,6 +225,8 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile.nvidia
+          file: ./Dockerfile
           push: true
           tags: ${{ steps.docker_tags.outputs.docker_tags }}
+          build-args: |
+            BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
