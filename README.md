@@ -253,12 +253,13 @@ The **mandatory** parameter that you need to change from the example are this:
 | `GEMINI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is GEMINI) Your Google Gemini API Key. | *(N/A - from Secret)* |
 | `MISTRAL_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MISTRAL) Your Mistral API Key.      | *(N/A - from Secret)* |
 
-These parameter can be leave as it is:
+These parameter could be leave as it is:
 
 | Parameter               | Description                                  | Default Value     |
 |-------------------------|----------------------------------------------|-------------------|
 | `TEMP_DIR`              | Temp directory for audio files              | `/app/temp_audio` |
 | `CLEANING_SAFETY_LIMIT` | Max number of albums deleted during cleaning | `100`             |
+| `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names. | `""` (empty - scan all) |
 
 This are the default parameters on wich the analysis or clustering task will be lunched. You will be able to change them to another value directly in the front-end:
 
