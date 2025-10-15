@@ -13,6 +13,64 @@ REQUESTS_TIMEOUT = 300
 # JELLYFIN IMPLEMENTATION
 # ##############################################################################
 
+def _get_target_library_ids():
+    """
+    Parses config for library names and returns their IDs for filtering using a robust,
+    case-insensitive matching against the server's actual library configuration.
+    """
+    library_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+
+    if not library_names_str.strip():
+        return None
+
+    target_names_lower = {name.strip().lower() for name in library_names_str.split(',') if name.strip()}
+
+    # Use the /Library/VirtualFolders endpoint as it provides the canonical system configuration.
+    url = f"{config.JELLYFIN_URL}/Library/VirtualFolders"
+    try:
+        r = requests.get(url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        all_libraries = r.json()
+
+        # Build a case-insensitive map: lowercase_name -> {'name': OriginalCaseName, 'id': ItemId}
+        library_map = {
+            lib['Name'].lower(): {'name': lib['Name'], 'id': lib['ItemId']}
+            for lib in all_libraries
+            if lib.get('CollectionType') == 'music'
+        }
+
+        # --- DIAGNOSTIC LOGGING ---
+        available_music_libraries = [lib['name'] for lib in library_map.values()]
+        logger.info(f"Available Jellyfin music libraries found: {available_music_libraries}")
+        # --- END DIAGNOSTIC LOGGING ---
+
+        # Match user's config against the map to find IDs and original names
+        found_libraries = []
+        unfound_names = []
+        for target_name in target_names_lower:
+            if target_name in library_map:
+                found_libraries.append(library_map[target_name])
+            else:
+                unfound_names.append(target_name)
+
+        if unfound_names:
+            logger.warning(f"Jellyfin config specified library names that were not found: {list(unfound_names)}")
+
+        if not found_libraries:
+            logger.warning(f"No matching music libraries found for configured names: {list(target_names_lower)}. No albums will be analyzed.")
+            return set()
+
+        music_library_ids = {lib['id'] for lib in found_libraries}
+        found_names_original_case = [lib['name'] for lib in found_libraries]
+
+        logger.info(f"Filtering analysis to {len(music_library_ids)} Jellyfin libraries: {found_names_original_case}")
+        return music_library_ids
+
+    except Exception as e:
+        logger.error(f"Failed to fetch or parse Jellyfin virtual folders at '{url}': {e}", exc_info=True)
+        return set()
+
+
 def _jellyfin_get_users(token):
     """Fetches a list of all users from Jellyfin using a provided token."""
     url = f"{config.JELLYFIN_URL}/Users"
@@ -45,29 +103,87 @@ def get_recent_albums(limit):
     """
     Fetches a list of the most recently added albums from Jellyfin using pagination.
     Uses global admin credentials.
+    If MUSIC_LIBRARIES is set, it will only return albums from those libraries.
     """
+    target_library_ids = _get_target_library_ids()
+    
+    # Case 1: Config is set, but no matching libraries were found. Scan nothing.
+    if isinstance(target_library_ids, set) and not target_library_ids:
+        logger.warning("Library filtering is active, but no matching libraries were found on the server. Returning no albums.")
+        return []
+
     all_albums = []
-    start_index = 0
-    page_size = 500
     fetch_all = (limit == 0)
-    while fetch_all or len(all_albums) < limit:
-        size_to_fetch = page_size if fetch_all else min(page_size, limit - len(all_albums))
-        if size_to_fetch <= 0: break
-        url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
-        params = {"IncludeItemTypes": "MusicAlbum", "SortBy": "DateCreated", "SortOrder": "Descending", "Recursive": True, "Limit": size_to_fetch, "StartIndex": start_index}
-        try:
-            r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
-            r.raise_for_status()
-            response_data = r.json()
-            albums = response_data.get("Items", [])
-            if not albums: break
-            all_albums.extend(albums)
-            start_index += len(albums)
-            if len(albums) < size_to_fetch: break
-            if fetch_all and start_index >= response_data.get("TotalRecordCount", float('inf')): break
-        except Exception as e:
-            logger.error(f"Jellyfin get_recent_albums failed: {e}", exc_info=True)
-            break
+
+    # Case 2: Config is NOT set (is None). Scan all albums from the user's root without ParentId.
+    if target_library_ids is None:
+        logger.info("Scanning all Jellyfin libraries for recent albums.")
+        start_index = 0
+        page_size = 500
+        while True:
+            # We fetch full pages and apply the limit only after collecting and sorting.
+            url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
+            params = {
+                "IncludeItemTypes": "MusicAlbum", "SortBy": "DateCreated", "SortOrder": "Descending",
+                "Recursive": True, "Limit": page_size, "StartIndex": start_index
+            }
+            try:
+                r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+                r.raise_for_status()
+                response_data = r.json()
+                albums_on_page = response_data.get("Items", [])
+                
+                if not albums_on_page:
+                    break
+                
+                all_albums.extend(albums_on_page)
+                start_index += len(albums_on_page)
+
+                if len(albums_on_page) < page_size:
+                    break
+            except Exception as e:
+                logger.error(f"Jellyfin get_recent_albums failed during 'scan all': {e}", exc_info=True)
+                break
+    
+    # Case 3: Config is set and we have library IDs. Scan each of these libraries by using their ID as ParentId.
+    else:
+        logger.info(f"Scanning {len(target_library_ids)} specific Jellyfin libraries for recent albums.")
+        for library_id in target_library_ids:
+            start_index = 0
+            page_size = 500
+            while True: # Paginate through the current library
+                url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
+                params = {
+                    "IncludeItemTypes": "MusicAlbum", "SortBy": "DateCreated", "SortOrder": "Descending",
+                    "Recursive": True, "Limit": page_size, "StartIndex": start_index,
+                    "ParentId": library_id
+                }
+                try:
+                    r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+                    r.raise_for_status()
+                    response_data = r.json()
+                    albums_on_page = response_data.get("Items", [])
+                    
+                    if not albums_on_page:
+                        break
+                    
+                    all_albums.extend(albums_on_page)
+                    start_index += len(albums_on_page)
+
+                    if len(albums_on_page) < page_size:
+                        break
+                except Exception as e:
+                    logger.error(f"Jellyfin get_recent_albums failed for library ID {library_id}: {e}", exc_info=True)
+                    break
+
+    # After fetching, a final sort and trim is needed only if we fetched from multiple libraries.
+    if target_library_ids is not None and len(target_library_ids) > 1:
+        all_albums.sort(key=lambda x: x.get('DateCreated', ''), reverse=True)
+
+    # Apply the final limit if one was specified
+    if not fetch_all:
+        return all_albums[:limit]
+        
     return all_albums
 
 def get_tracks_from_album(album_id):
@@ -213,3 +329,4 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     except Exception as e:
         logger.error("Exception creating Jellyfin instant playlist '%s' for user %s: %s", playlist_name, user_id, e, exc_info=True)
         return None
+

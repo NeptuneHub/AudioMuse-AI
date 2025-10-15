@@ -10,6 +10,12 @@ MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Poss
 JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "http://your_jellyfin_url:8096") # Replace with your default URL
 JELLYFIN_USER_ID = os.environ.get("JELLYFIN_USER_ID", "your_default_user_id")  # Replace with a suitable default or handle missing case
 JELLYFIN_TOKEN = os.environ.get("JELLYFIN_TOKEN", "your_default_token")  # Replace with a suitable default or handle missing case
+
+# NEW: Allow specifying music libraries/folders for analysis across all media servers.
+# Comma-separated list of library/folder names or paths. If empty, all music libraries/folders are scanned.
+# For Lyrion: Use folder paths like "/music/myfolder"  
+# For Jellyfin/Navidrome: Use library/folder names
+MUSIC_LIBRARIES = os.environ.get("MUSIC_LIBRARIES", "") 
 TEMP_DIR = "/app/temp_audio"  # Always use /app/temp_audio
 HEADERS = {"X-Emby-Token": JELLYFIN_TOKEN}
 
