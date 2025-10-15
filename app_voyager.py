@@ -122,7 +122,7 @@ def get_similar_tracks_endpoint():
           enum: ['true', 'false']
       - name: mood_similarity
         in: query
-        description: If 'true', filters results by mood similarity using stored mood features (danceability, aggressive, happy, party, relaxed, sad). If 'false' or omitted, only acoustic similarity is used.
+        description: If 'true', filters results by mood similarity using stored mood features (danceability, aggressive, happy, party, relaxed, sad). If 'false', only acoustic similarity is used. Defaults to 'true' if omitted.
         schema:
           type: string
           enum: ['true', 'false']
@@ -163,7 +163,10 @@ def get_similar_tracks_endpoint():
         eliminate_duplicates = eliminate_duplicates_str.lower() == 'true'
 
     mood_similarity_str = request.args.get('mood_similarity')
-    mood_similarity = mood_similarity_str is not None and mood_similarity_str.lower() == 'true'
+    if mood_similarity_str is None:
+        mood_similarity = True  # Default to True when parameter is not provided
+    else:
+        mood_similarity = mood_similarity_str.lower() == 'true'
 
     target_item_id = None
 

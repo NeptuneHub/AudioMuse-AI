@@ -628,7 +628,7 @@ def _parse_mood_features(other_features_str: str) -> dict:
         logger.warning(f"Error parsing mood features '{other_features_str}': {e}")
         return {}
 
-def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool = False, mood_similarity: bool = False):
+def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool = False, mood_similarity: bool = True):
     """
     Finds the N nearest neighbors for a given item_id using the globally cached Voyager index.
     If mood_similarity is True, filters results by mood feature similarity (danceability, aggressive, happy, party, relaxed, sad).
