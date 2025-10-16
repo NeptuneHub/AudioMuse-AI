@@ -672,16 +672,6 @@ def get_all_songs():
         
         # Map all songs to our standard format
         for song in songs:
-            # Debug: Log available artist fields
-            artist_fields = {
-                'trackartist': song.get('trackartist'),
-                'contributor': song.get('contributor'), 
-                'artist': song.get('artist'),
-                'albumartist': song.get('albumartist'),
-                'band': song.get('band')
-            }
-            logger.info(f"DEBUG: Artist fields for '{song.get('title', 'Unknown')}': {artist_fields}")
-            
             # Prioritize track artist over album artist to avoid "Various Artists"
             if song.get('trackartist'):
                 track_artist = song.get('trackartist')
@@ -701,8 +691,6 @@ def get_all_songs():
             else:
                 track_artist = 'Unknown Artist'
                 used_field = 'fallback'
-            
-            logger.info(f"DEBUG: Used field '{used_field}' with value '{track_artist}' for track '{song.get('title', 'Unknown')}'")
             
             mapped_song = {
                 'Id': song.get('id'), 
@@ -967,16 +955,6 @@ def get_tracks_from_album(album_id):
         id_val = s.get('id') or s.get('Id') or s.get('track_id')
         title = s.get('title') or s.get('name') or s.get('Name')
         
-        # Debug: Log available artist fields
-        artist_fields = {
-            'trackartist': s.get('trackartist'),
-            'contributor': s.get('contributor'), 
-            'artist': s.get('artist'),
-            'albumartist': s.get('albumartist'),
-            'band': s.get('band')
-        }
-        logger.info(f"DEBUG: Artist fields for '{title}': {artist_fields}")
-        
         # Prioritize track artist over album artist to avoid "Various Artists"
         if s.get('trackartist'):
             artist = s.get('trackartist')
@@ -996,8 +974,6 @@ def get_tracks_from_album(album_id):
         else:
             artist = 'Unknown Artist'
             used_field = 'fallback'
-        
-        logger.info(f"DEBUG: Used field '{used_field}' with value '{artist}' for track '{title}'")
         
         path = s.get('url') or s.get('Path') or s.get('path') or ''
         mapped.append({'Id': id_val, 'Name': title, 'AlbumArtist': artist, 'Path': path, 'url': path})
@@ -1023,16 +999,6 @@ def get_top_played_songs(limit):
         for s in songs:
             title = s.get('title', 'Unknown')
             
-            # Debug: Log available artist fields
-            artist_fields = {
-                'trackartist': s.get('trackartist'),
-                'contributor': s.get('contributor'), 
-                'artist': s.get('artist'),
-                'albumartist': s.get('albumartist'),
-                'band': s.get('band')
-            }
-            logger.info(f"DEBUG: Artist fields for '{title}': {artist_fields}")
-            
             # Prioritize track artist over album artist to avoid "Various Artists"
             if s.get('trackartist'):
                 track_artist = s.get('trackartist')
@@ -1052,8 +1018,6 @@ def get_top_played_songs(limit):
             else:
                 track_artist = 'Unknown Artist'
                 used_field = 'fallback'
-            
-            logger.info(f"DEBUG: Used field '{used_field}' with value '{track_artist}' for track '{title}'")
             
             mapped_songs.append({
                 'Id': s.get('id'), 

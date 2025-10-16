@@ -193,7 +193,14 @@ def get_tracks_from_album(album_id):
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        return r.json().get("Items", [])
+        items = r.json().get("Items", [])
+        
+        # Apply artist field prioritization to each track
+        for item in items:
+            title = item.get('Name', 'Unknown')
+            item['AlbumArtist'] = _select_best_artist(item, title)
+        
+        return items
     except Exception as e:
         logger.error(f"Jellyfin get_tracks_from_album failed for album {album_id}: {e}", exc_info=True)
         return []
@@ -215,6 +222,24 @@ def download_track(temp_dir, item):
         logger.error(f"Failed to download track {item.get('Name', 'Unknown')}: {e}", exc_info=True)
         return None
 
+def _select_best_artist(item, title="Unknown"):
+    """
+    Selects the best artist field from Jellyfin item, prioritizing track artists over album artists.
+    This helps avoid "Various Artists" issues in compilation albums.
+    """
+    # Priority: Artists array (track artists) > AlbumArtist > fallback
+    if item.get('Artists') and len(item['Artists']) > 0:
+        track_artist = item['Artists'][0]  # Take first artist if multiple
+        used_field = 'Artists[0]'
+    elif item.get('AlbumArtist'):
+        track_artist = item['AlbumArtist']
+        used_field = 'AlbumArtist'
+    else:
+        track_artist = 'Unknown Artist'
+        used_field = 'fallback'
+    
+    return track_artist
+
 def get_all_songs():
     """Fetches all songs from Jellyfin using admin credentials."""
     url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
@@ -222,7 +247,14 @@ def get_all_songs():
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        return r.json().get("Items", [])
+        items = r.json().get("Items", [])
+        
+        # Apply artist field prioritization to each item
+        for item in items:
+            title = item.get('Name', 'Unknown')
+            item['AlbumArtist'] = _select_best_artist(item, title)
+        
+        return items
     except Exception as e:
         logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)
         return []
@@ -286,7 +318,14 @@ def get_top_played_songs(limit, user_creds=None):
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        return r.json().get("Items", [])
+        items = r.json().get("Items", [])
+        
+        # Apply artist field prioritization to each track
+        for item in items:
+            title = item.get('Name', 'Unknown')
+            item['AlbumArtist'] = _select_best_artist(item, title)
+        
+        return items
     except Exception as e:
         logger.error(f"Jellyfin get_top_played_songs failed for user {user_id}: {e}", exc_info=True)
         return []

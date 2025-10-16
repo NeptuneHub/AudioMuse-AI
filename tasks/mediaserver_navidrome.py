@@ -211,6 +211,24 @@ def get_recent_albums(limit):
         
     return all_albums
 
+def _select_best_artist(song_item, title="Unknown"):
+    """
+    Selects the best artist field from Navidrome song item, prioritizing track artists over album artists.
+    This helps avoid "Various Artists" issues in compilation albums.
+    """
+    # Priority: artist (track artist) > albumArtist > fallback
+    if song_item.get('artist'):
+        track_artist = song_item['artist']
+        used_field = 'artist'
+    elif song_item.get('albumArtist'):
+        track_artist = song_item['albumArtist']
+        used_field = 'albumArtist'
+    else:
+        track_artist = 'Unknown Artist'
+        used_field = 'fallback'
+    
+    return track_artist
+
 def get_all_songs():
     """
     Fetches all songs from Navidrome using admin credentials.
@@ -236,7 +254,18 @@ def get_all_songs():
             if response and "searchResult3" in response and "song" in response["searchResult3"]:
                 songs = response["searchResult3"]["song"]
                 if not songs: break
-                all_songs.extend([{'Id': s.get('id'), 'Name': s.get('title'), 'AlbumArtist': s.get('artist'), 'Path': s.get('path')} for s in songs])
+                
+                # Apply artist field prioritization to each song
+                for s in songs:
+                    title = s.get('title', 'Unknown')
+                    artist = _select_best_artist(s, title)
+                    all_songs.append({
+                        'Id': s.get('id'), 
+                        'Name': title, 
+                        'AlbumArtist': artist, 
+                        'Path': s.get('path')
+                    })
+                
                 offset += len(songs)
                 if len(songs) < limit: break
             else:
@@ -381,7 +410,20 @@ def get_tracks_from_album(album_id, user_creds=None):
     response = _navidrome_request("getAlbum", params, user_creds=user_creds)
     if response and "album" in response and "song" in response["album"]:
         songs = response["album"]["song"]
-        return [{**s, 'Id': s.get('id'), 'Name': s.get('title'), 'AlbumArtist': s.get('artist'), 'Path': s.get('path')} for s in songs]
+        
+        # Apply artist field prioritization to each song
+        result = []
+        for s in songs:
+            title = s.get('title', 'Unknown')
+            artist = _select_best_artist(s, title)
+            result.append({
+                **s, 
+                'Id': s.get('id'), 
+                'Name': title, 
+                'AlbumArtist': artist, 
+                'Path': s.get('path')
+            })
+        return result
     return []
 
 def get_playlist_by_name(playlist_name, user_creds=None):
