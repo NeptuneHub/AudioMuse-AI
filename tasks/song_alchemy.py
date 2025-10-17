@@ -248,8 +248,7 @@ def song_alchemy(add_ids: List[str], subtract_ids: List[str], n_results: int = N
     # Allow one or more songs in the ADD set — a single-song centroid is valid
     if not add_ids or len(add_ids) < 1:
         raise ValueError("At least one song must be in the ADD set")
-    if len(add_ids) > 10 or len(subtract_ids) > 10:
-        raise ValueError("Max 10 songs per ADD or SUBTRACT set")
+    # Remove rigid 10-song per group limit; allow any reasonable number (server-side configs still cap results)
 
     add_centroid = _compute_centroid_from_ids(add_ids)
     if add_centroid is None:

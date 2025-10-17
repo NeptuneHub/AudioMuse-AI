@@ -16,8 +16,8 @@ def alchemy_page():
 
 @alchemy_bp.route('/api/alchemy', methods=['POST'])
 def alchemy_api():
-    """POST payload: {"add": [{"id":"...","op":"ADD"}, ...], "n":100}
-    Expect at least two ADD items and up to 10 per group.
+    """POST payload: {"items": [{"id":"...","op":"ADD"}, ...], "n":100}
+    Expect at least one ADD item; SUBTRACT items are optional. No hard cap on number of selected songs enforced here.
     """
     payload = request.get_json() or {}
     items = payload.get('items', [])

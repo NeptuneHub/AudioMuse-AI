@@ -39,7 +39,7 @@
             <section>
                 <header class="page-header">
                     <h1>AudioMuse-AI - Song Alchemy</h1>
-                    <p>Blend 2–10 tracks to craft a new sonic direction — boost favorites with '+' and remove unwanted flavors with '-'.</p>
+                    <p>Select tracks to Include or Exclude — boost favorites with Include and remove unwanted flavors with Exclude.</p>
                 </header>
 
                 <form id="alchemy-form">
@@ -215,7 +215,6 @@
                 </div>
                 <input type="hidden" class="song-id" />
                 <input type="hidden" class="op" value="ADD" />
-                
             `;
             const artistInput = card.querySelector('.song-artist');
             const titleInput = card.querySelector('.song-title');
@@ -333,7 +332,6 @@
                 // Require at least one ADD item; SUBTRACT items are optional
                 const addCount = valid.filter(i => i.op && i.op.toUpperCase() === 'ADD').length;
                 if (addCount < 1) { showMessageBox('Input Error', 'Please include at least one ADD song.'); return }
-                if (valid.length > 10) { showMessageBox('Input Error', 'A maximum of 10 songs is allowed.'); return }
                 
                 const nInput = parseInt(document.getElementById('n_results').value || defaultN);
                 const n = Math.min(nInput, maxN);
