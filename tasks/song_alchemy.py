@@ -92,10 +92,32 @@ def song_alchemy(add_ids: List[str], subtract_ids: List[str], n_results: int = N
     # Trim to desired n_results
     candidate_ids = candidate_ids[:n_results]
 
+    # Compute distance from add_centroid for each candidate (to display in results)
+    distances = {}
+    for cid in candidate_ids:
+        vec = get_vector_by_id(cid)
+        if vec is None:
+            continue
+        v = np.array(vec, dtype=float)
+        if config.PATH_DISTANCE_METRIC == 'angular':
+            a = add_centroid / np.linalg.norm(add_centroid) if np.linalg.norm(add_centroid) > 0 else add_centroid
+            b = v / np.linalg.norm(v) if np.linalg.norm(v) > 0 else v
+            cosine = np.clip(np.dot(a, b), -1.0, 1.0)
+            dist = float(np.arccos(cosine) / np.pi)
+        else:
+            dist = float(np.linalg.norm(add_centroid - v))
+        distances[cid] = dist
+
     # Fetch details
     details = get_score_data_by_ids(candidate_ids)
     # Preserve order in candidate_ids
     details_map = {d['item_id']: d for d in details}
-    ordered = [details_map[i] for i in candidate_ids if i in details_map]
+    ordered = []
+    for i in candidate_ids:
+        if i in details_map:
+            item = details_map[i]
+            # attach distance if available
+            item['distance'] = distances.get(i)
+            ordered.append(item)
 
     return ordered

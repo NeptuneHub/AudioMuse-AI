@@ -70,6 +70,7 @@
                             <tr>
                                 <th>Title</th>
                                 <th>Artist</th>
+                                <th>Distance</th>
                             </tr>
                         </thead>
                         <tbody id="results-list">
@@ -172,11 +173,14 @@
             card.className = 'alchemy-card op-add-active'; // Default to ADD
             card.innerHTML = `
                 <div class="alchemy-card-header">
-                    <strong class="song-number">Song ${rowCount + 1}</strong>
-                    <div class="op-buttons">
-                        <button type="button" class="op-btn op-add active">+</button>
-                        <button type="button" class="op-btn op-sub">-</button>
+                    <div class="left-group" style="display:flex; align-items:center; gap:0.5rem;">
+                        <div class="op-buttons">
+                            <button type="button" class="op-btn op-add active">+</button>
+                            <button type="button" class="op-btn op-sub">-</button>
+                        </div>
+                        <strong class="song-number">Song ${rowCount + 1}</strong>
                     </div>
+                    <button type="button" class="card-close" aria-label="Remove song">&times;</button>
                 </div>
                 <div class="field-row">
                     <label>Artist</label>
@@ -193,9 +197,7 @@
                 </div>
                 <input type="hidden" class="song-id" />
                 <input type="hidden" class="op" value="ADD" />
-                <div class="alchemy-actions">
-                    <button type="button" class="remove">Remove</button>
-                </div>
+                
             `;
             const artistInput = card.querySelector('.song-artist');
             const titleInput = card.querySelector('.song-title');
@@ -224,10 +226,13 @@
 
             setupAutocomplete(artistInput, titleInput, resultsEl, idEl, card, songNumberEl);
             
-            card.querySelector('.remove').addEventListener('click', () => {
-                card.remove();
-                updateNumbers();
-            });
+            const closeBtn = card.querySelector('.card-close');
+            if (closeBtn) {
+                closeBtn.addEventListener('click', () => {
+                    card.remove();
+                    updateNumbers();
+                });
+            }
 
             songRows.appendChild(card);
             updateNumbers();
@@ -331,7 +336,8 @@
                 if(data.results && data.results.length > 0) {
                     data.results.forEach(r => {
                         const row = document.createElement('tr');
-                        row.innerHTML = `<td>${r.title || 'N/A'}</td><td>${r.author || 'N/A'}</td>`;
+                        const distText = (typeof r.distance === 'number') ? r.distance.toFixed(4) : 'N/A';
+                        row.innerHTML = `<td>${r.title || 'N/A'}</td><td>${r.author || 'N/A'}</td><td>${distText}</td>`;
                         list.appendChild(row);
                         if (r.item_id) window.currentResultIds.push(r.item_id);
                     });
