@@ -20,9 +20,8 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 * **Song Paths**: Create a seamless listening journey between two or more songs. AudioMuse-AI finds the perfect tracks to bridge the sonic gap.
 * **Instant Playlists**: Simply tell the AI what you want to hear—like "high-tempo, low-energy workout music"—and it will instantly generate a playlist for you.
 * **Sonic Fingerprint**: Generates playlists based on your listening habits, finding tracks similar to what you've been playing most often.
+* **Song Alchemy**: Mix your ideal vibe — mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and an interactive 2D preview. Export the final selection directly to your media server.
 
-> 👉 Experience the **Sonic Analysis potentiality** with the [AudioMuse-AI-MusicServer Demo](https://github.com/NeptuneHub/AudioMuse-AI/issues/94)!  
-> _Available for a limited time ⌛_
 
 **The full list or AudioMuse-AI related repository are:** 
   > * [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI): the core application, it run Flask and Worker containers to actually run all the feature;
@@ -31,6 +30,7 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): **Experimental** Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
+> * Version 0.7.1-beta add the Song Alchemy functionality, create your playlist by blending together different song.
 > * Version 0.7.0-beta remove Tensorflow and use instead ONXX. This new version should have better result on different CPU and be also more stable between update. **IMPORTANT:** this new version will require a new analysis of the entire library to work correctly.
 > * Version 0.6.9-beta introduce the support to Lyrion Music Server.
 
