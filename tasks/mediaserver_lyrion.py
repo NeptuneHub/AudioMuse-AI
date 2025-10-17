@@ -9,6 +9,17 @@ logger = logging.getLogger(__name__)
 
 REQUESTS_TIMEOUT = 300
 
+# Global cache to store pseudo-album tracks for retrieval by get_tracks_from_album
+_pseudo_album_cache = {}
+
+
+def _is_standalone_track(song_item):
+    """Returns True when the Lyrion song lacks album metadata entirely."""
+    album_id = song_item.get('album_id') or song_item.get('albumId')
+    if album_id:
+        return False
+    return True
+
 # ##############################################################################
 # LYRION (JSON-RPC) IMPLEMENTATION
 # ##############################################################################
@@ -499,9 +510,23 @@ def _album_has_tracks_in_target_path(album_id, target_paths):
 
 def get_recent_albums(limit):
     """
-    Fetches recently added albums from Lyrion using JSON-RPC.
-    If MUSIC_LIBRARIES is set, filters albums by checking if their tracks' actual file paths match.
-    Scans ALL albums until the requested number is found (or library is exhausted).
+    Fetches recent albums from Lyrion, with comprehensive discovery when limit=0:
+    - limit = 0: Returns ALL albums + standalone tracks (comprehensive discovery)
+    - limit > 0: Returns ONLY real albums (no standalone tracks)
+    
+    This ensures consistent behavior across all media servers.
+    """
+    if limit == 0:
+        # Special case: limit=0 means get everything (albums + standalone tracks)
+        return get_recent_music_items(limit)
+    else:
+        # Normal case: get only real albums, no standalone tracks
+        return _get_recent_albums_only(limit)
+
+def _get_recent_albums_only(limit):
+    """
+    Original implementation: Fetches ONLY albums from Lyrion (no standalone tracks).
+    This is kept as a separate function for when album-only behavior is needed.
     """
     target_paths = _get_target_paths_for_filtering()
     
@@ -651,6 +676,146 @@ def get_recent_albums(limit):
         logger.info(f"Collected {len(albums_accum)} albums from Lyrion after path filtering.")
 
     return albums_accum
+
+def get_recent_music_items(limit):
+    """
+    Gets both recent albums AND recent standalone tracks for comprehensive discovery.
+    This ensures no music is missed during analysis, even if metadata is incomplete.
+    Returns a list combining album objects and standalone track objects.
+    """
+    _pseudo_album_cache.clear()
+    target_paths = _get_target_paths_for_filtering()
+    
+    # Get recent albums (existing functionality)
+    albums = _get_recent_albums_only(limit)
+    
+    # Get recent standalone tracks
+    standalone_tracks = _get_recent_standalone_tracks(limit, target_paths)
+    
+    # Combine and sort by date if both have timestamps
+    all_items = albums + standalone_tracks
+    # Note: Lyrion doesn't provide creation dates easily, so we keep the order as-is
+    
+    # Apply final limit if specified
+    if limit > 0:
+        return all_items[:limit]
+    
+    return all_items
+
+def _get_recent_standalone_tracks(limit, target_paths=None):
+    """
+    Fetches recent standalone audio tracks that might not be properly organized in albums.
+    This captures orphaned tracks, loose files, and tracks with missing album metadata.
+    """
+    logger.info("Fetching recent standalone tracks from Lyrion...")
+    
+    all_tracks = []
+    fetch_all = (limit == 0)
+    
+    try:
+        # Get recent songs using songs query with sort:new
+        page_size = 100
+        offset = 0
+        
+        while True:
+            size_to_fetch = page_size if fetch_all else min(page_size, limit - len(all_tracks))
+            if size_to_fetch <= 0:
+                break
+                
+            params = [offset, size_to_fetch, "sort:new"]
+            
+            try:
+                response = _jsonrpc_request("songs", params)
+            except Exception as e:
+                logger.error(f"Lyrion API call failed for standalone tracks at offset {offset}: {e}")
+                break
+                
+            if not response or not isinstance(response, dict):
+                break
+                
+            songs_data = response.get('songs_loop', [])
+            if not songs_data:
+                break
+                
+            # Filter by path if target paths specified
+            if target_paths is not None:
+                filtered_songs = []
+                for song in songs_data:
+                    song_path = song.get('url', '')
+                    if any(song_path.startswith(target_path) for target_path in target_paths):
+                        filtered_songs.append(song)
+                songs_data = filtered_songs
+                
+            standalone_songs = [song for song in songs_data if _is_standalone_track(song)]
+            if not standalone_songs:
+                offset += len(songs_data)
+                if len(songs_data) < size_to_fetch:
+                    break
+                continue
+
+            # Group standalone tracks by artist into pseudo-albums
+            pseudo_albums = _group_tracks_into_pseudo_albums(standalone_songs)
+            all_tracks.extend(pseudo_albums)
+            
+            offset += len(songs_data)
+            if len(songs_data) < size_to_fetch:
+                break
+                
+    except Exception as e:
+        logger.error(f"Failed to fetch standalone tracks from Lyrion: {e}", exc_info=True)
+    
+    return all_tracks
+
+def _group_tracks_into_pseudo_albums(songs):
+    """
+    Groups standalone tracks by artist into pseudo-albums for compatibility with album-based workflow.
+    """
+    artist_groups = {}
+    
+    for song in songs:
+        artist = _select_best_artist(song, song.get('title', 'Unknown'))
+        
+        if artist not in artist_groups:
+            pseudo_id = f"standalone-{artist.replace(' ', '-').lower()}"
+            artist_groups[artist] = {
+                'Id': pseudo_id,
+                'Name': f"🎵 Standalone Tracks - {artist}",
+                'artist': artist,
+                'tracks': []
+            }
+        
+        artist_groups[artist]['tracks'].append(song)
+    
+    # Store tracks in global cache for retrieval by get_tracks_from_album
+    for artist, album_data in artist_groups.items():
+        _pseudo_album_cache[album_data['Id']] = album_data['tracks']
+    
+    return list(artist_groups.values())
+
+def get_comprehensive_music_discovery(limit=0):
+    """
+    Convenience function for comprehensive music discovery including standalone tracks.
+    Always returns both albums and standalone tracks as pseudo-albums.
+    """
+    return get_recent_music_items(limit)
+
+def _select_best_artist(song, title="Unknown"):
+    """
+    Selects the best artist field from Lyrion song item, using comprehensive priority hierarchy.
+    Priority: trackartist > contributor > artist > albumartist > band > fallback
+    """
+    if song.get('trackartist'):
+        return song.get('trackartist')
+    elif song.get('contributor'):
+        return song.get('contributor')
+    elif song.get('artist'):
+        return song.get('artist')
+    elif song.get('albumartist'):
+        return song.get('albumartist')
+    elif song.get('band'):
+        return song.get('band')
+    else:
+        return 'Unknown Artist'
 
 def get_all_songs():
     """
@@ -878,6 +1043,29 @@ def delete_playlist(playlist_id):
 # --- User-specific Lyrion functions ---
 def get_tracks_from_album(album_id):
     """Fetches all audio tracks for an album from Lyrion using JSON-RPC."""
+    # Check if this is a pseudo-album for standalone tracks
+    if str(album_id).startswith('standalone-'):
+        # Look up tracks in the pseudo-album cache
+        if album_id in _pseudo_album_cache:
+            songs = _pseudo_album_cache[album_id]
+            
+            # Apply artist field prioritization to each song
+            result = []
+            for s in songs:
+                title = s.get('title', 'Unknown')
+                artist = _select_best_artist(s, title)
+                result.append({
+                    **s, 
+                    'Id': s.get('id'), 
+                    'Name': title, 
+                    'AlbumArtist': artist,
+                    'Path': s.get('url', s.get('path', ''))
+                })
+            return result
+        else:
+            logger.warning(f"Pseudo-album {album_id} not found in cache. This may indicate a workflow issue.")
+            return []
+    
     logger.info(f"Attempting to fetch tracks for album ID: {album_id}")
     
     # Lyrion's JSON-RPC doesn't have a direct "get tracks for album" call.

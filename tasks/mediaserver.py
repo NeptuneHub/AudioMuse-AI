@@ -9,6 +9,7 @@ from tasks.mediaserver_jellyfin import (
     get_all_playlists as jellyfin_get_all_playlists,
     delete_playlist as jellyfin_delete_playlist,
     get_recent_albums as jellyfin_get_recent_albums,
+    get_recent_music_items as jellyfin_get_recent_music_items,
     get_tracks_from_album as jellyfin_get_tracks_from_album,
     download_track as jellyfin_download_track,
     get_all_songs as jellyfin_get_all_songs,
@@ -22,6 +23,7 @@ from tasks.mediaserver_navidrome import (
     get_all_playlists as navidrome_get_all_playlists,
     delete_playlist as navidrome_delete_playlist,
     get_recent_albums as navidrome_get_recent_albums,
+    get_recent_music_items as navidrome_get_recent_music_items,
     get_tracks_from_album as navidrome_get_tracks_from_album,
     download_track as navidrome_download_track,
     get_all_songs as navidrome_get_all_songs,
@@ -35,6 +37,7 @@ from tasks.mediaserver_lyrion import (
     get_all_playlists as lyrion_get_all_playlists,
     delete_playlist as lyrion_delete_playlist,
     get_recent_albums as lyrion_get_recent_albums,
+    get_recent_music_items as lyrion_get_recent_music_items,
     get_tracks_from_album as lyrion_get_tracks_from_album,
     download_track as lyrion_download_track,
     get_all_songs as lyrion_get_all_songs,
@@ -108,6 +111,23 @@ def get_recent_albums(limit):
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_recent_albums(limit)
     return []
+
+def get_recent_music_items(limit):
+    """
+    Fetches both recent albums AND standalone tracks for comprehensive music discovery.
+    This ensures no music is missed during analysis, even with incomplete metadata.
+    Now implemented for Jellyfin, Navidrome, and Lyrion - all provide comprehensive discovery.
+    """
+    if config.MEDIASERVER_TYPE == 'jellyfin': 
+        return jellyfin_get_recent_music_items(limit)
+    elif config.MEDIASERVER_TYPE == 'navidrome': 
+        return navidrome_get_recent_music_items(limit)
+    elif config.MEDIASERVER_TYPE == 'lyrion': 
+        return lyrion_get_recent_music_items(limit)
+    else:
+        # Fallback to regular album fetching for servers without comprehensive discovery
+        logger.info(f"get_recent_music_items not yet implemented for {config.MEDIASERVER_TYPE}, falling back to get_recent_albums")
+        return get_recent_albums(limit)
 
 def get_tracks_from_album(album_id):
     """Fetches tracks for an album using admin credentials."""
