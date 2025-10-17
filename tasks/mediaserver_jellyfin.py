@@ -570,24 +570,34 @@ def get_last_played_time(item_id, user_creds=None):
         return None
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
-    """Creates a new instant playlist on Jellyfin for a specific user."""
-    token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
-    if not token: raise ValueError("Jellyfin Token is required.")
-    
-    identifier = user_creds.get('user_identifier') if user_creds else config.JELLYFIN_USER_ID
-    if not identifier: raise ValueError("Jellyfin User Identifier is required.")
+    """
+    Creates a new instant playlist on Jellyfin for a specific user.
+    Handles empty tokens by falling back to the default config token.
+    """
+    token = (user_creds.get('token') if user_creds else None) or config.JELLYFIN_TOKEN
+    if not token:
+        raise ValueError("Jellyfin Token is required and could not be found.")
 
-    user_id = resolve_user(identifier, token)
-    
-    final_playlist_name = f"{playlist_name.strip()}_instant"
-    url = f"{config.JELLYFIN_URL}/Playlists"
-    headers = {"X-Emby-Token": token}
-    body = {"Name": final_playlist_name, "Ids": item_ids, "UserId": user_id}
+    identifier = (user_creds.get('user_identifier') if user_creds else None) or config.JELLYFIN_USER_ID
+    if not identifier:
+        raise ValueError("Jellyfin User Identifier is required and could not be found.")
+
     try:
+        user_id = resolve_user(identifier, token)
+        
+        final_playlist_name = f"{playlist_name.strip()}_instant"
+        url = f"{config.JELLYFIN_URL}/Playlists"
+        headers = {"X-Emby-Token": token}
+        body = {"Name": final_playlist_name, "Ids": item_ids, "UserId": user_id}
+
         r = requests.post(url, headers=headers, json=body, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
+        logger.info("Successfully created playlist '%s' for user %s.", final_playlist_name, user_id)
         return r.json()
+    except requests.exceptions.RequestException as e:
+        logger.error("HTTP Exception creating Jellyfin playlist '%s' for user %s: %s", playlist_name, user_id, e, exc_info=True)
+        return None
     except Exception as e:
-        logger.error("Exception creating Jellyfin instant playlist '%s' for user %s: %s", playlist_name, user_id, e, exc_info=True)
+        logger.error("Generic exception creating Jellyfin playlist '%s' for user %s: %s", playlist_name, user_id, e, exc_info=True)
         return None
 
