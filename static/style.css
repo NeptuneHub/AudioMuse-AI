@@ -703,6 +703,14 @@ tbody tr:hover {
     color: #000;
 }
 
+/* Constrain alchemy plot so it doesn't grow the page height excessively */
+#alchemy-plot {
+    width: 100% !important;
+    max-height: 480px;
+    height: 360px;
+    display: block;
+}
+
 
 .alchemy-card-header .song-number {
     font-weight: 600;

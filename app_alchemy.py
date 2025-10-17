@@ -30,7 +30,8 @@ def alchemy_api():
     subtract_distance = payload.get('subtract_distance')
     try:
         results = song_alchemy(add_ids, sub_ids, n_results=n, subtract_distance=subtract_distance)
-        return jsonify({"results": results})
+        # song_alchemy now returns a dict with results, filtered_out and centroid projections
+        return jsonify(results)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
