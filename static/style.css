@@ -600,3 +600,138 @@ tbody tr:hover {
         flex: 1;
     }
 }
+
+/* --- Alchemy Page Styles (centralized and corrected) --- */
+
+.alchemy-controls.task-buttons {
+    flex-direction: column-reverse; /* Main action button on top */
+}
+
+/* Make both buttons in this container primary buttons */
+.alchemy-controls.task-buttons button {
+    background-color: #2563EB;
+    color: white;
+    border: none;
+}
+.alchemy-controls.task-buttons button:hover {
+    background-color: #1D4ED8;
+}
+
+/* Card base styles */
+.alchemy-card {
+    background-color: #FFFFFF;
+    border: 1px solid #E5E7EB;
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    display: flex;
+    flex-direction: column;
+    gap: 1rem; /* Increased gap for better spacing */
+    width: 100%;
+    transition: border-color 0.3s ease-in-out;
+    border-left-width: 4px;
+    border-left-color: #E5E7EB; /* Default border */
+    box-sizing: border-box; /* FIX: Prevents padding from causing overflow */
+}
+
+.alchemy-card.op-add-active {
+    border-left-color: #16A34A; /* Green for ADD */
+}
+
+.alchemy-card.op-subtract-active {
+    border-left-color: #DC2626; /* Red for SUBTRACT */
+}
+
+.alchemy-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem; /* Reduced margin */
+    gap: 1rem;
+}
+
+.alchemy-card-header .song-number {
+    font-weight: 600;
+    color: #111827;
+    font-size: 1.05rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.op-buttons {
+    display: flex;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+
+.op-btn {
+    font-size: 1.25rem;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #D1D5DB;
+    background-color: #FFFFFF;
+    cursor: pointer;
+    font-weight: 700;
+    border-radius: 0.375rem;
+}
+
+.op-btn.op-add.active {
+    background-color: #16A34A; /* Green */
+    border-color: #15803d;
+    color: white;
+}
+.op-btn.op-sub.active {
+    background-color: #DC2626; /* Red */
+    border-color: #b91c1c;
+    color: white;
+}
+
+.alchemy-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.5rem; /* Reduced margin */
+}
+
+.alchemy-actions .remove {
+    flex: 0 1 auto; /* Prevent stretching */
+    background-color: #FEE2E2;
+    color: #991B1B;
+    font-weight: 600;
+    padding: 0.5rem 1rem;
+    width: auto;
+    border: 1px solid transparent;
+    border-radius: 0.375rem;
+    cursor: pointer;
+}
+.alchemy-actions .remove:hover {
+     background-color: #FECACA;
+}
+
+.alchemy-card .field-row {
+    display: flex;
+    flex-direction: column;
+}
+/* Small helpers for alchemy form rows */
+.param-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+.param-row input[type="range"] {
+    flex-grow: 1;
+}
+.param-row input[type="number"] {
+    width: 6rem;
+}
+.param-help {
+    font-size: 0.8rem;
+    color: #6B7280;
+    width: 100%;
+    margin-top: -0.25rem;
+}
+

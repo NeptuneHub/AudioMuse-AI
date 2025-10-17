@@ -23,16 +23,17 @@ from flasgger import Swagger, swag_from
 
 # Import configuration
 from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP_DIR, \
-    REDIS_URL, DATABASE_URL, MAX_DISTANCE, MAX_SONGS_PER_CLUSTER, MAX_SONGS_PER_ARTIST, NUM_RECENT_ALBUMS, \
-    SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_SILHOUETTE, SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ, \
-    SCORE_WEIGHT_PURITY, SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY, SCORE_WEIGHT_OTHER_FEATURE_PURITY, \
-    MIN_SONGS_PER_GENRE_FOR_STRATIFICATION, STRATIFIED_SAMPLING_TARGET_PERCENTILE, \
-    CLUSTER_ALGORITHM, NUM_CLUSTERS_MIN, NUM_CLUSTERS_MAX, DBSCAN_EPS_MIN, DBSCAN_EPS_MAX, GMM_COVARIANCE_TYPE, \
-    DBSCAN_MIN_SAMPLES_MIN, DBSCAN_MIN_SAMPLES_MAX, GMM_N_COMPONENTS_MIN, GMM_N_COMPONENTS_MAX, \
-    SPECTRAL_N_CLUSTERS_MIN, SPECTRAL_N_CLUSTERS_MAX, ENABLE_CLUSTERING_EMBEDDINGS, \
-    PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, MOOD_LABELS, TOP_N_MOODS, APP_VERSION, \
-    AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME, MISTRAL_MODEL_NAME, \
-    TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC  # --- NEW: Import path distance metric ---
+  REDIS_URL, DATABASE_URL, MAX_DISTANCE, MAX_SONGS_PER_CLUSTER, MAX_SONGS_PER_ARTIST, NUM_RECENT_ALBUMS, \
+  SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_SILHOUETTE, SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ, \
+  SCORE_WEIGHT_PURITY, SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY, SCORE_WEIGHT_OTHER_FEATURE_PURITY, \
+  MIN_SONGS_PER_GENRE_FOR_STRATIFICATION, STRATIFIED_SAMPLING_TARGET_PERCENTILE, \
+  CLUSTER_ALGORITHM, NUM_CLUSTERS_MIN, NUM_CLUSTERS_MAX, DBSCAN_EPS_MIN, DBSCAN_EPS_MAX, GMM_COVARIANCE_TYPE, \
+  DBSCAN_MIN_SAMPLES_MIN, DBSCAN_MIN_SAMPLES_MAX, GMM_N_COMPONENTS_MIN, GMM_N_COMPONENTS_MAX, \
+  SPECTRAL_N_CLUSTERS_MIN, SPECTRAL_N_CLUSTERS_MAX, ENABLE_CLUSTERING_EMBEDDINGS, \
+  PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, MOOD_LABELS, TOP_N_MOODS, APP_VERSION, \
+  AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME, MISTRAL_MODEL_NAME, \
+  TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, ALCHEMY_SUBTRACT_DISTANCE, \
+  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN  # --- NEW: Import path distance metric and alchemy defaults ---
 
 # --- Flask App Setup ---
 app = Flask(__name__)
@@ -470,6 +471,11 @@ def get_config_endpoint():
         "score_weight_other_feature_diversity": SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY,
         "score_weight_other_feature_purity": SCORE_WEIGHT_OTHER_FEATURE_PURITY,
         "path_distance_metric": PATH_DISTANCE_METRIC
+      ,"alchemy_default_n_results": ALCHEMY_DEFAULT_N_RESULTS
+      ,"alchemy_max_n_results": ALCHEMY_MAX_N_RESULTS
+      ,"alchemy_subtract_distance": ALCHEMY_SUBTRACT_DISTANCE
+      ,"alchemy_subtract_distance_angular": ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
+      ,"alchemy_subtract_distance_euclid": ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN
     })
 
 @app.route('/api/playlists', methods=['GET'])
@@ -537,6 +543,7 @@ from app_path import path_bp
 from app_collection import collection_bp
 from app_external import external_bp # --- NEW: Import the external blueprint ---
 from app_universe import universe_bp # --- NEW: Import the universe blueprint ---
+from app_alchemy import alchemy_bp
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -547,6 +554,7 @@ app.register_blueprint(path_bp)
 app.register_blueprint(collection_bp)
 app.register_blueprint(external_bp, url_prefix='/external') # --- NEW: Register the external blueprint ---
 app.register_blueprint(universe_bp) # --- NEW: Register the universe blueprint ---
+app.register_blueprint(alchemy_bp)
 
 if __name__ == '__main__':
     os.makedirs(TEMP_DIR, exist_ok=True)

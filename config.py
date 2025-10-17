@@ -237,6 +237,17 @@ PATH_CANDIDATES_PER_STEP = int(os.environ.get("PATH_CANDIDATES_PER_STEP", "25"))
 PATH_LCORE_MULTIPLIER = int(os.environ.get("PATH_LCORE_MULTIPLIER", "3"))
 
 
+# --- Song Alchemy Defaults ---
+# Number of similar songs to return when creating the Alchemy result (default 100, max 200)
+ALCHEMY_DEFAULT_N_RESULTS = int(os.environ.get("ALCHEMY_DEFAULT_N_RESULTS", "100"))
+ALCHEMY_MAX_N_RESULTS = int(os.environ.get("ALCHEMY_MAX_N_RESULTS", "200"))
+# Minimum distance from the subtract-centroid to keep a candidate (metric-dependent).
+# For angular (cosine-derived) distances this is in [0,1] where higher means more distant.
+ALCHEMY_SUBTRACT_DISTANCE = float(os.environ.get("ALCHEMY_SUBTRACT_DISTANCE", "0.2"))
+ALCHEMY_SUBTRACT_DISTANCE_ANGULAR = float(os.environ.get("ALCHEMY_SUBTRACT_DISTANCE_ANGULAR", "0.2"))
+ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN = float(os.environ.get("ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN", "5.0"))
+
+
 # --- Other Essentia Model Paths ---
 # Paths for models used in predict_other_models (VGGish-based)
 DANCEABILITY_MODEL_PATH = os.environ.get("DANCEABILITY_MODEL_PATH", "/app/model/danceability-msd-musicnn-1.onnx") # Example, adjust if different

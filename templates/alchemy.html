@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="app-version" content="{{ app_version }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AudioMuse-AI - Song Alchemy</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/menu.css">
+    <style>
+        /* All page-specific styles have been moved to style.css for centralization. */
+    </style>
+</head>
+<body>
+<div class="page-container">
+    <aside class="sidebar">
+        <nav>
+            <ul class="sidebar-nav"></ul>
+        </nav>
+    </aside>
+
+    <div class="main-content" id="main-content">
+        <button class="menu-toggle">&#9776;</button>
+        <div class="container">
+            <section>
+                <header class="page-header">
+                    <h1>AudioMuse-AI - Song Alchemy</h1>
+                    <p>Blend 2–10 tracks to craft a new sonic direction — boost favorites with '+' and remove unwanted flavors with '-'.</p>
+                </header>
+
+                <form id="alchemy-form">
+                    <fieldset>
+                        <legend>Song Selection</legend>
+                        <div id="song-rows" class="param-group">
+                            <!-- Song cards will be injected here by JavaScript -->
+                        </div>
+                    </fieldset>
+
+                    <fieldset>
+                        <legend>Parameters</legend>
+                        <div class="param-group">
+                            <div>
+                                <label for="n_results">Number of results:</label>
+                                <input id="n_results" name="n_results" type="number" value="100" min="1" max="200" />
+                            </div>
+                            <div>
+                                <label for="subtract_distance">Subtract distance threshold:</label>
+                                <div class="param-row">
+                                    <input id="subtract_distance" type="range" min="0" max="1" step="0.01" value="0.30" />
+                                    <span id="subtract_distance_label" style="font-weight: 500;">0.30</span>
+                                    <input id="subtract_distance_angular_input" type="number" min="0" max="1" step="0.01" value="0.30" />
+                                </div>
+                                <input id="subtract_distance_euclid" type="number" min="0" step="0.01" value="5.0" style="margin-top: 0.5rem;" />
+                            </div>
+                        </div>
+                    </fieldset>
+
+                    <div class="alchemy-controls task-buttons">
+                        <button id="run-alchemy" type="submit">Run Alchemy</button>
+                        <button id="add-row" type="button">Add Another Song</button>
+                    </div>
+                </form>
+            </section>
+
+            <section id="results" class="hidden">
+                <h2>Results</h2>
+                <div id="results-table-wrapper">
+                     <table id="results-table">
+                        <thead>
+                            <tr>
+                                <th>Title</th>
+                                <th>Artist</th>
+                            </tr>
+                        </thead>
+                        <tbody id="results-list">
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+            
+            <section id="playlist-creator" class="hidden">
+                <h3>Create a Playlist from Results</h3>
+                <form id="playlist-form">
+                    <div class="param-group">
+                        <div>
+                           <label for="playlist_name">Playlist Name:</label>
+                           <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., My Alchemy Mix">
+                        </div>
+                    </div>
+                    <button type="submit" style="background-color: #16A34A;">Create Playlist on Media Server</button>
+                </form>
+                <div id="playlist-status"></div>
+            </section>
+        </div>
+    </div>
+</div>
+    <script>
+    (async () => {
+        // Fetch config to get ALCHEMY defaults
+        let defaultN = 100;
+        let maxN = 200;
+        let cfg = {};
+        try {
+            const resp = await fetch('/api/config');
+            cfg = await resp.json();
+            if (cfg.alchemy_default_n_results) defaultN = cfg.alchemy_default_n_results;
+            if (cfg.alchemy_max_n_results) maxN = cfg.alchemy_max_n_results;
+        } catch (e) { console.warn('Failed to fetch config for alchemy, using defaults', e); }
+
+        // Autocomplete plumbing
+        let searchTimeout;
+        const songRows = document.getElementById('song-rows');
+        const addRowBtn = document.getElementById('add-row');
+
+        const setupAutocomplete = (artistInputEl, titleInputEl, resultsEl, idEl, songCardEl, songNumberEl) => {
+            const handleSearch = async () => {
+                const artistQuery = artistInputEl.value.trim();
+                const titleQuery = titleInputEl.value.trim();
+                if (artistQuery.length < 2 && titleQuery.length < 2) {
+                    resultsEl.classList.add('hidden');
+                    return;
+                }
+                try {
+                    const params = new URLSearchParams({ artist: artistQuery, title: titleQuery });
+                    const response = await fetch(`/api/search_tracks?${params}`);
+                    const tracks = await response.json();
+                    resultsEl.innerHTML = '';
+                    if (tracks.length === 0) {
+                        resultsEl.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
+                    } else {
+                        tracks.forEach(track => {
+                            const itemDiv = document.createElement('div');
+                            itemDiv.className = 'autocomplete-item';
+                            itemDiv.innerHTML = `<div class="title">${track.title}</div><div class="artist">${track.author}</div>`;
+                            itemDiv.addEventListener('click', () => {
+                                const allIds = Array.from(document.querySelectorAll('.song-id')).map(i => i.value).filter(Boolean);
+                                if (allIds.includes(track.item_id) && idEl.value !== track.item_id) {
+                                    // Using a custom message box instead of alert
+                                    showMessageBox('Duplicate Song', 'This song is already selected in another row.');
+                                    return;
+                                }
+                                artistInputEl.value = track.author;
+                                titleInputEl.value = track.title;
+                                idEl.value = track.item_id;
+                                
+                                const baseText = songNumberEl.textContent.split(':')[0];
+                                songNumberEl.textContent = `${baseText}: ${track.title} — ${track.author}`;
+
+                                resultsEl.classList.add('hidden');
+                            });
+                            resultsEl.appendChild(itemDiv);
+                        });
+                    }
+                    resultsEl.classList.remove('hidden');
+                } catch (error) {
+                    console.error('Autocomplete search error:', error);
+                    resultsEl.classList.add('hidden');
+                }
+            };
+
+            const debouncedSearch = () => {
+                clearTimeout(searchTimeout);
+                searchTimeout = setTimeout(handleSearch, 300);
+            };
+            artistInputEl.addEventListener('input', debouncedSearch);
+            titleInputEl.addEventListener('input', debouncedSearch);
+        };
+
+        function makeRow() {
+            const rowCount = document.querySelectorAll('.alchemy-card').length;
+            const card = document.createElement('div');
+            card.className = 'alchemy-card op-add-active'; // Default to ADD
+            card.innerHTML = `
+                <div class="alchemy-card-header">
+                    <strong class="song-number">Song ${rowCount + 1}</strong>
+                    <div class="op-buttons">
+                        <button type="button" class="op-btn op-add active">+</button>
+                        <button type="button" class="op-btn op-sub">-</button>
+                    </div>
+                </div>
+                <div class="field-row">
+                    <label>Artist</label>
+                     <div class="autocomplete-container">
+                        <input type="text" placeholder="Start typing artist..." class="song-artist" />
+                    </div>
+                </div>
+                <div class="field-row">
+                    <label>Title</label>
+                    <div class="autocomplete-container">
+                        <input type="text" placeholder="Start typing title..." class="song-title" />
+                        <div class="autocomplete-results hidden"></div>
+                    </div>
+                </div>
+                <input type="hidden" class="song-id" />
+                <input type="hidden" class="op" value="ADD" />
+                <div class="alchemy-actions">
+                    <button type="button" class="remove">Remove</button>
+                </div>
+            `;
+            const artistInput = card.querySelector('.song-artist');
+            const titleInput = card.querySelector('.song-title');
+            const resultsEl = card.querySelector('.autocomplete-results');
+            const idEl = card.querySelector('.song-id');
+            const opHidden = card.querySelector('.op');
+            const songNumberEl = card.querySelector('.song-number');
+            const opAddBtn = card.querySelector('.op-add');
+            const opSubBtn = card.querySelector('.op-sub');
+
+            // Operation button handlers
+            opAddBtn.addEventListener('click', () => {
+                opHidden.value = 'ADD';
+                opAddBtn.classList.add('active');
+                opSubBtn.classList.remove('active');
+                card.classList.add('op-add-active');
+                card.classList.remove('op-subtract-active');
+            });
+            opSubBtn.addEventListener('click', () => {
+                opHidden.value = 'SUBTRACT';
+                opSubBtn.classList.add('active');
+                opAddBtn.classList.remove('active');
+                card.classList.add('op-subtract-active');
+                card.classList.remove('op-add-active');
+            });
+
+            setupAutocomplete(artistInput, titleInput, resultsEl, idEl, card, songNumberEl);
+            
+            card.querySelector('.remove').addEventListener('click', () => {
+                card.remove();
+                updateNumbers();
+            });
+
+            songRows.appendChild(card);
+            updateNumbers();
+        }
+
+        const updateNumbers = () => {
+            Array.from(document.querySelectorAll('.alchemy-card')).forEach((card, idx) => {
+                const songNumberEl = card.querySelector('.song-number');
+                const currentText = songNumberEl.textContent.split(':');
+                const baseText = `Song ${idx + 1}`;
+                if (currentText.length > 1) {
+                    songNumberEl.textContent = `${baseText}:${currentText[1]}`;
+                } else {
+                    songNumberEl.textContent = baseText;
+                }
+            });
+        };
+        
+        addRowBtn.addEventListener('click', () => makeRow());
+        makeRow();
+        makeRow();
+
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.autocomplete-container')) {
+                document.querySelectorAll('.autocomplete-results').forEach(el => el.classList.add('hidden'));
+            }
+        });
+
+        const metric = ((cfg && cfg.path_distance_metric) || 'angular').toLowerCase();
+        const subtractSlider = document.getElementById('subtract_distance');
+        const subtractLabel = document.getElementById('subtract_distance_label');
+        const subtractEuclid = document.getElementById('subtract_distance_euclid');
+        const angularInput = document.getElementById('subtract_distance_angular_input');
+
+        // Use a single slider control. For angular metric it ranges 0..1, for euclidean 0..100.
+        if (metric === 'angular') {
+            subtractSlider.style.display = 'block';
+            angularInput.style.display = 'inline-block';
+            subtractEuclid.style.display = 'none';
+            subtractSlider.min = 0;
+            subtractSlider.max = 1;
+            subtractSlider.step = 0.01;
+            const angDefault = (cfg && (cfg.alchemy_subtract_distance_angular || cfg.alchemy_subtract_distance)) || 0.3;
+            subtractSlider.value = angDefault;
+            angularInput.value = parseFloat(subtractSlider.value).toFixed(2);
+            subtractLabel.textContent = subtractSlider.value;
+        } else {
+            subtractSlider.style.display = 'block';
+            angularInput.style.display = 'none';
+            subtractEuclid.style.display = 'none';
+            subtractSlider.min = 0;
+            subtractSlider.max = 100;
+            subtractSlider.step = 0.1;
+            const euDefault = (cfg && (cfg.alchemy_subtract_distance_euclid || cfg.alchemy_subtract_distance)) || 5.0;
+            subtractSlider.value = euDefault;
+            subtractLabel.textContent = subtractSlider.value;
+        }
+
+        // Keep label (and angular numeric) in sync with slider
+        subtractSlider.addEventListener('input', () => {
+            const val = subtractSlider.value;
+            subtractLabel.textContent = val;
+            if (metric === 'angular') angularInput.value = parseFloat(val).toFixed(2);
+        });
+        angularInput.addEventListener('input', () => {
+            let v = parseFloat(angularInput.value);
+            if (isNaN(v)) v = 0;
+            v = Math.max(0, Math.min(1, v));
+            subtractSlider.value = v;
+            subtractLabel.textContent = v.toFixed(2);
+        });
+
+        const form = document.getElementById('alchemy-form');
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                const rows = [...document.querySelectorAll('.alchemy-card')];
+                const items = rows.map(r => ({ id: r.querySelector('.song-id').value.trim(), op: r.querySelector('.op').value }));
+                const valid = items.filter(i => i.id);
+                // Require at least one ADD item; SUBTRACT items are optional
+                const addCount = valid.filter(i => i.op && i.op.toUpperCase() === 'ADD').length;
+                if (addCount < 1) { showMessageBox('Input Error', 'Please include at least one ADD song.'); return }
+                if (valid.length > 10) { showMessageBox('Input Error', 'A maximum of 10 songs is allowed.'); return }
+                
+                const nInput = parseInt(document.getElementById('n_results').value || defaultN);
+                const n = Math.min(nInput, maxN);
+                
+                const payload = { items: valid, n };
+                if (metric === 'angular') payload.subtract_distance = parseFloat(subtractSlider.value);
+                else payload.subtract_distance = parseFloat(subtractEuclid.value);
+
+                const resp = await fetch('/api/alchemy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const data = await resp.json();
+                
+                if (data.error) { showMessageBox('API Error', data.error); return }
+
+                const list = document.getElementById('results-list');
+                list.innerHTML = ''; // Clear previous results
+                // Track current result IDs so playlist creation can use them
+                window.currentResultIds = [];
+                if(data.results && data.results.length > 0) {
+                    data.results.forEach(r => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `<td>${r.title || 'N/A'}</td><td>${r.author || 'N/A'}</td>`;
+                        list.appendChild(row);
+                        if (r.item_id) window.currentResultIds.push(r.item_id);
+                    });
+                    // Show playlist creator
+                    document.getElementById('playlist-creator').classList.remove('hidden');
+                    document.getElementById('playlist-status').textContent = '';
+                    document.getElementById('playlist_name').value = `Alchemy: ${document.querySelector('.alchemy-card .song-title')?.value || 'Results'}`;
+                } else {
+                     const row = document.createElement('tr');
+                     row.innerHTML = `<td colspan="2" style="text-align:center;">No results found.</td>`;
+                     list.appendChild(row);
+                     document.getElementById('playlist-creator').classList.add('hidden');
+                }
+                document.getElementById('results').classList.remove('hidden');
+            } catch (err) {
+                console.error('Alchemy request failed', err);
+                showMessageBox('Request Failed', 'Failed to run Alchemy. See console for details.');
+            }
+        });
+        
+        function showMessageBox(title, message) {
+            const boxId = 'custom-message-box';
+            document.getElementById(boxId)?.remove();
+            const messageBox = document.createElement('div');
+            messageBox.id = boxId;
+            // Using styles from style.css for consistency where possible, with inline for positioning
+            messageBox.style.cssText = 'position: fixed; top: 20px; right: 20px; background-color: #fff; color: #1F2937; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; border: 1px solid #E5E7EB; max-width: 400px; text-align: left;';
+            messageBox.innerHTML = `<h3 style="font-weight: 600; margin-top:0; margin-bottom: 10px; color: #111827;">${title}</h3><p style="margin:0;">${message}</p><button style="position: absolute; top: 10px; right: 10px; background: none; border: none; font-size: 1.5rem; color: #9CA3AF; cursor: pointer;" onclick="this.parentNode.remove()">&times;</button>`;
+            document.body.appendChild(messageBox);
+            setTimeout(() => messageBox.remove(), 5000);
+        }
+
+    })();
+    </script>
+    <script>
+    // Playlist form wiring: reuse /api/create_playlist behavior from similarity.html
+    (function() {
+        const playlistForm = document.getElementById('playlist-form');
+        const playlistStatusDiv = document.getElementById('playlist-status');
+        playlistForm.addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const playlistName = document.getElementById('playlist_name').value;
+            playlistStatusDiv.className = '';
+            if (!playlistName) {
+                playlistStatusDiv.textContent = 'Please enter a playlist name.';
+                playlistStatusDiv.className = 'status-error';
+                return;
+            }
+            // Collect ADD song ids from the current rows (they should be added to the playlist even if not in results)
+            const addIds = Array.from(document.querySelectorAll('.alchemy-card')).map(card => {
+                const op = card.querySelector('.op')?.value;
+                const id = card.querySelector('.song-id')?.value?.trim();
+                return (op && op.toUpperCase() === 'ADD' && id) ? id : null;
+            }).filter(Boolean);
+
+            const resultIds = window.currentResultIds || [];
+
+            // Combine ADD ids first, then results, removing duplicates while preserving order
+            const seen = new Set();
+            const combined = [];
+            addIds.forEach(id => { if (!seen.has(id)) { seen.add(id); combined.push(id); } });
+            resultIds.forEach(id => { if (id && !seen.has(id)) { seen.add(id); combined.push(id); } });
+
+            if (combined.length === 0) {
+                playlistStatusDiv.textContent = 'No tracks to add. Please run Alchemy or add songs to the ADD list.';
+                playlistStatusDiv.className = 'status-error';
+                return;
+            }
+
+            playlistStatusDiv.textContent = 'Creating playlist...';
+            try {
+                const response = await fetch('/api/create_playlist', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ playlist_name: playlistName, track_ids: combined }),
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || `HTTP error! status: ${response.status}`);
+                playlistStatusDiv.textContent = result.message || 'Playlist created.';
+                playlistStatusDiv.className = 'status-success';
+            } catch (error) {
+                playlistStatusDiv.textContent = `Error: ${error.message}`;
+                playlistStatusDiv.className = 'status-error';
+                console.error('Playlist creation error:', error);
+            }
+        });
+    })();
+    </script>
+<script src="/static/menu.js"></script>
+</body>
+</html>
+
