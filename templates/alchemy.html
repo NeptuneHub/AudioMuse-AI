@@ -9,6 +9,20 @@
     <link rel="stylesheet" href="/static/menu.css">
     <style>
         /* All page-specific styles have been moved to style.css for centralization. */
+        @media (max-width: 768px) {
+            .alchemy-card .song-artist,
+            .alchemy-card .song-title {
+                font-size: 16px;
+            }
+        }
+        .alchemy-card-header .song-number {
+            /* Allow the song title/artist to wrap if it's too long */
+            white-space: normal;
+            word-break: break-word;
+            flex-shrink: 1;
+            min-width: 0; /* Necessary for text wrapping in a flex container */
+            line-height: 1.3; /* Adjust for better readability */
+        }
     </style>
 </head>
 <body>
@@ -64,8 +78,8 @@
 
             <section id="results" class="hidden">
                 <h2>Results</h2>
-                <div style="margin-bottom:1.5rem;">
-                    <canvas id="alchemy-plot" width="600" height="400"></canvas>
+                <div style="position: relative; width: 100%; max-width: 800px; margin: 0 auto 1.5rem auto;">
+                    <canvas id="alchemy-plot"></canvas>
                     <div id="projection-label" style="text-align: center; font-size:0.9rem; color:#6B7280; margin-top:0.5rem; text-transform: capitalize;"></div>
                 </div>
                 <div id="results-table-wrapper">
@@ -447,7 +461,7 @@
                                 data: { datasets },
                                 options: {
                                     responsive: true,
-                                    maintainAspectRatio: true,
+                                    maintainAspectRatio: false,
                                     plugins: { 
                                         tooltip: { 
                                             callbacks: { 
