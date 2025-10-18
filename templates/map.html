@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="app-version" content="{{ app_version }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AudioMuse-AI - Music Map</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/menu.css">
+</head>
+<body>
+<div class="page-container">
+    <aside class="sidebar">
+        <nav>
+            <ul class="sidebar-nav"></ul>
+        </nav>
+    </aside>
+
+    <div class="main-content" id="main-content">
+        <button class="menu-toggle">&#9776;</button>
+        <div class="container">
+            <section>
+                <header class="page-header">
+                    <h1>AudioMuse-AI - Music Map [EXPERIMENTAL]</h1>
+                    <p>Visualize your music</p>
+                </header>
+                <form id="map-form" style="margin-bottom:1rem; display:flex; gap:0.5rem; align-items:center;">
+                    <label for="n_songs">Number of songs:</label>
+                    <input id="n_songs" type="number" min="1" value="500" style="width:100px;" />
+                    <button id="show-map" type="button">Show</button>
+                    <div style="display:inline-flex; gap:0.25rem; margin-left:0.5rem;">
+                        <button id="zoom-in" type="button" title="Zoom In">🔍+</button>
+                        <button id="zoom-out" type="button" title="Zoom Out">🔍-</button>
+                        <button id="reset-zoom" type="button" title="Reset Zoom">Reset</button>
+                    </div>
+                    <!-- pan controls moved to floating overlay on the map -->
+                    <div id="map-status" style="margin-left:1rem;color:#6B7280"></div>
+                </form>
+                <div style="position: relative; width: 100%; max-width: 1200px; margin: 0 auto 1.5rem;">
+                    <canvas id="map-plot" style="touch-action: none;"></canvas>
+                    <div id="map-projection-label" style="text-align: center; font-size:0.9rem; color:#6B7280; margin-top:0.5rem; text-transform: capitalize;"></div>
+                </div>
+                <div id="map-legend"></div>
+            </section>
+        </div>
+    </div>
+</div>
+<script>
+function parseTopGenre(mood_vector) {
+    if (!mood_vector) return 'unknown';
+    try {
+        const parts = mood_vector.split(',');
+        let best = null;
+        for (const p of parts) {
+            if (!p.includes(':')) continue;
+            const [g, s] = p.split(':', 2);
+            const score = parseFloat(s) || 0;
+            if (!best || score > best[1]) best = [g.trim(), score];
+        }
+        return best ? best[0] : 'unknown';
+    } catch (e) { return 'unknown'; }
+}
+
+function distinctColorsForGenres(genres) {
+    const palette = [
+        '#ff6b6b','#4ecdc4','#ffe66d','#a8e6cf','#ff8b94','#ffaaa5','#88d8b0','#ffd93d','#6c5ce7','#fdcb6e',
+        '#636e72','#00b894','#0984e3','#e84393','#00cec9','#fab1a0','#74b9ff','#b2bec3','#fd79a8','#00bfa5'
+    ];
+    const map = {};
+    let i = 0;
+    for (const g of genres) {
+        map[g] = palette[i % palette.length];
+        i++;
+    }
+    map['unknown'] = '#888888';
+    return map;
+}
+
+async function drawMap(n) {
+    document.getElementById('map-status').textContent = 'Loading...';
+    try {
+        const resp = await fetch(`/api/map?n=${encodeURIComponent(n)}`);
+        const data = await resp.json();
+        const items = data.items || [];
+        document.getElementById('map-projection-label').textContent = data.projection || '';
+
+        // compute top genres and color mapping
+        const genres = new Set();
+        items.forEach(it => genres.add(parseTopGenre(it.mood_vector)));
+        const genreList = Array.from(genres);
+        const colorMap = distinctColorsForGenres(genreList);
+
+        const points = items.map(it => ({ x: it.embedding_2d[0], y: it.embedding_2d[1], title: it.title, artist: it.artist, genre: parseTopGenre(it.mood_vector) }));
+
+        // Build legend
+        const legendDiv = document.getElementById('map-legend');
+        legendDiv.innerHTML = '';
+        genreList.slice(0,50).forEach(g => {
+            const el = document.createElement('span');
+            el.style.display = 'inline-block';
+            el.style.marginRight = '0.5rem';
+            el.innerHTML = `<span style="display:inline-block;width:12px;height:12px;background:${colorMap[g]};margin-right:6px;border-radius:2px;vertical-align:middle;"></span>${g}`;
+            legendDiv.appendChild(el);
+        });
+
+        // expose points/color map globally for redraws and fallback
+        window._mapPoints = points;
+        window._mapColorMap = colorMap;
+
+        // If Chart.js is available
+            if (window.Chart) {
+            // Group by genre into datasets
+            const datasets = {};
+            points.forEach(p => {
+                const g = p.genre || 'unknown';
+                datasets[g] = datasets[g] || { label: g, data: [], pointBackgroundColor: colorMap[g] || '#888' };
+                // Include genre in the raw point object so Chart.js tooltip can access it
+                datasets[g].data.push({ x: p.x, y: p.y, title: p.title, artist: p.artist, genre: g });
+            });
+
+            const ctx = document.getElementById('map-plot').getContext('2d');
+            if (window._mapChart) { window._mapChart.destroy(); }
+            window._mapChart = new Chart(ctx, {
+                type: 'scatter',
+                data: { datasets: Object.values(datasets).map(d => ({ label: d.label, data: d.data, pointRadius: 3, backgroundColor: d.pointBackgroundColor })) },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { display: true, position: 'bottom' },
+                        tooltip: { callbacks: { label: function(context) { const p = context.raw; return `[${p.genre || 'unknown'}] ${p.title} - ${p.artist}`; } } },
+                        // Enable chartjs-plugin-zoom options: wheel/pinch zoom and drag pan
+                        zoom: {
+                            // Allow drag panning without requiring a modifier key so desktop
+                            // drag and mobile touch-pan both work.
+                            pan: { enabled: true, mode: 'xy', modifierKey: null },
+                            zoom: { wheel: { enabled: true, modifierKey: null }, pinch: { enabled: true }, mode: 'xy' }
+                        }
+                    },
+                    scales: { x: { display: true, title: { display: true, text: 'X' } }, y: { display: true, title: { display: true, text: 'Y' } } }
+                }
+            });
+
+            // Ensure chart renders and capture initial scales for reliable reset
+            try {
+                window._mapChart.update();
+                const xs = window._mapChart.scales.x;
+                const ys = window._mapChart.scales.y;
+                window._mapInitialScales = { x: { min: xs.min, max: xs.max }, y: { min: ys.min, max: ys.max } };
+            } catch (e) { /* ignore if scales not available */ }
+
+            // Programmatic zoom helpers (in case plugin methods are unavailable)
+            function zoomChartByFactor(chart, factor) {
+                if (!chart) return;
+                try {
+                    const xScale = chart.scales.x;
+                    const yScale = chart.scales.y;
+                    const xCenter = (xScale.max + xScale.min) / 2;
+                    const yCenter = (yScale.max + yScale.min) / 2;
+                    const xRange = (xScale.max - xScale.min) / factor;
+                    const yRange = (yScale.max - yScale.min) / factor;
+                    chart.options.scales.x.min = xCenter - xRange / 2;
+                    chart.options.scales.x.max = xCenter + xRange / 2;
+                    chart.options.scales.y.min = yCenter - yRange / 2;
+                    chart.options.scales.y.max = yCenter + yRange / 2;
+                    chart.update('none');
+                } catch (e) {
+                    console.warn('Programmatic zoom failed', e);
+                }
+            }
+
+            document.getElementById('zoom-in').addEventListener('click', () => { zoomChartByFactor(window._mapChart, 1.25); });
+            document.getElementById('zoom-out').addEventListener('click', () => { zoomChartByFactor(window._mapChart, 1 / 1.25); });
+            document.getElementById('reset-zoom').addEventListener('click', () => {
+                // Chart.js reset
+                if (window._mapChart) {
+                    if (typeof window._mapChart.resetZoom === 'function') {
+                        try { window._mapChart.resetZoom(); } catch (e) { /* ignore */ }
+                    }
+                    if (window._mapInitialScales) {
+                        window._mapChart.options.scales.x.min = window._mapInitialScales.x.min;
+                        window._mapChart.options.scales.x.max = window._mapInitialScales.x.max;
+                        window._mapChart.options.scales.y.min = window._mapInitialScales.y.min;
+                        window._mapChart.options.scales.y.max = window._mapInitialScales.y.max;
+                    } else {
+                        delete window._mapChart.options.scales.x.min;
+                        delete window._mapChart.options.scales.x.max;
+                        delete window._mapChart.options.scales.y.min;
+                        delete window._mapChart.options.scales.y.max;
+                    }
+                    try { window._mapChart.update(); } catch (e) { /* ignore */ }
+                }
+
+                // Canvas fallback reset
+                const c = document.getElementById('map-plot');
+                if (c) {
+                    window._canvasPan = { x:0, y:0 };
+                    if (window._mapPoints) {
+                        if (typeof drawCanvasPoints === 'function') {
+                            try { drawCanvasPoints(window._mapPoints, window._mapColorMap); } catch (e) { }
+                        } else {
+                            try {
+                                const ctx = c.getContext('2d');
+                                ctx.clearRect(0,0,c.width,c.height);
+                                window._mapPoints.forEach(p => {
+                                    const x = (p.x + 1) * (c.width/2);
+                                    const y = (1 - (p.y + 1)/2) * c.height;
+                                    ctx.fillStyle = (window._mapColorMap && window._mapColorMap[p.genre]) ? window._mapColorMap[p.genre] : '#888';
+                                    ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI*2); ctx.fill();
+                                });
+                            } catch (e) { /* ignore */ }
+                        }
+                    }
+                }
+            });
+
+            // Pan helpers: pan by fraction of visible range for Chart.js, or pixel offsets for canvas fallback
+            function panChartByFraction(chart, fracX, fracY) {
+                if (!chart) return;
+                try {
+                    const xScale = chart.scales.x;
+                    const yScale = chart.scales.y;
+                    const xRange = xScale.max - xScale.min;
+                    const yRange = yScale.max - yScale.min;
+                    const dx = fracX * xRange;
+                    const dy = fracY * yRange;
+                    chart.options.scales.x.min = xScale.min + dx;
+                    chart.options.scales.x.max = xScale.max + dx;
+                    chart.options.scales.y.min = yScale.min + dy;
+                    chart.options.scales.y.max = yScale.max + dy;
+                    chart.update('none');
+                } catch (e) { console.warn('Pan failed', e); }
+            }
+
+            // legacy inline pan buttons removed; overlay will handle pan actions
+
+            function panBoth(fracX, fracY) {
+                // Chart.js
+                if (window._mapChart) {
+                    panChartByFraction(window._mapChart, fracX, fracY);
+                } else {
+                    // Canvas: shift pixel offsets and redraw
+                    const c = document.getElementById('map-plot');
+                    window._canvasPan = window._canvasPan || { x: 0, y: 0 };
+                    // Move 15% of canvas size per click
+                    const stepX = Math.round(c.width * Math.abs(fracX) * (fracX < 0 ? 1 : 1));
+                    const stepY = Math.round(c.height * Math.abs(fracY) * (fracY < 0 ? 1 : 1));
+                    // frac sign decides direction
+                    window._canvasPan.x += Math.round(-fracX * c.width * 0.2);
+                    window._canvasPan.y += Math.round(-fracY * c.height * 0.2);
+                    // Redraw from stored points
+                    if (window._mapPoints) {
+                        drawCanvasPoints(window._mapPoints, window._mapColorMap);
+                    }
+                }
+            }
+
+            // Create compact floating overlay with 4 pan buttons in a cross shape (no inert blanks)
+            (function createFloatingPan() {
+                const container = document.getElementById('map-plot').parentElement;
+                let old = container.querySelector('.map-pan-overlay');
+                if (old) old.remove();
+
+                const overlay = document.createElement('div');
+                overlay.className = 'map-pan-overlay';
+                overlay.style.position = 'absolute';
+                overlay.style.top = '8px';
+                overlay.style.right = '8px';
+                overlay.style.width = '90px';
+                overlay.style.height = '90px';
+                overlay.style.background = 'transparent';
+                overlay.style.zIndex = 20;
+
+                const btnStyle = 'position:absolute;width:32px;height:32px;border-radius:4px;border:1px solid rgba(0,0,0,0.08);background:#fff;cursor:pointer;font-size:14px;';
+
+                const up = document.createElement('button'); up.type='button'; up.innerText='▲'; up.style.cssText = btnStyle + 'left:29px;top:0;'; up.title='Pan Up'; up.addEventListener('click', () => panBoth(0, 0.15));
+                const down = document.createElement('button'); down.type='button'; down.innerText='▼'; down.style.cssText = btnStyle + 'left:29px;bottom:0;'; down.title='Pan Down'; down.addEventListener('click', () => panBoth(0, -0.15));
+                const left = document.createElement('button'); left.type='button'; left.innerText='◀'; left.style.cssText = btnStyle + 'left:0;top:29px;'; left.title='Pan Left'; left.addEventListener('click', () => panBoth(-0.15, 0));
+                const right = document.createElement('button'); right.type='button'; right.innerText='▶'; right.style.cssText = btnStyle + 'right:0;top:29px;'; right.title='Pan Right'; right.addEventListener('click', () => panBoth(0.15, 0));
+
+                overlay.appendChild(up); overlay.appendChild(down); overlay.appendChild(left); overlay.appendChild(right);
+                container.style.position = 'relative';
+                container.appendChild(overlay);
+            })();
+        } else {
+            // Fallback canvas draw
+            const c = document.getElementById('map-plot');
+            c.width = Math.min(1200, window.innerWidth - 40);
+            c.height = 600;
+            const ctx = c.getContext('2d');
+            ctx.clearRect(0,0,c.width,c.height);
+            points.forEach(p => {
+                const x = (p.x + 1) * (c.width/2);
+                const y = (1 - (p.y + 1)/2) * c.height;
+                ctx.fillStyle = colorMap[p.genre] || '#888';
+                ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI*2); ctx.fill();
+            });
+
+            // Canvas hover tooltip
+            let hoverTooltip = document.getElementById('map-canvas-tooltip');
+            if (!hoverTooltip) {
+                hoverTooltip = document.createElement('div');
+                hoverTooltip.id = 'map-canvas-tooltip';
+                hoverTooltip.style.position = 'absolute';
+                hoverTooltip.style.pointerEvents = 'none';
+                hoverTooltip.style.background = 'rgba(0,0,0,0.75)';
+                hoverTooltip.style.color = '#fff';
+                hoverTooltip.style.padding = '6px 8px';
+                hoverTooltip.style.borderRadius = '4px';
+                hoverTooltip.style.fontSize = '12px';
+                hoverTooltip.style.display = 'none';
+                document.body.appendChild(hoverTooltip);
+            }
+
+            const rect = c.getBoundingClientRect();
+            function hideTooltip() { hoverTooltip.style.display = 'none'; }
+            function onMove(ev) {
+                const mx = ev.clientX - rect.left;
+                const my = ev.clientY - rect.top;
+                let best = null;
+                // threshold in pixels
+                const TH = 6;
+                for (const p of points) {
+                    const sx = (p.x + 1) * (c.width/2);
+                    const sy = (1 - (p.y + 1)/2) * c.height;
+                    const dx = sx - mx; const dy = sy - my;
+                    const d = Math.sqrt(dx*dx + dy*dy);
+                    if (d <= TH && (!best || d < best.d)) best = { p, d, sx, sy };
+                }
+                if (best) {
+                    const text = `[${best.p.genre || 'unknown'}] ${best.p.title} - ${best.p.artist}`;
+                    hoverTooltip.textContent = text;
+                    hoverTooltip.style.left = (ev.clientX + 12) + 'px';
+                    hoverTooltip.style.top = (ev.clientY + 12) + 'px';
+                    hoverTooltip.style.display = 'block';
+                } else {
+                    hideTooltip();
+                }
+            }
+            function onOut() { hideTooltip(); }
+
+            // Remove previous listeners if present
+            if (c._mapHandlers) {
+                c.removeEventListener('mousemove', c._mapHandlers.move);
+                c.removeEventListener('mouseout', c._mapHandlers.out);
+            }
+            c._mapHandlers = { move: onMove, out: onOut };
+            c.addEventListener('mousemove', onMove);
+            c.addEventListener('mouseout', onOut);
+        }
+
+        document.getElementById('map-status').textContent = `Showing ${items.length} songs`;
+    } catch (e) {
+        console.error('Failed to load map data', e);
+        document.getElementById('map-status').textContent = 'Failed to load data';
+    }
+}
+
+document.getElementById('show-map').addEventListener('click', () => {
+    const n = parseInt(document.getElementById('n_songs').value) || 500;
+    drawMap(Math.max(1, n));
+});
+
+</script>
+<!-- chartjs-plugin-zoom (CDN) -->
+<script src="/static/chart.js"></script>
+<!-- chartjs-plugin-zoom (CDN) - must be loaded after Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@1.2.1/dist/chartjs-plugin-zoom.min.js"></script>
+<script src="/static/menu.js"></script>
+</body>
+</html>
