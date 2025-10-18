@@ -132,6 +132,8 @@
         const addRowBtn = document.getElementById('add-row');
 
         const setupAutocomplete = (artistInputEl, titleInputEl, resultsEl, idEl, songCardEl, songNumberEl) => {
+            const selectedSongNameEl = songCardEl.querySelector('.selected-song-name');
+
             const handleSearch = async () => {
                 const artistQuery = artistInputEl.value.trim();
                 const titleQuery = titleInputEl.value.trim();
@@ -162,8 +164,8 @@
                                 titleInputEl.value = track.title;
                                 idEl.value = track.item_id;
                                 
-                                const baseText = songNumberEl.textContent.split(':')[0];
-                                songNumberEl.textContent = `${baseText}: ${track.title} — ${track.author}`;
+                                // UPDATE: Set text content of the new dedicated span
+                                selectedSongNameEl.textContent = `${track.title} — ${track.author}`;
 
                                 resultsEl.classList.add('hidden');
                             });
@@ -191,12 +193,15 @@
             card.className = 'alchemy-card op-add-active'; // Default to ADD
             card.innerHTML = `
                 <div class="alchemy-card-header">
-                    <div class="left-group" style="display:flex; align-items:center; gap:0.5rem;">
+                    <div class="left-group">
                         <div class="op-buttons">
-                            <button type="button" class="op-btn op-add active">+</button>
-                            <button type="button" class="op-btn op-sub">-</button>
+                            <button type="button" class="op-btn op-add active">Include</button>
+                            <button type="button" class="op-btn op-sub">Exclude</button>
                         </div>
-                        <strong class="song-number">Song ${rowCount + 1}</strong>
+                        <div class="song-details-wrapper">
+                            <strong class="song-number">Song ${rowCount + 1}</strong>
+                            <span class="selected-song-name"></span>
+                        </div>
                     </div>
                     <button type="button" class="card-close" aria-label="Remove song">&times;</button>
                 </div>
@@ -258,13 +263,8 @@
         const updateNumbers = () => {
             Array.from(document.querySelectorAll('.alchemy-card')).forEach((card, idx) => {
                 const songNumberEl = card.querySelector('.song-number');
-                const currentText = songNumberEl.textContent.split(':');
-                const baseText = `Song ${idx + 1}`;
-                if (currentText.length > 1) {
-                    songNumberEl.textContent = `${baseText}:${currentText[1]}`;
-                } else {
-                    songNumberEl.textContent = baseText;
-                }
+                // UPDATE: This function now only needs to update the "Song X" label.
+                songNumberEl.textContent = `Song ${idx + 1}`;
             });
         };
         
@@ -598,4 +598,3 @@
 <script src="/static/chart.js"></script>
 </body>
 </html>
-
