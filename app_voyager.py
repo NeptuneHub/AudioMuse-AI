@@ -120,6 +120,12 @@ def get_similar_tracks_endpoint():
         schema:
           type: string
           enum: ['true', 'false']
+      - name: mood_similarity
+        in: query
+        description: If 'true', filters results by mood similarity using stored mood features (danceability, aggressive, happy, party, relaxed, sad). If 'false', only acoustic similarity is used. Defaults to 'true' if omitted.
+        schema:
+          type: string
+          enum: ['true', 'false']
     responses:
       200:
         description: A list of similar tracks with their details.
@@ -156,6 +162,12 @@ def get_similar_tracks_endpoint():
     else:
         eliminate_duplicates = eliminate_duplicates_str.lower() == 'true'
 
+    mood_similarity_str = request.args.get('mood_similarity')
+    if mood_similarity_str is None:
+        mood_similarity = True  # Default to True when parameter is not provided
+    else:
+        mood_similarity = mood_similarity_str.lower() == 'true'
+
     target_item_id = None
 
     if item_id:
@@ -172,7 +184,8 @@ def get_similar_tracks_endpoint():
         neighbor_results = find_nearest_neighbors_by_id(
             target_item_id, 
             n=num_neighbors,
-            eliminate_duplicates=eliminate_duplicates
+            eliminate_duplicates=eliminate_duplicates,
+            mood_similarity=mood_similarity
         )
         if not neighbor_results:
             return jsonify({"error": "Target track not found in index or no similar tracks found."}), 404

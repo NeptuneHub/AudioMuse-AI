@@ -20,6 +20,7 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 * **Song Paths**: Create a seamless listening journey between two or more songs. AudioMuse-AI finds the perfect tracks to bridge the sonic gap.
 * **Instant Playlists**: Simply tell the AI what you want to hear—like "high-tempo, low-energy workout music"—and it will instantly generate a playlist for you.
 * **Sonic Fingerprint**: Generates playlists based on your listening habits, finding tracks similar to what you've been playing most often.
+* **Song Alchemy**: Mix your ideal vibe — mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and an interactive 2D preview. Export the final selection directly to your media server.
 
 
 **The full list or AudioMuse-AI related repository are:** 
@@ -29,6 +30,7 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): **Experimental** Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
+> * Version 0.7.1-beta add the Song Alchemy functionality, create your playlist by blending together different song.
 > * Version 0.7.0-beta remove Tensorflow and use instead ONXX. This new version should have better result on different CPU and be also more stable between update. **IMPORTANT:** this new version will require a new analysis of the entire library to work correctly.
 > * Version 0.6.9-beta introduce the support to Lyrion Music Server.
 
@@ -241,7 +243,8 @@ The **mandatory** parameter that you need to change from the example are this:
 | `NAVIDROME_URL`      | (Required) Your Navidrome server's full URL                             | `http://YOUR_JELLYFIN_IP:4553`    |
 | `NAVIDROME_USER`     | (Required) Navidrome User ID.                                           | *(N/A - from Secret)* |
 | `NAVIDROME_PASSWORD` | (Required) Navidrome user Password.                                     | *(N/A - from Secret)* |
-| `POSTGRES_USER`      | (Required) PostgreSQL username.                                         | *(N/A - from Secret)* | # Corrected typo
+| `LYRION_URL`         | (Required) Your Lyrion server's full URL                                | `http://YOUR_LYRION_IP:9000`      |
+| `POSTGRES_USER`      | (Required) PostgreSQL username.                                         | *(N/A - from Secret)* |
 | `POSTGRES_PASSWORD`  | (Required) PostgreSQL password.                                         | *(N/A - from Secret)* |
 | `POSTGRES_DB`        | (Required) PostgreSQL database name.                                    | *(N/A - from Secret)* |
 | `POSTGRES_HOST`      | (Required) PostgreSQL host.                                             | `postgres-service.playlist`       |
@@ -250,97 +253,99 @@ The **mandatory** parameter that you need to change from the example are this:
 | `GEMINI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is GEMINI) Your Google Gemini API Key. | *(N/A - from Secret)* |
 | `MISTRAL_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MISTRAL) Your Mistral API Key.      | *(N/A - from Secret)* |
 
-These parameter can be leave as it is:
+These parameter could be leave as it is:
 
-| Parameter               | Description                                 | Default Value                       |
-| ----------------------- | ------------------------------------------- | ----------------------------------- |
-| `TEMP_DIR`              | Temp directory for audio files              | `/app/temp_audio`                   |
-| `CLEANING_SAFETY_LIMIT` | Max number of albums deleted during cleaning | `100`                             |
-
+| Parameter               | Description                                  | Default Value     |
+|-------------------------|----------------------------------------------|-------------------|
+| `TEMP_DIR`              | Temp directory for audio files              | `/app/temp_audio` |
+| `CLEANING_SAFETY_LIMIT` | Max number of albums deleted during cleaning | `100`             |
+| `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names. | `""` (empty - scan all) |
 
 This are the default parameters on wich the analysis or clustering task will be lunched. You will be able to change them to another value directly in the front-end:
 
-| Parameter                                                  | Description                                                                                                                | Default Value                        |
-|------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|--------------------------------------|
-| **Analysis General**                                       |                                                                                                                            |                                      | 
-| `NUM_RECENT_ALBUMS`                                        | Number of recent albums to scan (0 for all).                                                                               | `0`                               |
-| `TOP_N_MOODS`                                              | Number of top moods per track for feature vector.                                                                          | `5`                                  |
-| **Clustering General**                                     |                                                                                                                            |                                      |
-| `ENABLE_CLUSTERING_EMBEDDINGS`                             | Whether to use audio embeddings (True) or score-based features (False) for clustering.                                     | `false`                              |
-| `CLUSTER_ALGORITHM`                                        | Default clustering: `kmeans`, `dbscan`, `gmm`, `spectral`.                                                                 | `kmeans`                             |
-| `MAX_SONGS_PER_CLUSTER`                                    | Max songs per generated playlist segment.                                                                                  | `0`                                  |
-| `MAX_SONGS_PER_ARTIST`                                     | Max songs from one artist per cluster.                                                                                     | `3`                                  |
-| `MAX_DISTANCE`                                             | Normalized distance threshold for tracks in a cluster.                                                                     | `0.5`                                |
-| `CLUSTERING_RUNS`                                          | Iterations for Monte Carlo evolutionary search.                                                                            | `5000`                               |
-| `TOP_N_PLAYLISTS`                                          | POST Clustering it keep only the top N diverse playlist.                                                                   | `8`                               |
-| **Similarity General**                                     |                                                                                                                            |                                      |
-| `INDEX_NAME`                                               | Name of the index, no need to change.                                                                                      | `music_library`                      |
-| `VOYAGER_EF_CONSTRUCTION`                                  | Number of element analyzed to create the neighbor list in the index.                                                       | `1024`                                 |
-| `VOYAGER_M`                                                | Number of neighbore More  = higher accuracy.                                                                               | `64`                                 |
-| `VOYAGER_QUERY_EF`                                         | Number neighbor analyzed during the query.                                                                                 | `1024`                                 |
-| `VOYAGER_METRIC`                                           | Different tipe of distance metrics: `angular`, `euclidean`,`dot`                                                           | `angular`              |
-| `SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT`                  | It enable the possibility of use the `MAX_SONGS_PER_ARTIST` also in similar song                                           | `true`              |
-| **Sonic Fingerprint General**                              |                                                                                                                            |                                      |
-| `SONIC_FINGERPRINT_NEIGHBORS`                              | Default number of track for the sonic fingerprint                                                                          | `100`                      |
-| **Similar Song and Song Path Duplicate filtering General** |                                                                                                                            |                                      |
-| `DUPLICATE_DISTANCE_THRESHOLD_COSINE`                      | Less than this cosine distance the track is a duplicate.                                                                   | `0.01`                      |
-| `DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN`                   | Less than this euclidean distance the track is a duplicate.                                                                | `0.15`                      |
-| `DUPLICATE_DISTANCE_CHECK_LOOKBACK`                        | How many previous song need to be checked for duplicate.                                                                   | `1`                      |
-| **Song Path General**                                      |                                                                                                                            |                                      |
-| `PATH_DISTANCE_METRIC`                                     | The distance metric to use for pathfinding. Options: 'angular', 'euclidean'                                                | `euclidean`   |
-| `PATH_DEFAULT_LENGTH`                                      | Default number of songs in the path if not specified in the API request                                                    | `25`          |
-| `PATH_AVG_JUMP_SAMPLE_SIZE`                                | Number of random songs to sample for calculating the average jump distance                                                 | `200`         |
-| `PATH_CANDIDATES_PER_STEP`                                 | Number of candidate songs to retrieve from Voyager for each step in the path                                               | `25`          |
-| `PATH_LCORE_MULTIPLIER`                                    | It multiply the number of centroid created based on the distance. Higher is better for distant song and worst for nearest. | `3`          |
-| **Evolutionary Clustering & Scoring**                      |                                                                                                                            |                                      |
-| `ITERATIONS_PER_BATCH_JOB`                                 | Number of clustering iterations processed per RQ batch job.                                                                | `20`                                |
-| `MAX_CONCURRENT_BATCH_JOBS`                                | Maximum number of clustering batch jobs to run simultaneously.                                                             | `10`                                  |
-| `TOP_K_MOODS_FOR_PURITY_CALCULATION`                       | Number of centroid's top moods to consider when calculating playlist purity.                                               | `3`                                  |
-| `EXPLOITATION_START_FRACTION`                              | Fraction of runs before starting to use elites.                                                                            | `0.2`                                |
-| `EXPLOITATION_PROBABILITY_CONFIG`                          | Probability of mutating an elite vs. random generation.                                                                    | `0.7`                                |
-| `MUTATION_INT_ABS_DELTA`                                   | Max absolute change for integer parameter mutation.                                                                        | `3`                                  |
-| `MUTATION_FLOAT_ABS_DELTA`                                 | Max absolute change for float parameter mutation.                                                                          | `0.05`                               |
-| `MUTATION_KMEANS_COORD_FRACTION`                           | Fractional change for KMeans centroid coordinates.                                                                         | `0.05`                               |
-| **K-Means Ranges**                                         |                                                                                                                            |                                      |
-| `NUM_CLUSTERS_MIN`                                         | Min $K$ for K-Means.                                                                                                       | `40`                                 |
-| `TOP_K_MOODS_FOR_PURITY_CALCULATION`                       | Number of centroid's top moods to consider when calculating playlist purity.                                               | `3`                                  |
-| `NUM_CLUSTERS_MAX`                                         | Max $K$ for K-Means.                                                                                                       | `100`                                |
-| `USE_MINIBATCH_KMEANS`                                     | Whether to use MiniBatchKMeans (True) or standard KMeans (False) when clustering embeddings.                               | `false`                               |
-| **DBSCAN Ranges**                                          |                                                                                                                            |                                      |
-| `DBSCAN_EPS_MIN`                                           | Min epsilon for DBSCAN.                                                                                                    | `0.1`                                |
-| `DBSCAN_EPS_MAX`                                           | Max epsilon for DBSCAN.                             d                                                                      | `0.5`                                |
-| `DBSCAN_MIN_SAMPLES_MIN`                                   | Min `min_samples` for DBSCAN.                                                                                              | `5`                                  |
-| `DBSCAN_MIN_SAMPLES_MAX`                                   | Max `min_samples` for DBSCAN.                                                                                              | `20`                                 |
-| **GMM Ranges**                                             |                                                                                                                            |                                      |
-| `GMM_N_COMPONENTS_MIN`                                     | Min components for GMM.                                                                                                    | `40`                                 |
-| `GMM_N_COMPONENTS_MAX`                                     | Max components for GMM.                                                                                                    | `100`                                 |
-| `GMM_COVARIANCE_TYPE`                                      | Covariance type for GMM (task uses `full`).                                                                                | `full`                               |
-| **Spectral Ranges**                                        |                                                                                                                            |                                      |
-| `SPECTRAL_N_CLUSTERS_MIN`                                  | Min components for GMM.                                                                                                    | `40`                                 |
-| `SPECTRAL_N_CLUSTERS_MAX`                                  | Max components for GMM.                                                                                                    | `100`                                 |
-| `SPECTRAL_N_NEIGHBORS`                                     | Number of Neighbors on which do clustering. Higher is better but slower                                                    | `20`                               |
-| **PCA Ranges**                                             |                                                                                                                            |                                      |
-| `PCA_COMPONENTS_MIN`                                       | Min PCA components (0 to disable).                                                                                         | `0`                                  |
-| `PCA_COMPONENTS_MAX`                                       | Max PCA components (e.g., `8` for feature vectors, `199` for embeddings).                                                  | `8`                                  |
-| **AI Naming (*)**                                          |                                                                                                                            |                                      |
-| `AI_MODEL_PROVIDER`                                        | AI provider: `OLLAMA`, `GEMINI`, `MISTRAL` or `NONE`.                                                                      | `NONE`                               |
-| **Evolutionary Clustering & Scoring**                      |                                                                                                                            |                                      |
-| `TOP_N_ELITES`                                             | Number of best solutions kept as elites.                                                                                   | `10`                                 |
-| `SAMPLING_PERCENTAGE_CHANGE_PER_RUN`                       | Percentage of songs to swap out in the stratified sample between runs (0.0 to 1.0).                                        | `0.2`                                |
-| `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`                   | Minimum number of songs to target per stratified genre during sampling.                                                    | `100`                                |
-| `STRATIFIED_SAMPLING_TARGET_PERCENTILE`                    | Percentile of genre song counts to use for target songs per stratified genre.                                              | `50`                                 |
-| `OLLAMA_SERVER_URL`                                        | URL for your Ollama instance (if `AI_MODEL_PROVIDER` is OLLAMA).                                                           | `http://<your-ip>:11434/api/generate` |
-| `OLLAMA_MODEL_NAME`                                        | Ollama model to use (if `AI_MODEL_PROVIDER` is OLLAMA).                                                                    | `mistral:7b`                         |
-| `GEMINI_MODEL_NAME`                                        | Gemini model to use (if `AI_MODEL_PROVIDER` is GEMINI).                                                                    | `gemini-2.5-pro`            |
-| `MISTRAL_MODEL_NAME`                                       | Mistral model to use (if `AI_MODEL_PROVIDER` is MISTRAL).                                                                  | `ministral-3b-latest`            |
-| **Scoring Weights**                                        |                                                                                                                            |                                      |
-| `SCORE_WEIGHT_DIVERSITY`                                   | Weight for inter-playlist mood diversity.                                                                                  | `2.0`                                |
-| `SCORE_WEIGHT_PURITY`                                      | Weight for playlist purity (intra-playlist mood consistency).                                                              | `1.0`                                |
-| `SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY`                     | Weight for inter-playlist 'other feature' diversity.                                                                       | `0.0`                                |
-| `SCORE_WEIGHT_OTHER_FEATURE_PURITY`                        | Weight for intra-playlist 'other feature' consistency.                                                                     | `0.0`                                |
-| `SCORE_WEIGHT_SILHOUETTE`                                  | Weight for Silhouette Score (cluster separation).                                                                          | `0.0`                                |
-| `SCORE_WEIGHT_DAVIES_BOULDIN`                              | Weight for Davies-Bouldin Index (cluster separation).                                                                      | `0.0`                                |
-| `SCORE_WEIGHT_CALINSKI_HARABASZ`                           | Weight for Calinski-Harabasz Index (cluster separation).                                                                   | `0.0`                                |
+| Parameter                                   | Description                                                                                                                | Default Value   |
+|---------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|-----------------|
+| **Analysis General**                        |                                                                                                                            |                 |
+| `NUM_RECENT_ALBUMS`                         | Number of recent albums to scan (0 for all).                                                                              | `0`             |
+| `TOP_N_MOODS`                               | Number of top moods per track for feature vector.                                                                         | `5`             |
+| **Clustering General**                      |                                                                                                                            |                 |
+| `ENABLE_CLUSTERING_EMBEDDINGS`              | Whether to use audio embeddings (True) or score-based features (False) for clustering.                                    | `true`          |
+| `CLUSTER_ALGORITHM`                         | Default clustering: `kmeans`, `dbscan`, `gmm`, `spectral`.                                                                | `kmeans`        |
+| `MAX_SONGS_PER_CLUSTER`                     | Max songs per generated playlist segment.                                                                                 | `0`             |
+| `MAX_SONGS_PER_ARTIST`                      | Max songs from one artist per cluster.                                                                                    | `3`             |
+| `MAX_DISTANCE`                              | Normalized distance threshold for tracks in a cluster.                                                                    | `0.5`           |
+| `CLUSTERING_RUNS`                           | Iterations for Monte Carlo evolutionary search.                                                                           | `5000`          |
+| `TOP_N_PLAYLISTS`                           | POST Clustering it keep only the top N diverse playlist.                                                                  | `8`             |
+| **Similarity General**                      |                                                                                                                            |                 |
+| `INDEX_NAME`                                | Name of the index, no need to change.                                                                                     | `music_library` |
+| `VOYAGER_EF_CONSTRUCTION`                   | Number of element analyzed to create the neighbor list in the index.                                                      | `1024`          |
+| `VOYAGER_M`                                 | Number of neighbore More = higher accuracy.                                                                               | `64`            |
+| `VOYAGER_QUERY_EF`                          | Number neighbor analyzed during the query.                                                                                | `1024`          |
+| `VOYAGER_METRIC`                            | Different tipe of distance metrics: `angular`, `euclidean`,`dot`                                                          | `angular`       |
+| `SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT`   | It enable the possibility of use the `MAX_SONGS_PER_ARTIST` also in similar song                                          | `true`          |
+| **Sonic Fingerprint General**               |                                                                                                                            |                 |
+| `SONIC_FINGERPRINT_NEIGHBORS`               | Default number of track for the sonic fingerprint                                                                         | `100`           |
+| **Similar Song and Song Path Duplicate filtering General** |                                                                                                            |                 |
+| `DUPLICATE_DISTANCE_THRESHOLD_COSINE`       | Less than this cosine distance the track is a duplicate.                                                                  | `0.01`          |
+| `DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN`    | Less than this euclidean distance the track is a duplicate.                                                               | `0.15`          |
+| `DUPLICATE_DISTANCE_CHECK_LOOKBACK`         | How many previous song need to be checked for duplicate.                                                                  | `1`             |
+| `MOOD_SIMILARITY_THRESHOLD`                 | Maximum normalized distance for mood similarity filtering. Lower value will give more importance to mood                  | `0.15`          |
+| **Song Path General**                       |                                                                                                                            |                 |
+| `PATH_DISTANCE_METRIC`                      | The distance metric to use for pathfinding. Options: 'angular', 'euclidean'                                               | `angular`       |
+| `PATH_DEFAULT_LENGTH`                       | Default number of songs in the path if not specified in the API request                                                   | `25`            |
+| `PATH_AVG_JUMP_SAMPLE_SIZE`                 | Number of random songs to sample for calculating the average jump distance                                                | `200`           |
+| `PATH_CANDIDATES_PER_STEP`                  | Number of candidate songs to retrieve from Voyager for each step in the path                                              | `25`            |
+| `PATH_LCORE_MULTIPLIER`                     | It multiply the number of centroid created based on the distance. Higher is better for distant song and worst for nearest. | `3`             |
+| **Evolutionary Clustering & Scoring**      |                                                                                            |                                        |
+| `ITERATIONS_PER_BATCH_JOB`                  | Number of clustering iterations processed per RQ batch job.                                | `20`                                   |
+| `MAX_CONCURRENT_BATCH_JOBS`                 | Maximum number of clustering batch jobs to run simultaneously.                             | `10`                                   |
+| `CLUSTERING_BATCH_TIMEOUT_MINUTES`          | Max time a batch can run before being considered failed (prevents infinite hangs).        | `60`                                   |
+| `CLUSTERING_MAX_FAILED_BATCHES`             | Max number of failed batches before stopping new launches and forcing completion.         | `10`                                   |
+| `CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS`   | How often to check batch status for timeout detection.                                    | `30`                                   |
+| `TOP_K_MOODS_FOR_PURITY_CALCULATION`        | Number of centroid's top moods to consider when calculating playlist purity.              | `3`                                    |
+| `EXPLOITATION_START_FRACTION`               | Fraction of runs before starting to use elites.                                           | `0.2`                                  |
+| `EXPLOITATION_PROBABILITY_CONFIG`           | Probability of mutating an elite vs. random generation.                                   | `0.7`                                  |
+| `MUTATION_INT_ABS_DELTA`                    | Max absolute change for integer parameter mutation.                                        | `3`                                    |
+| `MUTATION_FLOAT_ABS_DELTA`                  | Max absolute change for float parameter mutation.                                          | `0.05`                                 |
+| `MUTATION_KMEANS_COORD_FRACTION`            | Fractional change for KMeans centroid coordinates.                                        | `0.05`                                 |
+| **K-Means Ranges**                          |                                                                                            |                                        |
+| `NUM_CLUSTERS_MIN`                          | Min $K$ for K-Means.                                                                      | `40`                                   |
+| `NUM_CLUSTERS_MAX`                          | Max $K$ for K-Means.                                                                      | `100`                                  |
+| `USE_MINIBATCH_KMEANS`                      | Whether to use MiniBatchKMeans (True) or standard KMeans (False) when clustering embeddings. | `false`                            |
+| **DBSCAN Ranges**                           |                                                                                            |                                        |
+| `DBSCAN_EPS_MIN`                            | Min epsilon for DBSCAN.                                                                   | `0.1`                                  |
+| `DBSCAN_EPS_MAX`                            | Max epsilon for DBSCAN.                                                                   | `0.5`                                  |
+| `DBSCAN_MIN_SAMPLES_MIN`                    | Min `min_samples` for DBSCAN.                                                             | `5`                                    |
+| `DBSCAN_MIN_SAMPLES_MAX`                    | Max `min_samples` for DBSCAN.                                                             | `20`                                   |
+| **GMM Ranges**                              |                                                                                            |                                        |
+| `GMM_N_COMPONENTS_MIN`                      | Min components for GMM.                                                                   | `40`                                   |
+| `GMM_N_COMPONENTS_MAX`                      | Max components for GMM.                                                                   | `100`                                  |
+| `GMM_COVARIANCE_TYPE`                       | Covariance type for GMM (task uses `full`).                                               | `full`                                 |
+| **Spectral Ranges**                         |                                                                                            |                                        |
+| `SPECTRAL_N_CLUSTERS_MIN`                   | Min components for Spectral clustering.                                                   | `40`                                   |
+| `SPECTRAL_N_CLUSTERS_MAX`                   | Max components for Spectral clustering.                                                   | `100`                                  |
+| `SPECTRAL_N_NEIGHBORS`                      | Number of Neighbors on which do clustering. Higher is better but slower                   | `20`                                   |
+| **PCA Ranges**                              |                                                                                            |                                        |
+| `PCA_COMPONENTS_MIN`                        | Min PCA components (0 to disable).                                                        | `0`                                    |
+| `PCA_COMPONENTS_MAX`                        | Max PCA components (e.g., `8` for feature vectors, `199` for embeddings).                 | `199`                                  |
+| **AI Naming (*)**                           |                                                                                            |                                        |
+| `AI_MODEL_PROVIDER`                         | AI provider: `OLLAMA`, `GEMINI`, `MISTRAL` or `NONE`.                                     | `NONE`                                 |
+| `TOP_N_ELITES`                              | Number of best solutions kept as elites.                                                  | `10`                                   |
+| `SAMPLING_PERCENTAGE_CHANGE_PER_RUN`        | Percentage of songs to swap out in the stratified sample between runs (0.0 to 1.0).       | `0.2`                                  |
+| `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`    | Minimum number of songs to target per stratified genre during sampling.                   | `100`                                  |
+| `STRATIFIED_SAMPLING_TARGET_PERCENTILE`     | Percentile of genre song counts to use for target songs per stratified genre.             | `50`                                   |
+| `OLLAMA_SERVER_URL`                         | URL for your Ollama instance (if `AI_MODEL_PROVIDER` is OLLAMA).                          | `http://<your-ip>:11434/api/generate` |
+| `OLLAMA_MODEL_NAME`                         | Ollama model to use (if `AI_MODEL_PROVIDER` is OLLAMA).                                   | `mistral:7b`                          |
+| `GEMINI_MODEL_NAME`                         | Gemini model to use (if `AI_MODEL_PROVIDER` is GEMINI).                                   | `gemini-2.5-pro`                      |
+| `MISTRAL_MODEL_NAME`                        | Mistral model to use (if `AI_MODEL_PROVIDER` is MISTRAL).                                 | `ministral-3b-latest`                  |
+| **Scoring Weights**                         |                                                                                            |                                        |
+| `SCORE_WEIGHT_DIVERSITY`                    | Weight for inter-playlist mood diversity.                                                 | `2.0`                                  |
+| `SCORE_WEIGHT_PURITY`                       | Weight for playlist purity (intra-playlist mood consistency).                             | `1.0`                                  |
+| `SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY`      | Weight for inter-playlist 'other feature' diversity.                                      | `0.0`                                  |
+| `SCORE_WEIGHT_OTHER_FEATURE_PURITY`         | Weight for intra-playlist 'other feature' consistency.                                    | `0.0`                                  |
+| `SCORE_WEIGHT_SILHOUETTE`                   | Weight for Silhouette Score (cluster separation).                                         | `0.0`                                  |
+| `SCORE_WEIGHT_DAVIES_BOULDIN`               | Weight for Davies-Bouldin Index (cluster separation).                                     | `0.0`                                  |
+| `SCORE_WEIGHT_CALINSKI_HARABASZ`            | Weight for Calinski-Harabasz Index (cluster separation).                                  | `0.0`                                  |
 
 
 
@@ -365,9 +370,6 @@ Our GitHub Actions workflow automatically builds and pushes Docker images. Here'
   * Ensures you're running a precise, versioned build.  
   * **Use for reproducible deployments or locking to a specific version.**
  
-Starting from v0.6.0-beta Librosa library is used for reading song in place of Essentia. We will keep the analysis version with essentia adding the suffix **-esstentia** to the tabg for retrocompatibility.
-This **-essentia** version will **not** receive additional implementation or fix on the analysis side BUT it **may** receive the other implementation. This version will be also less tested so avoid it if you don't have any specific reasion to use AudioMuse-AI implementation with essentia.
-
 **IMPORTANT** the `-nvidia` image are **experimantal** image. Try it if you want to help us to improve BUT we suggest to don't use it for normal daily use for now. 
 
 ## **Key Technologies**

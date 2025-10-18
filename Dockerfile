@@ -119,6 +119,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       sqlglot \
       google-generativeai \
       mistralai \
+  umap-learn \
       pydub \
       python-mpd2 \
       onnx==1.14.1 \
@@ -143,6 +144,25 @@ COPY deployment/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 # oneDNN floating-point math mode: STRICT reduces non-deterministic FP optimizations
 # Keep this if you want more deterministic CPU behavior when using oneDNN-enabled runtimes
 ENV ONEDNN_DEFAULT_FPMATH_MODE=STRICT
+
+# ONNX Runtime optimization settings to prevent signal 9 crashes on newer CPUs (Intel 12600K, etc.)
+# Similar to TF_ENABLE_ONEDNN_OPTS=0 for TensorFlow compatibility
+ENV ORT_DISABLE_ALL_OPTIMIZATIONS=1
+ENV ORT_ENABLE_CPU_FP16_OPS=0
+
+# Force consistent memory allocation and precision behavior (Intel 12600K vs i5-6500 compatibility)
+# Prevents different memory allocation patterns and floating-point precision issues
+ENV ORT_DISABLE_AVX512=1
+ENV ORT_FORCE_SHARED_PROVIDER=1
+
+# Force consistent floating-point behavior across different Intel generations
+# 12600K has different FPU precision defaults than 6th gen CPUs
+ENV MKL_ENABLE_INSTRUCTIONS=AVX2
+ENV MKL_DYNAMIC=FALSE
+
+# Prevent aggressive memory pre-allocation on newer CPUs
+ENV ORT_DISABLE_MEMORY_PATTERN_OPTIMIZATION=1
+
 ENV PYTHONPATH=/usr/local/lib/python3/dist-packages:/app
 
 EXPOSE 8000

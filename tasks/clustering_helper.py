@@ -5,6 +5,8 @@ import random
 import logging
 import numpy as np
 from collections import defaultdict
+# time, re, and cdist imports moved to clustering_postprocessing.py
+from psycopg2.extras import DictCursor
 
 # Sklearn imports
 from sklearn.preprocessing import StandardScaler
@@ -666,3 +668,5 @@ def _get_track_primary_genre(track_data):
         mood_scores = {p.split(':')[0]: float(p.split(':')[1]) for p in track_data['mood_vector'].split(',') if ':' in p}
         return max((g for g in STRATIFIED_GENRES if g in mood_scores), key=mood_scores.get, default='__other__')
     return '__other__'
+
+# Post-processing functions have been moved to clustering_postprocessing.py for better organization
