@@ -25,15 +25,14 @@
                     <h1>AudioMuse-AI - Music Map [EXPERIMENTAL]</h1>
                     <p>Precompute your music map with a song analysis, then explore it interactively and create your playlist</p>
                 </header>
-                <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+                <div class="map-controls" style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
                     <label for="n_songs">Number of songs:</label>
                     <input id="n_songs" type="number" min="1" value="500" style="width:100px;" />
-                    <button id="show-map" type="button">Load</button>
-                    <select id="renderer"><option value="scatter">SVG (reliable)</option><option value="scattergl" selected>WebGL (fast)</option></select>
-                    <button id="create-playlist">Create playlist</button>
-                    <button id="inspect-plot" type="button" title="Inspect plot data" style="margin-left:6px;">Inspect</button>
-                    <button id="toggle-full" type="button" title="Show full dataset" style="margin-left:6px;">Full</button>
-                    <button id="toggle-select" type="button" title="Toggle select/pan" style="margin-left:6px;">Select</button>
+                    <button id="show-map" type="button" class="btn btn-primary">Load</button>
+                    <button id="create-playlist" class="btn btn-primary">Create playlist</button>
+                    <button id="inspect-plot" type="button" class="btn btn-ghost" title="Inspect plot data" style="margin-left:6px;">Inspect</button>
+                    <button id="toggle-full" type="button" class="btn btn-ghost" title="Show full dataset" style="margin-left:6px;">Full</button>
+                    
                     <div id="map-status" style="margin-left:12px;color:#6B7280"></div>
                 </div>
 
@@ -44,8 +43,8 @@
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px">
                         <strong>Selected songs</strong>
                         <div>
-                            <button id="selection-close" style="margin-right:6px">Close</button>
-                            <button id="selection-clear">Clear all</button>
+                            <button id="selection-close" class="btn btn-ghost btn-sm" style="margin-right:6px">Close</button>
+                            <button id="selection-clear" class="btn btn-ghost btn-sm">Clear all</button>
                         </div>
                     </div>
                     <div id="selection-list"></div>
@@ -113,7 +112,8 @@ async function loadAndPlot(n) {
         // Subsample large datasets for faster rendering while preserving mapping
         // If using WebGL (scattergl) prefer to render the full set (no subsampling)
         const MAX_DISPLAY = 40000;
-        const rendererVal = (document.getElementById('renderer') && document.getElementById('renderer').value) || 'scatter';
+    // renderer is fixed to WebGL (scattergl)
+    const rendererVal = 'scattergl';
         let displayPts = pts;
         if (rendererVal !== 'scattergl' && !window._mapUseFull && pts.length > MAX_DISPLAY) {
             const stride = Math.ceil(pts.length / MAX_DISPLAY);
@@ -137,7 +137,7 @@ async function loadAndPlot(n) {
             customdata: ids,
             ids: ids,
             mode: 'markers',
-            type: document.getElementById('renderer').value === 'scattergl' ? 'scattergl' : 'scatter',
+            type: 'scattergl',
             marker: Object.assign({}, markerOpts, { color: colors }),
             name: 'tracks'
         }];
@@ -231,7 +231,7 @@ function applyGenreFilterAndRerender() {
     // filter out hidden genres
     let pts = ptsAll.filter(p => !hidden.has(p.genre));
     // respect subsampling policy: if not using scattergl and not _mapUseFull, subsample
-    const rendererVal = (document.getElementById('renderer') && document.getElementById('renderer').value) || 'scatter';
+    const rendererVal = 'scattergl';
     const MAX_DISPLAY = 40000;
     if (rendererVal !== 'scattergl' && !window._mapUseFull && pts.length > MAX_DISPLAY) {
         const stride = Math.ceil(pts.length / MAX_DISPLAY);
@@ -300,10 +300,10 @@ function renderSelectionPanel() {
         for (const id of sel) {
             const p = findPointById(id) || { id: id, genre: 'unknown', title: '(unknown)', artist: '' };
             const row = document.createElement('div');
-            row.style.display = 'flex'; row.style.justifyContent = 'space-between'; row.style.alignItems = 'center'; row.style.padding = '6px 0'; row.style.borderBottom = '1px solid #eee';
+            row.className = 'selection-list-item';
             const left = document.createElement('div');
             left.innerHTML = `<span style="color:#666;margin-right:6px">[${p.genre}]</span> ${p.title} - ${p.artist}`;
-            const btn = document.createElement('button'); btn.textContent = 'REMOVE'; btn.style.marginLeft = '8px'; btn.onclick = (()=>{
+            const btn = document.createElement('button'); btn.className = 'btn btn-danger btn-sm'; btn.textContent = 'REMOVE'; btn.style.marginLeft = '8px'; btn.onclick = (()=>{
                 return function() { removeFromSelection(id); };
             })();
             row.appendChild(left);
@@ -335,16 +335,7 @@ document.getElementById('inspect-plot').addEventListener('click', () => {
     } catch(e) { console.warn('inspect-plot failed', e); }
 });
 
-document.getElementById('toggle-select').addEventListener('click', () => {
-    const gd = document.getElementById('plot');
-    if (!gd) return;
-    try {
-        const current = (gd.layout && gd.layout.dragmode) || 'pan';
-        const next = current === 'lasso' ? 'pan' : 'lasso';
-        Plotly.relayout(gd, {dragmode: next});
-        document.getElementById('toggle-select').textContent = (next === 'lasso') ? 'Select (on)' : 'Select (off)';
-    } catch(e) { console.warn('toggle-select failed', e); }
-});
+// toggle-select removed; dragmode is forced to 'lasso' on plot render
 
 document.getElementById('toggle-full').addEventListener('click', () => {
     window._mapUseFull = !window._mapUseFull;
