@@ -7,6 +7,7 @@
     <title>AudioMuse-AI - Music Map</title>
     <link rel="stylesheet" href="/static/style.css">
     <link rel="stylesheet" href="/static/menu.css">
+    <script src="/static/plotly-2.29.1.min.js"></script>
 </head>
 <body>
 <div class="page-container">
@@ -22,349 +23,460 @@
             <section>
                 <header class="page-header">
                     <h1>AudioMuse-AI - Music Map [EXPERIMENTAL]</h1>
-                    <p>Visualize your music</p>
+                    <p>Precompute your music map with a song analysis, then explore it interactively and create your playlist</p>
                 </header>
-                <form id="map-form" style="margin-bottom:1rem; display:flex; gap:0.5rem; align-items:center;">
+                <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
                     <label for="n_songs">Number of songs:</label>
                     <input id="n_songs" type="number" min="1" value="500" style="width:100px;" />
-                    <button id="show-map" type="button">Show</button>
-                    <div style="display:inline-flex; gap:0.25rem; margin-left:0.5rem;">
-                        <button id="zoom-in" type="button" title="Zoom In">🔍+</button>
-                        <button id="zoom-out" type="button" title="Zoom Out">🔍-</button>
-                        <button id="reset-zoom" type="button" title="Reset Zoom">Reset</button>
-                    </div>
-                    <!-- pan controls moved to floating overlay on the map -->
-                    <div id="map-status" style="margin-left:1rem;color:#6B7280"></div>
-                </form>
-                <div style="position: relative; width: 100%; max-width: 1200px; margin: 0 auto 1.5rem;">
-                    <canvas id="map-plot" style="touch-action: none;"></canvas>
-                    <div id="map-projection-label" style="text-align: center; font-size:0.9rem; color:#6B7280; margin-top:0.5rem; text-transform: capitalize;"></div>
+                    <button id="show-map" type="button">Load</button>
+                    <select id="renderer"><option value="scatter">SVG (reliable)</option><option value="scattergl" selected>WebGL (fast)</option></select>
+                    <button id="create-playlist">Create playlist</button>
+                    <button id="inspect-plot" type="button" title="Inspect plot data" style="margin-left:6px;">Inspect</button>
+                    <button id="toggle-full" type="button" title="Show full dataset" style="margin-left:6px;">Full</button>
+                    <button id="toggle-select" type="button" title="Toggle select/pan" style="margin-left:6px;">Select</button>
+                    <div id="map-status" style="margin-left:12px;color:#6B7280"></div>
                 </div>
-                <div id="map-legend"></div>
+
+                <div id="plot" style="width:100%;height:700px;"></div>
+                <div id="map-projection-label" style="text-align:center;color:#6B7280;margin-top:8px"></div>
+                <!-- inline selection panel replaces debug panel -->
+                <div id="selection-panel-inline" style="display:none; margin-top:8px; background:#fff; color:#111; border:1px solid #e6eef8; padding:8px; border-radius:6px; font-size:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px">
+                        <strong>Selected songs</strong>
+                        <div>
+                            <button id="selection-close" style="margin-right:6px">Close</button>
+                            <button id="selection-clear">Clear all</button>
+                        </div>
+                    </div>
+                    <div id="selection-list"></div>
+                </div>
             </section>
         </div>
     </div>
 </div>
+
 <script>
-function parseTopGenre(mood_vector) {
+async function fetchMap(n) {
+    const resp = await fetch(`/api/map?n=${encodeURIComponent(n)}`);
+    if (!resp.ok) throw new Error('Failed to fetch map: ' + resp.status);
+    return resp.json();
+}
+
+function topGenre(mood_vector) {
     if (!mood_vector) return 'unknown';
     try {
         const parts = mood_vector.split(',');
         let best = null;
         for (const p of parts) {
             if (!p.includes(':')) continue;
-            const [g, s] = p.split(':', 2);
-            const score = parseFloat(s) || 0;
-            if (!best || score > best[1]) best = [g.trim(), score];
+            const [g,s] = p.split(':',2);
+            const sc = parseFloat(s)||0;
+            if (!best || sc > best[1]) best = [g.trim(), sc];
         }
         return best ? best[0] : 'unknown';
-    } catch (e) { return 'unknown'; }
+    } catch(e) { return 'unknown'; }
 }
 
-function distinctColorsForGenres(genres) {
-    const palette = [
-        '#ff6b6b','#4ecdc4','#ffe66d','#a8e6cf','#ff8b94','#ffaaa5','#88d8b0','#ffd93d','#6c5ce7','#fdcb6e',
-        '#636e72','#00b894','#0984e3','#e84393','#00cec9','#fab1a0','#74b9ff','#b2bec3','#fd79a8','#00bfa5'
-    ];
+function colorPaletteFor(genres) {
+    const base = ['#ff6b6b','#4ecdc4','#ffe66d','#a8e6cf','#ff8b94','#ffaaa5','#88d8b0','#ffd93d','#6c5ce7','#fdcb6e','#636e72','#00b894','#0984e3','#e84393','#00cec9'];
     const map = {};
-    let i = 0;
-    for (const g of genres) {
-        map[g] = palette[i % palette.length];
-        i++;
-    }
+    let i=0;
+    for (const g of genres) { map[g] = base[i % base.length]; i++; }
     map['unknown'] = '#888888';
     return map;
 }
 
-async function drawMap(n) {
+async function loadAndPlot(n) {
     document.getElementById('map-status').textContent = 'Loading...';
     try {
-        const resp = await fetch(`/api/map?n=${encodeURIComponent(n)}`);
-        const data = await resp.json();
-        const items = data.items || [];
+        const data = await fetchMap(n);
+    const items = data.items || [];
+    // store last items and n for re-rendering full dataset
+    window._lastItems = items;
+    window._lastN = n;
         document.getElementById('map-projection-label').textContent = data.projection || '';
 
-        // compute top genres and color mapping
+        // Build arrays and grouping
         const genres = new Set();
-        items.forEach(it => genres.add(parseTopGenre(it.mood_vector)));
-        const genreList = Array.from(genres);
-        const colorMap = distinctColorsForGenres(genreList);
-
-        const points = items.map(it => ({ x: it.embedding_2d[0], y: it.embedding_2d[1], title: it.title, artist: it.artist, genre: parseTopGenre(it.mood_vector) }));
-
-        // Build legend
-        const legendDiv = document.getElementById('map-legend');
-        legendDiv.innerHTML = '';
-        genreList.slice(0,50).forEach(g => {
-            const el = document.createElement('span');
-            el.style.display = 'inline-block';
-            el.style.marginRight = '0.5rem';
-            el.innerHTML = `<span style="display:inline-block;width:12px;height:12px;background:${colorMap[g]};margin-right:6px;border-radius:2px;vertical-align:middle;"></span>${g}`;
-            legendDiv.appendChild(el);
+        const pts = items.map(it => {
+            const g = topGenre(it.mood_vector);
+            genres.add(g);
+            return { id: String(it.item_id), x: it.embedding_2d[0], y: it.embedding_2d[1], title: it.title, artist: it.artist, genre: g };
         });
+    const genreList = Array.from(genres);
+        const colorMap = colorPaletteFor(genreList);
+    // expose color map and genre list for client-side filtering/toggling
+    window._colorMap = colorMap;
+    window._genreList = genreList;
+    window._hiddenGenres = window._hiddenGenres || new Set();
 
-        // expose points/color map globally for redraws and fallback
-        window._mapPoints = points;
-        window._mapColorMap = colorMap;
-
-        // If Chart.js is available
-            if (window.Chart) {
-            // Group by genre into datasets
-            const datasets = {};
-            points.forEach(p => {
-                const g = p.genre || 'unknown';
-                datasets[g] = datasets[g] || { label: g, data: [], pointBackgroundColor: colorMap[g] || '#888' };
-                // Include genre in the raw point object so Chart.js tooltip can access it
-                datasets[g].data.push({ x: p.x, y: p.y, title: p.title, artist: p.artist, genre: g });
-            });
-
-            const ctx = document.getElementById('map-plot').getContext('2d');
-            if (window._mapChart) { window._mapChart.destroy(); }
-            window._mapChart = new Chart(ctx, {
-                type: 'scatter',
-                data: { datasets: Object.values(datasets).map(d => ({ label: d.label, data: d.data, pointRadius: 3, backgroundColor: d.pointBackgroundColor })) },
-                options: {
-                    responsive: true,
-                    plugins: {
-                        legend: { display: true, position: 'bottom' },
-                        tooltip: { callbacks: { label: function(context) { const p = context.raw; return `[${p.genre || 'unknown'}] ${p.title} - ${p.artist}`; } } },
-                        // Enable chartjs-plugin-zoom options: wheel/pinch zoom and drag pan
-                        zoom: {
-                            // Allow drag panning without requiring a modifier key so desktop
-                            // drag and mobile touch-pan both work.
-                            pan: { enabled: true, mode: 'xy', modifierKey: null },
-                            zoom: { wheel: { enabled: true, modifierKey: null }, pinch: { enabled: true }, mode: 'xy' }
-                        }
-                    },
-                    scales: { x: { display: true, title: { display: true, text: 'X' } }, y: { display: true, title: { display: true, text: 'Y' } } }
-                }
-            });
-
-            // Ensure chart renders and capture initial scales for reliable reset
-            try {
-                window._mapChart.update();
-                const xs = window._mapChart.scales.x;
-                const ys = window._mapChart.scales.y;
-                window._mapInitialScales = { x: { min: xs.min, max: xs.max }, y: { min: ys.min, max: ys.max } };
-            } catch (e) { /* ignore if scales not available */ }
-
-            // Programmatic zoom helpers (in case plugin methods are unavailable)
-            function zoomChartByFactor(chart, factor) {
-                if (!chart) return;
-                try {
-                    const xScale = chart.scales.x;
-                    const yScale = chart.scales.y;
-                    const xCenter = (xScale.max + xScale.min) / 2;
-                    const yCenter = (yScale.max + yScale.min) / 2;
-                    const xRange = (xScale.max - xScale.min) / factor;
-                    const yRange = (yScale.max - yScale.min) / factor;
-                    chart.options.scales.x.min = xCenter - xRange / 2;
-                    chart.options.scales.x.max = xCenter + xRange / 2;
-                    chart.options.scales.y.min = yCenter - yRange / 2;
-                    chart.options.scales.y.max = yCenter + yRange / 2;
-                    chart.update('none');
-                } catch (e) {
-                    console.warn('Programmatic zoom failed', e);
-                }
-            }
-
-            document.getElementById('zoom-in').addEventListener('click', () => { zoomChartByFactor(window._mapChart, 1.25); });
-            document.getElementById('zoom-out').addEventListener('click', () => { zoomChartByFactor(window._mapChart, 1 / 1.25); });
-            document.getElementById('reset-zoom').addEventListener('click', () => {
-                // Chart.js reset
-                if (window._mapChart) {
-                    if (typeof window._mapChart.resetZoom === 'function') {
-                        try { window._mapChart.resetZoom(); } catch (e) { /* ignore */ }
-                    }
-                    if (window._mapInitialScales) {
-                        window._mapChart.options.scales.x.min = window._mapInitialScales.x.min;
-                        window._mapChart.options.scales.x.max = window._mapInitialScales.x.max;
-                        window._mapChart.options.scales.y.min = window._mapInitialScales.y.min;
-                        window._mapChart.options.scales.y.max = window._mapInitialScales.y.max;
-                    } else {
-                        delete window._mapChart.options.scales.x.min;
-                        delete window._mapChart.options.scales.x.max;
-                        delete window._mapChart.options.scales.y.min;
-                        delete window._mapChart.options.scales.y.max;
-                    }
-                    try { window._mapChart.update(); } catch (e) { /* ignore */ }
-                }
-
-                // Canvas fallback reset
-                const c = document.getElementById('map-plot');
-                if (c) {
-                    window._canvasPan = { x:0, y:0 };
-                    if (window._mapPoints) {
-                        if (typeof drawCanvasPoints === 'function') {
-                            try { drawCanvasPoints(window._mapPoints, window._mapColorMap); } catch (e) { }
-                        } else {
-                            try {
-                                const ctx = c.getContext('2d');
-                                ctx.clearRect(0,0,c.width,c.height);
-                                window._mapPoints.forEach(p => {
-                                    const x = (p.x + 1) * (c.width/2);
-                                    const y = (1 - (p.y + 1)/2) * c.height;
-                                    ctx.fillStyle = (window._mapColorMap && window._mapColorMap[p.genre]) ? window._mapColorMap[p.genre] : '#888';
-                                    ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI*2); ctx.fill();
-                                });
-                            } catch (e) { /* ignore */ }
-                        }
-                    }
-                }
-            });
-
-            // Pan helpers: pan by fraction of visible range for Chart.js, or pixel offsets for canvas fallback
-            function panChartByFraction(chart, fracX, fracY) {
-                if (!chart) return;
-                try {
-                    const xScale = chart.scales.x;
-                    const yScale = chart.scales.y;
-                    const xRange = xScale.max - xScale.min;
-                    const yRange = yScale.max - yScale.min;
-                    const dx = fracX * xRange;
-                    const dy = fracY * yRange;
-                    chart.options.scales.x.min = xScale.min + dx;
-                    chart.options.scales.x.max = xScale.max + dx;
-                    chart.options.scales.y.min = yScale.min + dy;
-                    chart.options.scales.y.max = yScale.max + dy;
-                    chart.update('none');
-                } catch (e) { console.warn('Pan failed', e); }
-            }
-
-            // legacy inline pan buttons removed; overlay will handle pan actions
-
-            function panBoth(fracX, fracY) {
-                // Chart.js
-                if (window._mapChart) {
-                    panChartByFraction(window._mapChart, fracX, fracY);
-                } else {
-                    // Canvas: shift pixel offsets and redraw
-                    const c = document.getElementById('map-plot');
-                    window._canvasPan = window._canvasPan || { x: 0, y: 0 };
-                    // Move 15% of canvas size per click
-                    const stepX = Math.round(c.width * Math.abs(fracX) * (fracX < 0 ? 1 : 1));
-                    const stepY = Math.round(c.height * Math.abs(fracY) * (fracY < 0 ? 1 : 1));
-                    // frac sign decides direction
-                    window._canvasPan.x += Math.round(-fracX * c.width * 0.2);
-                    window._canvasPan.y += Math.round(-fracY * c.height * 0.2);
-                    // Redraw from stored points
-                    if (window._mapPoints) {
-                        drawCanvasPoints(window._mapPoints, window._mapColorMap);
-                    }
-                }
-            }
-
-            // Create compact floating overlay with 4 pan buttons in a cross shape (no inert blanks)
-            (function createFloatingPan() {
-                const container = document.getElementById('map-plot').parentElement;
-                let old = container.querySelector('.map-pan-overlay');
-                if (old) old.remove();
-
-                const overlay = document.createElement('div');
-                overlay.className = 'map-pan-overlay';
-                overlay.style.position = 'absolute';
-                overlay.style.top = '8px';
-                overlay.style.right = '8px';
-                overlay.style.width = '90px';
-                overlay.style.height = '90px';
-                overlay.style.background = 'transparent';
-                overlay.style.zIndex = 20;
-
-                const btnStyle = 'position:absolute;width:32px;height:32px;border-radius:4px;border:1px solid rgba(0,0,0,0.08);background:#fff;cursor:pointer;font-size:14px;';
-
-                const up = document.createElement('button'); up.type='button'; up.innerText='▲'; up.style.cssText = btnStyle + 'left:29px;top:0;'; up.title='Pan Up'; up.addEventListener('click', () => panBoth(0, 0.15));
-                const down = document.createElement('button'); down.type='button'; down.innerText='▼'; down.style.cssText = btnStyle + 'left:29px;bottom:0;'; down.title='Pan Down'; down.addEventListener('click', () => panBoth(0, -0.15));
-                const left = document.createElement('button'); left.type='button'; left.innerText='◀'; left.style.cssText = btnStyle + 'left:0;top:29px;'; left.title='Pan Left'; left.addEventListener('click', () => panBoth(-0.15, 0));
-                const right = document.createElement('button'); right.type='button'; right.innerText='▶'; right.style.cssText = btnStyle + 'right:0;top:29px;'; right.title='Pan Right'; right.addEventListener('click', () => panBoth(0.15, 0));
-
-                overlay.appendChild(up); overlay.appendChild(down); overlay.appendChild(left); overlay.appendChild(right);
-                container.style.position = 'relative';
-                container.appendChild(overlay);
-            })();
-        } else {
-            // Fallback canvas draw
-            const c = document.getElementById('map-plot');
-            c.width = Math.min(1200, window.innerWidth - 40);
-            c.height = 600;
-            const ctx = c.getContext('2d');
-            ctx.clearRect(0,0,c.width,c.height);
-            points.forEach(p => {
-                const x = (p.x + 1) * (c.width/2);
-                const y = (1 - (p.y + 1)/2) * c.height;
-                ctx.fillStyle = colorMap[p.genre] || '#888';
-                ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI*2); ctx.fill();
-            });
-
-            // Canvas hover tooltip
-            let hoverTooltip = document.getElementById('map-canvas-tooltip');
-            if (!hoverTooltip) {
-                hoverTooltip = document.createElement('div');
-                hoverTooltip.id = 'map-canvas-tooltip';
-                hoverTooltip.style.position = 'absolute';
-                hoverTooltip.style.pointerEvents = 'none';
-                hoverTooltip.style.background = 'rgba(0,0,0,0.75)';
-                hoverTooltip.style.color = '#fff';
-                hoverTooltip.style.padding = '6px 8px';
-                hoverTooltip.style.borderRadius = '4px';
-                hoverTooltip.style.fontSize = '12px';
-                hoverTooltip.style.display = 'none';
-                document.body.appendChild(hoverTooltip);
-            }
-
-            const rect = c.getBoundingClientRect();
-            function hideTooltip() { hoverTooltip.style.display = 'none'; }
-            function onMove(ev) {
-                const mx = ev.clientX - rect.left;
-                const my = ev.clientY - rect.top;
-                let best = null;
-                // threshold in pixels
-                const TH = 6;
-                for (const p of points) {
-                    const sx = (p.x + 1) * (c.width/2);
-                    const sy = (1 - (p.y + 1)/2) * c.height;
-                    const dx = sx - mx; const dy = sy - my;
-                    const d = Math.sqrt(dx*dx + dy*dy);
-                    if (d <= TH && (!best || d < best.d)) best = { p, d, sx, sy };
-                }
-                if (best) {
-                    const text = `[${best.p.genre || 'unknown'}] ${best.p.title} - ${best.p.artist}`;
-                    hoverTooltip.textContent = text;
-                    hoverTooltip.style.left = (ev.clientX + 12) + 'px';
-                    hoverTooltip.style.top = (ev.clientY + 12) + 'px';
-                    hoverTooltip.style.display = 'block';
-                } else {
-                    hideTooltip();
-                }
-            }
-            function onOut() { hideTooltip(); }
-
-            // Remove previous listeners if present
-            if (c._mapHandlers) {
-                c.removeEventListener('mousemove', c._mapHandlers.move);
-                c.removeEventListener('mouseout', c._mapHandlers.out);
-            }
-            c._mapHandlers = { move: onMove, out: onOut };
-            c.addEventListener('mousemove', onMove);
-            c.addEventListener('mouseout', onOut);
+        // Subsample large datasets for faster rendering while preserving mapping
+        // If using WebGL (scattergl) prefer to render the full set (no subsampling)
+        const MAX_DISPLAY = 40000;
+        const rendererVal = (document.getElementById('renderer') && document.getElementById('renderer').value) || 'scatter';
+        let displayPts = pts;
+        if (rendererVal !== 'scattergl' && !window._mapUseFull && pts.length > MAX_DISPLAY) {
+            const stride = Math.ceil(pts.length / MAX_DISPLAY);
+            displayPts = pts.filter((_, i) => (i % stride) === 0);
+            console.info(`Subsampling ${pts.length} -> ${displayPts.length} points (stride ${stride})`);
         }
 
+        // Build a single trace with per-point color and customdata mapping using displayPts
+        const colors = displayPts.map(p => colorMap[p.genre] || '#888');
+    // include genre in hover text so hover shows [genre] title - artist
+    const texts = displayPts.map(p => `${p.genre} — ${p.title} - ${p.artist}`);
+        const ids = displayPts.map(p => p.id);
+
+        // marker options tuned for WebGL performance when rendering many points
+        const markerOpts = { size: 3, opacity: 0.85, line: { width: 0 }, symbol: 'circle' };
+
+        const traces = [{
+            x: displayPts.map(p => p.x),
+            y: displayPts.map(p => p.y),
+            text: texts,
+            customdata: ids,
+            ids: ids,
+            mode: 'markers',
+            type: document.getElementById('renderer').value === 'scattergl' ? 'scattergl' : 'scatter',
+            marker: Object.assign({}, markerOpts, { color: colors }),
+            name: 'tracks'
+        }];
+
+    // expose mapping and points globally for handlers
+    // window._plotPoints should reflect the plotted points (displayPts) so pointNumber maps correctly
+    window._plotPointsFull = pts;
+    window._plotPoints = displayPts; // indexed array; pointNumber corresponds to index in this array
+        window._plotTracePointIdMap = null; // not needed with single-trace customdata mapping
+
+    // render a compact, clickable legend manually (click genre to hide/show)
+    const legendDiv = document.getElementById('map-projection-label');
+    const legendHtml = genreList.slice(0,50).map(g => `<span class="genre-item" onclick="toggleGenre('${encodeURIComponent(g)}')" style="margin-right:8px;cursor:pointer"><span style="display:inline-block;width:12px;height:12px;background:${colorMap[g]};margin-right:6px;vertical-align:middle;border-radius:2px"></span>${g}</span>`).join('');
+    legendDiv.innerHTML = legendHtml;
+
+        const layout = {
+            hovermode: 'closest',
+            dragmode: 'lasso',
+            legend: { orientation: 'h' },
+            margin: { t: 8 }
+        };
+
+        // remove any leftover GUI 'selections' state that Plotly.react may choke on
+        const gd = document.getElementById('plot');
+        try { if (gd && gd.layout && gd.layout.selections) delete gd.layout.selections; } catch(e) {}
+
+    const LARGE = 30000;
+        // For very large datasets, prefer WebGL and newPlot for performance
+        if (pts.length > LARGE) {
+            // force WebGL renderer for large N
+            traces[0].type = 'scattergl';
+            // leave hover enabled so users can see genre/title/artist on hover
+            traces[0].hovertemplate = '%{text}<extra></extra>';
+            // reduce marker complexity further for very large N
+            traces[0].marker = Object.assign({}, traces[0].marker, { sizemode: 'area' });
+            // purge previous plot state to avoid GUI warnings
+            try { Plotly.purge(gd); } catch(e) {}
+            var plotPromise = Plotly.newPlot('plot', traces, layout, {responsive: true});
+        } else {
+            var plotPromise = Plotly.react('plot', traces, layout, {responsive: true});
+        }
+
+        plotPromise.then(() => {
+            const gd = document.getElementById('plot');
+            console.debug('Plotly.react finished. traces:', traces.length, 'points:', pts.length);
+            try {
+                if (gd && gd.data && gd.data[0] && gd.data[0].customdata) {
+                    console.debug('customdata sample:', gd.data[0].customdata.slice(0,10));
+                    if (gd.data[0].customdata.length !== pts.length) {
+                        console.warn('customdata length mismatch', gd.data[0].customdata.length, 'vs pts', pts.length);
+                    }
+                }
+            } catch(e) { console.warn('debug customdata failed', e); }
+            // reset selection state when a new plot loads
+            window._plotSelection = [];
+            // attach handlers to the freshly rendered plot to ensure events fire
+            // ensure dragmode is select/lasso so user can box/lasso select without changing toolbar
+            try { Plotly.relayout(gd, {dragmode: 'lasso'}); } catch(e) {}
+            attachPlotHandlers(gd);
+            // update status with customdata info
+            try {
+                const cdlen = (gd.data && gd.data[0] && gd.data[0].customdata) ? gd.data[0].customdata.length : 0;
+                document.getElementById('map-status').textContent = `Showing ${pts.length} songs — customdata ${cdlen}`;
+            } catch(e) {}
+        }).catch((e)=>{
+            console.warn('Plotly.react promise rejected', e);
+        });
+
+        // expose current count
         document.getElementById('map-status').textContent = `Showing ${items.length} songs`;
     } catch (e) {
-        console.error('Failed to load map data', e);
-        document.getElementById('map-status').textContent = 'Failed to load data';
+        console.error(e);
+        document.getElementById('map-status').textContent = 'Failed to load map';
     }
+}
+
+// Toggle a genre's visibility. Called by clicks on the manual legend.
+function toggleGenre(encodedGenre) {
+    try {
+        const g = decodeURIComponent(encodedGenre);
+        window._hiddenGenres = window._hiddenGenres || new Set();
+        if (window._hiddenGenres.has(g)) window._hiddenGenres.delete(g); else window._hiddenGenres.add(g);
+        applyGenreFilterAndRerender();
+    } catch (e) { console.warn('toggleGenre failed', e); }
+}
+
+// Rebuild the displayed plot from the full points array applying hidden-genre filters
+function applyGenreFilterAndRerender() {
+    const ptsAll = window._plotPointsFull || [];
+    const hidden = window._hiddenGenres || new Set();
+    // filter out hidden genres
+    let pts = ptsAll.filter(p => !hidden.has(p.genre));
+    // respect subsampling policy: if not using scattergl and not _mapUseFull, subsample
+    const rendererVal = (document.getElementById('renderer') && document.getElementById('renderer').value) || 'scatter';
+    const MAX_DISPLAY = 40000;
+    if (rendererVal !== 'scattergl' && !window._mapUseFull && pts.length > MAX_DISPLAY) {
+        const stride = Math.ceil(pts.length / MAX_DISPLAY);
+        pts = pts.filter((_, i) => (i % stride) === 0);
+    }
+    // rebuild trace data
+    const colorMap = window._colorMap || {};
+    const colors = pts.map(p => colorMap[p.genre] || '#888');
+    // include genre in hover text so hover shows [genre] title - artist
+    const texts = pts.map(p => `${p.genre} — ${p.title} - ${p.artist}`);
+    const ids = pts.map(p => p.id);
+    const markerOpts = { size: 3, opacity: 0.85, line: { width: 0 }, symbol: 'circle' };
+    const trace = {
+        x: pts.map(p => p.x),
+        y: pts.map(p => p.y),
+        text: texts,
+        customdata: ids,
+        ids: ids,
+        mode: 'markers',
+        type: rendererVal === 'scattergl' ? 'scattergl' : 'scatter',
+        marker: Object.assign({}, markerOpts, { color: colors }),
+        name: 'tracks'
+    };
+    const LARGE = 30000;
+    const gd = document.getElementById('plot');
+    try { if (gd && gd.layout && gd.layout.selections) delete gd.layout.selections; } catch(e) {}
+    try {
+        if (pts.length > LARGE) {
+            trace.type = 'scattergl';
+            trace.hovertemplate = '%{text}<extra></extra>';
+            trace.marker = Object.assign({}, trace.marker, { sizemode: 'area' });
+            Plotly.purge(gd);
+            Plotly.newPlot('plot', [trace], { hovermode: 'closest', dragmode: 'lasso', legend:{orientation:'h'}, margin:{t:8} }, {responsive:true}).then(() => { attachPlotHandlers(gd); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`; });
+        } else {
+            Plotly.react('plot', [trace], { hovermode: 'closest', dragmode: 'lasso', legend:{orientation:'h'}, margin:{t:8} }, {responsive:true}).then(() => { attachPlotHandlers(gd); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`; });
+        }
+    } catch (e) { console.warn('applyGenreFilterAndRerender failed', e); }
 }
 
 document.getElementById('show-map').addEventListener('click', () => {
     const n = parseInt(document.getElementById('n_songs').value) || 500;
-    drawMap(Math.max(1, n));
+    loadAndPlot(Math.max(1, n));
 });
 
+// toggle-debug button removed; no-op
+
+// Render a selection panel listing selected songs with per-item REMOVE buttons
+function findPointById(id) {
+    id = String(id);
+    const full = window._plotPointsFull || [];
+    for (const p of full) if (String(p.id) === id) return p;
+    const partial = window._plotPoints || [];
+    for (const p of partial) if (String(p.id) === id) return p;
+    return null;
+}
+
+function renderSelectionPanel() {
+    const panel = document.getElementById('selection-panel-inline');
+    const list = document.getElementById('selection-list');
+    if (!panel || !list) return;
+    const sel = Array.from(new Set(window._plotSelection || []));
+    list.innerHTML = '';
+    if (sel.length === 0) {
+        list.innerHTML = '<div style="color:#666">No songs selected.</div>';
+    } else {
+        for (const id of sel) {
+            const p = findPointById(id) || { id: id, genre: 'unknown', title: '(unknown)', artist: '' };
+            const row = document.createElement('div');
+            row.style.display = 'flex'; row.style.justifyContent = 'space-between'; row.style.alignItems = 'center'; row.style.padding = '6px 0'; row.style.borderBottom = '1px solid #eee';
+            const left = document.createElement('div');
+            left.innerHTML = `<span style="color:#666;margin-right:6px">[${p.genre}]</span> ${p.title} - ${p.artist}`;
+            const btn = document.createElement('button'); btn.textContent = 'REMOVE'; btn.style.marginLeft = '8px'; btn.onclick = (()=>{
+                return function() { removeFromSelection(id); };
+            })();
+            row.appendChild(left);
+            row.appendChild(btn);
+            list.appendChild(row);
+        }
+    }
+    panel.style.display = 'block';
+}
+
+function removeFromSelection(id) {
+    const sel = window._plotSelection || [];
+    const idx = sel.indexOf(id);
+    if (idx !== -1) sel.splice(idx, 1);
+    window._plotSelection = sel;
+    renderSelectionPanel();
+    document.getElementById('map-status').textContent = `Selected ${ (window._plotSelection||[]).length } songs`;
+}
+
+document.getElementById('inspect-plot').addEventListener('click', () => {
+    try {
+        renderSelectionPanel();
+        // ensure inline panel controls are attached
+        const closeBtn = document.getElementById('selection-close');
+        const clearBtn = document.getElementById('selection-clear');
+        const panel = document.getElementById('selection-panel-inline');
+        if (closeBtn && panel) closeBtn.onclick = () => { panel.style.display = 'none'; };
+        if (clearBtn) clearBtn.onclick = () => { window._plotSelection = []; renderSelectionPanel(); document.getElementById('map-status').textContent = 'Selected 0 songs'; };
+    } catch(e) { console.warn('inspect-plot failed', e); }
+});
+
+document.getElementById('toggle-select').addEventListener('click', () => {
+    const gd = document.getElementById('plot');
+    if (!gd) return;
+    try {
+        const current = (gd.layout && gd.layout.dragmode) || 'pan';
+        const next = current === 'lasso' ? 'pan' : 'lasso';
+        Plotly.relayout(gd, {dragmode: next});
+        document.getElementById('toggle-select').textContent = (next === 'lasso') ? 'Select (on)' : 'Select (off)';
+    } catch(e) { console.warn('toggle-select failed', e); }
+});
+
+document.getElementById('toggle-full').addEventListener('click', () => {
+    window._mapUseFull = !window._mapUseFull;
+    document.getElementById('toggle-full').textContent = window._mapUseFull ? 'Full (on)' : 'Full';
+    // re-render with previous n
+    const n = window._lastN || parseInt(document.getElementById('n_songs').value) || 500;
+    loadAndPlot(n);
+});
+
+// Optional: load on open
+window.addEventListener('load', () => { loadAndPlot(500); });
+
 </script>
-<!-- chartjs-plugin-zoom (CDN) -->
-<script src="/static/chart.js"></script>
-<!-- chartjs-plugin-zoom (CDN) - must be loaded after Chart.js -->
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@1.2.1/dist/chartjs-plugin-zoom.min.js"></script>
+
+<script>
+// Global Plotly event handlers: collect selection and clicks, robust mapping via customdata or trace->point map
+const plotElGlobal = document.getElementById('plot');
+function extractIdsFromPoints(points) {
+    const ids = [];
+    if (!points) return ids;
+    for (const p of points) {
+        console.debug('extractIdsFromPoints point:', p);
+        if (p.customdata !== undefined && p.customdata !== null) { ids.push(String(p.customdata)); continue; }
+        // check multiple index fields that different Plotly builds use
+        const idx = (p.pointIndex !== undefined) ? p.pointIndex : ((p.pointNumber !== undefined) ? p.pointNumber : (p.index !== undefined ? p.index : null));
+        if (idx !== null) {
+            // prefer data.customdata if present
+            if (p.data && p.data.customdata && p.data.customdata[idx] !== undefined && p.data.customdata[idx] !== null) {
+                ids.push(String(p.data.customdata[idx]));
+                continue;
+            }
+            // fallback to global points array
+            if (window._plotPoints && window._plotPoints[idx] && window._plotPoints[idx].id !== undefined) {
+                ids.push(String(window._plotPoints[idx].id));
+                continue;
+            }
+            // fallback to gd.data[0].customdata if available
+            try {
+                const gd = document.getElementById('plot');
+                if (gd && gd.data && gd.data[0] && gd.data[0].customdata && gd.data[0].customdata[idx] !== undefined) {
+                    ids.push(String(gd.data[0].customdata[idx]));
+                    continue;
+                }
+            } catch(e) { /* ignore */ }
+        }
+    }
+    if (ids.length === 0) console.debug('extractIdsFromPoints produced no ids for points', points);
+    return ids;
+}
+
+function attachPlotHandlers(gd) {
+    if (!gd) return;
+    try {
+        // detach previous handlers if present
+        if (gd._amy_handlers_attached) {
+            gd.removeAllListeners && gd.removeAllListeners();
+        }
+    } catch(e) { /* ignore */ }
+
+    // attach fresh handlers
+    try {
+        const bind = (type, fn) => {
+            if (typeof gd.on === 'function') {
+                gd.on(type, fn);
+            } else if (typeof gd.addEventListener === 'function') {
+                gd.addEventListener(type, fn);
+            } else if (window.Plotly && typeof window.Plotly.on === 'function') {
+                window.Plotly.on(gd, type, fn);
+            } else {
+                throw new Error('No supported event binding found on plot element');
+            }
+        };
+
+        bind('plotly_selected', (ev) => {
+            console.debug('plotly_selected event', ev && ev.points && ev.points.length, ev);
+            const ids = extractIdsFromPoints(ev && ev.points);
+            // replace selection (lasso/box usually indicates a fresh selection)
+            window._plotSelection = [...new Set(ids.filter(Boolean))];
+            console.debug('updated _plotSelection', window._plotSelection);
+            document.getElementById('map-status').textContent = `Selected ${window._plotSelection.length} songs`;
+        });
+
+        bind('plotly_click', (ev) => {
+            console.debug('plotly_click event', ev && ev.points && ev.points[0], ev);
+            const pt = ev && ev.points && ev.points[0];
+            const ids = extractIdsFromPoints(pt ? [pt] : []);
+            if (!ids || ids.length === 0) return;
+            const id = ids[0];
+            window._plotSelection = window._plotSelection || [];
+            const idx = window._plotSelection.indexOf(id);
+            if (idx === -1) window._plotSelection.push(id); else window._plotSelection.splice(idx,1);
+            console.debug('toggled selection', id, window._plotSelection);
+            document.getElementById('map-status').textContent = `Selected ${window._plotSelection.length} songs`;
+        });
+
+        gd._amy_handlers_attached = true;
+    } catch (e) {
+        console.warn('attachPlotHandlers failed', e);
+    }
+}
+
+// Do not attach handlers until a plot is rendered and attachPlotHandlers is called
+</script>
+
+<!-- debug button removed per user request -->
+
 <script src="/static/menu.js"></script>
 </body>
 </html>
+<script>
+        // Improved create-playlist response handling: parse response text safely and surface status
+        document.getElementById('create-playlist').onclick = async () => {
+            const sel = window._plotSelection || [];
+            if (sel.length === 0) { document.getElementById('map-status').textContent = 'No songs selected.'; return; }
+            document.getElementById('map-status').textContent = 'Creating playlist...';
+            try {
+            // filter out any undefined or null ids
+            const filtered = (sel || []).filter(id => id !== undefined && id !== null);
+            console.debug('Creating playlist with ids', filtered.slice(0,50));
+            const payload = { playlist_name: `Map selection ${new Date().toISOString()}`, track_ids: filtered };
+            const resp = await fetch('/api/create_playlist', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+                const text = await resp.text();
+                let json = null;
+                try { json = text ? JSON.parse(text) : null; } catch(e) { json = null; }
+                console.log('create_playlist response', resp.status, text, json);
+                if (resp.ok) document.getElementById('map-status').textContent = (json && (json.message || json.playlist_id)) ? (json.message || `Playlist created (${json.playlist_id})`) : 'Playlist created';
+                else document.getElementById('map-status').textContent = (json && (json.error || json.message)) ? (json.error || json.message) : `Create playlist failed (${resp.status})`;
+                // clear selection on success
+                if (resp.ok) window._plotSelection = [];
+            } catch (e) {
+                console.error('Create playlist failed', e);
+                document.getElementById('map-status').textContent = 'Create playlist failed';
+            }
+        };
+</script>

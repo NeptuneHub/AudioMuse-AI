@@ -251,8 +251,14 @@ def create_media_server_playlist():
     if not data:
         return jsonify({"error": "Invalid JSON payload"}), 400
 
+    # Debug log incoming payload to help trace client/server mismatch
+    try:
+        logger.info(f"/api/create_playlist called with payload: {data}")
+    except Exception:
+        logger.info('/api/create_playlist called (unable to serialize payload)')
+
     playlist_name = data.get('playlist_name')
-    track_ids_raw = data.get('track_ids', []) 
+    track_ids_raw = data.get('track_ids', [])
 
     if not playlist_name:
         return jsonify({"error": "Missing 'playlist_name'"}), 400
@@ -265,7 +271,7 @@ def create_media_server_playlist():
                 item_id = item
             elif isinstance(item, dict) and 'item_id' in item:
                 item_id = item['item_id']
-            
+
             if item_id and item_id not in final_track_ids:
                 final_track_ids.append(item_id)
 

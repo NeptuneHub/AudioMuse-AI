@@ -6,6 +6,7 @@ import numpy as np
 
 from app_helper import get_db
 import config
+from app_helper import load_map_projection
 
 # Try to reuse projection helpers from song_alchemy
 try:
@@ -120,6 +121,32 @@ def map_api():
     if not items:
         return jsonify({'items': []})
 
+    # Try to load precomputed projection (id map + projection) from DB first
+    id_map, proj = load_map_projection('main_map')
+    if id_map is not None and proj is not None and len(id_map) > 0:
+        # Build response by mapping projection rows to items by id (support subsets)
+        # zip(id_map, proj.tolist()) pairs ids with coordinates in stored order.
+        id_to_coord = {str(i): tuple(coord) for i, coord in zip(id_map, proj.tolist())}
+        resp_items = []
+        used_any = False
+        for it in items:
+            coord = id_to_coord.get(str(it['item_id']))
+            if coord is None:
+                coord = (0.0, 0.0)
+            else:
+                used_any = True
+            resp_items.append({
+                'item_id': it.get('item_id'),
+                'title': it.get('title'),
+                'artist': it.get('author'),
+                'embedding_2d': [float(coord[0]), float(coord[1])],
+                'mood_vector': it.get('mood_vector'),
+                'other_feature': it.get('other_features')
+            })
+        # If at least one item was matched from precomputed projection, return precomputed
+        if used_any:
+            return jsonify({'items': resp_items, 'projection': 'precomputed'})
+
     # Build numpy matrix
     mat = np.vstack([it['embedding'] for it in items])
 
@@ -161,6 +188,7 @@ def map_api():
     resp_items = []
     for it, coord in zip(items, scaled):
         resp_items.append({
+            'item_id': it.get('item_id'),
             'title': it.get('title'),
             'artist': it.get('author'),
             'embedding_2d': [float(coord[0]), float(coord[1])],
