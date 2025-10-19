@@ -14,6 +14,9 @@ NAVIDROME_API_BATCH_SIZE = 40
 # Global cache to store pseudo-album tracks for retrieval by get_tracks_from_album
 _pseudo_album_cache = {}
 
+# Feature detection cache: None == unknown, True == supported, False == unsupported
+_navidrome_supports_getSongList = None
+
 
 def _is_standalone_track(song_item):
     """Returns True when the Navidrome song lacks album metadata entirely."""
@@ -113,6 +116,11 @@ def _navidrome_request(endpoint, params=None, method='get', stream=False, user_c
         r = requests.request(method, url, params=all_params, timeout=REQUESTS_TIMEOUT, stream=stream)
         r.raise_for_status()
 
+        # If we successfully called getSongList, mark it as supported to avoid future 404 noise
+        global _navidrome_supports_getSongList
+        if endpoint == "getSongList":
+            _navidrome_supports_getSongList = True
+
         if stream:
             return r
             
@@ -124,6 +132,19 @@ def _navidrome_request(endpoint, params=None, method='get', stream=False, user_c
         return subsonic_response
         
     except requests.exceptions.RequestException as e:
+        # Special-case: Navidrome does not implement getSongList (404). Avoid flooding logs with stacktraces.
+        status_code = None
+        try:
+            status_code = e.response.status_code if hasattr(e, 'response') and e.response is not None else None
+        except Exception:
+            status_code = None
+
+        # If getSongList returns 404, remember it and log a single warning instead of a full error
+        if endpoint == 'getSongList' and status_code == 404:
+            _navidrome_supports_getSongList = False
+            logger.warning(f"Navidrome does not support endpoint 'getSongList' (received 404). Standalone-track discovery will be skipped.")
+            return None
+
         logger.error(f"Error calling Navidrome API endpoint '{endpoint}': {e}", exc_info=True)
         return None
 
@@ -275,6 +296,12 @@ def _get_recent_standalone_tracks(limit, target_folder_ids=None):
     
     all_tracks = []
     fetch_all = (limit == 0)
+
+    # If we've previously detected Navidrome does not support getSongList, skip attempts.
+    global _navidrome_supports_getSongList
+    if _navidrome_supports_getSongList is False:
+        logger.info("Skipping Navidrome standalone-track discovery because 'getSongList' is unsupported by this server.")
+        return []
     
     try:
         # Get recent songs using getSongList
