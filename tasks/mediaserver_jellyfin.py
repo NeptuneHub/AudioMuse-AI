@@ -101,163 +101,9 @@ def resolve_user(identifier, token):
 # --- ADMIN/GLOBAL JELLYFIN FUNCTIONS ---
 def get_recent_albums(limit):
     """
-    Fetches recent albums from Jellyfin, aligned with other media servers behavior:
-    - limit = 0: Returns ALL albums + standalone tracks (comprehensive discovery)
-    - limit > 0: Returns ONLY real albums (no standalone tracks)
-    
-    This matches Navidrome and Lyrion behavior where specific limits focus on albums only.
-    """
-    if limit == 0:
-        # Special case: limit=0 means get everything (albums + standalone tracks)
-        return get_recent_music_items(limit)
-    else:
-        # Normal case: get only real albums, no standalone tracks
-        return _get_recent_albums_only(limit)
-
-def get_comprehensive_music_discovery(limit=0):
-    """
-    Convenience function for comprehensive music discovery including standalone tracks.
-    Always returns both albums and standalone tracks as pseudo-albums.
-    Use this when you want to ensure no music is missed, regardless of metadata completeness.
-    """
-    return get_recent_music_items(limit)
-
-def _get_recent_standalone_tracks(limit, target_library_ids=None):
-    """
-    Fetches recent standalone audio tracks that are not properly organized in albums.
-    This captures orphaned tracks, loose files, and tracks with missing album metadata.
-    """
-    if target_library_ids is not None and isinstance(target_library_ids, set) and not target_library_ids:
-        logger.info("Library filtering is active but no matching libraries found. Skipping standalone tracks.")
-        return []
-
-    all_tracks = []
-    fetch_all = (limit == 0)
-
-    # Case 1: No library filtering - scan all libraries
-    if target_library_ids is None:
-        logger.info("Scanning all Jellyfin libraries for recent standalone tracks.")
-        start_index = 0
-        page_size = 500
-        while True:
-            url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
-            params = {
-                "IncludeItemTypes": "Audio", "SortBy": "DateCreated", "SortOrder": "Descending",
-                "Recursive": True, "Limit": page_size, "StartIndex": start_index,
-                "Fields": "ParentId,Path,DateCreated"  # Include fields to check album relationship
-            }
-            try:
-                r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
-                r.raise_for_status()
-                response_data = r.json()
-                tracks_on_page = response_data.get("Items", [])
-                
-                if not tracks_on_page:
-                    break
-
-                # Filter for tracks that don't have a proper album parent
-                standalone_tracks = []
-                for track in tracks_on_page:
-                    # Check if track has a proper album parent by trying to get parent info
-                    parent_id = track.get('ParentId')
-                    if not parent_id:
-                        # No parent - definitely standalone
-                        standalone_tracks.append(track)
-                    else:
-                        # Check if parent is actually an album (not just a folder)
-                        try:
-                            parent_url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items/{parent_id}"
-                            parent_r = requests.get(parent_url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
-                            if parent_r.ok:
-                                parent_info = parent_r.json()
-                                # If parent is not a MusicAlbum, treat track as standalone
-                                if parent_info.get('Type') != 'MusicAlbum':
-                                    standalone_tracks.append(track)
-                        except:
-                            # If we can't check parent, assume it's standalone to be safe
-                            standalone_tracks.append(track)
-
-                all_tracks.extend(standalone_tracks)
-                start_index += len(tracks_on_page)
-                
-                if not fetch_all and len(all_tracks) >= limit:
-                    all_tracks = all_tracks[:limit]
-                    break
-
-                if len(tracks_on_page) < page_size:
-                    break
-            except Exception as e:
-                logger.error(f"Jellyfin get_recent_standalone_tracks failed: {e}", exc_info=True)
-                break
-
-    # Case 2: Library filtering - scan specific libraries
-    else:
-        logger.info(f"Scanning {len(target_library_ids)} specific Jellyfin libraries for recent standalone tracks.")
-        for library_id in target_library_ids:
-            start_index = 0
-            page_size = 500
-            while True:
-                url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
-                params = {
-                    "IncludeItemTypes": "Audio", "SortBy": "DateCreated", "SortOrder": "Descending",
-                    "Recursive": True, "Limit": page_size, "StartIndex": start_index,
-                    "ParentId": library_id, "Fields": "ParentId,Path,DateCreated"
-                }
-                try:
-                    r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
-                    r.raise_for_status()
-                    response_data = r.json()
-                    tracks_on_page = response_data.get("Items", [])
-                    
-                    if not tracks_on_page:
-                        break
-
-                    # Apply same standalone filtering logic
-                    standalone_tracks = []
-                    for track in tracks_on_page:
-                        parent_id = track.get('ParentId')
-                        if not parent_id or parent_id == library_id:
-                            # No parent or parent is the library itself - standalone
-                            standalone_tracks.append(track)
-                        else:
-                            # Check if parent is actually an album
-                            try:
-                                parent_url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items/{parent_id}"
-                                parent_r = requests.get(parent_url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
-                                if parent_r.ok:
-                                    parent_info = parent_r.json()
-                                    if parent_info.get('Type') != 'MusicAlbum':
-                                        standalone_tracks.append(track)
-                            except:
-                                standalone_tracks.append(track)
-
-                    all_tracks.extend(standalone_tracks)
-                    start_index += len(tracks_on_page)
-                    
-                    if not fetch_all and len(all_tracks) >= limit:
-                        all_tracks = all_tracks[:limit]
-                        break
-
-                    if len(tracks_on_page) < page_size:
-                        break
-                except Exception as e:
-                    logger.error(f"Jellyfin get_recent_standalone_tracks failed for library ID {library_id}: {e}", exc_info=True)
-                    break
-
-    # Apply artist field prioritization to standalone tracks
-    for track in all_tracks:
-        title = track.get('Name', 'Unknown')
-        track['AlbumArtist'] = _select_best_artist(track, title)
-
-    if all_tracks:
-        logger.info(f"Found {len(all_tracks)} recent standalone tracks (not in albums)")
-    
-    return all_tracks
-
-def _get_recent_albums_only(limit):
-    """
-    Original implementation: Fetches ONLY albums from Jellyfin (no standalone tracks).
-    This is kept as a separate function in case the original behavior is needed.
+    Fetches a list of the most recently added albums from Jellyfin using pagination.
+    Uses global admin credentials.
+    If MUSIC_LIBRARIES is set, it will only return albums from those libraries.
     """
     target_library_ids = _get_target_library_ids()
     
@@ -271,7 +117,7 @@ def _get_recent_albums_only(limit):
 
     # Case 2: Config is NOT set (is None). Scan all albums from the user's root without ParentId.
     if target_library_ids is None:
-        logger.info("Scanning all Jellyfin libraries for recent albums (albums only).")
+        logger.info("Scanning all Jellyfin libraries for recent albums.")
         start_index = 0
         page_size = 500
         while True:
@@ -296,12 +142,12 @@ def _get_recent_albums_only(limit):
                 if len(albums_on_page) < page_size:
                     break
             except Exception as e:
-                logger.error(f"Jellyfin _get_recent_albums_only failed during 'scan all': {e}", exc_info=True)
+                logger.error(f"Jellyfin get_recent_albums failed during 'scan all': {e}", exc_info=True)
                 break
     
     # Case 3: Config is set and we have library IDs. Scan each of these libraries by using their ID as ParentId.
     else:
-        logger.info(f"Scanning {len(target_library_ids)} specific Jellyfin libraries for recent albums (albums only).")
+        logger.info(f"Scanning {len(target_library_ids)} specific Jellyfin libraries for recent albums.")
         for library_id in target_library_ids:
             start_index = 0
             page_size = 500
@@ -327,7 +173,7 @@ def _get_recent_albums_only(limit):
                     if len(albums_on_page) < page_size:
                         break
                 except Exception as e:
-                    logger.error(f"Jellyfin _get_recent_albums_only failed for library ID {library_id}: {e}", exc_info=True)
+                    logger.error(f"Jellyfin get_recent_albums failed for library ID {library_id}: {e}", exc_info=True)
                     break
 
     # After fetching, a final sort and trim is needed only if we fetched from multiple libraries.
@@ -340,76 +186,8 @@ def _get_recent_albums_only(limit):
         
     return all_albums
 
-def get_recent_music_items(limit):
-    """
-    Gets both recent albums AND recent standalone tracks that aren't properly organized in albums.
-    This ensures no music is missed during analysis, even if metadata is incomplete.
-    Returns a list combining album objects and standalone track objects.
-    """
-    target_library_ids = _get_target_library_ids()
-    
-    # Get recent albums (existing functionality)
-    albums = _get_recent_albums_only(limit)
-    
-    # Get recent standalone tracks (new functionality) 
-    # Use the same limit to get a reasonable number of standalone tracks
-    standalone_limit = min(limit, 100) if limit > 0 else 100  # Cap standalone tracks at 100
-    standalone_tracks = _get_recent_standalone_tracks(standalone_limit, target_library_ids)
-    
-    # Create pseudo-albums for standalone tracks to maintain compatibility with analysis workflow
-    pseudo_albums = []
-    for track in standalone_tracks:
-        # Create a pseudo-album containing just this one track
-        pseudo_album = {
-            'Id': f"standalone_{track['Id']}",  # Unique pseudo-album ID
-            'Name': f"Standalone: {track.get('Name', 'Unknown')}",
-            'Type': 'PseudoAlbum',  # Mark as pseudo-album
-            'StandaloneTrack': track,  # Embed the track data
-            'DateCreated': track.get('DateCreated', ''),
-            'AlbumArtist': track.get('AlbumArtist', 'Unknown Artist')
-        }
-        pseudo_albums.append(pseudo_album)
-    
-    # Combine albums and pseudo-albums
-    all_items = albums + pseudo_albums
-    
-    # Sort by date if we have multiple sources
-    if albums and pseudo_albums:
-        all_items.sort(key=lambda x: x.get('DateCreated', ''), reverse=True)
-    
-    # Apply final limit if specified
-    if limit > 0:
-        all_items = all_items[:limit]
-    
-    if pseudo_albums:
-        logger.info(f"Found {len(albums)} regular albums and {len(pseudo_albums)} standalone tracks (combined into {len(all_items)} total items)")
-    
-    return all_items
-
 def get_tracks_from_album(album_id):
     """Fetches all audio tracks for a given album ID from Jellyfin using admin credentials."""
-    # Check if this is a pseudo-album for a standalone track
-    if str(album_id).startswith('standalone_'):
-        # Extract the real track ID from the pseudo-album ID
-        real_track_id = album_id.replace('standalone_', '')
-        
-        # Get the track directly by its ID
-        url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items/{real_track_id}"
-        try:
-            r = requests.get(url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
-            r.raise_for_status()
-            track_item = r.json()
-            
-            # Apply artist field prioritization
-            title = track_item.get('Name', 'Unknown')
-            track_item['AlbumArtist'] = _select_best_artist(track_item, title)
-            
-            return [track_item]  # Return as single-item list to maintain compatibility
-        except Exception as e:
-            logger.error(f"Jellyfin get_tracks_from_album failed for standalone track {real_track_id}: {e}", exc_info=True)
-            return []
-    
-    # Normal album handling
     url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
     params = {"ParentId": album_id, "IncludeItemTypes": "Audio"}
     try:
@@ -570,34 +348,24 @@ def get_last_played_time(item_id, user_creds=None):
         return None
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
-    """
-    Creates a new instant playlist on Jellyfin for a specific user.
-    Handles empty tokens by falling back to the default config token.
-    """
-    token = (user_creds.get('token') if user_creds else None) or config.JELLYFIN_TOKEN
-    if not token:
-        raise ValueError("Jellyfin Token is required and could not be found.")
+    """Creates a new instant playlist on Jellyfin for a specific user."""
+    token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
+    if not token: raise ValueError("Jellyfin Token is required.")
+    
+    identifier = user_creds.get('user_identifier') if user_creds else config.JELLYFIN_USER_ID
+    if not identifier: raise ValueError("Jellyfin User Identifier is required.")
 
-    identifier = (user_creds.get('user_identifier') if user_creds else None) or config.JELLYFIN_USER_ID
-    if not identifier:
-        raise ValueError("Jellyfin User Identifier is required and could not be found.")
-
+    user_id = resolve_user(identifier, token)
+    
+    final_playlist_name = f"{playlist_name.strip()}_instant"
+    url = f"{config.JELLYFIN_URL}/Playlists"
+    headers = {"X-Emby-Token": token}
+    body = {"Name": final_playlist_name, "Ids": item_ids, "UserId": user_id}
     try:
-        user_id = resolve_user(identifier, token)
-        
-        final_playlist_name = f"{playlist_name.strip()}_instant"
-        url = f"{config.JELLYFIN_URL}/Playlists"
-        headers = {"X-Emby-Token": token}
-        body = {"Name": final_playlist_name, "Ids": item_ids, "UserId": user_id}
-
         r = requests.post(url, headers=headers, json=body, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        logger.info("Successfully created playlist '%s' for user %s.", final_playlist_name, user_id)
         return r.json()
-    except requests.exceptions.RequestException as e:
-        logger.error("HTTP Exception creating Jellyfin playlist '%s' for user %s: %s", playlist_name, user_id, e, exc_info=True)
-        return None
     except Exception as e:
-        logger.error("Generic exception creating Jellyfin playlist '%s' for user %s: %s", playlist_name, user_id, e, exc_info=True)
+        logger.error("Exception creating Jellyfin instant playlist '%s' for user %s: %s", playlist_name, user_id, e, exc_info=True)
         return None
 
