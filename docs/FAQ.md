@@ -16,7 +16,7 @@ The readme section have multiple example. If you're not able to reach the front-
 
 ## User Guide FAQs
 
-Learn how to use AudioMuse-AI effectively — from basic features to advanced functionality.
+Learn how to use AudioMuse-AI effectively, from basic features to advanced functionality.
 
 
 ### How do I start using AudioMuse-AI?
