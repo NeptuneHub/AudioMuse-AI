@@ -60,7 +60,21 @@ from tasks.mediaserver_mpd import (
     get_top_played_songs as mpd_get_top_played_songs,
     get_last_played_time as mpd_get_last_played_time,
 )
-
+from tasks.mediaserver_emby import (
+    resolve_user as emby_resolve_user,
+    get_all_playlists as emby_get_all_playlists,
+    delete_playlist as emby_delete_playlist,
+    get_recent_albums as emby_get_recent_albums,
+    get_recent_music_items as emby_get_recent_music_items,
+    get_tracks_from_album as emby_get_tracks_from_album,
+    download_track as emby_download_track,
+    get_all_songs as emby_get_all_songs,
+    get_playlist_by_name as emby_get_playlist_by_name,
+    create_playlist as emby_create_playlist,
+    create_instant_playlist as emby_create_instant_playlist,
+    get_top_played_songs as emby_get_top_played_songs,
+    get_last_played_time as emby_get_last_played_time,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +83,12 @@ logger = logging.getLogger(__name__)
 # PUBLIC API (Dispatcher functions)
 # ##############################################################################
 
-def resolve_jellyfin_user(identifier, token):
-    """Public dispatcher for resolving a Jellyfin user identifier."""
+def resolve_emby_jellyfin_user(identifier, token):
+    """Public dispatcher for resolving a Jellyfin or Emby user identifier."""
     # This is specific to Jellyfin, so we call it directly.
-    return jellyfin_resolve_user(identifier, token)
+    if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_resolve_user(identifier, token)
+    if config.MEDIASERVER_TYPE == 'emby': return emby_resolve_user(identifier, token)
+    return []
 
 def delete_automatic_playlists():
     """Deletes all playlists ending with '_automatic' using admin credentials."""
@@ -94,6 +110,9 @@ def delete_automatic_playlists():
     elif config.MEDIASERVER_TYPE == 'mpd':
         playlists_to_check = mpd_get_all_playlists()
         delete_function = mpd_delete_playlist
+    elif config.MEDIASERVER_TYPE == 'emby':
+        playlists_to_check = emby_get_all_playlists()
+        delete_function = emby_delete_playlist
 
     if delete_function:
         for p in playlists_to_check:
@@ -110,6 +129,7 @@ def get_recent_albums(limit):
     if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_recent_albums(limit)
+    if config.MEDIASERVER_TYPE == 'emby': return emby_get_recent_albums(limit)
     return []
 
 def get_recent_music_items(limit):
@@ -124,6 +144,8 @@ def get_recent_music_items(limit):
         return navidrome_get_recent_music_items(limit)
     elif config.MEDIASERVER_TYPE == 'lyrion': 
         return lyrion_get_recent_music_items(limit)
+    elif config.MEDIASERVER_TYPE == 'emby': 
+        return emby_get_recent_music_items(limit)
     else:
         # Fallback to regular album fetching for servers without comprehensive discovery
         logger.info(f"get_recent_music_items not yet implemented for {config.MEDIASERVER_TYPE}, falling back to get_recent_albums")
@@ -135,6 +157,7 @@ def get_tracks_from_album(album_id):
     if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_tracks_from_album(album_id)
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_tracks_from_album(album_id)
     if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_tracks_from_album(album_id)
+    if config.MEDIASERVER_TYPE == 'emby': return emby_get_tracks_from_album(album_id)
     return []
 
 def download_track(temp_dir, item):
@@ -143,6 +166,7 @@ def download_track(temp_dir, item):
     if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_download_track(temp_dir, item)
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_download_track(temp_dir, item)
     if config.MEDIASERVER_TYPE == 'mpd': return mpd_download_track(temp_dir, item)
+    if config.MEDIASERVER_TYPE == 'emby': return emby_download_track(temp_dir, item)
     return None
 
 def get_all_songs():
@@ -151,6 +175,7 @@ def get_all_songs():
     if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_all_songs()
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_all_songs()
     if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_all_songs()
+    if config.MEDIASERVER_TYPE == 'emby': return emby_get_all_songs()
     return []
 
 def get_playlist_by_name(playlist_name):
@@ -160,6 +185,7 @@ def get_playlist_by_name(playlist_name):
     if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_playlist_by_name(playlist_name)
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_playlist_by_name(playlist_name)
     if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_playlist_by_name(playlist_name)
+    if config.MEDIASERVER_TYPE == 'emby': return emby_get_playlist_by_name(playlist_name)
     return None
 
 def create_playlist(base_name, item_ids):
@@ -170,6 +196,7 @@ def create_playlist(base_name, item_ids):
     elif config.MEDIASERVER_TYPE == 'navidrome': navidrome_create_playlist(base_name, item_ids)
     elif config.MEDIASERVER_TYPE == 'lyrion': lyrion_create_playlist(base_name, item_ids)
     elif config.MEDIASERVER_TYPE == 'mpd': mpd_create_playlist(base_name, item_ids)
+    elif config.MEDIASERVER_TYPE == 'emby': emby_create_playlist(base_name, item_ids)
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     """Creates an instant playlist. Uses user_creds if provided, otherwise admin."""
@@ -184,6 +211,8 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         return lyrion_create_instant_playlist(playlist_name, item_ids)
     if config.MEDIASERVER_TYPE == 'mpd':
         return mpd_create_instant_playlist(playlist_name, item_ids, user_creds)
+    if config.MEDIASERVER_TYPE == 'emby':
+        return emby_create_instant_playlist(playlist_name, item_ids, user_creds)
     return None
 
 def get_top_played_songs(limit, user_creds=None):
@@ -196,6 +225,8 @@ def get_top_played_songs(limit, user_creds=None):
         return lyrion_get_top_played_songs(limit)
     if config.MEDIASERVER_TYPE == 'mpd':
         return mpd_get_top_played_songs(limit, user_creds)
+    if config.MEDIASERVER_TYPE == 'emby':
+        return emby_get_top_played_songs(limit, user_creds)
     return []
 
 def get_last_played_time(item_id, user_creds=None):
@@ -208,5 +239,7 @@ def get_last_played_time(item_id, user_creds=None):
         return lyrion_get_last_played_time(item_id)
     if config.MEDIASERVER_TYPE == 'mpd':
         return mpd_get_last_played_time(item_id, user_creds)
+    if config.MEDIASERVER_TYPE == 'emby':
+        return emby_get_last_played_time(item_id, user_creds)
     return None
 
