@@ -12,7 +12,12 @@ AudioMuse-AI work on both ARM and INTEL architecture. The suggested requirements
 
 ### How to deploy AudioMuse-AI?
 
-The readme section have multiple example. If you're not able to reach the front-end on **[http://YOUR-IP:8000](http://YOUR-IP:8000)** or the analysis seems finishing without analyze nothing, it means that you miss some important parameter. Remember that in docker compose the same parameter need to be write in two place, one in the Flask section and the other in the Worker section
+The [readme](https://github.com/NeptuneHub/AudioMuse-AI) section have the explanetion and multiple example can be found in the [deployment folder](https://github.com/NeptuneHub/AudioMuse-AI/tree/main/deployment). If you're not able to reach the front-end on **[http://YOUR-IP:8000](http://YOUR-IP:8000)** or the analysis seems finishing without analyze nothing, it means that you miss some important parameter. Remember that in docker compose the same parameter need to be write in two place, one in the Flask section and the other in the Worker section
+
+### Can AudioMuse-AI support multiple music libraries?
+Yes, it can support multiple music libraries within a single media server instance (e.g., two separate music folders in one Jellyfin server). However, a single AudioMuse-AI instance cannot connect to multiple different media servers (e.g., one Jellyfin and one Navidrome server) at the same time. 
+
+The ENV variable `MUSIC_LIBRARIES` can be used for match multiple music library on the same music server. Is a Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names.	"" (empty - scan all)
 
 ## User Guide FAQs
 
