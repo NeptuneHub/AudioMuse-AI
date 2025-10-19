@@ -46,7 +46,7 @@ If your clusters are too small, you can adjust the following values in the **Adv
 
 * **`Stratified Sampling Target Percentile`**:
   Defines the percentile of songs sampled per genre for clustering.
-  The higher this value, the more songs will be clustered. You can set it to **100** to include all songs.
+  The higher this value, the more songs will be clustered. You can set it to **100** to include more songs.
 
 * **`min clusters` and `max clusters`**:
   By default, AudioMuse-AI creates between **40 and 100 clusters (playlists)**.
