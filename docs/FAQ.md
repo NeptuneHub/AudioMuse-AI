@@ -23,6 +23,7 @@ The ENV variable `MUSIC_LIBRARIES` can be used for match multiple music library 
 
 Learn how to use AudioMuse-AI effectively, from basic features to advanced functionality.
 
+* **NOTE**: Most front-end parameters can also be set as environment variables. See the parameter table in the [README.md](../README.md) for a complete list.
 
 ### How do I start using AudioMuse-AI?
 
@@ -55,3 +56,7 @@ If your clusters are too small, you can adjust the following values in the **Adv
 ### Clustering returns clusters with big number of songs. How can I fix this?
 
 In contrast to cluster with few song, you can just raise the `Stratified Sampling Target Percentile`, `min clusters` and `max clusters` values in the advanced parameter view. 
+
+### Clustering takes a lot of time, how can I run it faster?
+
+Clusterign algorithm by default do 5000 run. This means that multiple run are executed and the best is kept. You can lower this number in the front-end in the `Clustering Runs:` to do less run. For example with 1000 run the result should still be good enough and take a reasonable amount of time.
