@@ -22,7 +22,7 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 * **Sonic Fingerprint**: Generates playlists based on your listening habits, finding tracks similar to what you've been playing most often.
 * **Song Alchemy**: Mix your ideal vibe — mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and an interactive 2D preview. Export the final selection directly to your media server.
 
-More information, like **Frequently Asked Question (FAQ)** can be found in the [docs folder](https://github.com/NeptuneHub/AudioMuse-AI/tree/main/docs).
+More information, like **Frequently Asked Question (FAQ)** can be found in the [docs folder](docs).
 
 **The full list or AudioMuse-AI related repository are:** 
   > * [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI): the core application, it run Flask and Worker containers to actually run all the feature;
@@ -220,7 +220,7 @@ Intel I7 CPU of first gen or older **DON'T WORK** because Tensorflow require AVX
 
 If you tested with CPU older than the suggested requirements, please track this in an issue ticket reporting your feedback.
 
-You can check the [Tested Hardware and Configuration](HARDWARE.md) notes to look which one was already tested till now.
+You can check the [Tested Hardware and Configuration](docs/HARDWARE.md) notes to look which one was already tested till now.
 
 **IMPORTANT** From `0.7.0-beta` ONNX replace Tensorflow. So there is the possibility that CPU not supported till can now work.
 
