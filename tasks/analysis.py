@@ -686,6 +686,17 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             build_and_store_voyager_index(get_db())
             redis_conn.publish('index-updates', 'reload')
 
+            # Build and store the 2D map projection for the web map (best-effort)
+            try:
+                from app_helper import build_and_store_map_projection
+                built = build_and_store_map_projection('main_map')
+                if built:
+                    logger.info('Precomputed map projection built and stored.')
+                else:
+                    logger.info('Precomputed map projection build returned no data (no embeddings?).')
+            except Exception as e:
+                logger.warning(f"Failed to build/store precomputed map projection: {e}")
+
             final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
             log_and_update_main(final_message, 100, task_state=TASK_STATUS_SUCCESS)
             clean_temp(TEMP_DIR)

@@ -44,9 +44,9 @@ document.addEventListener('DOMContentLoaded', function() {
         { href: '/', text: 'Analysis and Clustering' },
         { href: '/chat', text: 'Instant Playlist' },
         { href: '/similarity', text: 'Playlist from Similar Song' },
-        //{ href: '/music_map', text: 'Music Map (t-SNE)' },
         { href: '/path', text: 'Song Path' },
         { href: '/alchemy', text: 'Song Alchemy' },
+        { href: '/map', text: 'Music Map' },
         { href: '/sonic_fingerprint', text: 'Sonic Fingerprint' },
         //{ href: '/collection', text: 'Collection Sync' }, // New Menu Item - commented because still experimental
         { href: '/cleaning', text: 'Cleaning' }

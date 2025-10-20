@@ -3,8 +3,8 @@ from typing import List, Tuple
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 
-from .voyager_manager import find_nearest_neighbors_by_vector, get_vector_by_id
-from app_helper import get_score_data_by_ids
+from .voyager_manager import find_nearest_neighbors_by_vector, find_nearest_neighbors_by_id, get_vector_by_id
+from app_helper import get_score_data_by_ids, load_map_projection
 import config
 
 try:
@@ -233,7 +233,7 @@ def _project_with_discriminant(add_vectors: List[np.ndarray], sub_vectors: List[
     return [(float(x), float(y)) for x, y in scaled]
 
 
-def song_alchemy(add_ids: List[str], subtract_ids: List[str], n_results: int = None, subtract_distance: float = None) -> dict:
+def song_alchemy(add_ids: List[str], subtract_ids: List[str], n_results: int = None, subtract_distance: float = None, temperature: float = None) -> dict:
     """Perform Song Alchemy:
     - add_ids: items to include in positive centroid
     - subtract_ids: items to include in negative centroid
@@ -258,13 +258,49 @@ def song_alchemy(add_ids: List[str], subtract_ids: List[str], n_results: int = N
     if subtract_ids:
         subtract_centroid = _compute_centroid_from_ids(subtract_ids)
 
+    # Normalize temperature early so downstream logic (including the special-case
+    # branch below) can safely compare/convert it. If the frontend omitted the
+    # parameter or provided a non-numeric/null value, fall back to the configured
+    # default. This ensures temperature is optional from the API perspective.
+    try:
+        if temperature is None:
+            # Use configured default
+            temperature = float(config.ALCHEMY_TEMPERATURE)
+        else:
+            # Coerce numeric-like strings as well
+            temperature = float(temperature)
+    except Exception:
+        logger.warning(f"Invalid temperature value passed to song_alchemy: {temperature!r}; falling back to config default")
+        try:
+            temperature = float(config.ALCHEMY_TEMPERATURE)
+        except Exception:
+            temperature = 1.0
+
     # Find nearest neighbors to add_centroid using Voyager
-    neighbors = find_nearest_neighbors_by_vector(add_centroid, n=n_results * 3)
+    # Special-case: if user provided exactly one ADD track and temperature==0 (deterministic)
+    # then use the id-based neighbor query so results match the "similar song" path.
+    if temperature is not None and float(temperature) == 0.0 and add_ids and len(add_ids) == 1:
+        try:
+            neighbors = find_nearest_neighbors_by_id(add_ids[0], n=n_results)
+        except Exception:
+            neighbors = find_nearest_neighbors_by_vector(add_centroid, n=n_results * 3)
+    else:
+        neighbors = find_nearest_neighbors_by_vector(add_centroid, n=n_results * 3)
     if not neighbors:
         return {"results": [], "filtered_out": [], "centroid_2d": None}
 
     # neighbors is a list of dicts with item_id and score; keep candidate ids
     candidate_ids = [n['item_id'] for n in neighbors]
+
+    # Remove any user-provided ADD or SUBTRACT items from candidate list so we don't
+    # return the input tracks themselves as results. This mirrors find_nearest_neighbors_by_id
+    # behavior which excludes the original item.
+    if add_ids:
+        add_set = set(add_ids)
+        candidate_ids = [cid for cid in candidate_ids if cid not in add_set]
+    if subtract_ids:
+        sub_set = set(subtract_ids)
+        candidate_ids = [cid for cid in candidate_ids if cid not in sub_set]
 
     # If subtract centroid present, filter candidates by distance
     filtered_out = []
@@ -306,8 +342,8 @@ def song_alchemy(add_ids: List[str], subtract_ids: List[str], n_results: int = N
 
     candidate_ids = filtered
 
-    # Trim to desired n_results
-    candidate_ids = candidate_ids[:n_results]
+    # Trim to desired n_results (we'll sample probabilistically from these candidates)
+    candidate_ids = candidate_ids[: max(n_results * 3, n_results)]
 
     # Compute distance from add_centroid for each candidate (to display in results)
     # Gather vectors for projection
@@ -360,52 +396,144 @@ def song_alchemy(add_ids: List[str], subtract_ids: List[str], n_results: int = N
         proj_vectors.append(np.array(vec, dtype=float))
         proj_ids.append(fid)
 
-    # Project to 2D - Choose the best method based on input
+    # Try to use a precomputed 2D projection saved in the DB (same approach as app_map.py).
+    # If a precomputed map exists, use its coords for any matching item_ids. Only compute
+    # projections locally for the subset of proj_ids that are missing from the precomputed map.
     projection_used = 'none'
-    projections = None
-    
-    # Build lists of add and sub vectors (raw vectors) for projection methods
-    add_vecs = [np.array(get_vector_by_id(aid), dtype=float) for aid in add_ids if get_vector_by_id(aid) is not None]
-    sub_vecs = [np.array(get_vector_by_id(sid), dtype=float) for sid in subtract_ids if get_vector_by_id(sid) is not None]
+    proj_map = {}
 
-    if add_vecs and sub_vecs:
-        # Case 1: Both ADD and SUBTRACT songs are provided. Prioritize separation.
-        logger.info("Trying discriminant projection...")
+    try:
+        id_map, precomp_proj = load_map_projection('main_map')
+    except Exception:
+        id_map, precomp_proj = None, None
+
+    id_to_coord = {}
+    if id_map is not None and precomp_proj is not None:
         try:
-            projections = _project_with_discriminant(add_vecs, sub_vecs, proj_vectors)
-            projection_used = 'discriminant'
-            logger.info("Using discriminant projection.")
+            # id_map is expected to be a list of item_ids in the same order as rows in precomp_proj
+            # Use string keys to be robust (DB item_ids are text)
+            for iid, coord in zip(id_map, precomp_proj.tolist()):
+                id_to_coord[str(iid)] = (float(coord[0]), float(coord[1]))
+        except Exception:
+            id_to_coord = {}
+
+    # Fill proj_map from precomputed projection where possible
+    missing_ids = []
+    missing_vectors = []
+    for pid in proj_ids:
+        # markers like '__add_id__{id}' or '__sub_id__{id}' map to underlying item ids
+        if isinstance(pid, str) and pid.startswith('__add_id__'):
+            item_id = pid.replace('__add_id__', '')
+            coord = id_to_coord.get(str(item_id))
+            if coord is not None:
+                proj_map[pid] = coord
+            else:
+                missing_ids.append(pid)
+        elif isinstance(pid, str) and pid.startswith('__sub_id__'):
+            item_id = pid.replace('__sub_id__', '')
+            coord = id_to_coord.get(str(item_id))
+            if coord is not None:
+                proj_map[pid] = coord
+            else:
+                missing_ids.append(pid)
+        elif pid in ('__add_centroid__', '__subtract_centroid__'):
+            # compute centroid coords later (from member point coords) if possible
+            continue
+        else:
+            # regular item id
+            coord = id_to_coord.get(str(pid))
+            if coord is not None:
+                proj_map[pid] = coord
+            else:
+                missing_ids.append(pid)
+
+    # For centroids, attempt to compute centroid coordinates from precomputed member points
+    def _centroid_from_member_coords(member_ids, prefix=''):
+        coords = []
+        for mid in member_ids:
+            c = id_to_coord.get(str(mid))
+            if c is not None:
+                coords.append(np.array(c, dtype=float))
+        if not coords:
+            return None
+        mean = np.mean(np.vstack(coords), axis=0)
+        return (float(mean[0]), float(mean[1]))
+
+    add_centroid_2d_db = None
+    subtract_centroid_2d_db = None
+    try:
+        if add_ids:
+            add_centroid_2d_db = _centroid_from_member_coords(add_ids)
+        if subtract_ids:
+            subtract_centroid_2d_db = _centroid_from_member_coords(subtract_ids)
+        if add_centroid_2d_db is not None:
+            proj_map['__add_centroid__'] = add_centroid_2d_db
+        if subtract_centroid_2d_db is not None:
+            proj_map['__subtract_centroid__'] = subtract_centroid_2d_db
+    except Exception:
+        # non-fatal; we'll compute missing projections below
+        pass
+
+    # Collect vectors for any proj_ids that are still missing (we will compute only these)
+    for pid in proj_ids:
+        if pid in proj_map:
+            continue
+        if pid in ('__add_centroid__', '__subtract_centroid__'):
+            # if not set from member coords, skip for now
+            continue
+        # resolve underlying item id for add/sub markers
+        if isinstance(pid, str) and pid.startswith('__add_id__'):
+            item_id = pid.replace('__add_id__', '')
+        elif isinstance(pid, str) and pid.startswith('__sub_id__'):
+            item_id = pid.replace('__sub_id__', '')
+        else:
+            item_id = pid
+
+        vec = get_vector_by_id(item_id)
+        if vec is None:
+            # can't project without vector; leave missing
+            continue
+        missing_ids.append(pid)
+        missing_vectors.append(np.array(vec, dtype=float))
+
+    # If we have missing vectors, compute projections for them only
+    if missing_vectors:
+        try:
+            # Try discriminant/aligned/umap/pca similar to previous logic but only for missing subset
+            local_projections = None
+            # For discriminant we need add/sub vectors; attempt only if both exist within missing set
+            try:
+                # Build add/sub vectors intersecting missing vectors
+                local_add_vecs = [np.array(get_vector_by_id(a), dtype=float) for a in add_ids if get_vector_by_id(a) is not None and (f'__add_id__{a}' in missing_ids or a in missing_ids)]
+                local_sub_vecs = [np.array(get_vector_by_id(s), dtype=float) for s in subtract_ids if get_vector_by_id(s) is not None and (f'__sub_id__{s}' in missing_ids or s in missing_ids)]
+                if local_add_vecs and local_sub_vecs and _project_with_discriminant is not None:
+                    local_projections = _project_with_discriminant(local_add_vecs, local_sub_vecs, missing_vectors)
+                    projection_used = 'discriminant'
+            except Exception:
+                local_projections = None
+
+            if local_projections is None:
+                try:
+                    local_projections = _project_with_umap(missing_vectors)
+                    projection_used = 'umap'
+                except Exception:
+                    try:
+                        local_projections = _project_to_2d(missing_vectors)
+                        projection_used = 'pca'
+                    except Exception:
+                        # fallback zeros
+                        local_projections = [(0.0, 0.0) for _ in missing_vectors]
+
+            # Assign local projections back into proj_map in the same order
+            for pid, coord in zip(missing_ids, local_projections):
+                proj_map[pid] = (float(coord[0]), float(coord[1]))
         except Exception as e:
-            logger.warning(f"Discriminant projection failed: {e}. Falling back.")
-            try:
-                logger.info("Trying aligned_add_sub projection...")
-                projections = _project_aligned_add_sub(proj_vectors, add_centroid, subtract_centroid)
-                projection_used = 'aligned_add_sub'
-                logger.info("Using aligned_add_sub projection.")
-            except Exception as e2:
-                logger.warning(f"Aligned_add_sub projection failed: {e2}. Falling back to UMAP.")
-                projections = None # Ensure fallback to next block
-    
-    if projections is None:
-        # Case 2: Only ADD songs, or previous methods failed. Prioritize structure discovery.
-        try:
-            logger.info("Trying UMAP projection...")
-            projections = _project_with_umap(proj_vectors)
-            projection_used = 'umap'
-            logger.info("Using UMAP projection.")
-        except (ImportError, Exception) as e:
-            logger.warning(f"UMAP projection failed: {e}. Falling back to PCA.")
-            try:
-                logger.info("Trying PCA projection...")
-                projections = _project_to_2d(proj_vectors)
-                projection_used = 'pca'
-                logger.info("Using PCA projection.")
-            except Exception as e2:
-                logger.error(f"PCA projection also failed: {e2}. Returning no projections.")
-                projections = [(0.0, 0.0) for _ in proj_vectors]
-                projection_used = 'failed'
+            logger.warning(f"Failed to compute local projections for missing ids: {e}")
 
-    proj_map = {pid: coord for pid, coord in zip(proj_ids, projections)}
+    # Ensure every proj_id has something (fill remaining with zeros)
+    for pid in proj_ids:
+        if pid not in proj_map:
+            proj_map[pid] = (0.0, 0.0)
 
     # Compute distances from add_centroid for display
     distances = {}
@@ -425,17 +553,89 @@ def song_alchemy(add_ids: List[str], subtract_ids: List[str], n_results: int = N
 
     # Fetch details
     details = get_score_data_by_ids(candidate_ids)
-    # Preserve order in candidate_ids
     details_map = {d['item_id']: d for d in details}
+
+    # Build a list of scored candidates for probabilistic sampling
+    scored_candidates = []
+    for cid in candidate_ids:
+        if cid in details_map and cid in distances:
+            scored_candidates.append((cid, distances[cid]))
+
+    # Determine temperature: use provided value or config default
+    if temperature is None:
+        try:
+            from config import ALCHEMY_TEMPERATURE as _cfg_temp
+            temperature = float(_cfg_temp)
+        except Exception:
+            temperature = 1.0
+
+    # Convert distances into similarity-like scores (smaller distance => higher similarity)
+    # We'll negate distances so higher is better
+    import math, random
+
+    ids = [c[0] for c in scored_candidates]
+    raw_scores = [ -float(c[1]) for c in scored_candidates ]
+
     ordered = []
-    for i in candidate_ids:
-        if i in details_map:
-            item = details_map[i]
-            # attach distance if available
-            item['distance'] = distances.get(i)
-            # attach 2d projection if available
-            item['embedding_2d'] = proj_map.get(i)
-            ordered.append(item)
+    if ids:
+        # If temperature is exactly zero, use deterministic selection (best matches first)
+        try:
+            if temperature is not None and float(temperature) == 0.0:
+                ids_sorted = sorted(ids, key=lambda x: distances.get(x, float('inf')))
+                for i in ids_sorted[:n_results]:
+                    item = details_map.get(i, {})
+                    item['distance'] = distances.get(i)
+                    item['embedding_2d'] = proj_map.get(i)
+                    ordered.append(item)
+            else:
+                # Softmax with temperature (temperature may be None or >0)
+                temps = [s / (temperature or 1.0) for s in raw_scores]
+                max_t = max(temps)
+                exps = [math.exp(t - max_t) for t in temps]
+                total = sum(exps)
+                if total <= 0:
+                    probs = [1.0 / len(exps)] * len(exps)
+                else:
+                    probs = [e / total for e in exps]
+
+                # Weighted sampling without replacement to get n_results items (preserve projection/metadata)
+                chosen = []
+                avail_ids = ids.copy()
+                avail_probs = probs.copy()
+                k = min(n_results, len(avail_ids))
+                for _ in range(k):
+                    # Normalize
+                    s = sum(avail_probs)
+                    if s <= 0:
+                        idx = random.randrange(len(avail_ids))
+                    else:
+                        r = random.random() * s
+                        acc = 0.0
+                        idx = 0
+                        for j, p in enumerate(avail_probs):
+                            acc += p
+                            if r <= acc:
+                                idx = j
+                                break
+                    chosen_id = avail_ids.pop(idx)
+                    avail_probs.pop(idx)
+                    chosen.append(chosen_id)
+
+                # Build ordered results from chosen ids in the order selected
+                for cid in chosen:
+                    item = details_map.get(cid, {})
+                    item['distance'] = distances.get(cid)
+                    item['embedding_2d'] = proj_map.get(cid)
+                    ordered.append(item)
+        except Exception as e:
+            # Fallback deterministic ordering by best match
+            logger.warning(f"Sampling failed, falling back to deterministic selection: {e}")
+            ids_sorted = sorted(ids, key=lambda x: distances.get(x, float('inf')))
+            for i in ids_sorted[:n_results]:
+                item = details_map.get(i, {})
+                item['distance'] = distances.get(i)
+                item['embedding_2d'] = proj_map.get(i)
+                ordered.append(item)
 
     # Prepare filtered_out details
     filtered_details = []

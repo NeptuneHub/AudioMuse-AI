@@ -494,35 +494,54 @@ def get_playlists_endpoint():
         playlists_data[row['playlist_name']].append({"item_id": row['item_id'], "title": row['title'], "author": row['author']})
     return jsonify(dict(playlists_data)), 200
 
-def listen_for_index_reloads():
-    """
-    Runs in a background thread to listen for messages on a Redis Pub/Sub channel.
-    When a 'reload' message is received, it triggers the in-memory Voyager index to be reloaded.
-    This is the recommended pattern for inter-process communication in this architecture,
-    avoiding direct HTTP calls from workers to the web server.
-    """
-    # Create a new Redis connection for this thread.
-    # Sharing the main redis_conn object across threads is not recommended.
-    thread_redis_conn = Redis.from_url(REDIS_URL)
-    pubsub = thread_redis_conn.pubsub()
-    pubsub.subscribe('index-updates')
-    logger.info("Background thread started. Listening for Voyager index reloads on Redis channel 'index-updates'.")
+# Minimal startup loader: load voyager index and the main map only in the Flask web process.
+# Keep this simple and avoid background threads or Redis pubsub in the web process.
+def _load_indexes_on_startup():
+    """Load in-memory Voyager index and precomputed map projection if available.
 
-    for message in pubsub.listen():
-        # The first message is a confirmation of subscription, so we skip it.
-        if message['type'] == 'message':
-            message_data = message['data'].decode('utf-8')
-            logger.info(f"Received '{message_data}' message on 'index-updates' channel.")
-            if message_data == 'reload':
-                # We need the application context to access 'g' and the database connection.
-                with app.app_context():
-                    logger.info("Triggering in-memory Voyager index reload from background listener.")
-                    try:
-                        from tasks.voyager_manager import load_voyager_index_for_querying
-                        load_voyager_index_for_querying(force_reload=True)
-                        logger.info("In-memory Voyager index reloaded successfully by background listener.")
-                    except Exception as e:
-                        logger.error(f"Error reloading Voyager index from background listener: {e}", exc_info=True)
+    This function is intentionally simple and runs in the Flask process (web container).
+    It should not be called from RQ workers.
+    """
+    try:
+        from tasks.voyager_manager import load_voyager_index_for_querying
+        load_voyager_index_for_querying(force_reload=True)
+        logger.info("In-memory Voyager index loaded by startup hook.")
+    except Exception as e:
+        logger.warning(f"Voyager index initial load failed in startup hook: {e}")
+
+    try:
+        from app_helper import load_map_projection
+        load_map_projection('main_map')
+        logger.info("In-memory map projection loaded by startup hook.")
+    except Exception as e:
+        logger.debug(f"No precomputed map projection to load at startup or load failed: {e}")
+
+
+# Register a simple startup loader to run in the Flask web process only.
+# Use before_first_request when available; otherwise fall back to a one-time before_request.
+def _register_startup_loader(app):
+  if hasattr(app, 'before_first_request'):
+    try:
+      app.before_first_request(_load_indexes_on_startup)
+      logger.info('Registered _load_indexes_on_startup with app.before_first_request')
+      return
+    except Exception:
+      # Continue to fallback below if decorator fails for any reason
+      logger.debug('app.before_first_request exists but registration failed; falling back to before_request')
+
+  # Fallback: register a before_request handler that runs only once
+  @app.before_request
+  def _one_time_before_request_loader():
+    # Use a flag on the app to ensure we only run this once per process
+    if not getattr(app, '_indexes_loaded', False):
+      try:
+        _load_indexes_on_startup()
+      finally:
+        setattr(app, '_indexes_loaded', True)
+
+
+# Perform registration now
+_register_startup_loader(app)
 
 
 # --- Import and Register Blueprints ---
@@ -542,8 +561,8 @@ from app_sonic_fingerprint import sonic_fingerprint_bp
 from app_path import path_bp
 from app_collection import collection_bp
 from app_external import external_bp # --- NEW: Import the external blueprint ---
-from app_universe import universe_bp # --- NEW: Import the universe blueprint ---
 from app_alchemy import alchemy_bp
+from app_map import map_bp
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -553,19 +572,23 @@ app.register_blueprint(sonic_fingerprint_bp)
 app.register_blueprint(path_bp)
 app.register_blueprint(collection_bp)
 app.register_blueprint(external_bp, url_prefix='/external') # --- NEW: Register the external blueprint ---
-app.register_blueprint(universe_bp) # --- NEW: Register the universe blueprint ---
 app.register_blueprint(alchemy_bp)
+app.register_blueprint(map_bp)
 
 if __name__ == '__main__':
     os.makedirs(TEMP_DIR, exist_ok=True)
-    
+
     with app.app_context():
         # --- Initial Voyager Index Load ---
         from tasks.voyager_manager import load_voyager_index_for_querying
         load_voyager_index_for_querying()
+        # Also try to load precomputed map projection into memory if available
+        try:
+            from app_helper import load_map_projection
+            load_map_projection('main_map')
+            logger.info("In-memory map projection loaded at startup.")
+        except Exception as e:
+            logger.debug(f"No precomputed map projection to load at startup or load failed: {e}")
 
-    # --- Start Background Listener Thread ---
-    listener_thread = threading.Thread(target=listen_for_index_reloads, daemon=True)
-    listener_thread.start()
-
+    # Run the Flask app (no background threads started here).
     app.run(debug=False, host='0.0.0.0', port=8000)

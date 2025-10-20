@@ -192,6 +192,76 @@ textarea {
     margin-bottom: 1rem;
 }
 
+/* --- Shared button utilities (use .btn on buttons) --- */
+/* Common usage: <button class="btn btn-primary">Save</button> */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    color: #ffffff;
+    font-weight: 700;
+    padding: 0.6rem 1rem;
+    border-radius: 0.5rem;
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.18s ease, transform 0.06s ease;
+    font-size: 1rem;
+}
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Primary blue button (matches existing primary selectors) */
+.btn-primary { background-color: #2563EB; }
+.btn-primary:hover { background-color: #1D4ED8; }
+
+/* Danger/red button */
+.btn-danger { background-color: #DC2626; }
+.btn-danger:hover { background-color: #B91C1C; }
+
+/* Ghost / outline button for secondary actions */
+.btn-ghost {
+    background: transparent;
+    color: #374151;
+    border: 1px solid #D1D5DB;
+}
+.btn-ghost:hover { background: #F9FAFB; }
+
+/* Small variant */
+.btn-sm { padding: 0.35rem 0.6rem; font-size: 0.875rem; }
+
+/* Selection list item used in the inline selection panel */
+.selection-list-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid #eee;
+}
+
+/* Controls row for map page: allow wrapping on small screens */
+.map-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+    flex-wrap: wrap; /* allow controls to wrap to next line when space is limited */
+}
+.map-controls > * {
+    margin-right: 6px;
+}
+
+@media (max-width: 640px) {
+    /* On small screens allow controls to form two-per-row where possible */
+    .map-controls > * {
+        flex: 1 1 48%;
+        min-width: 120px;
+    }
+    .map-controls input#n_songs { flex: 0 1 100px; }
+    .selection-panel-inline { width: 100%; }
+}
+
+
 .task-buttons button,
 #cancel-task-btn,
 #cancel-sync-btn,

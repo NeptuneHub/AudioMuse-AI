@@ -254,6 +254,8 @@ PATH_LCORE_MULTIPLIER = int(os.environ.get("PATH_LCORE_MULTIPLIER", "3"))
 # Number of similar songs to return when creating the Alchemy result (default 100, max 200)
 ALCHEMY_DEFAULT_N_RESULTS = int(os.environ.get("ALCHEMY_DEFAULT_N_RESULTS", "100"))
 ALCHEMY_MAX_N_RESULTS = int(os.environ.get("ALCHEMY_MAX_N_RESULTS", "200"))
+# Temperature for probabilistic sampling in Song Alchemy (softmax temperature)
+ALCHEMY_TEMPERATURE = float(os.environ.get("ALCHEMY_TEMPERATURE", "1.0"))
 # Minimum distance from the subtract-centroid to keep a candidate (metric-dependent).
 # For angular (cosine-derived) distances this is in [0,1] where higher means more distant.
 ALCHEMY_SUBTRACT_DISTANCE = float(os.environ.get("ALCHEMY_SUBTRACT_DISTANCE", "0.2"))

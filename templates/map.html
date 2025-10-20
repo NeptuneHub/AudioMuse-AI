@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="app-version" content="{{ app_version }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AudioMuse-AI - Music Map</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/menu.css">
+    <script src="/static/plotly-2.29.1.min.js"></script>
+</head>
+<body>
+<div class="page-container">
+    <aside class="sidebar">
+        <nav>
+            <ul class="sidebar-nav"></ul>
+        </nav>
+    </aside>
+
+    <div class="main-content" id="main-content">
+        <button class="menu-toggle">&#9776;</button>
+        <div class="container">
+            <section>
+                <header class="page-header">
+                    <h1>AudioMuse-AI - Music Map [EXPERIMENTAL]</h1>
+                    <p>Precompute your music map with a song analysis, then explore it interactively and create your playlist</p>
+                </header>
+                <div class="map-controls" style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+                    <label for="n_songs">Number of songs:</label>
+                    <input id="n_songs" type="number" min="1" value="500" style="width:100px;" />
+                    <button id="show-map" type="button" class="btn btn-primary">Load</button>
+                    <button id="create-playlist" class="btn btn-primary">Create playlist</button>
+                    <button id="song-path-btn" class="btn btn-primary" disabled style="margin-left:6px;">Song Path</button>
+                    <button id="refresh-map" type="button" class="btn btn-ghost" title="Refresh map (clear overlays)" style="margin-left:6px;">Refresh</button>
+                    <button id="toggle-full" type="button" class="btn btn-ghost" title="Show full dataset" style="margin-left:6px;">Full</button>
+                    
+                    <div id="map-status" style="margin-left:12px;color:#6B7280"></div>
+                </div>
+
+                <div id="plot" style="width:100%;height:700px;"></div>
+                <div id="map-projection-label" style="text-align:center;color:#6B7280;margin-top:8px"></div>
+                <!-- inline selection panel replaces debug panel -->
+                <div id="selection-panel-inline" style="display:block; margin-top:8px; background:#fff; color:#111; border:1px solid #e6eef8; padding:8px; border-radius:6px; font-size:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px">
+                        <strong>Selected songs</strong>
+                        <div>
+                            <button id="selection-clear" class="btn btn-ghost btn-sm">Clear all</button>
+                        </div>
+                    </div>
+                    <div id="selection-list"></div>
+                </div>
+            </section>
+        </div>
+    </div>
+</div>
+
+<script>
+async function fetchMap(n) {
+    const resp = await fetch(`/api/map?n=${encodeURIComponent(n)}`);
+    if (!resp.ok) throw new Error('Failed to fetch map: ' + resp.status);
+    return resp.json();
+}
+
+function topGenre(mood_vector) {
+    if (!mood_vector) return 'unknown';
+    try {
+        const parts = mood_vector.split(',');
+        let best = null;
+        for (const p of parts) {
+            if (!p.includes(':')) continue;
+            const [g,s] = p.split(':',2);
+            const sc = parseFloat(s)||0;
+            if (!best || sc > best[1]) best = [g.trim(), sc];
+        }
+        return best ? best[0] : 'unknown';
+    } catch(e) { return 'unknown'; }
+}
+
+function colorPaletteFor(genres) {
+    const base = ['#ff6b6b','#4ecdc4','#ffe66d','#a8e6cf','#ff8b94','#ffaaa5','#88d8b0','#ffd93d','#6c5ce7','#fdcb6e','#636e72','#00b894','#0984e3','#e84393','#00cec9'];
+    const map = {};
+    let i=0;
+    for (const g of genres) { map[g] = base[i % base.length]; i++; }
+    map['unknown'] = '#888888';
+    return map;
+}
+
+async function loadAndPlot(n) {
+    document.getElementById('map-status').textContent = 'Loading...';
+    try {
+        const data = await fetchMap(n);
+    const items = data.items || [];
+    // store last items and n for re-rendering full dataset
+    window._lastItems = items;
+    window._lastN = n;
+        document.getElementById('map-projection-label').textContent = data.projection || '';
+
+        // Build arrays and grouping
+        const genres = new Set();
+        const pts = items.map(it => {
+            const g = topGenre(it.mood_vector);
+            genres.add(g);
+            return { id: String(it.item_id), x: it.embedding_2d[0], y: it.embedding_2d[1], title: it.title, artist: it.artist, genre: g };
+        });
+    const genreList = Array.from(genres);
+        const colorMap = colorPaletteFor(genreList);
+    // expose color map and genre list for client-side filtering/toggling
+    window._colorMap = colorMap;
+    window._genreList = genreList;
+    window._hiddenGenres = window._hiddenGenres || new Set();
+
+        // Subsample large datasets for faster rendering while preserving mapping
+        // If using WebGL (scattergl) prefer to render the full set (no subsampling)
+        const MAX_DISPLAY = 40000;
+    // renderer is fixed to WebGL (scattergl)
+    const rendererVal = 'scattergl';
+        let displayPts = pts;
+        if (rendererVal !== 'scattergl' && !window._mapUseFull && pts.length > MAX_DISPLAY) {
+            const stride = Math.ceil(pts.length / MAX_DISPLAY);
+            displayPts = pts.filter((_, i) => (i % stride) === 0);
+            console.info(`Subsampling ${pts.length} -> ${displayPts.length} points (stride ${stride})`);
+        }
+
+        // Build a single trace with per-point color and customdata mapping using displayPts
+        const colors = displayPts.map(p => colorMap[p.genre] || '#888');
+    // include genre in hover text so hover shows [genre] title - artist
+    const texts = displayPts.map(p => `${p.genre} — ${p.title} - ${p.artist}`);
+        const ids = displayPts.map(p => p.id);
+
+        // marker options tuned for WebGL performance when rendering many points
+        const markerOpts = { size: 3, opacity: 0.85, line: { width: 0 }, symbol: 'circle' };
+
+        const traces = [{
+            x: displayPts.map(p => p.x),
+            y: displayPts.map(p => p.y),
+            text: texts,
+            customdata: ids,
+            ids: ids,
+            mode: 'markers',
+            type: 'scattergl',
+            marker: Object.assign({}, markerOpts, { color: colors }),
+            name: 'tracks'
+        }];
+
+    // expose mapping and points globally for handlers
+    // window._plotPoints should reflect the plotted points (displayPts) so pointNumber maps correctly
+    window._plotPointsFull = pts;
+    window._plotPoints = displayPts; // indexed array; pointNumber corresponds to index in this array
+    // click behavior: clicks always add the clicked point to the selection
+        window._plotTracePointIdMap = null; // not needed with single-trace customdata mapping
+
+    // render a compact, clickable legend manually (click genre to hide/show)
+    const legendDiv = document.getElementById('map-projection-label');
+    const legendHtml = genreList.slice(0,50).map(g => `<span class="genre-item" onclick="toggleGenre('${encodeURIComponent(g)}')" style="margin-right:8px;cursor:pointer"><span style="display:inline-block;width:12px;height:12px;background:${colorMap[g]};margin-right:6px;vertical-align:middle;border-radius:2px"></span>${g}</span>`).join('');
+    legendDiv.innerHTML = legendHtml;
+
+        const layout = {
+            hovermode: 'closest',
+            dragmode: 'lasso',
+            legend: { orientation: 'h' },
+            margin: { t: 8 }
+        };
+
+        // remove any leftover GUI 'selections' state that Plotly.react may choke on
+        const gd = document.getElementById('plot');
+        try { if (gd && gd.layout && gd.layout.selections) delete gd.layout.selections; } catch(e) {}
+
+    const LARGE = 30000;
+        // For very large datasets, prefer WebGL and newPlot for performance
+        if (pts.length > LARGE) {
+            // force WebGL renderer for large N
+            traces[0].type = 'scattergl';
+            // leave hover enabled so users can see genre/title/artist on hover
+            traces[0].hovertemplate = '%{text}<extra></extra>';
+            // reduce marker complexity further for very large N
+            traces[0].marker = Object.assign({}, traces[0].marker, { sizemode: 'area' });
+            // purge previous plot state to avoid GUI warnings
+            try { Plotly.purge(gd); } catch(e) {}
+            var plotPromise = Plotly.newPlot('plot', traces, layout, {responsive: true});
+        } else {
+            var plotPromise = Plotly.react('plot', traces, layout, {responsive: true});
+        }
+
+        plotPromise.then(() => {
+            const gd = document.getElementById('plot');
+            console.debug('Plotly.react finished. traces:', traces.length, 'points:', pts.length);
+            try {
+                if (gd && gd.data && gd.data[0] && gd.data[0].customdata) {
+                    console.debug('customdata sample:', gd.data[0].customdata.slice(0,10));
+                    if (gd.data[0].customdata.length !== pts.length) {
+                        console.warn('customdata length mismatch', gd.data[0].customdata.length, 'vs pts', pts.length);
+                    }
+                }
+            } catch(e) { console.warn('debug customdata failed', e); }
+            // reset selection state when a new plot loads
+            window._plotSelection = [];
+            // attach handlers to the freshly rendered plot to ensure events fire
+            // ensure dragmode is select/lasso so user can box/lasso select without changing toolbar
+            try { Plotly.relayout(gd, {dragmode: 'lasso'}); } catch(e) {}
+            attachPlotHandlers(gd);
+            // update status with customdata info
+            try {
+                const cdlen = (gd.data && gd.data[0] && gd.data[0].customdata) ? gd.data[0].customdata.length : 0;
+                document.getElementById('map-status').textContent = `Showing ${pts.length} songs — customdata ${cdlen}`;
+            } catch(e) {}
+        }).catch((e)=>{
+            console.warn('Plotly.react promise rejected', e);
+        });
+
+        // expose current count
+        document.getElementById('map-status').textContent = `Showing ${items.length} songs`;
+    } catch (e) {
+        console.error(e);
+        document.getElementById('map-status').textContent = 'Failed to load map';
+    }
+}
+
+// Toggle a genre's visibility. Called by clicks on the manual legend.
+function toggleGenre(encodedGenre) {
+    try {
+        const g = decodeURIComponent(encodedGenre);
+        window._hiddenGenres = window._hiddenGenres || new Set();
+        if (window._hiddenGenres.has(g)) window._hiddenGenres.delete(g); else window._hiddenGenres.add(g);
+        applyGenreFilterAndRerender();
+    } catch (e) { console.warn('toggleGenre failed', e); }
+}
+
+// Rebuild the displayed plot from the full points array applying hidden-genre filters
+function applyGenreFilterAndRerender() {
+    const ptsAll = window._plotPointsFull || [];
+    const hidden = window._hiddenGenres || new Set();
+    // filter out hidden genres
+    let pts = ptsAll.filter(p => !hidden.has(p.genre));
+    // respect subsampling policy: if not using scattergl and not _mapUseFull, subsample
+    const rendererVal = 'scattergl';
+    const MAX_DISPLAY = 40000;
+    if (rendererVal !== 'scattergl' && !window._mapUseFull && pts.length > MAX_DISPLAY) {
+        const stride = Math.ceil(pts.length / MAX_DISPLAY);
+        pts = pts.filter((_, i) => (i % stride) === 0);
+    }
+    // rebuild trace data
+    const colorMap = window._colorMap || {};
+    const colors = pts.map(p => colorMap[p.genre] || '#888');
+    // include genre in hover text so hover shows [genre] title - artist
+    const texts = pts.map(p => `${p.genre} — ${p.title} - ${p.artist}`);
+    const ids = pts.map(p => p.id);
+    const markerOpts = { size: 3, opacity: 0.85, line: { width: 0 }, symbol: 'circle' };
+    const trace = {
+        x: pts.map(p => p.x),
+        y: pts.map(p => p.y),
+        text: texts,
+        customdata: ids,
+        ids: ids,
+        mode: 'markers',
+        type: rendererVal === 'scattergl' ? 'scattergl' : 'scatter',
+        marker: Object.assign({}, markerOpts, { color: colors }),
+        name: 'tracks'
+    };
+    const LARGE = 30000;
+    const gd = document.getElementById('plot');
+    try { if (gd && gd.layout && gd.layout.selections) delete gd.layout.selections; } catch(e) {}
+    try {
+        if (pts.length > LARGE) {
+            trace.type = 'scattergl';
+            trace.hovertemplate = '%{text}<extra></extra>';
+            trace.marker = Object.assign({}, trace.marker, { sizemode: 'area' });
+            Plotly.purge(gd);
+            Plotly.newPlot('plot', [trace], { hovermode: 'closest', dragmode: 'lasso', legend:{orientation:'h'}, margin:{t:8} }, {responsive:true}).then(() => { attachPlotHandlers(gd); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`; });
+        } else {
+            Plotly.react('plot', [trace], { hovermode: 'closest', dragmode: 'lasso', legend:{orientation:'h'}, margin:{t:8} }, {responsive:true}).then(() => { attachPlotHandlers(gd); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`; });
+        }
+    } catch (e) { console.warn('applyGenreFilterAndRerender failed', e); }
+}
+
+document.getElementById('show-map').addEventListener('click', () => {
+    const n = parseInt(document.getElementById('n_songs').value) || 500;
+    loadAndPlot(Math.max(1, n));
+});
+
+// toggle-debug button removed; no-op
+
+// Render a selection panel listing selected songs with per-item REMOVE buttons
+function findPointById(id) {
+    id = String(id);
+    const full = window._plotPointsFull || [];
+    for (const p of full) if (String(p.id) === id) return p;
+    const partial = window._plotPoints || [];
+    for (const p of partial) if (String(p.id) === id) return p;
+    return null;
+}
+
+function renderSelectionPanel() {
+    const panel = document.getElementById('selection-panel-inline');
+    const list = document.getElementById('selection-list');
+    if (!panel || !list) return;
+    const sel = Array.from(new Set(window._plotSelection || []));
+    list.innerHTML = '';
+    if (sel.length === 0) {
+        list.innerHTML = '<div style="color:#666">No songs selected.</div>';
+    } else {
+        for (const id of sel) {
+            const p = findPointById(id) || { id: id, genre: 'unknown', title: '(unknown)', artist: '' };
+            const row = document.createElement('div');
+            row.className = 'selection-list-item';
+            const left = document.createElement('div');
+            left.innerHTML = `<span style="color:#666;margin-right:6px">[${p.genre}]</span> ${p.title} - ${p.artist}`;
+            const btn = document.createElement('button'); btn.className = 'btn btn-danger btn-sm'; btn.textContent = 'REMOVE'; btn.style.marginLeft = '8px'; btn.onclick = (()=>{
+                return function() { removeFromSelection(id); };
+            })();
+            row.appendChild(left);
+            row.appendChild(btn);
+            list.appendChild(row);
+        }
+    }
+    panel.style.display = 'block';
+}
+
+function removeFromSelection(id) {
+    const sel = window._plotSelection || [];
+    const idx = sel.indexOf(id);
+    if (idx !== -1) sel.splice(idx, 1);
+    window._plotSelection = sel;
+    renderSelectionPanel();
+    document.getElementById('map-status').textContent = `Selected ${ (window._plotSelection||[]).length } songs`;
+}
+
+// selection panel is always visible now. Attach global handler for Clear all so it always works
+try {
+    const clearBtnGlobal = document.getElementById('selection-clear');
+    if (clearBtnGlobal) clearBtnGlobal.onclick = () => { 
+        // clear selection and overlays (paths)
+        window._plotSelection = []; 
+        try { clearMapOverlays(); } catch(e) { /* ignore */ }
+        renderSelectionPanel(); 
+        document.getElementById('map-status').textContent = 'Selected 0 songs'; 
+    };
+} catch(e) { console.warn('attach global clear failed', e); }
+
+// toggle-select removed; dragmode is forced to 'lasso' on plot render
+
+document.getElementById('toggle-full').addEventListener('click', () => {
+    window._mapUseFull = !window._mapUseFull;
+    document.getElementById('toggle-full').textContent = window._mapUseFull ? 'Full (on)' : 'Full';
+    // re-render with previous n
+    const n = window._lastN || parseInt(document.getElementById('n_songs').value) || 500;
+    loadAndPlot(n);
+});
+
+// Refresh button clears overlays (paths) and selection but keeps the main track scatter
+document.getElementById('refresh-map').addEventListener('click', () => {
+    try {
+        clearMapOverlays();
+    } catch (e) { console.warn('refresh-map failed', e); }
+});
+
+// Click mode toggle: Add (default) vs Replace
+
+// Optional: load on open
+window.addEventListener('load', () => { loadAndPlot(500); });
+
+</script>
+
+<script>
+// Global Plotly event handlers: collect selection and clicks, robust mapping via customdata or trace->point map
+const plotElGlobal = document.getElementById('plot');
+function extractIdsFromPoints(points) {
+    const ids = [];
+    if (!points) return ids;
+    for (const p of points) {
+        console.debug('extractIdsFromPoints point:', p);
+        if (p.customdata !== undefined && p.customdata !== null) { ids.push(String(p.customdata)); continue; }
+        // check multiple index fields that different Plotly builds use
+        const idx = (p.pointIndex !== undefined) ? p.pointIndex : ((p.pointNumber !== undefined) ? p.pointNumber : (p.index !== undefined ? p.index : null));
+        if (idx !== null) {
+            // prefer data.customdata if present
+            if (p.data && p.data.customdata && p.data.customdata[idx] !== undefined && p.data.customdata[idx] !== null) {
+                ids.push(String(p.data.customdata[idx]));
+                continue;
+            }
+            // fallback to global points array
+            if (window._plotPoints && window._plotPoints[idx] && window._plotPoints[idx].id !== undefined) {
+                ids.push(String(window._plotPoints[idx].id));
+                continue;
+            }
+            // fallback to gd.data[0].customdata if available
+            try {
+                const gd = document.getElementById('plot');
+                if (gd && gd.data && gd.data[0] && gd.data[0].customdata && gd.data[0].customdata[idx] !== undefined) {
+                    ids.push(String(gd.data[0].customdata[idx]));
+                    continue;
+                }
+            } catch(e) { /* ignore */ }
+        }
+    }
+    if (ids.length === 0) console.debug('extractIdsFromPoints produced no ids for points', points);
+    return ids;
+}
+
+function attachPlotHandlers(gd) {
+    if (!gd) return;
+    try {
+        // detach previous handlers if present
+        if (gd._amy_handlers_attached) {
+            gd.removeAllListeners && gd.removeAllListeners();
+        }
+    } catch(e) { /* ignore */ }
+
+    // attach fresh handlers
+    try {
+        const bind = (type, fn) => {
+            if (typeof gd.on === 'function') {
+                gd.on(type, fn);
+            } else if (typeof gd.addEventListener === 'function') {
+                gd.addEventListener(type, fn);
+            } else if (window.Plotly && typeof window.Plotly.on === 'function') {
+                window.Plotly.on(gd, type, fn);
+            } else {
+                throw new Error('No supported event binding found on plot element');
+            }
+        };
+
+        bind('plotly_selected', (ev) => {
+            // Lasso/box selection should only ADD to the existing selection, never remove.
+            // Cap the number of items added at once to avoid UI/DOM overload (1000 per selection event)
+            console.debug('plotly_selected event (add-only, capped)', ev && ev.points && ev.points.length, ev);
+            const ids = extractIdsFromPoints(ev && ev.points).filter(Boolean);
+            if (!ids || ids.length === 0) return;
+            window._plotSelection = window._plotSelection || [];
+            const existingSet = new Set(window._plotSelection.map(String));
+            const MAX_ADD = 1000;
+            let added = 0;
+            const space = Math.max(0, MAX_ADD - window._plotSelection.length);
+            for (const id of ids) {
+                if (added >= space) break;
+                const sid = String(id);
+                if (!existingSet.has(sid)) {
+                    window._plotSelection.push(sid);
+                    existingSet.add(sid);
+                    added++;
+                }
+            }
+            if (ids.length > added) {
+                document.getElementById('map-status').textContent = `Selected ${window._plotSelection.length} songs (first ${added} added; selection capped at 1000)`;
+            } else {
+                document.getElementById('map-status').textContent = `Selected ${window._plotSelection.length} songs`;
+            }
+            updateSongPathButtonState();
+            // refresh inline panel so user sees newly added items
+            try { renderSelectionPanel(); } catch(e) { /* ignore */ }
+        });
+
+        bind('plotly_click', (ev) => {
+            console.debug('plotly_click event', ev && ev.points && ev.points[0], ev);
+            const pt = ev && ev.points && ev.points[0];
+            const ids = extractIdsFromPoints(pt ? [pt] : []);
+            if (!ids || ids.length === 0) return;
+            const id = String(ids[0]);
+            window._plotSelection = window._plotSelection || [];
+            // Always add clicked id to selection (do not remove/toggle here). Use inspect/remove to remove.
+            if (!window._plotSelection.includes(id)) window._plotSelection.push(id);
+            console.debug('toggled selection', id, window._plotSelection);
+            document.getElementById('map-status').textContent = `Selected ${window._plotSelection.length} songs`;
+            // enable/disable song-path button based on selection count
+            updateSongPathButtonState();
+            // refresh the inline selection panel so users see the change
+            try { renderSelectionPanel(); } catch (e) { /* ignore */ }
+        });
+
+        gd._amy_handlers_attached = true;
+    } catch (e) {
+        console.warn('attachPlotHandlers failed', e);
+    }
+}
+
+function updateSongPathButtonState() {
+    try {
+        const btn = document.getElementById('song-path-btn');
+        const count = (window._plotSelection || []).length;
+        if (!btn) return;
+        btn.disabled = !(count >= 2 && count <= 10);
+    } catch (e) { console.warn('updateSongPathButtonState failed', e); }
+}
+
+// Append songs (array of objects with id/title/artist) to selection list UI
+function appendSongsToSelectionPanel(songs) {
+    try {
+        window._plotSelection = window._plotSelection || [];
+        for (const s of songs) {
+            if (!s || !s.item_id) continue;
+            const sid = String(s.item_id);
+            if (!window._plotSelection.includes(sid)) window._plotSelection.push(sid);
+            // ensure minimal metadata is present in _plotPointsFull for display
+            window._plotPointsFull = window._plotPointsFull || [];
+            if (!window._plotPointsFull.find(p => String(p.id) === sid)) {
+                window._plotPointsFull.push({ id: sid, title: s.title || '(unknown)', artist: s.author || s.artist || '', x: (s.embedding_2d && s.embedding_2d[0]) || undefined, y: (s.embedding_2d && s.embedding_2d[1]) || undefined, genre: s.mood_vector ? topGenre(s.mood_vector) : 'unknown' });
+            }
+        }
+        renderSelectionPanel();
+    } catch (e) { console.warn('appendSongsToSelectionPanel failed', e); }
+}
+
+// Draw a polyline on the map for a path (array of items with embedding_2d or fallback coords)
+function drawPathOnMap(pathItems, color) {
+    try {
+        if (!pathItems || pathItems.length === 0) return;
+        const gd = document.getElementById('plot');
+        const xs = [];
+        const ys = [];
+        // Ensure we plot the path in the provided order, attempting multiple fallbacks to find coordinates
+        for (const it of pathItems) {
+            let x,y;
+            if (it.embedding_2d && it.embedding_2d.length >= 2) {
+                x = it.embedding_2d[0]; y = it.embedding_2d[1];
+            }
+            // try common aliases
+            if ((x === undefined || y === undefined) && (it.x !== undefined && it.y !== undefined)) {
+                x = it.x; y = it.y;
+            }
+            // fallback to searching plotted points by id
+            if ((x === undefined || y === undefined) && it.item_id !== undefined) {
+                const found = findPointById(it.item_id) || {};
+                if (found && found.x !== undefined && found.y !== undefined) { x = found.x; y = found.y; }
+            }
+            // as a last resort, try matching by id against _plotPointsFull entries
+            if ((x === undefined || y === undefined) && it.item_id !== undefined && window._plotPointsFull) {
+                const f = window._plotPointsFull.find(p => String(p.id) === String(it.item_id));
+                if (f && f.x !== undefined && f.y !== undefined) { x = f.x; y = f.y; }
+            }
+            if (x !== undefined && y !== undefined) { xs.push(x); ys.push(y); }
+            else {
+                // skip points without coordinates but keep order of others
+                console.debug('drawPathOnMap skipping point without coords', it && (it.item_id || it.id));
+            }
+        }
+        if (xs.length === 0) return;
+        // Build per-point fill colors and hover texts based on genre/title/artist
+        const colorMap = window._colorMap || {};
+        const fills = [];
+        const hovers = [];
+        const xs_used = [];
+        const ys_used = [];
+        // Build synchronized arrays only for points that have coordinates
+        for (let i = 0; i < pathItems.length; i++) {
+            const it = pathItems[i];
+            let x = undefined, y = undefined;
+            if (it.embedding_2d && it.embedding_2d.length >= 2) { x = it.embedding_2d[0]; y = it.embedding_2d[1]; }
+            if ((x === undefined || y === undefined) && it.x !== undefined && it.y !== undefined) { x = it.x; y = it.y; }
+            if ((x === undefined || y === undefined) && it.item_id !== undefined) {
+                const found = findPointById(it.item_id) || {};
+                if (found && found.x !== undefined && found.y !== undefined) { x = found.x; y = found.y; }
+            }
+            if ((x === undefined || y === undefined) && it.item_id !== undefined && window._plotPointsFull) {
+                const f = window._plotPointsFull.find(p => String(p.id) === String(it.item_id));
+                if (f && f.x !== undefined && f.y !== undefined) { x = f.x; y = f.y; }
+            }
+            if (x === undefined || y === undefined) {
+                console.debug('drawPathOnMap skipping point without coords for hover/marker', it && (it.item_id || it.id));
+                continue; // skip points without coords for plotting
+            }
+            xs_used.push(x); ys_used.push(y);
+
+            // determine genre fill
+            let genre = null;
+            try { if (it.mood_vector) genre = topGenre(it.mood_vector); } catch(e) {}
+            if (!genre && it.item_id) {
+                const fp = findPointById(it.item_id) || {};
+                if (fp && fp.genre) genre = fp.genre;
+            }
+            if (!genre) genre = 'unknown';
+            const fill = colorMap[genre] || color || '#888888';
+            fills.push(fill);
+
+            // hover text and displayed step number
+            const step = xs_used.length; // order among plotted coords
+            const title = (it.title || '') || (findPointById(it.item_id) || {}).title || '(unknown)';
+            const artist = (it.artist || it.author) || (findPointById(it.item_id) || {}).artist || '';
+            hovers.push(`Step ${step} — [${genre}] ${title} - ${artist}`);
+
+            // ensure metadata present in _plotPointsFull for selection listing
+            try {
+                if (it.item_id && window._plotPointsFull) {
+                    const sid = String(it.item_id);
+                    const present = window._plotPointsFull.find(p => String(p.id) === sid);
+                    if (!present) {
+                        window._plotPointsFull.push({ id: sid, title: title, artist: artist, x: x, y: y, genre: genre });
+                    }
+                }
+            } catch(e) {}
+        }
+
+        if (xs_used.length === 0) return;
+
+        // Line trace (black) as scattergl for performance
+        const lineTrace = {
+            x: xs_used,
+            y: ys_used,
+            mode: 'lines',
+            type: 'scattergl',
+            line: { color: 'black', width: 3 },
+            hoverinfo: 'none',
+            name: 'path-line'
+        };
+
+        // Markers as SVG scatter so they render on top and support text labels
+        const markerTrace = {
+            x: xs_used,
+            y: ys_used,
+            mode: 'markers',
+            type: 'scatter',
+            marker: { size: 12, color: fills, line: { color: 'black', width: 1.5 } },
+            hovertemplate: '%{customdata}<extra></extra>',
+            customdata: hovers,
+            name: 'path-markers'
+        };
+        try {
+            // add line then markers so markers are on top
+            Plotly.addTraces(gd, lineTrace);
+            Plotly.addTraces(gd, markerTrace);
+            // attempt to move the newly added traces to the end (top) if moveTraces available
+            try {
+                const total = gd.data.length;
+                // last two traces are the ones we added; ensure they are last
+                const lastIdx = total - 2;
+                const secondLastIdx = total - 1;
+                if (typeof Plotly.moveTraces === 'function') {
+                    // move lastIdx then secondLastIdx to the end
+                    Plotly.moveTraces(gd, lastIdx, total - 2);
+                    Plotly.moveTraces(gd, secondLastIdx, total - 1);
+                }
+            } catch(e) { /* non-fatal */ }
+        } catch(e) { console.warn('Plotly.addTraces failed', e); }
+    } catch (e) { console.warn('drawPathOnMap failed', e); }
+}
+
+// Remove all path traces and other overlays from the map, keep the main 'tracks' trace intact
+function clearMapOverlays() {
+    try {
+        const gd = document.getElementById('plot');
+        if (!gd || !gd.data) return;
+        // collect indices of traces to remove (named 'path' or with line mode but not the main tracks trace)
+        const removeIdx = [];
+        for (let i = 0; i < gd.data.length; i++) {
+            const t = gd.data[i];
+            if (!t) continue;
+            // keep the main tracks trace (name === 'tracks')
+            if (t.name === 'tracks') continue;
+            // remove traces explicitly named 'path' or traces that look like overlays (lines)
+            if (String(t.name).toLowerCase().includes('path') || (t.mode && t.mode.toString().toLowerCase().includes('line'))) {
+                removeIdx.push(i);
+            }
+        }
+        if (removeIdx.length > 0) {
+            try { Plotly.deleteTraces(gd, removeIdx); } catch(e) { console.warn('Plotly.deleteTraces failed', e); }
+        }
+        // clear selection and inline panel
+        window._plotSelection = [];
+        try { renderSelectionPanel(); } catch(e) { /* ignore */ }
+        document.getElementById('map-status').textContent = 'Map refreshed (overlays cleared)';
+    } catch (e) { console.warn('clearMapOverlays failed', e); }
+}
+
+// Do not attach handlers until a plot is rendered and attachPlotHandlers is called
+</script>
+
+<!-- debug button removed per user request -->
+
+<script src="/static/menu.js"></script>
+</body>
+</html>
+<script>
+        // Improved create-playlist response handling: parse response text safely and surface status
+        document.getElementById('create-playlist').onclick = async () => {
+            const sel = window._plotSelection || [];
+            if (sel.length === 0) { document.getElementById('map-status').textContent = 'No songs selected.'; return; }
+            document.getElementById('map-status').textContent = 'Creating playlist...';
+            try {
+            // filter out any undefined or null ids
+            const filtered = (sel || []).filter(id => id !== undefined && id !== null);
+            console.debug('Creating playlist with ids', filtered.slice(0,50));
+            const payload = { playlist_name: `Map selection ${new Date().toISOString()}`, track_ids: filtered };
+            const resp = await fetch('/api/create_playlist', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+                const text = await resp.text();
+                let json = null;
+                try { json = text ? JSON.parse(text) : null; } catch(e) { json = null; }
+                console.log('create_playlist response', resp.status, text, json);
+                if (resp.ok) document.getElementById('map-status').textContent = (json && (json.message || json.playlist_id)) ? (json.message || `Playlist created (${json.playlist_id})`) : 'Playlist created';
+                else document.getElementById('map-status').textContent = (json && (json.error || json.message)) ? (json.error || json.message) : `Create playlist failed (${resp.status})`;
+                // clear selection on success
+                if (resp.ok) window._plotSelection = [];
+            } catch (e) {
+                console.error('Create playlist failed', e);
+                document.getElementById('map-status').textContent = 'Create playlist failed';
+            }
+        };
+
+            // Song Path button: compute paths between selected songs (consecutive pairs)
+            document.getElementById('song-path-btn').onclick = async () => {
+                try {
+                    const sel = (window._plotSelection || []).slice(0, 10); // cap at 10
+                    if (!sel || sel.length < 2) { document.getElementById('map-status').textContent = 'Select at least 2 songs (max 10)'; return; }
+                    document.getElementById('map-status').textContent = 'Computing paths...';
+                    // For each consecutive pair, call /api/find_path?start_song_id=A&end_song_id=B&max_steps=25
+                    const allAppended = [];
+                    for (let i = 0; i < sel.length - 1; i++) {
+                        const a = sel[i];
+                        const b = sel[i+1];
+                        const params = new URLSearchParams({ start_song_id: a, end_song_id: b, max_steps: 25 });
+                        try {
+                            const resp = await fetch(`/api/find_path?${params}`);
+                            if (!resp.ok) {
+                                const err = await resp.json().catch(() => ({}));
+                                console.warn('find_path failed for', a, b, err);
+                                continue;
+                            }
+                            const data = await resp.json();
+                            if (data && Array.isArray(data.path) && data.path.length > 0) {
+                                // append these songs to inspect list and selection
+                                appendSongsToSelectionPanel(data.path);
+                                // draw the path on the map (use a color per segment)
+                                const color = `rgba(${(i*50)%255}, ${(150 + i*30)%255}, ${(200 - i*20 + 255)%255}, 0.85)`;
+                                drawPathOnMap(data.path, color);
+                                allAppended.push(...data.path.map(p => p.item_id));
+                            }
+                        } catch (e) {
+                            console.warn('Error fetching path for pair', a, b, e);
+                        }
+                    }
+                    document.getElementById('map-status').textContent = `Appended ${allAppended.length} songs from ${sel.length-1} paths`;
+                    renderSelectionPanel();
+                    updateSongPathButtonState();
+                } catch (e) {
+                    console.error('song-path failed', e);
+                    document.getElementById('map-status').textContent = 'Failed to compute song paths';
+                }
+            };
+</script>
