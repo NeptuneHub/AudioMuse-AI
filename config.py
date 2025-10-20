@@ -2,7 +2,7 @@
 import os
 
 # --- Media Server Type ---
-MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, mpd
+MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, mpd, emby
 
 # --- Jellyfin and DB Constants (Read from Environment Variables first) ---
 
@@ -11,6 +11,12 @@ JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "http://your_jellyfin_url:8096") #
 JELLYFIN_USER_ID = os.environ.get("JELLYFIN_USER_ID", "your_default_user_id")  # Replace with a suitable default or handle missing case
 JELLYFIN_TOKEN = os.environ.get("JELLYFIN_TOKEN", "your_default_token")  # Replace with a suitable default or handle missing case
 
+# EMBY_USER_ID and JELLYFIN_TOKEN come from a Kubernetes Secret
+EMBY_URL = os.environ.get("EMBY_URL", "http://embymediaserver:8096") # Replace with your default URL
+EMBY_USER_ID = os.environ.get("EMBY_USER_ID", "your_default_user_id")  # Replace with a suitable default or handle missing case
+EMBY_TOKEN = os.environ.get("EMBY_TOKEN", "your_default_token")  # Replace with a suitable default or handle missing case
+
+
 # NEW: Allow specifying music libraries/folders for analysis across all media servers.
 # Comma-separated list of library/folder names or paths. If empty, all music libraries/folders are scanned.
 # For Lyrion: Use folder paths like "/music/myfolder"  
@@ -18,6 +24,13 @@ JELLYFIN_TOKEN = os.environ.get("JELLYFIN_TOKEN", "your_default_token")  # Repla
 MUSIC_LIBRARIES = os.environ.get("MUSIC_LIBRARIES", "") 
 TEMP_DIR = "/app/temp_audio"  # Always use /app/temp_audio
 HEADERS = {"X-Emby-Token": JELLYFIN_TOKEN}
+
+if MEDIASERVER_TYPE == "jellyfin":
+    HEADERS = {"X-Emby-Token": JELLYFIN_TOKEN}
+elif MEDIASERVER_TYPE == "emby":
+    HEADERS = {"X-Emby-Token": EMBY_TOKEN}
+else:
+    HEADERS = {}
 
 # --- Navidrome (Subsonic API) Constants ---
 # These are used only if MEDIASERVER_TYPE is "navidrome".
