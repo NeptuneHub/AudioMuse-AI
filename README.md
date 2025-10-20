@@ -286,6 +286,11 @@ This are the default parameters on wich the analysis or clustering task will be 
 | `SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT`   | It enable the possibility of use the `MAX_SONGS_PER_ARTIST` also in similar song                                          | `true`          |
 | **Sonic Fingerprint General**               |                                                                                                                            |                 |
 | `SONIC_FINGERPRINT_NEIGHBORS`               | Default number of track for the sonic fingerprint                                                                         | `100`           |
+| **Song Alchemy General**                     |                                                                                                                            |                 |
+| `ALCHEMY_DEFAULT_N_RESULTS`                  | Number of similar songs to return when creating the Alchemy result (default).                                              | `100`           |
+| `ALCHEMY_MAX_N_RESULTS`                      | Maximum number of similar songs to return for Alchemy results.                                                             | `200`           |
+| `ALCHEMY_TEMPERATURE`                        | Temperature for probabilistic sampling in Song Alchemy (softmax temperature). Use `0.0` for deterministic selection.       | `1.0`           |
+| `ALCHEMY_SUBTRACT_DISTANCE`                  | Minimum distance from the subtract-centroid to keep a candidate (metric-dependent).                                         | `0.2`           |
 | **Similar Song and Song Path Duplicate filtering General** |                                                                                                            |                 |
 | `DUPLICATE_DISTANCE_THRESHOLD_COSINE`       | Less than this cosine distance the track is a duplicate.                                                                  | `0.01`          |
 | `DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN`    | Less than this euclidean distance the track is a duplicate.                                                               | `0.15`          |
