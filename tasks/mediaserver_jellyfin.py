@@ -349,11 +349,20 @@ def get_last_played_time(item_id, user_creds=None):
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     """Creates a new instant playlist on Jellyfin for a specific user."""
-    token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
-    if not token: raise ValueError("Jellyfin Token is required.")
-    
-    identifier = user_creds.get('user_identifier') if user_creds else config.JELLYFIN_USER_ID
-    if not identifier: raise ValueError("Jellyfin User Identifier is required.")
+    # Treat empty token ("") as not provided and fall back to admin token from config
+    token = config.JELLYFIN_TOKEN
+    if user_creds and isinstance(user_creds, dict) and user_creds.get('token'):
+        token = user_creds.get('token')
+    if not token:
+        # No token available even after fallback
+        raise ValueError("Jellyfin Token is required.")
+
+    # Treat empty user_identifier as not provided and fall back to admin user id
+    identifier = config.JELLYFIN_USER_ID
+    if user_creds and isinstance(user_creds, dict) and user_creds.get('user_identifier'):
+        identifier = user_creds.get('user_identifier')
+    if not identifier:
+        raise ValueError("Jellyfin User Identifier is required.")
 
     user_id = resolve_user(identifier, token)
     

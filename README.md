@@ -1,6 +1,6 @@
 ![GitHub license](https://img.shields.io/github/license/neptunehub/AudioMuse-AI.svg)
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/AudioMuse-AI?label=latest-tag)
-![Media Server Support: Jellyfin 10.10.7, Navidrome 0.58.0, LMS v3.69.0, Lyrion 9.0.2](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.10.7%2C%20Navidrome%200.58.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2-blue?style=flat-square&logo=server&logoColor=white)
+![Media Server Support: Jellyfin 10.10.7, Navidrome 0.58.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.10.7%2C%20Navidrome%200.58.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2-blue?style=flat-square&logo=server&logoColor=white)
 
 
 # **AudioMuse-AI - Let the choice happen, the open-source way** 
@@ -12,7 +12,7 @@
 
 AudioMuse-AI is an Open Source Dockerized environment that brings **automatic playlist generation** to your self-hosted music library. Using powerful tools like [Librosa](https://github.com/librosa/librosa) and [ONNX](https://onnx.ai/), it performs **sonic analysis** on your audio files locally, allowing you to curate the perfect playlist for any mood or occasion without relying on external APIs.
 
-Deploy it easily on your local machine with Docker Compose/Podman or scale it up in your Kubernetes cluster, with the support of **AMD64** and **ARM64** architecture. It integrate with API the main Music server like [Jellyfin](https://jellyfin.org), [Navidrome](https://www.navidrome.org/), [LMS](https://github.com/epoupon/lms/tree/master), [Lyrion](https://lyrion.org/) and many mores will come in the future.
+Deploy it easily on your local machine with Docker Compose/Podman or scale it up in your Kubernetes cluster, with the support of **AMD64** and **ARM64** architecture. It integrate with API the main Music server like [Jellyfin](https://jellyfin.org), [Navidrome](https://www.navidrome.org/), [LMS](https://github.com/epoupon/lms/tree/master), [Lyrion](https://lyrion.org/), [Emby](https://emby.media) and many mores will come in the future.
 
 AudioMuse-AI lets you explore your music library in innovative ways, just **start with an initial analysis**, and you’ll unlock features like:
 * **Clustering**: Automatically groups sonically similar songs, creating genre-defying playlists based on the music's actual sound.
@@ -31,6 +31,7 @@ More information, like **Frequently Asked Question (FAQ)** can be found in the [
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): **Experimental** Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
+> * Version 0.7.2-beta ad the new Song Map functionality to visualize your music. Also introduce the **experimental** support of Emby.
 > * Version 0.7.1-beta add the Song Alchemy functionality, create your playlist by blending together different song.
 > * Version 0.7.0-beta remove Tensorflow and use instead ONXX. This new version should have better result on different CPU and be also more stable between update. **IMPORTANT:** this new version will require a new analysis of the entire library to work correctly.
 > * Version 0.6.9-beta introduce the support to Lyrion Music Server.
@@ -137,14 +138,13 @@ AudioMuse-AI provides Docker Compose files for different media server backends:
 - **Jellyfin**: Use `deployment/docker-compose.yaml`
 - **Navidrome**: Use `deployment/docker-compose-navidrome.yaml`
 - **Lyrion**: Use `deployment/docker-compose-lyrion.yaml`
+- **Emby**: Use `deployment/docker-compose-emby.yaml`
 
 Choose the appropriate file based on your media server setup.
 
-For a quick local setup or for users not using Kubernetes, a `docker-compose.yaml` file is provided in the `deployment/` directory for interacting with **Jellyfin**. `docker-compose-navidrome.yaml` is instead pre-compiled to interact with **Navidrome** or other Subsonic API based Mediaserver. Finally `docker-compose-lyrion.yaml` is precompiled for Lyrion.
-
 **Prerequisites:**
 *   Docker and Docker Compose installed.
-*   `Jellyfin` or `Navidrome` or `Lyrion` installed.
+*   `Jellyfin` or `Navidrome` or `Lyrion` or `Emby` installed.
 *   Respect the [hardware requirements](#hardware-requirements)
 
 **Steps:**
