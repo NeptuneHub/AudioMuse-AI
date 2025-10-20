@@ -12,7 +12,8 @@ REQUESTS_TIMEOUT = 300
 # ##############################################################################
 # EMBY IMPLEMENTATION
 # ##############################################################################
-
+# Accessing the API is via http[s]://hostname:port/emby/{apipath}
+# https://dev.emby.media/doc/restapi/index.html
 def _get_target_library_ids():
     """
     Parses config for library names and returns their IDs for filtering using a robust,
@@ -25,12 +26,18 @@ def _get_target_library_ids():
 
     target_names_lower = {name.strip().lower() for name in library_names_str.split(',') if name.strip()}
 
-    # Use the /Library/VirtualFolders endpoint as it provides the canonical system configuration.
-    url = f"{config.EMBY_URL}/Library/VirtualFolders"
+    # Compatible with Emby GET /Library/VirtualFolders API (returns a list, not a dict).
+    # https://dev.emby.media/reference/RestAPI/LibraryStructureService/getLibraryVirtualfoldersQuery.html
+    url = f"{config.EMBY_URL}/emby/Library/VirtualFolders"
     try:
         r = requests.get(url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
+
+        # Emby returns a top-level list of virtual folders
         all_libraries = r.json()
+        if not isinstance(all_libraries, list):
+            logger.warning(f"Unexpected response type from Emby: {type(all_libraries)} — expected a list.")
+            all_libraries = []
 
         # Build a case-insensitive map: lowercase_name -> {'name': OriginalCaseName, 'id': ItemId}
         library_map = {
@@ -72,8 +79,12 @@ def _get_target_library_ids():
 
 
 def _emby_get_users(token):
+    # this is fully compatble with Emby. no need to change
+    # https://dev.emby.media/reference/RestAPI/UserService/getUsersQuery.html
     """Fetches a list of all users from Emby using a provided token."""
-    url = f"{config.EMBY_URL}/Users"
+    url = f"{config.EMBY_URL}/emby/Users"
+    #this endpoint is fully compatble with Emby. no need to change
+    #https://dev.emby.media/reference/RestAPI/UserService/getUsersQuery.html
     headers = {"X-Emby-Token": token}
     try:
         r = requests.get(url, headers=headers, timeout=REQUESTS_TIMEOUT)
@@ -122,7 +133,10 @@ def get_comprehensive_music_discovery(limit=0):
     """
     return get_recent_music_items(limit)
 
-def _get_recent_standalone_tracks(limit, target_library_ids=None):
+def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=None):
+    # this is is compatble with Emby
+    # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
+    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     """
     Fetches recent standalone audio tracks that are not properly organized in albums.
     This captures orphaned tracks, loose files, and tracks with missing album metadata.
@@ -140,7 +154,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None):
         start_index = 0
         page_size = 500
         while True:
-            url = f"{config.EMBY_URL}/Users/{config.EMBY_USER_ID}/Items"
+            url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
             params = {
                 "IncludeItemTypes": "Audio", "SortBy": "DateCreated", "SortOrder": "Descending",
                 "Recursive": True, "Limit": page_size, "StartIndex": start_index,
@@ -166,7 +180,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None):
                     else:
                         # Check if parent is actually an album (not just a folder)
                         try:
-                            parent_url = f"{config.EMBY_URL}/Users/{config.EMBY_USER_ID}/Items/{parent_id}"
+                            parent_url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items/{parent_id}"
                             parent_r = requests.get(parent_url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
                             if parent_r.ok:
                                 parent_info = parent_r.json()
@@ -197,7 +211,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None):
             start_index = 0
             page_size = 500
             while True:
-                url = f"{config.EMBY_URL}/Users/{config.EMBY_USER_ID}/Items"
+                url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
                 params = {
                     "IncludeItemTypes": "Audio", "SortBy": "DateCreated", "SortOrder": "Descending",
                     "Recursive": True, "Limit": page_size, "StartIndex": start_index,
@@ -222,7 +236,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None):
                         else:
                             # Check if parent is actually an album
                             try:
-                                parent_url = f"{config.EMBY_URL}/Users/{config.EMBY_USER_ID}/Items/{parent_id}"
+                                parent_url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items/{parent_id}"
                                 parent_r = requests.get(parent_url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
                                 if parent_r.ok:
                                     parent_info = parent_r.json()
@@ -254,11 +268,14 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None):
     
     return all_tracks
 
-def _get_recent_albums_only(limit):
+def _get_recent_albums_only(limit, user_creds=None):
+    # this is is compatble with Emby
+    # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     """
     Original implementation: Fetches ONLY albums from Emby (no standalone tracks).
     This is kept as a separate function in case the original behavior is needed.
     """
+    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     target_library_ids = _get_target_library_ids()
     
     # Case 1: Config is set, but no matching libraries were found. Scan nothing.
@@ -276,7 +293,7 @@ def _get_recent_albums_only(limit):
         page_size = 500
         while True:
             # We fetch full pages and apply the limit only after collecting and sorting.
-            url = f"{config.EMBY_URL}/Users/{config.EMBY_USER_ID}/Items"
+            url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
             params = {
                 "IncludeItemTypes": "MusicAlbum", "SortBy": "DateCreated", "SortOrder": "Descending",
                 "Recursive": True, "Limit": page_size, "StartIndex": start_index
@@ -306,7 +323,7 @@ def _get_recent_albums_only(limit):
             start_index = 0
             page_size = 500
             while True: # Paginate through the current library
-                url = f"{config.EMBY_URL}/Users/{config.EMBY_USER_ID}/Items"
+                url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
                 params = {
                     "IncludeItemTypes": "MusicAlbum", "SortBy": "DateCreated", "SortOrder": "Descending",
                     "Recursive": True, "Limit": page_size, "StartIndex": start_index,
@@ -386,15 +403,18 @@ def get_recent_music_items(limit):
     
     return all_items
 
-def get_tracks_from_album(album_id):
+def get_tracks_from_album(album_id, user_creds=None):
+    # this is fully compatble with Emby. no need to change
+    # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     """Fetches all audio tracks for a given album ID from Emby using admin credentials."""
     # Check if this is a pseudo-album for a standalone track
+    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     if str(album_id).startswith('standalone_'):
         # Extract the real track ID from the pseudo-album ID
         real_track_id = album_id.replace('standalone_', '')
         
         # Get the track directly by its ID
-        url = f"{config.EMBY_URL}/Users/{config.EMBY_USER_ID}/Items/{real_track_id}"
+        url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items/{real_track_id}"
         try:
             r = requests.get(url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
             r.raise_for_status()
@@ -410,7 +430,7 @@ def get_tracks_from_album(album_id):
             return []
     
     # Normal album handling
-    url = f"{config.EMBY_URL}/Users/{config.EMBY_USER_ID}/Items"
+    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
     params = {"ParentId": album_id, "IncludeItemTypes": "Audio"}
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
@@ -429,10 +449,12 @@ def get_tracks_from_album(album_id):
 
 def download_track(temp_dir, item):
     """Downloads a single track from Emby using admin credentials."""
+    # this is fully compatble with Emby. no need to change
+    # https://dev.emby.media/reference/RestAPI/LibraryService/getItemsByIdDownload.html
     try:
         track_id = item['Id']
         file_extension = os.path.splitext(item.get('Path', ''))[1] or '.tmp'
-        download_url = f"{config.EMBY_URL}/Items/{track_id}/Download"
+        download_url = f"{config.EMBY_URL}/emby/Items/{track_id}/Download"
         local_filename = os.path.join(temp_dir, f"{track_id}{file_extension}")
         with requests.get(download_url, headers=config.HEADERS, stream=True, timeout=REQUESTS_TIMEOUT) as r:
             r.raise_for_status()
@@ -462,51 +484,134 @@ def _select_best_artist(item, title="Unknown"):
     
     return track_artist
 
-def get_all_songs():
+def get_all_songs(user_creds=None):
+    # Emby might have a maximum number of items returned per request.
+    # not sure if this approach would work.. It defnitly needs testing.
     """Fetches all songs from Emby using admin credentials."""
-    url = f"{config.EMBY_URL}/Users/{config.EMBY_USER_ID}/Items"
-    params = {"IncludeItemTypes": "Audio", "Recursive": True}
-    try:
-        r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
-        r.raise_for_status()
-        items = r.json().get("Items", [])
-        
-        # Apply artist field prioritization to each item
-        for item in items:
-            title = item.get('Name', 'Unknown')
-            item['AlbumArtist'] = _select_best_artist(item, title)
-        
-        return items
-    except Exception as e:
-        logger.error(f"Emby get_all_songs failed: {e}", exc_info=True)
-        return []
+    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
+    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+    all_items = []
+    start_index = 0
+    limit = 1000  # max items per request
 
-def get_playlist_by_name(playlist_name):
+    while True:
+        params = {
+            "IncludeItemTypes": "Audio",
+            "Recursive": True,
+            "StartIndex": start_index,
+            "Limit": limit,
+            "Fields": "UserData,Path"
+        }
+        try:
+            r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+            r.raise_for_status()
+            items = r.json().get("Items", [])
+            
+            # Apply artist field prioritization
+            for item in items:
+                title = item.get('Name', 'Unknown')
+                item['AlbumArtist'] = _select_best_artist(item, title)
+
+            all_items.extend(items)
+
+            if len(items) < limit:
+                # No more items left
+                break
+
+            start_index += limit
+        except Exception as e:
+            logger.error(f"Emby get_all_songs failed at index {start_index}: {e}", exc_info=True)
+            break
+
+    return all_items
+
+def get_playlist_by_name(playlist_name, user_creds=None):
     """Finds a Emby playlist by its exact name using admin credentials."""
-    url = f"{config.EMBY_URL}/Users/{config.EMBY_USER_ID}/Items"
-    params = {"IncludeItemTypes": "Playlist", "Recursive": True, "Name": playlist_name}
+    # this is mostly compatble with emby
+    # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
+    # The Name parameter will be ignored by Emby, so your function may return all playlists instead of filtering by name.
+    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
+    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+    params = {"IncludeItemTypes": "Playlist", "Recursive": True}
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         playlists = r.json().get("Items", [])
-        return playlists[0] if playlists else None
+
+        # Filter manually by name (case-sensitive exact match)
+        for playlist in playlists:
+            if playlist.get("Name") == playlist_name:
+                return playlist
+        
+        return None  # Not found
+    
     except Exception as e:
         logger.error(f"Emby get_playlist_by_name failed for '{playlist_name}': {e}", exc_info=True)
         return None
 
-def create_playlist(base_name, item_ids):
-    """Creates a new playlist on Emby using admin credentials."""
-    url = f"{config.EMBY_URL}/Playlists"
-    body = {"Name": base_name, "Ids": item_ids, "UserId": config.EMBY_USER_ID}
-    try:
-        r = requests.post(url, headers=config.HEADERS, json=body, timeout=REQUESTS_TIMEOUT)
-        if r.ok: logger.info("✅ Created Emby playlist '%s'", base_name)
-    except Exception as e:
-        logger.error("Exception creating Emby playlist '%s': %s", base_name, e, exc_info=True)
+def create_playlist(playlist_name, item_ids, user_creds=None):
+    """
+    Creates a new instant playlist on Emby for a specific user.
+    Handles empty tokens by falling back to the default config token.
+    """
+    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
+    token = (user_creds.get('token') if user_creds else None) or config.EMBY_TOKEN
+    if not token:
+        raise ValueError("Emby Token is required and could not be found.")
+    if not user_id:
+        raise ValueError("Emby User Identifier is required and could not be found.")
 
-def get_all_playlists():
+    try:
+        # Build playlist name according to convention
+        final_playlist_name = f"{playlist_name.strip()}"
+
+        # Construct the API endpoint — note the use of query parameters,
+        # not JSON payload, per Emby API spec
+        #
+        # Correct format:
+        # POST /emby/Playlists?Name={name}&Ids={id1,id2}&UserId={userId}&MediaType={mediaType}
+        # https://dev.emby.media/doc/restapi/Playlists.html
+        # https://dev.emby.media/reference/RestAPI/PlaylistService/postPlaylists.html
+
+        
+        ids_param = ",".join(item_ids) if isinstance(item_ids, (list, set, tuple)) else str(item_ids)
+        url = (
+            f"{config.EMBY_URL}/emby/Playlists"
+            f"?Name={requests.utils.quote(final_playlist_name)}"
+            f"&Ids={requests.utils.quote(ids_param)}"
+            f"&UserId={user_id}"
+            f"&MediaType=Audio"
+        )
+
+        headers = {"X-Emby-Token": token}
+
+        # No JSON body should be sent — Emby expects query parameters only
+        r = requests.post(url, headers=headers, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+
+        logger.info("Successfully created playlist '%s' for user %s.", final_playlist_name, user_id)
+        return r.json()
+
+    except requests.exceptions.RequestException as e:
+        logger.error(
+            "HTTP Exception creating Emby playlist '%s' for user %s: %s",
+            playlist_name, user_id, e, exc_info=True
+        )
+        return None
+
+    except Exception as e:
+        logger.error(
+            "Generic exception creating Emby playlist '%s' for user %s: %s",
+            playlist_name, user_id, e, exc_info=True
+        )
+        return None
+
+def get_all_playlists(user_creds=None):
     """Fetches all playlists from Emby using admin credentials."""
-    url = f"{config.EMBY_URL}/Users/{config.EMBY_USER_ID}/Items"
+    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
+    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+    # this is still compatble with Emby. no need to change
+    # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     params = {"IncludeItemTypes": "Playlist", "Recursive": True}
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
@@ -517,10 +622,18 @@ def get_all_playlists():
         return []
 
 def delete_playlist(playlist_id):
-    """Deletes a playlist on Emby using admin credentials."""
-    url = f"{config.EMBY_URL}/Items/{playlist_id}"
+    """
+    Deletes a playlist on Emby using admin credentials.
+
+    Changes made:
+    - Uses POST instead of DELETE (Emby expects POST for /Items/Delete)
+    - Sends the playlist ID as a query parameter 'Ids' instead of in the URL path
+    """
+    url = f"{config.EMBY_URL}/emby/Items/Delete"  # endpoint for deleting items
+    # https://dev.emby.media/reference/RestAPI/LibraryService/postItemsDelete.html
+    params = {"Ids": playlist_id}                 # send the playlist ID as query parameter
     try:
-        r = requests.delete(url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
+        r = requests.post(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         return True
     except Exception as e:
@@ -534,7 +647,9 @@ def get_top_played_songs(limit, user_creds=None):
     token = user_creds.get('token') if user_creds else config.EMBY_TOKEN
     if not user_id or not token: raise ValueError("Emby User ID and Token are required.")
 
-    url = f"{config.EMBY_URL}/Users/{user_id}/Items"
+    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+    # this Endpoint is compatble with Emby. no need to change
+    # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     headers = {"X-Emby-Token": token}
     params = {"IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path"}
     try:
@@ -558,7 +673,9 @@ def get_last_played_time(item_id, user_creds=None):
     token = user_creds.get('token') if user_creds else config.EMBY_TOKEN
     if not user_id or not token: raise ValueError("Emby User ID and Token are required.")
 
-    url = f"{config.EMBY_URL}/Users/{user_id}/Items/{item_id}"
+    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items/{item_id}"
+    # this Endpoint is compatble with Emby. no need to change
+    # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     headers = {"X-Emby-Token": token}
     params = {"Fields": "UserData"}
     try:
@@ -570,34 +687,60 @@ def get_last_played_time(item_id, user_creds=None):
         return None
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
+    # is this duplicate of create_playlist?
     """
     Creates a new instant playlist on Emby for a specific user.
     Handles empty tokens by falling back to the default config token.
     """
+    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     token = (user_creds.get('token') if user_creds else None) or config.EMBY_TOKEN
     if not token:
         raise ValueError("Emby Token is required and could not be found.")
-
-    identifier = (user_creds.get('user_identifier') if user_creds else None) or config.EMBY_USER_ID
-    if not identifier:
-        raise ValueError("Emby User Identifier is required and could not be found.")
+    if not user_id:
+        raise ValueError("Emby User user_id is required and could not be found.")
 
     try:
-        user_id = resolve_user(identifier, token)
-        
+        # Build playlist name according to convention
         final_playlist_name = f"{playlist_name.strip()}_instant"
-        url = f"{config.EMBY_URL}/Playlists"
-        headers = {"X-Emby-Token": token}
-        body = {"Name": final_playlist_name, "Ids": item_ids, "MediaType": "Audio"}
 
-        r = requests.post(url, headers=headers, json=body, timeout=REQUESTS_TIMEOUT)
+        # Construct the API endpoint — note the use of query parameters,
+        # not JSON payload, per Emby API spec
+        #
+        # Correct format:
+        # POST /emby/Playlists?Name={name}&Ids={id1,id2}&UserId={userId}&MediaType={mediaType}
+        # https://dev.emby.media/doc/restapi/Playlists.html
+        # https://dev.emby.media/reference/RestAPI/PlaylistService/postPlaylists.html
+
+        
+        ids_param = ",".join(item_ids) if isinstance(item_ids, (list, set, tuple)) else str(item_ids)
+        url = (
+            f"{config.EMBY_URL}/emby/Playlists"
+            f"?Name={requests.utils.quote(final_playlist_name)}"
+            f"&Ids={requests.utils.quote(ids_param)}"
+            f"&UserId={user_id}"
+            f"&MediaType=Audio"
+        )
+
+        headers = {"X-Emby-Token": token}
+
+        # ✅ 5. No JSON body should be sent — Emby expects query parameters only
+        r = requests.post(url, headers=headers, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
+
         logger.info("Successfully created playlist '%s' for user %s.", final_playlist_name, user_id)
         return r.json()
+
     except requests.exceptions.RequestException as e:
-        logger.error("HTTP Exception creating Emby playlist '%s' for user %s: %s", playlist_name, user_id, e, exc_info=True)
+        logger.error(
+            "HTTP Exception creating Emby playlist '%s' for user %s: %s",
+            playlist_name, user_id, e, exc_info=True
+        )
         return None
+
     except Exception as e:
-        logger.error("Generic exception creating Emby playlist '%s' for user %s: %s", playlist_name, user_id, e, exc_info=True)
+        logger.error(
+            "Generic exception creating Emby playlist '%s' for user %s: %s",
+            playlist_name, user_id, e, exc_info=True
+        )
         return None
 
