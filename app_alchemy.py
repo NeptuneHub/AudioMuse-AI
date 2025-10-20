@@ -22,6 +22,8 @@ def alchemy_api():
     payload = request.get_json() or {}
     items = payload.get('items', [])
     n = payload.get('n', config.ALCHEMY_DEFAULT_N_RESULTS)
+    # Temperature parameter for probabilistic sampling (softmax temperature)
+    temperature = payload.get('temperature', config.ALCHEMY_TEMPERATURE)
 
     add_ids = [i['id'] for i in items if i.get('op', '').upper() == 'ADD']
     sub_ids = [i['id'] for i in items if i.get('op', '').upper() == 'SUBTRACT']
@@ -29,7 +31,7 @@ def alchemy_api():
     # Allow optional override for subtract distance (from frontend slider)
     subtract_distance = payload.get('subtract_distance')
     try:
-        results = song_alchemy(add_ids, sub_ids, n_results=n, subtract_distance=subtract_distance)
+        results = song_alchemy(add_ids, sub_ids, n_results=n, subtract_distance=subtract_distance, temperature=temperature)
         # song_alchemy now returns a dict with results, filtered_out and centroid projections
         return jsonify(results)
     except ValueError as e:

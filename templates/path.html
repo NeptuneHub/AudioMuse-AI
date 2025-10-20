@@ -117,6 +117,7 @@
                         <button id="view-progression-btn" class="active">Path Progression</button>
                         <button id="view-range-btn">Feature Range</button>
                         <button id="view-diff-btn">Feature Difference</button>
+                        <button id="view-2d-btn">2D Path</button>
                     </div>
                     <canvas id="path-graph"></canvas>
                 </div>
@@ -148,6 +149,7 @@
             let pathChart = null;
             let currentPathData = [];
             let pathDistanceMetric = 'euclidean'; // Default value
+            let mapIdToCoord = {}; // cache of id -> [x,y] from /api/map
 
             // --- Fetch config to get the distance metric ---
             try {
@@ -519,6 +521,94 @@
                 };
             };
             
+            // Render a 2D path using DB precomputed coords when available, falling back to first two embedding dims
+            const render2DPathChart = (pathData) => {
+                // Build points in exact path order
+                const points = pathData.map(track => {
+                    const id = String(track.item_id);
+                    let coord = mapIdToCoord[id];
+                    if (coord && Array.isArray(coord) && coord.length >= 2) {
+                        return { x: coord[0], y: coord[1], title: track.title, author: track.author };
+                    }
+                    // Fallback to first two elements of embedding_vector
+                    if (track.embedding_vector && track.embedding_vector.length >= 2) {
+                        return { x: track.embedding_vector[0], y: track.embedding_vector[1], title: track.title, author: track.author };
+                    }
+                    // If no coords available, return null placeholder
+                    return null;
+                }).filter(p => p !== null);
+
+                if (points.length === 0) return null;
+
+                // Find extent for autoscaling
+                const xs = points.map(p => p.x);
+                const ys = points.map(p => p.y);
+                const minX = Math.min(...xs);
+                const maxX = Math.max(...xs);
+                const minY = Math.min(...ys);
+                const maxY = Math.max(...ys);
+
+                // prepare per-point colors: start=green, end=red, others=blue
+                const bgColors = points.map((_, i) => {
+                    if (i === 0) return 'rgba(16, 185, 129, 0.95)'; // green
+                    if (i === points.length - 1) return 'rgba(239, 68, 68, 0.95)'; // red
+                    return 'rgba(54, 162, 235, 0.8)'; // blue
+                });
+
+                return {
+                    type: 'scatter',
+                    data: {
+                        datasets: [
+                            {
+                                label: 'Path Points',
+                                data: points.map((p, i) => ({ x: p.x, y: p.y, step: i + 1, title: p.title, author: p.author })),
+                                backgroundColor: bgColors,
+                                borderColor: 'rgba(54, 162, 235, 0.9)',
+                                pointRadius: 6,
+                                showLine: true,
+                                fill: false,
+                                tension: 0.0,
+                                borderWidth: 2,
+                                pointHoverRadius: 8
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: { display: false },
+                            title: { display: true, text: '2D Path (DB map coords preferred)' },
+                            tooltip: {
+                                callbacks: {
+                                    title: (items) => {
+                                        // items is an array of tooltip items; read data from dataset.data[dataIndex]
+                                        const item = items[0];
+                                        const ds = item.dataset;
+                                        const d = ds.data[item.dataIndex];
+                                        return `Step ${d.step}: ${d.title || 'N/A'} by ${d.author || 'N/A'}`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                type: 'linear',
+                                title: { display: true, text: 'X' },
+                                min: minX - (Math.abs(maxX - minX) * 0.05 || 1),
+                                max: maxX + (Math.abs(maxX - minX) * 0.05 || 1)
+                            },
+                            y: {
+                                type: 'linear',
+                                title: { display: true, text: 'Y' },
+                                min: minY - (Math.abs(maxY - minY) * 0.05 || 1),
+                                max: maxY + (Math.abs(maxY - minY) * 0.05 || 1)
+                            }
+                        }
+                    }
+                };
+            };
+            
             const updateChartView = (view = 'progression') => {
                 if (pathChart) pathChart.destroy();
                 if (currentPathData.length === 0) return;
@@ -530,6 +620,9 @@
                         break;
                     case 'range':
                         chartConfig = renderRangeChart(currentPathData);
+                        break;
+                    case '2d':
+                        chartConfig = render2DPathChart(currentPathData);
                         break;
                     case 'progression':
                     default:
@@ -551,6 +644,7 @@
             viewProgressionBtn.addEventListener('click', () => updateChartView('progression'));
             viewRangeBtn.addEventListener('click', () => updateChartView('range'));
             viewDiffBtn.addEventListener('click', () => updateChartView('difference'));
+            document.getElementById('view-2d-btn').addEventListener('click', () => updateChartView('2d'));
 
             pathForm.addEventListener('submit', async function (event) {
                 event.preventDefault();
@@ -594,11 +688,30 @@
                     currentPathData = data.path;
                     currentTrackIds = currentPathData.map(track => track.item_id);
 
-                    if (currentPathData.every(track => track.embedding_vector && track.embedding_vector.length > 0)) {
-                        updateChartView('progression');
+                    // Attempt to fetch the precomputed map projection and build an id->coord map
+                    try {
+                        const respMap = await fetch('/api/map?n=2000');
+                        if (respMap.ok) {
+                            const mapData = await respMap.json();
+                            if (mapData && Array.isArray(mapData.items)) {
+                                mapIdToCoord = {};
+                                mapData.items.forEach(it => {
+                                    if (it && it.item_id && it.embedding_2d) {
+                                        mapIdToCoord[String(it.item_id)] = it.embedding_2d;
+                                    }
+                                });
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('Failed to fetch map projection for path visualization', e);
+                    }
+
+                    // Show 2D path using DB coords when available, else fallback to embedding_vector dims
+                    if (currentPathData.every(track => (mapIdToCoord[String(track.item_id)] || (track.embedding_vector && track.embedding_vector.length > 1)))) {
+                        updateChartView('2d');
                         graphContainer.classList.remove('hidden');
                     } else {
-                        console.warn("Graph not rendered because songs are missing embedding vectors.");
+                        console.warn("Graph not rendered because songs are missing embedding vectors or map coords.");
                     }
                     
                     const embeddingMin = -20;

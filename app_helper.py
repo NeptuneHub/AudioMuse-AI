@@ -25,10 +25,12 @@ from config import DATABASE_URL, REDIS_URL
 from rq.command import send_stop_job_command
 
 logger = logging.getLogger(__name__)
-
 # Import app object after it's defined to break circular dependency
 # Avoid importing the Flask `app` object here to prevent circular imports.
 # Use the module-level `logger` defined above for logging instead of `app.logger`.
+
+# In-memory cache for the precomputed 2D map projection (optional)
+MAP_PROJECTION_CACHE = None
 
 # --- Constants ---
 MAX_LOG_ENTRIES_STORED = 10 # Max number of recent log entries to store in the database per task
@@ -89,6 +91,8 @@ def init_db():
         if not cur.fetchone()[0]: cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
         # Create 'voyager_index_data' table
         cur.execute("CREATE TABLE IF NOT EXISTS voyager_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        # Create 'map_projection_data' table for precomputed 2D map projections
+        cur.execute("CREATE TABLE IF NOT EXISTS map_projection_data (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         db.commit()
 
 # --- Status Constants ---
@@ -410,6 +414,132 @@ def get_score_data_by_ids(item_ids_list):
     finally:
         cur.close()
     return [dict(row) for row in rows]
+
+
+def save_map_projection(index_name, id_map, projection_array):
+    """
+    Save a precomputed 2D projection into the map_projection_data table.
+    projection_array: numpy array of shape (N,2), dtype=float32
+    id_map: JSON-serializable list/dict mapping rows to item_ids
+    """
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        blob = projection_array.astype(np.float32).tobytes()
+        id_map_json = json.dumps(id_map)
+        cur.execute("""
+            INSERT INTO map_projection_data (index_name, projection_data, id_map_json, embedding_dimension)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (index_name) DO UPDATE SET projection_data = EXCLUDED.projection_data, id_map_json = EXCLUDED.id_map_json, embedding_dimension = EXCLUDED.embedding_dimension, created_at = NOW()
+        """, (index_name, psycopg2.Binary(blob), id_map_json, projection_array.shape[1] if projection_array.ndim == 2 else 0))
+        conn.commit()
+        try:
+            size_bytes = len(blob)
+            id_count = len(id_map) if hasattr(id_map, '__len__') else None
+            logger.info(f"Saved map projection '{index_name}' to DB: {size_bytes} bytes, ids={id_count}")
+        except Exception:
+            # non-critical logging error
+            logger.debug("Saved map projection but failed to compute size/id_count for log.")
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to save map projection: {e}")
+        raise
+    finally:
+        cur.close()
+
+
+def load_map_projection(index_name):
+    """Load precomputed projection from DB. Returns (id_map, numpy_array) or (None, None)"""
+    global MAP_PROJECTION_CACHE
+    # Try cache first
+    if MAP_PROJECTION_CACHE and MAP_PROJECTION_CACHE.get('index_name') == index_name:
+        return MAP_PROJECTION_CACHE.get('id_map'), MAP_PROJECTION_CACHE.get('projection')
+
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT projection_data, id_map_json FROM map_projection_data WHERE index_name = %s", (index_name,))
+        row = cur.fetchone()
+        if not row:
+            return None, None
+        proj_blob, id_map_json = row[0], row[1]
+        proj = np.frombuffer(proj_blob, dtype=np.float32)
+        # infer shape as (-1,2) if length divisible by 2
+        if proj.size % 2 == 0:
+            proj = proj.reshape((-1, 2))
+        id_map = json.loads(id_map_json)
+        MAP_PROJECTION_CACHE = {'index_name': index_name, 'id_map': id_map, 'projection': proj}
+        return id_map, proj
+    except Exception as e:
+        logger.error(f"Failed to load map projection: {e}")
+        return None, None
+    finally:
+        cur.close()
+
+
+def build_and_store_map_projection(index_name='main_map'):
+    """Compute 2D projection for all tracks and store it. Uses available projection helpers if present.
+    Returns True on success.
+    """
+    # Import local projection helpers to avoid circular imports
+    try:
+        from tasks.song_alchemy import _project_with_umap, _project_to_2d
+    except Exception:
+        _project_with_umap = None
+        _project_to_2d = None
+
+    rows = get_all_tracks()
+    # collect embeddings and ids
+    ids = []
+    embs = []
+    for r in rows:
+        v = r.get('embedding_vector')
+        if v is not None and v.size:
+            ids.append(r['item_id'])
+            embs.append(v)
+    if not embs:
+        logger.info('No embeddings available to build map projection.')
+        return False
+
+    mat = np.vstack(embs)
+    projections = None
+    try:
+        logger.info(f"Starting to build map projection: {mat.shape[0]} embeddings found.")
+        if _project_with_umap is not None:
+            projections = _project_with_umap([v for v in mat])
+    except Exception as e:
+        logger.warning(f"UMAP projection failed during build: {e}")
+        projections = None
+
+    if projections is None:
+        try:
+            if _project_to_2d is not None:
+                projections = _project_to_2d([v for v in mat])
+        except Exception as e:
+            logger.warning(f"PCA projection failed during build: {e}")
+            projections = None
+
+    if projections is None:
+        projections = np.zeros((mat.shape[0], 2), dtype=np.float32)
+    else:
+        projections = np.array(projections, dtype=np.float32)
+    logger.info(f"Computed projection shape: {projections.shape}")
+
+    # Save to DB
+    try:
+        save_map_projection(index_name, ids, projections)
+        # update in-memory cache
+        global MAP_PROJECTION_CACHE
+        MAP_PROJECTION_CACHE = {'index_name': index_name, 'id_map': ids, 'projection': projections}
+        # Publish reload message to redis so web process(es) can reload
+        try:
+            redis_conn.publish('index-updates', 'reload')
+        except Exception:
+            logger.debug('Could not publish reload message to redis (maybe redis not available).')
+        return True
+    except Exception as e:
+        logger.error(f"Failed to build and store map projection: {e}")
+        return False
 
 
 def update_playlist_table(playlists): # Removed db_path
