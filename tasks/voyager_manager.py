@@ -18,6 +18,7 @@ from config import (
     DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
     DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD
 )
+import config
 
 # Import from other project modules
 from .mediaserver import create_instant_playlist
@@ -595,18 +596,29 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
             else:
                 logger.debug(f"  -> FILTERED OUT (distance: {normalized_mood_distance:.4f} > threshold: {mood_threshold})")
     else:
-        # For larger datasets, use parallel processing
+        # For larger datasets, use parallel processing but preserve deterministic ordering
+        # by collecting results per batch index and assembling them in the original order.
         song_batches = [song_results[i:i + BATCH_SIZE_VECTOR_OPS] for i in range(0, len(song_results), BATCH_SIZE_VECTOR_OPS)]
-        
+
         executor = _get_thread_pool()
-        future_to_batch = {
-            executor.submit(_compute_mood_distances_batch, batch, target_mood_features, candidate_mood_features, mood_features, mood_threshold): batch 
-            for batch in song_batches
+        future_to_index = {
+            executor.submit(_compute_mood_distances_batch, batch, target_mood_features, candidate_mood_features, mood_features, mood_threshold): idx
+            for idx, batch in enumerate(song_batches)
         }
-        
+
+        # Collect results as batches complete, but store them keyed by the original batch index
+        results_by_index = {}
+        for future in as_completed(future_to_index):
+            idx = future_to_index.get(future)
+            try:
+                results_by_index[idx] = future.result()
+            except Exception:
+                results_by_index[idx] = []
+
+        # Assemble final list in the original song_results order to ensure determinism
         filtered_songs = []
-        for future in as_completed(future_to_batch):
-            batch_results = future.result()
+        for idx in range(len(song_batches)):
+            batch_results = results_by_index.get(idx, [])
             filtered_songs.extend(batch_results)
 
     logger.info(f"Mood filtering results: kept {len(filtered_songs)} of {len(song_results)} songs (threshold: {mood_threshold})")
@@ -628,7 +640,7 @@ def _parse_mood_features(other_features_str: str) -> dict:
         logger.warning(f"Error parsing mood features '{other_features_str}': {e}")
         return {}
 
-def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool = False, mood_similarity: bool = True):
+def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool = False, mood_similarity: bool = True, temperature: float = None):
     """
     Finds the N nearest neighbors for a given item_id using the globally cached Voyager index.
     If mood_similarity is True, filters results by mood feature similarity (danceability, aggressive, happy, party, relaxed, sad).
@@ -745,9 +757,33 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
     else:
         final_results = unique_results_by_song
 
-    return final_results[:n]
+    # Apply temperature-based sampling (centralized here so other callers can pass temperature)
+    # Determine temperature to use: prefer explicit parameter, else config default
+    if temperature is None:
+        try:
+            temperature = float(config.ALCHEMY_TEMPERATURE)
+        except Exception:
+            temperature = 1.0
 
-def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool = False):
+    # Build scored list and perform sampling: smaller distance -> higher score
+    try:
+        scored = [(r['item_id'], r.get('distance', 0.0)) for r in final_results]
+
+        # Enforce a consistent softmax pool size across features: user-requested n plus 20%
+        pool_limit = n + int(n * 0.20)
+        # Sort by distance ascending (smaller distance = better) and truncate to pool_limit
+        scored_sorted = sorted(scored, key=lambda tup: tup[1])
+        pool_for_sampling = scored_sorted[:min(pool_limit, len(scored_sorted))]
+
+        chosen_ids = _sample_ids_by_temperature(pool_for_sampling, n, temperature)
+        # preserve distance ordering from final_results for chosen ids
+        id_to_item = {r['item_id']: r for r in final_results}
+        selected = [id_to_item[cid] for cid in chosen_ids if cid in id_to_item]
+        return selected
+    except Exception:
+        return final_results[:n]
+
+def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool = False, temperature: float = None):
     """
     Finds the N nearest neighbors for a given query vector.
     """
@@ -849,7 +885,94 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
     else:
         final_results = unique_songs_by_content
 
-    return final_results[:n]
+    # Apply optional temperature-based sampling
+    if temperature is None:
+        try:
+            temperature = float(config.ALCHEMY_TEMPERATURE)
+        except Exception:
+            temperature = 1.0
+
+    try:
+        scored = [(r['item_id'], r.get('distance', 0.0)) for r in final_results]
+
+        # Enforce a consistent softmax pool size: n + 20% (same behavior for id-based caller)
+        pool_limit = n + int(n * 0.20)
+        scored_sorted = sorted(scored, key=lambda tup: tup[1])
+        pool_for_sampling = scored_sorted[:min(pool_limit, len(scored_sorted))]
+
+        chosen_ids = _sample_ids_by_temperature(pool_for_sampling, n, temperature)
+        id_to_item = {r['item_id']: r for r in final_results}
+        selected = [id_to_item[cid] for cid in chosen_ids if cid in id_to_item]
+        return selected
+    except Exception:
+        return final_results[:n]
+
+
+def _sample_ids_by_temperature(scored_candidates: list, n: int, temperature: float = None):
+    """Given a list of (item_id, distance) tuples, sample up to n item_ids according to
+    a softmax over negative distances controlled by temperature. If temperature==0, return
+    the top-n deterministic by smallest distance.
+    """
+    import math, random
+
+    if not scored_candidates:
+        return []
+
+    # Determine temperature
+    if temperature is None:
+        try:
+            temperature = float(config.ALCHEMY_TEMPERATURE)
+        except Exception:
+            temperature = 1.0
+
+    # Convert to lists
+    ids = [c[0] for c in scored_candidates]
+    raw_scores = [-float(c[1]) for c in scored_candidates]
+
+    # Deterministic case
+    try:
+        if temperature is not None and float(temperature) == 0.0:
+            # Deterministic: sort by distance ascending (smaller distance = better match)
+            # Use a stable tie-breaker on item id to ensure deterministic ordering when distances are equal.
+            # scored_candidates is a list of (item_id, distance)
+            sorted_by_dist = sorted(scored_candidates, key=lambda tup: (tup[1], str(tup[0])))
+            ids_sorted = [item_id for item_id, _ in sorted_by_dist]
+            return ids_sorted[:min(n, len(ids_sorted))]
+    except Exception:
+        pass
+
+    # Softmax sampling without replacement
+    temps = [s / (temperature or 1.0) for s in raw_scores]
+    max_t = max(temps)
+    exps = [math.exp(t - max_t) for t in temps]
+    total = sum(exps)
+    if total <= 0:
+        probs = [1.0 / len(exps)] * len(exps)
+    else:
+        probs = [e / total for e in exps]
+
+    avail_ids = ids.copy()
+    avail_probs = probs.copy()
+    chosen = []
+    k = min(n, len(avail_ids))
+    for _ in range(k):
+        s = sum(avail_probs)
+        if s <= 0:
+            idx = random.randrange(len(avail_ids))
+        else:
+            r = random.random() * s
+            acc = 0.0
+            idx = 0
+            for j, p in enumerate(avail_probs):
+                acc += p
+                if r <= acc:
+                    idx = j
+                    break
+        chosen_id = avail_ids.pop(idx)
+        avail_probs.pop(idx)
+        chosen.append(chosen_id)
+
+    return chosen
 
 def get_item_id_by_title_and_artist(title: str, artist: str):
     """

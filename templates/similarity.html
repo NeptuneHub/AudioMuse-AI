@@ -55,6 +55,10 @@
                             <label for="n">Number of results:</label>
                             <input type="number" id="n" name="n" value="10" min="1" max="200">
                         </div>
+                        <div>
+                            <label for="temperature">Temperature (optional):</label>
+                            <input type="text" id="temperature" name="temperature" value="1.0" placeholder="e.g. 0.0 for deterministic, 1.0 default">
+                        </div>
                     </div>
                      <div class="param-group">
                         <div class="checkbox-container">
@@ -197,13 +201,15 @@
                     return;
                 }
 
-                try {
-                    const params = new URLSearchParams({ 
+                    try {
+                    const temperature = document.getElementById('temperature').value.trim();
+                    const paramsObj = { 
                         item_id: itemId, 
                         n: n,
                         eliminate_duplicates: eliminateDuplicates // Always send true or false
-                        // mood_similarity intentionally omitted
-                    });
+                    };
+                    if (temperature !== '') paramsObj.temperature = temperature;
+                    const params = new URLSearchParams(paramsObj);
                     const response = await fetch(`/api/similar_tracks?${params}`);
                     const data = await response.json();
 

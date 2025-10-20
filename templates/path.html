@@ -100,6 +100,10 @@
                             <div id="end-autocomplete-results" class="autocomplete-results hidden"></div>
                         </div>
 
+                            <div>
+                                <label for="temperature">Temperature (optional):</label>
+                                <input type="text" id="temperature" name="temperature" value="1.0" placeholder="e.g. 0.0 for deterministic, 1.0 default">
+                            </div>
                         <div>
                             <label for="max_steps">Songs in path:</label>
                             <input type="number" id="max_steps" name="max_steps" value="25" min="10" max="200">
@@ -668,11 +672,14 @@
                 }
 
                 try {
-                    const params = new URLSearchParams({
+                    const temperature = document.getElementById('temperature').value.trim();
+                    const paramsObj = {
                         start_song_id: startSongId,
                         end_song_id: endSongId,
                         max_steps: maxSteps
-                    });
+                    };
+                    if (temperature !== '') paramsObj.temperature = temperature;
+                    const params = new URLSearchParams(paramsObj);
                     const response = await fetch(`/api/find_path?${params}`);
                     if (!response.ok) {
                         let errorData;

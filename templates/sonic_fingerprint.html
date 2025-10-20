@@ -84,6 +84,10 @@
                                 <label for="n">Number of results:</label>
                                 <input type="number" id="n" name="n" value="200" min="40" max="1000">
                             </div>
+                            <div>
+                                <label for="temperature">Temperature (optional):</label>
+                                <input type="text" id="temperature" name="temperature" value="1.0" placeholder="e.g. 0.0 for deterministic, 1.0 default">
+                            </div>
                         </div>
                     </fieldset>
 
@@ -155,6 +159,16 @@
                 const payload = {
                     n: parseInt(document.getElementById('n').value, 10)
                 };
+
+                // Optional temperature: include if user provided a value
+                try {
+                    const tempRaw = document.getElementById('temperature')?.value;
+                    if (tempRaw !== undefined && tempRaw !== null && String(tempRaw).trim() !== '') {
+                        payload.temperature = tempRaw;
+                    }
+                } catch (e) {
+                    // ignore and proceed without temperature
+                }
 
                 if (mediaserverType === 'jellyfin') {
                     payload.jellyfin_user_identifier = document.getElementById('jellyfin_user_identifier').value;

@@ -9,7 +9,7 @@ from .voyager_manager import find_nearest_neighbors_by_vector
 
 logger = logging.getLogger(__name__)
 
-def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
+def generate_sonic_fingerprint(num_neighbors=None, user_creds=None, temperature: float = None):
     """
     Generates a 'sonic fingerprint' by averaging the embeddings of the most played songs,
     weighted by recency, and then finds similar songs to this fingerprint.
@@ -125,7 +125,8 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
         similar_songs_from_voyager = find_nearest_neighbors_by_vector(
             query_vector=average_vector,
             n=neighbors_to_find,
-            eliminate_duplicates=True
+            eliminate_duplicates=True,
+            temperature=temperature
         )
         logger.info(f"Found {len(similar_songs_from_voyager)} similar songs for the sonic fingerprint.")
 

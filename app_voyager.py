@@ -155,7 +155,16 @@ def get_similar_tracks_endpoint():
     title = request.args.get('title')
     artist = request.args.get('artist')
     num_neighbors = request.args.get('n', 10, type=int)
-    
+
+    # Optional temperature parameter (float). If omitted, server default from config is used.
+    temperature_raw = request.args.get('temperature')
+    temperature = None
+    if temperature_raw is not None:
+        try:
+            temperature = float(temperature_raw)
+        except Exception:
+            temperature = None
+
     eliminate_duplicates_str = request.args.get('eliminate_duplicates')
     if eliminate_duplicates_str is None:
         eliminate_duplicates = SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
@@ -182,10 +191,11 @@ def get_similar_tracks_endpoint():
 
     try:
         neighbor_results = find_nearest_neighbors_by_id(
-            target_item_id, 
+            target_item_id,
             n=num_neighbors,
             eliminate_duplicates=eliminate_duplicates,
-            mood_similarity=mood_similarity
+            mood_similarity=mood_similarity,
+            temperature=temperature
         )
         if not neighbor_results:
             return jsonify({"error": "Target track not found in index or no similar tracks found."}), 404

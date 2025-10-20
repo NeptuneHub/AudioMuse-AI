@@ -96,7 +96,7 @@ def _create_path_from_ids(path_ids):
     return ordered_path_details
 
 
-def _calculate_local_average_jump_distance(start_item_id, end_item_id, sample_size=PATH_AVG_JUMP_SAMPLE_SIZE):
+def _calculate_local_average_jump_distance(start_item_id, end_item_id, sample_size=PATH_AVG_JUMP_SAMPLE_SIZE, temperature: float = None):
     """
     Calculates the average distance by creating a chain of neighbors and measuring the
     distance between each step in the chain.
@@ -107,7 +107,7 @@ def _calculate_local_average_jump_distance(start_item_id, end_item_id, sample_si
     
     for item_id in [start_item_id, end_item_id]:
         try:
-            neighbors = find_nearest_neighbors_by_id(item_id, n=sample_size)
+            neighbors = find_nearest_neighbors_by_id(item_id, n=sample_size, eliminate_duplicates=True, temperature=temperature)
             if not neighbors:
                 continue
 
@@ -142,7 +142,7 @@ def _normalize_signature(artist, title):
     return (artist_norm, title_norm)
 
 
-def _find_best_unique_song(centroid_vec, used_song_ids, used_signatures, path_songs_details_so_far=None):
+def _find_best_unique_song(centroid_vec, used_song_ids, used_signatures, path_songs_details_so_far=None, temperature: float = None):
     """
     --- OPTIMIZED ---
     Finds the best song for a centroid that is not already used by ID, signature,
@@ -156,7 +156,7 @@ def _find_best_unique_song(centroid_vec, used_song_ids, used_signatures, path_so
     metric_name = 'Angular' if PATH_DISTANCE_METRIC == 'angular' else 'Euclidean'
 
     try:
-        candidates_voyager = find_nearest_neighbors_by_vector(centroid_vec, n=PATH_CANDIDATES_PER_STEP * 3)
+            candidates_voyager = find_nearest_neighbors_by_vector(centroid_vec, n=PATH_CANDIDATES_PER_STEP, temperature=temperature)
     except Exception as e:
         logger.error(f"Error finding neighbors for a centroid: {e}")
         return None
@@ -215,7 +215,7 @@ def _find_best_unique_song(centroid_vec, used_song_ids, used_signatures, path_so
     return None
 
 
-def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH):
+def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH, temperature: float = None):
     """
     Finds an adaptive path between two songs, ensuring exact length and no duplicate artist/title pairs.
     """
@@ -240,7 +240,9 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
         _normalize_signature(end_details.get('author'), end_details.get('title'))
     }
 
-    delta_avg = _calculate_local_average_jump_distance(start_item_id, end_item_id)
+    # Allow caller to pass temperature (optional). If None, voyager_manager will use config default.
+    # Extract temperature if provided via kwargs style - but keep signature explicit below.
+    delta_avg = _calculate_local_average_jump_distance(start_item_id, end_item_id, temperature=temperature)
     if delta_avg is None or delta_avg == 0:
         logger.error("Average jump distance (delta_avg) is not available or zero.")
         return None, 0.0
@@ -263,8 +265,14 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
 
     for i in range(1, Lcore - 1):
         centroid_vec = backbone_centroids[i]
-        best_song = _find_best_unique_song(centroid_vec, used_song_ids, used_signatures, path_songs_details_so_far=path_songs_details)
-        
+        best_song = _find_best_unique_song(
+            centroid_vec,
+            used_song_ids,
+            used_signatures,
+            path_songs_details_so_far=path_songs_details,
+            temperature=temperature
+        )
+
         if best_song:
             path_songs_details.append(best_song)
             used_song_ids.add(best_song['item_id'])
@@ -308,7 +316,8 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                     
                     for centroid_vec in intermediate_centroids:
                         # Pass the details of songs added in this segment for accurate filtering
-                        best_song = _find_best_unique_song(centroid_vec, used_song_ids, used_signatures, path_songs_details_so_far=current_path_segment_details)
+                        # Ensure we forward the temperature so sampling/determinism is preserved
+                        best_song = _find_best_unique_song(centroid_vec, used_song_ids, used_signatures, path_songs_details_so_far=current_path_segment_details, temperature=temperature)
                         if best_song:
                             final_path_details.append(get_tracks_by_ids([best_song['item_id']])[0])
                             current_path_segment_details.append(best_song)

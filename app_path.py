@@ -27,6 +27,14 @@ def find_path_endpoint():
     end_song_id = request.args.get('end_song_id')
     # Use the default from config if max_steps is not provided in the request
     max_steps = request.args.get('max_steps', PATH_DEFAULT_LENGTH, type=int)
+    # Optional temperature parameter for similarity sampling (float). If omitted, config default will be used.
+    temperature_raw = request.args.get('temperature')
+    temperature = None
+    if temperature_raw is not None:
+        try:
+            temperature = float(temperature_raw)
+        except Exception:
+            temperature = None
 
     if not start_song_id or not end_song_id:
         return jsonify({"error": "Both a start and end song must be provided."}), 400
@@ -35,7 +43,7 @@ def find_path_endpoint():
         return jsonify({"error": "Start and end songs cannot be the same."}), 400
 
     try:
-        path, total_distance = find_path_between_songs(start_song_id, end_song_id, max_steps)
+        path, total_distance = find_path_between_songs(start_song_id, end_song_id, max_steps, temperature=temperature)
 
         if not path:
             return jsonify({"error": f"No path found between the selected songs within {max_steps} steps."}), 404

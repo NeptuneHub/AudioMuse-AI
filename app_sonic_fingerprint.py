@@ -131,20 +131,23 @@ def generate_sonic_fingerprint_endpoint():
     from app_helper import get_score_data_by_ids
 
     try:
+        # Read input (POST JSON or GET args)
         if request.method == 'POST':
             data = request.get_json()
             if not data:
                 return jsonify({"error": "Invalid JSON payload"}), 400
-        else:  # GET request
+        else:
             data = request.args
 
+        # Parse num_results if provided
         num_results = data.get('n')
         if num_results is not None:
             try:
                 num_results = int(num_results)
             except (ValueError, TypeError):
                 return jsonify({"error": "Parameter 'n' must be a valid integer."}), 400
-        
+
+        # Build user credentials depending on configured media server
         user_creds = {}
         if MEDIASERVER_TYPE == 'jellyfin':
             user_identifier = data.get('jellyfin_user_identifier')
@@ -152,7 +155,6 @@ def generate_sonic_fingerprint_endpoint():
                 return jsonify({"error": "Jellyfin User Identifier is required."}), 400
 
             token = data.get('jellyfin_token') or JELLYFIN_TOKEN
-            
             if not token:
                 return jsonify({"error": "Jellyfin API Token is required. Please provide one or set it in the server configuration."}), 400
 
@@ -160,7 +162,7 @@ def generate_sonic_fingerprint_endpoint():
             resolved_user_id = resolve_jellyfin_user(user_identifier, token)
             if not resolved_user_id:
                 return jsonify({"error": f"Could not resolve Jellyfin user '{user_identifier}'."}), 400
-            
+
             logger.info(f"Resolved Jellyfin user ID: '{resolved_user_id}'")
             user_creds['user_id'] = resolved_user_id
             user_creds['token'] = token
@@ -170,10 +172,26 @@ def generate_sonic_fingerprint_endpoint():
             user_creds['password'] = data.get('navidrome_password') or NAVIDROME_PASSWORD
             if not user_creds['user'] or not user_creds['password']:
                 return jsonify({"error": "Navidrome username and password are required. Please provide them or set them in the server configuration."}), 400
-        
+
+        # Optional temperature parameter (float). If omitted, manager will use config default.
+        temp_raw = None
+        try:
+            temp_raw = data.get('temperature')
+        except Exception:
+            temp_raw = None
+
+        temperature = None
+        if temp_raw is not None:
+            try:
+                temperature = float(temp_raw)
+            except Exception:
+                temperature = None
+
+        # Call manager
         fingerprint_results = generate_sonic_fingerprint(
             num_neighbors=num_results,
-            user_creds=user_creds
+            user_creds=user_creds,
+            temperature=temperature
         )
 
         if not fingerprint_results:
@@ -181,7 +199,7 @@ def generate_sonic_fingerprint_endpoint():
 
         result_ids = [r['item_id'] for r in fingerprint_results]
         details_list = get_score_data_by_ids(result_ids)
-        
+
         details_map = {d['item_id']: d for d in details_list}
         distance_map = {r['item_id']: r['distance'] for r in fingerprint_results}
 
@@ -197,6 +215,7 @@ def generate_sonic_fingerprint_endpoint():
                 })
 
         return jsonify(final_results)
+
     except Exception as e:
         logger.error(f"Error in sonic_fingerprint endpoint: {e}", exc_info=True)
         return jsonify({"error": "An unexpected error occurred while generating the sonic fingerprint."}), 500

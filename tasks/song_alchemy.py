@@ -277,15 +277,27 @@ def song_alchemy(add_ids: List[str], subtract_ids: List[str], n_results: int = N
             temperature = 1.0
 
     # Find nearest neighbors to add_centroid using Voyager
-    # Special-case: if user provided exactly one ADD track and temperature==0 (deterministic)
-    # then use the id-based neighbor query so results match the "similar song" path.
-    if temperature is not None and float(temperature) == 0.0 and add_ids and len(add_ids) == 1:
+    # Try the newer signature (with temperature) first; if the underlying function
+    # doesn't accept temperature (older environments), fall back to the older call.
+    neighbors = []
+    try:
+        if temperature is not None and float(temperature) == 0.0 and add_ids and len(add_ids) == 1:
+            # deterministic path: prefer id-based query for exact-match determinism
+            neighbors = find_nearest_neighbors_by_id(add_ids[0], n=n_results, eliminate_duplicates=False, mood_similarity=True, temperature=temperature)
+        else:
+            neighbors = find_nearest_neighbors_by_vector(add_centroid, n=n_results, eliminate_duplicates=False, temperature=temperature)
+    except TypeError:
+        # Fallback for older signatures that don't accept temperature
         try:
-            neighbors = find_nearest_neighbors_by_id(add_ids[0], n=n_results)
+            if temperature is not None and float(temperature) == 0.0 and add_ids and len(add_ids) == 1:
+                neighbors = find_nearest_neighbors_by_id(add_ids[0], n=n_results, eliminate_duplicates=False, mood_similarity=True)
+            else:
+                neighbors = find_nearest_neighbors_by_vector(add_centroid, n=n_results, eliminate_duplicates=False)
         except Exception:
-            neighbors = find_nearest_neighbors_by_vector(add_centroid, n=n_results * 3)
-    else:
-        neighbors = find_nearest_neighbors_by_vector(add_centroid, n=n_results * 3)
+            neighbors = []
+    except Exception as e:
+        logger.error(f"Error while querying neighbors for song_alchemy: {e}")
+        neighbors = []
     if not neighbors:
         return {"results": [], "filtered_out": [], "centroid_2d": None}
 
@@ -555,87 +567,23 @@ def song_alchemy(add_ids: List[str], subtract_ids: List[str], n_results: int = N
     details = get_score_data_by_ids(candidate_ids)
     details_map = {d['item_id']: d for d in details}
 
-    # Build a list of scored candidates for probabilistic sampling
-    scored_candidates = []
-    for cid in candidate_ids:
-        if cid in details_map and cid in distances:
-            scored_candidates.append((cid, distances[cid]))
-
-    # Determine temperature: use provided value or config default
-    if temperature is None:
-        try:
-            from config import ALCHEMY_TEMPERATURE as _cfg_temp
-            temperature = float(_cfg_temp)
-        except Exception:
-            temperature = 1.0
-
-    # Convert distances into similarity-like scores (smaller distance => higher similarity)
-    # We'll negate distances so higher is better
-    import math, random
-
-    ids = [c[0] for c in scored_candidates]
-    raw_scores = [ -float(c[1]) for c in scored_candidates ]
-
+    # The voyager_manager neighbor calls already perform temperature-based sampling when a
+    # temperature is provided. Use the neighbors list order as the final ordered results.
     ordered = []
-    if ids:
-        # If temperature is exactly zero, use deterministic selection (best matches first)
-        try:
-            if temperature is not None and float(temperature) == 0.0:
-                ids_sorted = sorted(ids, key=lambda x: distances.get(x, float('inf')))
-                for i in ids_sorted[:n_results]:
-                    item = details_map.get(i, {})
-                    item['distance'] = distances.get(i)
-                    item['embedding_2d'] = proj_map.get(i)
-                    ordered.append(item)
-            else:
-                # Softmax with temperature (temperature may be None or >0)
-                temps = [s / (temperature or 1.0) for s in raw_scores]
-                max_t = max(temps)
-                exps = [math.exp(t - max_t) for t in temps]
-                total = sum(exps)
-                if total <= 0:
-                    probs = [1.0 / len(exps)] * len(exps)
-                else:
-                    probs = [e / total for e in exps]
-
-                # Weighted sampling without replacement to get n_results items (preserve projection/metadata)
-                chosen = []
-                avail_ids = ids.copy()
-                avail_probs = probs.copy()
-                k = min(n_results, len(avail_ids))
-                for _ in range(k):
-                    # Normalize
-                    s = sum(avail_probs)
-                    if s <= 0:
-                        idx = random.randrange(len(avail_ids))
-                    else:
-                        r = random.random() * s
-                        acc = 0.0
-                        idx = 0
-                        for j, p in enumerate(avail_probs):
-                            acc += p
-                            if r <= acc:
-                                idx = j
-                                break
-                    chosen_id = avail_ids.pop(idx)
-                    avail_probs.pop(idx)
-                    chosen.append(chosen_id)
-
-                # Build ordered results from chosen ids in the order selected
-                for cid in chosen:
-                    item = details_map.get(cid, {})
-                    item['distance'] = distances.get(cid)
-                    item['embedding_2d'] = proj_map.get(cid)
-                    ordered.append(item)
-        except Exception as e:
-            # Fallback deterministic ordering by best match
-            logger.warning(f"Sampling failed, falling back to deterministic selection: {e}")
-            ids_sorted = sorted(ids, key=lambda x: distances.get(x, float('inf')))
-            for i in ids_sorted[:n_results]:
-                item = details_map.get(i, {})
-                item['distance'] = distances.get(i)
-                item['embedding_2d'] = proj_map.get(i)
-                ordered.append(item)
+    # neighbors may contain items with distance; prefer that ordering and limit to n_results
+    neighbor_map = {n['item_id']: n for n in neighbors}
+    used = 0
+    for n_item in neighbors:
+        if used >= n_results:
+            break
+        cid = n_item.get('item_id')
+        if cid in details_map:
+            item = details_map.get(cid, {}).copy()
+            # attach distance from earlier computation if available, else from neighbor
+            item['distance'] = distances.get(cid, n_item.get('distance'))
+            item['embedding_2d'] = proj_map.get(cid)
+            ordered.append(item)
+            used += 1
 
     # Prepare filtered_out details
     filtered_details = []
