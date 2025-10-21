@@ -1,10 +1,15 @@
+# AudioMuse-AI Deployment Configuration
+#
+# WORKER TEMPLATE - Run this for heavy CPU/GPU tasks like analysis and clustering, connected to a lightweight server with Jellyfin and AudioMuse-AI Flask application and databases.
+# This configuration is intended for deployment on a server with NVIDIA GPU support.
+#
+
 version: '3.8'
 services:
   # AudioMuse-AI Worker service (GPU-dependent)
   audiomuse-ai-worker:
     image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
     container_name: audiomuse-ai-worker-instance
-    runtime: nvidia  # Use nvidia runtime (older but reliable method)
     ports:
       - "8029:8000"  # Expose worker API
     environment:
@@ -25,6 +30,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
     volumes:
       - temp-audio-worker:/app/temp_audio
+    restart: unless-stopped
     deploy:
       resources:
         reservations:
@@ -32,7 +38,5 @@ services:
             - driver: nvidia
               device_ids: ["0"]
               capabilities: [gpu]
-    restart: unless-stopped
-
 volumes:
   temp-audio-worker:
