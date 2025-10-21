@@ -8,6 +8,7 @@ import unicodedata
 import google.generativeai as genai # Import Gemini library
 from mistralai import Mistral
 import os # Import os to potentially read GEMINI_API_CALL_DELAY_SECONDS
+import openai
 
 logger = logging.getLogger(__name__)
 
@@ -203,9 +204,102 @@ def get_mistral_playlist_name(mistral_api_key, model_name, full_prompt):
     except Exception as e:
         logger.error("Error calling Mistral API: %s", e, exc_info=True)
         return "Error: AI service is currently unavailable."
+    
+# --- OpenAI or DMR Specific Function ---
+
+def get_openai_or_dmr_playlist_name(openai_dmr_model_name, full_prompt, openai_api_key=None, dmr_base_url=None):
+    """
+    Calls either OpenAI or Docker Model Runner (DMR) API to get a playlist name.
+    Uses streaming responses where possible and extracts only the main response text.
+
+    Priority:
+        1. DMR if dmr_base_url is provided (openai_api_key optional, ignored if both provided)
+        2. OpenAI if openai_api_key is provided and dmr_base_url is empty
+
+    Args:
+        openai_api_key (str, optional): OpenAI API key.
+        openai_dmr_model_name (str): Model name to use.
+        full_prompt (str): The prompt to send to the model.
+        dmr_base_url (str, optional): DMR base URL (e.g., http://localhost:8080/v1/completions)
+
+    Returns:
+        str: Extracted playlist name or error message.
+    """
+    if dmr_base_url:
+        # --- DMR API Call (OpenAI-compatible endpoint) ---
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "model": openai_dmr_model_name,
+            "prompt": full_prompt,
+            "temperature": 0.9,
+            "max_tokens": 5000,
+            "stream": True  # Handle streaming like Ollama
+        }
+
+        try:
+            response = requests.post(dmr_base_url, headers=headers, data=json.dumps(payload), stream=True, timeout=960)
+            response.raise_for_status()
+
+            full_raw_response_content = ""
+            for line in response.iter_lines():
+                if line:
+                    try:
+                        chunk = json.loads(line)
+                        if 'choices' in chunk and len(chunk['choices']) > 0 and 'text' in chunk['choices'][0]:
+                            full_raw_response_content += chunk['choices'][0]['text']
+                        if chunk.get('done'):
+                            break
+                    except json.JSONDecodeError:
+                        continue
+
+            # Extract text after common "thought" tags
+            thought_enders = ["</think>", "[/INST]", "[/THOUGHT]"]
+            extracted_text = full_raw_response_content.strip()
+            for end_tag in thought_enders:
+                if end_tag in extracted_text:
+                    extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
+            return extracted_text
+
+        except requests.exceptions.RequestException as e:
+            return f"Error: DMR API request failed: {e}"
+
+    elif openai_api_key:
+        # --- OpenAI API Call ---
+        openai.api_key = openai_api_key
+
+        try:
+            response = openai.Completion.create(
+                model=openai_dmr_model_name,
+                prompt=full_prompt,
+                temperature=0.9,
+                max_tokens=5000,
+                stream=True  # Use streaming to mirror Ollama behavior
+            )
+
+            full_raw_response_content = ""
+            for event in response:
+                if hasattr(event, "choices") and len(event.choices) > 0 and hasattr(event.choices[0], "text"):
+                    full_raw_response_content += event.choices[0].text
+
+            # Extract text after common "thought" tags
+            thought_enders = ["</think>", "[/INST]", "[/THOUGHT]"]
+            extracted_text = full_raw_response_content.strip()
+            for end_tag in thought_enders:
+                if end_tag in extracted_text:
+                    extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
+            return extracted_text
+
+        except Exception as e:
+            return f"Error: OpenAI API request failed: {e}"
+
+    else:
+        return "Error: Neither OpenAI API key nor DMR base URL provided."
+
+
+
 
 # --- General AI Naming Function ---
-def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key, gemini_model_name, mistral_api_key, mistral_model_name, prompt_template, feature1, feature2, feature3, song_list, other_feature_scores_dict):
+def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key, gemini_model_name, mistral_api_key, mistral_model_name, prompt_template, feature1, feature2, feature3, song_list, other_feature_scores_dict, openai_dmr_model_name, openai_api_key, dmr_base_url):
     """
     Selects and calls the appropriate AI model based on the provider.
     Constructs the full prompt including new features.
@@ -262,6 +356,8 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
         name = get_gemini_playlist_name(gemini_api_key, gemini_model_name, full_prompt)
     elif provider == "MISTRAL":
         name = get_mistral_playlist_name(mistral_api_key, mistral_model_name, full_prompt)
+    elif provider == "OPENAI":
+        name = get_openai_or_dmr_playlist_name(openai_dmr_model_name, full_prompt, openai_api_key, dmr_base_url)
     # else: provider is NONE or invalid, name remains "AI Naming Skipped"
 
     # Apply length check and return final name or error

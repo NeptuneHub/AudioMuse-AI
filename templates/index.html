@@ -206,6 +206,7 @@
                                             <option value="OLLAMA">Ollama</option>
                                             <option value="GEMINI">Gemini</option>
                                             <option value="MISTRAL">Mistral</option>
+                                            <option value="OPENAI">OpenAI / DMR</option>
                                             <option value="NONE" selected>None</option>
                                         </select>
                                     </div>
@@ -237,6 +238,20 @@
                                             <input type="text" id="config-mistral_model_name" value="ministral-3b-latest">
                                         </div>
                                     </div>
+                                    <div id="openai-config-group" class="hidden">
+                                         <h4>OpenAI / DMR Configuration:</h4>
+                                        <div>
+                                            <label for="config-openai_model_name">OpenAI / DMR Model Name:</label>
+                                            <input type="text" id="config-openai_model_name" value="GPT-4o mini">
+                                        </div>
+                                        <div>
+                                            <label for="config-openai_api_key">OpenAI API Key:</label>
+                                            <input type="text" id="config-openai_api_key" value="xxxx-xxxx-xxxx-xxxx">
+                                        </div>
+                                        <div>
+                                            <label for="config-openai_url">DMR Base URL:</label>
+                                            <input type="text" id="config-openai_url" value="http://model-runner.docker.internal">
+                                        </div>
                                 </div>
                             </fieldset>
                         </form>

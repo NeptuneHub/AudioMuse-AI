@@ -41,6 +41,7 @@
                                     <option value="OLLAMA">Ollama</option>
                                     <option value="GEMINI">Gemini</option>
                                     <option value="MISTRAL">Mistral</option>
+                                    <option value="OPENAI">OpenAI/DMR</option>
                                 </select>
                             </div>
                             <div id="ollamaConfig" class="hidden">
@@ -59,6 +60,18 @@
                             <div id="mistralConfig" class="hidden">
                                 <label for="mistralModel">Mistral Model</label>
                                 <input type="text" id="mistralModel" placeholder="e.g., ministral-3b-latest">
+                            </div>
+                            <div id="openaiConfig" class="hidden">
+                                <label for="openaiModel">OpenAI/DMR Model</label>
+                                <input type="text" id="openaiModel" placeholder="e.g., GPT-4o mini">
+                                <div style="margin-top: 1.5rem;">
+                                    <label for="openaiUrl">OpenAI/DMR Base URL</label>
+                                    <input type="text" id="openaiUrl" placeholder="e.g., http://model-runner.docker.internal">
+                                </div>
+                                <div style="margin-top: 1.5rem;">
+                                    <label for="openaiApiKey">OpenAI API Key (optional)</label>
+                                    <input type="text" id="openaiApiKey" placeholder="e.g., xxxx-xxxx-xxxx-xxxx">
+                                </div>
                             </div>
                         </div>
                     </fieldset>
@@ -126,6 +139,10 @@
             const createPlaylistSection = document.getElementById('createPlaylistSection');
             const createPlaylistForm = document.getElementById('createPlaylistForm');
             const mediaServerResponseArea = document.getElementById('mediaServerResponseArea');
+            const openaiModelSelect = document.getElementById('openaiModel');
+            const openaiUrlInput = document.getElementById('openaiUrl');
+            const openaiApiKeyInput = document.getElementById('openaiApiKey');
+
 
             // --- Core Functions ---
 
@@ -161,6 +178,9 @@
                 
                 geminiModelSelect.value = globalConfig.default_gemini_model_name || "gemini-2.5-pro";
                 mistralModelSelect.value = globalConfig.default_mistral_model_name || "ministral-3b-latest";
+                openaiModelSelect.value = globalConfig.default_openai_model_name || "GPT-4o mini";
+                openaiUrlInput.value = globalConfig.openai_url || "http://model-runner.docker.internal";
+                openaiApiKeyInput.value = ""; // Leave empty for security
             }
 
             /**
@@ -181,6 +201,10 @@
                     ollamaConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.remove('hidden');
+                } else if (provider === 'OPENAI') {
+                    ollamaConfigDiv.classList.add('hidden');
+                    geminiConfigDiv.classList.add('hidden');
+                    mistralConfigDiv.classList.add('hidden');
                 } else {
                     ollamaConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.add('hidden');
@@ -216,6 +240,10 @@
                     // REMOVED: The API key is no longer sent from the frontend
                 } else if (payload.ai_provider === 'MISTRAL') {
                     payload.ai_model = mistralModelSelect.value;
+                } else if (payload.ai_provider === 'OPENAI') {
+                    payload.ai_model = openaiModelSelect.value;
+                    payload.openai_url = openaiUrlInput.value;
+                    payload.openai_api_key = openaiApiKeyInput.value; // Optional
                 }
                 try {
                     const response = await fetch('/chat/api/chatPlaylist', {
