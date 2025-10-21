@@ -1,0 +1,58 @@
+version: '3.8'
+services:
+  # Redis service for RQ (task queue)
+  redis:
+    image: redis:7-alpine
+    container_name: audiomuse-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  # PostgreSQL database service
+  postgres:
+    image: postgres:15-alpine
+    container_name: audiomuse-postgres
+    environment:
+      POSTGRES_USER: "audiomuse"
+      POSTGRES_PASSWORD: "audiomusepassword"
+      POSTGRES_DB: "audiomusedb"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # AudioMuse-AI Flask application service
+  audiomuse-ai-flask:
+    image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
+    container_name: audiomuse-ai-flask-app
+    ports:
+      - "8000:8000"
+    environment:
+      SERVICE_TYPE: "flask"
+      MEDIASERVER_TYPE: "jellyfin"
+      JELLYFIN_USER_ID: "YOUR-JF-USER-ID" #for example: 0e45c44b3e2e4da7a2be11a72a1c8575
+      JELLYFIN_TOKEN: "YOUR-JF-TOKEN" # for example: e0b8c325bc1b426c81922b90c0aa2ff1
+      JELLYFIN_URL: "YOUR-JF-URL" # for example: http://jellyfin.192.168.3.131.nip.io:8087
+      POSTGRES_USER: "audiomuse"
+      POSTGRES_PASSWORD: "audiomusepassword"
+      POSTGRES_DB: "audiomusedb"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      REDIS_URL: "redis://redis:6379/0"
+      GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE"
+      TEMP_DIR: "/app/temp_audio"
+      WORKER_URL: "http://YOUR_WORKER_IP:8029/worker"  # points to worker on CPU/GPU machine for example: http://192.168.3.131:8029/worker
+    volumes:
+      - temp-audio-flask:/app/temp_audio
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  postgres-data:
+  temp-audio-flask:
