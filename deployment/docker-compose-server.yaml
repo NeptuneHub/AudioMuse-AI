@@ -1,3 +1,8 @@
+# AudioMuse-AI Deployment Configuration
+# 
+# SERVER TEMPLATE - Run database, Redis and Flask API
+# This can be run on a lightweight server, tested on an N100 mini PC (without heavy CPU or GPU requirements) with a container using `docker-compose-worker.yaml` running on a separate machine with CPU/GPU for processing tasks.
+
 version: '3.8'
 services:
   # Redis service for RQ (task queue)
