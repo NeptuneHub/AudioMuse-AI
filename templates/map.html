@@ -26,9 +26,13 @@
                     <p>Precompute your music map with a song analysis, then explore it interactively and create your playlist</p>
                 </header>
                 <div class="map-controls" style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
-                    <label for="n_songs">Number of songs:</label>
-                    <input id="n_songs" type="number" min="1" value="500" style="width:100px;" />
-                    <button id="show-map" type="button" class="btn btn-primary">Load</button>
+                    <label for="map_size">Map size:</label>
+                    <div id="map_size" style="display:flex; gap:6px; align-items:center;">
+                        <button id="btn-pct-25" type="button" class="btn btn-primary">25%</button>
+                        <button id="btn-pct-50" type="button" class="btn btn-ghost">50%</button>
+                        <button id="btn-pct-75" type="button" class="btn btn-ghost">75%</button>
+                        <button id="btn-pct-100" type="button" class="btn btn-ghost">100%</button>
+                    </div>
                     <button id="create-playlist" class="btn btn-primary">Create playlist</button>
                     <button id="song-path-btn" class="btn btn-primary" disabled style="margin-left:6px;">Song Path</button>
                     <button id="refresh-map" type="button" class="btn btn-ghost" title="Refresh map (clear overlays)" style="margin-left:6px;">Refresh</button>
@@ -55,15 +59,23 @@
 </div>
 
 <script>
-async function fetchMap(n) {
-    const resp = await fetch(`/api/map?n=${encodeURIComponent(n)}`);
+async function fetchMapParam(param) {
+    // param is a percent string like '25','50','75','100'
+    window._mapCache = window._mapCache || {};
+    if (window._mapCache[param]) return window._mapCache[param];
+    const resp = await fetch(`/api/map?percent=${encodeURIComponent(param)}`);
     if (!resp.ok) throw new Error('Failed to fetch map: ' + resp.status);
-    return resp.json();
+    // If server returned gzipped content, fetch() will transparently decode it in browsers.
+    const data = await resp.json();
+    window._mapCache[param] = data;
+    return data;
 }
 
 function topGenre(mood_vector) {
     if (!mood_vector) return 'unknown';
     try {
+        // If mood_vector is already a single label (reduced earlier), return it
+        if (!mood_vector.includes(':') && !mood_vector.includes(',')) return mood_vector;
         const parts = mood_vector.split(',');
         let best = null;
         for (const p of parts) {
@@ -85,14 +97,15 @@ function colorPaletteFor(genres) {
     return map;
 }
 
-async function loadAndPlot(n) {
+async function loadAndPlot(n_or_pct) {
     document.getElementById('map-status').textContent = 'Loading...';
     try {
-        const data = await fetchMap(n);
+        const pct = String(n_or_pct || '25');
+        const data = await fetchMapParam(pct);
     const items = data.items || [];
-    // store last items and n for re-rendering full dataset
+    // store last items and last requested percent for re-rendering/full toggles
     window._lastItems = items;
-    window._lastN = n;
+    window._lastN = pct;
         document.getElementById('map-projection-label').textContent = data.projection || '';
 
         // Build arrays and grouping
@@ -151,8 +164,19 @@ async function loadAndPlot(n) {
 
     // render a compact, clickable legend manually (click genre to hide/show)
     const legendDiv = document.getElementById('map-projection-label');
-    const legendHtml = genreList.slice(0,50).map(g => `<span class="genre-item" onclick="toggleGenre('${encodeURIComponent(g)}')" style="margin-right:8px;cursor:pointer"><span style="display:inline-block;width:12px;height:12px;background:${colorMap[g]};margin-right:6px;vertical-align:middle;border-radius:2px"></span>${g}</span>`).join('');
-    legendDiv.innerHTML = legendHtml;
+    // Build a small control set (Hide all / Show all) and the genre items. Each genre span includes a data-genre attribute
+    // so we can update its style when hidden.
+    const controlsHtml = `<span style="margin-right:12px;font-size:14px;color:#6B7280"><a href="#" onclick="hideAllGenres();return false;">Hide all</a> &nbsp;|&nbsp; <a href="#" onclick="showAllGenres();return false;">Show all</a></span>`;
+    const genreHtml = genreList.slice(0,50).map(g => {
+        const enc = encodeURIComponent(g);
+        const swatch = `<span style=\"display:inline-block;width:12px;height:12px;background:${colorMap[g]};margin-right:6px;vertical-align:middle;border-radius:2px\"></span>`;
+        // allow initial hidden state styling
+        const hidden = (window._hiddenGenres && window._hiddenGenres.has(g)) ? 'text-decoration:line-through' : '';
+        return `<span class=\"genre-item\" data-genre=\"${enc}\" onclick=\"toggleGenre('${enc}')\" style=\"margin-right:8px;cursor:pointer;${hidden}\">${swatch}${g}</span>`;
+    }).join('');
+    legendDiv.innerHTML = controlsHtml + genreHtml;
+    // Apply final legend styles in case window._hiddenGenres was set
+    applyLegendStyles();
 
         const layout = {
             hovermode: 'closest',
@@ -222,7 +246,42 @@ function toggleGenre(encodedGenre) {
         window._hiddenGenres = window._hiddenGenres || new Set();
         if (window._hiddenGenres.has(g)) window._hiddenGenres.delete(g); else window._hiddenGenres.add(g);
         applyGenreFilterAndRerender();
+        applyLegendStyles();
     } catch (e) { console.warn('toggleGenre failed', e); }
+}
+
+function hideAllGenres() {
+    window._hiddenGenres = new Set(window._genreList || []);
+    applyGenreFilterAndRerender();
+    applyLegendStyles();
+}
+
+function showAllGenres() {
+    window._hiddenGenres = new Set();
+    applyGenreFilterAndRerender();
+    applyLegendStyles();
+}
+
+function applyLegendStyles() {
+    try {
+        const legendDiv = document.getElementById('map-projection-label');
+        if (!legendDiv) return;
+        const hidden = window._hiddenGenres || new Set();
+        const nodes = legendDiv.querySelectorAll('.genre-item');
+        nodes.forEach(node => {
+            try {
+                const enc = node.getAttribute('data-genre');
+                const g = decodeURIComponent(enc);
+                if (hidden.has(g)) {
+                    node.style.textDecoration = 'line-through';
+                    node.style.opacity = '0.5';
+                } else {
+                    node.style.textDecoration = '';
+                    node.style.opacity = '1';
+                }
+            } catch(e) { /* ignore */ }
+        });
+    } catch(e) { console.warn('applyLegendStyles failed', e); }
 }
 
 // Rebuild the displayed plot from the full points array applying hidden-genre filters
@@ -272,10 +331,19 @@ function applyGenreFilterAndRerender() {
     } catch (e) { console.warn('applyGenreFilterAndRerender failed', e); }
 }
 
-document.getElementById('show-map').addEventListener('click', () => {
-    const n = parseInt(document.getElementById('n_songs').value) || 500;
-    loadAndPlot(Math.max(1, n));
-});
+function setActivePctButton(activeId) {
+    ['btn-pct-25','btn-pct-50','btn-pct-75','btn-pct-100'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (id === activeId) { el.classList.remove('btn-ghost'); el.classList.add('btn-primary'); }
+        else { el.classList.remove('btn-primary'); el.classList.add('btn-ghost'); }
+    });
+}
+
+document.getElementById('btn-pct-25').addEventListener('click', () => { setActivePctButton('btn-pct-25'); loadAndPlot('25'); });
+document.getElementById('btn-pct-50').addEventListener('click', () => { setActivePctButton('btn-pct-50'); loadAndPlot('50'); });
+document.getElementById('btn-pct-75').addEventListener('click', () => { setActivePctButton('btn-pct-75'); loadAndPlot('75'); });
+document.getElementById('btn-pct-100').addEventListener('click', () => { setActivePctButton('btn-pct-100'); loadAndPlot('100'); });
 
 // toggle-debug button removed; no-op
 
@@ -342,21 +410,26 @@ document.getElementById('toggle-full').addEventListener('click', () => {
     window._mapUseFull = !window._mapUseFull;
     document.getElementById('toggle-full').textContent = window._mapUseFull ? 'Full (on)' : 'Full';
     // re-render with previous n
-    const n = window._lastN || parseInt(document.getElementById('n_songs').value) || 500;
+    const n = window._lastN || '25';
     loadAndPlot(n);
 });
 
 // Refresh button clears overlays (paths) and selection but keeps the main track scatter
 document.getElementById('refresh-map').addEventListener('click', () => {
     try {
+        // Clear overlays and client cache so next load fetches fresh data from server
         clearMapOverlays();
+        window._mapCache = {};
+        window._lastItems = null;
+        window._lastN = null;
+        document.getElementById('map-status').textContent = 'Refreshed (cache cleared)';
     } catch (e) { console.warn('refresh-map failed', e); }
 });
 
 // Click mode toggle: Add (default) vs Replace
 
-// Optional: load on open
-window.addEventListener('load', () => { loadAndPlot(500); });
+// Optional: load 25% on open (default)
+window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAndPlot('25'); });
 
 </script>
 

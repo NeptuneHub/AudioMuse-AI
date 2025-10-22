@@ -1,12 +1,12 @@
 import json
 import math
 import logging
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, render_template, request, Response, current_app
 import numpy as np
+import gzip
 
-from app_helper import get_db
+from app_helper import get_db, load_map_projection
 import config
-from app_helper import load_map_projection
 
 # Try to reuse projection helpers from song_alchemy
 try:
@@ -21,6 +21,200 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 map_bp = Blueprint('map_bp', __name__)
+
+# In-memory cached JSON (and compressed) for fast map responses.
+# Keys: '100','75','50','25' each maps to dict with 'json_bytes' and 'json_gzip_bytes' and 'projection'
+MAP_JSON_CACHE = {}
+
+
+def _pick_top_mood(mood_vector_str):
+    """Return top mood label from 'label:score,label2:score' string.
+    If parsing fails, return 'unknown'."""
+    if not mood_vector_str:
+        return 'unknown'
+    try:
+        parts = mood_vector_str.split(',')
+        best_label = None
+        best_val = -float('inf')
+        for p in parts:
+            if ':' not in p:
+                continue
+            lab, val = p.split(':', 1)
+            try:
+                v = float(val)
+            except Exception:
+                v = 0.0
+            if v > best_val:
+                best_val = v
+                best_label = lab
+        return best_label or 'unknown'
+    except Exception:
+        return 'unknown'
+
+
+def _round_coord(coord):
+    try:
+        return [round(float(coord[0]), 3), round(float(coord[1]), 3)]
+    except Exception:
+        return [0.0, 0.0]
+
+
+def _sample_items(items, fraction):
+    """Deterministic downsample: choose M = max(1, int(len* fraction)) items using linspace indices."""
+    n = len(items)
+    if n == 0:
+        return []
+    m = max(1, int(math.floor(n * fraction)))
+    if m >= n:
+        return items.copy()
+    idxs = np.linspace(0, n - 1, m, dtype=int)
+    seen = set()
+    out = []
+    for i in idxs:
+        if i in seen: continue
+        seen.add(int(i))
+        out.append(items[int(i)])
+    return out
+
+
+def build_map_cache():
+    """Load all tracks & embeddings from DB, compute 2D projection (prefer precomputed),
+    and build cached JSON blobs for 100/75/50/25 percent samples. This should be called
+    once at startup inside app.app_context()."""
+    global MAP_JSON_CACHE
+    logger = logging.getLogger(__name__)
+    logger.info('Building map JSON cache (this reads the DB once).')
+
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT s.item_id, s.title, s.author, s.mood_vector, e.embedding
+            FROM score s
+            JOIN embedding e ON s.item_id = e.item_id
+        """)
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+
+    items = []
+    ids = []
+    embs = []
+    for r in rows:
+        # r: item_id, title, author, mood_vector, embedding_blob
+        item_id = r[0]
+        title = r[1]
+        author = r[2]
+        mood_vector = r[3]
+        emb_blob = r[4]
+        if emb_blob is None:
+            continue
+        try:
+            emb = np.frombuffer(emb_blob, dtype=np.float32)
+        except Exception:
+            # fallback if already stored as list
+            try:
+                emb = np.array(r[4], dtype=np.float32)
+            except Exception:
+                continue
+        ids.append(str(item_id))
+        embs.append(emb)
+        items.append({'item_id': str(item_id), 'title': title, 'artist': author, 'mood_vector': mood_vector, 'embedding': emb})
+
+    if not items:
+        # empty cache
+        MAP_JSON_CACHE = {}
+        logger.warning('No items found to build map cache.')
+        return
+
+    # Try to use precomputed projection if available
+    id_map, proj = None, None
+    try:
+        id_map, proj = load_map_projection('main_map')
+    except Exception as e:
+        logger.debug('load_map_projection failed: %s', e)
+
+    coords_by_id = {}
+    used_projection = 'none'
+    if id_map is not None and proj is not None and len(id_map) > 0:
+        # id_map likely lists item ids in same order as proj rows
+        try:
+            for iid, coord in zip(id_map, proj.tolist()):
+                coords_by_id[str(iid)] = (float(coord[0]), float(coord[1]))
+            used_projection = 'precomputed'
+        except Exception:
+            coords_by_id = {}
+
+    # For items still missing coordinates, compute projection on-the-fly using available helpers
+    missing_indices = [i for i, it in enumerate(items) if str(it['item_id']) not in coords_by_id]
+    if missing_indices:
+        try:
+            # Build matrix of missing emb
+            mat = np.vstack([items[i]['embedding'] for i in missing_indices])
+            projections = None
+            used = 'none'
+            # prefer UMAP helper if present
+            if '_project_with_umap' in globals() and globals().get('_project_with_umap') is not None:
+                try:
+                    projections = globals()['_project_with_umap']([v for v in mat])
+                    used = 'umap'
+                except Exception as e:
+                    logger.debug('UMAP helper failed during cache build: %s', e)
+            if projections is None and '_project_to_2d' in globals() and globals().get('_project_to_2d') is not None:
+                try:
+                    projections = globals()['_project_to_2d']([v for v in mat])
+                    used = 'pca'
+                except Exception as e:
+                    logger.debug('PCA helper failed during cache build: %s', e)
+            if projections is None:
+                projections = [(0.0, 0.0) for _ in missing_indices]
+                used = 'none'
+
+            for idx, coord in zip(missing_indices, projections):
+                coords_by_id[str(items[idx]['item_id'])] = (float(coord[0]), float(coord[1]))
+            if used_projection == 'none':
+                used_projection = used
+        except Exception as e:
+            logger.exception('Failed to compute missing projections: %s', e)
+
+    # Build full list of lightweight items and drop heavy embedding vectors
+    full_light = []
+    for it in items:
+        iid = str(it['item_id'])
+        coord = coords_by_id.get(iid, (0.0, 0.0))
+        light = {
+            'artist': it.get('artist') or '',
+            'embedding_2d': _round_coord(coord),
+            'item_id': iid,
+            'mood_vector': _pick_top_mood(it.get('mood_vector')),
+            'title': it.get('title') or ''
+        }
+        full_light.append(light)
+
+    # create sampled versions
+    n = len(full_light)
+    frac_map = {'100': 1.0, '75': 0.75, '50': 0.5, '25': 0.25}
+    new_cache = {}
+    for k, frac in frac_map.items():
+        sampled = _sample_items(full_light, frac)
+        payload = {'items': sampled, 'projection': used_projection, 'count': len(sampled)}
+        js = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        try:
+            gz = gzip.compress(js)
+        except Exception:
+            gz = None
+        new_cache[k] = {'json_bytes': js, 'json_gzip_bytes': gz, 'projection': used_projection, 'count': len(sampled)}
+
+    MAP_JSON_CACHE = new_cache
+    logger.info('Map JSON cache built: %d total items; cache sizes: %s', n, {k: v['count'] for k, v in MAP_JSON_CACHE.items()})
+
+
+def init_map_cache():
+    """Public initializer that can be called from app startup to build the cache."""
+    try:
+        build_map_cache()
+    except Exception:
+        logging.getLogger(__name__).exception('init_map_cache failed')
 
 
 @map_bp.route('/map')
@@ -76,124 +270,88 @@ def map_api():
 
     Response: JSON list of items with title, artist, embedding_2d, mood_vector, other_feature
     """
-    # Allow caller to override count via ?n=NN (safe-guarded)
+    # Serve exclusively from the in-memory MAP_JSON_CACHE built at startup.
+    # Accept either explicit percent param (?percent=25|50|75|100) or legacy ?n=<count>.
+    if not MAP_JSON_CACHE:
+        # Cache not built or empty
+        return jsonify({'items': [], 'projection': 'none'})
+
+    pct = None
+    pct_param = request.args.get('percent') or request.args.get('p')
+    if pct_param:
+        pct = str(pct_param)
+    else:
+        # legacy n param mapping to nearest bucket
+        n_param = request.args.get('n')
+        if n_param:
+            try:
+                n = int(n_param)
+                full = MAP_JSON_CACHE.get('100', {}).get('count') or 0
+                if full <= 0:
+                    pct = '100'
+                else:
+                    r = float(n) / float(full)
+                    if r <= 0.25:
+                        pct = '25'
+                    elif r <= 0.5:
+                        pct = '50'
+                    elif r <= 0.75:
+                        pct = '75'
+                    else:
+                        pct = '100'
+            except Exception:
+                pct = '25'
+        else:
+            pct = '25'
+
+    if pct not in MAP_JSON_CACHE:
+        # fallback to closest available
+        for k in ['25', '50', '75', '100']:
+            if k in MAP_JSON_CACHE:
+                pct = k
+                break
+
+    entry = MAP_JSON_CACHE.get(pct)
+    if not entry:
+        return jsonify({'items': [], 'projection': 'none'})
+
+    # Prefer serving gzip if the client accepts it and gzip bytes were built
+    accept_enc = request.headers.get('Accept-Encoding', '')
+    gz = entry.get('json_gzip_bytes')
+    if gz and 'gzip' in accept_enc.lower():
+        resp = Response(gz, mimetype='application/json; charset=utf-8')
+        resp.headers['Content-Encoding'] = 'gzip'
+        resp.headers['Content-Length'] = str(len(gz))
+        return resp
+
+    # Fallback to plain JSON
+    resp = Response(entry['json_bytes'], mimetype='application/json; charset=utf-8')
+    resp.headers['Content-Length'] = str(len(entry['json_bytes']))
+    return resp
+
+
+@map_bp.route('/api/map_cache_status', methods=['GET'])
+def map_cache_status():
+    """Return diagnostic information about the in-memory map JSON cache."""
     try:
-        # Default remains 2000 when not specified, but we no longer enforce an upper cap.
-        requested = int(request.args.get('n', 2000))
-    except Exception:
-        requested = 2000
-    TARGET = max(1, requested)
-    conn = get_db()
-
-    # Prepare per-genre target
-    genres = config.STRATIFIED_GENRES or []
-    per_genre = max(1, TARGET // max(1, len(genres))) if genres else TARGET
-
-    collected = []
-    cur = conn.cursor()
-    try:
-        if genres:
-            for g in genres:
-                rows = _fetch_genre_samples(conn, g, per_genre)
-                collected.extend(rows)
-
-        # If not enough, fetch additional tracks with embeddings (no mood filter)
-        if len(collected) < TARGET:
-            need = TARGET - len(collected)
-            cur.execute("""
-                SELECT s.item_id, s.title, s.author, s.mood_vector, s.other_features, e.embedding
-                FROM score s
-                JOIN embedding e ON s.item_id = e.item_id
-                LIMIT %s
-            """, (need,))
-            extra = cur.fetchall()
-            collected.extend(extra)
-
-    finally:
-        cur.close()
-
-    # Convert to item dicts with numpy embeddings
-    items = _rows_to_items(collected)
-
-    # Limit to TARGET
-    items = items[:TARGET]
-
-    if not items:
-        return jsonify({'items': []})
-
-    # Try to load precomputed projection (id map + projection) from DB first
-    id_map, proj = load_map_projection('main_map')
-    if id_map is not None and proj is not None and len(id_map) > 0:
-        # Build response by mapping projection rows to items by id (support subsets)
-        # zip(id_map, proj.tolist()) pairs ids with coordinates in stored order.
-        id_to_coord = {str(i): tuple(coord) for i, coord in zip(id_map, proj.tolist())}
-        resp_items = []
-        used_any = False
-        for it in items:
-            coord = id_to_coord.get(str(it['item_id']))
-            if coord is None:
-                coord = (0.0, 0.0)
-            else:
-                used_any = True
-            resp_items.append({
-                'item_id': it.get('item_id'),
-                'title': it.get('title'),
-                'artist': it.get('author'),
-                'embedding_2d': [float(coord[0]), float(coord[1])],
-                'mood_vector': it.get('mood_vector'),
-                'other_feature': it.get('other_features')
-            })
-        # If at least one item was matched from precomputed projection, return precomputed
-        if used_any:
-            return jsonify({'items': resp_items, 'projection': 'precomputed'})
-
-    # Build numpy matrix
-    mat = np.vstack([it['embedding'] for it in items])
-
-    # Choose projection method. Prefer UMAP if available, else PCA via _project_to_2d
-    projections = None
-    used = 'none'
-    try:
-        if _project_with_umap is not None:
-            projections = _project_with_umap([v for v in mat])
-            used = 'umap'
+        if not MAP_JSON_CACHE:
+            return jsonify({'ok': False, 'reason': 'empty_cache', 'buckets': {}})
+        info = {}
+        for k, v in MAP_JSON_CACHE.items():
+            info[k] = {'count': v.get('count', 0), 'json_bytes': len(v.get('json_bytes') or b''), 'projection': v.get('projection')}
+        return jsonify({'ok': True, 'buckets': info}), 200
     except Exception as e:
-        logger.warning('UMAP projection failed: %s', e)
-        projections = None
+        logger.exception('map_cache_status failed: %s', e)
+        return jsonify({'ok': False, 'reason': 'exception', 'error': str(e)}), 500
 
-    if projections is None:
-        try:
-            if _project_to_2d is not None:
-                projections = _project_to_2d([v for v in mat])
-                used = 'pca'
-        except Exception as e:
-            logger.warning('PCA projection failed: %s', e)
-            projections = None
 
-    if projections is None:
-        # As a last resort, return zeros
-        projections = [(0.0, 0.0) for _ in items]
-        used = 'none'
-
-    # The projection helpers in tasks.song_alchemy already center and scale
-    # the output to a comparable range. Use the projections as returned
-    # (ensure shape Nx2). This preserves precision and matches
-    # song_alchemy behaviour.
-    proj_arr = np.array(projections, dtype=float)
-    if proj_arr.ndim != 2 or proj_arr.shape[1] != 2:
-        proj_arr = np.zeros((len(items), 2), dtype=float)
-    scaled = proj_arr.tolist()
-
-    # Build response
-    resp_items = []
-    for it, coord in zip(items, scaled):
-        resp_items.append({
-            'item_id': it.get('item_id'),
-            'title': it.get('title'),
-            'artist': it.get('author'),
-            'embedding_2d': [float(coord[0]), float(coord[1])],
-            'mood_vector': it.get('mood_vector'),
-            'other_feature': it.get('other_features')
-        })
-
-    return jsonify({'items': resp_items, 'projection': used})
+@map_bp.route('/api/rebuild_map_cache', methods=['POST'])
+def rebuild_map_cache():
+    """Trigger a synchronous rebuild of the in-memory cache. Useful for debugging.
+    Note: this reads the DB and may take time."""
+    try:
+        build_map_cache()
+        return jsonify({'ok': True, 'message': 'map cache rebuilt'}), 200
+    except Exception as e:
+        logger.exception('rebuild_map_cache failed: %s', e)
+        return jsonify({'ok': False, 'error': str(e)}), 500

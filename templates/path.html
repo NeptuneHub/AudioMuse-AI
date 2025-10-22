@@ -690,7 +690,7 @@
 
                     // Attempt to fetch the precomputed map projection and build an id->coord map
                     try {
-                        const respMap = await fetch('/api/map?n=2000');
+                        const respMap = await fetch('/api/map?percent=100');
                         if (respMap.ok) {
                             const mapData = await respMap.json();
                             if (mapData && Array.isArray(mapData.items)) {

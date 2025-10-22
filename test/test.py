@@ -229,7 +229,7 @@ def test_song_alchemy_and_playlist():
 def test_map_visualization():
     """Test /api/map visualization endpoint."""
     start_time = time.time()
-    resp = requests.get(f'{BASE_URL}/api/map?n=10', timeout=120)
+    resp = requests.get(f'{BASE_URL}/api/map?percent=25', timeout=120)
     assert resp.status_code == 200, f"Status: {resp.status_code}, Body: {resp.text}"
     data = resp.json()
     assert 'items' in data and isinstance(data['items'], list), f"Response: {data}"

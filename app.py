@@ -578,6 +578,12 @@ if __name__ == '__main__':
       logger.info("In-memory map projection loaded at startup.")
     except Exception as e:
       logger.debug(f"No precomputed map projection to load at startup or load failed: {e}")
+    # Initialize map JSON cache once at startup (reads DB one time)
+    try:
+      from app_map import init_map_cache
+      init_map_cache()
+    except Exception:
+      app.logger.exception('Failed to initialize map JSON cache at startup')
 
   # --- Start Background Listener Thread ---
   listener_thread = threading.Thread(target=listen_for_index_reloads, daemon=True)
