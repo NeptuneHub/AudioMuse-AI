@@ -10,6 +10,7 @@
 # 3. Install requirements:
 #      pip install -r requirements.txt
 #
+# 4. Set the BASE_URL variable below to point to Media Server
 #
 # Example commands to run tests:
 #
