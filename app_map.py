@@ -220,7 +220,15 @@ def init_map_cache():
 @map_bp.route('/map')
 def map_ui():
     """Serve the map UI page."""
-    return render_template('map.html')
+    resp = render_template('map.html')
+    # Ensure the rendered page is not cached by browsers or intermediary caches.
+    # We return a Response object below so Flask will set the appropriate headers.
+    from flask import make_response
+    response = make_response(resp)
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 
 def _fetch_genre_samples(conn, genre, limit):
@@ -322,11 +330,19 @@ def map_api():
         resp = Response(gz, mimetype='application/json; charset=utf-8')
         resp.headers['Content-Encoding'] = 'gzip'
         resp.headers['Content-Length'] = str(len(gz))
+        # Prevent browser from storing the map response beyond the page session.
+        resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        resp.headers['Pragma'] = 'no-cache'
+        resp.headers['Expires'] = '0'
         return resp
 
     # Fallback to plain JSON
     resp = Response(entry['json_bytes'], mimetype='application/json; charset=utf-8')
     resp.headers['Content-Length'] = str(len(entry['json_bytes']))
+    # Prevent browser from storing the map response beyond the page session.
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
     return resp
 
 
