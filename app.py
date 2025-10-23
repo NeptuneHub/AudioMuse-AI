@@ -545,6 +545,7 @@ import tasks.analysis
 from app_chat import chat_bp
 from app_clustering import clustering_bp
 from app_analysis import analysis_bp
+from app_cron import cron_bp, run_due_cron_jobs
 from app_voyager import voyager_bp
 from app_sonic_fingerprint import sonic_fingerprint_bp
 from app_path import path_bp
@@ -556,6 +557,7 @@ from app_map import map_bp
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
 app.register_blueprint(analysis_bp)
+app.register_blueprint(cron_bp)
 app.register_blueprint(voyager_bp)
 app.register_blueprint(sonic_fingerprint_bp)
 app.register_blueprint(path_bp)
@@ -597,5 +599,22 @@ if __name__ == '__main__':
   # --- Start Background Listener Thread ---
   listener_thread = threading.Thread(target=listen_for_index_reloads, daemon=True)
   listener_thread.start()
+
+  # Start a cron manager thread that checks enabled cron entries every 60 seconds
+  def _cron_manager_loop():
+    try:
+      from time import sleep
+      while True:
+        try:
+          with app.app_context():
+            run_due_cron_jobs()
+        except Exception:
+          app.logger.exception('cron manager failed')
+        sleep(60)
+    except Exception:
+      app.logger.exception('cron manager main loop error')
+
+  cron_thread = threading.Thread(target=_cron_manager_loop, daemon=True)
+  cron_thread.start()
 
   app.run(debug=False, host='0.0.0.0', port=8000)
