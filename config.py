@@ -51,7 +51,7 @@ MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music"
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v0.7.2-beta"
+APP_VERSION = "v0.7.4-beta"
 MAX_DISTANCE = 0.5
 MAX_SONGS_PER_CLUSTER = 0
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -209,7 +209,18 @@ POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "postgres-service.playlist") # D
 POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "audiomusedb")
 
-DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+# Allow an explicit DATABASE_URL to override construction (useful for docker-compose or direct env override)
+from urllib.parse import quote
+
+# Percent-encode username and password to safely include special characters like '@' in the URI
+_pg_user_esc = quote(POSTGRES_USER, safe='')
+_pg_pass_esc = quote(POSTGRES_PASSWORD, safe='')
+
+# If DATABASE_URL is set in the environment, prefer it; otherwise build one using the escaped credentials
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    f"postgresql://{_pg_user_esc}:{_pg_pass_esc}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+)
 
 # --- AI User for Chat SQL Execution ---
 AI_CHAT_DB_USER_NAME = os.environ.get("AI_CHAT_DB_USER_NAME", "ai_user")
