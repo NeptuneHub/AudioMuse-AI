@@ -579,11 +579,20 @@ if __name__ == '__main__':
     except Exception as e:
       logger.debug(f"No precomputed map projection to load at startup or load failed: {e}")
     # Initialize map JSON cache once at startup (reads DB one time)
-    try:
-      from app_map import init_map_cache
-      init_map_cache()
-    except Exception:
-      app.logger.exception('Failed to initialize map JSON cache at startup')
+    # Run this in a background daemon thread so the Flask process doesn't block on the heavy DB read.
+    def _start_map_init_background():
+      try:
+        from app_map import init_map_cache
+        logger.info('Starting background map JSON cache build.')
+        # Ensure we run the heavy cache build inside an application context
+        with app.app_context():
+          init_map_cache()
+        logger.info('Background map JSON cache build finished.')
+      except Exception:
+        logger.exception('Background init_map_cache failed')
+
+    t = threading.Thread(target=_start_map_init_background, daemon=True)
+    t.start()
 
   # --- Start Background Listener Thread ---
   listener_thread = threading.Thread(target=listen_for_index_reloads, daemon=True)

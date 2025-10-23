@@ -61,14 +61,14 @@
 <script>
 async function fetchMapParam(param) {
     // param is a percent string like '25','50','75','100'
-    window._mapCache = window._mapCache || {};
-    if (window._mapCache[param]) return window._mapCache[param];
-    const resp = await fetch(`/api/map?percent=${encodeURIComponent(param)}`);
+    // Always fetch fresh data from the server. Do not persist any map JSON in page memory.
+    const resp = await fetch(`/api/map?percent=${encodeURIComponent(param)}`, {
+        cache: 'no-store',
+        headers: { 'Pragma': 'no-cache' }
+    });
     if (!resp.ok) throw new Error('Failed to fetch map: ' + resp.status);
     // If server returned gzipped content, fetch() will transparently decode it in browsers.
-    const data = await resp.json();
-    window._mapCache[param] = data;
-    return data;
+    return await resp.json();
 }
 
 function topGenre(mood_vector) {
@@ -103,9 +103,7 @@ async function loadAndPlot(n_or_pct) {
         const pct = String(n_or_pct || '25');
         const data = await fetchMapParam(pct);
     const items = data.items || [];
-    // store last items and last requested percent for re-rendering/full toggles
-    window._lastItems = items;
-    window._lastN = pct;
+    // Do NOT store items or last requested percent in page memory — always re-fetch when needed.
         document.getElementById('map-projection-label').textContent = data.projection || '';
 
         // Build arrays and grouping
@@ -409,21 +407,64 @@ try {
 document.getElementById('toggle-full').addEventListener('click', () => {
     window._mapUseFull = !window._mapUseFull;
     document.getElementById('toggle-full').textContent = window._mapUseFull ? 'Full (on)' : 'Full';
-    // re-render with previous n
-    const n = window._lastN || '25';
-    loadAndPlot(n);
+    // re-render using the currently active percent button (fallback to 25)
+    let pct = '25';
+    try {
+        const btn25 = document.getElementById('btn-pct-25');
+        const btn50 = document.getElementById('btn-pct-50');
+        const btn75 = document.getElementById('btn-pct-75');
+        const btn100 = document.getElementById('btn-pct-100');
+        if (btn25 && btn25.classList.contains('btn-primary')) pct = '25';
+        else if (btn50 && btn50.classList.contains('btn-primary')) pct = '50';
+        else if (btn75 && btn75.classList.contains('btn-primary')) pct = '75';
+        else if (btn100 && btn100.classList.contains('btn-primary')) pct = '100';
+    } catch (e) { /* ignore and fallback to 25 */ }
+    loadAndPlot(pct);
 });
 
-// Refresh button clears overlays (paths) and selection but keeps the main track scatter
+// Refresh button clears overlays (paths) and selection and forces new fetches on next load
 document.getElementById('refresh-map').addEventListener('click', () => {
     try {
-        // Clear overlays and client cache so next load fetches fresh data from server
+        // Clear overlays and transient selection state so next load fetches fresh data from server
         clearMapOverlays();
-        window._mapCache = {};
-        window._lastItems = null;
-        window._lastN = null;
-        document.getElementById('map-status').textContent = 'Refreshed (cache cleared)';
+        window._plotSelection = [];
+        // update status; actual map data will be re-fetched on the next loadAndPlot call
+        document.getElementById('map-status').textContent = 'Refreshed (transient state cleared)';
     } catch (e) { console.warn('refresh-map failed', e); }
+});
+
+// Prevent bfcache from preserving large in-memory map state across navigation.
+window.addEventListener('pageshow', (event) => {
+    try {
+        if (event.persisted) {
+            // Clear transient objects and re-fetch fresh map data
+            window._plotPointsFull = null;
+            window._plotPoints = null;
+            window._plotSelection = [];
+            window._colorMap = null;
+            window._genreList = null;
+            window._hiddenGenres = new Set();
+            // re-fetch the active percent (derive from active button)
+            let pct = '25';
+            try {
+                if (document.getElementById('btn-pct-50')?.classList.contains('btn-primary')) pct = '50';
+                else if (document.getElementById('btn-pct-75')?.classList.contains('btn-primary')) pct = '75';
+                else if (document.getElementById('btn-pct-100')?.classList.contains('btn-primary')) pct = '100';
+            } catch (e) {}
+            loadAndPlot(pct);
+        }
+    } catch (e) { console.warn('pageshow handler failed', e); }
+});
+
+window.addEventListener('beforeunload', () => {
+    try {
+        window._plotPointsFull = null;
+        window._plotPoints = null;
+        window._plotSelection = null;
+        window._colorMap = null;
+        window._genreList = null;
+        window._hiddenGenres = null;
+    } catch (e) { /* ignore */ }
 });
 
 // Click mode toggle: Add (default) vs Replace

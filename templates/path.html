@@ -168,12 +168,13 @@
                     if (window.requestIdleCallback) return window.requestIdleCallback(fn, {timeout: delay});
                     return setTimeout(fn, delay);
                 };
+                // Prefetch the map in the background (fire-and-forget). Do NOT store the response in page memory.
                 schedule(() => {
-                    if (!window._mapFullPromise) {
-                        window._mapFullPromise = fetch('/api/map?percent=100')
-                            .then(r => r.ok ? r.json().catch(() => null) : null)
+                    try {
+                        fetch('/api/map?percent=100', { cache: 'no-store' })
+                            .then(r => { if (!r.ok) throw new Error('prefetch failed'); return r.json().catch(() => null); })
                             .catch(() => null);
-                    }
+                    } catch (e) { /* ignore */ }
                 }, 1500);
             } catch (e) {
                 console.debug('Map prefetch schedule failed', e);
@@ -692,8 +693,8 @@
                         max_steps: maxSteps
                     });
                     // Start fetching the full map projection in parallel (non-blocking) so both network requests
-                    // can be performed concurrently. Prefer the background prefetch promise if it exists.
-                    const mapPromise = window._mapFullPromise || fetch('/api/map?percent=100')
+                    // can be performed concurrently. Always fetch fresh data and do not reuse any in-page cached promise.
+                    const mapPromise = fetch('/api/map?percent=100', { cache: 'no-store' })
                         .then(r => r.ok ? r.json().catch(() => null) : null)
                         .catch(() => null);
 
