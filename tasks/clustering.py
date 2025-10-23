@@ -268,7 +268,7 @@ def run_clustering_task(
     mistral_api_key_param, mistral_model_name_param,
     top_n_moods_for_clustering_param,
     top_n_playlists_param, # *** NEW: Accept Top N parameter ***
-    enable_clustering_embeddings_param, openai_dmr_model_name, openai_api_key, dmr_base_url):
+    enable_clustering_embeddings_param, openai_model_name, openai_api_key, openai_base_url):
     """
     Main entry point for the clustering process.
     Orchestrates data preparation, batch job creation, result aggregation, and playlist creation.
@@ -509,7 +509,7 @@ def run_clustering_task(
                 ai_model_provider_param, ollama_server_url_param,
                 ollama_model_name_param, gemini_api_key_param, gemini_model_name_param,
                 mistral_api_key_param, mistral_model_name_param,
-                enable_clustering_embeddings_param, openai_dmr_model_name, openai_api_key, dmr_base_url
+                enable_clustering_embeddings_param, openai_model_name, openai_api_key, openai_base_url
             )
 
             _log_and_update("Deleting existing automatic playlists...", 97)
@@ -840,7 +840,7 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
     logger.info(f"Enqueued batch job {new_job.id} for runs {start_run}-{start_run + num_iterations - 1}.")
 
 
-def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_model, gemini_key, gemini_model, mistral_key, mistral_model, embeddings_used, openai_dmr_model_name, openai_api_key, dmr_base_url):
+def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_model, gemini_key, gemini_model, mistral_key, mistral_model, embeddings_used, openai_model_name, openai_api_key, openai_base_url):
     """
     Uses AI to name playlists and formats them for creation.
     Returns a dictionary mapping final playlist names to lists of song tuples (id, title, author).
@@ -871,7 +871,7 @@ def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_mod
                     creative_prompt_template, feature1, feature2, feature3,
                     [{'title': s_title, 'author': s_author} for _, s_title, s_author in songs],
                     centroids.get(original_name, {}),
-                    openai_dmr_model_name, openai_api_key, dmr_base_url
+                    openai_model_name, openai_api_key, openai_base_url
                 )
                 if ai_name and "Error" not in ai_name:
                     final_name = ai_name.strip().replace("\n", " ")

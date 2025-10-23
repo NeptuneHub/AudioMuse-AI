@@ -160,9 +160,9 @@ function renderConfig(config) {
     document.getElementById('config-ollama_model_name').value = config.ollama_model_name || 'mistral:7b';
     document.getElementById('config-gemini_model_name').value = config.gemini_model_name || 'gemini-2.5-pro';
     document.getElementById('config-mistral_model_name').value = config.mistral_model_name || 'ministral-3b-latest';
-    document.getElementById('config-openai_model_name').value = config.mistral_model_name || 'GPT-4o mini';
-    document.getElementById('config-openai_api_key').value = config.mistral_model_name || 'xxxx-xxxx-xxxx-xxxx'; // Placeholder
-    document.getElementById('config-openai_url').value = config.mistral_model_name || 'http://model-runner.docker.internal'; // Placeholder
+    document.getElementById('config-openai_model_name').value = config.openai_model_name || 'GPT-4o mini';
+    document.getElementById('config-openai_api_key').value = config.openai_api_key || 'xxxx-xxxx-xxxx-xxxx'; // Placeholder
+    document.getElementById('config-openai_url').value = config.openai_url|| 'http://model-runner.docker.internal'; // Placeholder
 }
 
 function toggleClusteringParams() {

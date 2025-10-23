@@ -202,9 +202,9 @@ MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "YOUR-GEMINI-API-KEY-HERE")
 MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 
-OPENAI_DMR_MODEL_NAME = os.environ.get("OPENAI_DMR_MODEL_NAME", "gpt-4-dmr-2024-08-06") # Default OpenAI DMR model
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", None) # Default OpenAI API key
-DMR_BASE_URL = os.environ.get("DMR_BASE_URL", None) # Default DMR base URL
+OPENAI_MODEL_NAME = os.environ.get("OPENAI_MODEL_NAME", "gpt-4-2024-08-06") # Default Open-AI model
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "xxxxxxxx") # Default Open-AI API key
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", None) # Default Open-AI base URL
 
 # Construct DATABASE_URL from individual components for better security in K8s
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "audiomuse")
