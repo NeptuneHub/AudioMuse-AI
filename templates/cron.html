@@ -21,14 +21,17 @@
             <div class="container">
                 <div id="main-content-inner">
                     <section>
-                        <div class="page-header">
-                            <h1>Scheduled Tasks</h1>
-                            <p class="subtitle">Configure scheduled Analysis and Clustering runs using cron notation.</p>
+                        <div id="config-header">
+                            <div class="config-title-group">
+                                <h1>Schedule a Task</h1>
+                                <p class="subtitle">Configure scheduled Analysis and Clustering runs using cron notation.</p>
+                            </div>
+                            <div class="header-controls">
+                                <!-- Header controls intentionally empty; the save button is placed under the form. -->
+                            </div>
                         </div>
-                    </section>
 
-                    <section>
-                        <div style="max-width:700px;">
+                        <div style="max-width:100%; margin-top:1rem;">
                             <label style="display:block;margin-bottom:.5rem;">Analysis</label>
                             <input id="analysis-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 2 * * 0-5)">
                             <div style="margin-top:.5rem;"><input id="analysis-enabled" type="checkbox"> Enable</div>
@@ -40,6 +43,7 @@
                             <div style="margin-top:.5rem;"><input id="clustering-enabled" type="checkbox"> Enable</div>
 
                             <p style="margin-top:.5rem;font-size:0.9rem;color:#555;">Defaults are disabled. Analysis default: each night (2:00) except Saturday. Clustering default: Saturday at 2:00.</p>
+
                             <div style="margin-top:1rem;">
                                 <button id="save-btn" class="btn btn-primary" style="width:100%;">Save Schedules</button>
                             </div>
