@@ -36,7 +36,7 @@
                     <button id="create-playlist" class="btn btn-primary">Create playlist</button>
                     <button id="song-path-btn" class="btn btn-primary" disabled style="margin-left:6px;">Song Path</button>
                     <button id="refresh-map" type="button" class="btn btn-ghost" title="Refresh map (clear overlays)" style="margin-left:6px;">Refresh</button>
-                    <button id="toggle-full" type="button" class="btn btn-ghost" title="Show full dataset" style="margin-left:6px;">Full</button>
+                    
                     
                     <div id="map-status" style="margin-left:12px;color:#6B7280"></div>
                 </div>
@@ -404,23 +404,7 @@ try {
 
 // toggle-select removed; dragmode is forced to 'lasso' on plot render
 
-document.getElementById('toggle-full').addEventListener('click', () => {
-    window._mapUseFull = !window._mapUseFull;
-    document.getElementById('toggle-full').textContent = window._mapUseFull ? 'Full (on)' : 'Full';
-    // re-render using the currently active percent button (fallback to 25)
-    let pct = '25';
-    try {
-        const btn25 = document.getElementById('btn-pct-25');
-        const btn50 = document.getElementById('btn-pct-50');
-        const btn75 = document.getElementById('btn-pct-75');
-        const btn100 = document.getElementById('btn-pct-100');
-        if (btn25 && btn25.classList.contains('btn-primary')) pct = '25';
-        else if (btn50 && btn50.classList.contains('btn-primary')) pct = '50';
-        else if (btn75 && btn75.classList.contains('btn-primary')) pct = '75';
-        else if (btn100 && btn100.classList.contains('btn-primary')) pct = '100';
-    } catch (e) { /* ignore and fallback to 25 */ }
-    loadAndPlot(pct);
-});
+// 'Full' toggle removed; default behavior uses subsampling policy and WebGL renderer
 
 // Refresh button clears overlays (paths) and selection and forces new fetches on next load
 document.getElementById('refresh-map').addEventListener('click', () => {
