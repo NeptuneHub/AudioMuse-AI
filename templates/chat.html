@@ -63,14 +63,13 @@
                             </div>
                             <div id="openaiConfig" class="hidden">
                                 <label for="openaiModel">OpenAI Model</label>
-                                <input type="text" id="openaiModel" placeholder="e.g., GPT-4o mini">
+                                <input type="text" id="openaiModel" placeholder="e.g., gpt-4">
                                 <div style="margin-top: 1.5rem;">
-                                    <label for="openaiUrl">OpenAI Base URL</label>
-                                    <input type="text" id="openaiUrl" placeholder="e.g., http://model-runner.docker.internal">
+                                    <label for="openaiBaseUrl">OpenAI Base URL</label>
+                                    <input type="text" id="openaiBaseUrl" placeholder="e.g., https://api.openai.com/v1/">
                                 </div>
-                                <div style="margin-top: 1.5rem;">
-                                    <label for="openaiApiKey">OpenAI API Key (optional)</label>
-                                    <input type="text" id="openaiApiKey" placeholder="e.g., xxxx-xxxx-xxxx-xxxx">
+                                <div style="margin-top: 1.5rem; font-size: 0.9rem; color: #555;">
+                                    <em>Note: Ensure your OpenAI API key is configured on the server side for security.</em>
                                 </div>
                             </div>
                         </div>
@@ -131,6 +130,9 @@
             const ollamaServerUrlInput = document.getElementById('ollamaServerUrl'); // Added Ollama Server URL input
             const geminiModelSelect = document.getElementById('geminiModel');
             const mistralModelSelect = document.getElementById('mistralModel');
+            const openaiConfigDiv = document.getElementById('openaiConfig');
+            const openaiModelSelect = document.getElementById('openaiModel');
+            const openaiBaseUrlInput = document.getElementById('openaiBaseUrl');
             const playlistForm = document.getElementById('playlistForm');
             const userInput = document.getElementById('userInput');
             const submitButton = document.getElementById('submitChat');
@@ -139,10 +141,6 @@
             const createPlaylistSection = document.getElementById('createPlaylistSection');
             const createPlaylistForm = document.getElementById('createPlaylistForm');
             const mediaServerResponseArea = document.getElementById('mediaServerResponseArea');
-            const openaiModelSelect = document.getElementById('openaiModel');
-            const openaiUrlInput = document.getElementById('openaiUrl');
-            const openaiApiKeyInput = document.getElementById('openaiApiKey');
-
 
             // --- Core Functions ---
 
@@ -178,9 +176,8 @@
                 
                 geminiModelSelect.value = globalConfig.default_gemini_model_name || "gemini-2.5-pro";
                 mistralModelSelect.value = globalConfig.default_mistral_model_name || "ministral-3b-latest";
-                openaiModelSelect.value = globalConfig.default_openai_model_name || "GPT-4o mini";
-                openaiUrlInput.value = globalConfig.openai_url || "http://model-runner.docker.internal";
-                openaiApiKeyInput.value = ""; // Leave empty for security
+                openaiModelSelect.value = globalConfig.default_openai_model_name || "gpt-4";
+                openaiBaseUrlInput.value = globalConfig.openai_base_url || "https://api.openai.com/v1/"; // Pre-fill OpenAI Base URL
             }
 
             /**
@@ -193,15 +190,19 @@
                     ollamaConfigDiv.classList.remove('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.add('hidden');
+                    openaiConfigDiv.classList.add('hidden');
                 } else if (provider === 'GEMINI') {
                     ollamaConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.remove('hidden');
                     mistralConfigDiv.classList.add('hidden');
+                    openaiConfigDiv.classList.add('hidden');
                 } else if (provider === 'MISTRAL') {
                     ollamaConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.remove('hidden');
+                    openaiConfigDiv.classList.add('hidden');
                 } else if (provider === 'OPENAI') {
+                    openaiConfigDiv.classList.remove('hidden');
                     ollamaConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.add('hidden');
@@ -209,6 +210,7 @@
                     ollamaConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.add('hidden');
+                    openaiConfigDiv.classList.add('hidden');
                 }
             }
 
@@ -242,8 +244,7 @@
                     payload.ai_model = mistralModelSelect.value;
                 } else if (payload.ai_provider === 'OPENAI') {
                     payload.ai_model = openaiModelSelect.value;
-                    payload.openai_url = openaiUrlInput.value;
-                    payload.openai_api_key = openaiApiKeyInput.value; // Optional
+                    payload.openai_base_url = openaiBaseUrlInput.value; // Include OpenAI Base URL
                 }
                 try {
                     const response = await fetch('/chat/api/chatPlaylist', {

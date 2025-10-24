@@ -268,7 +268,8 @@ def run_clustering_task(
     mistral_api_key_param, mistral_model_name_param,
     top_n_moods_for_clustering_param,
     top_n_playlists_param, # *** NEW: Accept Top N parameter ***
-    enable_clustering_embeddings_param, openai_model_name, openai_api_key, openai_base_url):
+    enable_clustering_embeddings_param,
+    openai_model_name_param, openai_api_key_param, openai_base_url_param):
     """
     Main entry point for the clustering process.
     Orchestrates data preparation, batch job creation, result aggregation, and playlist creation.
@@ -509,7 +510,8 @@ def run_clustering_task(
                 ai_model_provider_param, ollama_server_url_param,
                 ollama_model_name_param, gemini_api_key_param, gemini_model_name_param,
                 mistral_api_key_param, mistral_model_name_param,
-                enable_clustering_embeddings_param, openai_model_name, openai_api_key, openai_base_url
+                enable_clustering_embeddings_param,
+                openai_model_name_param, openai_api_key_param, openai_base_url_param
             )
 
             _log_and_update("Deleting existing automatic playlists...", 97)

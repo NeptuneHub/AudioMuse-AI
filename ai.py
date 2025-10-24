@@ -9,9 +9,7 @@ import google.generativeai as genai # Import Gemini library
 from mistralai import Mistral
 import os # Import os to potentially read GEMINI_API_CALL_DELAY_SECONDS
 from openai import OpenAI
-logger = logging.getLogger(__name__)
 
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 # creative_prompt_template is imported in tasks.py, so it should be defined here
@@ -208,7 +206,7 @@ def get_mistral_playlist_name(mistral_api_key, model_name, full_prompt):
         return "Error: AI service is currently unavailable."
     
 # --- OpenAI Specific Function ---
-def get_openai_playlist_name(openai_model_name, full_prompt, openai_api_key, openai_base_url, temperature: float = 0.9, max_tokens: int = 100, stream: bool = True) -> str:
+def get_openai_playlist_name(full_prompt, openai_model_name, openai_api_key, openai_base_url = None, temperature: float = 0.9, max_tokens: int = 500, stream: bool = True) -> str:
     """
     Calls the OpenAI Chat Completions API (via SDK) to generate a playlist name.
 
@@ -245,7 +243,7 @@ def get_openai_playlist_name(openai_model_name, full_prompt, openai_api_key, ope
         messages = [
             {
                 "role": "system",
-                "content": "The title needs to represent the mood and the activity of when you're listening to the playlist."
+                "content": "You generate short Playlist titles. The Playlist title needs to represent the mood and the activity of when you're listening to the playlist. The Playlist titles should be between 2 and 5 words long. You always return a single playlist name."
             },
             {"role": "user", "content": full_prompt}
         ]
@@ -272,30 +270,42 @@ def get_openai_playlist_name(openai_model_name, full_prompt, openai_api_key, ope
 
         else:
             logger.info("Requesting non-streaming completion from model '%s'...", openai_model_name)
-            response = client.chat.completions.create(
+            resp = client.chat.completions.create(
                 model=openai_model_name,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=False,
             )
-            extracted_text = response.choices[0].message.content.strip()
 
-        # --- Clean internal markers (optional, from your Ollama/Gemini logic) ---
-        for end_tag in ["</think>", "[/INST]", "[/THOUGHT]", "<|end_think|>", "<|end_of_thought|>"]:
-            if end_tag in extracted_text:
-                extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
+            logger.debug("Raw response: %s", resp.model_dump())
+
+            choice = resp.choices[0]
+            msg = choice.message
+            print(choice)
+            print(msg)
+            # Handle both OpenAI-style and local LLM formats
+            extracted_text = (
+                getattr(msg, "content", "") or
+                getattr(msg, "reasoning_content", "") or
+                choice.get("message", {}).get("reasoning_content", "") or
+                choice.get("message", {}).get("content", "")
+            ).strip()
 
         if not extracted_text:
             logger.warning("Empty response from OpenAI model.")
             return "Error: No text was returned by the AI model."
 
+        # Clean prefixes
+        for prefix in ["assistant:", "Assistant:", "AI:"]:
+            if extracted_text.startswith(prefix):
+                extracted_text = extracted_text[len(prefix):].strip()
+
         return extracted_text
 
     except Exception as e:
-        logger.error("Error calling OpenAI API: %s", e, exc_info=True)
+        logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
         return "Error: AI service is currently unavailable."
-
 
 # --- General AI Naming Function ---
 def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key, gemini_model_name, mistral_api_key, mistral_model_name, prompt_template, feature1, feature2, feature3, song_list, other_feature_scores_dict, openai_model_name, openai_api_key, openai_base_url):
@@ -356,7 +366,7 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
     elif provider == "MISTRAL":
         name = get_mistral_playlist_name(mistral_api_key, mistral_model_name, full_prompt)
     elif provider == "OPENAI":
-        name = get_openai_playlist_name(openai_model_name, full_prompt, openai_api_key, openai_base_url)
+        name = get_openai_playlist_name(full_prompt,openai_model_name, openai_api_key, openai_base_url)
     # else: provider is NONE or invalid, name remains "AI Naming Skipped"
 
     # Apply length check and return final name or error

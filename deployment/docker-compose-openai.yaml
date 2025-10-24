@@ -43,6 +43,7 @@ services:
       POSTGRES_HOST: "postgres" # Service name of the postgres container
       POSTGRES_PORT: "5432"
       REDIS_URL: "redis://redis:6379/0" # Connects to the 'redis' service
+      AI_MODEL_PROVIDER: "OPENAI"
       OPENAI_API_KEY: "YOUR_OPENAI_API_KEY_HERE" # From openai-api-credentials secret. For DMR or self hosted LLMs, add a dummy key.
       OPENAI_MODEL_NAME: "ai/qwen3:0.6B-Q4_0" # Specify the OpenAI model to use
       OPENAI_BASE_URL: "http://172.17.0.1:12434/engines/llama.cpp/v1/chat/completions" # OpenAI API URL
@@ -75,6 +76,7 @@ services:
       POSTGRES_HOST: "postgres" # Service name of the postgres container
       POSTGRES_PORT: "5432"
       REDIS_URL: "redis://redis:6379/0" # Connects to the 'redis' service
+      AI_MODEL_PROVIDER: "OPENAI"
       OPENAI_API_KEY: "YOUR_OPENAI_API_KEY_HERE" # From openai-api-credentials secret. For DMR or self hosted LLMs, add a dummy key.
       OPENAI_MODEL_NAME: "ai/qwen3:0.6B-Q4_0" # Specify the OpenAI model to use
       OPENAI_BASE_URL: "http://172.17.0.1:12434/engines/llama.cpp/v1/chat/completions" # OpenAI API URL

@@ -15,7 +15,7 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
     SPECTRAL_N_CLUSTERS_MIN, SPECTRAL_N_CLUSTERS_MAX, ENABLE_CLUSTERING_EMBEDDINGS, \
     PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, MOOD_LABELS, TOP_N_MOODS, \
     AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME, \
-    TOP_N_PLAYLISTS, MISTRAL_API_KEY, MISTRAL_MODEL_NAME, OPENAI_MODEL_NAME, OPENAI_API_KEY, OPENAI_BASE_URL
+    TOP_N_PLAYLISTS, MISTRAL_API_KEY, MISTRAL_MODEL_NAME, OPENAI_API_KEY, OPENAI_MODEL_NAME, OPENAI_BASE_URL
 
 # RQ import
 from rq import Retry
@@ -186,7 +186,7 @@ def start_clustering_endpoint():
                 default: "Configured MAX_SONGS_PER_CLUSTER"
               ai_model_provider:
                 type: string
-                description: AI provider for playlist naming (OLLAMA, GEMINI, MISTRAL, NONE).
+                description: AI provider for playlist naming (OLLAMA, GEMINI, MISTRAL, OPENAI, NONE).
                 default: "Configured AI_MODEL_PROVIDER"
               ollama_server_url:
                 type: string
@@ -197,7 +197,7 @@ def start_clustering_endpoint():
                 type: string
                 description: Override for the Ollama model name for this run.
                 nullable: true
-                default: "Defaults to server-configured OLLAMA_MODEL_NAME"
+                default: "Defaults to server-configured OPENAI_MODEL_NAME"
               gemini_api_key:
                 type: string
                 description: Override for the Gemini API key for this run (optional, defaults to server configuration).
@@ -216,20 +216,19 @@ def start_clustering_endpoint():
                 description: Override for the Mistral model name for this run.
                 nullable: true
                 default: "Defaults to server-configured MISTRAL_MODEL_NAME"
-              openai_api_key:
-                type: string
-                description: Override for the OpenAI API key for this run (optional, defaults to server configuration).
-                nullable: true
               openai_model_name:
                 type: string
                 description: Override for the OpenAI model name for this run.
                 nullable: true
                 default: "Defaults to server-configured OPENAI_MODEL_NAME"
+              openai_api_key:
+                type: string
+                description: Override for the OpenAI API key for this run (optional, defaults to server configuration).
+                nullable: true
               openai_base_url:
                 type: string
-                description: Override for the Open-AI base URL for this run.
+                description: Override for the OpenAI base URL for this run (optional, defaults to server configuration).
                 nullable: true
-                default: "Defaults to server-configured OPENAI_BASE_URL"
               top_n_moods:
                 type: integer
                 description: Number of top moods to consider for clustering feature vectors (uses the first N from global MOOD_LABELS).
@@ -341,11 +340,11 @@ def start_clustering_endpoint():
             "gemini_model_name_param": data.get('gemini_model_name', GEMINI_MODEL_NAME),
             "mistral_api_key_param": data.get('mistral_api_key', MISTRAL_API_KEY),
             "mistral_model_name_param": data.get('mistral_model_name', MISTRAL_MODEL_NAME),
-            "openai_api_key_param": data.get('openai_api_key', OPENAI_API_KEY),
-            "openai_model_name_param": data.get('openai_model_name', OPENAI_MODEL_NAME),
-            "openai_base_url_param": data.get('openai_base_url', OPENAI_BASE_URL),
             "top_n_moods_for_clustering_param": int(data.get('top_n_moods', TOP_N_MOODS)),
             "enable_clustering_embeddings_param": data.get('enable_clustering_embeddings', ENABLE_CLUSTERING_EMBEDDINGS),
+            "openai_model_name_param": data.get('openai_model_name', OPENAI_MODEL_NAME),
+            "openai_api_key_param": data.get('openai_api_key', OPENAI_API_KEY),
+            "openai_base_url_param": data.get('openai_base_url', OPENAI_BASE_URL),
         },
         job_id=job_id,
         description="Main Music Clustering",
