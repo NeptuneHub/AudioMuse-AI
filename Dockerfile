@@ -119,6 +119,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       sqlglot \
       google-generativeai \
       mistralai \
+      openai \
   umap-learn \
       pydub \
       python-mpd2 \

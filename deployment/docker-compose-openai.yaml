@@ -32,10 +32,10 @@ services:
       - "8000:8000" # Map host port 8000 to container port 8000
     environment:
       SERVICE_TYPE: "flask" # Tells the container to run the Flask app
-      MEDIASERVER_TYPE: "jellyfin" # Specify the media server type
-      JELLYFIN_USER_ID: "YOUR-JF-USER-ID" #for example: 0e45c44b3e2e4da7a2be11a72a1c8575
-      JELLYFIN_TOKEN: "YOUR-JF-TOKEN" # for example: e0b8c325bc1b426c81922b90c0aa2ff1
-      JELLYFIN_URL: "YOUR-JF-URL" # for example: http://jellyfin.192.168.3.131.nip.io:8087
+      MEDIASERVER_TYPE: "emby" # Specify the media server type
+      EMBY_USER_ID: "xxxxb4fb-4e2d-4c3d-xxxx-xxxxxxxxxxxx" # Example: xxxxb4fb-4e2d-4c3d-xxxx-xxxxxxxxxxxx
+      EMBY_TOKEN: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # Example: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      EMBY_URL: "http://embyserver:80"
       # DATABASE_URL is now constructed by config.py from the following:
       POSTGRES_USER: "audiomuse"
       POSTGRES_PASSWORD: "audiomusepassword"
@@ -43,18 +43,20 @@ services:
       POSTGRES_HOST: "postgres" # Service name of the postgres container
       POSTGRES_PORT: "5432"
       REDIS_URL: "redis://redis:6379/0" # Connects to the 'redis' service
-      GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE" # From gemini-api-credentials secret
-      MISTRAL_API_KEY: "YOUR_MISTRAL_API_KEY_HERE" # From mistral-api-credentials secret
-      OPENAI_API_KEY: "YOUR_OPENAI_API_KEY_HERE" # From openai-api-credentials secret
-      OPENAI_MODEL: "gpt-4o" # Specify the OpenAI model to use
-      OPENAI_URL: "https://api.openai.com/" # OpenAI API URL
+      OPENAI_API_KEY: "YOUR_OPENAI_API_KEY_HERE" # From openai-api-credentials secret. For DMR or self hosted LLMs, add a dummy key.
+      OPENAI_MODEL_NAME: "ai/qwen3:0.6B-Q4_0" # Specify the OpenAI model to use
+      OPENAI_BASE_URL: "http://172.17.0.1:12434/engines/llama.cpp/v1/chat/completions" # OpenAI API URL
       TEMP_DIR: "/app/temp_audio"
-    volumes:
-      - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
+    #volumes:
+    #  - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
+    tmpfs:  # Use tmpfs for temporary audio files instead of a volume
+      - /app/temp_audio:rw
     depends_on:
       - redis
       - postgres
     restart: unless-stopped
+    models:
+      - llm
 
   # AudioMuse-AI RQ Worker service
   audiomuse-ai-worker:
@@ -62,10 +64,10 @@ services:
     container_name: audiomuse-ai-worker-instance
     environment:
       SERVICE_TYPE: "worker" # Tells the container to run the RQ worker
-      MEDIASERVER_TYPE: "jellyfin" # Specify the media server type
-      JELLYFIN_USER_ID: "YOUR-JF-USER-ID" #for example: 0e45c44b3e2e4da7a2be11a72a1c8575
-      JELLYFIN_TOKEN: "YOUR-JF-TOKEN" # for example: e0b8c325bc1b426c81922b90c0aa2ff1
-      JELLYFIN_URL: "YOUR-JF-URL" # for example: http://jellyfin.192.168.3.131.nip.io:8087
+      MEDIASERVER_TYPE: "emby" # Specify the media server type
+      EMBY_USER_ID: "xxxxb4fb-4e2d-4c3d-xxxx-xxxxxxxxxxxx" # Example: xxxxb4fb-4e2d-4c3d-xxxx-xxxxxxxxxxxx
+      EMBY_TOKEN: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # Example: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      EMBY_URL: "http://embyserver:80"
       # DATABASE_URL is now constructed by config.py from the following:
       POSTGRES_USER: "audiomuse"
       POSTGRES_PASSWORD: "audiomusepassword"
@@ -73,15 +75,24 @@ services:
       POSTGRES_HOST: "postgres" # Service name of the postgres container
       POSTGRES_PORT: "5432"
       REDIS_URL: "redis://redis:6379/0" # Connects to the 'redis' service
-      GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE" # From gemini-api-credentials secret
-      MISTRAL_API_KEY: "YOUR_MISTRAL_API_KEY_HERE"
+      OPENAI_API_KEY: "YOUR_OPENAI_API_KEY_HERE" # From openai-api-credentials secret. For DMR or self hosted LLMs, add a dummy key.
+      OPENAI_MODEL_NAME: "ai/qwen3:0.6B-Q4_0" # Specify the OpenAI model to use
+      OPENAI_BASE_URL: "http://172.17.0.1:12434/engines/llama.cpp/v1/chat/completions" # OpenAI API URL
       TEMP_DIR: "/app/temp_audio"
-    volumes:
-      - temp-audio-worker:/app/temp_audio # Volume for temporary audio files
+    #volumes:
+    #  - temp-audio-worker:/app/temp_audio # Volume for temporary audio files
+    tmpfs:  # Use tmpfs for temporary audio files instead of a volume
+      - /app/temp_audio:rw
     depends_on:
       - redis
       - postgres
     restart: unless-stopped
+    models:
+      - llm
+# Docker Model Runner uses the same API endpoints as OpenAI. https://docs.docker.com/ai/model-runner/
+models:
+  llm:
+    model: ai/qwen3:0.6B-Q4_0 # very lightweight local model for testing. Change as needed. and make sure it maches OPENAI_MODEL_NAME
 
 # Define volumes for persistent data and temporary files
 volumes:

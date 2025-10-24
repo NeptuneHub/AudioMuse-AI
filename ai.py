@@ -8,7 +8,10 @@ import unicodedata
 import google.generativeai as genai # Import Gemini library
 from mistralai import Mistral
 import os # Import os to potentially read GEMINI_API_CALL_DELAY_SECONDS
-from typing import Optional
+from openai import OpenAI
+logger = logging.getLogger(__name__)
+
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 # creative_prompt_template is imported in tasks.py, so it should be defined here
@@ -205,223 +208,93 @@ def get_mistral_playlist_name(mistral_api_key, model_name, full_prompt):
         return "Error: AI service is currently unavailable."
     
 # --- OpenAI Specific Function ---
-
-def get_openai_playlist_name(
-    openai_model_name: str,
-    full_prompt: str,
-    openai_api_key: str,
-    openai_base_url: Optional[str] = None,
-    temperature: float = 0.9,
-    max_tokens: int = 500,
-    stream: bool = True,
-    timeout_seconds: int = 300,
-) -> str:
+def get_openai_playlist_name(openai_model_name, full_prompt, openai_api_key, openai_base_url, temperature: float = 0.9, max_tokens: int = 100, stream: bool = True) -> str:
     """
-    Calls an OpenAI-compatible chat completions endpoint (can be OpenAI or a self-hosted Open-AI/proxy)
-    to get a playlist name. Handles both streaming and non-streaming responses and extracts only
-    the "final" assistant content (attempting to remove internal 'thought' blocks).
+    Calls the OpenAI Chat Completions API (via SDK) to generate a playlist name.
 
     Args:
-        openai_model_name (str): Model name (e.g., "gpt-4o-mini" or "qwen3-4b").
-        full_prompt (str): The prompt to send as a single user message (the function uses a simple messages array).
-        openai_api_key (str): API key for Authorization header ("Bearer ...").
-        openai_base_url (Optional[str]): If provided, used as base URL (e.g., "http://192.168.20.254:1234").
-                                         If None, defaults to the official OpenAI URL "https://api.openai.com".
-        temperature (float): Sampling temperature for generation.
-        max_tokens (int): Maximum tokens to generate for the completion.
-        stream (bool): Whether to request streaming output. If True, the function will parse stream events.
-        timeout_seconds (int): HTTP request timeout in seconds.
+        openai_model_name (str): Model name (e.g., "gpt-4.1-nano", "gpt-4o-mini").
+        full_prompt (str): Full text prompt to send to the model.
+        openai_api_key (str): OpenAI or compatible API key.
+        openai_base_url (str, optional): Base API URL (e.g., "http://localhost:1234/v1").
+                                         If None, defaults to official OpenAI endpoint.
+        temperature (float): Sampling temperature for creativity.
+        max_tokens (int): Max tokens to generate in response.
+        stream (bool): Whether to stream the response incrementally.
 
     Returns:
-        str: The cleaned assistant response (intended to be the playlist name) or an error message.
+        str: Extracted playlist name text, or a user-friendly error message.
     """
 
-    # If no base URL is provided, use the standard OpenAI REST base.
-    # Then append the path for chat completions: /v1/chat/completions
-    if openai_base_url:
-        # Allow the user to pass either the full url including path or just the base host.
-        # If they passed a host only (no /v1/chat/completions), ensure we append the path.
-        if openai_base_url.endswith("/v1/chat/completions"):
-            endpoint = openai_base_url
-        else:
-            endpoint = openai_base_url.rstrip("/") + "/v1/chat/completions"
-    else:
-        endpoint = "https://api.openai.com/v1/chat/completions"
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {openai_api_key}",
-    }
-
-    # Build the messages array. We send the full_prompt as a single user message.
-    # If you want to include a system role or system-level instructions, caller should include them in full_prompt.
-    messages = [
-        {
-            "role": "system",
-            "content": "The title needs to represent the mood and the activity of when you're listening to the playlist.",
-        },
-        {"role": "user", "content": full_prompt}
-    ]
-
-    payload = {
-        "model": openai_model_name,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": stream,
-    }
-
     try:
-        logger.debug("Calling OpenAI-compatible endpoint at %s with model %s", endpoint, openai_model_name)
+        # --- Optional call delay for rate limiting ---
+        api_call_delay = int(os.environ.get("OPENAI_API_CALL_DELAY_SECONDS", "2"))
+        if api_call_delay > 0:
+            logger.debug("Delaying OpenAI API call by %s seconds to respect rate limits.", api_call_delay)
+            time.sleep(api_call_delay)
 
-        # Use streaming if requested; this will allow incremental parsing of assistant content.
-        response = requests.post(endpoint, headers=headers, data=json.dumps(payload), stream=stream, timeout=timeout_seconds)
-        response.raise_for_status()
-
-        full_raw_response_content = ""
-
-        if stream:
-            # OpenAI-style streaming: each event line begins with "data: "
-            # The stream ends with a line: data: [DONE]
-            # Each data: line contains a partial JSON object with "choices"[0]["delta"] fields.
-            # We'll iterate over response.iter_lines() to handle chunked events robustly.
-            for line_bytes in response.iter_lines(decode_unicode=False):
-                if not line_bytes:
-                    continue
-                try:
-                    line = line_bytes.decode("utf-8", errors="ignore").strip()
-                except Exception:
-                    # Fall back to safe decode; continue if we can't decode.
-                    try:
-                        line = line_bytes.decode("latin-1", errors="ignore").strip()
-                    except Exception:
-                        logger.warning("Couldn't decode streaming line; skipping a chunk.")
-                        continue
-
-                # The streaming protocol uses "data: " prefix. If not present, try to parse raw JSON.
-                if line.startswith("data: "):
-                    data_str = line[len("data: "):].strip()
-                else:
-                    data_str = line
-
-                # End-of-stream sentinel for OpenAI-style streaming
-                if data_str == "[DONE]":
-                    logger.debug("Received [DONE] sentinel from stream.")
-                    break
-
-                # Each data_str should be JSON; parse and extract any assistant delta content
-                try:
-                    chunk = json.loads(data_str)
-                except json.JSONDecodeError:
-                    # Not JSON — ignore and continue. This mirrors your Ollama approach of skipping bad lines.
-                    logger.warning("Skipping non-JSON stream line: %s", data_str[:200])
-                    continue
-
-                # Two common patterns:
-                # - OpenAI-style: chunk["choices"][0]["delta"].get("content")
-                # - Some OpenAI proxies may send 'message' or 'content' directly.
-                assistant_text_piece = ""
-                try:
-                    choices = chunk.get("choices")
-                    if isinstance(choices, list) and len(choices) > 0:
-                        choice0 = choices[0]
-                        # OpenAI streaming delta:
-                        delta = choice0.get("delta", {})
-                        if isinstance(delta, dict):
-                            assistant_text_piece = delta.get("content", "") or delta.get("text", "")
-                        # In some variants the chunk may include 'message' with 'content'
-                        if not assistant_text_piece:
-                            message = choice0.get("message")
-                            if message and isinstance(message, dict):
-                                # message.content can be a string or a dict with parts; handle string primarily
-                                content = message.get("content")
-                                if isinstance(content, str):
-                                    assistant_text_piece = content
-                                elif isinstance(content, dict):
-                                    # Some implementations structure content differently; join text fields if present
-                                    # Example: {"content": {"type":"text","text":"..."}} -> try to extract
-                                    assistant_text_piece = content.get("text", "") or content.get("parts", [None])[0] or ""
-                except Exception:
-                    # Be robust: if anything about the chunk parsing fails, log and continue.
-                    logger.debug("Failed to parse streaming chunk structure; chunk keys: %s", list(chunk.keys()))
-                    assistant_text_piece = ""
-
-                if assistant_text_piece:
-                    full_raw_response_content += assistant_text_piece
-
-                # Some implementations provide a 'done' flag on the chunk (like your Ollama example)
-                if isinstance(chunk, dict) and chunk.get("done"):
-                    logger.debug("Chunk reported done=True; breaking stream loop.")
-                    break
-
-            # finished reading the stream
+        # --- Initialize OpenAI client ---
+        if openai_base_url:
+            client = OpenAI(api_key=openai_api_key, base_url=openai_base_url)
         else:
-            # Non-streaming: full JSON response in one go
-            # Parse and extract the assistant content from choices[0].message.content
-            try:
-                parsed = response.json()
-            except Exception as e:
-                logger.error("Failed to parse non-streaming JSON response: %s", e, exc_info=True)
-                return "Error: AI service returned malformed response."
+            client = OpenAI(api_key=openai_api_key)
 
-            # Typical structure: parsed["choices"][0]["message"]["content"]
-            assistant_content = ""
-            try:
-                choices = parsed.get("choices", [])
-                if choices and isinstance(choices, list):
-                    first_choice = choices[0]
-                    # Handle the OpenAI-style nested message
-                    message = first_choice.get("message", {})
-                    if isinstance(message, dict):
-                        content = message.get("content", "")
-                        if isinstance(content, str):
-                            assistant_content = content
-                        else:
-                            # Fallback if content is structured differently
-                            assistant_content = json.dumps(content)
-                    else:
-                        # Older or proxy formats might put text directly
-                        assistant_content = first_choice.get("text", "")
-            except Exception:
-                logger.exception("Unexpected structure in non-streaming response.")
-                assistant_content = ""
+        logger.debug("Starting OpenAI API call for model '%s'.", openai_model_name)
 
-            full_raw_response_content = (assistant_content or "").strip()
+        # --- Define messages ---
+        messages = [
+            {
+                "role": "system",
+                "content": "The title needs to represent the mood and the activity of when you're listening to the playlist."
+            },
+            {"role": "user", "content": full_prompt}
+        ]
 
-        # At this point full_raw_response_content should contain the assistant text (maybe with internal thought blocks).
-        extracted_text = full_raw_response_content.strip()
+        # --- Handle streaming or non-streaming output ---
+        if stream:
+            logger.info("Streaming response from OpenAI model '%s'...", openai_model_name)
+            stream_response = client.chat.completions.create(
+                model=openai_model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+            )
 
-        # Remove common 'think'/internal tags, keeping only the text after them.
-        # Using the same approach as your Ollama function: split on known thought-end tags and take the text _after_ them.
-        thought_enders = ["</think>", "[/INST]", "[/THOUGHT]", "<|end_think|>", "<|end_of_thought|>"]
-        for end_tag in thought_enders:
-            # If tag present, take everything after the last occurrence of the tag
+            # Build the response incrementally
+            full_text = ""
+            for chunk in stream_response:
+                delta = chunk.choices[0].delta
+                if delta and getattr(delta, "content", None):
+                    full_text += delta.content
+
+            extracted_text = full_text.strip()
+
+        else:
+            logger.info("Requesting non-streaming completion from model '%s'...", openai_model_name)
+            response = client.chat.completions.create(
+                model=openai_model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=False,
+            )
+            extracted_text = response.choices[0].message.content.strip()
+
+        # --- Clean internal markers (optional, from your Ollama/Gemini logic) ---
+        for end_tag in ["</think>", "[/INST]", "[/THOUGHT]", "<|end_think|>", "<|end_of_thought|>"]:
             if end_tag in extracted_text:
                 extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
 
-        # Additional conservative cleaning: some streams include role tags like "assistant:" or "### Assistant:"
-        # If these appear at the beginning, remove them to get the pure content.
-        for prefix in ["assistant:", "Assistant:", "### Assistant:", "Assistant —", "AI:" ]:
-            if extracted_text.startswith(prefix):
-                extracted_text = extracted_text[len(prefix):].strip()
-
-        # Final safety/length check: if empty, return a helpful error message.
         if not extracted_text:
-            logger.warning("Response parsed to empty string; returning service unavailable message.")
-            return "Error: AI service did not return usable content."
+            logger.warning("Empty response from OpenAI model.")
+            return "Error: No text was returned by the AI model."
 
         return extracted_text
 
-    except requests.exceptions.RequestException as e:
-        # Network error, timeout, connection refused, etc.
-        logger.error("Network error when calling OpenAI-compatible API: %s", e, exc_info=True)
-        return "Error: AI service is currently unavailable."
     except Exception as e:
-        # Any other unexpected failure — log full traceback and return a generic error string for the caller.
-        logger.exception("An unexpected error occurred in get_openai_playlist_name")
+        logger.error("Error calling OpenAI API: %s", e, exc_info=True)
         return "Error: AI service is currently unavailable."
-
-
 
 
 # --- General AI Naming Function ---
