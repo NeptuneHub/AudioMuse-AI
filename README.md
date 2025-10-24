@@ -16,11 +16,13 @@ Deploy it easily on your local machine with Docker Compose/Podman or scale it up
 
 AudioMuse-AI lets you explore your music library in innovative ways, just **start with an initial analysis**, and you’ll unlock features like:
 * **Clustering**: Automatically groups sonically similar songs, creating genre-defying playlists based on the music's actual sound.
+* **Instant Playlists**: Simply tell the AI what you want to hear—like "high-tempo, low-energy music" and it will instantly generate a playlist for you.
+* **Music Map**: Discover your music collection visually with a vibrant, genre-based 2D map.
 * **Playlist from Similar Songs**: Pick a track you love, and AudioMuse-AI will find all the songs in your library that share its sonic signature, creating a new discovery playlist.
-* **Song Paths**: Create a seamless listening journey between two or more songs. AudioMuse-AI finds the perfect tracks to bridge the sonic gap.
-* **Instant Playlists**: Simply tell the AI what you want to hear—like "high-tempo, low-energy workout music"—and it will instantly generate a playlist for you.
+* **Song Paths**: Create a seamless listening journey between two songs. AudioMuse-AI finds the perfect tracks to bridge the sonic gap.
 * **Sonic Fingerprint**: Generates playlists based on your listening habits, finding tracks similar to what you've been playing most often.
-* **Song Alchemy**: Mix your ideal vibe — mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and an interactive 2D preview. Export the final selection directly to your media server.
+* **Song Alchemy**: Mix your ideal vibe, mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and a 2D preview. Export the final selection directly to your media server.
+
 
 More information, like **Frequently Asked Question (FAQ)** can be found in the [docs folder](docs).
 
