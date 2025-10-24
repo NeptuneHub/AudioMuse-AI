@@ -8,6 +8,7 @@ import unicodedata
 import google.generativeai as genai # Import Gemini library
 from mistralai import Mistral
 import os # Import os to potentially read GEMINI_API_CALL_DELAY_SECONDS
+from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -203,9 +204,111 @@ def get_mistral_playlist_name(mistral_api_key, model_name, full_prompt):
     except Exception as e:
         logger.error("Error calling Mistral API: %s", e, exc_info=True)
         return "Error: AI service is currently unavailable."
+    
+# --- OpenAI Specific Function ---
+def get_openai_playlist_name(full_prompt, openai_model_name, openai_api_key, openai_base_url = None, temperature: float = 0.9, max_tokens: int = 500, stream: bool = True) -> str:
+    """
+    Calls the OpenAI Chat Completions API (via SDK) to generate a playlist name.
+
+    Args:
+        openai_model_name (str): Model name (e.g., "gpt-4.1-nano", "gpt-4o-mini").
+        full_prompt (str): Full text prompt to send to the model.
+        openai_api_key (str): OpenAI or compatible API key.
+        openai_base_url (str, optional): Base API URL (e.g., "http://localhost:1234/v1").
+                                         If None, defaults to official OpenAI endpoint.
+        temperature (float): Sampling temperature for creativity.
+        max_tokens (int): Max tokens to generate in response.
+        stream (bool): Whether to stream the response incrementally.
+
+    Returns:
+        str: Extracted playlist name text, or a user-friendly error message.
+    """
+
+    try:
+        # --- Optional call delay for rate limiting ---
+        api_call_delay = int(os.environ.get("OPENAI_API_CALL_DELAY_SECONDS", "2"))
+        if api_call_delay > 0:
+            logger.debug("Delaying OpenAI API call by %s seconds to respect rate limits.", api_call_delay)
+            time.sleep(api_call_delay)
+
+        # --- Initialize OpenAI client ---
+        if openai_base_url:
+            client = OpenAI(api_key=openai_api_key, base_url=openai_base_url)
+        else:
+            client = OpenAI(api_key=openai_api_key)
+
+        logger.debug("Starting OpenAI API call for model '%s'.", openai_model_name)
+
+        # --- Define messages ---
+        messages = [
+            {
+                "role": "system",
+                "content": "You generate short Playlist titles. The Playlist title needs to represent the mood and the activity of when you're listening to the playlist. The Playlist titles should be between 2 and 5 words long. You always return a single playlist name."
+            },
+            {"role": "user", "content": full_prompt}
+        ]
+
+        # --- Handle streaming or non-streaming output ---
+        if stream:
+            logger.info("Streaming response from OpenAI model '%s'...", openai_model_name)
+            stream_response = client.chat.completions.create(
+                model=openai_model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+            )
+
+            # Build the response incrementally
+            full_text = ""
+            for chunk in stream_response:
+                delta = chunk.choices[0].delta
+                if delta and getattr(delta, "content", None):
+                    full_text += delta.content
+
+            extracted_text = full_text.strip()
+
+        else:
+            logger.info("Requesting non-streaming completion from model '%s'...", openai_model_name)
+            resp = client.chat.completions.create(
+                model=openai_model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=False,
+            )
+
+            logger.debug("Raw response: %s", resp.model_dump())
+
+            choice = resp.choices[0]
+            msg = choice.message
+            print(choice)
+            print(msg)
+            # Handle both OpenAI-style and local LLM formats
+            extracted_text = (
+                getattr(msg, "content", "") or
+                getattr(msg, "reasoning_content", "") or
+                choice.get("message", {}).get("reasoning_content", "") or
+                choice.get("message", {}).get("content", "")
+            ).strip()
+
+        if not extracted_text:
+            logger.warning("Empty response from OpenAI model.")
+            return "Error: No text was returned by the AI model."
+
+        # Clean prefixes
+        for prefix in ["assistant:", "Assistant:", "AI:"]:
+            if extracted_text.startswith(prefix):
+                extracted_text = extracted_text[len(prefix):].strip()
+
+        return extracted_text
+
+    except Exception as e:
+        logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
+        return "Error: AI service is currently unavailable."
 
 # --- General AI Naming Function ---
-def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key, gemini_model_name, mistral_api_key, mistral_model_name, prompt_template, feature1, feature2, feature3, song_list, other_feature_scores_dict):
+def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key, gemini_model_name, mistral_api_key, mistral_model_name, prompt_template, feature1, feature2, feature3, song_list, other_feature_scores_dict, openai_model_name, openai_api_key, openai_base_url):
     """
     Selects and calls the appropriate AI model based on the provider.
     Constructs the full prompt including new features.
@@ -262,6 +365,8 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
         name = get_gemini_playlist_name(gemini_api_key, gemini_model_name, full_prompt)
     elif provider == "MISTRAL":
         name = get_mistral_playlist_name(mistral_api_key, mistral_model_name, full_prompt)
+    elif provider == "OPENAI":
+        name = get_openai_playlist_name(full_prompt,openai_model_name, openai_api_key, openai_base_url)
     # else: provider is NONE or invalid, name remains "AI Naming Skipped"
 
     # Apply length check and return final name or error

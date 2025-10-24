@@ -176,7 +176,8 @@ textarea {
 /* --- AI Provider Specific Config Groups --- */
 #ollama-config-group,
 #gemini-config-group,
-#mistral-config-group {
+#mistral-config-group,
+#openai-config-group {
     border: 1px solid #E5E7EB;
     border-radius: 0.5rem;
     padding: 1.5rem;

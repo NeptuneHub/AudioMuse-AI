@@ -19,8 +19,9 @@ from config import (
     MISTRAL_MODEL_NAME, MISTRAL_API_KEY,
     AI_MODEL_PROVIDER, # Default AI provider
     AI_CHAT_DB_USER_NAME, AI_CHAT_DB_USER_PASSWORD, # Import new config
+    OPENAI_API_KEY, OPENAI_MODEL_NAME, OPENAI_BASE_URL, # Import OpenAI config
 )
-from ai import get_gemini_playlist_name, get_ollama_playlist_name, get_mistral_playlist_name # Import functions to call AI
+from ai import get_gemini_playlist_name, get_ollama_playlist_name, get_mistral_playlist_name, get_openai_playlist_name # Import functions to call AI
 
 # Create a Blueprint for chat-related routes
 chat_bp = Blueprint('chat_bp', __name__,
@@ -188,6 +189,15 @@ def chat_home():
                             'default_mistral_model_name': {
                                 'type': 'string', 'example': 'ministral-3b-latest'
                             },
+                            'default_openai_model_name': {
+                                'type': 'string', 'example': 'gpt-4o-mini'
+                            },
+                            'default_openai_base_url': {
+                                'type': 'string', 'example': 'https://api.openai.com/v1'
+                            },
+                            'default_openai_api_key': {
+                                'type': 'string', 'example': 'sk-your-own-key'
+                            },
                         }
                     }
                 }
@@ -206,6 +216,9 @@ def chat_config_defaults_api():
         "ollama_server_url": OLLAMA_SERVER_URL, # Ollama server URL might be useful for display/info
         "default_gemini_model_name": GEMINI_MODEL_NAME,
         "default_mistral_model_name": MISTRAL_MODEL_NAME,
+        "default_openai_model_name": OPENAI_MODEL_NAME,
+        "default_openai_base_url": OPENAI_BASE_URL,
+        "default_openai_api_key": OPENAI_API_KEY,
     }), 200
 
 @chat_bp.route('/api/chatPlaylist', methods=['POST'])
@@ -228,9 +241,9 @@ def chat_config_defaults_api():
                         },
                         'ai_provider': {
                             'type': 'string',
-                            'description': 'The AI provider to use (OLLAMA, GEMINI, MISTRAL, NONE). Defaults to server config.',
+                            'description': 'The AI provider to use (OLLAMA, GEMINI, MISTRAL, OPENAI, NONE). Defaults to server config.',
                             'example': 'GEMINI',
-                            'enum': ['OLLAMA', 'GEMINI', "MISTRAL", 'NONE']
+                            'enum': ['OLLAMA', 'GEMINI', "MISTRAL", "OPENAI", 'NONE']
                         },
                         'ai_model': {
                             'type': 'string',
@@ -249,6 +262,19 @@ def chat_config_defaults_api():
                         'mistral_api_key': {
                             'type': 'string',
                             'description': 'Custom Mistral API key (optional, defaults to server configuration).',
+                        },
+                        'openai_api_key': {
+                            'type': 'string',
+                            'description': 'Custom OpenAI API key (optional, defaults to server configuration).',
+                        },
+                        'openai_base_url': {
+                            'type': 'string',
+                            'description': 'Custom OpenAI Base URL (optional, defaults to server configuration).',
+                        },
+                        'openai_model': {
+                            'type': 'string',
+                            'description': 'The specific OpenAI model name to use. Defaults to server config for OpenAI.',
+                            'example': 'gpt-4o-mini'
                         }
                     }
                 }
@@ -334,6 +360,8 @@ def chat_playlist_api():
         data_for_log['gemini_api_key'] = 'API-KEY' # Masked
     if 'mistral_api_key' in data_for_log and data_for_log['mistral_api_key']:
         data_for_log['mistral_api_key'] = 'API-KEY' # Masked
+    if 'openai_api_key' in data_for_log and data_for_log['openai_api_key']:
+        data_for_log['openai_api_key'] = 'API-KEY' # Masked
     logger.debug("chat_playlist_api called. Raw request data: %s", data_for_log)
     from app_helper import get_db # Import get_db here, inside the function
     if not data or 'userInput' not in data:
@@ -555,6 +583,15 @@ Original full prompt context (for reference):
             raw_sql_from_ai_this_attempt = get_mistral_playlist_name(mistral_api_key_from_request, actual_model_used, current_prompt_for_ai)
             if raw_sql_from_ai_this_attempt.startswith("Error:"):
                 ai_response_message += f"Mistral API Error: {raw_sql_from_ai_this_attempt}\n"
+                last_error_for_retry = raw_sql_from_ai_this_attempt
+                raw_sql_from_ai_this_attempt = None
+
+        elif ai_provider == "OPENAI":
+            actual_model_used = ai_model_from_request or OPENAI_MODEL_NAME
+            ai_response_message += f"Processing with OPENAI model: {actual_model_used}.\n"
+            raw_sql_from_ai_this_attempt = get_openai_playlist_name(current_prompt_for_ai, actual_model_used, OPENAI_API_KEY, OPENAI_BASE_URL)
+            if raw_sql_from_ai_this_attempt.startswith("Error:"):
+                ai_response_message += f"OpenAI API Error: {raw_sql_from_ai_this_attempt}\n"
                 last_error_for_retry = raw_sql_from_ai_this_attempt
                 raw_sql_from_ai_this_attempt = None
 
