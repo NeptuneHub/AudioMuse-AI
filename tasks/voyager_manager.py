@@ -231,7 +231,12 @@ def _compute_distance_batch(song_batch, lookback_songs, threshold, metric_name, 
             continue
         
         # Check against lookback window
-        for recent_song in lookback_songs:
+        # Build an effective comparison window that includes the provided lookback
+        # plus any songs already accepted in this batch. This avoids the case where
+        # two near-duplicate songs fall into the same batch and both slip through
+        # because they weren't compared to each other.
+        combined_recent = list(lookback_songs) + list(batch_results)
+        for recent_song in combined_recent:
             recent_vector = _get_cached_vector(recent_song['item_id'])
             if recent_vector is None:
                 continue
