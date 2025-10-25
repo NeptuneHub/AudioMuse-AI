@@ -1145,22 +1145,19 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
     # --- Increase search size to get a large candidate pool ---
     # We need a *much larger* pool for the radius walk to be effective.
     # The multiplier should be consistent for both modes to satisfy the user's requirement.
-    if radius_similarity:
+    if radius_similarity or eliminate_duplicates:
         # Radius walk needs a large pool to choose from.
         # Let's use a base multiplier of 20, same as old code.
-        base_multiplier = 20
-        k_increase = max(4000, int(n * base_multiplier)) # Get a large pool, e.g. 4000+
+        base_multiplier = 3
+        k_increase = max(20, int(n * base_multiplier)) # Get a large pool, e.g. 4000+
         num_to_query = n + k_increase + 1
         logger.info(f"Radius similarity enabled. Fetching a large candidate pool of {num_to_query} songs.")
-    elif mood_similarity:
+    else:
+        k_increase = max(3, int(n * 0.20))
+        num_to_query = n + k_increase + 1
+    if mood_similarity:
         base_multiplier = 8 if eliminate_duplicates else 4
         k_increase = max(20, int(n * base_multiplier))
-        num_to_query = n + k_increase + 1
-    elif eliminate_duplicates:
-        k_increase = max(5, int(n * 4))
-        num_to_query = n + k_increase + 1
-    else:
-        k_increase = max(5, int(n * 0.20))
         num_to_query = n + k_increase + 1
 
     original_num_to_query = num_to_query
