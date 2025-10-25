@@ -930,11 +930,14 @@ def _execute_radius_walk(
                                 logger.debug(f"Bucket {bucket_index}: skipping idx={i} artist-cap {auth}")
                             continue
 
-                # compute dist_prev (distance to current song)
+                # compute dist_prev (distance to current song) using configured metric
                 try:
-                    dist_prev = float(np.linalg.norm(cand_vecs[i] - cur_vec))
-                except Exception:
                     dist_prev = get_direct_distance(cand_vecs[i], cur_vec)
+                except Exception:
+                    try:
+                        dist_prev = float(np.linalg.norm(cand_vecs[i] - cur_vec))
+                    except Exception:
+                        dist_prev = float('inf')
 
                 score = 0.7 * dist_prev + 0.3 * float(cand_anchor[i])
                 if score < best_score:
