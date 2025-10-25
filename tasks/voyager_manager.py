@@ -612,24 +612,62 @@ def _radius_walk_get_candidates(
                 artist_counts[author] = current_count + 1
         unique_results_by_song = final_filtered
         logger.info(f"Radius walk: artist cap applied pre-walk. Candidate pool size reduced to {len(unique_results_by_song)}.")
+
+    # 2.b Optional: apply distance-based duplicate filtering (use the same logic as non-radius path).
+    # Prepend the original song so the distance filter can compare candidates against the anchor.
+    try:
+        if unique_results_by_song:
+            original_for_filter = {"item_id": target_item_id, "distance": 0.0}
+            # _filter_by_distance honors DUPLICATE_DISTANCE_CHECK_LOOKBACK and will be a no-op if disabled.
+            filtered_after_distance = _filter_by_distance([original_for_filter] + unique_results_by_song, db_conn)
+            # Remove the original entry we prepended
+            filtered_after_distance = [s for s in filtered_after_distance if s['item_id'] != target_item_id]
+            logger.info(f"Radius walk: distance-based filtering reduced candidates {len(unique_results_by_song)} -> {len(filtered_after_distance)}")
+            unique_results_by_song = filtered_after_distance
+    except Exception:
+        # If distance filtering fails for any reason, continue with the previous candidate set.
+        logger.exception("Radius walk: distance-based pre-filter failed, continuing without it.")
     
-    # 3. Pre-calculate and cache data for the walk
+    # 2.c Apply mood-similarity filtering as a pre-walk candidate filter for radius mode.
+    # This mirrors the non-radius behavior but runs before the greedy walk.
+    try:
+        if unique_results_by_song:
+            before_mood = len(unique_results_by_song)
+            unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_item_id, db_conn)
+            after_mood = len(unique_results_by_song)
+            logger.info(f"Radius walk: mood-based filtering reduced candidates {before_mood} -> {after_mood}")
+    except Exception:
+        logger.exception("Radius walk: mood-based pre-filter failed, continuing without it.")
+    
+    # 3. Fetch item details for remaining candidates and pre-calculate/cache data for the walk
     candidate_data = []
-    for song in unique_results_by_song:
-        item_id = song['item_id']
-        vector = _get_cached_vector(item_id)
-        if vector is not None:
-            # Normalize vectors to float32 once to avoid repeated casting later
-            try:
-                vector = vector.astype(np.float32)
-            except Exception:
-                vector = np.array(vector, dtype=np.float32)
-            dist_to_anchor = get_direct_distance(vector, anchor_vector)
-            candidate_data.append({
-                "item_id": item_id,
-                "vector": vector,
-                "dist_anchor": dist_to_anchor
-            })
+    if unique_results_by_song:
+        item_ids_to_fetch = [r['item_id'] for r in unique_results_by_song]
+        # Fetch details in batch (uses app_helper get_score_data_by_ids)
+        try:
+            track_details_list = get_score_data_by_ids(item_ids_to_fetch)
+            details_map = {d['item_id']: {'title': d['title'], 'author': d['author']} for d in track_details_list}
+        except Exception:
+            details_map = {}
+
+        for song in unique_results_by_song:
+            item_id = song['item_id']
+            vector = _get_cached_vector(item_id)
+            if vector is not None:
+                # Normalize vectors to float32 once to avoid repeated casting later
+                try:
+                    vector = vector.astype(np.float32)
+                except Exception:
+                    vector = np.array(vector, dtype=np.float32)
+                dist_to_anchor = get_direct_distance(vector, anchor_vector)
+                info = details_map.get(item_id, {'title': None, 'author': None})
+                candidate_data.append({
+                    "item_id": item_id,
+                    "vector": vector,
+                    "dist_anchor": dist_to_anchor,
+                    "title": info.get('title'),
+                    "author": info.get('author')
+                })
             
     logger.info(f"Radius walk: pre-calculated vectors and distances for {len(candidate_data)} candidates.")
     return candidate_data
@@ -638,7 +676,8 @@ def _radius_walk_get_candidates(
 def _execute_radius_walk(
     target_item_id: str,
     n: int,
-    candidate_data: list
+    candidate_data: list,
+    original_song_details: dict | None = None
 ) -> list:
     """
     Executes the bucketed greedy walk based on the pre-filtered and pre-calculated candidate data.
@@ -704,10 +743,33 @@ def _execute_radius_walk(
         first_song = candidate_data[0]
         playlist_ids.append(first_song['item_id'])
         used_ids.add(first_song['item_id'])
-
         current_song_vector = first_song['vector'].astype(np.float32)
         current_song_id = first_song['item_id']
         logger.info(f"Radius walk: Starting walk with song {current_song_id}.")
+    except IndexError:
+        logger.warning("Radius walk: Candidate data was empty, cannot start walk.")
+        return []
+
+    # Maintain a dict of selected item_id -> vector for distance checks during the walk
+    selected_vectors = {playlist_ids[0]: current_song_vector}
+
+    # Maintain a set of normalized (title, author) signatures for selected songs to prevent name duplicates
+    selected_signatures = set()
+    try:
+        if original_song_details:
+            sig = (_normalize_string(original_song_details.get('title')), _normalize_string(original_song_details.get('author')))
+            selected_signatures.add(sig)
+    except Exception:
+        pass
+
+    # If first_song contains title/author, add its signature
+    try:
+        first_title = first_song.get('title')
+        first_author = first_song.get('author')
+        if first_title or first_author:
+            selected_signatures.add((_normalize_string(first_title), _normalize_string(first_author)))
+    except Exception:
+        pass
 
     except IndexError:
         logger.warning("Radius walk: Candidate data was empty, cannot start walk.")
@@ -754,6 +816,51 @@ def _execute_radius_walk(
                 dist_prev = float(np.linalg.norm(diffs))
             except Exception:
                 dist_prev = get_direct_distance(current_song_vector, bucket['items'][idx]['vector'])
+            # Additional duplicate checks against songs already selected in the walk
+            # 1) Name/artist duplicate
+            candidate_item = bucket['items'][idx]
+            cand_title = candidate_item.get('title')
+            cand_author = candidate_item.get('author')
+            cand_signature = (_normalize_string(cand_title), _normalize_string(cand_author))
+            if cand_signature in selected_signatures:
+                # Skip this candidate (treat as used)
+                # Advance pointer for this bucket and continue to next bucket
+                next_idx[bi] = idx + 1
+                continue
+
+            # 2) Distance duplicate against recent selected songs (lookback)
+            # Use the configured threshold depending on metric
+            threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if VOYAGER_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
+            lookback_ids = list(playlist_ids[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]) if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 else []
+            too_close = False
+            for sel_id in lookback_ids:
+                sel_vec = selected_vectors.get(sel_id)
+                if sel_vec is None:
+                    # Try to fetch and cache
+                    try:
+                        sel_vec = _get_cached_vector(sel_id)
+                        if sel_vec is not None:
+                            try:
+                                sel_vec = sel_vec.astype(np.float32)
+                            except Exception:
+                                sel_vec = np.array(sel_vec, dtype=np.float32)
+                            selected_vectors[sel_id] = sel_vec
+                    except Exception:
+                        sel_vec = None
+                if sel_vec is None:
+                    continue
+                # compute direct distance
+                try:
+                    d = float(np.linalg.norm(cand_vec - sel_vec))
+                except Exception:
+                    d = get_direct_distance(cand_vec, sel_vec)
+                if d < threshold:
+                    too_close = True
+                    break
+            if too_close:
+                # Skip this candidate and advance pointer
+                next_idx[bi] = idx + 1
+                continue
 
             cand_anchor = float(bucket['dist_anchor'][idx])
             score = 0.7 * dist_prev + 0.3 * cand_anchor
@@ -922,7 +1029,8 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         final_results = _execute_radius_walk(
             target_item_id=target_item_id,
             n=n,
-            candidate_data=candidate_data
+            candidate_data=candidate_data,
+            original_song_details=target_song_details
         )
         
         # 3. Return the results. They are already in the correct "walk" order.
