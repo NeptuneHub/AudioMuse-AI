@@ -18,12 +18,15 @@ from config import (
     VOYAGER_M, VOYAGER_QUERY_EF, MAX_SONGS_PER_ARTIST,
     DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
     DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD
-    , SIMILARITY_RADIUS_DEFAULT
+    , SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT
 )
 # Import from other project modules
 from .mediaserver import create_instant_playlist
 
 logger = logging.getLogger(__name__)
+
+# Optional instrumentation: enable with RADIUS_INSTRUMENTATION=True in env
+INSTRUMENT_BUCKET_SKIPS = os.environ.get("RADIUS_INSTRUMENTATION", "False").lower() == 'true'
 
 # --- Global cache for the loaded Voyager index ---
 voyager_index = None
@@ -585,51 +588,38 @@ def _radius_walk_get_candidates(
     """
     from app_helper import get_score_data_by_ids
     
-    # --- PERFORMANCE: Skip the slow O(N*K) _filter_by_distance. ---
-    # The radius walk is *designed* to find a diverse path, making the
-    # pre-filter redundant and slow. We only apply the name/artist filter.
-    logger.info(f"Radius walk: Skipping slow pre-filter _filter_by_distance for {len(initial_results)} candidates.")
+    # Follow the same pre-filter order used by the non-radius path:
+    # 1) Distance-based de-dup (prepend original)
+    # 2) Name/artist dedupe
+    # 3) Mood similarity filter
+    # NOTE: Artist-cap is intentionally NOT applied here and will be enforced
+    #       during the walk itself (in-walk) to preserve selection dynamics.
 
-    # 1. Filter by name/artist (This is now O(N) thanks to optimization)
-    # This filter now also removes the original song by checking against original_song_details
-    unique_results_by_song = _deduplicate_and_filter_neighbors(initial_results, db_conn, original_song_details)
-    
-    # 2. Apply artist cap pre-walk if requested
-    if eliminate_duplicates:
-        item_ids_to_check = [r['item_id'] for r in unique_results_by_song]
-        track_details_list = get_score_data_by_ids(item_ids_to_check)
-        details_map = {d['item_id']: {'author': d['author']} for d in track_details_list}
-        artist_counts = {}
-        final_filtered = []
-        for song in unique_results_by_song:
-            song_id = song['item_id']
-            author = details_map.get(song_id, {}).get('author')
-            if not author:
-                continue
-            current_count = artist_counts.get(author, 0)
-            if current_count < MAX_SONGS_PER_ARTIST:
-                final_filtered.append(song)
-                artist_counts[author] = current_count + 1
-        unique_results_by_song = final_filtered
-        logger.info(f"Radius walk: artist cap applied pre-walk. Candidate pool size reduced to {len(unique_results_by_song)}.")
+    # Early exit if no candidates
+    if not initial_results:
+        return []
 
-    # 2.b Optional: apply distance-based duplicate filtering (use the same logic as non-radius path).
-    # Prepend the original song so the distance filter can compare candidates against the anchor.
+    # 1) Distance-based filtering: prepend original so the filter can compare against the anchor
     try:
-        if unique_results_by_song:
-            original_for_filter = {"item_id": target_item_id, "distance": 0.0}
-            # _filter_by_distance honors DUPLICATE_DISTANCE_CHECK_LOOKBACK and will be a no-op if disabled.
-            filtered_after_distance = _filter_by_distance([original_for_filter] + unique_results_by_song, db_conn)
-            # Remove the original entry we prepended
-            filtered_after_distance = [s for s in filtered_after_distance if s['item_id'] != target_item_id]
-            logger.info(f"Radius walk: distance-based filtering reduced candidates {len(unique_results_by_song)} -> {len(filtered_after_distance)}")
-            unique_results_by_song = filtered_after_distance
+        original_for_filter = {"item_id": target_item_id, "distance": 0.0}
+        results_with_original = [original_for_filter] + initial_results
+        temp_filtered = _filter_by_distance(results_with_original, db_conn)
+        # Remove the original we prepended
+        distance_filtered_results = [s for s in temp_filtered if s['item_id'] != target_item_id]
+        logger.info(f"Radius walk: distance-based filtering reduced candidates {len(initial_results)} -> {len(distance_filtered_results)}")
     except Exception:
-        # If distance filtering fails for any reason, continue with the previous candidate set.
-        logger.exception("Radius walk: distance-based pre-filter failed, continuing without it.")
-    
-    # 2.c Apply mood-similarity filtering as a pre-walk candidate filter for radius mode.
-    # This mirrors the non-radius behavior but runs before the greedy walk.
+        logger.exception("Radius walk: distance-based pre-filter failed, continuing with original candidate set.")
+        distance_filtered_results = initial_results
+
+    # 2) Name/artist deduplication (remove exact duplicates and the original song)
+    try:
+        unique_results_by_song = _deduplicate_and_filter_neighbors(distance_filtered_results, db_conn, original_song_details)
+        logger.info(f"Radius walk: name-based dedupe reduced candidates to {len(unique_results_by_song)}")
+    except Exception:
+        logger.exception("Radius walk: name-based dedupe failed, continuing without it.")
+        unique_results_by_song = distance_filtered_results
+
+    # 3) Mood similarity filtering (mirror non-radius behavior)
     try:
         if unique_results_by_song:
             before_mood = len(unique_results_by_song)
@@ -677,7 +667,8 @@ def _execute_radius_walk(
     target_item_id: str,
     n: int,
     candidate_data: list,
-    original_song_details: dict | None = None
+    original_song_details: dict | None = None,
+    eliminate_duplicates: bool = False
 ) -> list:
     """
     Executes the bucketed greedy walk based on the pre-filtered and pre-calculated candidate data.
@@ -771,6 +762,15 @@ def _execute_radius_walk(
     except Exception:
         pass
 
+    # Track per-artist counts during the walk (enforced only if eliminate_duplicates=True)
+    artist_counts = {}
+    try:
+        # Initialize with the first selected song's artist
+        if first_author:
+            artist_counts[first_author] = artist_counts.get(first_author, 0) + 1
+    except Exception:
+        pass
+
     except IndexError:
         logger.warning("Radius walk: Candidate data was empty, cannot start walk.")
         return []
@@ -783,108 +783,177 @@ def _execute_radius_walk(
     # number of direct distance calculations while keeping a greedy selection.
 
     num_buckets = len(buckets)
-    # per-bucket next index pointer
-    next_idx = [0] * num_buckets
 
-    # Collect songs until we have n or run out
-    while len(playlist_ids) < n:
-        best_next_song = None
-        best_bucket = None
-        best_idx_in_bucket = None
-        lowest_score = float('inf')
+    # We'll process buckets sequentially (nearest -> farthest), building a
+    # greedy subpath inside each bucket and appending it to the global playlist.
+    # This satisfies the requirement to create tight per-bucket paths and then
+    # stitch them together, while enforcing artist cap and duplicate avoidance
+    # across the entire walk.
+    buckets_to_check = min(num_buckets, BUCKETS_TO_SCAN)
 
-        # Limit scanning to the nearest buckets only
-        buckets_to_check = min(num_buckets, BUCKETS_TO_SCAN)
+    # Helper: perform a greedy walk constrained to a single bucket's items.
+    def _walk_single_bucket(bucket_index, start_item_id=None):
+        bucket = buckets[bucket_index]
+        items = bucket['items']
+        if not items:
+            return []
 
-        for bi in range(buckets_to_check):
-            bucket = buckets[bi]
-            if bucket['vecs'].size == 0:
-                continue
+        # Build arrays for candidate vectors and metadata
+        cand_ids = [c['item_id'] for c in items]
+        cand_vecs = bucket['vecs']
+        cand_anchor = bucket['dist_anchor']
 
-            # Advance pointer to the next unused candidate in this bucket
-            while next_idx[bi] < len(bucket['ids']) and bucket['ids'][next_idx[bi]] in used_ids:
-                next_idx[bi] += 1
+        # remaining mask (True = available)
+        remaining = [True] * len(cand_ids)
 
-            if next_idx[bi] >= len(bucket['ids']):
-                continue
+        subpath = []
 
-            idx = next_idx[bi]
-            try:
-                # Prefer vectorized numpy norm for speed; fallback to get_direct_distance
-                cand_vec = bucket['vecs'][idx]
-                diffs = cand_vec - current_song_vector
-                dist_prev = float(np.linalg.norm(diffs))
-            except Exception:
-                dist_prev = get_direct_distance(current_song_vector, bucket['items'][idx]['vector'])
-            # Additional duplicate checks against songs already selected in the walk
-            # 1) Name/artist duplicate
-            candidate_item = bucket['items'][idx]
-            cand_title = candidate_item.get('title')
-            cand_author = candidate_item.get('author')
-            cand_signature = (_normalize_string(cand_title), _normalize_string(cand_author))
-            if cand_signature in selected_signatures:
-                # Skip this candidate (treat as used)
-                # Advance pointer for this bucket and continue to next bucket
-                next_idx[bi] = idx + 1
-                continue
-
-            # 2) Distance duplicate against recent selected songs (lookback)
-            # Use the configured threshold depending on metric
-            threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if VOYAGER_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
-            lookback_ids = list(playlist_ids[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]) if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 else []
-            too_close = False
-            for sel_id in lookback_ids:
-                sel_vec = selected_vectors.get(sel_id)
-                if sel_vec is None:
-                    # Try to fetch and cache
-                    try:
-                        sel_vec = _get_cached_vector(sel_id)
-                        if sel_vec is not None:
-                            try:
-                                sel_vec = sel_vec.astype(np.float32)
-                            except Exception:
-                                sel_vec = np.array(sel_vec, dtype=np.float32)
-                            selected_vectors[sel_id] = sel_vec
-                    except Exception:
-                        sel_vec = None
-                if sel_vec is None:
-                    continue
-                # compute direct distance
+        # If a start_item_id is provided and present in this bucket, use it as the first
+        # accepted song (if not already used); otherwise pick the nearest available.
+        def _find_start_index():
+            if start_item_id:
                 try:
-                    d = float(np.linalg.norm(cand_vec - sel_vec))
+                    si = cand_ids.index(start_item_id)
+                    if remaining[si] and cand_ids[si] not in used_ids:
+                        return si
+                except ValueError:
+                    pass
+            # fallback: first available candidate in bucket order
+            for i, cid in enumerate(cand_ids):
+                if remaining[i] and cid not in used_ids:
+                    return i
+            return None
+
+        cur_idx = _find_start_index()
+        if cur_idx is None:
+            return []
+
+        # Accept start if it passes name/artist/artist-cap checks
+        def _accept_at_index(i):
+            # In-walk name/title and distance duplicates are intentionally NOT applied here.
+            # Those duplicates should have been filtered in the initial candidate prep.
+            # Only enforce artist cap (eliminate_duplicates) and ensure the id is not already used.
+            cid = cand_ids[i]
+            if cid in used_ids:
+                return False
+            if eliminate_duplicates:
+                author = items[i].get('author')
+                if author and artist_counts.get(author, 0) >= MAX_SONGS_PER_ARTIST:
+                    return False
+            return True
+
+        # Try to accept start index, otherwise mark it unavailable and find next
+        if _accept_at_index(cur_idx):
+            remaining[cur_idx] = False
+            cid = cand_ids[cur_idx]
+            subpath.append(items[cur_idx])
+            used_ids.add(cid)
+            # Only add if we still need more songs
+            if len(playlist_ids) < n:
+                playlist_ids.append(cid)
+            try:
+                v = items[cur_idx]['vector'].astype(np.float32)
+            except Exception:
+                v = np.array(items[cur_idx]['vector'], dtype=np.float32)
+            selected_vectors[cid] = v
+            if eliminate_duplicates:
+                a = items[cur_idx].get('author')
+                if a:
+                    artist_counts[a] = artist_counts.get(a, 0) + 1
+        else:
+            remaining[cur_idx] = False
+
+        # Greedy selection inside the bucket: repeatedly pick best candidate among remaining
+        while True:
+            # build list of candidate indices still available
+            avail_idxs = [i for i, r in enumerate(remaining) if r and cand_ids[i] not in used_ids]
+            if not avail_idxs:
+                break
+
+            # compute distances from current song vector to each available candidate
+            try:
+                cur_vec = selected_vectors[playlist_ids[-1]]
+            except Exception:
+                break
+
+            best_i = None
+            best_score = float('inf')
+            best_d = None
+
+            for i in avail_idxs:
+                meta = items[i]
+                cid = cand_ids[i]
+                # Skip if already used or artist cap blocks it
+                if cid in used_ids:
+                    continue
+                if eliminate_duplicates:
+                    auth = meta.get('author')
+                    if auth and artist_counts.get(auth, 0) >= MAX_SONGS_PER_ARTIST:
+                        if INSTRUMENT_BUCKET_SKIPS:
+                            logger.debug(f"Bucket {bucket_index}: skipping idx={i} artist-cap {auth}")
+                        continue
+
+                # compute dist_prev (distance to current song)
+                try:
+                    dist_prev = float(np.linalg.norm(cand_vecs[i] - cur_vec))
                 except Exception:
-                    d = get_direct_distance(cand_vec, sel_vec)
-                if d < threshold:
-                    too_close = True
-                    break
-            if too_close:
-                # Skip this candidate and advance pointer
-                next_idx[bi] = idx + 1
-                continue
+                    dist_prev = get_direct_distance(cand_vecs[i], cur_vec)
 
-            cand_anchor = float(bucket['dist_anchor'][idx])
-            score = 0.7 * dist_prev + 0.3 * cand_anchor
+                score = 0.7 * dist_prev + 0.3 * float(cand_anchor[i])
+                if score < best_score:
+                    best_score = score
+                    best_i = i
+                    best_d = dist_prev
 
-            if score < lowest_score:
-                lowest_score = score
-                best_next_song = bucket['items'][idx]
-                best_bucket = bi
-                best_idx_in_bucket = idx
+            if best_i is None:
+                break
 
-        # If we didn't find any candidate in the scanned buckets, stop
-        if best_next_song is None:
-            logger.warning(f"Radius walk: Stopped early at {len(playlist_ids)} songs; no candidates found in top {buckets_to_check} buckets.")
-            break
+            # Accept best_i
+            remaining[best_i] = False
+            cid = cand_ids[best_i]
+            used_ids.add(cid)
+            subpath.append(items[best_i])
+            # Only add if we still need more songs
+            if len(playlist_ids) < n:
+                playlist_ids.append(cid)
+            try:
+                v = items[best_i]['vector'].astype(np.float32)
+            except Exception:
+                v = np.array(items[best_i]['vector'], dtype=np.float32)
+            selected_vectors[cid] = v
+            selected_signatures.add((_normalize_string(items[best_i].get('title')), _normalize_string(items[best_i].get('author'))))
+            if eliminate_duplicates:
+                a = items[best_i].get('author')
+                if a:
+                    artist_counts[a] = artist_counts.get(a, 0) + 1
 
-        # Accept the best candidate found among the checked bucket-tops
-        playlist_ids.append(best_next_song['item_id'])
-        used_ids.add(best_next_song['item_id'])
-        current_song_vector = best_next_song['vector'].astype(np.float32)
-        current_song_id = best_next_song['item_id']
+            if INSTRUMENT_BUCKET_SKIPS:
+                logger.debug(f"Bucket {bucket_index}: accepted idx={best_i} item_id={cid}")
 
-        # Advance the pointer in the bucket we took from so next time we consider the next item
-        if best_bucket is not None:
-            next_idx[best_bucket] = best_idx_in_bucket + 1
+        return subpath
+
+    # Process buckets sequentially; expand if needed until we reach n or run out
+    processed_buckets = 0
+    while len(playlist_ids) < n and processed_buckets < num_buckets:
+        # ensure we process at least the nearest buckets_to_check first
+        target = min(num_buckets, buckets_to_check)
+        # iterate over the next unprocessed bucket indices
+        for bi in range(processed_buckets, target):
+            # for bucket 0, we already selected the first_song (candidate_data[0])
+            start_id = None
+            if bi == 0:
+                start_id = playlist_ids[0] if playlist_ids else None
+            sub = _walk_single_bucket(bi, start_item_id=start_id)
+            processed_buckets += 1
+            if len(playlist_ids) >= n:
+                break
+
+        # if we still need more and there are more buckets, expand the window
+        if len(playlist_ids) < n and buckets_to_check < num_buckets:
+            prev = buckets_to_check
+            buckets_to_check = min(num_buckets, max(prev + 1, prev * 2))
+            logger.info(f"Radius walk: expanded bucket processing window to {buckets_to_check} buckets (needed more songs)")
+            continue
 
     logger.info(f"Radius walk: Walk complete. Collected {len(playlist_ids)} songs.")
 
@@ -918,13 +987,27 @@ def _execute_radius_walk(
                 })
 
     # The list is already ordered by the walk. We just return it.
+    # Ensure we return exactly n items requested by the caller. Trim if we collected extra.
+    playlist_ids = playlist_ids[:n]
+    # Rebuild final_results from the (possibly trimmed) playlist_ids
+    final_results = []
+    for item_id in playlist_ids:
+        dist_anchor = dist_anchor_map.get(item_id)
+        if dist_anchor is not None:
+            final_results.append({"item_id": item_id, "distance": dist_anchor})
+        else:
+            vec = _get_cached_vector(item_id)
+            anchor_vec = _get_cached_vector(target_item_id)
+            if vec is not None and anchor_vec is not None:
+                final_results.append({"item_id": item_id, "distance": get_direct_distance(vec, anchor_vec)})
+
     # No final sort by distance is needed.
     return final_results
 
 # --- END: RADIUS SIMILARITY RE-IMPLEMENTATION ---
 
 
-def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool = False, mood_similarity: bool = True, radius_similarity: bool | None = None):
+def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool | None = None, mood_similarity: bool = True, radius_similarity: bool | None = None):
     """
     Finds the N nearest neighbors for a given item_id using the globally cached Voyager index.
     If mood_similarity is True, filters results by mood feature similarity (danceability, aggressive, happy, party, relaxed, sad).
@@ -957,6 +1040,14 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
     # If caller didn't supply radius_similarity explicitly (None), use the configured default.
     if radius_similarity is None:
         radius_similarity = SIMILARITY_RADIUS_DEFAULT
+
+    # If caller didn't supply eliminate_duplicates explicitly (None), use configured default
+    if eliminate_duplicates is None:
+        eliminate_duplicates = SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
+
+    # If caller didn't supply mood_similarity explicitly (None), fall back to True (existing default).
+    if mood_similarity is None:
+        mood_similarity = True
 
     # --- Increase search size to get a large candidate pool ---
     # We need a *much larger* pool for the radius walk to be effective.
@@ -1030,7 +1121,8 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
             target_item_id=target_item_id,
             n=n,
             candidate_data=candidate_data,
-            original_song_details=target_song_details
+            original_song_details=target_song_details,
+            eliminate_duplicates=eliminate_duplicates
         )
         
         # 3. Return the results. They are already in the correct "walk" order.
@@ -1086,7 +1178,7 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         # 6. Return the top N results, sorted by original distance
         return final_results[:n]
 
-def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool = False):
+def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool | None = None):
     """
     Finds the N nearest neighbors for a given query vector.
     """
@@ -1095,6 +1187,10 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
 
     from app_helper import get_db, get_score_data_by_ids
     db_conn = get_db()
+
+    # If caller didn't supply eliminate_duplicates explicitly (None), use configured default
+    if eliminate_duplicates is None:
+        eliminate_duplicates = SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
 
     if eliminate_duplicates:
         num_to_query = n + int(n * 4)
