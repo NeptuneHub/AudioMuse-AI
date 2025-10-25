@@ -333,3 +333,5 @@ DUPLICATE_DISTANCE_CHECK_LOOKBACK = int(os.getenv("DUPLICATE_DISTANCE_CHECK_LOOK
 # Threshold for mood similarity filtering. Lower values = stricter filtering (more similar moods required).
 # Range: 0.0 (identical moods only) to 1.0 (any mood difference allowed)
 MOOD_SIMILARITY_THRESHOLD = float(os.getenv("MOOD_SIMILARITY_THRESHOLD", "0.15"))
+# Enable or disable mood similarity filtering globally (default: disabled for radius experiments)
+MOOD_SIMILARITY_ENABLE = os.environ.get("MOOD_SIMILARITY_ENABLE", "False").lower() == 'true'

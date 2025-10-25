@@ -18,7 +18,8 @@ from config import (
     VOYAGER_M, VOYAGER_QUERY_EF, MAX_SONGS_PER_ARTIST,
     DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
     DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD
-    , SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT
+    , SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT,
+    MOOD_SIMILARITY_ENABLE
 )
 # Import from other project modules
 from .mediaserver import create_instant_playlist
@@ -570,12 +571,13 @@ def _parse_mood_features(other_features_str: str) -> dict:
 # --- START: RADIUS SIMILARITY RE-IMPLEMENTATION ---
 
 def _radius_walk_get_candidates(
-    target_item_id: str, 
-    anchor_vector: np.ndarray, 
-    initial_results: list, 
-    db_conn, 
-    original_song_details: dict, 
-    eliminate_duplicates: bool
+    target_item_id: str,
+    anchor_vector: np.ndarray,
+    initial_results: list,
+    db_conn,
+    original_song_details: dict,
+    eliminate_duplicates: bool,
+    mood_similarity: bool | None = None,
 ) -> list:
     """
     Prepares the candidate pool for the radius walk.
@@ -619,13 +621,17 @@ def _radius_walk_get_candidates(
         logger.exception("Radius walk: name-based dedupe failed, continuing without it.")
         unique_results_by_song = distance_filtered_results
 
-    # 3) Mood similarity filtering (mirror non-radius behavior)
+    # 3) Mood similarity filtering: only apply if globally enabled via config.
     try:
-        if unique_results_by_song:
+        # Determine effective mood filtering: caller preference takes precedence.
+        effective_mood = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
+        if effective_mood:
             before_mood = len(unique_results_by_song)
             unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_item_id, db_conn)
             after_mood = len(unique_results_by_song)
             logger.info(f"Radius walk: mood-based filtering reduced candidates {before_mood} -> {after_mood}")
+        else:
+            logger.debug("Radius walk: mood-based pre-filter disabled by caller/config. Skipping.")
     except Exception:
         logger.exception("Radius walk: mood-based pre-filter failed, continuing without it.")
     
@@ -1089,7 +1095,7 @@ def _execute_radius_walk(
 # --- END: RADIUS SIMILARITY RE-IMPLEMENTATION ---
 
 
-def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool | None = None, mood_similarity: bool = True, radius_similarity: bool | None = None):
+def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool | None = None, mood_similarity: bool | None = None, radius_similarity: bool | None = None):
     """
     Finds the N nearest neighbors for a given item_id using the globally cached Voyager index.
     If mood_similarity is True, filters results by mood feature similarity (danceability, aggressive, happy, party, relaxed, sad).
@@ -1127,9 +1133,9 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
     if eliminate_duplicates is None:
         eliminate_duplicates = SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
 
-    # If caller didn't supply mood_similarity explicitly (None), fall back to True (existing default).
-    if mood_similarity is None:
-        mood_similarity = True
+    # If caller didn't supply mood_similarity explicitly (None), DO NOT force it here.
+    # We will treat None as "use the config default". Caller-provided True must
+    # override the config; caller-provided False disables it.
 
     # --- Increase search size to get a large candidate pool ---
     # We need a *much larger* pool for the radius walk to be effective.
@@ -1194,7 +1200,8 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
             initial_results=initial_results,
             db_conn=db_conn,
             original_song_details=target_song_details,
-            eliminate_duplicates=eliminate_duplicates # Pass this flag to apply artist cap pre-walk
+            eliminate_duplicates=eliminate_duplicates, # Pass this flag to apply artist cap pre-walk
+            mood_similarity=mood_similarity
         )
         
         # 2. Execute the bucketed greedy walk
@@ -1226,12 +1233,13 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         distance_filtered_results = [song for song in temp_filtered_results if song['item_id'] != target_item_id]
         unique_results_by_song = _deduplicate_and_filter_neighbors(distance_filtered_results, db_conn, target_song_details)
         
-        # 4. Apply mood similarity filtering if requested
-        if mood_similarity:
-            logger.info(f"Mood similarity filtering requested for target_item_id: {target_item_id}")
+        # 4. Apply mood similarity filtering: caller preference overrides config.
+        effective_mood_nonradius = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
+        if effective_mood_nonradius:
+            logger.info(f"Mood similarity filtering requested/enabled for target_item_id: {target_item_id}")
             unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_item_id, db_conn)
         else:
-            logger.info(f"No mood similarity filtering requested (mood_similarity={mood_similarity})")
+            logger.info(f"Mood filtering skipped (mood_similarity={mood_similarity}, MOOD_SIMILARITY_ENABLE={MOOD_SIMILARITY_ENABLE})")
         
         # 5. Apply artist cap (eliminate_duplicates)
         if eliminate_duplicates:

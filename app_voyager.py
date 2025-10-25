@@ -171,7 +171,7 @@ def get_similar_tracks_endpoint():
 
     mood_similarity_str = request.args.get('mood_similarity')
     if mood_similarity_str is None:
-        mood_similarity = True  # Default to True when parameter is not provided
+        mood_similarity = None  # Respect config default when parameter is omitted
     else:
         mood_similarity = mood_similarity_str.lower() == 'true'
 
