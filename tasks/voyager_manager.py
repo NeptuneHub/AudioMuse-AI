@@ -771,9 +771,10 @@ def _execute_radius_walk(
     except Exception:
         pass
 
-    except IndexError:
-        logger.warning("Radius walk: Candidate data was empty, cannot start walk.")
-        return []
+    # Track how many different buckets each artist has been included in.
+    # This enforces the "only two different bucket subpaths can have the same artist"
+    # rule until the global per-artist cap (MAX_SONGS_PER_ARTIST) is reached.
+    artist_bucket_counts = {}
 
     # --- Step 3: Iteratively build the playlist (Greedy, low-cost scanning) ---
 
@@ -805,6 +806,8 @@ def _execute_radius_walk(
 
         # remaining mask (True = available)
         remaining = [True] * len(cand_ids)
+        # Per-bucket artist set to avoid more than one song per artist within the same bucket
+        bucket_artist_set = set()
 
         subpath = []
 
@@ -836,10 +839,23 @@ def _execute_radius_walk(
             cid = cand_ids[i]
             if cid in used_ids:
                 return False
+            # Per-bucket: avoid more than one song per artist inside this bucket
+            try:
+                author = items[i].get('author')
+                if author and author in bucket_artist_set:
+                    return False
+            except Exception:
+                pass
+            # Enforce global artist cap
             if eliminate_duplicates:
                 author = items[i].get('author')
-                if author and artist_counts.get(author, 0) >= MAX_SONGS_PER_ARTIST:
-                    return False
+                if author:
+                    # If this artist has already appeared in two different buckets
+                    # and still hasn't hit the global cap, don't allow them in a third bucket.
+                    if artist_bucket_counts.get(author, 0) >= 2 and artist_counts.get(author, 0) < MAX_SONGS_PER_ARTIST:
+                        return False
+                    if artist_counts.get(author, 0) >= MAX_SONGS_PER_ARTIST:
+                        return False
             return True
 
         # Try to accept start index, otherwise mark it unavailable and find next
@@ -859,7 +875,12 @@ def _execute_radius_walk(
             if eliminate_duplicates:
                 a = items[cur_idx].get('author')
                 if a:
+                    # update global artist count
                     artist_counts[a] = artist_counts.get(a, 0) + 1
+                    # register this artist as present in this bucket (only increment bucket count once)
+                    if a not in bucket_artist_set:
+                        bucket_artist_set.add(a)
+                        artist_bucket_counts[a] = artist_bucket_counts.get(a, 0) + 1
         else:
             remaining[cur_idx] = False
 
@@ -883,15 +904,31 @@ def _execute_radius_walk(
             for i in avail_idxs:
                 meta = items[i]
                 cid = cand_ids[i]
-                # Skip if already used or artist cap blocks it
+                # Skip if already used
                 if cid in used_ids:
                     continue
+                # Per-bucket: avoid more than one song per artist inside this bucket
+                try:
+                    auth = meta.get('author')
+                    if auth and auth in bucket_artist_set:
+                        if INSTRUMENT_BUCKET_SKIPS:
+                            logger.debug(f"Bucket {bucket_index}: skipping idx={i} bucket-artist-limit {auth}")
+                        continue
+                except Exception:
+                    pass
+                # Global artist cap check
                 if eliminate_duplicates:
                     auth = meta.get('author')
-                    if auth and artist_counts.get(auth, 0) >= MAX_SONGS_PER_ARTIST:
-                        if INSTRUMENT_BUCKET_SKIPS:
-                            logger.debug(f"Bucket {bucket_index}: skipping idx={i} artist-cap {auth}")
-                        continue
+                    if auth:
+                        # if artist already occupies two different buckets and hasn't hit the cap, skip
+                        if artist_bucket_counts.get(auth, 0) >= 2 and artist_counts.get(auth, 0) < MAX_SONGS_PER_ARTIST:
+                            if INSTRUMENT_BUCKET_SKIPS:
+                                logger.debug(f"Bucket {bucket_index}: skipping idx={i} bucket-count-limit {auth}")
+                            continue
+                        if artist_counts.get(auth, 0) >= MAX_SONGS_PER_ARTIST:
+                            if INSTRUMENT_BUCKET_SKIPS:
+                                logger.debug(f"Bucket {bucket_index}: skipping idx={i} artist-cap {auth}")
+                            continue
 
                 # compute dist_prev (distance to current song)
                 try:
@@ -925,7 +962,12 @@ def _execute_radius_walk(
             if eliminate_duplicates:
                 a = items[best_i].get('author')
                 if a:
+                    # update global artist count
                     artist_counts[a] = artist_counts.get(a, 0) + 1
+                    # register this artist as present in this bucket (only increment bucket count once)
+                    if a not in bucket_artist_set:
+                        bucket_artist_set.add(a)
+                        artist_bucket_counts[a] = artist_bucket_counts.get(a, 0) + 1
 
             if INSTRUMENT_BUCKET_SKIPS:
                 logger.debug(f"Bucket {bucket_index}: accepted idx={best_i} item_id={cid}")
@@ -956,6 +998,43 @@ def _execute_radius_walk(
             continue
 
     logger.info(f"Radius walk: Walk complete. Collected {len(playlist_ids)} songs.")
+
+    # --- Post-processing: avoid undesirable adjacency ---
+    # Ensure we don't have three songs from the same artist in a row after stitching
+    def _avoid_triple_adjacent(ids):
+        # Build a lightweight map of item_id -> author from candidate_data (fallbacks to None)
+        id_to_author = {cand['item_id']: cand.get('author') for cand in candidate_data}
+        i = 0
+        while i <= len(ids) - 3:
+            a1 = id_to_author.get(ids[i])
+            a2 = id_to_author.get(ids[i+1])
+            a3 = id_to_author.get(ids[i+2])
+            if a1 and a1 == a2 == a3:
+                # Try to find a later item with a different artist to swap with the 3rd element
+                swapped = False
+                for j in range(i+3, len(ids)):
+                    if id_to_author.get(ids[j]) != a1:
+                        ids[i+2], ids[j] = ids[j], ids[i+2]
+                        swapped = True
+                        break
+                # If not found, try swapping the middle element instead
+                if not swapped:
+                    for j in range(i+3, len(ids)):
+                        if id_to_author.get(ids[j]) != a1:
+                            ids[i+1], ids[j] = ids[j], ids[i+1]
+                            swapped = True
+                            break
+                # If we couldn't swap, advance to avoid infinite loop
+                if not swapped:
+                    i += 1
+                else:
+                    # Re-evaluate the current window in case swaps created new triples
+                    continue
+            else:
+                i += 1
+        return ids
+
+    playlist_ids = _avoid_triple_adjacent(playlist_ids)
 
     # --- Step 5: Finalize and return ---
     
