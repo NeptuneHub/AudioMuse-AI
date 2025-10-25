@@ -107,7 +107,7 @@ def _calculate_local_average_jump_distance(start_item_id, end_item_id, sample_si
     
     for item_id in [start_item_id, end_item_id]:
         try:
-            neighbors = find_nearest_neighbors_by_id(item_id, n=sample_size)
+            neighbors = find_nearest_neighbors_by_id(item_id, n=sample_size, radius_similarity=None)
             if not neighbors:
                 continue
 
