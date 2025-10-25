@@ -61,6 +61,10 @@
                             <input type="checkbox" id="eliminate_duplicates" name="eliminate_duplicates" checked>
                             <label for="eliminate_duplicates">Limit songs per artist in results</label>
                         </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="radius_similarity" name="radius_similarity">
+                            <label for="radius_similarity">Radius Similarity</label>
+                        </div>
                         <!--<div class="checkbox-container">
                             <input type="checkbox" id="mood_similarity" name="mood_similarity">
                             <label for="mood_similarity">Filter by mood similarity (danceability, energy, etc.)</label>
@@ -75,6 +79,7 @@
             <section id="results-container" class="hidden">
                 <h2>Results</h2>
                 <div id="status"></div>
+                <!-- Graph visualization removed (not needed) -->
                 <div id="results-table-wrapper"></div>
             </section>
 
@@ -99,9 +104,11 @@
     </div>
 </div>
 
+    <script src="/static/chart.js"></script>
     <script>
         (() => {
             let currentTrackIds = [];
+            let currentTracks = [];
             let searchTimeout;
 
             const similarityForm = document.getElementById('similarity-form');
@@ -148,7 +155,7 @@
                     tracks.forEach(track => {
                         const itemDiv = document.createElement('div');
                         itemDiv.className = 'autocomplete-item';
-                        itemDiv.innerHTML = `<div class="title">${track.title}</div><div class="artist">${track.author}</div>`;
+                        itemDiv.innerHTML = '<div class="title">' + track.title + '</div><div class="artist">' + track.author + '</div>';
                         itemDiv.addEventListener('click', () => selectTrack(track));
                         autocompleteResults.appendChild(itemDiv);
                     });
@@ -175,6 +182,8 @@
                 }
             });
 
+            // Graph visualization removed — kept UI and results table only.
+
             // --- Main Form Submission ---
             similarityForm.addEventListener('submit', async function (event) {
                 event.preventDefault();
@@ -182,6 +191,7 @@
                 const itemId = selectedItemIdInput.value;
                 const n = document.getElementById('n').value;
                 const eliminateDuplicates = document.getElementById('eliminate_duplicates').checked;
+                const radiusSimilarity = document.getElementById('radius_similarity').checked;
                 // Mood similarity removed from UI/API: do not read or send this value
                 // const moodSimilarity = document.getElementById('mood_similarity').checked;
 
@@ -201,7 +211,8 @@
                     const params = new URLSearchParams({ 
                         item_id: itemId, 
                         n: n,
-                        eliminate_duplicates: eliminateDuplicates // Always send true or false
+                        eliminate_duplicates: eliminateDuplicates, // Always send true or false
+                        radius_similarity: radiusSimilarity
                         // mood_similarity intentionally omitted
                     });
                     const response = await fetch(`/api/similar_tracks?${params}`);
@@ -216,26 +227,16 @@
 
                     currentTrackIds = [itemId, ...data.map(track => track.item_id)];
 
-                    statusDiv.textContent = `Found ${data.length} similar tracks.`;
-                    const tableHTML = `
-                        <table>
-                            <thead>
-                                <tr><th>Title</th><th>Artist</th><th>Distance</th></tr>
-                            </thead>
-                            <tbody>
-                                ${data.map(track => `
-                                    <tr>
-                                        <td>${track.title || 'N/A'}</td>
-                                        <td>${track.author || 'N/A'}</td>
-                                        <td>${track.distance.toFixed(4)}</td>
-                                    </tr>
-                                `).join('')}
-                            </tbody>
-                        </table>`;
+                    currentTracks = [{id: itemId, title: titleInput.value, author: artistInput.value}, ...data.map(track => ({id: track.item_id, title: track.title, author: track.author}))];
+
+                    // Graph visualization removed: skipping map fetch and chart rendering.
+
+                    statusDiv.textContent = 'Found ' + data.length + ' similar tracks.';
+                    const tableHTML = '<table><thead><tr><th>Title</th><th>Artist</th><th>Distance</th></tr></thead><tbody>' + data.map(track => '<tr><td>' + (track.title || 'N/A') + '</td><td>' + (track.author || 'N/A') + '</td><td>' + track.distance.toFixed(4) + '</td></tr>').join('') + '</tbody></table>';
                     resultsTableWrapper.innerHTML = tableHTML;
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
-                    document.getElementById('playlist_name').value = `Similar to ${titleInput.value}`;
+                    document.getElementById('playlist_name').value = "Similar to " + titleInput.value;
 
                 } catch (error) {
                     statusDiv.textContent = `Error: ${error.message}`;

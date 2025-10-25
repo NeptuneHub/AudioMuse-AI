@@ -162,6 +162,9 @@ def get_similar_tracks_endpoint():
     else:
         eliminate_duplicates = eliminate_duplicates_str.lower() == 'true'
 
+    radius_similarity_str = request.args.get('radius_similarity')
+    radius_similarity = radius_similarity_str and radius_similarity_str.lower() == 'true'
+
     mood_similarity_str = request.args.get('mood_similarity')
     if mood_similarity_str is None:
         mood_similarity = True  # Default to True when parameter is not provided
@@ -185,7 +188,8 @@ def get_similar_tracks_endpoint():
             target_item_id, 
             n=num_neighbors,
             eliminate_duplicates=eliminate_duplicates,
-            mood_similarity=mood_similarity
+            mood_similarity=mood_similarity,
+            radius_similarity=radius_similarity
         )
         if not neighbor_results:
             return jsonify({"error": "Target track not found in index or no similar tracks found."}), 404

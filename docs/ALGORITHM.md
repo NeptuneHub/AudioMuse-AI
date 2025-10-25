@@ -1,6 +1,13 @@
-# **Algorhtm**
+## Quick developer pointers (where to inspect code)
+- Path: `tasks/path_manager.py` — see `find_path_between_songs`, `_find_best_unique_song`, `interpolate_centroids`.
+- Alchemy: `tasks/song_alchemy.py` — see `song_alchemy`, `_compute_centroid_from_ids`, `_project_*` helpers; `templates/alchemy.html` for client wiring.
+- Map: `app_map.py` — see `build_map_cache`, `_sample_items`, `/api/map`; `templates/map.html` for client behavior.
+- Sonic fingerprint: `tasks/sonic_fingerprint_manager.py` — see `generate_sonic_fingerprint`; `templates/sonic_fingerprint.html` for UI.
 
-This document go deeper in how the different functionality work, helping also to understand the different mix of parameter. If you just want an introduction just have look to the FAQ.
+If you'd like, I can also add a minimal flow diagram or a short call-sequence per feature (function A → function B → DB → index) to this page.
+# Algorithm
+
+This document explains the runtime algorithms implemented in the repository. It focuses on the current behavior in code (file and function references are provided so you can inspect the implementation directly). Outdated historical notes (for example references to a k-means minibatch experiment or an earlier TensorFlow/ONNX mention) were removed — the sections below describe what the code actually runs today.
 
 ## **Table of Contents**
 
@@ -12,6 +19,13 @@ This document go deeper in how the different functionality work, helping also to
 - [Workflow Overview](#workflow-overview)
 - [Analysis Algorithm Deep Dive](#analysis-algorithm-deep-dive)
 - [Clustering Algorithm Deep Dive](#clustering-algorithm-deep-dive)
+ - [Song Path Deep Dive - Deep dive](#song-path-deep-dive---deep-dive)
+ - [Song Alchemy - Deep dive](#song-alchemy---deep-dive)
+ - [Music Map - Deep dive](#music-map---deep-dive)
+ - [Sonic Fingerprint - Deep dive](#sonic-fingerprint---deep-dive)
+ - [Workflow Overview](#workflow-overview)
+ - [Analysis Algorithm Deep Dive](#analysis-algorithm-deep-dive)
+ - [Clustering Algorithm Deep Dive](#clustering-algorithm-deep-dive)
   - [1. K-Means](#1-k-means)
   - [2. DBSCAN](#2-dbscan)
   - [3. GMM (Gaussian Mixture Models)](#3-gmm-gaussian-mixture-models)
@@ -206,132 +220,44 @@ This is the main workflow of how this algorithm works. For an easy way to use it
     *  **Task Cancellation** A key feature is the ability to cancel tasks (both parent and child) even while they are actively running, offering robust control over long processes. This is more advanced than typical queue systems where cancellation might only affect pending tasks.
 
 
-## Analysis Algorithm Deep Dive
+## Analysis Algorithm — deep dive
 
-The audio analysis in AudioMuse-AI, orchestrated by `tasks.py`, meticulously extracts a rich set of features from each track. This process is foundational for the subsequent clustering and playlist generation.
-1.  **Audio Loading & Preprocessing:**
-    *   Tracks are first downloaded from your Jellyfin or Navidrome library to a temporary local directory. Librosa is used then to load the audio.
-    
-2.  **Core Feature Extraction (Librosa):**
-    *   **Tempo:** The `Tempo` algorithm analyzes the rhythmic patterns in the audio to estimate the track's tempo, expressed in Beats Per Minute (BPM).
-    *   **Key & Scale:** The `Key` algorithm identifies the predominant musical key (e.g., C, G#, Bb) and scale (major or minor) of the track. This provides insights into its harmonic structure.
-    *   **Energy:** The `Energy` function calculates the raw total energy of the audio signal. However, to make this feature comparable across tracks of varying lengths and overall loudness, the system computes and stores the **average energy per sample** (total energy divided by the number of samples). This normalized energy value offers a more stable representation of the track's perceived loudness or intensity.
+Purpose: extract a compact, reusable representation for every track (features + embedding) so downstream tasks (clustering, similarity, alchemy, path, fingerprint) can operate efficiently and deterministically.
 
-3.  **Embedding Generation (TensorFlow & Librosa):**
-    *   **MusiCNN Embeddings:** The cornerstone of the audio representation is a 200-dimensional embedding vector. This vector is generated using `TensorflowPredictMusiCNN` with the pre-trained model `msd-musicnn-1.pb` (specifically, the output from the `model/dense/BiasAdd` layer). MusiCNN is a Convolutional Neural Network (CNN) architecture that has been extensively trained on large music datasets (like the Million Song Dataset) for tasks such as music tagging. The resulting embedding is a dense, numerical summary that captures high-level semantic information and complex sonic characteristics of the track, going beyond simple acoustic features.
-    *   **Important Note:** These embeddings are **always generated and saved** during the analysis phase for every track processed. This ensures they are available if you later choose to use them for clustering.
+Core steps (implementation highlights):
 
-4.  **Prediction Models (TensorFlow & Librosa):**
-    The rich MusiCNN embeddings serve as the input to several specialized models, each designed to predict specific characteristics of the music:
-    *   **Primary Tag/Genre Prediction:**
-        *   Model: `msd-msd-musicnn-1.onnx`
-        *   Output: This model produces a vector of probability scores. Each score corresponds to a predefined tag or genre from a list (defined by `MOOD_LABELS` in `config.py`, including labels like 'rock', 'pop', 'electronic', 'jazz', 'chillout', '80s', 'instrumental', etc.). These scores indicate the likelihood of each tag/genre being applicable to the track.
-    *   **Other Feature Predictions:** The `predict_other_models` function leverages a suite of distinct models, each targeting a specific musical attribute. These models also take the MusiCNN embedding as input and typically use a `model/Softmax` output layer:
-        *   `danceable`: Predicted using `danceability-msd-musicnn-1.onnx`.
-        *   `danceable`: Predicted using `danceability-msd-musicnn-1.onnx`.
-        *   `aggressive`: Predicted using `mood_aggressive-msd-musicnn-1.onnx`.
-        *   `happy`: Predicted using `mood_happy-msd-musicnn-1.onnx`.
-        *   `party`: Predicted using `mood_party-msd-musicnn-1.onnx`.
-        *   `relaxed`: Predicted using `mood_relaxed-msd-musicnn-1.onnx`.
-        *   `sad`: Predicted using `mood_sad-msd-musicnn-1.onnx`.
-        *   Output: Each of these models outputs a probability score (typically the probability of the positive class in a binary classification, e.g., the likelihood the track is 'danceable'). This provides a nuanced understanding of various moods and characteristics beyond the primary tags.
+- Entrypoint(s): analysis tasks enqueued from the UI; per-album worker function is `analyze_album_task` (see `tasks/analysis.py`).
+- Audio loading & preprocessing: tracks are downloaded and loaded with `librosa.load(file_path, sr=16000, mono=True)` to match the MusiCNN training configuration. A mel-spectrogram is computed with fixed parameters (n_fft=512, hop_length=256, n_mels=96, window='hann', center=False, power=2.0, norm='slaney') and scaled with `np.log10(1 + 10000 * mel_spec)`.
+- Embedding generation: each track produces a 200-dim MusiCNN embedding via the `TensorflowPredictMusiCNN` wrapper (model: `msd-musicnn-1.pb`, output layer `model/dense/BiasAdd`). Embeddings are always stored in the DB so they can be reused by downstream tasks.
+- Prediction heads: a set of lightweight ONNX/TensorFlow heads consume the embedding to predict `MOOD_LABELS` (genre/tag probabilities) and other binary-like features (danceable, aggressive, happy, party, relaxed, sad). These outputs become part of the track's `mood_vector` and `other_features` fields.
+- Feature vector assembly: when the system uses interpretable features instead of raw embeddings, `score_vector` builds a single vector per track by concatenating normalized tempo, normalized average energy, mood probabilities, and other predicted feature scores. Tempo/energy are min/max scaled; the combined vector is then standardized with `StandardScaler` and persisted (scaler stats are saved to allow centroid inverse-transforms).
 
-5.  **Feature Vector Preparation for Clustering (`score_vector` function):**
-    When not using embeddings directly for clustering, all the extracted and predicted features are meticulously assembled and transformed into a single numerical vector for each track using the `score_vector` function. This is a critical step for machine learning algorithms:
-    *   **Normalization:** Tempo and the calculated average energy are normalized to a 0-1 range using configured minimum/maximum values (`TEMPO_MIN_BPM`, `TEMPO_MAX_BPM`, `ENERGY_MIN`, `ENERGY_MAX`). This ensures these features have a comparable scale.
-    *   **Normalization:**
-        *   Tempo (BPM) and the calculated average energy per sample are normalized to a 0-1 range. This is achieved by scaling them based on predefined minimum and maximum values (e.g., `TEMPO_MIN_BPM = 40.0`, `TEMPO_MAX_BPM = 200.0`, `ENERGY_MIN = 0.01`, `ENERGY_MAX = 0.15` from `config.py`). Normalization ensures that these features, which might have vastly different original scales, contribute more equally during the initial stages of vector construction.
-    *   **Vector Assembly:**
-        *   The final feature vector for each track is constructed by concatenating: the normalized tempo, the normalized average energy, the vector of primary tag/genre probability scores, and the vector of other predicted feature scores (danceability, aggressive, etc.). This creates a comprehensive numerical profile of the track.
-    *   **Standardization:**
-        *   This complete feature vector is then standardized using `sklearn.preprocessing.StandardScaler`. Standardization transforms the data for each feature to have a zero mean and unit variance across the entire dataset. This step is particularly crucial for distance-based clustering algorithms like K-Means. It prevents features with inherently larger numerical ranges from disproportionately influencing the distance calculations, ensuring that all features contribute more equitably to the clustering process. The mean and standard deviation (scale) computed by the `StandardScaler` for each feature are saved. These saved values are used later for inverse transforming cluster centroids back to an interpretable scale, which aids in understanding the characteristics of each generated cluster.
+Key notes and edge cases:
 
-6.  **Option to Use Embeddings Directly for Clustering:**
-    *   As an alternative to the `score_vector`, AudioMuse-AI now offers the option to use the raw MusiCNN embeddings (200-dimensional vectors) directly as input for the clustering algorithms. This is controlled by the `ENABLE_CLUSTERING_EMBEDDINGS` parameter (configurable via the UI).
-    *   Using embeddings directly can capture more nuanced and complex relationships between tracks, as they represent a richer, higher-dimensional summary of the audio. However, this may also require different parameter tuning for the clustering algorithms (e.g., GMM often performs well with embeddings) and can be more computationally intensive, especially with algorithms like standard K-Means (MiniBatchKMeans is used to mitigate this when embeddings are enabled). The maximum number of PCA components can also be higher when using embeddings (e.g., up to 199) compared to feature vectors (e.g., up to 8).
-    *   Regardless of the K-Means variant, embeddings are standardized using `StandardScaler` before being fed into the clustering algorithms.
+- Embeddings are the canonical, high-dimensional representation — many features and tasks default to using them (controlled by `ENABLE_CLUSTERING_EMBEDDINGS`).
+- Strict preprocessing parameters are crucial: mismatch produces incompatible inputs for the frozen MusiCNN graph and leads to meaningless embeddings.
+- Missing timestamps or metadata are handled gracefully (defaults or smaller weights used); analysis tasks are idempotent so re-running an album updates the DB rows.
 
-**Persistence:** PostgreSQL database is used for persisting analyzed track metadata, generated playlist structures, and task status.
+Persistence: PostgreSQL stores `score` and `embedding` rows; the Voyager ANN index is built from those embeddings in a later step.
 
-The use of Librosa for songs preprocessing was introduced in order to improve the compatibility with other platform (eg. `ARM64`). It is configured in order to load the same MusicNN models previously used.
-Librosa loads audio using `librosa.load(file_path, sr=16000, mono=True)`, ensuring the sample rate is exactly `16,000 Hz` and the audio is converted to mono—both strict requirements of the model. It then computes a Mel spectrogram using `librosa.feature.melspectrogram` with parameters precisely matching those used during model training: `n_fft=512, hop_length=256, n_mels=96, window='hann', center=False, power=2.0, norm='slaney', htk=False`. The spectrogram is scaled using `np.log10(1 + 10000 * mel_spec)`, a transformation that must be replicated exactly. These preprocessing steps are crucial: any deviation in parameters results in incompatible input and incorrect model predictions. Once prepared, the data is passed into a frozen TensorFlow model graph using v1 compatibility mode. TensorFlow maps defined input/output tensor names and executes inference with session.run(), first generating embeddings for each patch of the spectrogram, and then passing these to various classifier heads (e.g., mood, genre). The entire pipeline depends on strict adherence to the original preprocessing parameters—without this, the model will fail to produce meaningful results.
+## Clustering — deep dive
 
-## **Clustering Algorithm Deep Dive**
+Purpose: group tracks into coherent playlists by experimenting with algorithm and parameter choices using a Monte Carlo + evolutionary search, then pick the best-scoring solution.
 
-AudioMuse-AI offers three main clustering algorithms (K-Means, DBSCAN, GMM). A key feature is the ability to choose the input data for these algorithms:
-*   **Score-based Feature Vectors:** The traditional approach, using a vector composed of normalized tempo, energy, mood scores, and other derived features (as described in the Analysis section). This is the default.
-*   **Direct Audio Embeddings:** Using the 200-dimensional MusiCNN embeddings generated during analysis. This can provide a more nuanced clustering based on deeper audio characteristics. This option is controlled by the `ENABLE_CLUSTERING_EMBEDDINGS` parameter in the UI's "Advanced" section and configuration. GMM may perform particularly well with embeddings. When embeddings are used with K-Means, MiniBatchKMeans is employed to handle the larger data size more efficiently.
+Core steps (implementation highlights):
 
-Regardless of the input data chosen, the selected clustering algorithm is executed multiple times (default 5000) following an Evolutionary Monte Carlo approach. This allows the system to test multiple configurations of parameters and find the best ones.
+- Entrypoint(s): `run_clustering_task` and its batch jobs (see `tasks/clustering.py`). The evolutionary search executes many clustering runs (default: `CLUSTERING_RUNS`).
+- Input choices: clustering can run on interpretable score-vectors (`score_vector`) or on raw 200-dim MusiCNN embeddings (controlled by `ENABLE_CLUSTERING_EMBEDDINGS`). When embeddings are used, MiniBatchKMeans is preferred for speed.
+- Algorithms available: K-Means (fast, default), GMM (probabilistic, flexible), DBSCAN (density-based, outlier-friendly), Spectral (rarely used — heavy). The system explores multiple algorithms/parameter sets per run.
+- Stratified sampling & perturbation: each run samples a subset of songs (with configurable stratified genres to ensure underrepresented styles are included). Subsequent runs re-use most of the previous sample and swap a fraction (`SAMPLING_PERCENTAGE_CHANGE_PER_RUN`) to introduce variation.
+- Evolutionary elements: the best parameter sets (elites) are retained; later runs sometimes mutate elites instead of sampling entirely new random parameters, balancing exploration and exploitation.
+- Scoring: each clustering outcome is scored by a weighted composite: purity, diversity, and internal metrics (silhouette / Davies-Bouldin / Calinski-Harabasz). Weights live in `config.py` and drive the optimizer.
 
-When chose clustering algorithm consider their complexity (speed, scalability, etc) expecially if you have big song dataset:
-* So K-Means -> GMM -> DBSCAN -> Spectral (from faster to slower)
+Key notes and edge cases:
 
-About quality it really depends from how your song are distributed. K-Means because is faster is always a good choice. GMM give good result in some test with embbeding. Spectral give also good result with embbeding but is very slow.
-
-The TOP Playlist Number parameter was added to find the top different playlist. In short after the clustering is executed, only the N most diverse playlist are keep to avoid to have hundred of playlist created. If you put this parameter to 0, it will keep all.
-
-Here's an explanation of the pros and cons of the different algorithms:
-
-### **1\. K-Means**
-
-* **Best For:** Speed, simplicity, when clusters are roughly spherical and of similar size.  
-* **Pros:** Very fast (especially MiniBatchKMeans for large datasets/embeddings), scalable, clear "average" cluster profiles.  
-* **Cons:** Requires knowing cluster count (K), struggles with irregular shapes, sensitive to outliers, and can be slow on large datasets (complexity is O(n*k*d*i), though MiniBatchKMeans helps).
-
-### **2\. DBSCAN**
-
-* **Best For:** Discovering clusters of arbitrary shapes, handling outliers well, when the number of clusters is unknown.  
-* **Pros:** No need to set K, finds varied shapes, robust to noise.  
-* **Cons:** Sensitive to eps and min_samples parameters, can struggle with varying cluster densities, no direct "centroids," and can be slow on large datasets (complexity is O(n log n) to O(n²)).
-
-### **3\. GMM (Gaussian Mixture Models)**
-
-* **Best For:** Modeling more complex, elliptical cluster shapes and when a probabilistic assignment of tracks to clusters is beneficial.  
-* **Pros:** Flexible cluster shapes, "soft" assignments, model-based insights.  
-* **Cons:** Requires setting number of components, computationally intensive (can be slow, with complexity of O(n*k*d²) per iteration), sensitive to initialization.
-
-### **4. Spectral Clustering**
-
-* **Best For:** Finding clusters with complex, non-convex shapes (e.g., intertwined genres) when the number of clusters is known beforehand.
-* **Pros:** Very effective for irregular cluster geometries where distance-based algorithms like K-Means fail. It does not assume clusters are spherical.
-* **Cons:** Computationally very expensive (often O(n^3) due to matrix operations), which makes it impractical for large music libraries. It also requires you to specify the number of clusters, similar to K-Means.
-
-**Recommendation:** Start with **K-Means** (which will use MiniBatchKMeans by default if embeddings are enabled) due to its speed in the evolutionary search. MiniBatchKMeans is particularly helpful for larger libraries or when using embeddings. Experiment with **GMM** for more nuanced results, especially when using direct audio embeddings. Use **DBSCAN** if you suspect many outliers or highly irregular cluster shapes. Using a high number of runs (default 5000) helps the integrated evolutionary algorithm to find a good solution.
-
-### Montecarlo Evolutionary Approach
-
-AudioMuse-AI doesn't just run a clustering algorithm once; it employs a sophisticated Monte Carlo evolutionary approach, managed within `tasks.py`, to discover high-quality playlist configurations. Here's a high-level overview:
-
-1.  **Stratified Sampling:** Before each clustering run, the system selects a subset of songs from your library. A crucial part of this selection is **stratified sampling** based on predefined genres (`STRATIFIED_GENRES` in `config.py`). This ensures that the dataset used for clustering in each iteration includes a targeted number of songs from each of these important genres.
-    *   **Purpose:** This is done specifically to **avoid scenarios where genres with a low number of songs in your library are poorly represented or entirely absent** from the clustering process. By explicitly sampling from these genres, even if they have few songs, the algorithm is more likely to discover clusters relevant to them.
-    *   **Tuning the Target:** The target number of songs sampled per stratified genre is dynamically determined based on the `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION` and `STRATIFIED_SAMPLING_TARGET_PERCENTILE` configuration values.
-        *   `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION` sets a minimum floor for the target.
-        *   `STRATIFIED_SAMPLING_TARGET_PERCENTILE` calculates a target based on the distribution of song counts across your stratified genres (e.g., the 25th percentile).
-        *   The actual target is the maximum of these two values.
-    *   **Effect:** By changing these parameters, you can **increase or decrease the emphasis** on ensuring a minimum number of songs from each stratified genre are included in every clustering iteration's dataset. A higher minimum or percentile will aim for more songs per genre (if available), potentially leading to more robust clusters for those genres but also increasing the dataset size and computation time. If a genre has fewer songs than the target, all its available songs are included.
-
-2.  **Data Perturbation:** For subsequent runs after the first, the sampled subset isn't entirely random. A percentage of songs (`SAMPLING_PERCENTAGE_CHANGE_PER_RUN`) are randomly swapped out, while the rest are kept from the previous iteration's sample. This controlled perturbation introduces variability while retaining some continuity between runs.
-
-3.  **Multiple Iterations:** The system performs a large number of clustering runs (defined by `CLUSTERING_RUNS`, e.g., 5000 times). In each run, it experiments with different parameters for the selected clustering algorithm (K-Means, DBSCAN, or GMM) and for Principal Component Analysis (PCA) if enabled. These parameters are initially chosen randomly within pre-defined ranges.
-
-4.  **Evolutionary Strategy:** As the runs progress, the system "learns" from good solutions:
-    *   **Elite Solutions:** The parameter sets from the best-performing runs (the "elites") are remembered.
-    *   **Exploitation & Mutation:** For subsequent runs, there's a chance (`EXPLOITATION_PROBABILITY_CONFIG`) that instead of purely random parameters, the system will take an elite solution and "mutate" its parameters slightly. This involves making small, random adjustments (controlled by `MUTATION_INT_ABS_DELTA`, `MUTATION_FLOAT_ABS_DELTA`, etc.) to the elite's parameters, effectively exploring the "neighborhood" of good solutions to potentially find even better ones.
-
-5.  **Comprehensive Scoring:** Each clustering outcome is evaluated using a composite score. This score is a weighted sum of several factors, designed to balance different aspects of playlist quality:
-    *   **Playlist Diversity:** Measures how varied the predominant characteristics (e.g., moods, danceability) are across all generated playlists.
-    *   **Playlist Purity:** Assesses how well the songs within each individual playlist align with that playlist's central theme or characteristic.
-    *   **Internal Clustering Metrics:** Standard metrics evaluate the geometric quality of the clusters:
-        *   **Silhouette Score:** How distinct are the clusters?
-        *   **Davies-Bouldin Index:** How well-separated are the clusters relative to their intra-cluster similarity?
-        *   **Calinski-Harabasz Index:** Ratio of between-cluster to within-cluster dispersion.
-
-6.  **Configurable Weights:** The influence of each component in the final score is determined by weights (e.g., `SCORE_WEIGHT_DIVERSITY`, `SCORE_WEIGHT_PURITY`, `SCORE_WEIGHT_SILHOUETTE`). These are defined in `config.py` and allow you to tune the algorithm to prioritize, for example, more diverse playlists over extremely pure ones, or vice-versa. 
-
-7.  **Best Overall Solution:** After all iterations are complete, the set of parameters that yielded the highest overall composite score is chosen. The playlists generated from this top-scoring configuration are then presented and created in Jellyfin or Navidrome.
-
-This iterative and evolutionary process allows AudioMuse-AI to automatically explore a vast parameter space and converge on a clustering solution that is well-suited to the underlying structure of your music library.
+- Start with K-Means / MiniBatchKMeans for speed and to get a working baseline. Try GMM when using embeddings for potentially richer clusters. DBSCAN is useful if you expect many outliers.
+- The `TOP_PLAYLIST_NUMBER` or similar post-filter keeps only the most diverse playlists to avoid creating hundreds of similar lists.
+- Parameter ranges and mutation deltas are tuned in `config.py`; raising `CLUSTERING_RUNS` yields better exploration at the cost of runtime.
 
 ### How Purity and Diversity Scores Are Calculated
 
@@ -464,101 +390,118 @@ After the clustering algorithm has identified groups of similar songs, AudioMuse
 
 This step adds a layer of creativity to the purely data-driven clustering process, making the generated playlists more appealing and easier to understand at a glance. The choice of AI provider and model is configurable via environment variables and the frontend.
 
-## Concurrency Algorithm Deep Dive
+## Concurrency — deep dive
 
-AudioMuse-AI leverages Redis Queue (RQ) to manage and execute long-running processes like audio analysis and evolutionary clustering in parallel across multiple worker nodes. This architecture, primarily orchestrated within `tasks.py`, is designed for scalability and robust task management.
+Purpose: scale long-running work (analysis, clustering) across multiple workers while preserving observability and cooperative cancellation.
 
-1.  **Task Queuing with Redis Queue (RQ):**
-    *   When a user initiates an analysis or clustering job via the web UI, the main Flask application doesn't perform the heavy lifting directly. Instead, it enqueues a task (e.g., `run_analysis_task` or `run_clustering_task`) into a Redis queue.
-    *   Separate RQ worker processes, which can be scaled independently (e.g., running multiple `audiomuse-ai-worker` pods in Kubernetes), continuously monitor this queue. When a new task appears, an available worker picks it up and begins execution.
+Core steps (implementation highlights):
 
-2.  **Parallel Processing on Multiple Workers:**
-    *   This setup allows multiple tasks to be processed concurrently. For instance, if you have several RQ workers, they can simultaneously analyze different albums or run different batches of clustering iterations. This significantly speeds up the overall processing time, especially for large music libraries or extensive clustering runs.
+- Entrypoint(s): user actions in the Flask UI enqueue top-level tasks (`run_analysis_task`, `run_clustering_task`) into Redis Queue (RQ); workers pick up child jobs like `analyze_album_task` and `run_clustering_batch_task`.
+- Hierarchical batching: parent tasks break large jobs into coarser-grained batches to avoid flooding the queue with tiny jobs (per-album analysis jobs; clustering iteration batches).
+- Parallel execution: multiple RQ workers run batches in parallel, speeding throughput. Workers should run on separate processes/containers for scale and resilience.
+- Cooperative cancellation & monitoring: tasks periodically check DB-stored status flags and will stop mid-run if marked `REVOKED`, performing cleanup and updating status. Progress and logs are written back to PostgreSQL for UI display.
 
-3.  **Hierarchical Task Structure & Batching for Efficiency:**
-    To minimize the overhead associated with frequent queue interactions (writing/reading task status, small job processing), tasks are structured hierarchically and batched:
-    *   **Analysis Tasks:** The `run_analysis_task` acts as a parent task. It fetches a list of albums and then enqueues individual `analyze_album_task` jobs for each album. Each `analyze_album_task` processes all tracks within that single album. This means one "album analysis" job in the queue corresponds to the analysis of potentially many songs, reducing the number of very small, granular tasks.
-    *   **Clustering Tasks:** Similarly, the main `run_clustering_task` orchestrates the evolutionary clustering. It breaks down the total number of requested clustering runs (e.g., 1000) into smaller `run_clustering_batch_task` jobs. Each batch task (e.g., `run_clustering_batch_task`) then executes a subset of these iterations (e.g., 20 iterations per batch). This strategy avoids enqueuing thousands of tiny individual clustering run tasks, again improving efficiency.
+Key notes and edge cases:
 
-4.  **Advanced Task Monitoring and Cancellation:**
-    A key feature implemented in `tasks.py` is the ability to monitor and cancel tasks *even while they are actively running*, not just when they are pending in the queue.
-    *   **Cooperative Cancellation:** Both parent tasks (like `run_analysis_task` and `run_clustering_task`) and their child tasks (like `analyze_album_task` and `run_clustering_batch_task`) periodically check their own status and the status of their parent in the database.
-    *   If a task sees that its own status has been set to `REVOKED` (e.g., by a user action through the UI) or if its parent task has been revoked or has failed, it will gracefully stop its current operation, perform necessary cleanup (like removing temporary files), and update its status accordingly.
-    *   This is more sophisticated than typical queue systems where cancellation might only prevent a task from starting. Here, long-running iterations or album processing loops can be interrupted mid-way.
+- Design trades off task granularity (fewer large tasks reduces queue churn; smaller tasks give finer progress visibility).
+- The DB is the primary source of truth for task progress; RQ metadata is supplementary.
+- For HA, supervise worker processes (e.g., `supervisord`) and use HA-ready Redis/Postgres in production.
 
-5.  **Status Tracking:**
-    *   Throughout their lifecycle, tasks frequently update their progress, status (e.g., `STARTED`, `PROGRESS`, `SUCCESS`, `FAILURE`, `REVOKED`), and detailed logs into the PostgreSQL database. The Flask application reads this information to display real-time updates on the web UI.
-    *   RQ's job metadata is also updated, but the primary source of truth for detailed status and logs is the application's database.
 
-## **Instant Chat Deep Dive**
+## Instant Chat — deep dive
 
-The "Instant Playlist" feature, accessible via `chat.html`, provides a direct way to generate playlists using natural language by leveraging AI models to construct and execute PostgreSQL queries against your analyzed music library.
+Purpose: translate a user's natural-language playlist request into a safe, constrained SQL query that runs against the analyzed `score` table and return results to the UI.
 
-**Core Workflow:**
+Core steps (implementation highlights):
 
-1.  **User Interface (`chat.html`):**
-    *   The user selects an AI provider (Ollama, Gemini or Mistral) and can customize model names, Ollama server URLs, or Gemini/Mistral API keys. These default to values from the server's `config.py` but can be overridden per session in the UI.
-    *   The user types a natural language request (e.g., "sad songs for a rainy day" or "energetic pop from the 2020s").
+- Entrypoint(s): frontend `chat.html` calls `/api/chatPlaylist` in `app_chat.py`.
+- Prompt engineering: `app_chat.py` composes a strict system prompt (`base_expert_playlist_creator_prompt`) describing the `public.score` schema, allowed labels, formatting rules (SQL only), and enforcing `LIMIT 25`.
+- Model call: `ai.py` adapters send the prompt to the configured provider (Ollama, Gemini, Mistral) and return the raw SQL text.
+- Sanitization & validation: `clean_and_validate_sql` strips markdown, normalizes quotes/encoding, parses with `sqlglot` (Postgres dialect), and enforces the `LIMIT` clause to ensure safe execution.
+- Safe execution: the service ensures a restricted DB role (`AI_CHAT_DB_USER_NAME`) exists and executes the query under that role (`SET LOCAL ROLE ...`) so AI-generated SQL has read-only, constrained permissions.
+- Response: the resulting rows (`item_id`, `title`, `author`) are returned to the frontend; the UI offers playlist creation via the media-server adapters.
 
-2.  **API Call (`app_chat.py` - `/api/chatPlaylist`):**
-    *   The frontend sends the user's input, selected AI provider, and any custom model/API parameters to this backend endpoint.
+Key notes and edge cases:
 
-3.  **Prompt Engineering (`app_chat.py`):**
-    *   A detailed system prompt (`base_expert_playlist_creator_prompt`) is used. This prompt instructs the AI model to act as an expert PostgreSQL query writer specializing in music. It includes:
-        *   Strict rules for the output (SQL only, specific columns, `LIMIT 25`).
-        *   The database schema for the `public.score` table.
-        *   Detailed querying instructions for `mood_vector`, `other_features`, `tempo`, `energy`, and `author`.
-        *   Examples of user requests and the corresponding desired SQL queries.
-        *   A list of `MOOD_LABELS` and `OTHER_FEATURE_LABELS` available in the `mood_vector` and `other_features` columns.
-        *   Specific instructions for handling requests for "top," "famous," or "trending" songs, suggesting the use of `CASE WHEN` in `ORDER BY` to prioritize known hits.
-        *   Guidance on using `UNION ALL` for combining different criteria.
-    *   The user's natural language input is appended to this master prompt.
+- The system uses syntactic validation (`sqlglot`) and role-based execution to mitigate risky queries. This is not a formal proof of safety — keep the DB and AI credentials guarded.
+- The quality of results depends heavily on the chosen model. The prompt includes explicit schema and examples to guide the model toward useful SQL.
 
-4.  **AI Model Interaction (`ai.py` via `app_chat.py`):**
-    *   Based on the selected provider, `app_chat.py` calls either `get_ollama_playlist_name`, `get_gemini_playlist_name` `get_mistral_playlist_name` from `ai.py`.
-    *   These functions send the complete prompt to the respective AI model (Ollama, Gemini or Mistral).
+## Playlist from Similar song — deep dive
 
-5.  **SQL Query Processing (`app_chat.py` - `clean_and_validate_sql`):**
-    *   The raw SQL string returned by the AI is processed:
-        *   Markdown (like ```sql) is stripped.
-        *   The query is normalized to start with `SELECT`.
-        *   Unescaped single quotes within potential string literals (e.g., "L'amour") are escaped to `''` (e.g., "L''amour") using a regex (`re.sub(r"(\w)'(\w)", r"\1''\2", cleaned_sql)`).
-        *   The string is normalized to ASCII using `unicodedata.normalize` to handle special characters.
-        *   `sqlglot.parse` is used to parse the SQL (as PostgreSQL dialect). This helps validate syntax and further sanitize the query.
-        *   The `LIMIT` clause is enforced to be `LIMIT 25`. If a different limit is present, it's changed; if no limit exists, it's added.
-        *   The query is re-serialized by `sqlglot` to ensure a clean, valid SQL string.
+Purpose: return a fast, accurate list of sonically similar tracks to a chosen seed song using a persisted ANN index (Voyager).
 
-6.  **Database Execution (`app_chat.py`):**
-    *   Before execution, the system ensures a dedicated, restricted database user (`AI_CHAT_DB_USER_NAME` from `config.py`) exists. This user is automatically created if it doesn't exist and is granted `SELECT` ONLY permissions on the `public.score` table.
-    *   The validated SQL query is executed against the PostgreSQL database using `SET LOCAL ROLE {AI_CHAT_DB_USER_NAME};`. This ensures the query runs with the restricted permissions of this AI-specific user for that transaction.
+Core steps (implementation highlights):
 
-7.  **Response to Frontend (`chat.html`):**
-    *   The results (list of songs: `item_id`, `title`, `author`) or any errors are sent back to `chat.html`.
-    *   The frontend displays the AI's textual response (including the generated SQL and any processing messages) and the list of songs.
-    *   If songs are returned, a form appears allowing the user to name the playlist. Submitting this form calls another endpoint (`/api/createJellyfinPlaylist`) in `app_chat.py` which uses the Jellyfin or Navidrome API to create the playlist with the chosen name (appended with `_instant`) and the retrieved song IDs.
+- Entrypoint(s): `/similarity` UI → `/api/similar_tracks` in the backend.
+- Index creation: during analysis the service builds a Voyager ANN index from stored 200-dim embeddings and saves it to PostgreSQL; the index is reloaded into memory at startup for query performance.
+- Query path: `find_nearest_neighbors_by_id` (or `by_vector`) looks up the seed vector and returns the N nearest vectors using an angular metric; results are joined with `score` metadata for display.
+- Playlist creation: `/api/create_playlist` takes selected IDs and calls the configured media-server adapter (Jellyfin/Navidrome/Lyrion) to create the playlist on the server.
 
-## Playlist from Similar song - Deep dive
+Key notes and edge cases:
 
-The "Playlist from Similar Song" feature provides an interactive way to discover music by finding tracks that are sonically similar to a chosen song. This process relies on a powerful combination of pre-computed audio embeddings and a specialized high-speed search index.
+- Voyager is persisted so rebuilds are only needed when new embeddings are added.
+- Loading the index into memory is essential for responsiveness; ensure enough RAM when serving large libraries.
+- The chosen distance metric (angular by default) favors directional similarity, which works well with normalized embeddings.
 
-**Core Workflow:**
+## Song Path Deep Dive - Deep dive
+Purpose: build an adaptive, fixed-length path of songs between a start and an end item that (a) sounds coherent, (b) avoids duplicate title/artist pairs, and (c) respects a realistic per-step distance estimated from the local neighborhood.
 
-1. **Index Creation (During Analysis Task):**  
-   * The foundation of this feature is an **Approximate Nearest Neighbors (ANN) index**, which is built using Spotify's **Voyager** library.  
-   * During the main "Analysis Task," after the 200-dimensional MusiCNN embedding has been generated for each track, a dedicated function (build\_and\_store\voyager\_index) is triggered.  
-   * This function gathers all embeddings from the database and uses them to build the Voyager index. It uses an 'angular' distance metric, which is highly effective for comparing the "direction" of high-dimensional vectors like audio embeddings, thus capturing sonic similarity well.  
-   * The completed index, which is a highly optimized data structure for fast lookups, is then saved to the PostgreSQL database. This ensures it persists and only needs to be rebuilt when new music is analyzed.  
-2. **User Interface (similarity.html):**  
-   * The user navigates to the /similarity page.  
-   * An autocomplete search box allows the user to easily find a specific "seed" song by typing its title and/or artist. This search is powered by the /api/search\_tracks endpoint.  
-3. **High-Speed Similarity Search (/api/similar\_tracks):**  
-   * Once the user selects a seed song and initiates the search, the frontend calls this API endpoint with the song's unique item\_id.  
-   * For maximum performance, the backend loads the Voyager index from the database into memory upon starting up (load\voyager\_index\_for\_querying). This in-memory cache allows for near-instantaneous lookups.  
-   * The core function find\_nearest\_neighbors\_by\_id takes the seed song's ID, finds its corresponding vector within the Voyager index, and instantly retrieves the *N* closest vectors (the most similar songs) based on the pre-calculated angular distances.  
-   * The backend then fetches the metadata (title, artist) for these resulting song IDs from the main score table.  
-4. **Playlist Creation (/api/create\_playlist):**  
-   * The list of similar tracks, along with their distance from the seed song, is displayed to the user.  
-   * The user can then enter a desired playlist name and click a button.  
-   * This action calls the /api/create\_playlist endpoint, which takes the list of similar track IDs and the new name, and then uses the Jellyfin or Navidrome API to create the playlist directly on the server.
+Core steps (implementation highlights):
+- Entrypoint: `find_path_between_songs(start_item_id, end_item_id, Lreq)`.
+- Estimate local jump size δ_avg using `_calculate_local_average_jump_distance(...)` which chains nearest neighbors around the endpoints to compute typical step distances.
+- Compute direct distance D between start and end using the configured metric (`PATH_DISTANCE_METRIC` — angular or euclidean). Derive a core step count Lcore ≈ floor(D/δ_avg) (bounded and scaled by `PATH_LCORE_MULTIPLIER`) so the path length is realistic.
+- Interpolate backbone centroids between start and end with `interpolate_centroids(...)` (supports angular interpolation for cosine-style metric or linear interpolation for euclidean).
+- For each centroid, pick an actual track using `_find_best_unique_song(...)`. Candidates are fetched from the vector index (`find_nearest_neighbors_by_vector`) and filtered/deduplicated by:
+  - ID and normalized (artist,title) signature uniqueness,
+  - configurable duplicate-distance thresholds with a short lookback window,
+  - availability of metadata/embedding.
+- If the user-requested length Lreq > backbone length, the code will expand the backbone and repeat selection, still enforcing uniqueness and distance constraints. Final IDs are resolved to full track rows with `get_tracks_by_ids()` and returned.
 
-This entire workflow provides a fast and intuitive method for music discovery, moving beyond simple genre or tag-based recommendations to find songs that truly *sound* alike.
+Edge cases: the function gracefully handles missing embeddings, insufficient neighbors, and returns shorter paths if uniqueness constraints prevent filling every slot.
+
+## Song Alchemy - Deep dive 
+Purpose: combine one-or-more "add" seeds and optional "subtract" seeds to return a playlist of similar tracks and a 2D visualization (embedding projection + centroids).
+
+Core steps (implementation highlights):
+- Entrypoint: `song_alchemy(add_ids, subtract_ids, n_results, subtract_distance, temperature)`.
+- Compute add/sub centroids by averaging item vectors (`_compute_centroid_from_ids(...)` using `get_vector_by_id`).
+- Query voyager for candidates either by ID (`find_nearest_neighbors_by_id`) for single seeds or by vector (`find_nearest_neighbors_by_vector`) for centroid queries; request a superset and filter down.
+- Subtract filtering: remove candidates that are too close to the subtract centroid according to the configured metric (angular or euclidean) and threshold (`subtract_distance`).
+- Deduplicate and exclude seed IDs.
+- Projection for visualization: try to reuse a stored projection with `load_map_projection('main_map')`. For missing points compute a local 2D projection using helpers defined in `tasks/song_alchemy.py` in this preference order:
+  1. `_project_aligned_add_sub` (align X axis to add→subtract)
+ 2. `_project_with_discriminant` (PCA + logistic discriminant)
+ 3. `_project_with_umap` (if umap installed)
+ 4. `_project_to_2d` (simple PCA/SVD fallback)
+- Sampling and selection: order candidates by distance to the add centroid; if `temperature > 0` apply a softmax over negative distances to sample stochastically; if `temperature == 0` return deterministic top-N.
+- Return payload includes `results`, `filtered_out` (items excluded by subtract filter, with 2D coordinates when available), `centroid_2d`, `add_points`, `sub_points`, and projection metadata used by the UI.
+
+UI notes: `templates/alchemy.html` trims results to exactly N on the client and plots both selected and filtered-out items (so the user sees what was excluded and why).
+
+## Music Map - Deep dive 
+Purpose: provide a fast, interactive 2D scatter of the collection for exploration and selection; server-side builds and caches deterministic sampled payloads for client efficiency.
+
+Core steps (implementation highlights):
+- Builder: `build_map_cache()` reads `score` + `embedding` rows from PostgreSQL and attempts to reuse a previously-saved projection via `load_map_projection('main_map')`.
+- For missing coordinates, it computes projections using the same helper set used by Song Alchemy (UMAP/discriminant/PCA fallbacks) to keep visualization consistent.
+- Deterministic downsampling: `_sample_items(items, fraction)` uses linspace indices to produce 100%/75%/50%/25% buckets so results are reproducible and memory-friendly.
+- The builder stores JSON and gzipped bytes into the in-memory `MAP_JSON_CACHE` keyed by percent for fast HTTP responses.
+
+Front-end (Plotly) behavior (`templates/map.html`):
+- Client calls `/api/map?percent=<25|50|75|100>` and receives a lightweight list of items with `embedding_2d`, `item_id`, `title`, `artist`, and a compact `mood_vector` summary.
+- `topGenre()` extracts the top mood/genre label from the stored `mood_vector` string; `colorPaletteFor()` deterministically maps labels to colors.
+- Plot uses a single `scattergl` trace for performance, stores ids in `customdata`, and implements a manual legend with hide/show filtering, lasso selection, and client-side path overlays.
+
+Performance notes: the heavy work (embedding projection) is done server-side and cached; the client avoids long-term in-memory retention by re-fetching on user-driven percent changes.
+
+## Sonic Fingerprint - Deep dive 
+Purpose: generate a personal playlist by averaging recently-played embeddings (a listening "fingerprint") and finding nearest neighbors to that fingerprint.
+
+Core steps (implementation highlights):
+- Entrypoint: `generate_sonic_fingerprint(num_neighbors=None, user_creds=None)`.
+- Fetch the user's top-played songs from the configured media adapter (`get_top_played_songs(limit=...)`).
+- Retrieve embeddings for those seeds (`get_tracks_by_ids`) and build a weighted average vector where weights reflect recency: `get_last_played_time(...)` is used to compute decayed weights (more recent plays get higher weight); a default small weight is used when timestamps are missing.
+- Normalize the average fingerprint vector (sum of weighted vectors / total weight) and query the vector index (`find_nearest_neighbors_by_vector`) for neighbors to reach the requested playlist size.
+- Final playlist: seed songs (the top-played items that contributed to the fingerprint) are included first, then voyager neighbors are appended, skipping duplicates until the target count is reached.
+
+UI notes: `templates/sonic_fingerprint.html` collects optional adapter credentials (Jellyfin/Navidrome token/user) and displays results; playlist creation reuses the app's playlist creation API.
