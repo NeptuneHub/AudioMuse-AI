@@ -3,7 +3,7 @@ from flask import Blueprint, jsonify, request, render_template
 import logging
 
 # Import the new config option
-from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
+from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT
 from tasks.voyager_manager import (
     find_nearest_neighbors_by_id, 
     create_playlist_from_ids,
@@ -163,7 +163,11 @@ def get_similar_tracks_endpoint():
         eliminate_duplicates = eliminate_duplicates_str.lower() == 'true'
 
     radius_similarity_str = request.args.get('radius_similarity')
-    radius_similarity = radius_similarity_str and radius_similarity_str.lower() == 'true'
+    if radius_similarity_str is None:
+        # Use configured default when parameter is omitted
+        radius_similarity = SIMILARITY_RADIUS_DEFAULT
+    else:
+        radius_similarity = radius_similarity_str.lower() == 'true'
 
     mood_similarity_str = request.args.get('mood_similarity')
     if mood_similarity_str is None:

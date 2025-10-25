@@ -18,6 +18,7 @@ from config import (
     VOYAGER_M, VOYAGER_QUERY_EF, MAX_SONGS_PER_ARTIST,
     DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
     DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD
+    , SIMILARITY_RADIUS_DEFAULT
 )
 # Import from other project modules
 from .mediaserver import create_instant_playlist
@@ -816,7 +817,7 @@ def _execute_radius_walk(
 # --- END: RADIUS SIMILARITY RE-IMPLEMENTATION ---
 
 
-def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool = False, mood_similarity: bool = True, radius_similarity: bool = False):
+def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool = False, mood_similarity: bool = True, radius_similarity: bool | None = None):
     """
     Finds the N nearest neighbors for a given item_id using the globally cached Voyager index.
     If mood_similarity is True, filters results by mood feature similarity (danceability, aggressive, happy, party, relaxed, sad).
@@ -845,6 +846,10 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
     except Exception as e:
         logger.error(f"Could not retrieve vector for Voyager ID {target_voyager_id} (item_id: {target_item_id}): {e}")
         return []
+
+    # If caller didn't supply radius_similarity explicitly (None), use the configured default.
+    if radius_similarity is None:
+        radius_similarity = SIMILARITY_RADIUS_DEFAULT
 
     # --- Increase search size to get a large candidate pool ---
     # We need a *much larger* pool for the radius walk to be effective.
