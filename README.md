@@ -287,6 +287,7 @@ This are the default parameters on wich the analysis or clustering task will be 
 | `VOYAGER_QUERY_EF`                          | Number neighbor analyzed during the query.                                                                                | `1024`          |
 | `VOYAGER_METRIC`                            | Different tipe of distance metrics: `angular`, `euclidean`,`dot`                                                          | `angular`       |
 | `SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT`   | It enable the possibility of use the `MAX_SONGS_PER_ARTIST` also in similar song                                          | `true`          |
+| `SIMILARITY_RADIUS_DEFAULT`                 | Default behavior for radius similarity mode. When `true`, similarity results may be re-ordered using the radius (bucketed) algorithm for better listening paths. | `true`          |
 | **Sonic Fingerprint General**               |                                                                                                                            |                 |
 | `SONIC_FINGERPRINT_NEIGHBORS`               | Default number of track for the sonic fingerprint                                                                         | `100`           |
 | **Song Alchemy General**                     |                                                                                                                            |                 |
@@ -305,6 +306,7 @@ This are the default parameters on wich the analysis or clustering task will be 
 | `PATH_AVG_JUMP_SAMPLE_SIZE`                 | Number of random songs to sample for calculating the average jump distance                                                | `200`           |
 | `PATH_CANDIDATES_PER_STEP`                  | Number of candidate songs to retrieve from Voyager for each step in the path                                              | `25`            |
 | `PATH_LCORE_MULTIPLIER`                     | It multiply the number of centroid created based on the distance. Higher is better for distant song and worst for nearest. | `3`             |
+| `PATH_FIX_SIZE`                             | When `true`, path generation will attempt to produce exactly the requested path length using centroid merging and backfilling. When `false`, the algorithm will perform a single best pick per centroid and may return a shorter path. Can be overridden per-request via the `path_fix_size` query parameter. | `false`         |
 | **Evolutionary Clustering & Scoring**      |                                                                                            |                                        |
 | `ITERATIONS_PER_BATCH_JOB`                  | Number of clustering iterations processed per RQ batch job.                                | `20`                                   |
 | `MAX_CONCURRENT_BATCH_JOBS`                 | Maximum number of clustering batch jobs to run simultaneously.                             | `10`                                   |
