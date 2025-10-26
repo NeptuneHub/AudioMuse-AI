@@ -588,33 +588,67 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     return {row[0] for row in cur.fetchall()}
 
             def monitor_and_clear_jobs():
+                """Monitor active RQ jobs and keep `albums_completed` in sync.
+
+                This function first tries to use RQ's Job.fetch to detect terminal jobs
+                (finished/failed/canceled). As a more reliable fallback it also queries
+                the database for child task records (which are updated by the child
+                job when it finishes) and uses that as the source of truth. This
+                helps in cases where RQ job state is not available or the worker
+                uses a different Redis namespace.
+                """
                 nonlocal albums_completed, last_rebuild_count
+                removed = 0
+
+                # First: try to detect terminal jobs via RQ
                 for job_id in list(active_jobs.keys()):
                     try:
-                        # **MODIFIED**: Added a try-except block to handle Redis timeouts gracefully.
                         job = Job.fetch(job_id, connection=redis_conn)
                         if job.is_finished or job.is_failed or job.is_canceled:
                             del active_jobs[job_id]
-                            albums_completed += 1
+                            removed += 1
                     except NoSuchJobError:
-                        logger.warning(f"Job {job_id} not found in Redis. Assuming complete.")
-                        del active_jobs[job_id]
-                        albums_completed += 1
+                        logger.debug(f"Job {job_id} not found in RQ. Will reconcile with DB status.")
+                        # Do not increment removed here; we'll reconcile via DB below.
                     except RedisTimeoutError:
                         logger.warning(f"Redis timeout while fetching job {job_id}. Will retry on next loop.")
-                        # We don't remove the job, we'll try fetching it again later.
                         continue
                     except Exception as e:
-                        # Catch-all to avoid a single unexpected failure stopping the monitor loop.
-                        # Don't remove the job here because the fetch failed unexpectedly (network, auth, etc.).
                         logger.warning(f"Unexpected error while fetching job {job_id}: {e}. Will retry on next loop.", exc_info=True)
                         continue
-                
+
+                if removed:
+                    albums_completed += removed
+
+                # Second: reconcile with DB child task statuses (authoritative)
+                try:
+                    from app_helper import get_child_tasks_from_db
+                    child_tasks = get_child_tasks_from_db(current_task_id)
+                    terminal_statuses = {TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED}
+                    db_completed = sum(1 for t in child_tasks if t.get('status') in terminal_statuses)
+
+                    if db_completed != albums_completed:
+                        logger.info(f"Reconciling albums_completed: RQ_count={albums_completed} DB_count={db_completed}")
+                        albums_completed = db_completed
+                        # Remove any active_jobs whose IDs are in DB terminal list
+                        terminal_ids = {t['task_id'] for t in child_tasks if t.get('status') in terminal_statuses}
+                        for job_id in list(active_jobs.keys()):
+                            if job_id in terminal_ids:
+                                try:
+                                    del active_jobs[job_id]
+                                except KeyError:
+                                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to reconcile child tasks from DB: {e}")
+
+                # Rebuild index in batches as before
                 if albums_completed > last_rebuild_count and (albums_completed - last_rebuild_count) >= REBUILD_INDEX_BATCH_SIZE:
                     log_and_update_main(f"Batch of {albums_completed - last_rebuild_count} albums complete. Rebuilding index...", current_progress)
-                    # MODIFIED: Call the voyager index builder
                     build_and_store_voyager_index(get_db())
-                    redis_conn.publish('index-updates', 'reload')
+                    try:
+                        redis_conn.publish('index-updates', 'reload')
+                    except Exception:
+                        logger.debug('Could not publish index-updates to redis during rebuild.')
                     last_rebuild_count = albums_completed
 
             for idx, album in enumerate(all_albums):
