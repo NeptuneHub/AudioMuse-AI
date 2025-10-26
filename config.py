@@ -262,6 +262,13 @@ PATH_CANDIDATES_PER_STEP = int(os.environ.get("PATH_CANDIDATES_PER_STEP", "25"))
 # Multiplier for the core number of steps (Lcore) to generate more backbone centroids.
 PATH_LCORE_MULTIPLIER = int(os.environ.get("PATH_LCORE_MULTIPLIER", "3"))
 
+# When True (default) the path generation attempts to produce exactly the requested
+# path length using centroid merging and backfilling. When False, the algorithm
+# will *not* perform centroid merging: it will attempt a single best pick per
+# centroid and skip centroids that don't yield a non-duplicate song (resulting
+# in potentially shorter paths). Can be overridden via env var PATH_FIX_SIZE.
+PATH_FIX_SIZE = os.environ.get("PATH_FIX_SIZE", "False").lower() == 'true'
+
 
 # --- Song Alchemy Defaults ---
 # Number of similar songs to return when creating the Alchemy result (default 100, max 200)

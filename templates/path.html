@@ -104,6 +104,11 @@
                             <label for="max_steps">Songs in path:</label>
                             <input type="number" id="max_steps" name="max_steps" value="25" min="10" max="200">
                         </div>
+                        <div>
+                            <label for="path_fix_size_checkbox" style="display:flex;align-items:center;gap:8px;">
+                                <input type="checkbox" id="path_fix_size_checkbox" name="path_fix_size" {% if path_fix_size %}checked{% endif %} style="margin-right:6px"> Keep path size exact
+                            </label>
+                        </div>
                     </div>
                     <button type="submit">Find Path</button>
                 </form>
@@ -687,10 +692,12 @@
                 }
 
                 try {
+                    const pathFixSize = document.getElementById('path_fix_size_checkbox')?.checked ? 'true' : 'false';
                     const params = new URLSearchParams({
                         start_song_id: startSongId,
                         end_song_id: endSongId,
-                        max_steps: maxSteps
+                        max_steps: maxSteps,
+                        path_fix_size: pathFixSize
                     });
                     // Start fetching the full map projection in parallel (non-blocking) so both network requests
                     // can be performed concurrently. Always fetch fresh data and do not reuse any in-page cached promise.

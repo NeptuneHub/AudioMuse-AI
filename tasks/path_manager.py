@@ -11,9 +11,12 @@ from .voyager_manager import get_vector_by_id, find_nearest_neighbors_by_vector,
 from config import (
     PATH_AVG_JUMP_SAMPLE_SIZE, PATH_CANDIDATES_PER_STEP, PATH_DEFAULT_LENGTH,
     PATH_DISTANCE_METRIC, VOYAGER_METRIC, PATH_LCORE_MULTIPLIER,
+    PATH_FIX_SIZE,
     DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
     DUPLICATE_DISTANCE_CHECK_LOOKBACK
 )
+# Also import per-artist cap
+from config import MAX_SONGS_PER_ARTIST
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +167,7 @@ def _normalize_signature(artist, title):
 
 
 def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_songs_details_so_far,
-                             k_search=10, num_to_find=1):
+                             k_search=10, num_to_find=1, artist_counts=None):
     """
     Finds a specific number (`num_to_find`) of best songs for a centroid
     by searching k_search neighbors.
@@ -199,7 +202,7 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
             break # We found all the songs we needed for this job
 
         candidate_id = candidate['item_id']
-        
+
         # Check if this is a duplicate by ID
         if candidate_id in used_song_ids:
             continue # Skip if already used by ID
@@ -214,12 +217,19 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
             logger.debug(f"Filtering song (NAME/ID FILTER): '{details.get('title')}' by '{details.get('author')}' as it is already in the path.")
             continue
 
+        # Enforce global per-artist cap if configured
+        author_norm = (details.get('author') or '').strip().lower()
+        if artist_counts is not None and MAX_SONGS_PER_ARTIST is not None:
+            if artist_counts.get(author_norm, 0) >= MAX_SONGS_PER_ARTIST:
+                logger.debug(f"Filtering song (ARTIST CAP) '{details.get('title')}' by '{details.get('author')}' because artist cap {MAX_SONGS_PER_ARTIST} reached.")
+                continue
+
         candidate_vector = get_vector_by_id(candidate_id)
         if candidate_vector is None:
             continue # Skip if vector is missing
 
         is_too_close = False
-        
+
         # Check against songs *already added to the main path*
         if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 and path_songs_details_so_far:
             for prev_song_details in path_songs_details_so_far[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]:
@@ -238,7 +248,7 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
 
         # Also check against songs found *within this same job*
         if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 and found_songs:
-             for prev_song_details in found_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]:
+            for prev_song_details in found_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]:
                 if 'vector' in prev_song_details:
                     distance_from_prev = get_distance(candidate_vector, prev_song_details['vector'])
                     if distance_from_prev < threshold:
@@ -249,7 +259,7 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
                         )
                         is_too_close = True
                         break
-             if is_too_close:
+            if is_too_close:
                 continue
 
         # If we get here, the song is acceptable
@@ -260,11 +270,14 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
             "title": details.get('title'),
             "author": details.get('author')
         })
-        
+
         # IMPORTANT: Add to used_song_ids and used_signatures immediately
         # so they are not picked again by this same job.
         used_song_ids.add(candidate_id)
         used_signatures.add(signature)
+        # Increment artist count
+        if artist_counts is not None:
+            artist_counts[author_norm] = artist_counts.get(author_norm, 0) + 1
 
 
     if len(found_songs) < num_to_find:
@@ -278,6 +291,11 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
                 used_song_ids.remove(song['item_id'])
             if song['signature'] in used_signatures:
                 used_signatures.remove(song['signature'])
+            # Decrement artist count for rolled-back songs
+            if artist_counts is not None:
+                auth = (song.get('author') or '').strip().lower()
+                if auth in artist_counts:
+                    artist_counts[auth] = max(0, artist_counts.get(auth, 0) - 1)
         
         # Return an empty list to signal complete failure of this job
         return []
@@ -288,7 +306,7 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
     return found_songs
 
 
-def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH):
+def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH, path_fix_size=PATH_FIX_SIZE):
     """
     Finds a path between two songs using linear interpolation of centroids
     and a centroid-merging strategy on failure, ensuring exact path length.
@@ -334,6 +352,15 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
         _normalize_signature(end_details.get('author'), end_details.get('title'))
     }
 
+    # Track per-artist counts so we can enforce MAX_SONGS_PER_ARTIST across the path
+    artist_counts = {}
+    start_author = (start_details.get('author') or '').strip().lower()
+    end_author = (end_details.get('author') or '').strip().lower()
+    if start_author:
+        artist_counts[start_author] = artist_counts.get(start_author, 0) + 1
+    if end_author:
+        artist_counts[end_author] = artist_counts.get(end_author, 0) + 1
+
     # This list holds the start song + all *found* intermediate songs
     path_songs_details = [{**start_details, 'vector': start_vector}]
     
@@ -375,96 +402,121 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
         initial_count = int(max(1, min(num_intermediate, representative // 2 if representative > 0 else num_intermediate)))
         logger.info(f"Centroid heuristic: sampled {sample_n} neighbors each side -> intersection={intersection_size}, union={union_size}. Using initial centroid count {initial_count} (requested intermediate {num_intermediate}).")
 
-        # Group original intermediate centroids into `initial_count` buckets and create jobs per bucket.
+        # Prepare jobs variable; if path_fix_size is False we won't populate it and
+        # will skip the merge/retry logic below.
         jobs = []
-        if initial_count >= num_intermediate:
-            # One job per original centroid
-            for idx in range(num_intermediate):
-                jobs.append({'vector': intermediate_centroids[idx], 'k': k_base, 'original_indices': [idx], 'num_to_find': 1})
+
+        # If path_fix_size is False, skip the centroid-merging approach and do
+        # a single-pass per-centroid nearest-neighbor pick. This may result in
+        # a shorter path if some centroids produce no acceptable candidate.
+        if not path_fix_size:
+            logger.info("PATH_FIX_SIZE disabled: using single-pass centroid picks (no merging). Path may be shorter than requested.")
+            for centroid in intermediate_centroids:
+                found = _find_best_songs_for_job(
+                    centroid,
+                    used_song_ids,
+                    used_signatures,
+                    path_songs_details,
+                    k_search=k_base,
+                    num_to_find=1,
+                    artist_counts=artist_counts
+                )
+                if found and len(found) > 0:
+                    path_songs_details.extend(found)
+            # Skip merging logic entirely
         else:
-            # Bucket centroids evenly
-            group_size = float(num_intermediate) / float(initial_count)
-            for j in range(initial_count):
-                start_idx = int(round(j * group_size))
-                end_idx = int(round((j + 1) * group_size)) - 1
-                if end_idx < start_idx:
-                    end_idx = start_idx
-                # Clamp to bounds
-                start_idx = max(0, min(start_idx, num_intermediate - 1))
-                end_idx = max(0, min(end_idx, num_intermediate - 1))
-                indices = list(range(start_idx, end_idx + 1))
-                # Average vectors for the bucket to produce a representative centroid
-                bucket_vecs = [intermediate_centroids[idx] for idx in indices]
-                bucket_mid = np.mean(bucket_vecs, axis=0)
-                # Determine how many songs to find for this bucket (sum of originals)
-                num_to_find = len(indices)
-                # Scale k proportionally so total search budget roughly preserved
-                scaled_k = min(k_max, max(k_base, int(k_base * (num_intermediate / float(initial_count)))))
-                jobs.append({'vector': bucket_mid, 'k': scaled_k, 'original_indices': indices, 'num_to_find': num_to_find})
-        
-        # Process the jobs with the merge logic
-        i = 0
-        while i < len(jobs):
-            job = jobs[i]
-            
-            # Pass the *current* path details for distance checking
-            found_songs = _find_best_songs_for_job(
-                job['vector'],
-                used_song_ids,
-                used_signatures,
-                path_songs_details, # Pass the list of songs found so far
-                k_search=job['k'],
-                num_to_find=job['num_to_find']
-            )
-            
-            num_found = len(found_songs)
-            num_needed = job['num_to_find']
-
-            if num_found == num_needed:
-                # Success! Add songs to path and move to the next job
-                path_songs_details.extend(found_songs)
-                # Note: used_song_ids was already updated inside _find_best_songs_for_job
-                i += 1
+            # Group original intermediate centroids into `initial_count` buckets and create jobs per bucket.
+            jobs = []
+            if initial_count >= num_intermediate:
+                # One job per original centroid
+                for idx in range(num_intermediate):
+                    jobs.append({'vector': intermediate_centroids[idx], 'k': k_base, 'original_indices': [idx], 'num_to_find': 1})
             else:
-                # Failure. num_found is 0 because _find_best_songs_for_job rolled back.
-                num_missing = num_needed # Since we found 0
-                logger.warning(f"Job {i} (k={job['k']}, needed {num_needed}) failed. Merging with next job.")
-                
-                if i + 1 >= len(jobs):
-                    # This was the *last* job in the list. It failed.
-                    logger.error(f"CRITICAL: Last centroid job failed (k={job['k']}) and cannot merge. Path will be short.")
-                    i += 1 # End the loop
-                else:
-                    # Merge job[i] and job[i+1]
-                    job_a = jobs[i]
-                    job_b = jobs.pop(i + 1) # Remove job_b from list
-                    
-                    # We need the *original* vectors to calculate the new midpoint
-                    idx_a_start = job_a['original_indices'][0]
-                    idx_b_end = job_b['original_indices'][-1]
-                    
-                    vec_a_orig = intermediate_centroids[idx_a_start]
-                    vec_b_orig = intermediate_centroids[idx_b_end]
+                # Bucket centroids evenly
+                group_size = float(num_intermediate) / float(initial_count)
+                for j in range(initial_count):
+                    start_idx = int(round(j * group_size))
+                    end_idx = int(round((j + 1) * group_size)) - 1
+                    if end_idx < start_idx:
+                        end_idx = start_idx
+                    # Clamp to bounds
+                    start_idx = max(0, min(start_idx, num_intermediate - 1))
+                    end_idx = max(0, min(end_idx, num_intermediate - 1))
+                    indices = list(range(start_idx, end_idx + 1))
+                    # Average vectors for the bucket to produce a representative centroid
+                    bucket_vecs = [intermediate_centroids[idx] for idx in indices]
+                    bucket_mid = np.mean(bucket_vecs, axis=0)
+                    # Determine how many songs to find for this bucket (sum of originals)
+                    num_to_find = len(indices)
+                    # Scale k proportionally so total search budget roughly preserved
+                    scaled_k = min(k_max, max(k_base, int(k_base * (num_intermediate / float(initial_count)))))
+                    jobs.append({'vector': bucket_mid, 'k': scaled_k, 'original_indices': indices, 'num_to_find': num_to_find})
+        
+        # Process the jobs with the merge logic (only if we actually created jobs)
+        if path_fix_size and jobs:
+            i = 0
+            while i < len(jobs):
+                job = jobs[i]
 
-                    # Create new merged vector (midpoint of the two *original* vectors)
-                    merged_vector = interpolate_centroids(vec_a_orig, vec_b_orig, num=3, metric=PATH_DISTANCE_METRIC)[1]
-                    
-                    # Sum k, cap at k_max
-                    merged_k = min(job_a['k'] + job_b['k'], k_max)
-                    
-                    # Sum how many songs we *still* need to find
-                    still_need_to_find = num_missing + job_b['num_to_find']
-                    
-                    merged_indices = job_a['original_indices'] + job_b['original_indices']
-                    
-                    # Update job[i] in-place with new merged values
-                    job_a['vector'] = merged_vector
-                    job_a['k'] = merged_k
-                    job_a['original_indices'] = merged_indices
-                    job_a['num_to_find'] = still_need_to_find
-                    
-                    logger.info(f"Retrying merged job at index {i} (k={merged_k}, need to find {still_need_to_find} more songs, represents {len(merged_indices)} original centroids)")
-                    # Do not increment i. We re-try the *current* job (which is now the merged job)
+                # Pass the *current* path details for distance checking
+                found_songs = _find_best_songs_for_job(
+                    job['vector'],
+                    used_song_ids,
+                    used_signatures,
+                    path_songs_details, # Pass the list of songs found so far
+                    k_search=job['k'],
+                    num_to_find=job['num_to_find'],
+                    artist_counts=artist_counts
+                )
+
+                num_found = len(found_songs)
+                num_needed = job['num_to_find']
+
+                if num_found == num_needed:
+                    # Success! Add songs to path and move to the next job
+                    path_songs_details.extend(found_songs)
+                    # Note: used_song_ids was already updated inside _find_best_songs_for_job
+                    i += 1
+                else:
+                    # Failure. num_found is 0 because _find_best_songs_for_job rolled back.
+                    num_missing = num_needed # Since we found 0
+                    logger.warning(f"Job {i} (k={job['k']}, needed {num_needed}) failed. Merging with next job.")
+
+                    if i + 1 >= len(jobs):
+                        # This was the *last* job in the list. It failed.
+                        logger.error(f"CRITICAL: Last centroid job failed (k={job['k']}) and cannot merge. Path will be short.")
+                        i += 1 # End the loop
+                    else:
+                        # Merge job[i] and job[i+1]
+                        job_a = jobs[i]
+                        job_b = jobs.pop(i + 1) # Remove job_b from list
+
+                        # We need the *original* vectors to calculate the new midpoint
+                        idx_a_start = job_a['original_indices'][0]
+                        idx_b_end = job_b['original_indices'][-1]
+
+                        vec_a_orig = intermediate_centroids[idx_a_start]
+                        vec_b_orig = intermediate_centroids[idx_b_end]
+
+                        # Create new merged vector (midpoint of the two *original* vectors)
+                        merged_vector = interpolate_centroids(vec_a_orig, vec_b_orig, num=3, metric=PATH_DISTANCE_METRIC)[1]
+
+                        # Sum k, cap at k_max
+                        merged_k = min(job_a['k'] + job_b['k'], k_max)
+
+                        # Sum how many songs we *still* need to find
+                        still_need_to_find = num_missing + job_b['num_to_find']
+
+                        merged_indices = job_a['original_indices'] + job_b['original_indices']
+
+                        # Update job[i] in-place with new merged values
+                        job_a['vector'] = merged_vector
+                        job_a['k'] = merged_k
+                        job_a['original_indices'] = merged_indices
+                        job_a['num_to_find'] = still_need_to_find
+
+                        logger.info(f"Retrying merged job at index {i} (k={merged_k}, need to find {still_need_to_find} more songs, represents {len(merged_indices)} original centroids)")
+                        # Do not increment i. We re-try the *current* job (which is now the merged job)
     
     # Add the end song (it was already in used_song_ids)
     path_songs_details.append({**end_details, 'vector': end_vector})
