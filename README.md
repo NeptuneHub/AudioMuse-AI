@@ -6,7 +6,7 @@
 # **AudioMuse-AI - Let the choice happen, the open-source way** 
 
 <p align="center">
-  <img src="https://github.com/NeptuneHub/AudioMuse-AI/blob/main/screenshot/audiomuseai.png?raw=true" alt="AudioMuse-AI Logo" width="480">
+  <img src="https://github.com/NeptuneHub/AudioMuse-AI/blob/main/screenshot/AM-AI-MAP.png?raw=true" alt="AudioMuse-AI Logo" width="480">
 </p>
 
 
