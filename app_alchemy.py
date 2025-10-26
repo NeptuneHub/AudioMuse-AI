@@ -35,7 +35,9 @@ def alchemy_api():
         # song_alchemy now returns a dict with results, filtered_out and centroid projections
         return jsonify(results)
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        # Log the validation error server-side but do not expose internal error text to clients
+        logger.exception("Alchemy validation failure")
+        return jsonify({"error": "Invalid request"}), 400
     except Exception as e:
         logger.exception("Alchemy failure")
         return jsonify({"error": "Internal error"}), 500

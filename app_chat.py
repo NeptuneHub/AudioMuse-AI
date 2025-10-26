@@ -137,7 +137,10 @@ def clean_and_validate_sql(raw_sql):
         # Re-generate the SQL from the potentially modified structure.
         cleaned_sql = expression.sql(dialect='postgres', pretty=False).strip().rstrip(';')
     except sqlglot.errors.ParseError as e:
-        return None, f"SQLglot parsing error: {str(e)}"
+        # Log full parse exception server-side for diagnostics, but do not expose
+        # parser internals to API clients.
+        logger.exception("SQLglot parsing error while validating AI SQL")
+        return None, "SQL parsing error"
     return cleaned_sql, None
 
 @chat_bp.route('/')
@@ -591,10 +594,10 @@ Original full prompt context (for reference):
                 if not ai_user_setup_done: 
                     raise Exception("AI user setup flag not set after configuration attempt.")
             except Exception as setup_err:
-                # Log detailed error on the server
-                logger.error("Error during AI user setup in chat_playlist_api", exc_info=True)
-                ai_response_message += "Critical Error: Could not ensure AI user setup. Query will not be executed.\n" # Generic message for client
-                last_error_for_retry = f"AI User setup failed: {setup_err}"
+                # Log detailed error on the server (including stack trace) but keep client-facing messages generic
+                logger.exception("Error during AI user setup in chat_playlist_api")
+                ai_response_message += "Critical Error: Could not ensure AI user setup. Query will not be executed.\n"
+                last_error_for_retry = "AI user setup failed"
                 break 
 
         # --- Execute Query ---
@@ -624,11 +627,10 @@ Original full prompt context (for reference):
 
             except Exception as db_exec_error:
                 get_db().rollback()
-                db_error_str = f"Database Error executing query: {str(db_exec_error)}"
-                # Log detailed error on the server
-                logger.error("Error executing AI generated query in chat_playlist_api: %s", db_error_str, exc_info=True)
-                ai_response_message += "Database Error executing query. Please check server logs.\n" # Generic message for client
-                last_error_for_retry = db_error_str
+                # Log full exception for diagnostics, but do not return exception text to the client
+                logger.exception("Error executing AI generated query in chat_playlist_api")
+                ai_response_message += "Database Error executing query. Please check server logs.\n"
+                last_error_for_retry = "Database execution error"
                 if attempt_num >= max_retries: break
                 continue
         elif cleaned_sql_this_attempt and not ai_user_setup_done:
