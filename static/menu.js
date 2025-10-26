@@ -49,7 +49,8 @@ document.addEventListener('DOMContentLoaded', function() {
         { href: '/map', text: 'Music Map' },
         { href: '/sonic_fingerprint', text: 'Sonic Fingerprint' },
         //{ href: '/collection', text: 'Collection Sync' }, // New Menu Item - commented because still experimental
-        { href: '/cleaning', text: 'Cleaning' }
+        { href: '/cleaning', text: 'Cleaning' },
+        { href: '/cron', text: 'Scheduled Tasks' }
     ];
 
     // Find the navigation list

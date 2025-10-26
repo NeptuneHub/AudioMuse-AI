@@ -545,6 +545,7 @@ import tasks.analysis
 from app_chat import chat_bp
 from app_clustering import clustering_bp
 from app_analysis import analysis_bp
+from app_cron import cron_bp, run_due_cron_jobs
 from app_voyager import voyager_bp
 from app_sonic_fingerprint import sonic_fingerprint_bp
 from app_path import path_bp
@@ -556,6 +557,7 @@ from app_map import map_bp
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
 app.register_blueprint(analysis_bp)
+app.register_blueprint(cron_bp)
 app.register_blueprint(voyager_bp)
 app.register_blueprint(sonic_fingerprint_bp)
 app.register_blueprint(path_bp)
@@ -578,9 +580,41 @@ if __name__ == '__main__':
       logger.info("In-memory map projection loaded at startup.")
     except Exception as e:
       logger.debug(f"No precomputed map projection to load at startup or load failed: {e}")
+    # Initialize map JSON cache once at startup (reads DB one time)
+    # Run this in a background daemon thread so the Flask process doesn't block on the heavy DB read.
+    def _start_map_init_background():
+      try:
+        from app_map import init_map_cache
+        logger.info('Starting background map JSON cache build.')
+        # Ensure we run the heavy cache build inside an application context
+        with app.app_context():
+          init_map_cache()
+        logger.info('Background map JSON cache build finished.')
+      except Exception:
+        logger.exception('Background init_map_cache failed')
+
+    t = threading.Thread(target=_start_map_init_background, daemon=True)
+    t.start()
 
   # --- Start Background Listener Thread ---
   listener_thread = threading.Thread(target=listen_for_index_reloads, daemon=True)
   listener_thread.start()
+
+  # Start a cron manager thread that checks enabled cron entries every 60 seconds
+  def _cron_manager_loop():
+    try:
+      from time import sleep
+      while True:
+        try:
+          with app.app_context():
+            run_due_cron_jobs()
+        except Exception:
+          app.logger.exception('cron manager failed')
+        sleep(60)
+    except Exception:
+      app.logger.exception('cron manager main loop error')
+
+  cron_thread = threading.Thread(target=_cron_manager_loop, daemon=True)
+  cron_thread.start()
 
   app.run(debug=False, host='0.0.0.0', port=8000)

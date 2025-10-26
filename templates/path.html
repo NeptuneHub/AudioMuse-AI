@@ -104,6 +104,11 @@
                             <label for="max_steps">Songs in path:</label>
                             <input type="number" id="max_steps" name="max_steps" value="25" min="10" max="200">
                         </div>
+                        <div>
+                            <label for="path_fix_size_checkbox" style="display:flex;align-items:center;gap:8px;">
+                                <input type="checkbox" id="path_fix_size_checkbox" name="path_fix_size" {% if path_fix_size %}checked{% endif %} style="margin-right:6px"> Keep path size exact
+                            </label>
+                        </div>
                     </div>
                     <button type="submit">Find Path</button>
                 </form>
@@ -159,6 +164,25 @@
                 console.log(`Using '${pathDistanceMetric}' distance metric for path progression chart.`);
             } catch (error) {
                 console.error('Failed to fetch config, defaulting to euclidean distance:', error);
+            }
+
+            // Background-prefetch the full map (100%) so it's available when users view paths.
+            // Use requestIdleCallback when available so it doesn't compete with page load.
+            try {
+                const schedule = (fn, delay) => {
+                    if (window.requestIdleCallback) return window.requestIdleCallback(fn, {timeout: delay});
+                    return setTimeout(fn, delay);
+                };
+                // Prefetch the map in the background (fire-and-forget). Do NOT store the response in page memory.
+                schedule(() => {
+                    try {
+                        fetch('/api/map?percent=100', { cache: 'no-store' })
+                            .then(r => { if (!r.ok) throw new Error('prefetch failed'); return r.json().catch(() => null); })
+                            .catch(() => null);
+                    } catch (e) { /* ignore */ }
+                }, 1500);
+            } catch (e) {
+                console.debug('Map prefetch schedule failed', e);
             }
 
             const pathForm = document.getElementById('path-form');
@@ -668,15 +692,23 @@
                 }
 
                 try {
+                    const pathFixSize = document.getElementById('path_fix_size_checkbox')?.checked ? 'true' : 'false';
                     const params = new URLSearchParams({
                         start_song_id: startSongId,
                         end_song_id: endSongId,
-                        max_steps: maxSteps
+                        max_steps: maxSteps,
+                        path_fix_size: pathFixSize
                     });
+                    // Start fetching the full map projection in parallel (non-blocking) so both network requests
+                    // can be performed concurrently. Always fetch fresh data and do not reuse any in-page cached promise.
+                    const mapPromise = fetch('/api/map?percent=100', { cache: 'no-store' })
+                        .then(r => r.ok ? r.json().catch(() => null) : null)
+                        .catch(() => null);
+
                     const response = await fetch(`/api/find_path?${params}`);
                     if (!response.ok) {
                         let errorData;
-                        try { errorData = await response.json(); } 
+                        try { errorData = await response.json(); }
                         catch (e) { throw new Error(`Server returned an error (HTTP ${response.status})`); }
                         throw new Error(errorData.error || `An unknown server error occurred.`);
                     }
@@ -688,19 +720,16 @@
                     currentPathData = data.path;
                     currentTrackIds = currentPathData.map(track => track.item_id);
 
-                    // Attempt to fetch the precomputed map projection and build an id->coord map
+                    // Await the parallel map fetch (it may have started earlier). If it failed, we continue without map coords.
                     try {
-                        const respMap = await fetch('/api/map?n=2000');
-                        if (respMap.ok) {
-                            const mapData = await respMap.json();
-                            if (mapData && Array.isArray(mapData.items)) {
-                                mapIdToCoord = {};
-                                mapData.items.forEach(it => {
-                                    if (it && it.item_id && it.embedding_2d) {
-                                        mapIdToCoord[String(it.item_id)] = it.embedding_2d;
-                                    }
-                                });
-                            }
+                        const mapData = await mapPromise;
+                        if (mapData && Array.isArray(mapData.items)) {
+                            mapIdToCoord = {};
+                            mapData.items.forEach(it => {
+                                if (it && it.item_id && it.embedding_2d) {
+                                    mapIdToCoord[String(it.item_id)] = it.embedding_2d;
+                                }
+                            });
                         }
                     } catch (e) {
                         console.warn('Failed to fetch map projection for path visualization', e);

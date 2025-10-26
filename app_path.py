@@ -2,7 +2,7 @@
 from flask import Blueprint, jsonify, request, render_template
 import logging
 from tasks.path_manager import find_path_between_songs
-from config import PATH_DEFAULT_LENGTH
+from config import PATH_DEFAULT_LENGTH, PATH_FIX_SIZE
 import numpy as np
 import math # Import the math module
 
@@ -16,7 +16,8 @@ def path_page():
     """
     Serves the frontend page for finding a path between songs.
     """
-    return render_template('path.html')
+    # Pass the server default for path_fix_size so the UI checkbox reflects config/env
+    return render_template('path.html', path_fix_size=PATH_FIX_SIZE)
 
 @path_bp.route('/api/find_path', methods=['GET'])
 def find_path_endpoint():
@@ -35,7 +36,14 @@ def find_path_endpoint():
         return jsonify({"error": "Start and end songs cannot be the same."}), 400
 
     try:
-        path, total_distance = find_path_between_songs(start_song_id, end_song_id, max_steps)
+        # parse optional path_fix_size override from request (query param)
+        pfs = request.args.get('path_fix_size')
+        if pfs is None:
+            path_fix_size = PATH_FIX_SIZE
+        else:
+            path_fix_size = str(pfs).lower() in ('1', 'true', 'yes', 'y')
+
+        path, total_distance = find_path_between_songs(start_song_id, end_song_id, max_steps, path_fix_size=path_fix_size)
 
         if not path:
             return jsonify({"error": f"No path found between the selected songs within {max_steps} steps."}), 404
