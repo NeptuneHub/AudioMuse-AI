@@ -12,6 +12,17 @@
     /* small style for overlay toggle icons when hidden */
     .am-overlay-hidden { opacity: 0.35 !important; filter: grayscale(60%); }
     #overlay-controls a { cursor: pointer; }
+    /* responsive search inputs: wrap and shrink on small screens */
+    .map-search-row { display:flex; gap:8px; align-items:flex-end; margin-left:12px; flex-wrap:wrap; }
+    .map-search-row .map-search-col { display:flex; flex-direction:column; min-width:0; }
+    .map-search-row .map-search-col.button-col { align-items:flex-start; }
+    .map-search-input { width:220px; padding:4px; border-radius:4px; border:1px solid #d1d5db; box-sizing:border-box; }
+    @media (max-width:600px) {
+        .map-search-row { gap:6px; }
+        .map-search-row .map-search-col { width:100%; }
+        .map-search-row .map-search-col.button-col { width:auto; }
+        .map-search-input { width: calc(100% - 12px); min-width:120px; font-size:13px; }
+    }
     </style>
 </head>
 <body>
@@ -45,18 +56,18 @@
                     
                     <div id="map-status" style="margin-left:12px;color:#6B7280"></div>
                     <!-- Minimal search UI: Artist and Title (autocomplete + highlight) -->
-                    <div style="display:flex; gap:8px; align-items:flex-end; margin-left:12px;">
-                        <div style="display:flex; flex-direction:column;">
+                    <div class="map-search-row">
+                        <div class="map-search-col">
                             <label for="artist_search_map" style="font-size:12px;color:#374151">Artist</label>
-                            <input id="artist_search_map" type="text" placeholder="Artist name..." autocomplete="off" style="width:220px;padding:4px;border-radius:4px;border:1px solid #d1d5db;">
+                            <input id="artist_search_map" class="map-search-input" type="text" placeholder="Artist name..." autocomplete="off">
                             <div id="artist_autocomplete_results" class="autocomplete-results hidden" style="background:#fff;border:1px solid #e5e7eb;max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
                         </div>
-                        <div style="display:flex; flex-direction:column;">
+                        <div class="map-search-col">
                             <label for="title_search_map" style="font-size:12px;color:#374151">Title</label>
-                            <input id="title_search_map" type="text" placeholder="Track title..." autocomplete="off" style="width:220px;padding:4px;border-radius:4px;border:1px solid #d1d5db;">
+                            <input id="title_search_map" class="map-search-input" type="text" placeholder="Track title..." autocomplete="off">
                             <div id="title_autocomplete_results" class="autocomplete-results hidden" style="background:#fff;border:1px solid #e5e7eb;max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
                         </div>
-                        <div style="display:flex; flex-direction:column; align-items:flex-start;">
+                        <div class="map-search-col button-col">
                             <label style="font-size:12px;color:transparent">&nbsp;</label>
                             <button id="map_search_btn" class="btn btn-ghost btn-sm" type="button" style="margin-top:6px;">Search</button>
                         </div>
@@ -377,18 +388,30 @@ function applyGenreFilterAndRerender() {
         }
     } catch(e) { preservedShapes = []; }
     try {
+        // capture current axis ranges so we don't auto-rescale or recenter the map when filtering
+        let keepRanges = {};
+        try {
+            const curX = (gd.layout && gd.layout.xaxis && gd.layout.xaxis.range) ? gd.layout.xaxis.range : (gd._fullLayout && gd._fullLayout.xaxis && gd._fullLayout.xaxis.range ? gd._fullLayout.xaxis.range : null);
+            const curY = (gd.layout && gd.layout.yaxis && gd.layout.yaxis.range) ? gd.layout.yaxis.range : (gd._fullLayout && gd._fullLayout.yaxis && gd._fullLayout.yaxis.range ? gd._fullLayout.yaxis.range : null);
+            if (curX && curY) {
+                keepRanges = { xaxis: { range: Array.isArray(curX) ? curX.slice() : curX, autorange: false }, yaxis: { range: Array.isArray(curY) ? curY.slice() : curY, autorange: false } };
+            }
+        } catch(e) { /* ignore range capture errors */ }
+
+        const baseLayout = Object.assign({ hovermode: 'closest', dragmode: 'lasso', legend:{orientation:'h'}, margin:{t:8} }, keepRanges);
+
         if (pts.length > LARGE) {
             trace.type = 'scattergl';
             trace.hovertemplate = '%{text}<extra></extra>';
             trace.marker = Object.assign({}, trace.marker, { sizemode: 'area' });
             Plotly.purge(gd);
-            Plotly.newPlot('plot', [trace], { hovermode: 'closest', dragmode: 'lasso', legend:{orientation:'h'}, margin:{t:8} }, {responsive:true}).then(() => {
+            Plotly.newPlot('plot', [trace], baseLayout, {responsive:true}).then(() => {
                 // restore shape overlays after main plot is ready
                 try { if (preservedShapes.length) Plotly.relayout(gd, { shapes: preservedShapes }); } catch(e) {}
                 attachPlotHandlers(gd); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`;
             });
         } else {
-            Plotly.react('plot', [trace], { hovermode: 'closest', dragmode: 'lasso', legend:{orientation:'h'}, margin:{t:8} }, {responsive:true}).then(() => {
+            Plotly.react('plot', [trace], baseLayout, {responsive:true}).then(() => {
                 try { if (preservedShapes.length) Plotly.relayout(gd, { shapes: preservedShapes }); } catch(e) {}
                 attachPlotHandlers(gd); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`;
             });
@@ -635,8 +658,10 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
             let xRange = null, yRange = null;
             try { xRange = (gd.layout && gd.layout.xaxis && gd.layout.xaxis.range) ? gd.layout.xaxis.range : (gd._fullLayout && gd._fullLayout.xaxis && gd._fullLayout.xaxis.range ? gd._fullLayout.xaxis.range : null); } catch(e) { xRange = null; }
             try { yRange = (gd.layout && gd.layout.yaxis && gd.layout.yaxis.range) ? gd.layout.yaxis.range : (gd._fullLayout && gd._fullLayout.yaxis && gd._fullLayout.yaxis.range ? gd._fullLayout.yaxis.range : null); } catch(e) { yRange = null; }
-            const rx = (xRange && xRange[1] - xRange[0]) ? (xRange[1] - xRange[0]) * 0.02 : 0.5;
-            const ry = (yRange && yRange[1] - yRange[0]) ? (yRange[1] - yRange[0]) * 0.02 : 0.5;
+            // use same sizing as path points (relative fraction of axis range)
+            // user requested size to be HALF of previous value: 0.015 -> 0.0075, fallback 0.3 -> 0.15
+            const rx = (xRange && xRange[1] - xRange[0]) ? (xRange[1] - xRange[0]) * 0.0075 : 0.15;
+            const ry = (yRange && yRange[1] - yRange[0]) ? (yRange[1] - yRange[0]) * 0.0075 : 0.15;
             const shape = {
                 type: 'circle', xref: 'x', yref: 'y',
                 x0: p.x - rx, x1: p.x + rx, y0: p.y - ry, y1: p.y + ry,
@@ -669,14 +694,7 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
         // add a prominent overlay marker for the single point
         try { addHighlightOverlay(id); } catch(e) { /* ignore */ }
 
-        // try to center the view on the point (small pan/zoom)
-        try {
-            const gd = document.getElementById('plot');
-            if (gd && typeof Plotly !== 'undefined'){
-                const pad = 0.5;
-                Plotly.relayout(gd, { 'xaxis.range':[p.x - pad, p.x + pad], 'yaxis.range':[p.y - pad, p.y + pad] });
-            }
-        } catch(e){ /* non fatal */ }
+        // Do NOT auto-zoom or pan the map on search; only show the highlight overlay per user request.
         document.getElementById('map-status').textContent = `Highlighted: ${p.title || ''} — ${p.artist || ''}`;
     }
 
@@ -1022,8 +1040,9 @@ function drawPathOnMap(pathItems, color) {
             let xRange = null, yRange = null;
             try { xRange = (gd.layout && gd.layout.xaxis && gd.layout.xaxis.range) ? gd.layout.xaxis.range : (gd._fullLayout && gd._fullLayout.xaxis && gd._fullLayout.xaxis.range ? gd._fullLayout.xaxis.range : null); } catch(e) { xRange = null; }
             try { yRange = (gd.layout && gd.layout.yaxis && gd.layout.yaxis.range) ? gd.layout.yaxis.range : (gd._fullLayout && gd._fullLayout.yaxis && gd._fullLayout.yaxis.range ? gd._fullLayout.yaxis.range : null); } catch(e) { yRange = null; }
-            const rx = (xRange && xRange[1] - xRange[0]) ? (xRange[1] - xRange[0]) * 0.015 : 0.3;
-            const ry = (yRange && yRange[1] - yRange[0]) ? (yRange[1] - yRange[0]) * 0.015 : 0.3;
+            // user requested size to be HALF of previous value: 0.015 -> 0.0075, fallback 0.3 -> 0.15
+            const rx = (xRange && xRange[1] - xRange[0]) ? (xRange[1] - xRange[0]) * 0.0075 : 0.15;
+            const ry = (yRange && yRange[1] - yRange[0]) ? (yRange[1] - yRange[0]) * 0.0075 : 0.15;
 
             // build SVG path string using data coordinates
             let pathStr = '';
