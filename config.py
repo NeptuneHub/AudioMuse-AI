@@ -342,3 +342,17 @@ DUPLICATE_DISTANCE_CHECK_LOOKBACK = int(os.getenv("DUPLICATE_DISTANCE_CHECK_LOOK
 MOOD_SIMILARITY_THRESHOLD = float(os.getenv("MOOD_SIMILARITY_THRESHOLD", "0.15"))
 # Enable or disable mood similarity filtering globally (default: disabled for radius experiments)
 MOOD_SIMILARITY_ENABLE = os.environ.get("MOOD_SIMILARITY_ENABLE", "False").lower() == 'true'
+
+# --- Enable Proxy Fix for Flask when behind a reverse proxy ---
+# Actually only one proxy is allowed between client and app.
+# Example nginx configuration:
+# location /audiomuseai/ {
+#   proxy_pass http://127.0.0.1:8000/;
+#   proxy_http_version 1.1;
+#   proxy_set_header X-Forwarded-Host myhostname;
+#   proxy_set_header X-Forwarded-For $remote_addr;
+#   proxy_set_header X-Forwarded-Port 443;
+#   proxy_set_header X-Forwarded-Proto https;
+#   proxy_set_header X-Forwarded-Prefix /audiomuseai;
+# }
+ENABLE_PROXY_FIX = os.environ.get("ENABLE_PROXY_FIX", "False").lower() == "true"

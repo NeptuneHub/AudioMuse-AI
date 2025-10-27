@@ -15,9 +15,6 @@ from rq.exceptions import NoSuchJobError
 # Redis client
 from redis import Redis
 
-# Werkzeug import for reverse proxy support
-from werkzeug.middleware.proxy_fix import ProxyFix
-
 # Swagger imports
 from flasgger import Swagger, swag_from
 
@@ -33,7 +30,12 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
   PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, MOOD_LABELS, TOP_N_MOODS, APP_VERSION, \
   AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME, MISTRAL_MODEL_NAME, \
   TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, ALCHEMY_SUBTRACT_DISTANCE, \
+  ENABLE_PROXY_FIX, \
   ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN  # --- NEW: Import path distance metric and alchemy defaults ---
+
+if ENABLE_PROXY_FIX:
+  # Werkzeug import for reverse proxy support
+  from werkzeug.middleware.proxy_fix import ProxyFix
 
 # --- Flask App Setup ---
 app = Flask(__name__)
@@ -61,9 +63,8 @@ logging.basicConfig(
     datefmt='%d-%m-%Y %H-%M-%S' # Custom date/time format
 )
 
-# TODO the proxy fix should be configurable
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
-# *** END OF FIX ***
+if ENABLE_PROXY_FIX:
+  app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # Log the application version on startup
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")

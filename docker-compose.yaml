@@ -1,0 +1,91 @@
+version: '3.8'
+services:
+  # Redis service for RQ (task queue)
+  redis:
+    image: redis:7-alpine
+    container_name: audiomuse-redis
+    ports:
+      - "6379:6379" # Expose Redis port to the host
+    volumes:
+      - redis-data:/data # Persistent storage for Redis data
+    restart: unless-stopped
+
+  # PostgreSQL database service
+  postgres:
+    image: postgres:15-alpine
+    container_name: audiomuse-postgres
+    environment:
+      POSTGRES_USER: "audiomuse"
+      POSTGRES_PASSWORD: "audiomusepassword"
+      POSTGRES_DB: "audiomusedb"
+    ports:
+      - "5432:5432" # Expose PostgreSQL port to the host
+    volumes:
+      - postgres-data:/var/lib/postgresql/data # Persistent storage for PostgreSQL data
+    restart: unless-stopped
+
+  # AudioMuse-AI Flask application service
+  audiomuse-ai-flask:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: audiomuse-ai:dev
+    container_name: audiomuse-ai-flask-app
+    ports:
+      - "8000:8000" # Map host port 8000 to container port 8000
+    environment:
+      SERVICE_TYPE: "flask" # Tells the container to run the Flask app
+      MEDIASERVER_TYPE: "jellyfin" # Specify the media server type
+      JELLYFIN_USER_ID: "YOUR-JF-USER-ID" #for example: 0e45c44b3e2e4da7a2be11a72a1c8575
+      JELLYFIN_TOKEN: "YOUR-JF-TOKEN" # for example: e0b8c325bc1b426c81922b90c0aa2ff1
+      JELLYFIN_URL: "YOUR-JF-URL" # for example: http://jellyfin.192.168.3.131.nip.io:8087
+      # DATABASE_URL is now constructed by config.py from the following:
+      POSTGRES_USER: "audiomuse"
+      POSTGRES_PASSWORD: "audiomusepassword"
+      POSTGRES_DB: "audiomusedb"
+      POSTGRES_HOST: "postgres" # Service name of the postgres container
+      POSTGRES_PORT: "5432"
+      REDIS_URL: "redis://redis:6379/0" # Connects to the 'redis' service
+      GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE" # From gemini-api-credentials secret
+      MISTRAL_API_KEY: "YOUR_MISTRAL_API_KEY_HERE" # From mistral-api-credentials secret
+      TEMP_DIR: "/app/temp_audio"
+    volumes:
+      - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  # AudioMuse-AI RQ Worker service
+  audiomuse-ai-worker:
+    image: ghcr.io/neptunehub/audiomuse-ai:latest # Reflects deployment.yaml
+    container_name: audiomuse-ai-worker-instance
+    environment:
+      SERVICE_TYPE: "worker" # Tells the container to run the RQ worker
+      MEDIASERVER_TYPE: "jellyfin" # Specify the media server type
+      JELLYFIN_USER_ID: "YOUR-JF-USER-ID" #for example: 0e45c44b3e2e4da7a2be11a72a1c8575
+      JELLYFIN_TOKEN: "YOUR-JF-TOKEN" # for example: e0b8c325bc1b426c81922b90c0aa2ff1
+      JELLYFIN_URL: "YOUR-JF-URL" # for example: http://jellyfin.192.168.3.131.nip.io:8087
+      # DATABASE_URL is now constructed by config.py from the following:
+      POSTGRES_USER: "audiomuse"
+      POSTGRES_PASSWORD: "audiomusepassword"
+      POSTGRES_DB: "audiomusedb"
+      POSTGRES_HOST: "postgres" # Service name of the postgres container
+      POSTGRES_PORT: "5432"
+      REDIS_URL: "redis://redis:6379/0" # Connects to the 'redis' service
+      GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE" # From gemini-api-credentials secret
+      MISTRAL_API_KEY: "YOUR_MISTRAL_API_KEY_HERE"
+      TEMP_DIR: "/app/temp_audio"
+    volumes:
+      - temp-audio-worker:/app/temp_audio # Volume for temporary audio files
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+# Define volumes for persistent data and temporary files
+volumes:
+  redis-data:
+  postgres-data:
+  temp-audio-flask: # Volume for Flask app's temporary audio
+  temp-audio-worker: # Volume for Worker's temporary audio

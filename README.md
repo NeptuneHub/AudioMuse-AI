@@ -264,6 +264,7 @@ These parameter could be leave as it is:
 | `TEMP_DIR`              | Temp directory for audio files              | `/app/temp_audio` |
 | `CLEANING_SAFETY_LIMIT` | Max number of albums deleted during cleaning | `100`             |
 | `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names. | `""` (empty - scan all) |
+| `ENABLE_PROXY_FIX` | Enable Proxy Fix for Flask when behind a reverse proxy. Example Nginx configuration: [config.py](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/config.py#L346) | `false` |
 
 This are the default parameters on wich the analysis or clustering task will be lunched. You will be able to change them to another value directly in the front-end:
 
