@@ -60,10 +60,18 @@
     </div>
 
     <script>
+        function saveCron(payload){
+            return fetch("{{ url_for('cron_bp.save_cron_entry') }}", {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify(payload)
+            });
+        }
+
         document.addEventListener('DOMContentLoaded', load);
         async function load(){
             try{
-                const res = await fetch('/api/cron');
+                const res = await fetch("{{ url_for('cron_bp.get_cron_entries') }}");
                 if(!res.ok) return;
                 const rows = await res.json();
                 // cache rows to avoid refetching on save
@@ -93,12 +101,18 @@
             const cn = rows.find(r=>r.task_type==='clustering');
 
             try{
-                if(an){ await fetch('/api/cron', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id:an.id, name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen})}) }
-                else { await fetch('/api/cron', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen})}) }
+                if (an) {
+                    saveCron({id:an.id, name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen})
+                } else {
+                    saveCron({name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen})
+                }
 
-                if(cn){ await fetch('/api/cron', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id:cn.id, name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen})}) }
-                else { await fetch('/api/cron', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen})}) }
-
+                if (cn) {
+                    saveCron({id:cn.id, name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen})
+                } else {
+                    saveCron({name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen})
+                }
+                
                 // refresh cached rows after saving
                 await load();
                 alert('Saved')

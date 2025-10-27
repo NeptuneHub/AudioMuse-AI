@@ -137,7 +137,7 @@
 
             window.addEventListener('DOMContentLoaded', async () => {
                 try {
-                    const response = await fetch('/api/config/defaults');
+                    const response = await fetch("{{ url_for('sonic_fingerprint_bp.get_media_server_defaults') }}");
                     if (!response.ok) return;
                     
                     const data = await response.json();
@@ -186,7 +186,7 @@
                 resultsTableWrapper.innerHTML = '';
 
                 try {
-                    const response = await fetch('/api/sonic_fingerprint/generate', {
+                    const response = await fetch("{{ url_for('sonic_fingerprint_bp.generate_sonic_fingerprint_endpoint') }}", {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload)
@@ -256,7 +256,7 @@
                 playlistStatusDiv.textContent = 'Creating playlist...';
                 
                 try {
-                    const response = await fetch('/api/create_playlist', {
+                    const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload),

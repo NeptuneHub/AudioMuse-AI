@@ -131,7 +131,7 @@
 async function fetchMapParam(param) {
     // param is a percent string like '25','50','75','100'
     // Always fetch fresh data from the server. Do not persist any map JSON in page memory.
-    const resp = await fetch(`/api/map?percent=${encodeURIComponent(param)}`, {
+    const resp = await fetch(`{{ url_for('map_bp.map_api') }}?percent=${encodeURIComponent(param)}`, {
         cache: 'no-store',
         headers: { 'Pragma': 'no-cache' }
     });
@@ -568,7 +568,7 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
     async function searchTracks(params){
         try{
             const qs = new URLSearchParams(params);
-            const resp = await fetch(`/api/search_tracks?${qs.toString()}`);
+            const resp = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${qs.toString()}`);
             if (!resp.ok) return [];
             return await resp.json();
         } catch(e){ console.debug('searchTracks failed', e); return []; }
@@ -1140,7 +1140,7 @@ function clearMapOverlays() {
             const filtered = (sel || []).filter(id => id !== undefined && id !== null);
             console.debug('Creating playlist with ids', filtered.slice(0,50));
             const payload = { playlist_name: `Map selection ${new Date().toISOString()}`, track_ids: filtered };
-            const resp = await fetch('/api/create_playlist', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+            const resp = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
                 const text = await resp.text();
                 let json = null;
                 try { json = text ? JSON.parse(text) : null; } catch(e) { json = null; }
@@ -1168,7 +1168,7 @@ function clearMapOverlays() {
                         const b = sel[i+1];
                         const params = new URLSearchParams({ start_song_id: a, end_song_id: b, max_steps: 25 });
                         try {
-                            const resp = await fetch(`/api/find_path?${params}`);
+                            const resp = await fetch(`{{ url_for('path_bp.find_path_endpoint') }}?${params}`);
                             if (!resp.ok) {
                                 const err = await resp.json().catch(() => ({}));
                                 console.warn('find_path failed for', a, b, err);

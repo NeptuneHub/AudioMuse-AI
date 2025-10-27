@@ -161,7 +161,7 @@
 
             // --- Fetch config to get the distance metric ---
             try {
-                const response = await fetch('/api/config');
+                const response = await fetch("{{ url_for('get_config_endpoint') }}");
                 const config = await response.json();
                 pathDistanceMetric = config.path_distance_metric || 'euclidean';
                 console.log(`Using '${pathDistanceMetric}' distance metric for path progression chart.`);
@@ -179,7 +179,7 @@
                 // Prefetch the map in the background (fire-and-forget). Do NOT store the response in page memory.
                 schedule(() => {
                     try {
-                        fetch('/api/map?percent=100', { cache: 'no-store' })
+                        fetch("{{ url_for('map_bp.map_api') }}?percent=100", { cache: 'no-store' })
                             .then(r => { if (!r.ok) throw new Error('prefetch failed'); return r.json().catch(() => null); })
                             .catch(() => null);
                     } catch (e) { /* ignore */ }
@@ -220,7 +220,7 @@
                     }
                     try {
                         const params = new URLSearchParams({ artist: artistQuery, title: titleQuery });
-                        const response = await fetch(`/api/search_tracks?${params}`);
+                        const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
                         const tracks = await response.json();
                         resultsEl.innerHTML = '';
                         if (tracks.length === 0) {
@@ -704,11 +704,11 @@
                     });
                     // Start fetching the full map projection in parallel (non-blocking) so both network requests
                     // can be performed concurrently. Always fetch fresh data and do not reuse any in-page cached promise.
-                    const mapPromise = fetch('/api/map?percent=100', { cache: 'no-store' })
+                    const mapPromise = fetch("{{ url_for('map_bp.map_api') }}?percent=100", { cache: 'no-store' })
                         .then(r => r.ok ? r.json().catch(() => null) : null)
                         .catch(() => null);
 
-                    const response = await fetch(`/api/find_path?${params}`);
+                    const response = await fetch(`{{ url_for('path_bp.find_path_endpoint') }}?${params}`);
                     if (!response.ok) {
                         let errorData;
                         try { errorData = await response.json(); }
@@ -807,7 +807,7 @@
                 }
                 playlistStatusDiv.textContent = 'Creating playlist...';
                 try {
-                    const response = await fetch('/api/create_playlist', {
+                    const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
