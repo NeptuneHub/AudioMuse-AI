@@ -12,7 +12,12 @@
     <div class="page-container">
         <aside class="sidebar">
             <nav>
-                <ul class="sidebar-nav"></ul>
+                <ul class="sidebar-nav">
+                    {% with %}
+                    {% set active = 'cron' %}
+                    {% include 'sidebar_navi.html' %}
+                    {% endwith %}
+                </ul>
             </nav>
         </aside>
 

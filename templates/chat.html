@@ -3,7 +3,6 @@
 <head>
     <meta charset="UTF-8">
     <meta name="app-version" content="{{ app_version }}">
-    <meta name="app-script-name" content="{{ script_name }}">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AudioMuse-AI - Instant Playlist</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
@@ -15,7 +14,10 @@
     <aside class="sidebar">
         <nav>
             <ul class="sidebar-nav">
-                <!-- Menu items are dynamically inserted by menu.js -->
+                {% with %}
+                {% set active = 'chat' %}
+                {% include 'sidebar_navi.html' %}
+                {% endwith %}
             </ul>
         </nav>
     </aside>

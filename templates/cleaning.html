@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AudioMuse-AI - Database Cleaning</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filenmae='menu.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
     <style>
         .cleaning-summary {
             background-color: #e7f3ff;
@@ -50,7 +50,10 @@
         <aside class="sidebar">
             <nav>
                 <ul class="sidebar-nav">
-                    <!-- Menu items are dynamically inserted by menu.js -->
+                    {% with %}
+                    {% set active = 'cleaning' %}
+                    {% include 'sidebar_navi.html' %}
+                    {% endwith %}
                 </ul>
             </nav>
         </aside>

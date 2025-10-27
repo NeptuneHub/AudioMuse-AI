@@ -13,7 +13,10 @@
         <aside class="sidebar">
             <nav>
                 <ul class="sidebar-nav">
-                    <!-- Menu items are dynamically inserted by menu.js -->
+                    {% with %}
+                    {% set active = 'index' %}
+                    {% include 'sidebar_navi.html' %}
+                    {% endwith %}
                 </ul>
             </nav>
         </aside>

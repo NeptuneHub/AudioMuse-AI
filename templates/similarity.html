@@ -23,7 +23,10 @@
     <aside class="sidebar">
         <nav>
             <ul class="sidebar-nav">
-                <!-- Menu items are dynamically inserted by menu.js -->
+                {% with %}
+                {% set active = 'similarity' %}
+                {% include 'sidebar_navi.html' %}
+                {% endwith %}
             </ul>
         </nav>
     </aside>
