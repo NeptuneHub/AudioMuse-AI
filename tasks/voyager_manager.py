@@ -851,14 +851,17 @@ def _execute_radius_walk(
             if cid in used_ids:
                 return False
             # Per-bucket: avoid more than one song per artist inside this bucket
+            # This restriction is considered part of the artist-cap behavior.
+            # Treat MAX_SONGS_PER_ARTIST <= 0 as DISABLED (no per-bucket restriction).
             try:
-                author = items[i].get('author')
-                if author and author in bucket_artist_set:
-                    return False
+                if eliminate_duplicates and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
+                    author = items[i].get('author')
+                    if author and author in bucket_artist_set:
+                        return False
             except Exception:
                 pass
-            # Enforce global artist cap
-            if eliminate_duplicates:
+            # Enforce global artist cap. Treat MAX_SONGS_PER_ARTIST <= 0 as DISABLED.
+            if eliminate_duplicates and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
                 author = items[i].get('author')
                 if author:
                     # If this artist has already appeared in two different buckets
@@ -918,17 +921,19 @@ def _execute_radius_walk(
                 # Skip if already used
                 if cid in used_ids:
                     continue
-                # Per-bucket: avoid more than one song per artist inside this bucket
+                # Per-bucket: avoid more than one song per artist inside this bucket.
+                # Treat MAX_SONGS_PER_ARTIST <= 0 as DISABLED (no per-bucket restriction).
                 try:
-                    auth = meta.get('author')
-                    if auth and auth in bucket_artist_set:
-                        if INSTRUMENT_BUCKET_SKIPS:
-                            logger.debug(f"Bucket {bucket_index}: skipping idx={i} bucket-artist-limit {auth}")
-                        continue
+                    if eliminate_duplicates and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
+                        auth = meta.get('author')
+                        if auth and auth in bucket_artist_set:
+                            if INSTRUMENT_BUCKET_SKIPS:
+                                logger.debug(f"Bucket {bucket_index}: skipping idx={i} bucket-artist-limit {auth}")
+                            continue
                 except Exception:
                     pass
-                # Global artist cap check
-                if eliminate_duplicates:
+                # Global artist cap check (only enforce if positive cap configured)
+                if eliminate_duplicates and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
                     auth = meta.get('author')
                     if auth:
                         # if artist already occupies two different buckets and hasn't hit the cap, skip
@@ -1245,25 +1250,29 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         
         # 5. Apply artist cap (eliminate_duplicates)
         if eliminate_duplicates:
-            item_ids_to_check = [r['item_id'] for r in unique_results_by_song]
-            
-            track_details_list = get_score_data_by_ids(item_ids_to_check)
-            details_map = {d['item_id']: {'author': d['author']} for d in track_details_list}
+            # If MAX_SONGS_PER_ARTIST <= 0, treat as disabled and skip cap enforcement
+            if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
+                final_results = unique_results_by_song
+            else:
+                item_ids_to_check = [r['item_id'] for r in unique_results_by_song]
+                
+                track_details_list = get_score_data_by_ids(item_ids_to_check)
+                details_map = {d['item_id']: {'author': d['author']} for d in track_details_list}
 
-            artist_counts = {}
-            final_results = []
-            for song in unique_results_by_song:
-                song_id = song['item_id']
-                author = details_map.get(song_id, {}).get('author')
+                artist_counts = {}
+                final_results = []
+                for song in unique_results_by_song:
+                    song_id = song['item_id']
+                    author = details_map.get(song_id, {}).get('author')
 
-                if not author:
-                    logger.warning(f"Could not find author for item_id {song_id} during artist deduplication. Skipping.")
-                    continue
+                    if not author:
+                        logger.warning(f"Could not find author for item_id {song_id} during artist deduplication. Skipping.")
+                        continue
 
-                current_count = artist_counts.get(author, 0)
-                if current_count < MAX_SONGS_PER_ARTIST:
-                    final_results.append(song)
-                    artist_counts[author] = current_count + 1
+                    current_count = artist_counts.get(author, 0)
+                    if current_count < MAX_SONGS_PER_ARTIST:
+                        final_results.append(song)
+                        artist_counts[author] = current_count + 1
         else:
             final_results = unique_results_by_song
 
@@ -1362,17 +1371,21 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
             added_songs_details.append(current_details)
 
     if eliminate_duplicates:
-        artist_counts = {}
-        final_results = []
-        for song in unique_songs_by_content:
-            author = item_details.get(song['item_id'], {}).get('author')
-            if not author:
-                continue
+        # If MAX_SONGS_PER_ARTIST <= 0, treat as disabled and skip cap enforcement
+        if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
+            final_results = unique_songs_by_content
+        else:
+            artist_counts = {}
+            final_results = []
+            for song in unique_songs_by_content:
+                author = item_details.get(song['item_id'], {}).get('author')
+                if not author:
+                    continue
 
-            current_count = artist_counts.get(author, 0)
-            if current_count < MAX_SONGS_PER_ARTIST:
-                final_results.append(song)
-                artist_counts[author] = current_count + 1
+                current_count = artist_counts.get(author, 0)
+                if current_count < MAX_SONGS_PER_ARTIST:
+                    final_results.append(song)
+                    artist_counts[author] = current_count + 1
     else:
         final_results = unique_songs_by_content
 

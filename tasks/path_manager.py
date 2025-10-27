@@ -217,9 +217,9 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
             logger.debug(f"Filtering song (NAME/ID FILTER): '{details.get('title')}' by '{details.get('author')}' as it is already in the path.")
             continue
 
-        # Enforce global per-artist cap if configured
+        # Enforce global per-artist cap if configured. Treat MAX_SONGS_PER_ARTIST <= 0 as DISABLED.
         author_norm = (details.get('author') or '').strip().lower()
-        if artist_counts is not None and MAX_SONGS_PER_ARTIST is not None:
+        if artist_counts is not None and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
             if artist_counts.get(author_norm, 0) >= MAX_SONGS_PER_ARTIST:
                 logger.debug(f"Filtering song (ARTIST CAP) '{details.get('title')}' by '{details.get('author')}' because artist cap {MAX_SONGS_PER_ARTIST} reached.")
                 continue
