@@ -5,15 +5,18 @@
     <meta name="app-version" content="{{ app_version }}">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AudioMuse-AI - Home Page</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <link rel="stylesheet" href="/static/menu.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
 </head>
 <body>
     <div class="page-container">
         <aside class="sidebar">
             <nav>
                 <ul class="sidebar-nav">
-                    <!-- Menu items are dynamically inserted by menu.js -->
+                    {% with %}
+                    {% set active = 'index' %}
+                    {% include 'sidebar_navi.html' %}
+                    {% endwith %}
                 </ul>
             </nav>
         </aside>
@@ -279,7 +282,7 @@
             </div>
         </div>
     </div>
-    <script src="/static/script.js"></script>
-    <script src="/static/menu.js"></script>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script src="{{ url_for('static', filename='menu.js') }}"></script>
 </body>
 </html>

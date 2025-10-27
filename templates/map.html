@@ -5,9 +5,9 @@
     <meta name="app-version" content="{{ app_version }}">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AudioMuse-AI - Music Map</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <link rel="stylesheet" href="/static/menu.css">
-    <script src="/static/plotly-2.29.1.min.js"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
+    <script src="{{ url_for('static', filename='plotly-2.29.1.min.js') }}"></script>
     <style>
     /* small style for overlay toggle icons when hidden */
     .am-overlay-hidden { opacity: 0.35 !important; filter: grayscale(60%); }
@@ -29,7 +29,12 @@
 <div class="page-container">
     <aside class="sidebar">
         <nav>
-            <ul class="sidebar-nav"></ul>
+            <ul class="sidebar-nav">
+                {% with %}
+                {% set active = 'map' %}
+                {% include 'sidebar_navi.html' %}
+                {% endwith %}
+            </ul>
         </nav>
     </aside>
 
@@ -1121,7 +1126,7 @@ function clearMapOverlays() {
 
 <!-- debug button removed per user request -->
 
-<script src="/static/menu.js"></script>
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
 </body>
 </html>
 <script>
