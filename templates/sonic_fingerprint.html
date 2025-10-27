@@ -5,8 +5,8 @@
     <meta name="app-version" content="{{ app_version }}">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AudioMuse-AI - Sonic Fingerprint</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <link rel="stylesheet" href="/static/menu.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
     <style>
         #fingerprint-form button {
             flex-grow: 1;
@@ -269,7 +269,7 @@
             });
         })();
     </script>
-    <script src="/static/menu.js"></script>
+    <script src="{{ url_for('static', filename='menu.js') }}"></script>
 </body>
 </html>
 

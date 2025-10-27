@@ -1,7 +1,7 @@
 import os
 import psycopg2
 from psycopg2.extras import DictCursor
-from flask import Flask, jsonify, request, render_template, g, current_app
+from flask import Flask, jsonify, request, render_template, g, current_app, url_for
 import json
 import logging
 import threading
@@ -61,6 +61,7 @@ logging.basicConfig(
     datefmt='%d-%m-%Y %H-%M-%S' # Custom date/time format
 )
 
+# TODO the proxy fix should be configurable
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 # *** END OF FIX ***
 

@@ -5,8 +5,8 @@
     <meta name="app-version" content="{{ app_version }}">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AudioMuse-AI - Collection Sync</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <link rel="stylesheet" href="/static/menu.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static'm filename='menu.css') }}">
     <!-- Import PocketBase SDK -->
     <script src="https://cdn.jsdelivr.net/npm/pocketbase/dist/pocketbase.umd.js"></script>
     <style>
@@ -161,8 +161,8 @@
             </div>
         </div>
     </div>
-    <script src="/static/collection_script.js"></script>
-    <script src="/static/menu.js"></script>
+    <script src="{{ url_for('static', filename='collection_script.js') }}"></script>
+    <script src="{{ url_for('static', filename='menu.js') }}"></script>
 </body>
 </html>
 

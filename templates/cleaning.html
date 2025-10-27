@@ -5,8 +5,8 @@
     <meta name="app-version" content="{{ app_version }}">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AudioMuse-AI - Database Cleaning</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <link rel="stylesheet" href="/static/menu.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filenmae='menu.css') }}">
     <style>
         .cleaning-summary {
             background-color: #e7f3ff;
@@ -510,6 +510,6 @@
             console.log('UI completely reset - all timers and intervals cleared');
         }
     </script>
-    <script src="/static/menu.js"></script>
+    <script src="{{ url_for('static', filename='menu.js') }}"></script>
 </body>
 </html>
