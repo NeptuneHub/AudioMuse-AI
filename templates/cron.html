@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="app-version" content="{{ app_version }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AudioMuse-AI - Scheduled Tasks</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
+</head>
+<body>
+    <div class="page-container">
+        <aside class="sidebar">
+            <nav>
+                <ul class="sidebar-nav">
+                    {% with %}
+                    {% set active = 'cron' %}
+                    {% include 'sidebar_navi.html' %}
+                    {% endwith %}
+                </ul>
+            </nav>
+        </aside>
+
+        <div class="main-content" id="main-content">
+            <button class="menu-toggle">&#9776;</button>
+            <div class="container">
+                <div id="main-content-inner">
+                    <section>
+                        <div id="config-header">
+                            <div class="config-title-group">
+                                <h1>Schedule a Task</h1>
+                                <p class="subtitle">Configure scheduled Analysis and Clustering runs using cron notation.</p>
+                            </div>
+                            <div class="header-controls">
+                                <!-- Header controls intentionally empty; the save button is placed under the form. -->
+                            </div>
+                        </div>
+
+                        <div style="max-width:100%; margin-top:1rem;">
+                            <label style="display:block;margin-bottom:.5rem;">Analysis</label>
+                            <input id="analysis-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 2 * * 0-5)">
+                            <div style="margin-top:.5rem;"><input id="analysis-enabled" type="checkbox"> Enable</div>
+
+                            <hr style="margin:1rem 0;">
+
+                            <label style="display:block;margin-bottom:.5rem;">Clustering</label>
+                            <input id="clustering-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 2 * * 6)">
+                            <div style="margin-top:.5rem;"><input id="clustering-enabled" type="checkbox"> Enable</div>
+
+                            <p style="margin-top:.5rem;font-size:0.9rem;color:#555;">Defaults are disabled. Analysis default: each night (2:00) except Saturday. Clustering default: Saturday at 2:00.</p>
+
+                            <div style="margin-top:1rem;">
+                                <button id="save-btn" class="btn btn-primary" style="width:100%;">Save Schedules</button>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function saveCron(payload){
+            return fetch("{{ url_for('cron_bp.save_cron_entry') }}", {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify(payload)
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', load);
+        async function load(){
+            try{
+                const res = await fetch("{{ url_for('cron_bp.get_cron_entries') }}");
+                if(!res.ok) return;
+                const rows = await res.json();
+                // cache rows to avoid refetching on save
+                window.cronRows = rows;
+                // find entries
+                const a = rows.find(r=>r.task_type==='analysis');
+                const c = rows.find(r=>r.task_type==='clustering');
+                if(a){ document.getElementById('analysis-cron').value = a.cron_expr; document.getElementById('analysis-enabled').checked = a.enabled }
+                else { document.getElementById('analysis-cron').value = '0 2 * * 0-5'; document.getElementById('analysis-enabled').checked = false }
+                if(c){ document.getElementById('clustering-cron').value = c.cron_expr; document.getElementById('clustering-enabled').checked = c.enabled }
+                else { document.getElementById('clustering-cron').value = '0 2 * * 6'; document.getElementById('clustering-enabled').checked = false }
+            }catch(e){ console.error(e) }
+        }
+
+        document.getElementById('save-btn').addEventListener('click', async ()=>{
+            const saveBtn = document.getElementById('save-btn');
+            if (saveBtn.disabled) return; // prevent double-click
+            saveBtn.disabled = true;
+            const aexpr = document.getElementById('analysis-cron').value;
+            const aen = document.getElementById('analysis-enabled').checked;
+            const cexpr = document.getElementById('clustering-cron').value;
+            const cen = document.getElementById('clustering-enabled').checked;
+
+            // Use cached rows if available to avoid an extra GET
+            const rows = window.cronRows || [];
+            const an = rows.find(r=>r.task_type==='analysis');
+            const cn = rows.find(r=>r.task_type==='clustering');
+
+            try{
+                if (an) {
+                    saveCron({id:an.id, name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen})
+                } else {
+                    saveCron({name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen})
+                }
+
+                if (cn) {
+                    saveCron({id:cn.id, name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen})
+                } else {
+                    saveCron({name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen})
+                }
+                
+                // refresh cached rows after saving
+                await load();
+                alert('Saved')
+            }catch(e){
+                console.error('Failed to save cron entries', e);
+                alert('Failed to save');
+            } finally{
+                saveBtn.disabled = false;
+            }
+        })
+    </script>
+    <script src="{{ url_for('static', filename='menu.js') }}"></script>
+</body>
+</html>

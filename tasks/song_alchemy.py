@@ -140,7 +140,7 @@ def _project_with_umap(vectors: List[np.ndarray], n_components: int = 2) -> List
     if not vectors:
         return []
     mat = np.vstack(vectors)
-    reducer = umap.UMAP(n_components=n_components, random_state=42, n_jobs=-1)
+    reducer = umap.UMAP(n_components=n_components, random_state=None, n_jobs=-1)
     embedding = reducer.fit_transform(mat)
     # Center and scale uniformly so x and y share same units
     emb_centered = embedding - embedding.mean(axis=0)

@@ -3,7 +3,7 @@ from flask import Blueprint, jsonify, request, render_template
 import logging
 
 # Import the new config option
-from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
+from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT
 from tasks.voyager_manager import (
     find_nearest_neighbors_by_id, 
     create_playlist_from_ids,
@@ -162,9 +162,16 @@ def get_similar_tracks_endpoint():
     else:
         eliminate_duplicates = eliminate_duplicates_str.lower() == 'true'
 
+    radius_similarity_str = request.args.get('radius_similarity')
+    if radius_similarity_str is None:
+        # Use configured default when parameter is omitted
+        radius_similarity = SIMILARITY_RADIUS_DEFAULT
+    else:
+        radius_similarity = radius_similarity_str.lower() == 'true'
+
     mood_similarity_str = request.args.get('mood_similarity')
     if mood_similarity_str is None:
-        mood_similarity = True  # Default to True when parameter is not provided
+        mood_similarity = None  # Respect config default when parameter is omitted
     else:
         mood_similarity = mood_similarity_str.lower() == 'true'
 
@@ -185,7 +192,8 @@ def get_similar_tracks_endpoint():
             target_item_id, 
             n=num_neighbors,
             eliminate_duplicates=eliminate_duplicates,
-            mood_similarity=mood_similarity
+            mood_similarity=mood_similarity,
+            radius_similarity=radius_similarity
         )
         if not neighbor_results:
             return jsonify({"error": "Target track not found in index or no similar tracks found."}), 404

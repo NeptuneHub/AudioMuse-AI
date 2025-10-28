@@ -222,7 +222,8 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
                 "-analyzeduration", "10M",  # Increase analysis duration
                 "-probesize", "10M",        # Increase probe size  
                 "-ignore_unknown",          # Ignore unknown streams
-                "-err_detect", "ignore_err" # Ignore decode errors
+                "-err_detect", "ignore_err", # Ignore decode errors
+                "-ac", "2"                  # Force downmix to stereo to handle multichannel files
             ]
         )
         if len(audio_segment) == 0:

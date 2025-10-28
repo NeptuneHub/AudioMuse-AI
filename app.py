@@ -1,7 +1,7 @@
 import os
 import psycopg2
 from psycopg2.extras import DictCursor
-from flask import Flask, jsonify, request, render_template, g, current_app
+from flask import Flask, jsonify, request, render_template, g, current_app, url_for
 import json
 import logging
 import threading
@@ -14,9 +14,6 @@ from rq.exceptions import NoSuchJobError
 
 # Redis client
 from redis import Redis
-
-# Werkzeug import for reverse proxy support
-from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Swagger imports
 from flasgger import Swagger, swag_from
@@ -33,9 +30,13 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
   PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, MOOD_LABELS, TOP_N_MOODS, APP_VERSION, \
   AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME, MISTRAL_MODEL_NAME, \
   TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, ALCHEMY_SUBTRACT_DISTANCE, \
-  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN, \
-  OPENAI_MODEL_NAME, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_API_TOKENS, OPENAI_API_TEMPERATURE, OPENAI_API_CALL_DELAY_SECONDS # --- NEW: OpenAI config ---
+  OPENAI_MODEL_NAME, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_API_TOKENS, \
+  ENABLE_PROXY_FIX, \
+  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN  # --- NEW: Import path distance metric and alchemy defaults ---
 
+if ENABLE_PROXY_FIX:
+  # Werkzeug import for reverse proxy support
+  from werkzeug.middleware.proxy_fix import ProxyFix
 
 # --- Flask App Setup ---
 app = Flask(__name__)
@@ -63,8 +64,8 @@ logging.basicConfig(
     datefmt='%d-%m-%Y %H-%M-%S' # Custom date/time format
 )
 
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
-# *** END OF FIX ***
+if ENABLE_PROXY_FIX:
+  app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # Log the application version on startup
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
@@ -548,6 +549,7 @@ import tasks.analysis
 from app_chat import chat_bp
 from app_clustering import clustering_bp
 from app_analysis import analysis_bp
+from app_cron import cron_bp, run_due_cron_jobs
 from app_voyager import voyager_bp
 from app_sonic_fingerprint import sonic_fingerprint_bp
 from app_path import path_bp
@@ -559,6 +561,7 @@ from app_map import map_bp
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
 app.register_blueprint(analysis_bp)
+app.register_blueprint(cron_bp)
 app.register_blueprint(voyager_bp)
 app.register_blueprint(sonic_fingerprint_bp)
 app.register_blueprint(path_bp)
@@ -581,9 +584,41 @@ if __name__ == '__main__':
       logger.info("In-memory map projection loaded at startup.")
     except Exception as e:
       logger.debug(f"No precomputed map projection to load at startup or load failed: {e}")
+    # Initialize map JSON cache once at startup (reads DB one time)
+    # Run this in a background daemon thread so the Flask process doesn't block on the heavy DB read.
+    def _start_map_init_background():
+      try:
+        from app_map import init_map_cache
+        logger.info('Starting background map JSON cache build.')
+        # Ensure we run the heavy cache build inside an application context
+        with app.app_context():
+          init_map_cache()
+        logger.info('Background map JSON cache build finished.')
+      except Exception:
+        logger.exception('Background init_map_cache failed')
+
+    t = threading.Thread(target=_start_map_init_background, daemon=True)
+    t.start()
 
   # --- Start Background Listener Thread ---
   listener_thread = threading.Thread(target=listen_for_index_reloads, daemon=True)
   listener_thread.start()
+
+  # Start a cron manager thread that checks enabled cron entries every 60 seconds
+  def _cron_manager_loop():
+    try:
+      from time import sleep
+      while True:
+        try:
+          with app.app_context():
+            run_due_cron_jobs()
+        except Exception:
+          app.logger.exception('cron manager failed')
+        sleep(60)
+    except Exception:
+      app.logger.exception('cron manager main loop error')
+
+  cron_thread = threading.Thread(target=_cron_manager_loop, daemon=True)
+  cron_thread.start()
 
   app.run(debug=False, host='0.0.0.0', port=8000)

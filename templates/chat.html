@@ -5,8 +5,8 @@
     <meta name="app-version" content="{{ app_version }}">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AudioMuse-AI - Instant Playlist</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <link rel="stylesheet" href="/static/menu.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
 </head>
 <body>
 
@@ -14,7 +14,10 @@
     <aside class="sidebar">
         <nav>
             <ul class="sidebar-nav">
-                <!-- Menu items are dynamically inserted by menu.js -->
+                {% with %}
+                {% set active = 'chat' %}
+                {% include 'sidebar_navi.html' %}
+                {% endwith %}
             </ul>
         </nav>
     </aside>
@@ -156,7 +159,7 @@
              */
             async function fetchConfig() {
                 try {
-                    const response = await fetch('/chat/api/config_defaults'); // Changed to new chat-specific config endpoint
+                    const response = await fetch("{{ url_for('chat_bp.chat_config_defaults_api') }}"); // Changed to new chat-specific config endpoint
                     if (!response.ok) {
                         throw new Error(`HTTP error! status: ${response.status}`);
                     }
@@ -257,7 +260,7 @@
                     payload.openai_api_tokens = parseInt(openaiApiTokensInput.value, 10); // Include OpenAI API Tokens
                 }
                 try {
-                    const response = await fetch('/chat/api/chatPlaylist', {
+                    const response = await fetch("{{ url_for('chat_bp.chat_playlist_api') }}", {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload),
@@ -425,7 +428,7 @@
 
                 try {
                     // MODIFIED: Changed API endpoint to be more generic
-                    const response = await fetch('/chat/api/create_playlist', {
+                    const response = await fetch("{{ url_for('chat_bp.create_media_server_playlist_api') }}", {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload)
@@ -450,6 +453,6 @@
             createPlaylistForm.addEventListener('submit', handleCreateMediaServerPlaylist);
         })();
     </script>
-    <script src="/static/menu.js"></script>
+    <script src="{{ url_for('static', filename='menu.js') }}"></script>
 </body>
 </html>

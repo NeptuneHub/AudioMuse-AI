@@ -102,7 +102,7 @@ function switchView(viewToShow) {
 
 async function fetchConfig() {
     try {
-        const response = await fetch('/api/config');
+        const response = await fetch(getConfigEndpointUrl);
         const config = await response.json();
         renderConfig(config);
         // Call switchView here to ensure the view is set correctly *before* showing the content
@@ -216,7 +216,7 @@ function updateCancelButtonState(isDisabled) {
 
 async function checkActiveTasks() {
     try {
-        const response = await fetch('/api/active_tasks');
+        const response = await fetch(getActiveTasksEndpointUrl);
         const mainActiveTask = await response.json(); 
 
         if (mainActiveTask && mainActiveTask.task_id) {
@@ -247,7 +247,7 @@ async function checkActiveTasks() {
             currentTaskId = null;
 
             try {
-                const finalStatusResponse = await fetch(`/api/status/${finishedTaskId}`);
+                const finalStatusResponse = await fetch(getTaskStatusEndpointUrl.replace(':taskId:', encodeURIComponent(finishedTaskId)));
                 if (finalStatusResponse.ok) {
                     const finalStatusData = await finalStatusResponse.json();
                     const upperFinalStatus = (finalStatusData.state || 'UNKNOWN').toUpperCase();
@@ -404,7 +404,7 @@ async function startTask(taskType) {
     }
 
     try {
-        const response = await fetch(`/api/${taskType}/start`, {
+        const response = await fetch(startAnalysisEndpointUrl.replace('/analysis/', `/${encodeURIComponent(taskType)}/`), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -430,7 +430,7 @@ async function cancelTask() {
     if (!currentTaskId) return;
     updateCancelButtonState(true);
     try {
-        const response = await fetch(`/api/cancel/${currentTaskId}`, { method: 'POST' });
+        const response = await fetch(cancelTaskEndpointUrl.replace(':taskId:', encodeURIComponent(currentTaskId)), { method: 'POST' });
         const result = await response.json();
         if (response.ok) {
             showMessageBox('Success', result.message);
@@ -449,7 +449,7 @@ async function fetchPlaylists() {
     playlistsContainer.innerHTML = '<p>Fetching playlists...</p>';
     playlistsSection.style.display = 'block';
     try {
-        const response = await fetch('/api/playlists');
+        const response = await fetch(getPlaylistsEndpointUrl);
         if (!response.ok) throw new Error(`Server responded with ${response.status}`);
         const playlistsData = await response.json();
         renderPlaylists(playlistsData);
@@ -504,7 +504,7 @@ function showMessageBox(title, message) {
 
 async function fetchAndDisplayOverallLastTask() {
     try {
-        const response = await fetch('/api/last_task');
+        const response = await fetch(getLastOverallTaskStatusEndpointUrl);
         if (response.ok) {
             const lastTask = await response.json();
             if (lastTask && lastTask.task_id) displayTaskStatus(lastTask);
@@ -520,6 +520,15 @@ async function fetchAndDisplayOverallLastTask() {
 
 // --- Event Listeners & Initialization ---
 document.addEventListener('DOMContentLoaded', async () => {
+    // do work behind a reverse proxy we need to get the URLs resolved set and expect them in the following variables
+    console.assert(getActiveTasksEndpointUrl, "Missing getActiveTasksEndpointUrl url variable");
+    console.assert(getConfigEndpointUrl, "Missing getConfigEndpointUrl url variable");
+    console.assert(getTaskStatusEndpointUrl, "Missing getTaskStatusEndpointUrl url variable");
+    console.assert(startAnalysisEndpointUrl, "Missing startAnalysisEndpointUrl url variable");
+    console.assert(getLastOverallTaskStatusEndpointUrl, "Missing getLastOverallTaskStatusEndpointUrl url variable");
+    console.assert(getPlaylistsEndpointUrl, "Missing getPlaylistsEndpointUrl url variable");
+    console.assert(cancelTaskEndpointUrl, "Missing cancelTaskEndpointUrl url variable");
+
     await fetchConfig();
     if (!await checkActiveTasks()) {
         await fetchAndDisplayOverallLastTask();

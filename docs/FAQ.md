@@ -39,10 +39,10 @@ Depending on these factors, it can take anywhere from a few hours to several day
 The good news is that analyzed songs are stored in the database, so if the process is interrupted, you can restart it and only the missing songs will be analyzed.
 
 
-### Clustering returns clusters with only a few songs. How can I fix this?
+### Clustering returns empty playlist or with only a few songs. How can I fix this?
 
 The default clustering parameters are fine-tuned for music collections of around **50,000–100,000 songs**.
-If your clusters are too small, you can adjust the following values in the **Advanced Parameters** view:
+If your clusters are too small or is empty, you can adjust the following values in the **Advanced Parameters** view:
 
 * **`Stratified Sampling Target Percentile`**:
   Defines the percentile of songs sampled per genre for clustering.
@@ -51,7 +51,6 @@ If your clusters are too small, you can adjust the following values in the **Adv
 * **`min clusters` and `max clusters`**:
   By default, AudioMuse-AI creates between **40 and 100 clusters (playlists)**.
   Lowering these numbers will result in fewer clusters, each containing more songs.
-
 
 ### Clustering returns clusters with big number of songs. How can I fix this?
 
