@@ -9,6 +9,10 @@ logger = logging.getLogger(__name__)
 
 REQUESTS_TIMEOUT = 300
 
+# Custom exception for Lyrion API failures so callers can decide how to handle them
+class LyrionAPIError(Exception):
+    pass
+
 # ##############################################################################
 # LYRION (JSON-RPC) IMPLEMENTATION
 # ##############################################################################
@@ -253,24 +257,27 @@ def _jsonrpc_request(method, params, player_id=""):
         "params": [player_id, [method, *params]]
     }
 
-    # Try with retry logic for connection issues
+    # Try with retry logic for connection issues. Use the configured REQUESTS_TIMEOUT
     max_retries = 3
     for attempt in range(max_retries):
         try:
             with requests.Session() as s:
                 s.headers.update({"Content-Type": "application/json"})
-                # Use shorter timeout and enable keep-alive
-                r = s.post(url, json=payload, timeout=30)
-            
+                # Use configured timeout so slow servers can be handled
+                r = s.post(url, json=payload, timeout=REQUESTS_TIMEOUT)
+
             r.raise_for_status()
             response_data = r.json()
-            
+
             if response_data.get("error"):
-                logger.error(f"Lyrion JSON-RPC Error: {response_data['error'].get('message')}")
-                return None
+                # JSON-RPC error from the server is fatal for this call
+                msg = response_data['error'].get('message')
+                logger.error(f"Lyrion JSON-RPC Error: {msg}")
+                raise LyrionAPIError(f"Lyrion API error: {msg}")
+
             # On success, return the result field. It might be None if not present.
             return response_data.get("result")
-            
+
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
             logger.warning(f"Connection issue with Lyrion API (attempt {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
@@ -278,13 +285,18 @@ def _jsonrpc_request(method, params, player_id=""):
                 time.sleep(2)  # Wait 2 seconds before retry
                 continue
             else:
-                logger.error(f"Failed to connect to Lyrion after {max_retries} attempts")
-                return None
+                err = f"Failed to connect to Lyrion after {max_retries} attempts: {e}"
+                logger.error(err)
+                raise LyrionAPIError(err)
+        except LyrionAPIError:
+            # Propagate our custom errors as-is
+            raise
         except Exception as e:
             logger.error(f"Failed to call Lyrion JSON-RPC API with method '{method}': {e}", exc_info=True)
-            return None
-    
-    return None
+            raise LyrionAPIError(f"Unexpected error calling Lyrion API: {e}")
+
+    # Should not reach here; raise to be explicit
+    raise LyrionAPIError("Unreachable: exceeded jsonrpc retry loop")
 
 def download_track(temp_dir, item):
     """Downloads a single track from Lyrion using its URL."""
@@ -336,21 +348,37 @@ def _get_all_albums_simple(limit):
         req_count = page_size if (remaining is None or remaining > page_size) else remaining
         params = [offset, req_count, "sort:new"]
 
-        try:
-            response = _jsonrpc_request("albums", params)
-        except Exception as e:
-            logger.error(f"Lyrion API call failed: {e}")
-            break
+        # Per-page retry: don't let a single slow/failed page stop the whole fetch
+        page_response = None
+        page_error = None
+        for attempt in range(3):
+            try:
+                page_response = _jsonrpc_request("albums", params)
+                break
+            except LyrionAPIError as e:
+                page_error = e
+                logger.warning(f"albums page fetch failed at offset={offset} (attempt {attempt+1}/3): {e}")
+                import time
+                time.sleep(1)
+                continue
 
-        if not response:
-            break
+        if page_response is None:
+            # After attempts, skip this page and continue to the next to avoid stopping at page 1
+            logger.error(f"Skipping albums page at offset={offset} after repeated failures: {page_error}")
+            # Advance offset by page_size to avoid an infinite loop. This may lose items but avoids halting.
+            offset += page_size
+            continue
 
+        response = page_response
+
+        # Normalize response shapes
         page_albums = []
         if isinstance(response, dict) and "albums_loop" in response:
             page_albums = response["albums_loop"]
         elif isinstance(response, list):
             page_albums = response
 
+        # If server legitimately returned an empty page, we've reached the end
         if not page_albums:
             break
 
@@ -466,41 +494,56 @@ def _album_has_tracks_in_target_path(album_id, target_paths):
     Check if an album has tracks in the target folder by examining actual file paths.
     This is the most reliable method for Lyrion folder filtering.
     """
-    try:
-        # Get tracks with detailed tags that might include file paths
-        response = _jsonrpc_request("titles", [0, 5, f"album_id:{album_id}", "tags:fFlpuo"])
-        
-        if not response or "titles_loop" not in response:
-            return False
-        
-        tracks = response["titles_loop"]
-        
-        # Check various fields that might contain the actual file path
-        path_fields = ['url', 'path', 'f', 'F', 'l', 'p', 'u', 'o', 'file', 'filename']
-        
-        for track in tracks[:3]:  # Check first 3 tracks
-            for field in path_fields:
-                if field in track and track[field]:
-                    track_path = str(track[field]).lower()
-                    
-                    # Check if any target path is in this track's path
-                    for target_path in target_paths:
-                        if target_path in track_path:
-                            return True
-                    
-                    # Also check if track path contains target path parts
-                    for target_path in target_paths:
-                        target_parts = target_path.strip('/').split('/')
-                        if len(target_parts) >= 2:
-                            # Check if last part of target path is in track path
-                            last_part = target_parts[-1].lower()
-                            if last_part in track_path:
+    # Request more tracks and retry on transient API errors. Inspect more tracks to increase
+    # chance of finding a path field.
+    attempts = 3
+    for attempt in range(attempts):
+        try:
+            # Ask for up to 20 tracks with richer tags that may include path/url
+            response = _jsonrpc_request("titles", [0, 20, f"album_id:{album_id}", "tags:fFlpuoP"])
+
+            if not response or "titles_loop" not in response:
+                return False
+
+            tracks = response["titles_loop"]
+
+            # Check various fields that might contain the actual file path
+            path_fields = ['url', 'path', 'f', 'F', 'l', 'p', 'u', 'o', 'file', 'filename']
+
+            # Inspect the first N tracks (increase from 3 to 8)
+            for track in tracks[:8]:
+                for field in path_fields:
+                    if field in track and track[field]:
+                        track_path = str(track[field]).lower()
+
+                        # Check if any target path is in this track's path
+                        for target_path in target_paths:
+                            if target_path in track_path:
                                 return True
-        
-        return False
-        
-    except Exception as e:
-        return False
+
+                        # Also check if track path contains target path parts
+                        for target_path in target_paths:
+                            target_parts = target_path.strip('/').split('/')
+                            if len(target_parts) >= 2:
+                                # Check if last part of target path is in track path
+                                last_part = target_parts[-1].lower()
+                                if last_part in track_path:
+                                    return True
+
+            return False
+
+        except LyrionAPIError as e:
+            logger.warning(f"Transient Lyrion API error checking album tracks (attempt {attempt+1}/{attempts}): {e}")
+            import time
+            time.sleep(1)
+            continue
+        except Exception as e:
+            logger.debug(f"Unexpected error while checking album tracks for {album_id}: {e}", exc_info=True)
+            return False
+
+    # If all attempts failed, assume no path info found (caller will decide how to treat this)
+    logger.error(f"Failed to fetch tracks for album {album_id} after {attempts} attempts")
+    return False
 
 def get_recent_albums(limit):
     """
@@ -531,14 +574,30 @@ def get_recent_albums(limit):
     while True:
         # Get next batch of albums
         params = [offset, page_size, "sort:new"]
-        
-        try:
-            response = _jsonrpc_request("albums", params)
-        except Exception as e:
-            logger.error(f"Lyrion API call failed at offset {offset}: {e}")
-            break
-        
+        # Per-page retry: attempt several times before skipping this page
+        page_response = None
+        page_error = None
+        for attempt in range(3):
+            try:
+                page_response = _jsonrpc_request("albums", params)
+                break
+            except LyrionAPIError as e:
+                page_error = e
+                logger.warning(f"albums page fetch failed at offset={offset} (attempt {attempt+1}/3): {e}")
+                import time
+                time.sleep(1)
+                continue
+
+        if page_response is None:
+            logger.error(f"Skipping albums page at offset={offset} after repeated failures: {page_error}")
+            offset += page_size
+            # continue to next page instead of aborting entire scan
+            continue
+
+        response = page_response
+
         if not response:
+            # Legitimate empty response -> end of library
             break
 
         pages_fetched += 1
@@ -592,91 +651,6 @@ def get_recent_albums(limit):
     
     logger.info(f"Found {len(filtered_albums)} albums in configured folders (pages fetched: {pages_fetched}, albums scanned: {albums_scanned}, matched: {albums_matched}, filtered_no_path: {filtered_no_path}, filtered_no_album_id: {filtered_no_album_id})")
     return filtered_albums
-    
-    # Since folder ID approach fails, we fetch all albums and filter by path
-    logger.info("Fetching all albums and filtering by path (workaround for folder API issue)")
-    page_size = 100
-    # If we're filtering, fetch more albums to account for filtering
-    fetch_limit = limit * 10 if (target_paths is not None and limit > 0) else limit
-    remaining = None if fetch_all else int(fetch_limit)
-    offset = 0
-
-    while True:
-        # Calculate how many to request this page
-        req_count = page_size if (remaining is None or remaining > page_size) else remaining
-        params = [offset, req_count, "sort:new"]
-
-        try:
-            response = _jsonrpc_request("albums", params)
-            logger.debug(f"Lyrion API Raw Response (offset={offset}, count={req_count}): {response}")
-        except Exception as e:
-            logger.error(f"Lyrion API call for recent albums failed at offset={offset}: {e}", exc_info=True)
-            break
-
-        if not response:
-            logger.debug(f"No response for albums page offset={offset}. Stopping pagination.")
-            break
-
-        # Extract albums from possible response shapes
-        page_albums = []
-        if isinstance(response, dict) and "albums_loop" in response and isinstance(response["albums_loop"], list):
-            page_albums = response["albums_loop"]
-        elif isinstance(response, list):
-            page_albums = response
-        else:
-            # Try to find the first list in the response dict
-            if isinstance(response, dict):
-                for v in response.values():
-                    if isinstance(v, list):
-                        page_albums = v
-                        break
-
-        # Log sample album data to understand the structure
-        if page_albums and len(page_albums) > 0:
-            logger.info(f"DEBUG: Sample album data from Lyrion API: {page_albums[0]}")
-
-        if not page_albums:
-            logger.debug(f"No albums found in page offset={offset}. Stopping pagination.")
-            break
-
-        # Filter albums by path if target paths are specified
-        filtered_albums = []
-        for album in page_albums:
-            if _album_matches_target_paths(album, target_paths):
-                filtered_albums.append(album)
-            # else:
-            #     logger.debug(f"DEBUG: Filtered out album: {album.get('album', 'Unknown')}")
-
-        # Map and append filtered albums
-        mapped = [{'Id': a.get('id'), 'Name': a.get('album')} for a in filtered_albums]
-        albums_accum.extend(mapped)
-        
-        logger.info(f"DEBUG: Page {offset//page_size + 1}: Found {len(page_albums)} albums, {len(filtered_albums)} matched filter, total accumulated: {len(albums_accum)}")
-
-        # Check if we have enough albums after filtering
-        if not fetch_all and len(albums_accum) >= limit:
-            albums_accum = albums_accum[:limit]  # Trim to exact limit
-            break
-
-        # Update remaining and offset
-        if remaining is not None:
-            remaining -= len(page_albums)
-            if remaining <= 0:
-                break
-
-        # If the page returned fewer items than requested, we've reached the end
-        if len(page_albums) < req_count:
-            break
-
-        offset += len(page_albums)
-
-    # Final result
-    if not albums_accum:
-        logger.warning("Lyrion API returned no albums after pagination and filtering.")
-    else:
-        logger.info(f"Collected {len(albums_accum)} albums from Lyrion after path filtering.")
-
-    return albums_accum
 
 def get_all_songs():
     """
