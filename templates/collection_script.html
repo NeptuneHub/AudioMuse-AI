@@ -1,0 +1,8 @@
+<script>
+    const getActiveTasksEndpointUrl = "{{ url_for('get_active_tasks_endpoint') }}";    
+    const getTaskStatusEndpointUrl = "{{ url_for('get_task_status_endpoint', task_id=':taskId:') }}";
+    const cancelTaskEndpointUrl = "{{ url_for('cancel_task_endpoint', task_id=':taskId:') }}";
+    const startCollectionSyncUrl = "{{ url_for('collection_bp.start_collection_sync') }}";
+    const getLastCollectionTaskUrl = "{{ url_for('collection_bp.get_last_collection_task') }}";
+</script>
+<script src="{{ url_for('static', filename='collection_script.js') }}"></script>

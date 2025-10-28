@@ -130,7 +130,7 @@
         let maxN = 200;
         let cfg = {};
         try {
-            const resp = await fetch('/api/config');
+            const resp = await fetch("{{ url_for('get_config_endpoint') }}");
             cfg = await resp.json();
             if (cfg.alchemy_default_n_results) defaultN = cfg.alchemy_default_n_results;
             if (cfg.alchemy_max_n_results) maxN = cfg.alchemy_max_n_results;
@@ -153,7 +153,7 @@
                 }
                 try {
                     const params = new URLSearchParams({ artist: artistQuery, title: titleQuery });
-                    const response = await fetch(`/api/search_tracks?${params}`);
+                    const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
                     const tracks = await response.json();
                     resultsEl.innerHTML = '';
                     if (tracks.length === 0) {
@@ -353,7 +353,7 @@
                 if (metric === 'angular') payload.subtract_distance = parseFloat(subtractSlider.value);
                 else payload.subtract_distance = parseFloat(subtractSlider.value);
 
-                const resp = await fetch('/api/alchemy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const resp = await fetch("{{ url_for('alchemy_bp.alchemy_api') }}", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 const data = await resp.json();
                 
                 if (data.error) { showMessageBox('API Error', data.error); return }
@@ -753,7 +753,7 @@
 
             playlistStatusDiv.textContent = 'Creating playlist...';
             try {
-                const response = await fetch('/api/create_playlist', {
+                const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ playlist_name: playlistName, track_ids: combined }),

@@ -139,7 +139,7 @@
 
                     try {
                         const params = new URLSearchParams({ artist: artistQuery, title: titleQuery });
-                        const response = await fetch(`/api/search_tracks?${params}`);
+                        const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
                         const tracks = await response.json();
                         showAutocomplete(tracks);
                     } catch (error) {
@@ -217,7 +217,7 @@
                         radius_similarity: radiusSimilarity
                         // mood_similarity intentionally omitted
                     });
-                    const response = await fetch(`/api/similar_tracks?${params}`);
+                    const response = await fetch(`{{ url_for('voyager_bp.get_similar_tracks_endpoint') }}?${params}`);
                     const data = await response.json();
 
                     if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
@@ -266,7 +266,7 @@
                 playlistStatusDiv.textContent = 'Creating playlist...';
                 
                 try {
-                    const response = await fetch('/api/create_playlist', {
+                    const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({

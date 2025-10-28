@@ -172,7 +172,7 @@
         // Fetch and display last task status
         async function fetchAndDisplayLastTask() {
             try {
-                const response = await fetch('/api/last_task');
+                const response = await fetch("{{ url_for('get_last_overall_task_status_endpoint') }}");
                 if (response.ok) {
                     const lastTask = await response.json();
                     if (lastTask && lastTask.task_id && lastTask.task_type === 'cleaning') {
@@ -230,7 +230,7 @@
         async function checkForExistingTask() {
             try {
                 // First check for active tasks
-                const activeResponse = await fetch('/api/active_tasks');
+                const activeResponse = await fetch("{{ url_for('get_active_tasks_endpoint') }}");
                 if (activeResponse.ok) {
                     const activeData = await activeResponse.json();
                     if (activeData.task_id && activeData.task_type === 'cleaning' && 
@@ -267,7 +267,7 @@
         // Start cleaning function
         async function startCleaning() {
             try {
-                const response = await fetch('/api/cleaning/start', {
+                const response = await fetch("{{ url_for('analysis_bp.start_cleaning_endpoint') }}", {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }
                 });
@@ -304,7 +304,7 @@
             if (!currentTaskId) return;
             
             try {
-                await fetch(`/api/cancel/${currentTaskId}`, { method: 'POST' });
+                await fetch("{{ url_for('cancel_task_endpoint', task_id=':currentTaskId:') }}".replace(':currentTaskId:', currentTaskId), { method: 'POST' });
                 resetUI();
                 clearTaskStateFromStorage();
             } catch (error) {
@@ -327,7 +327,7 @@
                 
                 try {
                     // POLL ACTIVE TASKS API LIKE ANALYSIS PAGE
-                    const response = await fetch('/api/active_tasks');
+                    const response = await fetch("{{ url_for('get_active_tasks_endpoint') }}");
                     if (!response.ok) {
                         console.log('Active tasks API returned error, stopping polling');
                         clearInterval(cleanInterval);
@@ -350,7 +350,7 @@
                         console.log(`Task ${currentTaskId} is no longer active - getting final status`);
                         
                         try {
-                            const finalStatusResponse = await fetch(`/api/status/${currentTaskId}`);
+                            const finalStatusResponse = await fetch("{{ url_for('get_task_status_endpoint', task_id=':currentTaskId:') }}".replace(':currentTaskId:', currentTaskId));
                             if (finalStatusResponse.ok) {
                                 const finalStatusData = await finalStatusResponse.json();
                                 console.log('Final status received:', finalStatusData);

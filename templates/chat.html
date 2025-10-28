@@ -137,7 +137,7 @@
              */
             async function fetchConfig() {
                 try {
-                    const response = await fetch('/chat/api/config_defaults'); // Changed to new chat-specific config endpoint
+                    const response = await fetch("{{ url_for('chat_bp.chat_config_defaults_api') }}"); // Changed to new chat-specific config endpoint
                     if (!response.ok) {
                         throw new Error(`HTTP error! status: ${response.status}`);
                     }
@@ -221,7 +221,7 @@
                     payload.ai_model = mistralModelSelect.value;
                 }
                 try {
-                    const response = await fetch('/chat/api/chatPlaylist', {
+                    const response = await fetch("{{ url_for('chat_bp.chat_playlist_api') }}", {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload),
@@ -389,7 +389,7 @@
 
                 try {
                     // MODIFIED: Changed API endpoint to be more generic
-                    const response = await fetch('/chat/api/create_playlist', {
+                    const response = await fetch("{{ url_for('chat_bp.create_media_server_playlist_api') }}", {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload)
