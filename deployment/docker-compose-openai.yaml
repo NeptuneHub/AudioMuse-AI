@@ -47,6 +47,7 @@ services:
       OPENAI_API_KEY: "YOUR_OPENAI_API_KEY_HERE" # From openai-api-credentials secret. For DMR or self hosted LLMs, add a dummy key.
       OPENAI_MODEL_NAME: "ai/qwen3:0.6B-Q4_0" # Specify the OpenAI model to use
       OPENAI_BASE_URL: "http://172.17.0.1:12434/engines/llama.cpp/v1/chat/completions" # OpenAI API URL
+      OPENAI_API_TOKENS: "1000" # Max tokens for OpenAI API calls
       TEMP_DIR: "/app/temp_audio"
     #volumes:
     #  - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
@@ -80,6 +81,7 @@ services:
       OPENAI_API_KEY: "YOUR_OPENAI_API_KEY_HERE" # From openai-api-credentials secret. For DMR or self hosted LLMs, add a dummy key.
       OPENAI_MODEL_NAME: "ai/qwen3:0.6B-Q4_0" # Specify the OpenAI model to use
       OPENAI_BASE_URL: "http://172.17.0.1:12434/engines/llama.cpp/v1/chat/completions" # OpenAI API URL
+      OPENAI_API_TOKENS: "1000" # Max tokens for OpenAI API calls
       TEMP_DIR: "/app/temp_audio"
     #volumes:
     #  - temp-audio-worker:/app/temp_audio # Volume for temporary audio files

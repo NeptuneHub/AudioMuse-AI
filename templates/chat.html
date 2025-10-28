@@ -66,10 +66,15 @@
                                 <input type="text" id="openaiModel" placeholder="e.g., gpt-4">
                                 <div style="margin-top: 1.5rem;">
                                     <label for="openaiBaseUrl">OpenAI Base URL</label>
-                                    <input type="text" id="openaiBaseUrl" placeholder="e.g., https://api.openai.com/v1/">
+                                    <input type="text" id="openaiBaseUrl" placeholder="e.g., https://api.openai.com/v1/chat/completions">
                                 </div>
-                                <div style="margin-top: 1.5rem; font-size: 0.9rem; color: #555;">
-                                    <em>Note: Ensure your OpenAI API key is configured on the server side for security.</em>
+                                <div style="margin-top: 1.5rem;">
+                                    <label for="openaiApiKey">OpenAI API Key</label>
+                                    <input type="text" id="openaiApiKey" placeholder="Enter your OpenAI API Key">
+                                </div>
+                                <div style="margin-top: 1.5rem;">
+                                    <label for="openaiApiTokens">Max Tokens for OpenAI API Calls</label>
+                                    <input type="number" id="openaiApiTokens" placeholder="e.g., 1000">
                                 </div>
                             </div>
                         </div>
@@ -132,7 +137,9 @@
             const mistralModelSelect = document.getElementById('mistralModel');
             const openaiConfigDiv = document.getElementById('openaiConfig');
             const openaiModelSelect = document.getElementById('openaiModel');
+            const openaiApiKeyInput = document.getElementById('openaiApiKey');
             const openaiBaseUrlInput = document.getElementById('openaiBaseUrl');
+            const openaiApiTokensInput = document.getElementById('openaiApiTokens');
             const playlistForm = document.getElementById('playlistForm');
             const userInput = document.getElementById('userInput');
             const submitButton = document.getElementById('submitChat');
@@ -177,7 +184,9 @@
                 geminiModelSelect.value = globalConfig.default_gemini_model_name || "gemini-2.5-pro";
                 mistralModelSelect.value = globalConfig.default_mistral_model_name || "ministral-3b-latest";
                 openaiModelSelect.value = globalConfig.default_openai_model_name || "gpt-4";
+                openaiApiKeyInput.value = globalConfig.openai_api_key || "sk-xxxxxx"; // Pre-fill OpenAI API Key
                 openaiBaseUrlInput.value = globalConfig.openai_base_url || "https://api.openai.com/v1/"; // Pre-fill OpenAI Base URL
+                openaiApiTokensInput.value = globalConfig.openai_api_tokens || 1000; // Pre-fill OpenAI API Tokens
             }
 
             /**
@@ -244,7 +253,9 @@
                     payload.ai_model = mistralModelSelect.value;
                 } else if (payload.ai_provider === 'OPENAI') {
                     payload.ai_model = openaiModelSelect.value;
+                    payload.openai_api_key = openaiApiKeyInput.value; // Include OpenAI API Key
                     payload.openai_base_url = openaiBaseUrlInput.value; // Include OpenAI Base URL
+                    payload.openai_api_tokens = parseInt(openaiApiTokensInput.value, 10); // Include OpenAI API Tokens
                 }
                 try {
                     const response = await fetch('/chat/api/chatPlaylist', {

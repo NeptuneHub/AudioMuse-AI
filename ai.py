@@ -206,7 +206,7 @@ def get_mistral_playlist_name(mistral_api_key, model_name, full_prompt):
         return "Error: AI service is currently unavailable."
     
 # --- OpenAI Specific Function ---
-def get_openai_playlist_name(full_prompt, openai_model_name, openai_api_key, openai_base_url = None, temperature: float = 0.9, max_tokens: int = 500, stream: bool = True) -> str:
+def get_openai_playlist_name(full_prompt, openai_model_name, openai_api_key, openai_base_url = None, max_tokens: int = 1000, stream: bool = True, temperature: float = 0.9) -> str:
     """
     Calls the OpenAI Chat Completions API (via SDK) to generate a playlist name.
 
@@ -243,7 +243,7 @@ def get_openai_playlist_name(full_prompt, openai_model_name, openai_api_key, ope
         messages = [
             {
                 "role": "system",
-                "content": "You generate short Playlist titles. The Playlist title needs to represent the mood and the activity of when you're listening to the playlist. The Playlist titles should be between 2 and 5 words long. You always return a single playlist name."
+                "content": "You generate short Playlist titles in plain text. The Playlist title needs to represent the mood and the activity of when you're listening to the playlist. The Playlist titles should be between 2 and 5 words long. You always return a single playlist name."
             },
             {"role": "user", "content": full_prompt}
         ]

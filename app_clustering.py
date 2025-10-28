@@ -15,7 +15,7 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
     SPECTRAL_N_CLUSTERS_MIN, SPECTRAL_N_CLUSTERS_MAX, ENABLE_CLUSTERING_EMBEDDINGS, \
     PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, MOOD_LABELS, TOP_N_MOODS, \
     AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME, \
-    TOP_N_PLAYLISTS, MISTRAL_API_KEY, MISTRAL_MODEL_NAME, OPENAI_API_KEY, OPENAI_MODEL_NAME, OPENAI_BASE_URL
+    TOP_N_PLAYLISTS, MISTRAL_API_KEY, MISTRAL_MODEL_NAME, OPENAI_API_KEY, OPENAI_MODEL_NAME, OPENAI_BASE_URL, OPENAI_API_TOKENS
 
 # RQ import
 from rq import Retry
@@ -229,6 +229,10 @@ def start_clustering_endpoint():
                 type: string
                 description: Override for the OpenAI base URL for this run (optional, defaults to server configuration).
                 nullable: true
+              openai_api_tokens:
+                type: integer
+                description: Number of tokens to use for OpenAI API calls (optional, defaults to server configuration).
+                nullable: false
               top_n_moods:
                 type: integer
                 description: Number of top moods to consider for clustering feature vectors (uses the first N from global MOOD_LABELS).
@@ -345,6 +349,7 @@ def start_clustering_endpoint():
             "openai_model_name_param": data.get('openai_model_name', OPENAI_MODEL_NAME),
             "openai_api_key_param": data.get('openai_api_key', OPENAI_API_KEY),
             "openai_base_url_param": data.get('openai_base_url', OPENAI_BASE_URL),
+            "openai_api_tokens_param": int(data.get('openai_api_tokens', OPENAI_API_TOKENS)),
         },
         job_id=job_id,
         description="Main Music Clustering",
