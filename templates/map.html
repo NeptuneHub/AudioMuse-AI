@@ -5,15 +5,36 @@
     <meta name="app-version" content="{{ app_version }}">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AudioMuse-AI - Music Map</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <link rel="stylesheet" href="/static/menu.css">
-    <script src="/static/plotly-2.29.1.min.js"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
+    <script src="{{ url_for('static', filename='plotly-2.29.1.min.js') }}"></script>
+    <style>
+    /* small style for overlay toggle icons when hidden */
+    .am-overlay-hidden { opacity: 0.35 !important; filter: grayscale(60%); }
+    #overlay-controls a { cursor: pointer; }
+    /* responsive search inputs: wrap and shrink on small screens */
+    .map-search-row { display:flex; gap:8px; align-items:flex-end; margin-left:12px; flex-wrap:wrap; }
+    .map-search-row .map-search-col { display:flex; flex-direction:column; min-width:0; }
+    .map-search-row .map-search-col.button-col { align-items:flex-start; }
+    .map-search-input { width:220px; padding:4px; border-radius:4px; border:1px solid #d1d5db; box-sizing:border-box; }
+    @media (max-width:600px) {
+        .map-search-row { gap:6px; }
+        .map-search-row .map-search-col { width:100%; }
+        .map-search-row .map-search-col.button-col { width:auto; }
+        .map-search-input { width: calc(100% - 12px); min-width:120px; font-size:13px; }
+    }
+    </style>
 </head>
 <body>
 <div class="page-container">
     <aside class="sidebar">
         <nav>
-            <ul class="sidebar-nav"></ul>
+            <ul class="sidebar-nav">
+                {% with %}
+                {% set active = 'map' %}
+                {% include 'sidebar_navi.html' %}
+                {% endwith %}
+            </ul>
         </nav>
     </aside>
 
@@ -22,22 +43,74 @@
         <div class="container">
             <section>
                 <header class="page-header">
-                    <h1>AudioMuse-AI - Music Map [EXPERIMENTAL]</h1>
+                    <h1>AudioMuse-AI - Music Map</h1>
                     <p>Precompute your music map with a song analysis, then explore it interactively and create your playlist</p>
                 </header>
                 <div class="map-controls" style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
-                    <label for="n_songs">Number of songs:</label>
-                    <input id="n_songs" type="number" min="1" value="500" style="width:100px;" />
-                    <button id="show-map" type="button" class="btn btn-primary">Load</button>
+                    <label for="map_size">Map size:</label>
+                    <div id="map_size" style="display:flex; gap:6px; align-items:center;">
+                        <button id="btn-pct-25" type="button" class="btn btn-primary">25%</button>
+                        <button id="btn-pct-50" type="button" class="btn btn-ghost">50%</button>
+                        <button id="btn-pct-75" type="button" class="btn btn-ghost">75%</button>
+                        <button id="btn-pct-100" type="button" class="btn btn-ghost">100%</button>
+                    </div>
                     <button id="create-playlist" class="btn btn-primary">Create playlist</button>
                     <button id="song-path-btn" class="btn btn-primary" disabled style="margin-left:6px;">Song Path</button>
                     <button id="refresh-map" type="button" class="btn btn-ghost" title="Refresh map (clear overlays)" style="margin-left:6px;">Refresh</button>
-                    <button id="toggle-full" type="button" class="btn btn-ghost" title="Show full dataset" style="margin-left:6px;">Full</button>
+                    
                     
                     <div id="map-status" style="margin-left:12px;color:#6B7280"></div>
+                    <!-- Minimal search UI: Artist and Title (autocomplete + highlight) -->
+                    <div class="map-search-row">
+                        <div class="map-search-col">
+                            <label for="artist_search_map" style="font-size:12px;color:#374151">Artist</label>
+                            <input id="artist_search_map" class="map-search-input" type="text" placeholder="Artist name..." autocomplete="off">
+                            <div id="artist_autocomplete_results" class="autocomplete-results hidden" style="background:#fff;border:1px solid #e5e7eb;max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
+                        </div>
+                        <div class="map-search-col">
+                            <label for="title_search_map" style="font-size:12px;color:#374151">Title</label>
+                            <input id="title_search_map" class="map-search-input" type="text" placeholder="Track title..." autocomplete="off">
+                            <div id="title_autocomplete_results" class="autocomplete-results hidden" style="background:#fff;border:1px solid #e5e7eb;max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
+                        </div>
+                        <div class="map-search-col button-col">
+                            <label style="font-size:12px;color:transparent">&nbsp;</label>
+                            <button id="map_search_btn" class="btn btn-ghost btn-sm" type="button" style="margin-top:6px;">Search</button>
+                        </div>
+                    </div>
                 </div>
 
                 <div id="plot" style="width:100%;height:700px;"></div>
+                <!-- overlay toggles: small icons (search highlight, path line, path points) placed below the map and above the legend -->
+                <div id="overlay-controls" style="text-align:center;margin-top:8px;">
+                    <span class="overlay-item" style="display:inline-flex;align-items:center;margin-right:12px;">
+                        <a href="#" id="overlay-toggle-search" title="Toggle searched song" style="display:inline-flex;align-items:center;color:#111;text-decoration:none;font-size:14px;cursor:pointer;">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;flex:0 0 auto;">
+                                <circle cx="12" cy="12" r="6" fill="rgba(255,235,59,0.9)" stroke="#000" stroke-width="1.5" />
+                            </svg>
+                            <span class="overlay-label" style="font-size:14px;margin-left:6px;color:#374151;vertical-align:middle">search</span>
+                        </a>
+                    </span>
+
+                    <span class="overlay-item" style="display:inline-flex;align-items:center;margin-right:12px;">
+                        <a href="#" id="overlay-toggle-path" title="Toggle path line" style="display:inline-flex;align-items:center;color:#111;text-decoration:none;font-size:14px;cursor:pointer;">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;flex:0 0 auto;">
+                                <path d="M2 12 L8 8 L14 16 L22 10" stroke="#000" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                            <span class="overlay-label" style="font-size:14px;margin-left:6px;color:#374151;vertical-align:middle">path</span>
+                        </a>
+                    </span>
+
+                    <span class="overlay-item" style="display:inline-flex;align-items:center;margin-right:12px;">
+                        <a href="#" id="overlay-toggle-points" title="Toggle path points" style="display:inline-flex;align-items:center;color:#111;text-decoration:none;font-size:14px;cursor:pointer;">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;flex:0 0 auto;">
+                                <circle cx="6" cy="12" r="2" fill="#333" />
+                                <circle cx="12" cy="8" r="2" fill="#333" />
+                                <circle cx="18" cy="14" r="2" fill="#333" />
+                            </svg>
+                            <span class="overlay-label" style="font-size:14px;margin-left:6px;color:#374151;vertical-align:middle">pts</span>
+                        </a>
+                    </span>
+                </div>
                 <div id="map-projection-label" style="text-align:center;color:#6B7280;margin-top:8px"></div>
                 <!-- inline selection panel replaces debug panel -->
                 <div id="selection-panel-inline" style="display:block; margin-top:8px; background:#fff; color:#111; border:1px solid #e6eef8; padding:8px; border-radius:6px; font-size:14px;">
@@ -55,15 +128,23 @@
 </div>
 
 <script>
-async function fetchMap(n) {
-    const resp = await fetch(`/api/map?n=${encodeURIComponent(n)}`);
+async function fetchMapParam(param) {
+    // param is a percent string like '25','50','75','100'
+    // Always fetch fresh data from the server. Do not persist any map JSON in page memory.
+    const resp = await fetch(`{{ url_for('map_bp.map_api') }}?percent=${encodeURIComponent(param)}`, {
+        cache: 'no-store',
+        headers: { 'Pragma': 'no-cache' }
+    });
     if (!resp.ok) throw new Error('Failed to fetch map: ' + resp.status);
-    return resp.json();
+    // If server returned gzipped content, fetch() will transparently decode it in browsers.
+    return await resp.json();
 }
 
 function topGenre(mood_vector) {
     if (!mood_vector) return 'unknown';
     try {
+        // If mood_vector is already a single label (reduced earlier), return it
+        if (!mood_vector.includes(':') && !mood_vector.includes(',')) return mood_vector;
         const parts = mood_vector.split(',');
         let best = null;
         for (const p of parts) {
@@ -85,14 +166,13 @@ function colorPaletteFor(genres) {
     return map;
 }
 
-async function loadAndPlot(n) {
+async function loadAndPlot(n_or_pct) {
     document.getElementById('map-status').textContent = 'Loading...';
     try {
-        const data = await fetchMap(n);
+        const pct = String(n_or_pct || '25');
+        const data = await fetchMapParam(pct);
     const items = data.items || [];
-    // store last items and n for re-rendering full dataset
-    window._lastItems = items;
-    window._lastN = n;
+    // Do NOT store items or last requested percent in page memory — always re-fetch when needed.
         document.getElementById('map-projection-label').textContent = data.projection || '';
 
         // Build arrays and grouping
@@ -151,8 +231,19 @@ async function loadAndPlot(n) {
 
     // render a compact, clickable legend manually (click genre to hide/show)
     const legendDiv = document.getElementById('map-projection-label');
-    const legendHtml = genreList.slice(0,50).map(g => `<span class="genre-item" onclick="toggleGenre('${encodeURIComponent(g)}')" style="margin-right:8px;cursor:pointer"><span style="display:inline-block;width:12px;height:12px;background:${colorMap[g]};margin-right:6px;vertical-align:middle;border-radius:2px"></span>${g}</span>`).join('');
-    legendDiv.innerHTML = legendHtml;
+    // Build a small control set (Hide all / Show all) and the genre items. Each genre span includes a data-genre attribute
+    // so we can update its style when hidden.
+    const controlsHtml = `<span style="margin-right:12px;font-size:14px;color:#6B7280"><a href="#" onclick="hideAllGenres();return false;">Hide all</a> &nbsp;|&nbsp; <a href="#" onclick="showAllGenres();return false;">Show all</a></span>`;
+    const genreHtml = genreList.slice(0,50).map(g => {
+        const enc = encodeURIComponent(g);
+        const swatch = `<span style=\"display:inline-block;width:12px;height:12px;background:${colorMap[g]};margin-right:6px;vertical-align:middle;border-radius:2px\"></span>`;
+        // allow initial hidden state styling
+        const hidden = (window._hiddenGenres && window._hiddenGenres.has(g)) ? 'text-decoration:line-through' : '';
+        return `<span class=\"genre-item\" data-genre=\"${enc}\" onclick=\"toggleGenre('${enc}')\" style=\"margin-right:8px;cursor:pointer;${hidden}\">${swatch}${g}</span>`;
+    }).join('');
+    legendDiv.innerHTML = controlsHtml + genreHtml;
+    // Apply final legend styles in case window._hiddenGenres was set
+    applyLegendStyles();
 
         const layout = {
             hovermode: 'closest',
@@ -222,7 +313,42 @@ function toggleGenre(encodedGenre) {
         window._hiddenGenres = window._hiddenGenres || new Set();
         if (window._hiddenGenres.has(g)) window._hiddenGenres.delete(g); else window._hiddenGenres.add(g);
         applyGenreFilterAndRerender();
+        applyLegendStyles();
     } catch (e) { console.warn('toggleGenre failed', e); }
+}
+
+function hideAllGenres() {
+    window._hiddenGenres = new Set(window._genreList || []);
+    applyGenreFilterAndRerender();
+    applyLegendStyles();
+}
+
+function showAllGenres() {
+    window._hiddenGenres = new Set();
+    applyGenreFilterAndRerender();
+    applyLegendStyles();
+}
+
+function applyLegendStyles() {
+    try {
+        const legendDiv = document.getElementById('map-projection-label');
+        if (!legendDiv) return;
+        const hidden = window._hiddenGenres || new Set();
+        const nodes = legendDiv.querySelectorAll('.genre-item');
+        nodes.forEach(node => {
+            try {
+                const enc = node.getAttribute('data-genre');
+                const g = decodeURIComponent(enc);
+                if (hidden.has(g)) {
+                    node.style.textDecoration = 'line-through';
+                    node.style.opacity = '0.5';
+                } else {
+                    node.style.textDecoration = '';
+                    node.style.opacity = '1';
+                }
+            } catch(e) { /* ignore */ }
+        });
+    } catch(e) { console.warn('applyLegendStyles failed', e); }
 }
 
 // Rebuild the displayed plot from the full points array applying hidden-genre filters
@@ -259,23 +385,58 @@ function applyGenreFilterAndRerender() {
     const LARGE = 30000;
     const gd = document.getElementById('plot');
     try { if (gd && gd.layout && gd.layout.selections) delete gd.layout.selections; } catch(e) {}
+    // Capture existing layout shapes so we can restore overlays (search highlight, path shapes)
+    let preservedShapes = [];
     try {
+        if (gd && gd.layout && Array.isArray(gd.layout.shapes)) {
+            preservedShapes = gd.layout.shapes.slice();
+        }
+    } catch(e) { preservedShapes = []; }
+    try {
+        // capture current axis ranges so we don't auto-rescale or recenter the map when filtering
+        let keepRanges = {};
+        try {
+            const curX = (gd.layout && gd.layout.xaxis && gd.layout.xaxis.range) ? gd.layout.xaxis.range : (gd._fullLayout && gd._fullLayout.xaxis && gd._fullLayout.xaxis.range ? gd._fullLayout.xaxis.range : null);
+            const curY = (gd.layout && gd.layout.yaxis && gd.layout.yaxis.range) ? gd.layout.yaxis.range : (gd._fullLayout && gd._fullLayout.yaxis && gd._fullLayout.yaxis.range ? gd._fullLayout.yaxis.range : null);
+            if (curX && curY) {
+                keepRanges = { xaxis: { range: Array.isArray(curX) ? curX.slice() : curX, autorange: false }, yaxis: { range: Array.isArray(curY) ? curY.slice() : curY, autorange: false } };
+            }
+        } catch(e) { /* ignore range capture errors */ }
+
+        const baseLayout = Object.assign({ hovermode: 'closest', dragmode: 'lasso', legend:{orientation:'h'}, margin:{t:8} }, keepRanges);
+
         if (pts.length > LARGE) {
             trace.type = 'scattergl';
             trace.hovertemplate = '%{text}<extra></extra>';
             trace.marker = Object.assign({}, trace.marker, { sizemode: 'area' });
             Plotly.purge(gd);
-            Plotly.newPlot('plot', [trace], { hovermode: 'closest', dragmode: 'lasso', legend:{orientation:'h'}, margin:{t:8} }, {responsive:true}).then(() => { attachPlotHandlers(gd); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`; });
+            Plotly.newPlot('plot', [trace], baseLayout, {responsive:true}).then(() => {
+                // restore shape overlays after main plot is ready
+                try { if (preservedShapes.length) Plotly.relayout(gd, { shapes: preservedShapes }); } catch(e) {}
+                attachPlotHandlers(gd); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`;
+            });
         } else {
-            Plotly.react('plot', [trace], { hovermode: 'closest', dragmode: 'lasso', legend:{orientation:'h'}, margin:{t:8} }, {responsive:true}).then(() => { attachPlotHandlers(gd); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`; });
+            Plotly.react('plot', [trace], baseLayout, {responsive:true}).then(() => {
+                try { if (preservedShapes.length) Plotly.relayout(gd, { shapes: preservedShapes }); } catch(e) {}
+                attachPlotHandlers(gd); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`;
+            });
         }
     } catch (e) { console.warn('applyGenreFilterAndRerender failed', e); }
 }
 
-document.getElementById('show-map').addEventListener('click', () => {
-    const n = parseInt(document.getElementById('n_songs').value) || 500;
-    loadAndPlot(Math.max(1, n));
-});
+function setActivePctButton(activeId) {
+    ['btn-pct-25','btn-pct-50','btn-pct-75','btn-pct-100'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (id === activeId) { el.classList.remove('btn-ghost'); el.classList.add('btn-primary'); }
+        else { el.classList.remove('btn-primary'); el.classList.add('btn-ghost'); }
+    });
+}
+
+document.getElementById('btn-pct-25').addEventListener('click', () => { setActivePctButton('btn-pct-25'); loadAndPlot('25'); });
+document.getElementById('btn-pct-50').addEventListener('click', () => { setActivePctButton('btn-pct-50'); loadAndPlot('50'); });
+document.getElementById('btn-pct-75').addEventListener('click', () => { setActivePctButton('btn-pct-75'); loadAndPlot('75'); });
+document.getElementById('btn-pct-100').addEventListener('click', () => { setActivePctButton('btn-pct-100'); loadAndPlot('100'); });
 
 // toggle-debug button removed; no-op
 
@@ -325,39 +486,255 @@ function removeFromSelection(id) {
 }
 
 // selection panel is always visible now. Attach global handler for Clear all so it always works
-try {
-    const clearBtnGlobal = document.getElementById('selection-clear');
-    if (clearBtnGlobal) clearBtnGlobal.onclick = () => { 
-        // clear selection and overlays (paths)
-        window._plotSelection = []; 
-        try { clearMapOverlays(); } catch(e) { /* ignore */ }
-        renderSelectionPanel(); 
-        document.getElementById('map-status').textContent = 'Selected 0 songs'; 
-    };
-} catch(e) { console.warn('attach global clear failed', e); }
+    try {
+        const clearBtnGlobal = document.getElementById('selection-clear');
+        if (clearBtnGlobal) clearBtnGlobal.onclick = () => { 
+            // clear selection only (do NOT remove overlays; Refresh will remove overlays)
+            window._plotSelection = []; 
+            renderSelectionPanel(); 
+            document.getElementById('map-status').textContent = 'Selected 0 songs'; 
+        };
+        // wire the three overlay toggle buttons (minimal wiring)
+        try {
+            const b1 = document.getElementById('overlay-toggle-points'); if (b1) b1.addEventListener('click', (ev)=>{ ev.preventDefault(); togglePathPoints(); });
+            const b2 = document.getElementById('overlay-toggle-path'); if (b2) b2.addEventListener('click', (ev)=>{ ev.preventDefault(); togglePathLine(); });
+            const b3 = document.getElementById('overlay-toggle-search'); if (b3) b3.addEventListener('click', (ev)=>{ ev.preventDefault(); toggleSearchHighlight(); });
+        } catch(e) { console.warn('overlay toggle init failed', e); }
+    } catch(e) { console.warn('attach global clear failed', e); }
 
 // toggle-select removed; dragmode is forced to 'lasso' on plot render
 
-document.getElementById('toggle-full').addEventListener('click', () => {
-    window._mapUseFull = !window._mapUseFull;
-    document.getElementById('toggle-full').textContent = window._mapUseFull ? 'Full (on)' : 'Full';
-    // re-render with previous n
-    const n = window._lastN || parseInt(document.getElementById('n_songs').value) || 500;
-    loadAndPlot(n);
-});
+// 'Full' toggle removed; default behavior uses subsampling policy and WebGL renderer
 
-// Refresh button clears overlays (paths) and selection but keeps the main track scatter
+// Refresh button clears overlays (paths) and selection and forces new fetches on next load
 document.getElementById('refresh-map').addEventListener('click', () => {
     try {
+        // Clear overlays and transient selection state so next load fetches fresh data from server
         clearMapOverlays();
+        window._plotSelection = [];
+        // update status; actual map data will be re-fetched on the next loadAndPlot call
+        document.getElementById('map-status').textContent = 'Refreshed (transient state cleared)';
     } catch (e) { console.warn('refresh-map failed', e); }
+});
+
+// Prevent bfcache from preserving large in-memory map state across navigation.
+window.addEventListener('pageshow', (event) => {
+    try {
+        if (event.persisted) {
+            // Clear transient objects and re-fetch fresh map data
+            window._plotPointsFull = null;
+            window._plotPoints = null;
+            window._plotSelection = [];
+            window._colorMap = null;
+            window._genreList = null;
+            window._hiddenGenres = new Set();
+            // re-fetch the active percent (derive from active button)
+            let pct = '25';
+            try {
+                if (document.getElementById('btn-pct-50')?.classList.contains('btn-primary')) pct = '50';
+                else if (document.getElementById('btn-pct-75')?.classList.contains('btn-primary')) pct = '75';
+                else if (document.getElementById('btn-pct-100')?.classList.contains('btn-primary')) pct = '100';
+            } catch (e) {}
+            loadAndPlot(pct);
+        }
+    } catch (e) { console.warn('pageshow handler failed', e); }
+});
+
+window.addEventListener('beforeunload', () => {
+    try {
+        window._plotPointsFull = null;
+        window._plotPoints = null;
+        window._plotSelection = null;
+        window._colorMap = null;
+        window._genreList = null;
+        window._hiddenGenres = null;
+    } catch (e) { /* ignore */ }
 });
 
 // Click mode toggle: Add (default) vs Replace
 
-// Optional: load on open
-window.addEventListener('load', () => { loadAndPlot(500); });
+// Optional: load 25% on open (default)
+window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAndPlot('25'); });
 
+</script>
+
+<script>
+// Minimal autocomplete and highlight logic for map search controls (connected artist+title + single Search)
+(function(){
+    let selectedItemId = null;
+
+    function debounce(fn, wait){ let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), wait); }; }
+
+    async function searchTracks(params){
+        try{
+            const qs = new URLSearchParams(params);
+            const resp = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${qs.toString()}`);
+            if (!resp.ok) return [];
+            return await resp.json();
+        } catch(e){ console.debug('searchTracks failed', e); return []; }
+    }
+
+    function showResults(list, containerId){
+        const c = document.getElementById(containerId);
+        if (!c) return;
+        c.innerHTML = '';
+        if (!list || list.length === 0){ c.innerHTML = '<div style="padding:6px;color:#666">No results</div>'; c.classList.remove('hidden'); return; }
+        for (const t of list.slice(0,50)){
+            const div = document.createElement('div');
+            div.className = 'autocomplete-item';
+            div.style.padding = '6px'; div.style.cursor = 'pointer'; div.style.borderBottom = '1px solid #f3f4f6';
+            div.innerHTML = `<div style="font-weight:600">${t.title || '(unknown)'}</div><div style="font-size:12px;color:#6b7280">${t.author || ''}</div>`;
+            div.addEventListener('click', ()=>{
+                // When an item is selected from either artist or title list, fill both fields and set the single selectedItemId
+                selectedItemId = t.item_id;
+                const a = document.getElementById('artist_search_map');
+                const ti = document.getElementById('title_search_map');
+                if (a) a.value = t.author || '';
+                if (ti) ti.value = t.title || '';
+                // hide both result containers
+                try { document.getElementById('artist_autocomplete_results').classList.add('hidden'); } catch(e){}
+                try { document.getElementById('title_autocomplete_results').classList.add('hidden'); } catch(e){}
+                // NOTE: do NOT add to selection here — user requested adding only when tapping the Search button
+            });
+            c.appendChild(div);
+        }
+        c.classList.remove('hidden');
+    }
+
+    const handleArtistInput = debounce(async ()=>{
+        const artistQ = document.getElementById('artist_search_map').value.trim();
+        const titleQ = document.getElementById('title_search_map').value.trim();
+        if (artistQ.length < 2 && titleQ.length < 2){ document.getElementById('artist_autocomplete_results').classList.add('hidden'); return; }
+        const list = await searchTracks({ artist: artistQ, title: titleQ, n: 50 });
+        showResults(list, 'artist_autocomplete_results');
+    }, 250);
+
+    const handleTitleInput = debounce(async ()=>{
+        const artistQ = document.getElementById('artist_search_map').value.trim();
+        const titleQ = document.getElementById('title_search_map').value.trim();
+        if (artistQ.length < 2 && titleQ.length < 2){ document.getElementById('title_autocomplete_results').classList.add('hidden'); return; }
+        const list = await searchTracks({ artist: artistQ, title: titleQ, n: 50 });
+        showResults(list, 'title_autocomplete_results');
+    }, 250);
+
+    function removeExistingHighlight(){
+        try {
+            const gd = document.getElementById('plot');
+            if (!gd) return;
+            // remove any previously added highlight shapes (our highlight uses fillcolor '#ffeb3b', line black, layer 'above')
+            try {
+                const shapes = (gd.layout && Array.isArray(gd.layout.shapes)) ? gd.layout.shapes.slice() : [];
+                const filtered = shapes.filter(s => {
+                    if (!s || s.type !== 'circle' || !s.line || String(s.line.color) !== 'black' || s.layer !== 'above') return true;
+                    const fc = String(s.fillcolor || '').toLowerCase();
+                    // match old hex '#ffeb3b' or rgba variant starting with 'rgba(255,235,59'
+                    if (fc === '#ffeb3b') return false;
+                    if (fc.indexOf('rgba(255,235,59') === 0) return false;
+                    return true;
+                });
+                if (filtered.length !== shapes.length) {
+                    Plotly.relayout(gd, { shapes: filtered }).catch(()=>{});
+                }
+            } catch(e) {}
+            // also remove any old scatter traces named 'search-highlight' just in case
+            try {
+                if (gd && gd.data) {
+                    const toRemove = [];
+                    for (let i = 0; i < gd.data.length; i++){
+                        const t = gd.data[i];
+                        if (!t) continue;
+                        if (String(t.name || '').toLowerCase() === 'search-highlight') toRemove.push(i);
+                    }
+                    if (toRemove.length) Plotly.deleteTraces(gd, toRemove);
+                }
+            } catch(e) {}
+        } catch(e) { /* ignore */ }
+    }
+
+    function addHighlightOverlay(id){
+        try {
+            const p = findPointById(id);
+            if (!p || p.x === undefined || p.y === undefined) return false;
+            const gd = document.getElementById('plot');
+            if (!gd) return false;
+            // remove existing highlight overlays
+            removeExistingHighlight();
+            // compute a radius relative to current axis ranges so the circle scales when zooming
+            let xRange = null, yRange = null;
+            try { xRange = (gd.layout && gd.layout.xaxis && gd.layout.xaxis.range) ? gd.layout.xaxis.range : (gd._fullLayout && gd._fullLayout.xaxis && gd._fullLayout.xaxis.range ? gd._fullLayout.xaxis.range : null); } catch(e) { xRange = null; }
+            try { yRange = (gd.layout && gd.layout.yaxis && gd.layout.yaxis.range) ? gd.layout.yaxis.range : (gd._fullLayout && gd._fullLayout.yaxis && gd._fullLayout.yaxis.range ? gd._fullLayout.yaxis.range : null); } catch(e) { yRange = null; }
+            // use same sizing as path points (relative fraction of axis range)
+            // user requested size to be HALF of previous value: 0.015 -> 0.0075, fallback 0.3 -> 0.15
+            const rx = (xRange && xRange[1] - xRange[0]) ? (xRange[1] - xRange[0]) * 0.0075 : 0.15;
+            const ry = (yRange && yRange[1] - yRange[0]) ? (yRange[1] - yRange[0]) * 0.0075 : 0.15;
+            const shape = {
+                type: 'circle', xref: 'x', yref: 'y',
+                x0: p.x - rx, x1: p.x + rx, y0: p.y - ry, y1: p.y + ry,
+                // semi-transparent yellow so the underlying song marker remains visible
+                fillcolor: 'rgba(255,235,59,0.35)', opacity: 0.95, line: { color: 'black', width: 3 }, layer: 'above',
+                // custom marker so we can toggle it separately
+                am_type: 'search-highlight'
+            };
+            // register the overlay shape and add it only if overlays are visible
+            try { registerOverlayShapes([shape]); } catch(e) {}
+            try {
+                if (window._mapOverlaysVisible) {
+                    const existing = (gd.layout && Array.isArray(gd.layout.shapes)) ? gd.layout.shapes.slice() : [];
+                    existing.push(shape);
+                    Plotly.relayout(gd, { shapes: existing }).catch(()=>{});
+                }
+            } catch(e) { /* ignore */ }
+            return true;
+        } catch(e) { console.warn('addHighlightOverlay failed', e); return false; }
+    }
+
+    function highlightSongById(id){
+        if (!id) return;
+        const p = findPointById(id);
+        if (!p){ document.getElementById('map-status').textContent = 'Song not present on the current map (try a different percent)'; return; }
+    // Do NOT automatically add highlighted song to the selection list here.
+    // Selection should only be modified when the user explicitly taps the Search button
+    // or clicks on the map. We still show the highlight overlay and center the view.
+
+        // add a prominent overlay marker for the single point
+        try { addHighlightOverlay(id); } catch(e) { /* ignore */ }
+
+        // Do NOT auto-zoom or pan the map on search; only show the highlight overlay per user request.
+        document.getElementById('map-status').textContent = `Highlighted: ${p.title || ''} — ${p.artist || ''}`;
+    }
+
+    // Wire inputs/buttons
+    try{
+        document.getElementById('artist_search_map').addEventListener('input', handleArtistInput);
+        document.getElementById('title_search_map').addEventListener('input', handleTitleInput);
+        document.getElementById('map_search_btn').addEventListener('click', async ()=>{
+            // If user selected an item from autocomplete, use it. Otherwise run a combined search and pick first.
+            if (selectedItemId) {
+                try { if (!window._plotSelection) window._plotSelection = []; if (!window._plotSelection.includes(String(selectedItemId))) window._plotSelection.push(String(selectedItemId)); renderSelectionPanel(); } catch(e){}
+                highlightSongById(selectedItemId);
+                return;
+            }
+            const artistQ = document.getElementById('artist_search_map').value.trim();
+            const titleQ = document.getElementById('title_search_map').value.trim();
+            if (artistQ.length < 1 && titleQ.length < 1) { document.getElementById('map-status').textContent = 'Enter artist or title to search'; return; }
+            const list = await searchTracks({ artist: artistQ, title: titleQ, n: 20 });
+            if (!list || list.length === 0) { document.getElementById('map-status').textContent = 'No matches found'; return; }
+            const t = list[0];
+            // set fields and selected id
+            selectedItemId = t.item_id;
+            document.getElementById('artist_search_map').value = t.author || '';
+            document.getElementById('title_search_map').value = t.title || '';
+            // add to selection and highlight (Search click triggers add)
+            try { if (!window._plotSelection) window._plotSelection = []; if (!window._plotSelection.includes(String(t.item_id))) window._plotSelection.push(String(t.item_id)); renderSelectionPanel(); } catch(e){}
+            highlightSongById(t.item_id);
+        });
+        // clicking outside should hide results
+        document.addEventListener('click', (e)=>{
+            if (!e.target.closest('#artist_search_map') && !e.target.closest('#artist_autocomplete_results')) document.getElementById('artist_autocomplete_results').classList.add('hidden');
+            if (!e.target.closest('#title_search_map') && !e.target.closest('#title_autocomplete_results')) document.getElementById('title_autocomplete_results').classList.add('hidden');
+        });
+    } catch(e){ console.warn('map search init failed', e); }
+})();
 </script>
 
 <script>
@@ -471,6 +848,73 @@ function attachPlotHandlers(gd) {
         console.warn('attachPlotHandlers failed', e);
     }
 }
+
+// Overlay state: keep backups of overlay shapes so path and highlight overlays
+// persist across re-renders. Overlays are always visible by default and only
+// cleared by the Refresh/clearMapOverlays action per user's request.
+window._mapOverlayShapes = window._mapOverlayShapes || [];
+window._mapOverlaysVisible = true;
+
+function registerOverlayShapes(shapes) {
+    try {
+        window._mapOverlayShapes = window._mapOverlayShapes || [];
+        window._mapOverlayShapes.push(...shapes.map(s => Object.assign({}, s)));
+    } catch(e) { console.warn('registerOverlayShapes failed', e); }
+}
+
+// Toggle helpers: allow hiding/showing overlay shapes by their am_type.
+window._am_shapes_saved = window._am_shapes_saved || {};
+window._am_show_flags = window._am_show_flags || {};
+function _am_toggleShapes(type, btnId, hideLabel, showLabel) {
+    try {
+        const gd = document.getElementById('plot'); if (!gd) return;
+        window._am_shapes_saved = window._am_shapes_saved || {};
+        window._am_show_flags = window._am_show_flags || {};
+        const key = String(type || '');
+        if (window._am_show_flags[key] === undefined) window._am_show_flags[key] = true;
+        // hide
+        if (window._am_show_flags[key]) {
+            const shapes = (gd.layout && Array.isArray(gd.layout.shapes)) ? gd.layout.shapes.slice() : [];
+            const keep = [];
+            const removed = [];
+            for (const s of shapes) {
+                try { if (s && s.am_type === key) removed.push(s); else keep.push(s); } catch(e) { keep.push(s); }
+            }
+            if (removed.length) {
+                try { Plotly.relayout(gd, { shapes: keep }).catch(()=>{}); } catch(e) {}
+                window._am_shapes_saved[key] = (window._am_shapes_saved[key] || []).concat(removed);
+            }
+            window._am_show_flags[key] = false;
+            try {
+                const b = document.getElementById(btnId);
+                if (b) {
+                    b.classList.add('am-overlay-hidden');
+                    try { b.title = showLabel || 'Show'; } catch(e){}
+                }
+            } catch(e) {}
+            return;
+        }
+        // show
+        const toAdd = window._am_shapes_saved[key] || [];
+        if (toAdd.length) {
+            const existing = (gd.layout && Array.isArray(gd.layout.shapes)) ? gd.layout.shapes.slice() : [];
+            const merged = existing.concat(toAdd);
+            try { Plotly.relayout(gd, { shapes: merged }).catch(()=>{}); } catch(e) {}
+            window._am_shapes_saved[key] = [];
+        }
+        window._am_show_flags[key] = true;
+        try {
+            const b = document.getElementById(btnId);
+            if (b) {
+                b.classList.remove('am-overlay-hidden');
+                try { b.title = hideLabel || 'Hide'; } catch(e){}
+            }
+        } catch(e) {}
+    } catch(e) { console.warn('_am_toggleShapes failed', e); }
+}
+function togglePathPoints(){ _am_toggleShapes('path-point','overlay-toggle-points','Hide pts','Show pts'); }
+function togglePathLine(){ _am_toggleShapes('path-line','overlay-toggle-path','Hide path','Show path'); }
+function toggleSearchHighlight(){ _am_toggleShapes('search-highlight','overlay-toggle-search','Hide highlight','Show highlight'); }
 
 function updateSongPathButtonState() {
     try {
@@ -590,45 +1034,62 @@ function drawPathOnMap(pathItems, color) {
 
         if (xs_used.length === 0) return;
 
-        // Line trace (black) as scattergl for performance
-        const lineTrace = {
-            x: xs_used,
-            y: ys_used,
-            mode: 'lines',
-            type: 'scattergl',
-            line: { color: 'black', width: 3 },
-            hoverinfo: 'none',
-            name: 'path-line'
-        };
-
-        // Markers as SVG scatter so they render on top and support text labels
-        const markerTrace = {
-            x: xs_used,
-            y: ys_used,
-            mode: 'markers',
-            type: 'scatter',
-            marker: { size: 12, color: fills, line: { color: 'black', width: 1.5 } },
-            hovertemplate: '%{customdata}<extra></extra>',
-            customdata: hovers,
-            name: 'path-markers'
-        };
+        // Convert path to layout shapes so it stays on top (layer: 'above') and
+        // scales/positions with axis transforms. Build one polyline 'path' shape
+        // plus small circle shapes per point so markers are visible like the
+        // search highlight.
         try {
-            // add line then markers so markers are on top
-            Plotly.addTraces(gd, lineTrace);
-            Plotly.addTraces(gd, markerTrace);
-            // attempt to move the newly added traces to the end (top) if moveTraces available
+            const gd = document.getElementById('plot');
+            if (!gd) return;
+            // compute radius relative to current axis ranges
+            let xRange = null, yRange = null;
+            try { xRange = (gd.layout && gd.layout.xaxis && gd.layout.xaxis.range) ? gd.layout.xaxis.range : (gd._fullLayout && gd._fullLayout.xaxis && gd._fullLayout.xaxis.range ? gd._fullLayout.xaxis.range : null); } catch(e) { xRange = null; }
+            try { yRange = (gd.layout && gd.layout.yaxis && gd.layout.yaxis.range) ? gd.layout.yaxis.range : (gd._fullLayout && gd._fullLayout.yaxis && gd._fullLayout.yaxis.range ? gd._fullLayout.yaxis.range : null); } catch(e) { yRange = null; }
+            // user requested size to be HALF of previous value: 0.015 -> 0.0075, fallback 0.3 -> 0.15
+            const rx = (xRange && xRange[1] - xRange[0]) ? (xRange[1] - xRange[0]) * 0.0075 : 0.15;
+            const ry = (yRange && yRange[1] - yRange[0]) ? (yRange[1] - yRange[0]) * 0.0075 : 0.15;
+
+            // build SVG path string using data coordinates
+            let pathStr = '';
+            for (let i = 0; i < xs_used.length; i++) {
+                const x = xs_used[i]; const y = ys_used[i];
+                if (i === 0) pathStr += `M ${x} ${y}`;
+                else pathStr += ` L ${x} ${y}`;
+            }
+
+            const pathShape = {
+                type: 'path',
+                path: pathStr,
+                xref: 'x', yref: 'y',
+                line: { color: 'black', width: 3 },
+                layer: 'above',
+                am_type: 'path-line'
+            };
+
+            // per-point circle shapes
+            const pointShapes = [];
+            for (let i = 0; i < xs_used.length; i++) {
+                const x = xs_used[i]; const y = ys_used[i];
+                const fill = fills[i] || color || '#888888';
+                const sh = {
+                    type: 'circle', xref: 'x', yref: 'y',
+                    x0: x - rx, x1: x + rx, y0: y - ry, y1: y + ry,
+                    fillcolor: fill, opacity: 0.95, line: { color: 'black', width: 1.5 }, layer: 'above',
+                    am_type: 'path-point'
+                };
+                pointShapes.push(sh);
+            }
+
+            // register shapes so they are restored across re-renders
+            try { registerOverlayShapes([pathShape, ...pointShapes]); } catch(e) {}
+
+            // add them immediately to plot layout
             try {
-                const total = gd.data.length;
-                // last two traces are the ones we added; ensure they are last
-                const lastIdx = total - 2;
-                const secondLastIdx = total - 1;
-                if (typeof Plotly.moveTraces === 'function') {
-                    // move lastIdx then secondLastIdx to the end
-                    Plotly.moveTraces(gd, lastIdx, total - 2);
-                    Plotly.moveTraces(gd, secondLastIdx, total - 1);
-                }
-            } catch(e) { /* non-fatal */ }
-        } catch(e) { console.warn('Plotly.addTraces failed', e); }
+                const existing = (gd.layout && Array.isArray(gd.layout.shapes)) ? gd.layout.shapes.slice() : [];
+                const merged = existing.concat([pathShape, ...pointShapes]);
+                Plotly.relayout(gd, { shapes: merged }).catch(()=>{});
+            } catch(e) { console.warn('drawPathOnMap relayout failed', e); }
+        } catch(e) { console.warn('drawPathOnMap failed', e); }
     } catch (e) { console.warn('drawPathOnMap failed', e); }
 }
 
@@ -637,21 +1098,22 @@ function clearMapOverlays() {
     try {
         const gd = document.getElementById('plot');
         if (!gd || !gd.data) return;
-        // collect indices of traces to remove (named 'path' or with line mode but not the main tracks trace)
+        // collect indices of all non-main traces to remove (anything that's not the main 'tracks' trace)
         const removeIdx = [];
         for (let i = 0; i < gd.data.length; i++) {
             const t = gd.data[i];
             if (!t) continue;
             // keep the main tracks trace (name === 'tracks')
-            if (t.name === 'tracks') continue;
-            // remove traces explicitly named 'path' or traces that look like overlays (lines)
-            if (String(t.name).toLowerCase().includes('path') || (t.mode && t.mode.toString().toLowerCase().includes('line'))) {
-                removeIdx.push(i);
-            }
+            if (String(t.name) === 'tracks') continue;
+            removeIdx.push(i);
         }
         if (removeIdx.length > 0) {
             try { Plotly.deleteTraces(gd, removeIdx); } catch(e) { console.warn('Plotly.deleteTraces failed', e); }
         }
+        // remove any overlay shapes (highlights) as well
+        try { Plotly.relayout(gd, { shapes: [] }).catch(()=>{}); } catch(e) {}
+    // clear backup overlay state so overlays are fully cleared on Refresh
+    try { window._mapOverlayShapes = []; window._mapOverlaysVisible = true; } catch(e) {}
         // clear selection and inline panel
         window._plotSelection = [];
         try { renderSelectionPanel(); } catch(e) { /* ignore */ }
@@ -664,7 +1126,7 @@ function clearMapOverlays() {
 
 <!-- debug button removed per user request -->
 
-<script src="/static/menu.js"></script>
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
 </body>
 </html>
 <script>
@@ -678,7 +1140,7 @@ function clearMapOverlays() {
             const filtered = (sel || []).filter(id => id !== undefined && id !== null);
             console.debug('Creating playlist with ids', filtered.slice(0,50));
             const payload = { playlist_name: `Map selection ${new Date().toISOString()}`, track_ids: filtered };
-            const resp = await fetch('/api/create_playlist', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+            const resp = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
                 const text = await resp.text();
                 let json = null;
                 try { json = text ? JSON.parse(text) : null; } catch(e) { json = null; }
@@ -706,7 +1168,7 @@ function clearMapOverlays() {
                         const b = sel[i+1];
                         const params = new URLSearchParams({ start_song_id: a, end_song_id: b, max_steps: 25 });
                         try {
-                            const resp = await fetch(`/api/find_path?${params}`);
+                            const resp = await fetch(`{{ url_for('path_bp.find_path_endpoint') }}?${params}`);
                             if (!resp.ok) {
                                 const err = await resp.json().catch(() => ({}));
                                 console.warn('find_path failed for', a, b, err);

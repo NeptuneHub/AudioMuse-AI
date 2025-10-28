@@ -5,8 +5,8 @@
     <meta name="app-version" content="{{ app_version }}">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AudioMuse-AI - Sonic Fingerprint</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <link rel="stylesheet" href="/static/menu.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
     <style>
         #fingerprint-form button {
             flex-grow: 1;
@@ -33,7 +33,10 @@
     <aside class="sidebar">
         <nav>
             <ul class="sidebar-nav">
-                <!-- Menu items are dynamically inserted by menu.js -->
+                {% with %}
+                {% set active = 'sonic_fingerprint' %}
+                {% include 'sidebar_navi.html' %}
+                {% endwith %}
             </ul>
         </nav>
     </aside>
@@ -134,7 +137,7 @@
 
             window.addEventListener('DOMContentLoaded', async () => {
                 try {
-                    const response = await fetch('/api/config/defaults');
+                    const response = await fetch("{{ url_for('sonic_fingerprint_bp.get_media_server_defaults') }}");
                     if (!response.ok) return;
                     
                     const data = await response.json();
@@ -183,7 +186,7 @@
                 resultsTableWrapper.innerHTML = '';
 
                 try {
-                    const response = await fetch('/api/sonic_fingerprint/generate', {
+                    const response = await fetch("{{ url_for('sonic_fingerprint_bp.generate_sonic_fingerprint_endpoint') }}", {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload)
@@ -253,7 +256,7 @@
                 playlistStatusDiv.textContent = 'Creating playlist...';
                 
                 try {
-                    const response = await fetch('/api/create_playlist', {
+                    const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload),
@@ -269,7 +272,7 @@
             });
         })();
     </script>
-    <script src="/static/menu.js"></script>
+    <script src="{{ url_for('static', filename='menu.js') }}"></script>
 </body>
 </html>
 

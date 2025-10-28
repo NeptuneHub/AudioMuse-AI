@@ -1,0 +1,10 @@
+<script>
+    const getActiveTasksEndpointUrl = "{{ url_for('get_active_tasks_endpoint') }}";    
+    const getConfigEndpointUrl = "{{ url_for('get_config_endpoint') }}";
+    const getTaskStatusEndpointUrl = "{{ url_for('get_task_status_endpoint', task_id=':taskId:') }}";
+    const startAnalysisEndpointUrl = "{{ url_for('analysis_bp.start_analysis_endpoint') }}";
+    const getLastOverallTaskStatusEndpointUrl = "{{ url_for('get_last_overall_task_status_endpoint') }}";
+    const getPlaylistsEndpointUrl = "{{ url_for('get_playlists_endpoint') }}";
+    const cancelTaskEndpointUrl = "{{ url_for('cancel_task_endpoint', task_id=':taskId:') }}";
+</script>
+<script src="{{ url_for('static', filename='script.js') }}"></script>

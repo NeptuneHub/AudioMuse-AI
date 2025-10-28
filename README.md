@@ -1,12 +1,12 @@
 ![GitHub license](https://img.shields.io/github/license/neptunehub/AudioMuse-AI.svg)
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/AudioMuse-AI?label=latest-tag)
-![Media Server Support: Jellyfin 10.10.7, Navidrome 0.58.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.10.7%2C%20Navidrome%200.58.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2-blue?style=flat-square&logo=server&logoColor=white)
+![Media Server Support: Jellyfin 10.10.7, Navidrome 0.58.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.10.7%2C%20Navidrome%200.58.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80-blue?style=flat-square&logo=server&logoColor=white)
 
 
-# **AudioMuse-AI - Let the choice happen, the open-source way** 
+# **AudioMuse-AI - Where Music Takes Shape** 
 
 <p align="center">
-  <img src="https://github.com/NeptuneHub/AudioMuse-AI/blob/main/screenshot/audiomuseai.png?raw=true" alt="AudioMuse-AI Logo" width="480">
+  <img src="screenshot/AM-AI-MAP.png?raw=true" alt="AudioMuse-AI Logo" width="480">
 </p>
 
 
@@ -16,11 +16,13 @@ Deploy it easily on your local machine with Docker Compose/Podman or scale it up
 
 AudioMuse-AI lets you explore your music library in innovative ways, just **start with an initial analysis**, and you’ll unlock features like:
 * **Clustering**: Automatically groups sonically similar songs, creating genre-defying playlists based on the music's actual sound.
+* **Instant Playlists**: Simply tell the AI what you want to hear—like "high-tempo, low-energy music" and it will instantly generate a playlist for you.
+* **Music Map**: Discover your music collection visually with a vibrant, genre-based 2D map.
 * **Playlist from Similar Songs**: Pick a track you love, and AudioMuse-AI will find all the songs in your library that share its sonic signature, creating a new discovery playlist.
-* **Song Paths**: Create a seamless listening journey between two or more songs. AudioMuse-AI finds the perfect tracks to bridge the sonic gap.
-* **Instant Playlists**: Simply tell the AI what you want to hear—like "high-tempo, low-energy workout music"—and it will instantly generate a playlist for you.
+* **Song Paths**: Create a seamless listening journey between two songs. AudioMuse-AI finds the perfect tracks to bridge the sonic gap.
 * **Sonic Fingerprint**: Generates playlists based on your listening habits, finding tracks similar to what you've been playing most often.
-* **Song Alchemy**: Mix your ideal vibe — mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and an interactive 2D preview. Export the final selection directly to your media server.
+* **Song Alchemy**: Mix your ideal vibe, mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and a 2D preview. Export the final selection directly to your media server.
+
 
 More information, like **Frequently Asked Question (FAQ)** can be found in the [docs folder](docs).
 
@@ -31,6 +33,7 @@ More information, like **Frequently Asked Question (FAQ)** can be found in the [
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): **Experimental** Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
+> * Version 0.7.4-beta add the support of Cron Job to schedule Analysis and Clustering task. 
 > * Version 0.7.2-beta ad the new Song Map functionality to visualize your music. Also introduce the **experimental** support of Emby.
 > * Version 0.7.1-beta add the Song Alchemy functionality, create your playlist by blending together different song.
 > * Version 0.7.0-beta remove Tensorflow and use instead ONXX. This new version should have better result on different CPU and be also more stable between update. **IMPORTANT:** this new version will require a new analysis of the entire library to work correctly.
@@ -67,16 +70,6 @@ The best way to install AudioMuse-AI on K3S (kubernetes) is by [AudioMuse-AI Hel
     *   Respect the HW requirements (look the specific chapter)
 
 You can directly check the Helm Chart repo for more details and deployments examples.
-
-How to find jellyfin **userid**:
-* Log into Jellyfin from your browser as an admin
-* Go to Dashboard > “admin panel” > Users.
-* Click on the user’s name that you are interested
-* The User ID is visible in the URL (is the part just after = ):
-  * http://your-jellyfin-server/web/index.html#!/useredit.html?userId=xxxxx
-
-How to create an the **jellyfin's API token**:
-* The API Token, still as admin you can go to Dashboard > “Admin panel” > API Key and create a new one.
 
 ## **Quick Start Deployment on K3S**
 
@@ -234,6 +227,16 @@ This has been tested with an NVidia RX 3060 running CUDA 12.9 and Driver V575.64
 
 These are the parameters accepted for this script. You can pass them as environment variables using, for example, /deployment/deployment.yaml in this repository.
 
+How to find jellyfin **userid**:
+* Log into Jellyfin from your browser as an admin
+* Go to Dashboard > “admin panel” > Users.
+* Click on the user’s name that you are interested
+* The User ID is visible in the URL (is the part just after = ):
+  * http://your-jellyfin-server/web/index.html#!/useredit.html?userId=xxxxx
+
+How to create an the **jellyfin's API token**:
+* The API Token, still as admin you can go to Dashboard > “Admin panel” > API Key and create a new one.
+
 The **mandatory** parameter that you need to change from the example are this:
 
 | Parameter            | Description                                                             | Default Value                     |
@@ -261,6 +264,7 @@ These parameter could be leave as it is:
 | `TEMP_DIR`              | Temp directory for audio files              | `/app/temp_audio` |
 | `CLEANING_SAFETY_LIMIT` | Max number of albums deleted during cleaning | `100`             |
 | `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names. | `""` (empty - scan all) |
+| `ENABLE_PROXY_FIX` | Enable Proxy Fix for Flask when behind a reverse proxy. Example Nginx configuration: [config.py](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/config.py#L346) | `false` |
 
 This are the default parameters on wich the analysis or clustering task will be lunched. You will be able to change them to another value directly in the front-end:
 
@@ -284,6 +288,7 @@ This are the default parameters on wich the analysis or clustering task will be 
 | `VOYAGER_QUERY_EF`                          | Number neighbor analyzed during the query.                                                                                | `1024`          |
 | `VOYAGER_METRIC`                            | Different tipe of distance metrics: `angular`, `euclidean`,`dot`                                                          | `angular`       |
 | `SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT`   | It enable the possibility of use the `MAX_SONGS_PER_ARTIST` also in similar song                                          | `true`          |
+| `SIMILARITY_RADIUS_DEFAULT`                 | Default behavior for radius similarity mode. When `true`, similarity results may be re-ordered using the radius (bucketed) algorithm for better listening paths. | `true`          |
 | **Sonic Fingerprint General**               |                                                                                                                            |                 |
 | `SONIC_FINGERPRINT_NEIGHBORS`               | Default number of track for the sonic fingerprint                                                                         | `100`           |
 | **Song Alchemy General**                     |                                                                                                                            |                 |
@@ -302,6 +307,7 @@ This are the default parameters on wich the analysis or clustering task will be 
 | `PATH_AVG_JUMP_SAMPLE_SIZE`                 | Number of random songs to sample for calculating the average jump distance                                                | `200`           |
 | `PATH_CANDIDATES_PER_STEP`                  | Number of candidate songs to retrieve from Voyager for each step in the path                                              | `25`            |
 | `PATH_LCORE_MULTIPLIER`                     | It multiply the number of centroid created based on the distance. Higher is better for distant song and worst for nearest. | `3`             |
+| `PATH_FIX_SIZE`                             | When `true`, path generation will attempt to produce exactly the requested path length using centroid merging and backfilling. When `false`, the algorithm will perform a single best pick per centroid and may return a shorter path. Can be overridden per-request via the `path_fix_size` query parameter. | `false`         |
 | **Evolutionary Clustering & Scoring**      |                                                                                            |                                        |
 | `ITERATIONS_PER_BATCH_JOB`                  | Number of clustering iterations processed per RQ batch job.                                | `20`                                   |
 | `MAX_CONCURRENT_BATCH_JOBS`                 | Maximum number of clustering batch jobs to run simultaneously.                             | `10`                                   |

@@ -1,6 +1,6 @@
-# **Algorhtm**
+# Algorithm
 
-This document go deeper in how the different functionality work, helping also to understand the different mix of parameter. If you just want an introduction just have look to the FAQ.
+This document explains the runtime algorithms implemented in the repository. It focuses on the current behavior in code (file and function references are provided so you can inspect the implementation directly). Outdated historical notes (for example references to a k-means minibatch experiment or an earlier TensorFlow/ONNX mention) were removed — the sections below describe what the code actually runs today.
 
 ## **Table of Contents**
 
@@ -562,3 +562,66 @@ The "Playlist from Similar Song" feature provides an interactive way to discover
    * This action calls the /api/create\_playlist endpoint, which takes the list of similar track IDs and the new name, and then uses the Jellyfin or Navidrome API to create the playlist directly on the server.
 
 This entire workflow provides a fast and intuitive method for music discovery, moving beyond simple genre or tag-based recommendations to find songs that truly *sound* alike.
+
+## Song Path Deep Dive - Deep dive
+Purpose: build an adaptive, fixed-length path of songs between a start and an end item that (a) sounds coherent, (b) avoids duplicate title/artist pairs, and (c) respects a realistic per-step distance estimated from the local neighborhood.
+
+Core steps (implementation highlights):
+- Entrypoint: `find_path_between_songs(start_item_id, end_item_id, Lreq)`.
+- Estimate local jump size δ_avg using `_calculate_local_average_jump_distance(...)` which chains nearest neighbors around the endpoints to compute typical step distances.
+- Compute direct distance D between start and end using the configured metric (`PATH_DISTANCE_METRIC` — angular or euclidean). Derive a core step count Lcore ≈ floor(D/δ_avg) (bounded and scaled by `PATH_LCORE_MULTIPLIER`) so the path length is realistic.
+- Interpolate backbone centroids between start and end with `interpolate_centroids(...)` (supports angular interpolation for cosine-style metric or linear interpolation for euclidean).
+- For each centroid, pick an actual track using `_find_best_unique_song(...)`. Candidates are fetched from the vector index (`find_nearest_neighbors_by_vector`) and filtered/deduplicated by:
+  - ID and normalized (artist,title) signature uniqueness,
+  - configurable duplicate-distance thresholds with a short lookback window,
+  - availability of metadata/embedding.
+- If the user-requested length Lreq > backbone length, the code will expand the backbone and repeat selection, still enforcing uniqueness and distance constraints. Final IDs are resolved to full track rows with `get_tracks_by_ids()` and returned.
+
+Edge cases: the function gracefully handles missing embeddings, insufficient neighbors, and returns shorter paths if uniqueness constraints prevent filling every slot.
+
+## Song Alchemy - Deep dive 
+Purpose: combine one-or-more "add" seeds and optional "subtract" seeds to return a playlist of similar tracks and a 2D visualization (embedding projection + centroids).
+
+Core steps (implementation highlights):
+- Entrypoint: `song_alchemy(add_ids, subtract_ids, n_results, subtract_distance, temperature)`.
+- Compute add/sub centroids by averaging item vectors (`_compute_centroid_from_ids(...)` using `get_vector_by_id`).
+- Query voyager for candidates either by ID (`find_nearest_neighbors_by_id`) for single seeds or by vector (`find_nearest_neighbors_by_vector`) for centroid queries; request a superset and filter down.
+- Subtract filtering: remove candidates that are too close to the subtract centroid according to the configured metric (angular or euclidean) and threshold (`subtract_distance`).
+- Deduplicate and exclude seed IDs.
+- Projection for visualization: try to reuse a stored projection with `load_map_projection('main_map')`. For missing points compute a local 2D projection using helpers defined in `tasks/song_alchemy.py` in this preference order:
+  1. `_project_aligned_add_sub` (align X axis to add→subtract)
+ 2. `_project_with_discriminant` (PCA + logistic discriminant)
+ 3. `_project_with_umap` (if umap installed)
+ 4. `_project_to_2d` (simple PCA/SVD fallback)
+- Sampling and selection: order candidates by distance to the add centroid; if `temperature > 0` apply a softmax over negative distances to sample stochastically; if `temperature == 0` return deterministic top-N.
+- Return payload includes `results`, `filtered_out` (items excluded by subtract filter, with 2D coordinates when available), `centroid_2d`, `add_points`, `sub_points`, and projection metadata used by the UI.
+
+UI notes: `templates/alchemy.html` trims results to exactly N on the client and plots both selected and filtered-out items (so the user sees what was excluded and why).
+
+## Music Map - Deep dive 
+Purpose: provide a fast, interactive 2D scatter of the collection for exploration and selection; server-side builds and caches deterministic sampled payloads for client efficiency.
+
+Core steps (implementation highlights):
+- Builder: `build_map_cache()` reads `score` + `embedding` rows from PostgreSQL and attempts to reuse a previously-saved projection via `load_map_projection('main_map')`.
+- For missing coordinates, it computes projections using the same helper set used by Song Alchemy (UMAP/discriminant/PCA fallbacks) to keep visualization consistent.
+- Deterministic downsampling: `_sample_items(items, fraction)` uses linspace indices to produce 100%/75%/50%/25% buckets so results are reproducible and memory-friendly.
+- The builder stores JSON and gzipped bytes into the in-memory `MAP_JSON_CACHE` keyed by percent for fast HTTP responses.
+
+Front-end (Plotly) behavior (`templates/map.html`):
+- Client calls `/api/map?percent=<25|50|75|100>` and receives a lightweight list of items with `embedding_2d`, `item_id`, `title`, `artist`, and a compact `mood_vector` summary.
+- `topGenre()` extracts the top mood/genre label from the stored `mood_vector` string; `colorPaletteFor()` deterministically maps labels to colors.
+- Plot uses a single `scattergl` trace for performance, stores ids in `customdata`, and implements a manual legend with hide/show filtering, lasso selection, and client-side path overlays.
+
+Performance notes: the heavy work (embedding projection) is done server-side and cached; the client avoids long-term in-memory retention by re-fetching on user-driven percent changes.
+
+## Sonic Fingerprint - Deep dive 
+Purpose: generate a personal playlist by averaging recently-played embeddings (a listening "fingerprint") and finding nearest neighbors to that fingerprint.
+
+Core steps (implementation highlights):
+- Entrypoint: `generate_sonic_fingerprint(num_neighbors=None, user_creds=None)`.
+- Fetch the user's top-played songs from the configured media adapter (`get_top_played_songs(limit=...)`).
+- Retrieve embeddings for those seeds (`get_tracks_by_ids`) and build a weighted average vector where weights reflect recency: `get_last_played_time(...)` is used to compute decayed weights (more recent plays get higher weight); a default small weight is used when timestamps are missing.
+- Normalize the average fingerprint vector (sum of weighted vectors / total weight) and query the vector index (`find_nearest_neighbors_by_vector`) for neighbors to reach the requested playlist size.
+- Final playlist: seed songs (the top-played items that contributed to the fingerprint) are included first, then voyager neighbors are appended, skipping duplicates until the target count is reached.
+
+UI notes: `templates/sonic_fingerprint.html` collects optional adapter credentials (Jellyfin/Navidrome token/user) and displays results; playlist creation reuses the app's playlist creation API.

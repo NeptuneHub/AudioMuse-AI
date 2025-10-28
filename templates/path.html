@@ -5,8 +5,8 @@
     <meta name="app-version" content="{{ app_version }}">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AudioMuse-AI - Song Path</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <link rel="stylesheet" href="/static/menu.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
     <style>
         #path-form button {
             flex-grow: 1;
@@ -61,7 +61,10 @@
     <aside class="sidebar">
         <nav>
             <ul class="sidebar-nav">
-                <!-- Menu items are dynamically inserted by menu.js -->
+                {% with %}
+                {% set active = 'path' %}
+                {% include 'sidebar_navi.html' %}
+                {% endwith %}
             </ul>
         </nav>
     </aside>
@@ -104,6 +107,11 @@
                             <label for="max_steps">Songs in path:</label>
                             <input type="number" id="max_steps" name="max_steps" value="25" min="10" max="200">
                         </div>
+                        <div>
+                            <label for="path_fix_size_checkbox" style="display:flex;align-items:center;gap:8px;">
+                                <input type="checkbox" id="path_fix_size_checkbox" name="path_fix_size" {% if path_fix_size %}checked{% endif %} style="margin-right:6px"> Keep path size exact
+                            </label>
+                        </div>
                     </div>
                     <button type="submit">Find Path</button>
                 </form>
@@ -141,7 +149,7 @@
         </div>
     </div>
 </div>
-    <script src="/static/chart.js"></script>
+    <script src="{{ url_for('static', filename='chart.js') }}"></script>
     <script>
         (async () => {
             let currentTrackIds = [];
@@ -153,12 +161,31 @@
 
             // --- Fetch config to get the distance metric ---
             try {
-                const response = await fetch('/api/config');
+                const response = await fetch("{{ url_for('get_config_endpoint') }}");
                 const config = await response.json();
                 pathDistanceMetric = config.path_distance_metric || 'euclidean';
                 console.log(`Using '${pathDistanceMetric}' distance metric for path progression chart.`);
             } catch (error) {
                 console.error('Failed to fetch config, defaulting to euclidean distance:', error);
+            }
+
+            // Background-prefetch the full map (100%) so it's available when users view paths.
+            // Use requestIdleCallback when available so it doesn't compete with page load.
+            try {
+                const schedule = (fn, delay) => {
+                    if (window.requestIdleCallback) return window.requestIdleCallback(fn, {timeout: delay});
+                    return setTimeout(fn, delay);
+                };
+                // Prefetch the map in the background (fire-and-forget). Do NOT store the response in page memory.
+                schedule(() => {
+                    try {
+                        fetch("{{ url_for('map_bp.map_api') }}?percent=100", { cache: 'no-store' })
+                            .then(r => { if (!r.ok) throw new Error('prefetch failed'); return r.json().catch(() => null); })
+                            .catch(() => null);
+                    } catch (e) { /* ignore */ }
+                }, 1500);
+            } catch (e) {
+                console.debug('Map prefetch schedule failed', e);
             }
 
             const pathForm = document.getElementById('path-form');
@@ -193,7 +220,7 @@
                     }
                     try {
                         const params = new URLSearchParams({ artist: artistQuery, title: titleQuery });
-                        const response = await fetch(`/api/search_tracks?${params}`);
+                        const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
                         const tracks = await response.json();
                         resultsEl.innerHTML = '';
                         if (tracks.length === 0) {
@@ -668,15 +695,23 @@
                 }
 
                 try {
+                    const pathFixSize = document.getElementById('path_fix_size_checkbox')?.checked ? 'true' : 'false';
                     const params = new URLSearchParams({
                         start_song_id: startSongId,
                         end_song_id: endSongId,
-                        max_steps: maxSteps
+                        max_steps: maxSteps,
+                        path_fix_size: pathFixSize
                     });
-                    const response = await fetch(`/api/find_path?${params}`);
+                    // Start fetching the full map projection in parallel (non-blocking) so both network requests
+                    // can be performed concurrently. Always fetch fresh data and do not reuse any in-page cached promise.
+                    const mapPromise = fetch("{{ url_for('map_bp.map_api') }}?percent=100", { cache: 'no-store' })
+                        .then(r => r.ok ? r.json().catch(() => null) : null)
+                        .catch(() => null);
+
+                    const response = await fetch(`{{ url_for('path_bp.find_path_endpoint') }}?${params}`);
                     if (!response.ok) {
                         let errorData;
-                        try { errorData = await response.json(); } 
+                        try { errorData = await response.json(); }
                         catch (e) { throw new Error(`Server returned an error (HTTP ${response.status})`); }
                         throw new Error(errorData.error || `An unknown server error occurred.`);
                     }
@@ -688,19 +723,16 @@
                     currentPathData = data.path;
                     currentTrackIds = currentPathData.map(track => track.item_id);
 
-                    // Attempt to fetch the precomputed map projection and build an id->coord map
+                    // Await the parallel map fetch (it may have started earlier). If it failed, we continue without map coords.
                     try {
-                        const respMap = await fetch('/api/map?n=2000');
-                        if (respMap.ok) {
-                            const mapData = await respMap.json();
-                            if (mapData && Array.isArray(mapData.items)) {
-                                mapIdToCoord = {};
-                                mapData.items.forEach(it => {
-                                    if (it && it.item_id && it.embedding_2d) {
-                                        mapIdToCoord[String(it.item_id)] = it.embedding_2d;
-                                    }
-                                });
-                            }
+                        const mapData = await mapPromise;
+                        if (mapData && Array.isArray(mapData.items)) {
+                            mapIdToCoord = {};
+                            mapData.items.forEach(it => {
+                                if (it && it.item_id && it.embedding_2d) {
+                                    mapIdToCoord[String(it.item_id)] = it.embedding_2d;
+                                }
+                            });
                         }
                     } catch (e) {
                         console.warn('Failed to fetch map projection for path visualization', e);
@@ -775,7 +807,7 @@
                 }
                 playlistStatusDiv.textContent = 'Creating playlist...';
                 try {
-                    const response = await fetch('/api/create_playlist', {
+                    const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -795,6 +827,6 @@
             });
         })();
     </script>
-    <script src="/static/menu.js"></script>
+    <script src="{{ url_for('static', filename='menu.js') }}"></script>
 </body>
 </html>

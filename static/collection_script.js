@@ -160,7 +160,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function checkActiveTasks() {
         try {
-            const response = await fetch('/api/active_tasks');
+            const response = await fetch(getActiveTasksEndpointUrl);
             const activeTask = await response.json();
 
             if (activeTask && activeTask.task_id) {
@@ -173,7 +173,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const finishedTaskId = currentTaskId;
                 currentTaskId = null;
                 try {
-                    const finalStatusResponse = await fetch(`/api/status/${finishedTaskId}`);
+                    const finalStatusResponse = await fetch(getTaskStatusEndpointUrl.replace(':taskId:', encodeURIComponent(finishedTaskId)));
                     if (finalStatusResponse.ok) {
                         const finalStatusData = await finalStatusResponse.json();
                         displayTaskStatus(finalStatusData);
@@ -198,7 +198,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function fetchAndDisplayLastCollectionTask() {
         try {
-            const response = await fetch('/api/collection/last_task');
+            const response = await fetch(getLastCollectionTaskUrl);
             if (response.ok) {
                 const lastTask = await response.json();
                 if (lastTask && lastTask.task_id && lastTask.status !== 'NO_PREVIOUS_TASK') {
@@ -223,7 +223,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         disableAllTaskButtons(true);
         try {
-            const response = await fetch('/api/collection/start', {
+            const response = await fetch(startCollectionSyncUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -246,7 +246,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!currentTaskId) return;
         updateCancelButtonState(true);
         try {
-            const response = await fetch(`/api/cancel/${currentTaskId}`, { method: 'POST' });
+            const response = await fetch(cancelTaskEndpointUrl.replace(':taskId:', encodeURIComponent(currentTaskId)), { method: 'POST' });
             const result = await response.json();
             if (!response.ok) throw new Error(result.message || 'Failed to send cancellation request.');
             showMessageBox('Cancellation Sent', result.message);
@@ -282,6 +282,12 @@ document.addEventListener('DOMContentLoaded', () => {
     privacyCheckbox.addEventListener('change', () => githubLoginBtn.disabled = !privacyCheckbox.checked);
     
     async function mainInit() {
+        console.assert(getActiveTasksEndpointUrl, "Missing getActiveTasksEndpointUrl url variable");
+        console.assert(getTaskStatusEndpointUrl, "Missing getTaskStatusEndpointUrl url variable");
+        console.assert(cancelTaskEndpointUrl, "Missing cancelTaskEndpointUrl url variable");
+        console.assert(startCollectionSyncUrl, "Missing startCollectionSyncUrl url variable");
+        console.assert(getLastCollectionTaskUrl, "Missing getLastCollectionTaskUrl url variable");
+
         initialize();
         if (!await checkActiveTasks()) {
             await fetchAndDisplayLastCollectionTask();

@@ -2,7 +2,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const menuToggle = document.querySelector('.menu-toggle');
     const sidebar = document.querySelector('.sidebar');
     const mainContent = document.querySelector('.main-content');
-    const currentPath = window.location.pathname;
 
     // The menu is now positioned off-screen by default via CSS.
     // This script just handles the open/close classes.
@@ -37,66 +36,6 @@ document.addEventListener('DOMContentLoaded', function() {
         if (sidebar.classList.contains('open') && !menuToggle.contains(e.target) && !sidebar.contains(e.target)) {
             closeMenu();
         }
-    });
-
-    // Define menu items
-    const menuItems = [
-        { href: '/', text: 'Analysis and Clustering' },
-        { href: '/chat', text: 'Instant Playlist' },
-        { href: '/similarity', text: 'Playlist from Similar Song' },
-        { href: '/path', text: 'Song Path' },
-        { href: '/alchemy', text: 'Song Alchemy' },
-        { href: '/map', text: 'Music Map' },
-        { href: '/sonic_fingerprint', text: 'Sonic Fingerprint' },
-        //{ href: '/collection', text: 'Collection Sync' }, // New Menu Item - commented because still experimental
-        { href: '/cleaning', text: 'Cleaning' }
-    ];
-
-    // Find the navigation list
-    const navList = document.querySelector('.sidebar-nav');
-
-    // Generate menu items
-    menuItems.forEach(item => {
-        const listItem = document.createElement('li');
-        const link = document.createElement('a');
-        link.href = item.href;
-        link.textContent = item.text;
-
-        // Check for active page
-        const linkPath = item.href;
-        let isActive = false;
-        if (linkPath === '/') {
-            if (currentPath === '/' || currentPath.endsWith('/index.html')) {
-                isActive = true;
-            }
-        } else {
-            // Check if the current path starts with the link's path.
-            // This handles cases like '/sonic_fingerprint' and '/sonic_fingerprint/'
-            if (currentPath.startsWith(linkPath) && (currentPath.length === linkPath.length || currentPath.charAt(linkPath.length) === '/')) {
-                isActive = true;
-            }
-        }
-
-        if (isActive) {
-            link.classList.add('active');
-        }
-
-        // Add event listener to auto-close menu on link click
-        link.addEventListener('click', (e) => {
-            if (!sidebar.classList.contains('open')) {
-                return; 
-            }
-            e.preventDefault();
-            closeMenu();
-            if (!isActive) {
-                setTimeout(() => {
-                    window.location.href = link.href;
-                }, 300); // Match CSS transition
-            }
-        });
-
-        listItem.appendChild(link);
-        navList.appendChild(listItem);
     });
 
     // Display App Version from meta tag
