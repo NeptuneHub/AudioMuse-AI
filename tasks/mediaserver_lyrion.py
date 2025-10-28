@@ -330,6 +330,8 @@ def _get_all_albums_simple(limit):
     remaining = None if fetch_all else int(limit)
     offset = 0
 
+    pages_fetched = 0
+
     while True:
         req_count = page_size if (remaining is None or remaining > page_size) else remaining
         params = [offset, req_count, "sort:new"]
@@ -352,6 +354,8 @@ def _get_all_albums_simple(limit):
         if not page_albums:
             break
 
+        pages_fetched += 1
+
         mapped = [{'Id': a.get('id'), 'Name': a.get('album')} for a in page_albums]
         albums_accum.extend(mapped)
 
@@ -365,6 +369,7 @@ def _get_all_albums_simple(limit):
 
         offset += len(page_albums)
 
+    logger.info(f"_get_all_albums_simple: fetched {len(albums_accum)} albums across {pages_fetched} pages (requested limit: {limit})")
     return albums_accum
 
 def _try_folder_id_based_filtering(target_paths, limit):
@@ -516,6 +521,12 @@ def get_recent_albums(limit):
     page_size = 100
     offset = 0
     fetch_all = (limit == 0)
+    # Diagnostics counters to help debug why albums are filtered out
+    pages_fetched = 0
+    albums_scanned = 0
+    albums_matched = 0
+    filtered_no_album_id = 0
+    filtered_no_path = 0
     
     while True:
         # Get next batch of albums
@@ -529,6 +540,8 @@ def get_recent_albums(limit):
         
         if not response:
             break
+
+        pages_fetched += 1
         
         # Extract albums from response
         page_albums = []
@@ -542,21 +555,34 @@ def get_recent_albums(limit):
         
         # Check each album in this batch
         for album in page_albums:
+            albums_scanned += 1
             album_id = album.get('id')
             album_name = album.get('album', 'Unknown')
-            
+
             if not album_id:
+                filtered_no_album_id += 1
+                logger.debug(f"Skipping album without ID (page {pages_fetched}): {album}")
                 continue
-            
+
             # Check if this album's tracks are in our target folder
-            if _album_has_tracks_in_target_path(album_id, target_paths):
+            try:
+                has_tracks = _album_has_tracks_in_target_path(album_id, target_paths)
+            except Exception as e:
+                logger.warning(f"Error checking album paths for album {album_id}: {e}")
+                has_tracks = False
+
+            if has_tracks:
+                albums_matched += 1
                 mapped_album = {'Id': album_id, 'Name': album_name}
                 filtered_albums.append(mapped_album)
-                
+
                 # Stop if we have enough albums (unless fetching all)
                 if not fetch_all and len(filtered_albums) >= limit:
-                    logger.info(f"Found {limit} matching albums in configured folders")
+                    logger.info(f"Found {limit} matching albums in configured folders (pages fetched: {pages_fetched}, albums scanned: {albums_scanned}, matched: {albums_matched})")
                     return filtered_albums
+            else:
+                filtered_no_path += 1
+                logger.debug(f"Album {album_id} ('{album_name}') does not appear to have tracks in target paths (page {pages_fetched}).")
         
         # If this page had fewer albums than requested, we've reached the end
         if len(page_albums) < page_size:
@@ -564,7 +590,7 @@ def get_recent_albums(limit):
         
         offset += len(page_albums)
     
-    logger.info(f"Found {len(filtered_albums)} albums in configured folders")
+    logger.info(f"Found {len(filtered_albums)} albums in configured folders (pages fetched: {pages_fetched}, albums scanned: {albums_scanned}, matched: {albums_matched}, filtered_no_path: {filtered_no_path}, filtered_no_album_id: {filtered_no_album_id})")
     return filtered_albums
     
     # Since folder ID approach fails, we fetch all albums and filter by path
