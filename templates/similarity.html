@@ -78,6 +78,7 @@
 
             <section id="results-container" class="hidden">
                 <h2>Results</h2>
+                <div id="max-distance" style="font-weight:600; margin-bottom:0.5rem;"></div>
                 <div id="status"></div>
                 <!-- Graph visualization removed (not needed) -->
                 <div id="results-table-wrapper"></div>
@@ -222,6 +223,22 @@
                     if (data.length === 0) {
                         statusDiv.textContent = 'No similar tracks found.';
                         return;
+                    }
+
+                    // Fetch exact max distance for the selected song and display it
+                    try {
+                        const mdResp = await fetch(`/api/max_distance?item_id=${encodeURIComponent(itemId)}`);
+                        if (mdResp.ok) {
+                            const md = await mdResp.json();
+                            const maxDistDiv = document.getElementById('max-distance');
+                            if (md && typeof md.max_distance === 'number') {
+                                maxDistDiv.textContent = 'Max distance: ' + md.max_distance.toFixed(4);
+                            } else {
+                                maxDistDiv.textContent = '';
+                            }
+                        }
+                    } catch (err) {
+                        console.error('Failed to fetch max distance:', err);
                     }
 
                     currentTrackIds = [itemId, ...data.map(track => track.item_id)];

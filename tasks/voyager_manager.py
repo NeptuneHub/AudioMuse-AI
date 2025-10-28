@@ -1135,6 +1135,7 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         logger.error(f"Could not retrieve vector for Voyager ID {target_voyager_id} (item_id: {target_item_id}): {e}")
         return []
 
+
     # If caller didn't supply radius_similarity explicitly (None), use the configured default.
     if radius_similarity is None:
         radius_similarity = SIMILARITY_RADIUS_DEFAULT
@@ -1390,6 +1391,51 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
         final_results = unique_songs_by_content
 
     return final_results[:n]
+
+
+def get_max_distance_for_id(target_item_id: str):
+    """
+    Returns the exact maximum distance from the given item to any other item in the loaded voyager index.
+    Returns a dict: { 'max_distance': float, 'farthest_item_id': str | None }
+    Raises RuntimeError if the index is not loaded.
+    """
+    if voyager_index is None or id_map is None or reverse_id_map is None:
+        raise RuntimeError("Voyager index is not loaded in memory. It may be missing, empty, or the server failed to load it on startup.")
+
+    target_voyager_id = reverse_id_map.get(target_item_id)
+    if target_voyager_id is None:
+        return None
+
+    try:
+        query_vector = voyager_index.get_vector(target_voyager_id)
+    except Exception as e:
+        logger.error(f"Could not retrieve vector for Voyager ID {target_voyager_id} (item_id: {target_item_id}): {e}")
+        return None
+
+    # Query distances to all items in the index (includes self). This returns a list of neighbor ids and distances.
+    try:
+        nbrs, dists = voyager_index.query(query_vector, k=len(voyager_index))
+    except Exception as e:
+        logger.error(f"Error querying voyager index for max distance of {target_item_id}: {e}", exc_info=True)
+        return None
+
+    # Find the maximum distance excluding the item itself
+    max_d = float('-inf')
+    far_voy = None
+    for vid, dist in zip(nbrs, dists):
+        if vid == target_voyager_id:
+            continue
+        if dist is None:
+            continue
+        if dist > max_d:
+            max_d = dist
+            far_voy = vid
+
+    if max_d == float('-inf'):
+        # No other items in index (single-item index) -> distance 0.0
+        return { 'max_distance': 0.0, 'farthest_item_id': None }
+
+    return { 'max_distance': float(max_d), 'farthest_item_id': id_map.get(far_voy) }
 
 def get_item_id_by_title_and_artist(title: str, artist: str):
     """
