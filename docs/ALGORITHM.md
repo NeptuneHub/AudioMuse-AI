@@ -1,627 +1,1316 @@
-# Algorithm
+# **Application Feature Analysis**
 
-This document explains the runtime algorithms implemented in the repository. It focuses on the current behavior in code (file and function references are provided so you can inspect the implementation directly). Outdated historical notes (for example references to a k-means minibatch experiment or an earlier TensorFlow/ONNX mention) were removed — the sections below describe what the code actually runs today.
+This document provides a detailed functional (high-level) and technical (algorithm-level) breakdown of the core features of the AudioMuse-AI application. It covers the data ingestion and analysis process, the playlist generation and clustering process, the similarity-based playlist creation process, the song pathfinding process, the vector-based song manipulation (alchemy) process, the interactive music map visualization, the personalized sonic fingerprint generation, and the AI-driven instant playlist creation via chat.
 
 ## **Table of Contents**
 
-- [Front-End Quick Start: Analysis and Clustering Parameters](#front-end-quick-start-analysis-and-clustering-parameters)
-- [Instant Playlist (via Chat Interface)](#instant-playlist-via-chat-interface)
-- [Playlist from Similar song (via similarity Interface)](#playlist-from-similar-song-via-similarity-interface)
-- [Sonic Fingerprint playlist (via sonic_fingerprint Interface)](#sonic-fingerprint-playlist-via-sonic_fingerprint-interface)
-- [Song Path playlist (via path Interface)](#song-path-playlist-via-path-interface)
-- [Workflow Overview](#workflow-overview)
-- [Analysis Algorithm Deep Dive](#analysis-algorithm-deep-dive)
-- [Clustering Algorithm Deep Dive](#clustering-algorithm-deep-dive)
-  - [1. K-Means](#1-k-means)
-  - [2. DBSCAN](#2-dbscan)
-  - [3. GMM (Gaussian Mixture Models)](#3-gmm-gaussian-mixture-models)
-  - [4. Spectral Clustering](#4-spectral-clustering)
-  - [Montecarlo Evolutionary Approach](#montecarlo-evolutionary-approach)
-  - [How Purity and Diversity Scores Are Calculated](#how-purity-and-diversity-scores-are-calculated)
-  - [AI Playlist Naming](#ai-playlist-naming)
-- [Concurrency Algorithm Deep Dive](#concurrency-algorithm-deep-dive)
-- [Instant Chat Deep Dive](#instant-chat-deep-dive)
-- [Playlist from Similar song - Deep dive](#playlist-from-similar-song---deep-dive)
+0. [Architectural Design](#0-architectural-design)  
+   * [0.1. Functional Analysis (High-Level)](#01-functional-analysis-high-level)  
+   * [0.2. Technical Analysis (Algorithm-Level)](#02-technical-analysis-algorithm-level)  
+   * [0.3. Environment Variable Configuration](#03-environment-variable-configuration)  
+   * [0.4. Concurrency Algorithm Deep Dive](#04-concurrency-algorithm-deep-dive)  
+
+1. [Song Analysis](#1-song-analysis)  
+   * [1.1. Functional Analysis (High-Level)](#11-functional-analysis-high-level)  
+   * [1.2. Technical Analysis (Algorithm-Level)](#12-technical-analysis-algorithm-level)  
+   * [1.3. Environment Variable Configuration](#13-environment-variable-configuration)  
+2. [Song Clustering](#2-song-clustering)  
+   * [2.1. Functional Analysis (High-Level)](#21-functional-analysis-high-level)  
+   * [2.2. Technical Analysis (Algorithm-Level)](#22-technical-analysis-algorithm-level)  
+   * [2.3. Clustering Deep Dive (Advanced Details)](#23-clustering-deep-dive-advanced-details)  
+   * [2.4. Environment Variable Configuration](#24-environment-variable-configuration)  
+3. [Playlist from Similar Song](#3-playlist-from-similar-song)  
+   * [3.1. Functional Analysis (High-Level)](#31-functional-analysis-high-level)  
+   * [3.2. Technical Analysis (Algorithm-Level)](#32-technical-analysis-algorithm-level)  
+   * [3.3. Environment Variable Configuration](#33-environment-variable-configuration)  
+4. [Song Path](#4-song-path)  
+   * [4.1. Functional Analysis (High-Level)](#41-functional-analysis-high-level)  
+   * [4.2. Technical Analysis (Algorithm-Level)](#42-technical-analysis-algorithm-level)  
+   * [4.3. Environment Variable Configuration](#43-environment-variable-configuration)  
+5. [Song Alchemy](#5-song-alchemy)  
+   * [5.1. Functional Analysis (High-Level)](#51-functional-analysis-high-level)  
+   * [5.2. Technical Analysis (Algorithm-Level)](#52-technical-analysis-algorithm-level)  
+   * [5.3. Environment Variable Configuration](#53-environment-variable-configuration)  
+6. [Music Map](#6-music-map)  
+   * [6.1. Functional Analysis (High-Level)](#61-functional-analysis-high-level)  
+   * [6.2. Technical Analysis (Algorithm-Level)](#62-technical-analysis-algorithm-level)  
+   * [6.3. Environment Variable Configuration](#63-environment-variable-configuration)  
+7. [Sonic Fingerprint](#7-sonic-fingerprint)  
+   * [7.1. Functional Analysis (High-Level)](#71-functional-analysis-high-level)  
+   * [7.2. Technical Analysis (Algorithm-Level)](#72-technical-analysis-algorithm-level)  
+   * [7.3. Environment Variable Configuration](#73-environment-variable-configuration)  
+8. [Instant Playlist (Chat)](#8-instant-playlist-chat)  
+   * [8.1. Functional Analysis (High-Level)](#81-functional-analysis-high-level)  
+   * [8.2. Technical Analysis (Algorithm-Level)](#82-technical-analysis-algorithm-level)  
+   * [8.3. Environment Variable Configuration](#83-environment-variable-configuration)  
+9. [Database Cleaning](#9-database-cleaning)  
+   * [9.1. Functional Analysis (High-Level)](#91-functional-analysis-high-level)  
+   * [9.2. Technical Analysis (Algorithm-Level)](#92-technical-analysis-algorithm-level)  
+   * [9.3. Environment Variable Configuration](#93-environment-variable-configuration)  
+10. [Scheduled Tasks (Cron)](#10-scheduled-tasks-cron)  
+   * [10.1. Functional Analysis (High-Level)](#101-functional-analysis-high-level)  
+   * [10.2. Technical Analysis (Algorithm-Level)](#102-technical-analysis-algorithm-level)  
+   * [10.3. Environment Variable Configuration](#103-environment-variable-configuration)
 
+## **0. Architectural Design**
 
+This chapter describes the overall system architecture of AudioMuse-AI: the runtime components, data flows, deployment model, and operational considerations that tie together the web UI, background workers, vector index, and model artifacts.
 
-## **Front-End Quick Start: Analysis and Clustering Parameters**
+### **0.1. Functional Analysis (High-Level)**
 
-After deploying with the K3S Quick Start, you'll want to run an **Analysis Task** first to process your music library, followed by a **Clustering Task** to generate playlists. Here are the most important parameters to consider for your first few runs, accessible via the UI or API:
+From a user's and operator's perspective, the system provides three broad capabilities:
 
-### **Analysis Task Quick Start**
+- Interactive UI and APIs: a Flask application that serves the web UI (blueprints) and a REST API for user actions (analysis, clustering, similarity, alchemy, map, cron, cleaning, chat). The web process handles short requests, status polling, and serving static assets.
+- Background processing: long-running CPU/IO-heavy jobs (analysis, clustering, cleaning, indexing, map projection) are executed by RQ workers connected to Redis. Jobs are enqueued by the web process and surfaced to the UI via the task status table.
+- Fast similarity/search: an in-memory vector index (Voyager) built from stored embeddings provides sub-second nearest-neighbor queries for similarity, pathfinding, and alchemy features.
 
-1.  **`NUM_RECENT_ALBUMS`** (Default: `0`)
-    *   How many of your most recently added albums to scan and analyze. Set to `0` to analyze *all* albums in your library (can take a very long time for large libraries).
-    *   **Recommendation:** For a first run, you might want to set this to a smaller number (e.g., `50`, `100`) to see results quickly. For a full analysis, use `0` or a large number.
-
-### **Clustering Task Quick Start**
-
-1.  **`CLUSTER_ALGORITHM`** (Default: `kmeans`)
-    *   **Recommendation:** For most users, especially when starting, **`kmeans`** is recommended. It's the fastest algorithm and works well when you have a general idea of the number of playlists you'd like to generate. The other algorithms (`gmm`, `dbscan`) are available for more advanced experimentation.
-
-2.  **K-Means Specific: `NUM_CLUSTERS_MIN` & `NUM_CLUSTERS_MAX`**
-    *   **`NUM_CLUSTERS_MIN`** (Default: `40`): The minimum number of playlists (clusters) the algorithm should try to create.
-    *   **`NUM_CLUSTERS_MAX`** (Default: `100`): The maximum number of playlists (clusters) the algorithm should try to create. (Note: K-Means generally performs well with feature vectors).
-    *   **Guidance:**
-        *   Think about how many distinct playlists you'd ideally like. These parameters define the range the evolutionary algorithm will explore for the K-Means `K` value.
-        *   The number of clusters cannot exceed the number of songs in the dataset being clustered for a given run. The system will automatically cap the `K` value if your `NUM_CLUSTERS_MAX` is too high for the available songs in a particular iteration's sample.
-        *   For a smaller library or a quick test, you might reduce both `NUM_CLUSTERS_MIN` and `NUM_CLUSTERS_MAX` (e.g., min 10, max 30). For larger libraries, the defaults are a reasonable starting point.
+High-level flows:
 
-3.  **`CLUSTERING_RUNS`** (Default: `5000`)
-    *   This is the number of iterations the evolutionary algorithm will perform. More runs mean a more thorough search for good playlist configurations but will take longer.
-    *   **Recommendation:** For a quick test, you can reduce this to `500`-`1000`. For better results, keep it high.
+- Analysis flow: UI -> POST /api/analysis/start -> enqueue `tasks.analysis.run_analysis_task` -> worker downloads audio, runs ONNX inference, writes `score` and `embedding` rows -> occasional `build_and_store_voyager_index` runs update the DB-stored index and publish a reload message.
+- Clustering flow: UI -> POST /api/clustering/start -> enqueue evolutionary clustering batches -> worker returns best solutions -> post-processing writes playlists to media server adapters.
+- Instant Playlist (Chat): UI -> /chat/api/chatPlaylist -> call AI providers (Ollama/Gemini/Mistral) via `ai.py` -> validate/sanitize structured query -> execute read-only query against PostgreSQL -> return results for optional playlist creation.
 
-4.  **Scoring Weights (Primary)**:
-    *   **`SCORE_WEIGHT_DIVERSITY`** (Default: `2.0`): How much to prioritize variety *between* different playlists (based on their main mood).
-    *   **`SCORE_WEIGHT_PURITY`** (Default: `1.0`): How much to prioritize consistency *within* each playlist (songs matching the playlist's main mood).
-    *   **Recommendation:** Start with these defaults. If you want more varied playlists, increase `SCORE_WEIGHT_DIVERSITY`. If you want playlists where songs are very similar to each other, increase `SCORE_WEIGHT_PURITY`.
-    *   **Note:** Other weights like `SCORE_WEIGHT_SILHOUETTE`, `SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY`, etc., default to `0.0` (disabled). They are actually there for future test and implementation
-
-5.  **`MAX_SONGS_PER_CLUSTER`** (Default: `0` - no limit)
-    *   If you want to limit the maximum number of songs in any single generated playlist, set this to a positive number (e.g., `20`, `30`). In the case of limitation is set, the algorithm will split the playlist in two or more.
-
-6.  **AI Playlist Naming (`AI_MODEL_PROVIDER`)** (Default: `NONE`)
-    *   If you've configured Ollama, Gemini or Mistral (see `GEMINI_API_KEY` or `MISTRAL_API_KEY`  in secrets, and `OLLAMA_SERVER_URL` in the ConfigMap), you can set this to `OLLAMA`,  `GEMINI` or `MISTRAL` to get AI-generated playlist names. Otherwise, playlists will have names like "Rock_Fast_Automatic". For a first run you can keep it as `NONE`.
-
-**To run your first tasks:**
-*   Go to the UI (`http://<EXTERNAL-IP>:8000`).
-*   Start Analysis: adjust `NUM_RECENT_ALBUMS` if desired, and submit. Wait for it to complete (it can takes a couple of days depending on your library size).
-*   Start Clustering: Adjust the clustering parameters above as desired in the form, and Submit. Wait for it to complete (it can takes between minutes and 1-2 hours depending on your library size and the number of `CLUSTERING_RUNS`).
-
-## **Instant PLaylist (via Chat Interface)**
-
-**IMPORTANT:** before use this function you need to run the Analysis task first from the normal (async) UI.
-
-For a quick and interactive way to generate playlists without running the full evolutionary clustering task, you can use the "Instant Playlist" chat interface. This feature leverages AI (Ollama, Gemini or Mistral, if configured) to translate your natural language requests directly into SQL queries that are run against your analyzed music data.
-
-**How to Use:**
-
-1.  **Access the Chat Interface:**
-    *   Navigate to `http://<EXTERNAL-IP>:8000/chat` (or `http://localhost:8000/chat` for local Docker Compose deployments).
-
-2.  **Configure AI (Optional but Recommended):**
-    *   Select your preferred AI Provider (Ollama, Gemini or Mistral).
-    *   If using Ollama, ensure the "Ollama Server URL" and "Ollama Model" are correctly set (they will default to values from your server configuration).
-    *   If using Gemini or Mistral, enter your "API Key" and select the "Model" (defaults are provided from server config).
-    *   If you select "None" as the AI Provider, the system will not attempt to generate SQL from your text.
+### **0.2. Technical Analysis (Algorithm-Level)**
 
-3.  **Make Your Request:**
-    *   In the text area "What kind of music are you in the mood for?", type your playlist request in natural language.
-    *   Click "Get Playlist Idea".
-
-4.  **Review and Create:**
-    *   The AI will generate a PostgreSQL query based on your request. This query is then executed against your `score` table.
-    *   The results (a list of songs) will be displayed.
-    *   If songs are found, a new section will appear allowing you to name the playlist and click "Let's do it" to create this playlist directly on your Jellyfin, Navidrome, or Lyrion server. The playlist name will have `_instant` appended to the name you provide.
-
-**Example Queries (Tested with Gemini):**
-*   "Create a playlist that is good for post lunch"
-*   "Create a playlist for the morning POP with a good energy"
-*   "Give me the tops songs of Red Hot Chili peppers"
-*   "Create a mix of Metal and Hard Rock songs like AC DC, Iron Maiden"
-*   "Give me some tranding songs of the radio of 2025"
-
-**Note:** The quality and relevance of the **Instant Playlist** heavily depend on the capabilities of the configured AI model and the detail of your request. The underlying music data must have been previously analyzed using the "Analysis Task" for this feature to find songs.
-
-## **Playlist from Similar song (via similarity Interface)**
-
-**IMPORTANT:** before use this function you need to run the Analysis task first from the normal (async) UI.
-
-This new functionality enable you to search the top N similar song that are similar to another one. Basically during the analysis task an Approximate Nearest Neighbors (Voyager) index is made. Then with the new similarity interface you can just search for similar song.
-
-**How to Use:**
-1.  **Access the Chat Interface:**
-    *   Navigate to `http://<EXTERNAL-IP>:8000/similarity` (or `http://localhost:8000//similarity` for local Docker Compose deployments).
-2.  **Input Your Song**
-    *   Start writing the first 3+ letter of your favourite artist, at the third letter a search will be made helping you in finding correct Artist and song
-3.  **Run the similarity search**
-    *   Ask the front-end to find the similar track, it will show to you in the table
-4.  **Review and Create:**
-    *   Input a name for the playlist and ask the interface to create it directly on Jellyfin, Navidrome, or Lyrion. That's it!
-
-## **Sonic Fingerprint playlist (via sonic_fingerprint Interface)**
-
-**IMPORTANT:** before use this function you need to run the Analysis task first from the normal (async) UI.
-
-This new functionality analyze your listening history and create your specific sonic fingerprint. With it it takes advance of Voyager Index (the sonic similarity function) to search for similar songs. With this similar song it enable you to create your personal playlist.
-
-**How to Use:**
-1.  **Access the Chat Interface:**
-    *   Navigate to `http://<EXTERNAL-IP>:8000/sonic_fingerprint` (or `http://localhost:8000/sonic_fingerprint` for local Docker Compose deployments).
-2.  **Input Your Username**
-    *   It get by default your username configurde in env variable, but if you have multiple user you can input it in the front-end to a personalized playlist
-3.  **Input Your Password or API token**
-    *   On jellyfin you can still use your API Token, for Navidrome you will need to use the password of the specific user. By default it takes the value from the env variable
-4.  **Select the number of song**
-    *  Select the number of similar song, from a minimum of 40 to a maximum of 200
-5.  **Run the Sonic Fingerprint search**
-    *   Ask the front-end to generate the list of Sonic Fingerprint track, it will show to you in the table.
-6.  **Review and Create:**
-    *   Input a name for the playlist and ask the interface to create it directly on Jellyfin, Navidrome, or Lyrion. That's it!
-
-**Note for Lyrion users:** Lyrion doesn't require user credentials since it doesn't have user-specific authentication like Jellyfin or Navidrome. The interface will automatically handle this for Lyrion deployments.
-
-## **Song Path playlist (via path Interface)**
-
-**IMPORTANT:** before use this function you need to run the Analysis task first from the normal (async) UI.
-
-This new functionality create a sonic similar path between two song asked from the user.
-
-**How to Use:**
-1.  **Access the Chat Interface:**
-    *   Navigate to `http://<EXTERNAL-IP>:8000/path` (or `http://localhost:8000/path` for local Docker Compose deployments).
-3.  **Input start and end song**
-    *   Insert Artist and Title of both start and end song. When you start input the first 3 char of a title or artist the front-end will give you suggestions.
-4.  **Select the lenght of the path**
-    *  Select the number of song to keep in the path. First and last will be the song that you insert.
-5.  **Run the path search**
-    *   Ask the front-end to generate the path, it will show to you in the table.
-6.  **Review and Create:**
-    *   Input a name for the playlist and ask the interface to create it directly on Jellyfin, Navidrome, or Lyrion. That's it!
-
-## **Collection Sync (via collection Interface)**
-
-**IMPORTANT:** this function sync your datatabase in a centralized one on internet. You can decide IF and WHEN using this function by explicitly accepting the [Privacy Policy](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/PRIVACY.md), doing an explicit login and explicitly run the functionality.
-
-**How to Use:**
-1.  **Access the Collection Interface:**
-    *   Navigate to `http://<EXTERNAL-IP>:8000/collection` (or `http://localhost:8000/collection` for local Docker Compose deployments).
-2.  **Accept the Security Policy and do the Oauth Login:**
-    *   To work you need first to read the Security Policy and check the checkbox, second to do an Oauth Login. Actually supported only with Github
-3.  **Select the number of last album to sync**
-    *   Like the offline analysis, you need to input how many last album you want to sync. If you put `0` it will sync all
-4.  **Start Syncronization**
-    *   The syncronization will sync Score and Embedding database online working on the last album order. Basically it pick an album and check: if **THE ANALYSIS DATA** are presents on your local database, it try to send online (to be shared with other user). If they are not present offline, it try to get from the online database.
-
-The actual use case is to retrive the analysis from the online database without the need of an analysis AND to contribute to the database itself with the song that you already analyzed
-
-**IMPORANT** this functionality only share analysis data **NOT** the song itself.
-
-The login is required mainly to avoid high traffic on the central database. If you don't like to share information on internet, just don't use it.
-
-## **Workflow Overview**
-
-This is the main workflow of how this algorithm works. For an easy way to use it, you will have a front-end reachable at **your\_ip:8000** with buttons to start/cancel the analysis (it can take hours depending on the number of songs in your Jellyfin library) and a button to create the playlist.
-
-*   **User Initiation:** Start analysis or clustering jobs via the Flask web UI.
-*   **Task Queuing:** Jobs are sent to Redis Queue for asynchronous background processing.
-*   **Parallel Worker Execution:**
-    *   Multiple RQ workers (at least 2 recommended) process tasks in parallel. Main tasks (e.g., full library analysis, entire evolutionary clustering process) often spawn and manage child tasks (e.g., per-album analysis, batches of clustering iterations).
-    *   **Analysis Phase:**
-        *   Workers fetch metadata and download audio from Jellyfin or Navidrome, processing albums individually.
-        *   Librosa and TensorFlow models analyze tracks for features (tempo, key, energy) and predictions (genres, moods, etc.).
-        *   Analysis results are saved to PostgreSQL.
-    *   **Clustering Phase:**
-        *   The option to use embeddings for clustering is currently available in the "Advanced" section of the UI.
-        *   The system can use either the traditional feature vectors (derived from tempo, moods, energy, etc.) or the richer MusiCNN embeddings directly for clustering, based on user configuration.
-        *   An evolutionary algorithm performs numerous clustering runs (e.g., K-Means, DBSCAN, or GMM) on the analyzed data. It explores different parameters to find optimal playlist structures based on a comprehensive scoring system.
-*   **Playlist Generation & Naming:**
-    *   Playlists are formed from the best clustering solution found by the evolutionary process.
-    *   Optionally, AI models (Ollama, Gemini or Mistral) can be used to generate creative, human-readable names for these playlists.
-    *   Finalized playlists are created directly in your Jellyfin or Navidrome library.
-*   **Advanced Task Management:**
-    *   The web UI offers real-time monitoring of task progress, including main and sub-tasks.
-    *   **Worker Supervision and High Availability:** In scenarios with multiple worker container instances, the system incorporates mechanisms to maintain high availability. HA is achived using **supervisord** and re-enquequing configuration in Redis Queue. For HA Redis and PostgreSQL must also be deployed in HA (deployment example in this repository don't cover this possibility ad the moment, so you need to change it)
-    *  **Task Cancellation** A key feature is the ability to cancel tasks (both parent and child) even while they are actively running, offering robust control over long processes. This is more advanced than typical queue systems where cancellation might only affect pending tasks.
-
-
-## Analysis Algorithm Deep Dive
-
-The audio analysis in AudioMuse-AI, orchestrated by `tasks.py`, meticulously extracts a rich set of features from each track. This process is foundational for the subsequent clustering and playlist generation.
-1.  **Audio Loading & Preprocessing:**
-    *   Tracks are first downloaded from your Jellyfin or Navidrome library to a temporary local directory. Librosa is used then to load the audio.
-    
-2.  **Core Feature Extraction (Librosa):**
-    *   **Tempo:** The `Tempo` algorithm analyzes the rhythmic patterns in the audio to estimate the track's tempo, expressed in Beats Per Minute (BPM).
-    *   **Key & Scale:** The `Key` algorithm identifies the predominant musical key (e.g., C, G#, Bb) and scale (major or minor) of the track. This provides insights into its harmonic structure.
-    *   **Energy:** The `Energy` function calculates the raw total energy of the audio signal. However, to make this feature comparable across tracks of varying lengths and overall loudness, the system computes and stores the **average energy per sample** (total energy divided by the number of samples). This normalized energy value offers a more stable representation of the track's perceived loudness or intensity.
-
-3.  **Embedding Generation (TensorFlow & Librosa):**
-    *   **MusiCNN Embeddings:** The cornerstone of the audio representation is a 200-dimensional embedding vector. This vector is generated using `TensorflowPredictMusiCNN` with the pre-trained model `msd-musicnn-1.pb` (specifically, the output from the `model/dense/BiasAdd` layer). MusiCNN is a Convolutional Neural Network (CNN) architecture that has been extensively trained on large music datasets (like the Million Song Dataset) for tasks such as music tagging. The resulting embedding is a dense, numerical summary that captures high-level semantic information and complex sonic characteristics of the track, going beyond simple acoustic features.
-    *   **Important Note:** These embeddings are **always generated and saved** during the analysis phase for every track processed. This ensures they are available if you later choose to use them for clustering.
-
-4.  **Prediction Models (TensorFlow & Librosa):**
-    The rich MusiCNN embeddings serve as the input to several specialized models, each designed to predict specific characteristics of the music:
-    *   **Primary Tag/Genre Prediction:**
-        *   Model: `msd-msd-musicnn-1.onnx`
-        *   Output: This model produces a vector of probability scores. Each score corresponds to a predefined tag or genre from a list (defined by `MOOD_LABELS` in `config.py`, including labels like 'rock', 'pop', 'electronic', 'jazz', 'chillout', '80s', 'instrumental', etc.). These scores indicate the likelihood of each tag/genre being applicable to the track.
-    *   **Other Feature Predictions:** The `predict_other_models` function leverages a suite of distinct models, each targeting a specific musical attribute. These models also take the MusiCNN embedding as input and typically use a `model/Softmax` output layer:
-        *   `danceable`: Predicted using `danceability-msd-musicnn-1.onnx`.
-        *   `danceable`: Predicted using `danceability-msd-musicnn-1.onnx`.
-        *   `aggressive`: Predicted using `mood_aggressive-msd-musicnn-1.onnx`.
-        *   `happy`: Predicted using `mood_happy-msd-musicnn-1.onnx`.
-        *   `party`: Predicted using `mood_party-msd-musicnn-1.onnx`.
-        *   `relaxed`: Predicted using `mood_relaxed-msd-musicnn-1.onnx`.
-        *   `sad`: Predicted using `mood_sad-msd-musicnn-1.onnx`.
-        *   Output: Each of these models outputs a probability score (typically the probability of the positive class in a binary classification, e.g., the likelihood the track is 'danceable'). This provides a nuanced understanding of various moods and characteristics beyond the primary tags.
+Core components and responsibilities:
 
-5.  **Feature Vector Preparation for Clustering (`score_vector` function):**
-    When not using embeddings directly for clustering, all the extracted and predicted features are meticulously assembled and transformed into a single numerical vector for each track using the `score_vector` function. This is a critical step for machine learning algorithms:
-    *   **Normalization:** Tempo and the calculated average energy are normalized to a 0-1 range using configured minimum/maximum values (`TEMPO_MIN_BPM`, `TEMPO_MAX_BPM`, `ENERGY_MIN`, `ENERGY_MAX`). This ensures these features have a comparable scale.
-    *   **Normalization:**
-        *   Tempo (BPM) and the calculated average energy per sample are normalized to a 0-1 range. This is achieved by scaling them based on predefined minimum and maximum values (e.g., `TEMPO_MIN_BPM = 40.0`, `TEMPO_MAX_BPM = 200.0`, `ENERGY_MIN = 0.01`, `ENERGY_MAX = 0.15` from `config.py`). Normalization ensures that these features, which might have vastly different original scales, contribute more equally during the initial stages of vector construction.
-    *   **Vector Assembly:**
-        *   The final feature vector for each track is constructed by concatenating: the normalized tempo, the normalized average energy, the vector of primary tag/genre probability scores, and the vector of other predicted feature scores (danceability, aggressive, etc.). This creates a comprehensive numerical profile of the track.
-    *   **Standardization:**
-        *   This complete feature vector is then standardized using `sklearn.preprocessing.StandardScaler`. Standardization transforms the data for each feature to have a zero mean and unit variance across the entire dataset. This step is particularly crucial for distance-based clustering algorithms like K-Means. It prevents features with inherently larger numerical ranges from disproportionately influencing the distance calculations, ensuring that all features contribute more equitably to the clustering process. The mean and standard deviation (scale) computed by the `StandardScaler` for each feature are saved. These saved values are used later for inverse transforming cluster centroids back to an interpretable scale, which aids in understanding the characteristics of each generated cluster.
+- Web App (Flask): Registers blueprints (chat, analysis, clustering, voyager, alchemy, map, cron, cleaning, sonic fingerprint, path, collection, external) and starts lightweight background threads such as `listen_for_index_reloads` and the cron manager. The web app persists task metadata to the `task_status` table and exposes endpoints for task control and status.
 
-6.  **Option to Use Embeddings Directly for Clustering:**
-    *   As an alternative to the `score_vector`, AudioMuse-AI now offers the option to use the raw MusiCNN embeddings (200-dimensional vectors) directly as input for the clustering algorithms. This is controlled by the `ENABLE_CLUSTERING_EMBEDDINGS` parameter (configurable via the UI).
-    *   Using embeddings directly can capture more nuanced and complex relationships between tracks, as they represent a richer, higher-dimensional summary of the audio. However, this may also require different parameter tuning for the clustering algorithms (e.g., GMM often performs well with embeddings) and can be more computationally intensive, especially with algorithms like standard K-Means (MiniBatchKMeans is used to mitigate this when embeddings are enabled). The maximum number of PCA components can also be higher when using embeddings (e.g., up to 199) compared to feature vectors (e.g., up to 8).
-    *   Regardless of the K-Means variant, embeddings are standardized using `StandardScaler` before being fed into the clustering algorithms.
+- Background Workers (RQ): Workers run RQ jobs defined under `tasks/` (e.g., `tasks.analysis`, `tasks.clustering`, `tasks.cleaning`, `tasks.song_alchemy`). Workers fetch jobs from Redis queues (`rq_queue_high`, `rq_queue_default`) and write progress to the database and job meta for UI consumption. RQ handles retries and job lifecycle.
 
-**Persistence:** PostgreSQL database is used for persisting analyzed track metadata, generated playlist structures, and task status.
+- Redis: Used for RQ queueing, pub/sub notifications (index reloads), and short-lived job coordination.
 
-The use of Librosa for songs preprocessing was introduced in order to improve the compatibility with other platform (eg. `ARM64`). It is configured in order to load the same MusicNN models previously used.
-Librosa loads audio using `librosa.load(file_path, sr=16000, mono=True)`, ensuring the sample rate is exactly `16,000 Hz` and the audio is converted to mono—both strict requirements of the model. It then computes a Mel spectrogram using `librosa.feature.melspectrogram` with parameters precisely matching those used during model training: `n_fft=512, hop_length=256, n_mels=96, window='hann', center=False, power=2.0, norm='slaney', htk=False`. The spectrogram is scaled using `np.log10(1 + 10000 * mel_spec)`, a transformation that must be replicated exactly. These preprocessing steps are crucial: any deviation in parameters results in incompatible input and incorrect model predictions. Once prepared, the data is passed into a frozen TensorFlow model graph using v1 compatibility mode. TensorFlow maps defined input/output tensor names and executes inference with session.run(), first generating embeddings for each patch of the spectrogram, and then passing these to various classifier heads (e.g., mood, genre). The entire pipeline depends on strict adherence to the original preprocessing parameters—without this, the model will fail to produce meaningful results.
+- PostgreSQL: Source-of-truth for persistent data: `score`, `embedding`, `voyager_index_data`, `task_status`, `cron`, and playlist metadata. Jobs write analysis results and index binaries to the DB.
 
-## **Clustering Algorithm Deep Dive**
+- Voyager Index: Built in workers by reading embeddings from PostgreSQL, then serialized and saved to the `voyager_index_data` table. The web process loads the binary index into memory at startup and listens for a pub/sub `reload` to replace it live.
 
-AudioMuse-AI offers three main clustering algorithms (K-Means, DBSCAN, GMM). A key feature is the ability to choose the input data for these algorithms:
-*   **Score-based Feature Vectors:** The traditional approach, using a vector composed of normalized tempo, energy, mood scores, and other derived features (as described in the Analysis section). This is the default.
-*   **Direct Audio Embeddings:** Using the 200-dimensional MusiCNN embeddings generated during analysis. This can provide a more nuanced clustering based on deeper audio characteristics. This option is controlled by the `ENABLE_CLUSTERING_EMBEDDINGS` parameter in the UI's "Advanced" section and configuration. GMM may perform particularly well with embeddings. When embeddings are used with K-Means, MiniBatchKMeans is employed to handle the larger data size more efficiently.
+- ONNX Models & Audio Stack: Analysis uses ONNX Runtime to run embedding and prediction models. Audio loading uses `librosa` with a `pydub`/ffmpeg fallback for resilient decoding. The Docker image pre-fetches ONNX model files and pins runtime libs to ensure consistent behavior across environments.
 
-Regardless of the input data chosen, the selected clustering algorithm is executed multiple times (default 5000) following an Evolutionary Monte Carlo approach. This allows the system to test multiple configurations of parameters and find the best ones.
+- Media Server Adapters: `mediaserver.py` provides adapters for Jellyfin, Navidrome, Emby, etc., enabling playlist creation and reading play-history for the Sonic Fingerprint feature.
 
-When chose clustering algorithm consider their complexity (speed, scalability, etc) expecially if you have big song dataset:
-* So K-Means -> GMM -> DBSCAN -> Spectral (from faster to slower)
+Deployment considerations (informed by `Dockerfile`):
 
-About quality it really depends from how your song are distributed. K-Means because is faster is always a good choice. GMM give good result in some test with embbeding. Spectral give also good result with embbeding but is very slow.
+- Multi-stage Docker build: separate stage to download model artifacts and a final runtime stage that pins OS and Python dependencies. The container sets ONNX/CPU environment flags to provide deterministic runtime behavior across CPUs (ORT_DISABLE_ALL_OPTIMIZATIONS, ORT_DISABLE_AVX512, MKL flags).
+- Supervisor or process manager: the image supports running the web server or RQ worker processes under Supervisor based on `SERVICE_TYPE` so both web and worker roles are reproducible.
 
-The TOP Playlist Number parameter was added to find the top different playlist. In short after the clustering is executed, only the N most diverse playlist are keep to avoid to have hundred of playlist created. If you put this parameter to 0, it will keep all.
+Scalability & safety:
 
-Here's an explanation of the pros and cons of the different algorithms:
+- Scale workers horizontally by running multiple worker containers pointed at the same Redis and DB. Only the web process should run the index-loading thread / cron manager to avoid duplicate cron enqueues unless leader election is used.
+- Safety limits (e.g., `CLEANING_SAFETY_LIMIT`, `ALCHEMY_MAX_N_RESULTS`) prevent destructive or excessively large operations triggered via AI or scheduled jobs.
 
-### **1\. K-Means**
+### **0.3. Environment Variable Configuration**
 
-* **Best For:** Speed, simplicity, when clusters are roughly spherical and of similar size.  
-* **Pros:** Very fast (especially MiniBatchKMeans for large datasets/embeddings), scalable, clear "average" cluster profiles.  
-* **Cons:** Requires knowing cluster count (K), struggles with irregular shapes, sensitive to outliers, and can be slow on large datasets (complexity is O(n*k*d*i), though MiniBatchKMeans helps).
+Key environment variables that shape architecture and operational behavior (non-exhaustive):
 
-### **2\. DBSCAN**
+- Core infra:
+   * `REDIS_URL` — connection string for Redis used by RQ and pub/sub.
+   * `DATABASE_URL` — PostgreSQL connection string for persistent data.
+   * `TEMP_DIR` — path where audio files are downloaded/processed.
 
-* **Best For:** Discovering clusters of arbitrary shapes, handling outliers well, when the number of clusters is unknown.  
-* **Pros:** No need to set K, finds varied shapes, robust to noise.  
-* **Cons:** Sensitive to eps and min_samples parameters, can struggle with varying cluster densities, no direct "centroids," and can be slow on large datasets (complexity is O(n log n) to O(n²)).
+- Models & runtime tuning:
+   * `EMBEDDING_MODEL_PATH`, `PREDICTION_MODEL_PATH` — filesystem paths to ONNX model files (when not downloaded by Docker).
+   * `ORT_DISABLE_ALL_OPTIMIZATIONS`, `ORT_DISABLE_AVX512`, `ORT_FORCE_SHARED_PROVIDER` — runtime flags set in Docker to stabilize ONNX behavior across CPUs.
 
-### **3\. GMM (Gaussian Mixture Models)**
+- Job & queue limits:
+   * `MAX_QUEUED_ANALYSIS_JOBS`, `MAX_CONCURRENT_BATCH_JOBS`, `ITERATIONS_PER_BATCH_JOB` — control parallelism and batch sizes for analysis/clustering.
+   * `REBUILD_INDEX_BATCH_SIZE` — controls how often index rebuilds occur during large analysis runs.
 
-* **Best For:** Modeling more complex, elliptical cluster shapes and when a probabilistic assignment of tracks to clusters is beneficial.  
-* **Pros:** Flexible cluster shapes, "soft" assignments, model-based insights.  
-* **Cons:** Requires setting number of components, computationally intensive (can be slow, with complexity of O(n*k*d²) per iteration), sensitive to initialization.
+Additional DB & deployment knobs (explicit)
 
-### **4. Spectral Clustering**
+* `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB` — Individual components used to construct `DATABASE_URL` when an explicit `DATABASE_URL` is not provided. Useful in containerized or Kubernetes setups where secrets are mounted per-value.
+* `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD` — Optional credentials for a restricted, read-only database role used when executing AI-generated SQL from the Instant Playlist (Chat) feature. The application creates/uses a low-privilege role to run SELECT-only queries when the chat flow is enabled; document these values in the Instant Playlist section as well.
 
-* **Best For:** Finding clusters with complex, non-convex shapes (e.g., intertwined genres) when the number of clusters is known beforehand.
-* **Pros:** Very effective for irregular cluster geometries where distance-based algorithms like K-Means fail. It does not assume clusters are spherical.
-* **Cons:** Computationally very expensive (often O(n^3) due to matrix operations), which makes it impractical for large music libraries. It also requires you to specify the number of clusters, similar to K-Means.
+- AI & provider settings:
+   * `AI_MODEL_PROVIDER`, `OLLAMA_SERVER_URL`, `OLLAMA_MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `MISTRAL_API_KEY`, `MISTRAL_MODEL_NAME` — control how AI naming/chat is performed.
 
-**Recommendation:** Start with **K-Means** (which will use MiniBatchKMeans by default if embeddings are enabled) due to its speed in the evolutionary search. MiniBatchKMeans is particularly helpful for larger libraries or when using embeddings. Experiment with **GMM** for more nuanced results, especially when using direct audio embeddings. Use **DBSCAN** if you suspect many outliers or highly irregular cluster shapes. Using a high number of runs (default 5000) helps the integrated evolutionary algorithm to find a good solution.
+- Safety & result caps:
+   * `ALCHEMY_MAX_N_RESULTS`, `ALCHEMY_DEFAULT_N_RESULTS`, `CLEANING_SAFETY_LIMIT`, `MAX_SONGS_PER_ARTIST` — enforce limits on returned/affected rows.
 
-### Montecarlo Evolutionary Approach
+Operational notes:
 
-AudioMuse-AI doesn't just run a clustering algorithm once; it employs a sophisticated Monte Carlo evolutionary approach, managed within `tasks.py`, to discover high-quality playlist configurations. Here's a high-level overview:
+- Logging & observability: application logs should be captured by the container runtime and RQ job meta status is stored in `task_status`. Keep API keys out of logs.
+- Index reloads: the worker performing `build_and_store_voyager_index` must publish `index-updates` to notify the web process; the web process must run `listen_for_index_reloads` so it can reload the binary index in memory without restart.
 
-1.  **Stratified Sampling:** Before each clustering run, the system selects a subset of songs from your library. A crucial part of this selection is **stratified sampling** based on predefined genres (`STRATIFIED_GENRES` in `config.py`). This ensures that the dataset used for clustering in each iteration includes a targeted number of songs from each of these important genres.
-    *   **Purpose:** This is done specifically to **avoid scenarios where genres with a low number of songs in your library are poorly represented or entirely absent** from the clustering process. By explicitly sampling from these genres, even if they have few songs, the algorithm is more likely to discover clusters relevant to them.
-    *   **Tuning the Target:** The target number of songs sampled per stratified genre is dynamically determined based on the `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION` and `STRATIFIED_SAMPLING_TARGET_PERCENTILE` configuration values.
-        *   `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION` sets a minimum floor for the target.
-        *   `STRATIFIED_SAMPLING_TARGET_PERCENTILE` calculates a target based on the distribution of song counts across your stratified genres (e.g., the 25th percentile).
-        *   The actual target is the maximum of these two values.
-    *   **Effect:** By changing these parameters, you can **increase or decrease the emphasis** on ensuring a minimum number of songs from each stratified genre are included in every clustering iteration's dataset. A higher minimum or percentile will aim for more songs per genre (if available), potentially leading to more robust clusters for those genres but also increasing the dataset size and computation time. If a genre has fewer songs than the target, all its available songs are included.
+### **0.4. Concurrency Algorithm Deep Dive**
 
-2.  **Data Perturbation:** For subsequent runs after the first, the sampled subset isn't entirely random. A percentage of songs (`SAMPLING_PERCENTAGE_CHANGE_PER_RUN`) are randomly swapped out, while the rest are kept from the previous iteration's sample. This controlled perturbation introduces variability while retaining some continuity between runs.
+This section expands on the runtime concurrency and orchestration patterns used across analysis, clustering, cleaning, and other long-running tasks. It focuses on implementation details that help operators understand batching, cancellation, monitoring, and scaling decisions.
 
-3.  **Multiple Iterations:** The system performs a large number of clustering runs (defined by `CLUSTERING_RUNS`, e.g., 5000 times). In each run, it experiments with different parameters for the selected clustering algorithm (K-Means, DBSCAN, or GMM) and for Principal Component Analysis (PCA) if enabled. These parameters are initially chosen randomly within pre-defined ranges.
+Hierarchy & Batching
 
-4.  **Evolutionary Strategy:** As the runs progress, the system "learns" from good solutions:
-    *   **Elite Solutions:** The parameter sets from the best-performing runs (the "elites") are remembered.
-    *   **Exploitation & Mutation:** For subsequent runs, there's a chance (`EXPLOITATION_PROBABILITY_CONFIG`) that instead of purely random parameters, the system will take an elite solution and "mutate" its parameters slightly. This involves making small, random adjustments (controlled by `MUTATION_INT_ABS_DELTA`, `MUTATION_FLOAT_ABS_DELTA`, etc.) to the elite's parameters, effectively exploring the "neighborhood" of good solutions to potentially find even better ones.
+- Parent/child task model: Long jobs (e.g., full-library analysis, evolutionary clustering) are implemented as a *parent* RQ task that enumerates work and enqueues *child* tasks. This reduces queue churn and improves observability: one parent job corresponds to a manageable set of medium-sized child jobs instead of thousands of tiny tasks.
+- Batch sizing: Tasks are grouped into batches (configured via `ITERATIONS_PER_BATCH_JOB` for clustering, and `REBUILD_INDEX_BATCH_SIZE` for analysis). Batches are sized to balance per-task overhead and worker throughput. Smaller batches increase responsiveness (faster progress updates, earlier index availability) but add queue and DB overhead.
 
-5.  **Comprehensive Scoring:** Each clustering outcome is evaluated using a composite score. This score is a weighted sum of several factors, designed to balance different aspects of playlist quality:
-    *   **Playlist Diversity:** Measures how varied the predominant characteristics (e.g., moods, danceability) are across all generated playlists.
-    *   **Playlist Purity:** Assesses how well the songs within each individual playlist align with that playlist's central theme or characteristic.
-    *   **Internal Clustering Metrics:** Standard metrics evaluate the geometric quality of the clusters:
-        *   **Silhouette Score:** How distinct are the clusters?
-        *   **Davies-Bouldin Index:** How well-separated are the clusters relative to their intra-cluster similarity?
-        *   **Calinski-Harabasz Index:** Ratio of between-cluster to within-cluster dispersion.
+Efficient Parallel Execution
 
-6.  **Configurable Weights:** The influence of each component in the final score is determined by weights (e.g., `SCORE_WEIGHT_DIVERSITY`, `SCORE_WEIGHT_PURITY`, `SCORE_WEIGHT_SILHOUETTE`). These are defined in `config.py` and allow you to tune the algorithm to prioritize, for example, more diverse playlists over extremely pure ones, or vice-versa. 
+- Concurrency limits: The parent enforcer limits how many child tasks are active/pending (`MAX_QUEUED_ANALYSIS_JOBS`, `MAX_CONCURRENT_BATCH_JOBS`) to avoid overloading DB/IO and to keep memory/CPU consumption predictable across worker nodes.
+- Worker sizing guidance: For most medium libraries, 2–4 worker processes provide good throughput. For very large libraries or high-throughput clusters, increase workers but maintain a single web process (or leader) responsible for index reloads and cron scheduling to avoid duplicate enqueues.
 
-7.  **Best Overall Solution:** After all iterations are complete, the set of parameters that yielded the highest overall composite score is chosen. The playlists generated from this top-scoring configuration are then presented and created in Jellyfin or Navidrome.
+Cooperative Cancellation & Robustness
 
-This iterative and evolutionary process allows AudioMuse-AI to automatically explore a vast parameter space and converge on a clustering solution that is well-suited to the underlying structure of your music library.
+- Cooperative cancellation: All long-running tasks periodically check their status and the status of their parent task in the `task_status` table. If revoked, they gracefully stop, clean temporary files, and update status. This allows preempting jobs mid-execution rather than only preventing new jobs from starting.
+- Stuck-batch handling: Batch tasks implement timeouts and heartbeats. The orchestrator enforces `CLUSTERING_BATCH_TIMEOUT_MINUTES` and will kill or mark batches as failed if they exceed allowed runtime. `CLUSTERING_MAX_FAILED_BATCHES` controls when the main job gives up after repeated failures.
 
-### How Purity and Diversity Scores Are Calculated
+Monitoring & Observability
 
-The **Purity** and **Diversity** scores are custom-designed metrics used to evaluate the quality of clustered playlists based on their musical characteristics — especially mood. These scores guide the evolutionary clustering algorithm to balance two goals:
+- Status propagation: Tasks write progress and logs to the `task_status` table and to RQ job meta; the web UI surfaces these updates so operators can see overall progress and per-batch details. Key status fields include STARTED/PROGRESS/SUCCESS/FAILURE/REVOKED and free-text logs.
+- Batch-level artifacts: Each batch returns its best-scoring result to the orchestrator. The orchestrator maintains an in-memory list of elite solutions (TOP_N_ELITES) and uses them as seeds for exploitation mutations in later batches.
 
-* **Purity** — how well songs within a playlist reflect its core mood identity
-* **Diversity** — how different playlists are from one another in their dominant mood
+Implementation pointers (current code locations)
 
-These metrics apply consistently whether clustering is based on **interpretable score vectors** (like mood labels) or **non-interpretable embeddings**.
+- Orchestration & monitoring: `tasks/clustering.py` (run_clustering_task, run_clustering_batch_task, _monitor_and_process_batches).
+- Analysis batching: `tasks/analysis.py` (run_analysis_task, analyze_album_task, build_and_store_voyager_index).
+- Cancellation & status: `tasks/commons.py` and `tasks/__init__.py` helpers used by multiple tasks to read/update `task_status` and check revocation.
 
-**6.1 Forming the Playlist Profile**
+Relevant environment variables and tuning knobs
 
-Each playlist (i.e., cluster) is assigned a **personality profile** — a vector that defines its musical identity.
+- `ITERATIONS_PER_BATCH_JOB`, `MAX_CONCURRENT_BATCH_JOBS`, `CLUSTERING_BATCH_TIMEOUT_MINUTES`, `CLUSTERING_MAX_FAILED_BATCHES`, `CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS` — tuning these directly affects parallelism, latency to first results, and fault tolerance.
+- `MAX_QUEUED_ANALYSIS_JOBS`, `REBUILD_INDEX_BATCH_SIZE` — control analysis job parallelism and how often the Voyager index is rebuilt during a large analysis run.
 
-* **If clustering used score vectors**:
-  The cluster centroid is directly interpretable — e.g., `indie: 0.6`, `pop: 0.4`, `tempo: 0.8`.
+Operational recommendations
 
-* **If clustering used embeddings**:
-  The system computes the **average of the original score vectors** of the songs in the playlist to form the profile.
+- Reserve one web process as the "leader" for index reloads and cron to avoid duplicate scheduled enqueues when running multiple web replicas.
+- Start with conservative batch sizes and worker counts; increase iteratively while monitoring DB load and queue saturation.
+- Configure sensible timeouts and a small `CLUSTERING_MAX_FAILED_BATCHES` during early tuning runs to fail fast on misconfiguration.
 
-The resulting profile determines the playlist’s **top moods** and dominant characteristics.
 
+## **1\. Song Analysis**
 
-**6.2 Mood Purity – Intra-Playlist Consistency**
+This section details the functional (high-level) and technical (algorithm-level) processes for the "Song Analysis" feature.
 
-The **Mood Purity** score answers:
+### **1.1. Functional Analysis (High-Level)**
 
-> *“How strongly do the songs in a playlist reflect its most defining moods?”*
+From a user's perspective, the "Song Analysis" feature is the core data-gathering process of the application. It is the necessary first step to populate the database with the audio features required for all other functionalities, such as clustering, playlist generation, and similarity searches.
 
-**How it works:**
+#### **Key User Interactions & Workflow**
 
-1. From the playlist’s profile, extract the **top K moods**.
-2. For each song:
+1. **Initiation:** The user navigates to the "Analysis and Clustering" page (the application's root, index.html).  
+2. **Configuration:** The user can set parameters before starting the task.  
+   * **Basic View:** The primary option is "Number of Recent Albums." Setting this to 0 or a negative number instructs the system to scan the *entire* media server library, not just recent additions.  
+   * **Advanced View:** The user can also configure "Top N Moods," which defines how many of the top-scoring moods are saved per track (this is primarily for database efficiency, as the full mood vector is not stored).  
+3. **Execution:** The user clicks the **"Start Analysis"** button. This action is asynchronous, meaning it starts a long-running job on the server, and the UI does not freeze.  
+4. **Monitoring & Feedback:** The "Task Status" panel immediately updates to show the newly created "main\_analysis" task. The user can monitor its progress in real-time:  
+   * **Task ID:** A unique identifier for the entire analysis job.  
+   * **Running Time:** A live-updating timer.  
+   * **Status:** Shows the current state (e.g., STARTED, PROGRESS, SUCCESS, FAILURE).  
+   * **Progress:** A percentage bar indicating overall completion.  
+   * **Details / Log:** Provides human-readable logs, such as which album is currently being processed or how many albums have been launched, skipped, or completed.  
+5. **Control:** The user can click the **"Cancel Current Task"** button at any time to stop the main analysis task and any in-progress album analysis tasks it has spawned.  
+6. **Outcome:** Once the task is complete, the application's database is populated with detailed audio features and vector embeddings for all new or updated songs. The system also builds (or rebuilds) a fast-search vector index (Voyager) in the background. This analyzed data is now ready to be used by the "Start Clustering," "Song Path," and other features.
 
-   * Check which of those moods also exist in the **`active_moods` list** — i.e., moods actually encoded in the song's feature vector.
-   * Among those, take the **maximum score**.
-3. Sum these values across all songs in the playlist.
+#### **Core Purpose**
 
- If a mood is in the top K but **not in `active_moods`**, it is **skipped**.
+The functional purpose is to **"scan, analyze, and index"** the music library. It intelligently skips music that has already been analyzed, ensuring that running the analysis again only processes new or changed albums, making subsequent runs much faster.
 
-**Example:**
+### **1.2. Technical Analysis (Algorithm-Level)**
 
-* **Playlist profile (top moods):** `pop: 0.6`, `indie: 0.4`, `vocal: 0.35`
-* **Top moods:** `["pop", "indie", "vocal"]`
-* **Active moods in song features:** `["indie", "rock", "vocal"]` (**pop is missing**)
+The technical process is a distributed, multi-stage pipeline orchestrated by a main task that spawns child tasks for parallel processing. The entire process relies heavily on environment variables (see section 1.3) to connect to media servers, databases, and configure task behavior.
 
-| Song | Mood Scores                        | Used Moods (top ∩ active) | Max Score (used) |
-| ---- | ---------------------------------- | ------------------------- | ---------------- |
-| A    | indie: 0.3, rock: 0.7, vocal: 0.6  | indie, vocal              | **0.6**          |
-| B    | indie: 0.4, rock: 0.45, vocal: 0.3 | indie, vocal              | **0.4**          |
+#### **Stage 1: API Call & Task Enqueueing (The "Spark")**
 
-`pop` is ignored — not in `active_moods`
-**Raw Purity = 0.6 + 0.4 = 1.0**
+1. **Route:** The "Start Analysis" button sends a POST request to the /api/analysis/start endpoint (defined in app\_analysis.py).  
+2. **Payload:** The request body contains num\_recent\_albums and top\_n\_moods. If not provided, the task will use defaults from NUM\_RECENT\_ALBUMS and TOP\_N\_MOODS environment variables.  
+3. **Job Creation:**  
+   * A unique job\_id (UUID) is generated.  
+   * The endpoint enqueues a new high-priority job in the **RQ (Redis Queue)**, configured via REDIS\_URL.  
+   * The function enqueued is tasks.analysis.run\_analysis\_task.  
+   * The task\_id is returned to the frontend.
 
-This score is:
+#### **Stage 2: Main Orchestration Task (run\_analysis\_task)**
 
-* Transformed using `np.log1p`
-* Normalized using `LN_MOOD_PURITY_STATS`
+This function, running in an RQ worker, acts as the "orchestrator."
 
-A **high purity score** means that most songs strongly match the playlist’s actual mood focus.
+1. **Get Albums:** It calls get\_recent\_albums(num\_recent\_albums). This function's behavior is determined by MEDIASERVER\_TYPE (e.g., "jellyfin", "navidrome") and uses the corresponding credentials (e.g., JELLYFIN\_URL, JELLYFIN\_TOKEN, etc.) and MUSIC\_LIBRARIES to filter the scan.  
+2. **Iterate & Check:** It loops through every album, checking against the PostgreSQL database (configured via DATABASE\_URL) to see if all tracks already exist in the score and embedding tables.  
+3. **Spawn Child Tasks:** For new or incomplete albums, it enqueues a tasks.analysis.analyze\_album\_task child task.  
+4. **Manage Parallelism:** The main task monitors the number of active\_jobs and limits concurrent enqueued album tasks to MAX\_QUEUED\_ANALYSIS\_JOBS.  
+5. **Batch Indexing (Voyager Index Generation):** After every REBUILD\_INDEX\_BATCH\_SIZE completed child tasks, it triggers build\_and\_store\_voyager\_index (from voyager\_manager.py). This function:  
+   * Fetches all item\_id and embedding vectors from the PostgreSQL database (embedding table).  
+   * Builds a new Voyager index in memory using these vectors. Configuration parameters like VOYAGER\_METRIC, VOYAGER\_EF\_CONSTRUCTION, and VOYAGER\_M are used here.  
+   * Saves the built index binary data and an ID map (Voyager internal ID \-\> item\_id) back to the database (voyager\_index\_data table).  
+   * Publishes a reload message via Redis (redis\_conn.publish('index-updates', 'reload')) to notify the web server process(es) to load the new index into memory.  
+6. **Finalize:** After all albums, it runs a final index build and publishes the reload message.
 
+#### **Stage 3: Album-Level Task (analyze\_album\_task)**
 
-**Mood Diversity – Inter-Playlist Variety**
+This function runs in parallel for each album.
 
-The **Mood Diversity** score answers:
+1. **Fetch Tracks:** It calls get\_tracks\_from\_album(album\_id) (again using MEDIASERVER\_TYPE and credentials).  
+2. **Download:** It calls download\_track(TEMP\_DIR, item) to download the audio file to the temporary directory specified by the TEMP\_DIR variable.  
+3. **Analyze:** It calls the core analyze\_track function.  
+4. **Save to DB:** It calls save\_track\_analysis\_and\_embedding to write results to the PostgreSQL database.
 
-> *“How different are the playlists from each other in mood identity?”*
+#### **Stage 4: Core Audio Analysis (analyze\_track)**
 
-**How it works:**
+This is the heart of the analysis, using librosa and onnxruntime.
 
-1. For each playlist, find its **dominant mood** — the highest mood score in its profile.
-2. Keep track of **unique dominant moods** across all playlists.
-3. Sum the scores of those unique moods.
+1. **Audio Loading:**  
+   * It uses robust\_load\_audio\_with\_fallback, which attempts to load the audio file. This process is constrained by the AUDIO\_LOAD\_TIMEOUT variable to prevent stuck jobs on corrupt files.  
+2. **Basic Feature Extraction:** Extracts Tempo, Energy, and Key/Scale.  
+3. **Spectrogram Generation:** Converts the audio into Mel Spectrogram patches compatible with the ONNX models.  
+4. **ONNX Model Inference (Main Models):**  
+   * **Embedding:** Loads the model from EMBEDDING\_MODEL\_PATH to generate embeddings\_per\_patch.  
+   * **Mood Prediction:** Loads the model from PREDICTION\_MODEL\_PATH and feeds it the embeddings\_per\_patch to get mood probabilities.  
+5. **ONNX Model Inference (Secondary Models):**  
+   * It loops through other models (e.g., DANCEABILITY\_MODEL\_PATH, AGGRESSIVE\_MODEL\_PATH, etc.) and feeds them the *same* embeddings\_per\_patch to get scores for other features.  
+6. **Final Output:**  
+   * Returns an analysis dictionary (with scalars like tempo, energy, and mood scores) and a single averaged processed\_embeddings vector for the entire track. This vector is what gets stored in the embedding table and indexed by Voyager.
 
-**Example:**
+### **1.3. Environment Variable Configuration**
 
-| Playlist | Profile                            | Dominant Mood | Score |
-| -------- | ---------------------------------- | ------------- | ----- |
-| P1       | indie: 0.6, rock: 0.3, vocal: 0.2  | **indie**     | 0.6   |
-| P2       | pop: 0.5, indie: 0.3, vocal: 0.1   | **pop**       | 0.5   |
-| P3       | vocal: 0.55, indie: 0.4, rock: 0.2 | **vocal**     | 0.55  |
+The Song Analysis functionality is configured by the following environment variables (from config.py):
 
-**Raw Diversity = 0.6 + 0.5 + 0.55 = 1.65**
+#### **Core Infrastructure**
 
-This score is:
+* REDIS\_URL: **(Required)** The connection string for the Redis server, used for task queueing (RQ) and status management.  
+* DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** The connection string for the PostgreSQL database where all analysis results are stored and the Voyager index data is saved.
 
-* Transformed using `np.log1p`
-* Normalized using `LN_MOOD_DIVERSITY_STATS`
+#### **Media Server**
 
-A **high diversity score** means playlists explore a wide range of moods, rather than clustering around a single genre or vibe.
+* MEDIASERVER\_TYPE: **(Required)** Specifies the media server to connect to. (e.g., jellyfin, navidrome, emby, lyrion, mpd).  
+* MUSIC\_LIBRARIES: (Optional) A comma-separated list of library names to scan. If empty, all music libraries are scanned.  
+* JELLYFIN\_URL, JELLYFIN\_USER\_ID, JELLYFIN\_TOKEN: Credentials for Jellyfin (if MEDIASERVER\_TYPE="jellyfin").  
+* EMBY\_URL, EMBY\_USER\_ID, EMBY\_TOKEN: Credentials for Emby (if MEDIASERVER\_TYPE="emby").  
+* NAVIDROME\_URL, NAVIDROME\_USER, NAVIDROME\_PASSWORD: Credentials for Navidrome (if MEDIASERVER\_TYPE="navidrome").  
+* LYRION\_URL: Credentials for Lyrion (if MEDIASERVER\_TYPE="lyrion").  
+* MPD\_HOST, MPD\_PORT, MPD\_PASSWORD, MPD\_MUSIC\_DIRECTORY: Credentials for MPD (if MEDIASERVER\_TYPE="mpd").
 
-**Comparison: Purity & Diversity vs. Silhouette Score**
+#### **Task & Performance Tuning**
 
-| Metric               | Measures What?                                  | Label-Aware | Cluster-Aware | Complexity   | Interpretation Strength     |
-| -------------------- | ----------------------------------------------- | ----------- | ------------- | ------------ | --------------------------- |
-| **Mood Purity**      | Song alignment with playlist’s top active moods | ✅ Yes       | ❌ No          | **O(N · K)** | ✅ High – mood alignment     |
-| **Mood Diversity**   | Mood variety across playlists                   | ✅ Yes       | ✅ Yes         | **O(C · M)** | ✅ High – thematic spread    |
-| **Silhouette Score** | Distance-based cluster separation               | ❌ No        | ✅ Yes         | **O(N²)**    | ⚠️ Medium – structural only |
+* TEMP\_DIR: The directory where audio files are temporarily downloaded for analysis (e.g., /app/temp\_audio).  
+* NUM\_RECENT\_ALBUMS: The default number of recent albums to scan if the user doesn't specify. 0 means scan all albums.  
+* AUDIO\_LOAD\_TIMEOUT: The maximum time (in seconds) the system will spend trying to load a single audio file before giving up. Prevents corrupt files from stalling the entire analysis.  
+* MAX\_QUEUED\_ANALYSIS\_JOBS: Controls the parallelism of the main analysis task by limiting how many album-analysis child jobs can be in the queue at one time.  
+* REBUILD\_INDEX\_BATCH\_SIZE: Controls how often the Voyager (vector search) index is rebuilt during a large analysis run. A smaller number means new songs are searchable faster, but with more overhead.
 
-> Where:
-> `N` = number of songs
-> `K` = number of top moods considered
-> `C` = number of playlists
-> `M` = number of total mood labels
+#### **Model & Analysis Parameters**
 
- **Purity and Diversity** are fast, interpretable, and designed specifically for music data.
- **Silhouette Score** focuses only on shape/separation and ignores label meaning entirely.
+* TOP\_N\_MOODS: The default number of top-scoring moods to save in the score.mood\_vector column.  
+* EMBEDDING\_MODEL\_PATH: Filesystem path to the main msd-musicnn-1.onnx model (generates embeddings).  
+* PREDICTION\_MODEL\_PATH: Filesystem path to the msd-msd-musicnn-1.onnx model (generates mood predictions from embeddings).  
+* DANCEABILITY\_MODEL\_PATH, AGGRESSIVE\_MODEL\_PATH, HAPPY\_MODEL\_PATH, PARTY\_MODEL\_PATH, RELAXED\_MODEL\_PATH, SAD\_MODEL\_PATH: Paths to the secondary models that generate "other features".
 
-**Combining Purity and Diversity**
+Additional analysis tuning & normalization constants
 
-The final score that guides the clustering algorithm is a weighted combination:
+* `ENERGY_MIN`, `ENERGY_MAX` — Range used to normalize energy values (BPM- and loudness-derived) into a common scale used across scoring and UI visualizations.
+* `TEMPO_MIN_BPM`, `TEMPO_MAX_BPM` — Tempo normalization bounds in beats-per-minute used when extracting and scaling tempo for score vectors.
+* `DB_FETCH_CHUNK_SIZE` — Chunk size used by batch jobs when fetching large numbers of tracks from the DB. Useful to tune for memory/IO tradeoffs during clustering/analysis rebuilds.
 
-```python
-final_score = (SCORE_WEIGHT_PURITY * purity_score) + (SCORE_WEIGHT_DIVERSITY * diversity_score)
+#### **Voyager Index Building (Used during Analysis)**
+
+* INDEX\_NAME: The name used to store the index in the database (e.g., music\_library).  
+* VOYAGER\_METRIC: The distance metric used for building the index (angular or euclidean).  
+* VOYAGER\_EF\_CONSTRUCTION: Voyager build-time parameter affecting index quality and build speed.  
+* VOYAGER\_M: Voyager build-time parameter affecting index quality and memory usage.
+
+## **2\. Song Clustering**
+
+This section details the "Song Clustering" feature, which uses the data generated by the "Song Analysis" process to create automatic, thematic playlists.
+
+### **2.1. Functional Analysis (High-Level)**
+
+From a user's perspective, "Song Clustering" is the primary *creative* feature of the application. It takes the entire analyzed music library and intelligently groups songs into new, discoverable playlists based on their audio characteristics.
+
+#### **Key User Interactions & Workflow**
+
+1. **Prerequisite:** The user must have already run the "Start Analysis" task at least once.  
+2. **Initiation:** The user navigates to the "Analysis and Clustering" page (index.html).  
+3. **Configuration (Basic View):**  
+   * **Clustering Algorithm:** Defaults to "K-Means".  
+   * **TOP Playlist Number:** The user specifies how many playlists they want (e.g., 8, 20).  
+   * **Clustering Runs:** Sets the number of "attempts" the system will make to find the best playlists. A higher number (e.g., 5000\) takes longer but produces better results.  
+   * **K-Means Specific:** The user can set a *range* for the number of clusters (e.g., Min 40, Max 100). The system will automatically find the best number within this range.  
+4. **Configuration** (Advanced **View):**  
+   * **Clustering Algorithm:** The user can select more advanced algorithms like **DBSCAN**, **GMM**, or **Spectral**. Each selection reveals its own specific parameters (e.g., DBSCAN Epsilon, GMM Components).  
+   * **Data Source:** The user can check "Use Embeddings for Clustering." If checked, clustering is performed on the raw 200-dimension audio embedding. If unchecked, it uses the human-readable "score vector" (tempo, energy, moods, etc.).  
+   * **Scoring Weights:** The user can fine-tune the definition of a "good" playlist by adjusting weights for Diversity, Purity, Silhouette, etc.  
+   * **AI Playlist Naming:** The user can select an AI Provider (Ollama, Gemini) to automatically generate creative names for the resulting playlists. If set to "None," playlists will have names based on their audio features (e.g., "Rock\_Fast\_Aggressive").  
+5. **Execution:** The user clicks the **"Start Clustering"** button. This is a long-running, asynchronous job. The system *prevents* a new clustering task from starting if one is already running.  
+6. **Monitoring & Feedback:** The "Task Status" panel updates to show the "main\_clustering" task. The user can monitor its progress:  
+   * **Status:** Shows STARTED, PROGRESS, etc.  
+   * **Progress:** The percentage bar fills as the clustering\_runs are completed.  
+   * **Details / Log:** Provides real-time updates like "Progress: 100/5000 runs. Active batches: 10\. Best score: 4.52". This shows the evolutionary search in action.  
+7. **Outcome:** When the task state becomes SUCCESS:  
+   * Old \_automatic playlists on the media server are deleted.  
+   * The new, optimized playlists are created on the media server (e.g., Jellyfin).  
+   * The "Generated Playlists" section on the UI, when fetched (or on next page load), will be populated with the new playlists.
+
+### **2.2. Technical Analysis (Algorithm-Level)**
+
+The clustering process is a sophisticated, distributed, and evolutionary computing task. It is designed to search a massive parameter space to find the "best" possible set of playlists according to the user's weighted scoring preferences.
+
+#### **Stage 1: API Call & Task Enqueueing**
+
+1. **Route:** The "Start Clustering" button (script.js) sends a POST request to /api/clustering/start (defined in app\_clustering.py).  
+2. **Payload:** The request body contains *all* parameters from the "Clustering Parameters" and "AI Playlist Naming" fieldsets.  
+3. **Conflict Check:** The endpoint first queries the database (via DATABASE\_URL) to see if any main\_clustering task is already in a non-terminal state.  
+4. **Job Creation:**  
+   * A unique job\_id is generated.  
+   * The endpoint enqueues a new high-priority job in the **RQ (Redis Queue)** (via REDIS\_URL).  
+   * The function enqueued is tasks.clustering.run\_clustering\_task.  
+   * All parameters are passed as kwargs, using configured defaults (e.g., CLUSTER\_ALGORITHM, CLUSTERING\_RUNS) if not provided by the user.
+
+#### **Stage 2: Main Orchestration Task (run\_clustering\_task)**
+
+This "orchestrator" function (in clustering.py) manages the evolutionary search.
+
+1. **Data Preparation (Stratified Sampling):**  
+   * It fetches all tracks from the score table.  
+   * It calls \_prepare\_genre\_map to group tracks by their primary genre, using the list of genres defined in STRATIFIED\_GENRES.  
+   * It calls \_calculate\_target\_songs\_per\_genre to determine a target number per genre, using STRATIFIED\_SAMPLING\_TARGET\_PERCENTILE and MIN\_SONGS\_PER\_GENRE\_FOR\_STRATIFICATION.  
+2. **Batch Orchestration (The "Evolutionary Loop"):**  
+   * The task runs num\_clustering\_runs (from CLUSTERING\_RUNS) times.  
+   * It divides the total runs into *batches* (e.g., 250 batches of 20 runs each, defined by ITERATIONS\_PER\_BATCH\_JOB).  
+   * It maintains a list of elite\_solutions: the TOP\_N\_ELITES best-scoring clustering results found so far.  
+   * It loops, launching child tasks (run\_clustering\_batch\_task) up to MAX\_CONCURRENT\_BATCH\_JOBS at a time.  
+3. **Monitoring & Elitism:**  
+   * In its main loop, it calls \_monitor\_and\_process\_batches.  
+   * This function checks for completed batch jobs. When a batch finishes, its best result is added to the elite\_solutions list.  
+   * The list of elites is passed to new batches, which can "exploit" them (mutate) based on EXPLOITATION\_PROBABILITY\_CONFIG or "explore" (random guess).  
+   * This monitoring function also enforces CLUSTERING\_BATCH\_TIMEOUT\_MINUTES to kill stuck batches and CLUSTERING\_MAX\_FAILED\_BATCHES to stop the job if it's failing.
+
+#### **Stage 3: Batch Iteration Task (run\_clustering\_batch\_task)**
+
+This is the parallel "worker" task.
+
+1. **Data Sampling:** It calls \_get\_stratified\_song\_subset, which perturbs the previous song subset by SAMPLING\_PERCENTAGE\_CHANGE\_PER\_RUN.  
+2. **Parameter Generation:** It calls \_generate\_evolutionary\_parameters, which either mutates an elite (using MUTATION\_\* variables) or generates random parameters within the user-defined ranges (e.g., NUM\_CLUSTERS\_MIN, NUM\_CLUSTERS\_MAX, PCA\_COMPONENTS\_MIN, PCA\_COMPONENTS\_MAX).  
+3. **Data Selection & Scaling:** It calls \_prepare\_and\_scale\_data, which selects either the raw embedding\_vector or the score\_vector based on the ENABLE\_CLUSTERING\_EMBEDDINGS flag and applies StandardScaler.  
+4. **Clustering:** It calls \_apply\_clustering\_model, which applies PCA and then fits the chosen model (KMeans, DBSCAN, etc.).  
+5. **Scoring (The "Fitness Function"):**  
+   * It calls \_format\_and\_score\_iteration\_result. This is the **most critical** part of the algorithm.  
+   * It calculates internal metrics (silhouette, davies\_bouldin, etc.) and custom metrics (mood\_diversity, mood\_purity).  
+   * The scores are normalized using pre-calculated statistics (e.g., LN\_MOOD\_DIVERSITY\_STATS, LN\_MOOD\_PURITY\_EMBEDING\_STATS).  
+   * It combines these metrics using the user-defined weights (e.g., SCORE\_WEIGHT\_DIVERSITY, SCORE\_WEIGHT\_PURITY, SCORE\_WEIGHT\_SILHOUETTE) to produce a single **fitness\_score**.  
+6. **Return:** The batch task completes its runs and returns the *single best result* to the main orchestrator.
+
+#### **Stage 4: Finalization & Post-Processing (run\_clustering\_task)**
+
+Once all batches are complete, the orchestrator has the single best-scoring result.
+
+1. **Post-Processing Pipeline:** It runs this result through a cleanup pipeline (in clustering\_postprocessing.py):  
+   * apply\_duplicate\_filtering\_to\_clustering\_result: Removes duplicate songs within playlists, using DUPLICATE\_DISTANCE\_THRESHOLD\_COSINE and DUPLICATE\_DISTANCE\_CHECK\_LOOKBACK.  
+   * apply\_minimum\_size\_filter\_to\_clustering\_result: Deletes playlists smaller than MIN\_PLAYLIST\_SIZE\_FOR\_TOP\_N.  
+   * select\_top\_n\_diverse\_playlists: If top\_n\_playlists was set, this selects the N most different playlists.  
+2. **Playlist Naming:** It calls \_name\_and\_prepare\_playlists.  
+   * If AI\_MODEL\_PROVIDER is "None," it generates names from features.  
+   * If an AI provider is set, it calls the AI (e.g., using OLLAMA\_SERVER\_URL or GEMINI\_API\_KEY) to get a creative name.  
+   * It applies a final Fisher-Yates shuffle to every playlist.  
+3. **Final Commit:**  
+   * Calls delete\_automatic\_playlists and create\_playlist (using MEDIASERVER\_TYPE and credentials).  
+   * Calls update\_playlist\_table to save the final playlists to the PostgreSQL database.  
+   * Marks the main\_clustering task as SUCCESS.
+
+### **2.3. Clustering Deep Dive (Advanced Details)**
+
+This subsection pulls in the more detailed, implementation-aligned explanation of the evolutionary search, scoring mechanics, and AI-driven playlist naming. It intentionally focuses on the parts that are not already described in the higher-level sections above: the exact purity/diversity computations, a practical comparison of metrics, and the AI naming workflow and sanitization rules.
+
+#### Purity & Diversity (Concrete Calculation Notes)
+
+These two custom metrics are central to the fitness function used by the evolutionary clustering process. They are label-aware (they operate on mood/genre labels) and are therefore complementary to geometric metrics like silhouette.
+
+Purity (intra-playlist consistency):
+
+- For each cluster (playlist) we form a profile. If clustering used interpretable score vectors the centroid itself is the profile; if embeddings were used, we compute the average of the original score vectors for the playlist members.
+- From the profile we take the top K moods (configurable via TOP_K_MOODS_FOR_PURITY_CALCULATION).
+- For every song in the playlist, we take the intersection between the song's active moods and the playlist's top K moods. From that intersection we keep the maximum mood score for that song (or skip the song if no intersection).
+- Sum these per-song maximums across the playlist to get a raw purity value for that playlist.
+- The raw purity value is transformed with log1p and then normalized using precomputed statistics (LN_MOOD_PURITY_STATS or the embedding-specific stats) so it fits into the composite scoring range used by the evolutionary algorithm.
+
+Example (illustrative):
+
+- Playlist top moods: pop:0.6, indie:0.4, vocal:0.35 (top K = 3)
+- Song A moods: indie:0.3, rock:0.7, vocal:0.6 → used moods: indie, vocal → song score = max(0.3, 0.6) = 0.6
+- Song B moods: indie:0.4, rock:0.45, vocal:0.3 → used moods: indie, vocal → song score = 0.4
+- Raw purity = 0.6 + 0.4 = 1.0 → transformed via log1p and normalized for combination.
+
+Diversity (inter-playlist variety):
+
+- For each playlist, extract its dominant mood (the single highest-scoring mood in its profile) and its score.
+- Keep only unique dominant moods across all playlists and sum their scores to get a raw diversity value.
+- Transform with log1p and normalize using LN_MOOD_DIVERSITY_STATS (or embedding-specific stats) before combining.
+
+Example (illustrative):
+
+- P1: dominant indie = 0.6
+- P2: dominant pop = 0.5
+- P3: dominant vocal = 0.55
+- Raw diversity = 0.6 + 0.5 + 0.55 = 1.65 → transformed and normalized.
+
+Why both? Purity rewards tight, theme-consistent playlists. Diversity rewards breadth across playlists so the final set is not a set of near-duplicates. The evolutionary fitness function combines them using configurable weights (SCORE_WEIGHT_PURITY, SCORE_WEIGHT_DIVERSITY).
+
+#### Metric Comparison (Practical Notes)
+
+When evaluating clustering outcomes the system uses both label-aware metrics (purity/diversity) and standard geometric metrics (silhouette, Davies-Bouldin, Calinski-Harabasz). Each has strengths:
+
+- Purity/Diversity: fast (linear-ish in songs), interpretable for music use-cases, directly measures musical semantics (moods/genres). Best for guiding the curator-style objective of playlists.
+- Silhouette / Davies-Bouldin / Calinski-Harabasz: measure geometric separation and cohesion; important for structure but blind to label meaning.
+
+Quick comparison:
+
+- Purity: label-aware, O(N·K) where K is top moods per playlist, high interpretability for music.
+- Diversity: label-aware, O(C·M) where C is number of playlists and M is number of mood labels.
+- Silhouette: cluster-aware and geometric, O(N^2) in naive implementations (often approximated), lower semantic interpretability for playlists.
+
+The evolutionary algorithm uses normalized combinations of these metrics so you can tune the final behavior via the score weights in the UI.
+
+#### Monte Carlo / Evolutionary Notes (Implementation Details)
+
+Brief reminders of implementation details that are still current and important when reasoning about tuning:
+
+- Stratified sampling is applied when creating the per-run subset: STRATIFIED_GENRES and MIN_SONGS_PER_GENRE_FOR_STRATIFICATION influence how many items of selected genres are forced into each sample. The target is computed using STRATIFIED_SAMPLING_TARGET_PERCENTILE applied to the distribution of counts.
+- Between successive runs a percentage (SAMPLING_PERCENTAGE_CHANGE_PER_RUN) of the sampled items is replaced to introduce controlled perturbation while keeping continuity.
+- Elite solutions (TOP_N_ELITES) are remembered. With probability EXPLOITATION_PROBABILITY_CONFIG the algorithm will select an elite and mutate it (MUTATION_INT_ABS_DELTA / MUTATION_FLOAT_ABS_DELTA) instead of sampling random parameters.
+
+These mechanisms balance exploration and exploitation and are implemented inside the `tasks.clustering` orchestration and batch workers.
+
+#### AI Playlist Naming (Practical & Sanitization Steps)
+
+When AI is enabled (AI_MODEL_PROVIDER set), the naming step follows a small pipeline to ensure stable, safe, and deterministic output:
+
+1. The naming prompt includes: the playlist's top moods and tempo range, a short sample list of songs from the playlist, and explicit format rules.
+2. Prompt engineering instructs the model to return a single name (15–35 ASCII characters) with no extra commentary and a short list of reserved words or forbidden characters.
+3. The backend calls the provider-specific helper in `ai.py` (e.g., `get_ollama_playlist_name`, `get_gemini_playlist_name`, `get_mistral_playlist_name`).
+4. Returned text is cleaned: strip Markdown fences, normalize Unicode to ASCII, enforce character whitelist (printable ASCII letters, numbers, spaces, dash/underscore), truncate to length limits, and append `_automatic` (or `_instant` for chat-generated lists) as needed.
+5. If the AI output can't be sanitized into a valid name, the system falls back to a deterministic feature-based name (e.g., `Rock_Fast_Aggressive`).
+
+These steps are implemented in `tasks/clustering_postprocessing.py` and `ai.py` and are still current as of the code in this repository.
+
+---
+
+### **2.4. Environment Variable Configuration**
+
+The Song Clustering functionality is configured by the following environment variables (from config.py):
+
+#### **Core Infrastructure**
+
+* REDIS\_URL: **(Required)** The connection string for the Redis server, used for task queueing and status management.  
+* DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** The connection string for the PostgreSQL database where all analysis results are read from.  
+* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Media server credentials are used at the *end* of the process to delete old playlists and create the new ones.
+
+#### **Main Clustering Configuration**
+
+* CLUSTER\_ALGORITHM: The default algorithm to use if not specified (e.g., kmeans, dbscan).  
+* ENABLE\_CLUSTERING\_EMBEDDINGS: (Boolean) Default for whether to cluster on raw embeddings (True) or "score vectors" (False).  
+* CLUSTERING\_RUNS: The default number of evolutionary iterations to perform. Higher is slower but generally better.  
+* TOP\_N\_PLAYLISTS: The default number of diverse playlists to select at the end.  
+* MAX\_DISTANCE: Used during iteration to filter out songs that are too far from their cluster's center.  
+* MAX\_SONGS\_PER\_CLUSTER: The maximum number of songs a playlist can have. 0 means unlimited.  
+* MAX\_SONGS\_PER\_ARTIST: The maximum number of songs from a single artist allowed in one playlist.
+
+#### **Algorithm Parameter Ranges (for Evolutionary Search)**
+
+* NUM\_CLUSTERS\_MIN, NUM\_CLUSTERS\_MAX: Default range for K-Means.  
+* DBSCAN\_EPS\_MIN, DBSCAN\_EPS\_MAX, DBSCAN\_MIN\_SAMPLES\_MIN, DBSCAN\_MIN\_SAMPLES\_MAX: Default ranges for DBSCAN.  
+* GMM\_N\_COMPONENTS\_MIN, GMM\_N\_COMPONENTS\_MAX: Default range for GMM.  
+* SPECTRAL\_N\_CLUSTERS\_MIN, SPECTRAL\_N\_CLUSTERS\_MAX: Default range for Spectral Clustering.  
+* PCA\_COMPONENTS\_MIN, PCA\_COMPONENTS\_MAX: Default range for PCA components.  
+* GMM\_COVARIANCE\_TYPE: A specific technical parameter for GMM (e.g., full).  
+* SPECTRAL\_N\_NEIGHBORS: A specific technical parameter for Spectral Clustering.
+
+#### **Task & Performance Tuning**
+
+* ITERATIONS\_PER\_BATCH\_JOB: How many clustering runs to perform in a single parallel child task.  
+* MAX\_CONCURRENT\_BATCH\_JOBS: The maximum number of batch tasks to run in parallel.  
+* CLUSTERING\_BATCH\_TIMEOUT\_MINUTES: The maximum time a single batch can run before being killed. Prevents stuck jobs.  
+* CLUSTERING\_MAX\_FAILED\_BATCHES: The number of failed batches allowed before the main clustering job gives up.  
+* CLUSTERING\_BATCH\_CHECK\_INTERVAL\_SECONDS: How often the main task checks the status of its children.
+* DB_FETCH_CHUNK_SIZE: Chunk size for fetching full track/embedding rows from the DB in batch jobs; tune to balance memory usage and query overhead during large runs.
+
+#### **Evolutionary Algorithm Tuning**
+
+* TOP\_N\_ELITES: The number of "best-so-far" solutions to keep in memory.  
+* EXPLOITATION\_START\_FRACTION: The percentage of total runs to complete before the algorithm starts "exploiting" (mutating) elite solutions.  
+* EXPLOITATION\_PROBABILITY\_CONFIG: The probability (0.0 to 1.0) of mutating an elite solution vs. trying a new random one.  
+* MUTATION\_INT\_ABS\_DELTA, MUTATION\_FLOAT\_ABS\_DELTA: The "size" of the mutation for integer and float parameters.
+* MUTATION\_KMEANS\_COORD\_FRACTION: Fractional coordinate mutation size used when mutating KMeans centroids (tunable to control the magnitude of centroid perturbations).
+
+#### **Fitness Score (Weighting)**
+
+* SCORE\_WEIGHT\_DIVERSITY, SCORE\_WEIGHT\_PURITY: Weights for the custom mood diversity/purity scores.  
+* SCORE\_WEIGHT\_OTHER\_FEATURE\_DIVERSITY, SCORE\_WEIGHT\_OTHER\_FEATURE\_PURITY: Weights for the custom "other feature" (e.g., danceability) scores.  
+* SCORE\_WEIGHT\_SILHOUETTE, SCORE\_WEIGHT\_DAVIES\_BOULDIN, SCORE\_WEIGHT\_CALINSKI\_HARABASZ: Weights for standard internal clustering validation metrics.
+
+#### **Fitness Score (Normalization Stats)**
+
+* LN\_MOOD\_DIVERSITY\_STATS, LN\_MOOD\_PURITY\_STATS, LN\_MOOD\_DIVERSITY\_EMBEDING\_STATS, LN\_MOOD\_PURITY\_EMBEDING\_STATS, LN\_OTHER\_FEATURES\_DIVERSITY\_STATS, LN\_OTHER\_FEATURES\_PURITY\_STATS: Pre-calculated statistical values (min, max, mean, std) used to normalize the raw scores into a comparable range.  
+* TOP\_K\_MOODS\_FOR\_PURITY\_CALCULATION: How many of a cluster's top moods to use when calculating its purity score.  
+* OTHER\_FEATURE\_PREDOMINANCE\_THRESHOLD\_FOR\_PURITY: The minimum score a feature (like "danceable") must have to be considered "predominant" for purity calculations.
+
+#### **AI Playlist Naming**
+
+* AI\_MODEL\_PROVIDER: Default AI provider (OLLAMA, GEMINI, MISTRAL, NONE).  
+* OLLAMA\_SERVER\_URL, OLLAMA\_MODEL\_NAME: Configuration for Ollama.  
+* GEMINI\_API\_KEY, GEMINI\_MODEL\_NAME: Configuration for Google Gemini.  
+* MISTRAL\_API\_KEY, MISTRAL\_MODEL\_NAME: Configuration for Mistral.
+
+#### **Data Sampling**
+
+* STRATIFIED\_GENRES: The list of genres to use for stratified (balanced) sampling.  
+* MIN\_SONGS\_PER\_GENRE\_FOR\_STRATIFICATION: The minimum target number of songs for each genre in the sample.  
+* STRATIFIED\_SAMPLING\_TARGET\_PERCENTILE: The percentile of genre counts used to dynamically set the target number.  
+* SAMPLING\_PERCENTAGE\_CHANGE\_PER\_RUN: The percentage of songs to "swap out" between clustering iterations to ensure data diversity.
+
+#### **Post-Processing**
+
+* MIN\_PLAYLIST\_SIZE\_FOR\_TOP\_N: The minimum number of songs a playlist must have to be considered in the final "Top N" selection.  
+* DUPLICATE\_DISTANCE\_THRESHOLD\_COSINE, DUPLICATE\_DISTANCE\_THRESHOLD\_EUCLIDEAN: The distance threshold for considering two songs a "duplicate" during post-processing.  
+* DUPLICATE\_DISTANCE\_CHECK\_LOOKBACK: A performance optimization for duplicate checking.
+
+## **3\. Playlist from Similar Song**
+
+This section details the feature allowing users to find songs similar to a selected track and generate a playlist from the results. It relies heavily on the pre-built Voyager vector index generated during the Song Analysis phase.
+
+### **3.1. Functional Analysis (High-Level)**
+
+This feature provides a quick way to create a focused playlist based on the sonic similarity to a single "seed" song.
+
+#### **Key User Interactions & Workflow**
+
+1. **Initiation:** The user navigates to the "Playlist from Similar Song" page (similarity.html).  
+2. **Seed Song Selection:** The user types into the "Artist" and/or "Track Title" fields. An autocomplete dropdown appears (autocomplete-results), suggesting matching songs from the library. The user clicks on a suggestion to select the seed song.  
+3. **Configuration:**  
+   * **Number of results:** The user specifies how many similar songs (n) they want in the final playlist.  
+   * **Limit** songs per **artist:** A checkbox (eliminate\_duplicates) allows the user to cap the number of songs by the same artist in the results (uses MAX\_SONGS\_PER\_ARTIST from config).  
+   * **Radius Similarity:** A checkbox (radius\_similarity) toggles between two different modes for finding and ordering similar songs (explained below).  
+4. **Execution:** The user clicks the **"Find Similar Tracks"** button. This sends a request to the backend.  
+5. **Results Display:** The backend searches the vector index and returns a list of similar songs. These are displayed in a table (results-table-wrapper) showing Title, Artist, and Distance (how similar they are to the seed song).  
+6. **Playlist Creation:** If results are found, a "Create Playlist" section appears. The user can optionally edit the suggested playlist name (defaults to "Similar to$$Seed Song Title$$  
+   ") and click the **"Create Playlist on Media Server"** button.  
+7. **Outcome:** A new playlist containing the seed song and the found similar songs is created on the configured media server (e.g., Jellyfin).
+
+### **3.2. Technical Analysis (Algorithm-Level)**
+
+This feature primarily interacts with the pre-built Voyager index for fast similarity searches.
+
+#### **Stage 1: Index Loading (Application Startup)**
+
+* When the Flask application starts (app.py), it calls load\_voyager\_index\_for\_querying (from voyager\_manager.py).  
+* This function reads the pre-built index data (binary) and ID map (JSON) from the PostgreSQL database (voyager\_index\_data table, populated during analysis) into global variables (voyager\_index, id\_map, reverse\_id\_map) in the web server's memory. This allows for very fast lookups.  
+* A background thread listens on Redis (listen\_for\_index\_reloads) for reload messages (published by the analysis task) and triggers load\_voyager\_index\_for\_querying(force\_reload=True) to update the in-memory index without restarting the server.
+
+#### **Stage 2: Autocomplete Search**
+
+1. **Route:** Typing in the search boxes (similarity.html) triggers JavaScript (handleSearchInput) which sends GET requests to /api/search\_tracks (app\_voyager.py).  
+2. **Backend Logic:** The endpoint calls search\_tracks\_by\_title\_and\_artist (voyager\_manager.py), which performs a simple SQL ILIKE query against the score table in PostgreSQL to find matching tracks.
+
+#### **Stage 3: Finding Similar Tracks**
+
+1. **Route:** Clicking "Find Similar Tracks" sends a GET request to /api/similar\_tracks (app\_voyager.py). Parameters include item\_id (of the seed song), n, eliminate\_duplicates, and radius\_similarity.  
+2. **Backend Logic (find\_nearest\_neighbors\_by\_id in voyager\_manager.py):**  
+   * **Vector Lookup:** It retrieves the embedding vector for the target\_item\_id from the in-memory Voyager index (voyager\_index.get\_vector).  
+   * **Determine Query Size (k):** It calculates how many neighbors (num\_to\_query) to initially retrieve from Voyager. This is *more* than n requested by the user, especially if radius\_similarity or eliminate\_duplicates is true, to provide a larger pool for filtering.  
+   * **Voyager Query:** It calls voyager\_index.query(query\_vector, k=num\_to\_query) to get the k nearest neighbors (internal Voyager IDs and distances).  
+   * **ID Mapping:** It converts the internal Voyager IDs back to media server item\_id strings using the id\_map.  
+   * **Radius** Similarity **Branching:**  
+     * **If radius\_similarity is True:**  
+       * Calls \_radius\_walk\_get\_candidates to prepare the initial pool. This involves pre-filtering candidates using \_filter\_by\_distance (removes songs extremely close to the *anchor* based on DUPLICATE\_DISTANCE\_THRESHOLD\_\*), \_deduplicate\_and\_filter\_neighbors (removes exact name/artist matches, including the anchor itself), and potentially \_filter\_by\_mood\_similarity (if enabled by MOOD\_SIMILARITY\_ENABLE). It also pre-fetches vectors and calculates distances to the anchor.  
+       * Calls \_execute\_radius\_walk. This function implements a **bucketed greedy walk**:  
+         * Candidates are sorted by distance to the anchor and grouped into buckets.  
+         * It starts with the closest valid candidate.  
+         * It iteratively selects the *next* song by evaluating candidates within a limited number of nearby buckets (BUCKETS\_TO\_SCAN).  
+         * The selection criteria prioritize songs that are close to the *previously selected song* while also considering distance to the *original anchor song* (a 70/30 weighting).  
+         * **Crucially,** the artist cap (MAX\_SONGS\_PER\_ARTIST if eliminate\_duplicates is true) is applied *during* the **walk**, preventing too many songs from the same artist being selected early on. A rule preventing the same artist appearing in more than two different "bucket subpaths" is also applied until the global cap is reached.  
+       * The final list is ordered according to the **path taken by the walk**, aiming for smoother transitions between songs rather than just raw similarity to the anchor. It returns exactly n songs.  
+     * **If radius\_similarity is False (Standard Logic):**  
+       * It applies a sequence of filters to the initial Voyager results:  
+         1. \_filter\_by\_distance: Removes songs too close in vector space to recently kept songs (uses DUPLICATE\_DISTANCE\_THRESHOLD\_\* and DUPLICATE\_DISTANCE\_CHECK\_LOOKBACK). This prevents near-identical tracks (e.g., slightly different masters).  
+         2. \_deduplicate\_and\_filter\_neighbors: Removes songs with the exact same Title/Artist as the anchor or already kept songs.  
+         3. \_filter\_by\_mood\_similarity: (Optional, based on MOOD\_SIMILARITY\_ENABLE or user request) Removes songs whose "other features" (danceable, aggressive, etc.) differ too much from the anchor song, based on MOOD\_SIMILARITY\_THRESHOLD.  
+         4. **Artist Cap:** If eliminate\_duplicates is true, it iterates through the remaining songs and keeps only up to MAX\_SONGS\_PER\_ARTIST songs per unique artist.  
+       * The final list contains the top n remaining songs, **sorted by their original distance** to the anchor song.  
+   * **Details Fetch:** It fetches the Title and Artist for the final list of item\_ids from the score table.  
+   * **Return:** Returns the list of similar songs (including item\_id, title, author, distance) to the frontend.
+
+#### **Stage 4: Playlist Creation**
+
+1. **Route:** Clicking "Create Playlist" (similarity.html) sends a POST request to /api/create\_playlist (app\_voyager.py). The payload contains the desired playlist\_name and the list of track\_ids (seed song \+ similar songs).  
+2. **Backend Logic:** The endpoint calls create\_playlist\_from\_ids (voyager\_manager.py), which in turn calls create\_instant\_playlist (mediaserver.py). This function uses the configured MEDIASERVER\_TYPE and credentials to interact with the media server's API and create the actual playlist.
+
+### **3.3. Environment Variable Configuration**
+
+The "Playlist from Similar Song" feature relies on the Voyager index built during Analysis and uses these environment variables:
+
+#### **Core Infrastructure**
+
+* REDIS\_URL: **(Required)** Used by the background listener thread that reloads the Voyager index.  
+* DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** Used to load the index data, fetch track details (Title/Artist), and perform autocomplete searches.  
+* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
+
+#### **Voyager Index Querying (Used during Similarity Search)**
+
+* INDEX\_NAME: The name used to load the correct index from the database.  
+* VOYAGER\_QUERY\_EF: Voyager query-time parameter affecting search speed and accuracy. Higher values are slower but potentially more accurate.  
+* EMBEDDING\_DIMENSION: Used to verify the loaded index matches the expected vector size.
+
+#### **Similarity Search Behavior & Filtering**
+
+* MAX\_SONGS\_PER\_ARTIST: The maximum number of songs allowed per artist in the results if the "Limit songs per artist" checkbox (eliminate\_duplicates=true) is checked.  
+* DUPLICATE\_DISTANCE\_THRESHOLD\_COSINE, DUPLICATE\_DISTANCE\_THRESHOLD\_EUCLIDEAN: Defines how close two songs' vectors must be (using the metric specified by VOYAGER\_METRIC) to be considered duplicates by the \_filter\_by\_distance function.  
+* DUPLICATE\_DISTANCE\_CHECK\_LOOKBACK: Performance optimization for distance filtering; checks only against the last N kept songs. 1 is usually sufficient if songs are pre-sorted or processed sequentially.  
+* MOOD\_SIMILARITY\_THRESHOLD: The maximum allowed normalized distance between the "other features" (danceable, aggressive, etc.) of the seed song and a candidate for the candidate to be kept by the \_filter\_by\_mood\_similarity function.  
+* MOOD\_SIMILARITY\_ENABLE: (Boolean) Global switch to enable (True) or disable (False) the mood similarity filter by default if the user doesn't specify it in the API call.  
+* SIMILARITY\_ELIMINATE\_DUPLICATES\_DEFAULT: (Boolean) Default state for the "Limit songs per artist" checkbox (eliminate\_duplicates parameter) if not specified by the user.  
+* SIMILARITY\_RADIUS\_DEFAULT: (Boolean) Default state for the "Radius Similarity" checkbox (radius\_similarity parameter) if not specified by the user. This determines the default search mode (Walk vs. Standard).  
+* VOYAGER\_METRIC: Although primarily a build-time parameter, the query logic in \_filter\_by\_distance uses this to select the correct distance function (\_get\_direct\_cosine\_distance or \_get\_direct\_euclidean\_distance) and threshold (DUPLICATE\_DISTANCE\_THRESHOLD\_COSINE or \_EUCLIDEAN).
+
+## **4\. Song Path**
+
+This section details the "Song Path" feature, which aims to generate a smooth, transitional playlist between two user-selected songs.
+
+### **4.1. Functional Analysis (High-Level)**
+
+The "Song Path" feature allows users to explore the sonic space between two potentially different songs. It generates a playlist that starts with the first song, gradually transitions through similar-sounding tracks, and ends with the second song.
+
+#### **Key User Interactions & Workflow**
+
+1. **Initiation:** The user navigates to the "Song Path" page (path.html).  
+2. **Song Selection:** The user selects a "Start Song" and an "End Song" using autocomplete fields similar to the "Playlist from Similar Song" feature.  
+3. **Configuration:**  
+   * **Songs in path:** The user specifies the desired total number of songs (max\_steps) in the path, including the start and end songs.  
+   * **Keep path size exact:** A checkbox (path\_fix\_size) controls whether the algorithm should prioritize reaching the exact requested path length, potentially using a more complex centroid-merging strategy if needed. If unchecked, the path might be shorter if the algorithm cannot find suitable non-duplicate songs at each step.  
+4. **Execution:** The user clicks the **"Find Path"** button. This sends a request to the backend.  
+5. **Results Display:**  
+   * The backend calculates the path using the vector embeddings.  
+   * A table (results-table-wrapper) lists the songs in the generated path order.  
+   * A chart (path-graph) visualizes the path's progression, showing distances between steps and distances to the start/end points. Different chart views (Progression, Feature Range, Feature Difference, 2D Path) can be selected.  
+6. **Playlist Creation:** If a path is found, a "Create Playlist" section appears. The user can edit the suggested name and click **"Create Playlist on Media Server"** to save the path as a playlist.  
+7. **Outcome:** A new playlist containing the sequence of songs forming the path is created on the media server.
+
+### **4.2. Technical Analysis (Algorithm-Level)**
+
+The Song Path algorithm constructs a sequence of songs by interpolating between the start and end song vectors and finding the nearest neighbors to these intermediate points.
+
+#### **Stage 1: API Call & Parameter Handling**
+
+1. **Route:** Clicking "Find Path" sends a GET request to /api/find\_path (app\_path.py). Parameters include start\_song\_id, end\_song\_id, max\_steps, and optionally path\_fix\_size.  
+2. **Validation:** The backend checks if start and end songs are provided and are different. It retrieves the default path length (PATH\_DEFAULT\_LENGTH) if max\_steps is not given. It determines the effective path\_fix\_size boolean based on the request parameter or the PATH\_FIX\_SIZE environment variable.
+
+#### **Stage 2: Path Generation (find\_path\_between\_songs in path\_manager.py)**
+
+1. **Vector Retrieval:** Fetches the embedding vectors for the start\_item\_id and end\_item\_id using get\_vector\_by\_id (which reads from the in-memory Voyager index cache). It also fetches initial song details from the database.  
+2. **Initialization:** Sets up used\_song\_ids and used\_signatures (normalized title/artist) sets, initially containing the start and end songs to prevent duplicates. It also initializes artist\_counts to track artists for the MAX\_SONGS\_PER\_ARTIST cap.  
+3. **Centroid Interpolation:**  
+   * Calculates the number of intermediate songs needed (num\_intermediate \= Lreq \- 2).  
+   * Calls interpolate\_centroids(start\_vector, end\_vector, num=Lreq, metric=PATH\_DISTANCE\_METRIC). This generates Lreq points (vectors) linearly or spherically interpolated between the start and end vectors, based on the PATH\_DISTANCE\_METRIC config (euclidean or angular).  
+   * Extracts the intermediate\_centroids (excluding the start and end points).  
+4. **Song Selection Strategy (Depends on path\_fix\_size):**  
+   * **If path\_fix\_size is False (Simpler, potentially shorter path):**  
+     * It iterates through each intermediate\_centroid.  
+     * For each centroid, it calls \_find\_best\_songs\_for\_job with num\_to\_find=1 and a small search radius (k\_base).  
+     * \_find\_best\_songs\_for\_job:  
+       * Uses find\_nearest\_neighbors\_by\_vector to get k\_search candidates near the centroid.  
+       * Iterates through candidates, checking against used\_song\_ids, used\_signatures, artist\_counts (using MAX\_SONGS\_PER\_ARTIST), and applying distance filtering (\_filter\_by\_distance logic using DUPLICATE\_DISTANCE\_THRESHOLD\_\* and DUPLICATE\_DISTANCE\_CHECK\_LOOKBACK) against the *path songs found so far*.  
+       * Adds the *first* valid song found to the path and updates the used sets and artist\_counts.  
+     * If \_find\_best\_songs\_for\_job fails to find a valid song for a centroid, that step is skipped, potentially making the final path shorter than Lreq.  
+   * **If path\_fix\_size is True (Complex, exact length prioritized):**  
+     * **Initial Job Creation:** It groups the intermediate\_centroids into an initial number of jobs (heuristic based on neighbor overlap). Each job represents one or more original centroids and is assigned a target number of songs (num\_to\_find) equal to the number of centroids it represents. The search radius (k) is scaled.  
+     * **Iterative Job Processing with Merging:**  
+       * It processes jobs sequentially.  
+       * For each job, it calls \_find\_best\_songs\_for\_job with the job's vector, k, and num\_to\_find.  
+       * **If Success:** The found songs are added to the path, and it moves to the next job.  
+       * **If Failure:** \_find\_best\_songs\_for\_job finds fewer songs than needed (returns \[\] after rolling back its additions). The algorithm *merges* the failed job with the *next* job in the list:  
+         * A new centroid is calculated (interpolated between the original start/end points of the merged span).  
+         * The search radius k is increased (summed, capped at k\_max).  
+         * num\_to\_find is updated to reflect the total songs needed by both original jobs.  
+         * The merged job replaces the current job, and the loop *retries the current index* (now containing the merged job).  
+       * This merging continues until either all songs are found, or the last job fails and cannot be merged further (resulting in a potentially shorter path).  
+5. **Final Path Construction:**  
+   * Appends the end song details to the list of found intermediate songs.  
+   * Extracts the final list of item\_ids.  
+   * Calls \_create\_path\_from\_ids to fetch full details for the path songs from the database.  
+   * Calculates the total\_path\_distance by summing the pairwise distances (get\_distance) between consecutive songs in the final path.  
+6. **Return:** Returns the list of song details (final\_path\_details) and the total\_path\_distance to the API endpoint (app\_path.py), which then formats it as JSON for the frontend.
+
+#### **Stage 3: Playlist Creation**
+
+* Identical to Stage 4 of "Playlist from Similar Song," using the /api/create\_playlist endpoint.
+
+### **4.3. Environment Variable Configuration**
+
+The Song Path feature uses the Voyager index and relies on several specific configuration variables:
+
+#### **Core Infrastructure & Index**
+
+* DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** Used to fetch song details.  
+* REDIS\_URL: **(Required)** Used by the index reloading listener.  
+* INDEX\_NAME, VOYAGER\_QUERY\_EF, EMBEDDING\_DIMENSION: Used for querying the Voyager index via get\_vector\_by\_id and find\_nearest\_neighbors\_by\_vector.
+
+#### **Path Generation Parameters**
+
+* PATH\_DISTANCE\_METRIC: **(Crucial)** Determines the distance function used for interpolation (interpolate\_centroids) and step distance calculation (get\_distance). Options: angular, euclidean.  
+* PATH\_DEFAULT\_LENGTH: The default number of songs in the path if the user doesn't specify.  
+* PATH\_AVG\_JUMP\_SAMPLE\_SIZE: (Not directly used in the main path logic, but potentially in related calculations like \_calculate\_local\_average\_jump\_distance).  
+* PATH\_CANDIDATES\_PER\_STEP: (Used by a heuristic during job creation when PATH\_FIX\_SIZE=True). Number of neighbors sampled near start/end to estimate overlap.  
+* PATH\_LCORE\_MULTIPLIER: (Seems unused in the provided find\_path\_between\_songs logic, might be for an alternative algorithm).  
+* PATH\_FIX\_SIZE: (Boolean) Controls the core pathfinding strategy (single pass vs. centroid merging) as described in the technical analysis.
+
+#### **Filtering Parameters (Shared with Similarity)**
+
+* MAX\_SONGS\_PER\_ARTIST: Caps the number of songs per artist allowed in the generated path.  
+* DUPLICATE\_DISTANCE\_THRESHOLD\_COSINE, DUPLICATE\_DISTANCE\_THRESHOLD\_EUCLIDEAN: Used by \_find\_best\_songs\_for\_job to filter out candidates too close to previously added path songs.  
+* DUPLICATE\_DISTANCE\_CHECK\_LOOKBACK: Performance optimization for the distance check within \_find\_best\_songs\_for\_job.  
+* VOYAGER\_METRIC: Used implicitly by distance filters to choose the correct threshold.
+
+#### **Media Server (for Playlist Creation)**
+
+* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
+
+## **5\. Song Alchemy**
+
+This section details the "Song Alchemy" feature, which allows users to combine the sonic characteristics of multiple songs, optionally subtracting others, to find tracks matching the resulting blend.
+
+### **5.1. Functional Analysis (High-Level)**
+
+Song Alchemy offers a powerful way to discover music by defining a desired sound profile through examples. Users can select songs they want to "include" (add their sonic essence) and songs they want to "exclude" (subtract their sonic essence). The system then finds tracks that are closest to the combined "include" profile while being distant from the "exclude" profile.
+
+#### **Key User Interactions & Workflow**
+
+1. **Initiation:** The user navigates to the "Song Alchemy" page (alchemy.html).  
+2. **Song Selection:**  
+   * The page starts with two song selection cards. The user can add more using the "Add Another Song" button.  
+   * For each card, the user searches for a song using autocomplete (similar to other features).  
+   * Crucially, for each selected song, the user clicks either **"Include"** or **"Exclude"**. At least one "Include" song is required.  
+3. **Configuration:**  
+   * **Number of results:** Specifies how many matching songs (n) to return.  
+   * **Sampling temperature (τ):** Controls the randomness of the selection process. Lower values (e.g., 0.1) favor songs very close to the target profile, while higher values (e.g., 1.0 or more) allow for more variety and exploration further away.  
+   * **Subtract distance threshold:** A slider adjusts how sonically *different* the results must be from the "Exclude" songs. A higher value means results must be further away from the excluded profile.  
+4. **Execution:** The user clicks the **"Run Alchemy"** button. This sends a request to the backend.  
+5. **Results Display:**  
+   * The backend calculates the combined vector profile and searches the index.  
+   * A 2D scatter plot (alchemy-plot) visually represents the selected songs (Include/Exclude), the calculated target centroids (Add/Subtract), the resulting "Kept" songs, and any "Removed" songs (filtered out by the subtract threshold). \\ \* A table (results-table) lists the final "Kept" songs, ordered by relevance to the combined profile.  
+6. **Playlist Creation:** If results are found, a "Create Playlist" section appears, allowing the user to save the "Kept" songs (plus the original "Include" songs) to a new playlist on the media server.  
+7. **Outcome:** The user discovers songs matching their custom sonic blend, visualized for better understanding, and can save these discoveries as a playlist.
+
+### **5.2. Technical Analysis (Algorithm-Level)**
+
+Song Alchemy leverages vector arithmetic on the song embeddings stored in the Voyager index.
+
+#### **Stage 1: API Call & Input Processing**
+
+1. **Route:** Clicking "Run Alchemy" sends a POST request to /api/alchemy (app\_alchemy.py).  
+2. **Payload:** Contains a list of items, each with an id and op ("ADD" or "SUBTRACT"), the desired number of results n, the temperature, and optionally an override for subtract\_distance.  
+3. **Validation:** The backend requires at least one "ADD" item.  
+4. **Vector Retrieval:** The core logic resides in tasks.song\_alchemy.song\_alchemy. It starts by fetching the embedding vectors for all provided add\_ids and sub\_ids using get\_vector\_by\_id (from the in-memory Voyager index cache).
+
+#### **Stage 2: Centroid Calculation**
+
+1. **Add Centroid:** Calculates the average vector of all "ADD" songs (add\_centroid).  
+2. **Subtract Centroid:** If "SUBTRACT" songs are provided, calculates their average vector (subtract\_centroid).
+
+#### **Stage 3: Candidate Search**
+
+1. **Nearest Neighbors:** Performs a nearest neighbor search using find\_nearest\_neighbors\_by\_vector centered on the add\_centroid. A significantly larger number of candidates (k \= n \* 4 or more) is requested initially to provide a pool for filtering and probabilistic sampling.
+
+#### **Stage 4: Filtering & Scoring**
+
+1. **Duplicate Removal:** Filters the initial candidates to remove the original ADD/SUBTRACT songs and apply standard duplicate filtering (distance-based via \_filter\_by\_distance, name-based via \_deduplicate\_and\_filter\_neighbors, and artist cap via MAX\_SONGS\_PER\_ARTIST).  
+2. **Subtract Filtering:** If a subtract\_centroid exists:  
+   * Calculates the direct distance (using get\_distance based on VOYAGER\_METRIC) between each remaining candidate and the subtract\_centroid.  
+   * Filters out candidates whose distance is *less than* the subtract\_distance threshold (obtained from the request payload or defaults like ALCHEMY\_SUBTRACT\_DISTANCE\_ANGULAR). These are stored separately as filtered\_out.  
+3. **Probabilistic Scoring (Softmax):**  
+   * For the remaining candidates (those close to add\_centroid and far enough from subtract\_centroid), calculates their distance to the add\_centroid.  
+   * Converts these distances into similarity scores (e.g., 1 / (distance \+ epsilon)).  
+   * Applies a **softmax function** using the provided temperature parameter: exp(similarity / temperature) / sum(exp(all\_similarities / temperature)).  
+     * Low temperature sharpens the probability distribution, favoring the very closest songs.  
+     * High temperature flattens the distribution, making selection more random among candidates.  
+4. **Selection:** Selects the top n candidates based on their softmax probabilities (either deterministically taking the highest probabilities or using weighted random sampling, depending on implementation details not fully shown but implied by "temperature").
+
+#### **Stage 5: 2D Projection (Optional Visualization)**
+
+1. **Dimensionality Reduction:** If candidates, centroids, or filtered songs exist, the backend performs dimensionality reduction (e.g., PCA, UMAP, or a custom discriminant projection) on their high-dimensional embedding vectors to get 2D coordinates (embedding\_2d). This allows plotting the relationships visually.
+
+#### **Stage 6: Response**
+
+1. **Formatting:** Packages the results:  
+   * results: The final list of n selected songs (with details and original distance).  
+   * filtered\_out: Songs removed by the subtract filter.  
+   * add\_centroid\_2d, subtract\_centroid\_2d: 2D coordinates of centroids.  
+   * add\_points, sub\_points: Original input songs with their 2D coordinates.  
+   * projection: The method used for 2D projection.  
+2. **Return:** Sends the JSON response to the frontend (alchemy.html) for display in the plot and table.
+
+#### **Stage 7: Playlist Creation**
+
+* Identical to Stage 4 of "Playlist from Similar Song," using the /api/create\_playlist endpoint. The track list includes the original "ADD" songs followed by the "kept" results, potentially trimmed to the requested n.
+
+### **5.3. Environment Variable Configuration**
+
+Song Alchemy uses the Voyager index and several specific parameters:
+
+#### **Core Infrastructure & Index**
+
+* DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** Used to fetch song details for results and input songs.  
+* REDIS\_URL: **(Required)** Used by the index reloading listener.  
+* INDEX\_NAME, VOYAGER\_QUERY\_EF, EMBEDDING\_DIMENSION: Used for querying the Voyager index.
+
+#### **Alchemy Parameters**
+
+* ALCHEMY\_DEFAULT\_N\_RESULTS: The default number of results (n) if not specified by the user.  
+* ALCHEMY\_MAX\_N\_RESULTS: The maximum allowed number of results (n).  
+* ALCHEMY\_TEMPERATURE: The default softmax temperature (τ) controlling result randomness/determinism.  
+* ALCHEMY\_SUBTRACT\_DISTANCE, ALCHEMY\_SUBTRACT\_DISTANCE\_ANGULAR, ALCHEMY\_SUBTRACT\_DISTANCE\_EUCLIDEAN: Default threshold for the subtract filter. The specific value used depends on VOYAGER\_METRIC.
+
+#### **Filtering Parameters (Shared with Similarity)**
+
+* MAX\_SONGS\_PER\_ARTIST: Caps the number of songs per artist allowed in the final results.  
+* DUPLICATE\_DISTANCE\_THRESHOLD\_COSINE, DUPLICATE\_DISTANCE\_THRESHOLD\_EUCLIDEAN: Used for initial duplicate filtering of candidates.  
+* DUPLICATE\_DISTANCE\_CHECK\_LOOKBACK: Used for initial duplicate filtering.  
+* VOYAGER\_METRIC: Determines which distance function (get\_distance) and subtract threshold (ALCHEMY\_SUBTRACT\_DISTANCE\_\*) are used.
+
+#### **Media Server (for Playlist Creation)**
+
+* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
+
+## **6\. Music Map**
+
+This section details the "Music Map" feature, which provides an interactive 2D visualization of the analyzed music library.
+
+### **6.1. Functional Analysis (High-Level)**
+
+The Music Map offers users a visual way to explore their music library based on sonic similarity. Songs that sound similar are plotted closer together in a 2D space. Users can interact with the map to discover relationships, select songs, and create playlists or song paths.
+
+#### **Key User Interactions & Workflow**
+
+1. **Prerequisite:** The "Start Analysis" task must have been run, which generates the embeddings and potentially a precomputed 2D projection.  
+2. **Initiation:** The user navigates to the "Music Map" page (map.html).  
+3. **Map Loading:** The page automatically loads and displays a subset (default 25%) of the analyzed songs on a 2D scatter plot using Plotly.js. Points are colored by their top mood/genre.  
+4. **Exploration:**  
+   * **Zoom/Pan:** Users can zoom and pan the plot using standard Plotly controls.  
+   * **Hover:** Hovering over a point reveals the song's Title, Artist, and top Mood/Genre.  
+   * **Map Size:** Buttons (25%, 50%, 75%, 100%) allow the user to load a larger, potentially more detailed (but slower) version of the map.  
+   * **Genre Filtering:** A clickable legend allows users to hide/show songs belonging to specific top moods/genres. "Hide all" / "Show all" controls are provided.  
+5. **Selection:**  
+   * **Click:** Clicking on a song point adds it to a selection list displayed below the map.  
+   * **Lasso/Box Select:** Users can drag to select multiple points within an area, adding them to the selection list.  
+   * **Selection Management:** The selection list shows chosen songs. Users can remove individual songs or "Clear all".  
+6. **Search & Highlight:**  
+   * Users can search for specific songs by Artist and/or Title using autocomplete fields.  
+   * Clicking "Search" highlights the selected or first found song on the map with a distinct marker and centers the view on it (highlighting can be toggled). The searched song is also added to the selection.  
+7. **Actions on Selection:**  
+   * **Create playlist:** Creates a playlist on the media server containing all currently selected songs.  
+   * **Song Path:** If 2 to 10 songs are selected, this button becomes enabled. Clicking it computes and draws paths between consecutive selected songs directly on the map overlay and adds the path songs to the selection list.  
+8. **Refresh:** A refresh button clears all selections and overlays (search highlights, paths) and reloads the map data.  
+9. **Outcome:** Users gain a visual understanding of their library's sonic landscape, discover clusters of similar music, and can directly create playlists or explore transitions based on their interactions.
+
+### **6.2. Technical Analysis (Algorithm-Level)**
+
+The Music Map relies on precomputed or dynamically generated 2D projections of the high-dimensional song embeddings and utilizes caching for performance.
+
+#### **Stage 1: Data Preparation & Caching (Application Startup / Analysis End)**
+
+1. **Precomputed Projection (Optional but Recommended):** During the run\_analysis\_task finalization (in analysis.py), after the Voyager index is built, it attempts to call build\_and\_store\_map\_projection('main\_map') (from app\_helper.py). This function likely uses UMAP or PCA to generate 2D coordinates for *all* embeddings and saves them (along with the corresponding item\_id list) to the database.  
+2. **Startup Cache Building:** When the Flask application starts (app.py), a background thread runs init\_map\_cache (app\_map.py), which calls build\_map\_cache.  
+3. **build\_map\_cache Logic:**  
+   * Fetches *all* item\_id, title, author, mood\_vector, and embedding data from the database.  
+   * Attempts to load the precomputed projection using load\_map\_projection('main\_map').  
+   * If precomputed coordinates exist, it uses them.  
+   * If any songs lack precomputed coordinates (or the precomputation failed/was skipped), it uses dimensionality reduction helpers (imported from tasks.song\_alchemy, preferring UMAP then PCA) to compute 2D coordinates *on-the-fly* for the missing songs.  
+   * It creates lightweight versions of song data (item\_id, title, artist, embedding\_2d, mood\_vector (simplified to top mood)).  
+   * It generates deterministic samples of the full dataset at 100%, 75%, 50%, and 25% using \_sample\_items.  
+   * For each sample size ('100', '75', '50', '25'), it serializes the song list to JSON, compresses it using gzip, and stores both the raw JSON bytes and the gzipped bytes in the in-memory MAP\_JSON\_CACHE dictionary.
+
+#### **Stage 2: Serving Map Data (API Endpoint)**
+
+1. **Route:** The frontend (map.html) requests map data via fetchMapParam which calls the /api/map endpoint (app\_map.py), typically with a percent parameter (e.g., ?percent=50).  
+2. **Cache Lookup:** The endpoint determines the requested percentage (defaulting to '25') and looks up the corresponding entry in the MAP\_JSON\_CACHE.  
+3. **Efficient Serving:**  
+   * If the client accepts gzip (Accept-Encoding: gzip) and gzipped data is available in the cache, it returns the pre-compressed json\_gzip\_bytes with the appropriate Content-Encoding header.  
+   * Otherwise, it returns the raw json\_bytes.  
+   * **Crucially, it sets Cache-Control: no-store headers to prevent browser/proxy caching of the map data itself**, ensuring fresh data on reload. The data is served entirely from the server's RAM cache.
+
+#### **Stage 3: Frontend Rendering & Interaction (map.html JavaScript)**
+
+1. **Loading:** On page load, it calls loadAndPlot('25') to fetch and display the default 25% map.  
+2. **Plotting:**  
+   * Uses Plotly.js (scattergl type for WebGL acceleration) to render the 2D scatter plot.  
+   * Assigns colors based on the top mood/genre (colorPaletteFor, topGenre).  
+   * Creates a single Plotly trace containing all points, using customdata to store the item\_id for each point.  
+   * Sets hovermode: 'closest' and dragmode: 'lasso' for interaction.  
+   * Generates a custom clickable HTML legend for genre filtering.  
+3. **Interaction Handlers (attachPlotHandlers):**  
+   * plotly\_selected: Triggered by lasso/box select. Extracts item\_ids from the event points using customdata and adds them (up to a cap) to the window.\_plotSelection array. Updates the selection panel (renderSelectionPanel).  
+   * plotly\_click: Extracts the item\_id of the clicked point and adds it to window.\_plotSelection. Updates the selection panel.  
+4. **Selection Management:**  
+   * window.\_plotSelection stores the array of selected item\_ids.  
+   * renderSelectionPanel dynamically builds the HTML list of selected songs with "REMOVE" buttons.  
+   * removeFromSelection removes an ID from the array and re-renders the panel.  
+   * "Clear all" button clears the array and re-renders.  
+5. **Genre Filtering:**  
+   * Clicking a genre in the custom legend calls toggleGenre, which adds/removes the genre from window.\_hiddenGenres.  
+   * applyGenreFilterAndRerender filters the *full* dataset (window.\_plotPointsFull) based on window.\_hiddenGenres, rebuilds the Plotly trace data with the filtered points, and calls Plotly.react (or Plotly.newPlot for large datasets) to update the chart efficiently, preserving zoom/pan state and overlays.  
+   * applyLegendStyles updates the visual style (strikethrough) of the legend items.  
+6. **Search:** Uses the same autocomplete logic (/api/search\_tracks) as other pages. Clicking "Search" calls highlightSongById, which finds the song's coordinates (findPointById), adds a distinct overlay shape (addHighlightOverlay via Plotly.relayout), and updates the status text. Searched songs are added to the selection.  
+7. **Playlist Creation:** The "Create playlist" button gathers IDs from window.\_plotSelection and sends them to the /api/create\_playlist endpoint.  
+8. **Song Path Integration:** The "Song Path" button (enabled for 2-10 selected songs) iterates through consecutive pairs in window.\_plotSelection, calls /api/find\_path for each pair, appends the resulting path songs to the selection (appendSongsToSelectionPanel), and draws the path segments on the map using Plotly shapes (drawPathOnMap).  
+9. **Overlays:** Search highlights and path segments are added as Plotly shapes. Functions like clearMapOverlays, togglePathPoints, togglePathLine, toggleSearchHighlight manage the visibility and removal of these shapes using Plotly.relayout. State is preserved across re-renders triggered by genre filtering.
+
+### **6.3. Environment Variable Configuration**
+
+The Music Map relies heavily on data generated during Analysis but has fewer direct configurations itself.
+
+#### **Core Infrastructure**
+
+* DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** Used by build\_map\_cache to fetch all song data and embeddings at startup, and potentially to load precomputed projections.  
+* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used by the "Create playlist" button functionality.
+
+#### **Data & Visualization (Implicit)**
+
+* **Embedding Data:** The existence and quality of the embeddings in the embedding table (generated by Song Analysis using EMBEDDING\_MODEL\_PATH) are fundamental.  
+* **Mood Data:** The mood\_vector in the score table (generated by Song Analysis using PREDICTION\_MODEL\_PATH) is used for coloring points and the legend.  
+* **Projection Method:** While not directly configured via a dedicated env var for the map *serving*, the method used to generate the 2D coordinates (precomputed during analysis or fallback in build\_map\_cache, potentially influenced by availability of UMAP/PCA libraries) determines the map's layout. The specific projection method used is reported in the API response and displayed below the map.
+
+#### **Related Features (Used via Map UI)**
+
+* PATH\_\* variables: Used when the "Song Path" button is clicked.  
+* MAX\_SONGS\_PER\_ARTIST, DUPLICATE\_DISTANCE\_THRESHOLD\_\*, etc.: Used implicitly by the /api/find\_path calls triggered from the map.
+
+## **7\. Sonic Fingerprint**
+
+This section details the "Sonic Fingerprint" feature, designed to generate a personalized playlist reflecting a user's listening habits.
+
+### **7.1. Functional Analysis (High-Level)**
+
+The Sonic Fingerprint feature creates a unique playlist tailored to an individual user's listening history. It analyzes the user's most played songs, giving more weight to recently played tracks, to create a sonic profile. It then finds other songs in the library that match this profile.
+
+#### **Key User Interactions & Workflow**
+
+1. **Prerequisite:** The "Start Analysis" task must have been run to populate the database with embeddings. The media server must track play counts and last played times for this feature to be effective.  
+2. **Initiation:** The user navigates to the "Sonic Fingerprint" page (sonic\_fingerprint.html).  
+3. **Credential Entry:** The user needs to provide their specific media server credentials (Username/User ID and potentially an API Token or Password). This is necessary because listening history is user-specific. Default credentials from the server config might pre-populate some fields, but the user must confirm or enter their own if different.  
+4. **Configuration:**  
+   * **Number of results:** The user specifies the desired total number of songs (n) for the final playlist.  
+5. **Execution:** The user clicks the **"Generate My Sonic Fingerprint"** button.  
+6. **Results Display:**  
+   * The backend fetches the user's listening history, calculates the weighted fingerprint vector, and searches the Voyager index.  
+   * The resulting recommended songs (a mix of the user's top played songs and newly discovered similar tracks) are displayed in a table (results-table-wrapper) showing Title, Artist, and Distance (similarity to the fingerprint).  
+7. **Playlist Creation:** If results are found, a "Create Playlist" section appears. The user enters a name (default "My Sonic Fingerprint Mix") and clicks **"Create Playlist on Media Server"**.  
+8. **Outcome:** A personalized playlist reflecting the user's listening taste, including both familiar top tracks and newly recommended similar songs, is created on their media server account.
+
+### **7.2. Technical Analysis (Algorithm-Level)**
+
+This feature combines media server interaction for user history with vector analysis and Voyager search.
+
+#### **Stage 1: API Call & Credential Handling**
+
+1. **Route:** Clicking "Generate My Sonic Fingerprint" sends a POST (or GET for backward compatibility) request to /api/sonic\_fingerprint/generate (app\_sonic\_fingerprint.py).  
+2. **Payload/Params:** Contains the desired number of results (n) and user-specific credentials (jellyfin\_user\_identifier, jellyfin\_token or navidrome\_user, navidrome\_password).  
+3. **Credential Resolution:**  
+   * The backend retrieves the credentials from the request.  
+   * For Jellyfin/Emby, it uses resolve\_emby\_jellyfin\_user to convert a username/identifier into the required User ID using the provided token.  
+   * It packages these credentials into a user\_creds dictionary.
+
+#### **Stage 2: Fingerprint Generation (generate\_sonic\_fingerprint in sonic\_fingerprint\_manager.py)**
+
+1. **Fetch Top Songs:** Calls get\_top\_played\_songs (from mediaserver.py), passing the user\_creds. This function interacts with the media server API (based on MEDIASERVER\_TYPE) to retrieve the user's top SONIC\_FINGERPRINT\_TOP\_N\_SONGS most played tracks.  
+2. **Fetch Embeddings:** Retrieves the embedding vectors (embedding\_vector) for these top songs from the application's PostgreSQL database (embedding table) using get\_tracks\_by\_ids.  
+3. **Calculate Recency Weights:**  
+   * Iterates through the top songs (for which embeddings were found).  
+   * For each song, calls get\_last\_played\_time (from mediaserver.py), passing user\_creds, to get the timestamp of the last play.  
+   * Calculates days\_since\_played.  
+   * Applies an **exponential decay function** (weight \= exp(-decay\_rate \* days\_since\_played)) to calculate a weight. The half\_life (set to 30 days) determines how quickly the weight decreases for older plays. Songs without a valid last played time receive a fixed lower weight.  
+4. **Weighted Average:** Calculates the weighted average of the embedding vectors (average\_vector). This vector represents the user's "sonic fingerprint".  
+5. **Determine Target Size:** Calculates how many *new* neighbors (neighbors\_to\_find) are needed to reach the total desired playlist size (total\_desired\_size, default SONIC\_FINGERPRINT\_NEIGHBORS), accounting for the number of top songs used to create the fingerprint (num\_seed\_songs).  
+6. **Voyager Search:** Calls find\_nearest\_neighbors\_by\_vector, using the calculated average\_vector as the query and requesting neighbors\_to\_find results. eliminate\_duplicates is set to True to ensure variety.  
+7. **Combine Results:**  
+   * Starts the final list with the original top songs used for the fingerprint (contributing\_seed\_ids).  
+   * Appends similar songs found by Voyager, skipping any duplicates, until the total\_desired\_size is reached.  
+8. **Return:** Returns the combined list of song results (dictionaries with item\_id and distance).
+
+#### **Stage 3: Formatting & Response (app\_sonic\_fingerprint.py)**
+
+1. **Fetch Details:** Retrieves Title and Artist details for the final list of item\_ids using get\_score\_data\_by\_ids.  
+2. **Format:** Combines the details and distances into the final JSON structure.  
+3. **Return:** Sends the list of recommended tracks to the frontend.
+
+#### **Stage 4: Playlist Creation**
+
+* Uses the same /api/create\_playlist endpoint as other features. Crucially, the user\_creds (collected in Stage 1\) are passed along in the request payload from the frontend (sonic\_fingerprint.html) to ensure the playlist is created for the correct user on the media server via create\_instant\_playlist.
+
+### **7.3. Environment Variable Configuration**
+
+The Sonic Fingerprint feature uses the following configurations:
+
+#### **Core Infrastructure & Index**
+
+* DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** Used to fetch embeddings and song details.  
+* INDEX\_NAME, VOYAGER\_QUERY\_EF, EMBEDDING\_DIMENSION: Used for querying the Voyager index.
+
+#### **Media Server**
+
+* MEDIASERVER\_TYPE: **(Required)** Determines how to interact with the media server API to get play history and create playlists.  
+* JELLYFIN\_URL, JELLYFIN\_USER\_ID, JELLYFIN\_TOKEN: Default Jellyfin credentials (used if user doesn't provide specific ones, and for resolving usernames).  
+* NAVIDROME\_URL, NAVIDROME\_USER, NAVIDROME\_PASSWORD: Default Navidrome credentials (used if user doesn't provide specific ones).  
+* *(Other media server credentials)*: Used similarly based on MEDIASERVER\_TYPE.
+
+#### **Sonic Fingerprint Parameters**
+
+* SONIC\_FINGERPRINT\_TOP\_N\_SONGS: The number of the user's most played songs to use as the basis for the fingerprint calculation.  
+* SONIC\_FINGERPRINT\_NEIGHBORS: The default total number of songs desired in the final generated playlist if the user doesn't specify n.
+
+#### **Filtering Parameters (Used during Neighbor Search)**
+
+* MAX\_SONGS\_PER\_ARTIST, DUPLICATE\_DISTANCE\_THRESHOLD\_\*, DUPLICATE\_DISTANCE\_CHECK\_LOOKBACK, VOYAGER\_METRIC: Used by \`find\_nearest\_neighbors\_by\_vector\` and other neighbor-search helpers to apply duplicate and artist-cap filtering.
+
+## **8\. Instant Playlist (Chat)**
+
+This section documents the Instant Playlist (Chat) feature: a conversational UI that accepts a user's natural-language prompt (mood, activity, description), uses an AI model to produce a playlist intent and a safe read-only query, executes the query against the analyzed music library, and optionally creates a playlist on the configured media server.
+
+### **8.1. Functional Analysis (High-Level)**
+
+From a user's perspective, Instant Playlist (Chat) provides a fast, natural-language-driven way to generate playlists without needing to configure clustering or sampling parameters.
+
+Key User Interactions & Workflow
+
+1. The user navigates to the Instant Playlist page (chat UI under the `/chat` blueprint). The page shows AI provider/model controls and a single prompt textarea (see `templates/chat.html`).
+2. The user types a prompt describing mood, activity, or desired songs (e.g., "upbeat workout with electronic funk") and clicks "Get Playlist Idea".
+3. The frontend gathers UI options (provider, model, optional Ollama server URL override) and posts to `/chat/api/chatPlaylist` with `{ userInput, ai_provider, ai_model, ... }`.
+4. The backend constructs a structured AI prompt asking for two things: a short human-friendly message summarizing the playlist intent and a parameterized, read-only SQL (or structured query) that will return candidate songs (or, alternatively, a validated structured query object). It calls an AI provider via helper functions in `ai.py`.
+5. The AI's response is validated and sanitized server-side. If valid, the server executes the query (with parameter binding) against PostgreSQL, returning the message, the executed SQL (for transparency), and the resulting songs. If invalid or unsafe, the server either rejects the AI output and returns an error or falls back to a safe templated query built from extracted entities.
+6. The frontend displays:
+   * Collapsible AI interaction log (full message),
+   * Collapsible executed query (for debugging/transparency),
+   * The resulting playlist (ordered list of songs), and
+   * A "Create Playlist on Media Server" section to push the returned songs to the user's configured media server.
+
+Outcome
+
+The user receives an instant playlist that reflects their natural language prompt, with the option to persist it to their media server. The UI emphasizes transparency by showing the AI message and executed query.
+
+### **8.2. Technical Analysis (Algorithm-Level)**
+
+The backend emphasizes structured AI output, safety, and result-size limits. The implementation uses `ai.py` helpers to call Ollama/Gemini/Mistral, enforces timeouts/delays, and strictly validates any AI-generated query.
+
+Stage 1: Request Handling
+
+1. Endpoint: POST `/chat/api/chatPlaylist` (registered by `chat_bp` in `app_chat.py`). The payload includes `userInput`, `ai_provider`, `ai_model`, and provider-specific overrides (e.g., `ollama_server_url`).
+2. Validation: Ensure `userInput` is present and non-empty. Normalize provider value (uppercase) and select server-side defaults from config if client omitted them.
+
+Stage 2: Prompt Construction
+
+1. Build a prompt that asks the model to return a structured JSON object with explicit keys: `message` (string), `query` (parameterized SQL string or a high-level structured query representation), and `params` (array/object of bind parameters). Example instruction: "Return JSON: {message:'..', query:'SELECT ... WHERE ... LIMIT $1', params:[50]}".
+2. Include explicit constraints in the prompt: SQL must be READ-ONLY (SELECT only), no joins that access non-music tables, result size limit, and only allowed columns (item_id, title, author, album, score, feature fields). Ask the model to prefer parameterized queries and to avoid database-specific features.
+
+Stage 3: Call AI Provider
+
+1. Use `ai.py` to call the selected provider. For Ollama, the app may call an internal or user-provided Ollama server URL (streaming support exists). For Gemini, the server uses `google.generativeai`; for Mistral, it uses `mistralai`.
+2. Apply provider-specific delays/timeouts (Gemini/Mistral use env-controlled call-delay variables) and keep a high-level timeout to avoid long waits. Log the full raw AI response for debugging (but not API keys).
+
+Stage 4: Validate & Sanitize AI Output
+
+1. If the AI returns JSON with `query` and `params`, parse it and inspect `query` to ensure it:
+   * Is read-only (only SELECT),
+   * Does not contain prohibited keywords (INSERT, UPDATE, DELETE, DROP, ALTER, COPY, TRUNCATE),
+   * References only allowed table(s) (score, embedding, track-related tables) and allowed columns.
+2. If the AI returns freeform SQL or text, attempt to extract intent (mood/genre/tempo/entities) and map to a safe, parameterized server-side template query (e.g., a template that selects based on mood vector similarity + tempo range + artist cap).
+3. Enforce a maximum `LIMIT` (e.g., `ALCHEMY_MAX_N_RESULTS`) regardless of AI-specified limits.
+
+Stage 5: Execute Query & Post-process Results
+
+1. Execute the validated, parameterized query against PostgreSQL and fetch rows.
+2. Post-process results: limit final result size, apply de-duplication (by title/artist), and enforce `MAX_SONGS_PER_ARTIST` if requested. Build the `query_results` array for the response.
+3. Save the executed SQL and params to the response so the frontend can show the executed query in a collapsible section.
+
+Stage 6: Optional Playlist Creation on Media Server
+
+1. The frontend posts the playlist name and `item_ids` to an endpoint that maps internal `item_id`s to media-server-specific IDs and creates the playlist using the configured media server adapter (Jellyfin/Emby/Navidrome). These adapter functions live in `mediaserver.py`.
+2. Return the media server response (success, playlist id, or error) to the frontend and display it in the UI.
+
+Safety & Fallbacks
+
+* If AI output fails validation, return a friendly error and either (a) allow the user to retry, (b) run a safe fallback query built from extracted entities, or (c) return an empty result with an explanation.
+* Limit the number of AI calls per minute or per session to avoid abuse. Record AI call metadata (time, provider, model) for observability.
+
+### **8.3. Environment Variable Configuration**
+
+Instant Playlist (Chat) reuses many existing infra variables and adds a few chat-specific ones.
+
+Core / Shared
+
+* `REDIS_URL`, `DATABASE_URL`, `TEMP_DIR`, etc. — core infra used elsewhere in the app.
+
+AI / Chat Specific
+
+* `AI_MODEL_PROVIDER` — Default chat AI provider (OLLAMA, GEMINI, MISTRAL, NONE).
+* `OLLAMA_SERVER_URL` — Default Ollama server (e.g., `http://localhost:11434/api/generate`) used when provider is OLLAMA. The frontend may supply an override `ollama_server_url` per-request.
+* `OLLAMA_MODEL_NAME` — Default Ollama model name for playlist-related prompts.
+* `GEMINI_API_KEY` — Server-side Google Gemini key used for GEMINI provider.
+* `GEMINI_MODEL_NAME` — Default Gemini model (e.g., `gemini-2.5-pro`).
+* `GEMINI_API_CALL_DELAY_SECONDS` — Optional delay to respect Gemini rate limits (used by `ai.py`).
+* `MISTRAL_API_KEY` — Server-side Mistral key used for MISTRAL provider.
+* `MISTRAL_MODEL_NAME` — Default Mistral model for playlist prompts.
+* `MISTRAL_API_CALL_DELAY_SECONDS` — Optional delay for Mistral calls.
+
+Database safety for AI chat
+
+* `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD` — Credentials for a restricted, read-only DB role that the chat/AI flow uses to execute validated, parameterized SELECT queries. The application creates/uses this low-privilege user to ensure any AI-generated SQL runs without write or DDL permissions. Documented here for operators who manage DB roles and secrets.
+
+Limits and Safety
+
+* `ALCHEMY_DEFAULT_N_RESULTS` / `ALCHEMY_MAX_N_RESULTS` — Caps the number of songs returned by AI-generated queries.
+* `CHAT_SQL_ALLOWED_READ_ONLY` — Conceptual flag: code enforces read-only SQL execution for AI results. (Enforced in code; not required to be present as an env var.)
+
+Operational Notes
+
+* API keys remain server-side; the frontend should never submit third-party API keys. For Ollama the UI may optionally provide an Ollama server URL if users self-host and the server is reachable from the UI.
+* Log AI interactions (message, executed query, provider, model) for debugging and observability; avoid logging secrets.
+
+## Notes
+
+This design favors structured AI output (JSON with `message`, `query`, `params`) and strict validation to safely combine LLM creativity with controlled database queries. When a generated query cannot be validated, the server should fall back to a safe template-based query derived from the AI's intent.
+
 ```
 
-You can tune the weights to emphasize:
+## **9. Database Cleaning**
 
-* **Purity** → for tighter, more focused playlists
-* **Diversity** → for broader, more eclectic playlist collections
+The Database Cleaning feature identifies and (optionally) removes tracks/albums that exist in the application's database but are no longer present on the configured media server. It runs as an asynchronous RQ task and is intended to keep the score/embedding tables in sync with the user's media server.
 
-### **AI Playlist Naming**
+### **9.1. Functional Analysis (High-Level)**
 
-After the clustering algorithm has identified groups of similar songs, AudioMuse-AI can optionally use an AI model to generate creative, human-readable names for the resulting playlists. This replaces the default "Mood_Tempo" naming scheme with something more evocative.
+From a user's perspective, Database Cleaning is accessible from the Analysis UI and provides a safe, auditable way to remove stale entries from the database.
 
-1.  **Input to AI:** For each cluster, the system extracts key characteristics derived from the cluster's centroid (like predominant moods and tempo) and provides a sample list of songs from that cluster.
-2.  **AI Model Interaction:** This information is sent to a configured AI model (either a self-hosted **Ollama** instance or a cloud-based one like **Google Gemini** or **Mistral**) along with a carefully crafted prompt.
-3.  **Prompt Engineering:** The prompt guides the AI to act as a music curator and generate a concise playlist name (15-35 characters) that reflects the mood, tempo, and overall vibe of the songs, while adhering to strict formatting rules (standard ASCII characters only, no extra text).
-4.  **Output Processing:** The AI's response is cleaned to ensure it meets the formatting and length constraints before being used as the final playlist name (with the `_automatic` suffix appended later by the task runner).
+Key User Interactions & Workflow
 
-This step adds a layer of creativity to the purely data-driven clustering process, making the generated playlists more appealing and easier to understand at a glance. The choice of AI provider and model is configurable via environment variables and the frontend.
+1. The user opens the Database Cleaning page (`/cleaning`) served by the `analysis_bp` blueprint. The page shows a summary area, Start/Clear buttons, and a status panel (see `templates/cleaning.html`).
+2. The user clicks "Start Cleaning". The frontend requests `/api/cleaning/start` which enqueues a high-priority RQ job (`tasks.cleaning.identify_and_clean_orphaned_albums_task`).
+3. The cleaning job performs these high-level steps:
+   - Fetch all albums/tracks from the configured media server via the mediaserver adapter (Jellyfin/Navidrome/Emby).
+   - Read all tracks currently present in the application's PostgreSQL database (score + embedding tables).
+   - Compute the set difference to discover orphaned tracks (in DB but not on the media server).
+   - Group orphaned tracks by artist/album and present a summary.
+   - Apply a safety limit (configured via `CLEANING_SAFETY_LIMIT`) to avoid accidental large deletions.
+   - Optionally delete the orphaned tracks and related references (embedding rows, playlist entries), and rebuild the Voyager index.
+4. The UI polls the task status (same `active_tasks` / `status` APIs used elsewhere) and displays a live log, progress bar, and final summary. The user can cancel the running task via `/api/cancel/<task_id>`.
 
-## Concurrency Algorithm Deep Dive
+Outcome
 
-AudioMuse-AI leverages Redis Queue (RQ) to manage and execute long-running processes like audio analysis and evolutionary clustering in parallel across multiple worker nodes. This architecture, primarily orchestrated within `tasks.py`, is designed for scalability and robust task management.
+After a successful run the database has fewer stale records, the Voyager index is rebuilt, and the UI shows a detailed summary of deleted tracks and any failures.
 
-1.  **Task Queuing with Redis Queue (RQ):**
-    *   When a user initiates an analysis or clustering job via the web UI, the main Flask application doesn't perform the heavy lifting directly. Instead, it enqueues a task (e.g., `run_analysis_task` or `run_clustering_task`) into a Redis queue.
-    *   Separate RQ worker processes, which can be scaled independently (e.g., running multiple `audiomuse-ai-worker` pods in Kubernetes), continuously monitor this queue. When a new task appears, an available worker picks it up and begins execution.
+### **9.2. Technical Analysis (Algorithm-Level)**
 
-2.  **Parallel Processing on Multiple Workers:**
-    *   This setup allows multiple tasks to be processed concurrently. For instance, if you have several RQ workers, they can simultaneously analyze different albums or run different batches of clustering iterations. This significantly speeds up the overall processing time, especially for large music libraries or extensive clustering runs.
+The cleaning process is implemented as a fault-tolerant RQ job that emphasizes safety, logging, and transparent reporting.
 
-3.  **Hierarchical Task Structure & Batching for Efficiency:**
-    To minimize the overhead associated with frequent queue interactions (writing/reading task status, small job processing), tasks are structured hierarchically and batched:
-    *   **Analysis Tasks:** The `run_analysis_task` acts as a parent task. It fetches a list of albums and then enqueues individual `analyze_album_task` jobs for each album. Each `analyze_album_task` processes all tracks within that single album. This means one "album analysis" job in the queue corresponds to the analysis of potentially many songs, reducing the number of very small, granular tasks.
-    *   **Clustering Tasks:** Similarly, the main `run_clustering_task` orchestrates the evolutionary clustering. It breaks down the total number of requested clustering runs (e.g., 1000) into smaller `run_clustering_batch_task` jobs. Each batch task (e.g., `run_clustering_batch_task`) then executes a subset of these iterations (e.g., 20 iterations per batch). This strategy avoids enqueuing thousands of tiny individual clustering run tasks, again improving efficiency.
+Stage 1: Job Enqueueing
 
-4.  **Advanced Task Monitoring and Cancellation:**
-    A key feature implemented in `tasks.py` is the ability to monitor and cancel tasks *even while they are actively running*, not just when they are pending in the queue.
-    *   **Cooperative Cancellation:** Both parent tasks (like `run_analysis_task` and `run_clustering_task`) and their child tasks (like `analyze_album_task` and `run_clustering_batch_task`) periodically check their own status and the status of their parent in the database.
-    *   If a task sees that its own status has been set to `REVOKED` (e.g., by a user action through the UI) or if its parent task has been revoked or has failed, it will gracefully stop its current operation, perform necessary cleanup (like removing temporary files), and update its status accordingly.
-    *   This is more sophisticated than typical queue systems where cancellation might only prevent a task from starting. Here, long-running iterations or album processing loops can be interrupted mid-way.
+1. Endpoint: POST `/api/cleaning/start` (defined in `app_analysis.py`). It performs lightweight validation and enqueues the task `tasks.cleaning.identify_and_clean_orphaned_albums_task` with a UUID job id and retry policy.
+2. The endpoint records a TASK_STATUS_PENDING entry in the database via `save_task_status` so the UI can immediately display the new task.
 
-5.  **Status Tracking:**
-    *   Throughout their lifecycle, tasks frequently update their progress, status (e.g., `STARTED`, `PROGRESS`, `SUCCESS`, `FAILURE`, `REVOKED`), and detailed logs into the PostgreSQL database. The Flask application reads this information to display real-time updates on the web UI.
-    *   RQ's job metadata is also updated, but the primary source of truth for detailed status and logs is the application's database.
+Stage 2: Media Server Enumeration
 
-## **Instant Chat Deep Dive**
+1. The cleaning task calls the mediaserver adapter's `get_recent_albums(0)` or equivalent to fetch all albums/tracks from the media server (0 indicates fetch all).
+2. It iterates albums and collects all media-server track IDs. It handles transient errors per-album, logs warnings, and continues rather than failing the whole job.
 
-The "Instant Playlist" feature, accessible via `chat.html`, provides a direct way to generate playlists using natural language by leveraging AI models to construct and execute PostgreSQL queries against your analyzed music library.
+Stage 3: Database Scan & Orphan Detection
 
-**Core Workflow:**
+1. The task queries the database for distinct `item_id` values joining `score` and `embedding` to ensure only fully analyzed tracks are considered.
+2. Orphaned track IDs are computed as `database_track_ids - media_server_track_ids`.
+3. Orphaned tracks are grouped by artist (and optionally album) for human-friendly presentation.
 
-1.  **User Interface (`chat.html`):**
-    *   The user selects an AI provider (Ollama, Gemini or Mistral) and can customize model names, Ollama server URLs, or Gemini/Mistral API keys. These default to values from the server's `config.py` but can be overridden per session in the UI.
-    *   The user types a natural language request (e.g., "sad songs for a rainy day" or "energetic pop from the 2020s").
+Stage 4: Safety, Presentation, and Deletion
 
-2.  **API Call (`app_chat.py` - `/api/chatPlaylist`):**
-    *   The frontend sends the user's input, selected AI provider, and any custom model/API parameters to this backend endpoint.
+1. Safety: If the number of orphaned albums/tracks exceeds `CLEANING_SAFETY_LIMIT`, the job limits the deletion set to the first N (and logs that the safety limit was applied).
+2. Deletion: The task calls `delete_orphaned_albums_sync(orphaned_track_ids)` which removes rows from `embedding`, `score`, and any playlist/auxiliary tables referencing those tracks, handling FK constraints and committing in a transaction. Failures are collected and returned.
+3. Rebuild Index: On success (or even when no orphans were found), the task rebuilds the Voyager index by calling `build_and_store_voyager_index(get_db())` to ensure the in-memory index matches the DB.
 
-3.  **Prompt Engineering (`app_chat.py`):**
-    *   A detailed system prompt (`base_expert_playlist_creator_prompt`) is used. This prompt instructs the AI model to act as an expert PostgreSQL query writer specializing in music. It includes:
-        *   Strict rules for the output (SQL only, specific columns, `LIMIT 25`).
-        *   The database schema for the `public.score` table.
-        *   Detailed querying instructions for `mood_vector`, `other_features`, `tempo`, `energy`, and `author`.
-        *   Examples of user requests and the corresponding desired SQL queries.
-        *   A list of `MOOD_LABELS` and `OTHER_FEATURE_LABELS` available in the `mood_vector` and `other_features` columns.
-        *   Specific instructions for handling requests for "top," "famous," or "trending" songs, suggesting the use of `CASE WHEN` in `ORDER BY` to prioritize known hits.
-        *   Guidance on using `UNION ALL` for combining different criteria.
-    *   The user's natural language input is appended to this master prompt.
+Stage 5: Logging & Task Status
 
-4.  **AI Model Interaction (`ai.py` via `app_chat.py`):**
-    *   Based on the selected provider, `app_chat.py` calls either `get_ollama_playlist_name`, `get_gemini_playlist_name` `get_mistral_playlist_name` from `ai.py`.
-    *   These functions send the complete prompt to the respective AI model (Ollama, Gemini or Mistral).
+1. The RQ job updates the RQ job meta and persistent `task_status` rows frequently via `save_task_status` and `current_job.meta` updates, including a `log` array and `progress` percentage.
+2. The UI polls `/api/active_tasks` and displays truncated logs (server truncates to last 10 entries) and final `final_summary_details` when the job completes.
 
-5.  **SQL Query Processing (`app_chat.py` - `clean_and_validate_sql`):**
-    *   The raw SQL string returned by the AI is processed:
-        *   Markdown (like ```sql) is stripped.
-        *   The query is normalized to start with `SELECT`.
-        *   Unescaped single quotes within potential string literals (e.g., "L'amour") are escaped to `''` (e.g., "L''amour") using a regex (`re.sub(r"(\w)'(\w)", r"\1''\2", cleaned_sql)`).
-        *   The string is normalized to ASCII using `unicodedata.normalize` to handle special characters.
-        *   `sqlglot.parse` is used to parse the SQL (as PostgreSQL dialect). This helps validate syntax and further sanitize the query.
-        *   The `LIMIT` clause is enforced to be `LIMIT 25`. If a different limit is present, it's changed; if no limit exists, it's added.
-        *   The query is re-serialized by `sqlglot` to ensure a clean, valid SQL string.
+Error Handling & Resilience
 
-6.  **Database Execution (`app_chat.py`):**
-    *   Before execution, the system ensures a dedicated, restricted database user (`AI_CHAT_DB_USER_NAME` from `config.py`) exists. This user is automatically created if it doesn't exist and is granted `SELECT` ONLY permissions on the `public.score` table.
-    *   The validated SQL query is executed against the PostgreSQL database using `SET LOCAL ROLE {AI_CHAT_DB_USER_NAME};`. This ensures the query runs with the restricted permissions of this AI-specific user for that transaction.
+* Database errors (OperationalError) are surfaced and cause the job to be retried (RQ retry policy). Transient media-server API errors are logged but do not abort the whole run unless they prevent completing essential steps.
+* Deletion is transactional where possible; partial failures are captured and returned in the summary.
 
-7.  **Response to Frontend (`chat.html`):**
-    *   The results (list of songs: `item_id`, `title`, `author`) or any errors are sent back to `chat.html`.
-    *   The frontend displays the AI's textual response (including the generated SQL and any processing messages) and the list of songs.
-    *   If songs are returned, a form appears allowing the user to name the playlist. Submitting this form calls another endpoint (`/api/createJellyfinPlaylist`) in `app_chat.py` which uses the Jellyfin or Navidrome API to create the playlist with the chosen name (appended with `_instant`) and the retrieved song IDs.
+### **9.3. Environment Variable Configuration**
 
-## Playlist from Similar song - Deep dive
+The cleaning process uses core infra variables and a few cleaning-specific ones.
 
-The "Playlist from Similar Song" feature provides an interactive way to discover music by finding tracks that are sonically similar to a chosen song. This process relies on a powerful combination of pre-computed audio embeddings and a specialized high-speed search index.
+Core Infra
 
-**Core Workflow:**
+* `REDIS_URL` — Required by RQ for job queueing and for the background listener used elsewhere.
+* `DATABASE_URL` — Required to query and delete database rows, and to rebuild the Voyager index.
+* `MEDIASERVER_TYPE`, `JELLYFIN_URL`, `JELLYFIN_TOKEN`, `NAVIDROME_URL`, etc. — Credentials used by the mediaserver adapter to enumerate media server albums and to resolve track IDs.
 
-1. **Index Creation (During Analysis Task):**  
-   * The foundation of this feature is an **Approximate Nearest Neighbors (ANN) index**, which is built using Spotify's **Voyager** library.  
-   * During the main "Analysis Task," after the 200-dimensional MusiCNN embedding has been generated for each track, a dedicated function (build\_and\_store\voyager\_index) is triggered.  
-   * This function gathers all embeddings from the database and uses them to build the Voyager index. It uses an 'angular' distance metric, which is highly effective for comparing the "direction" of high-dimensional vectors like audio embeddings, thus capturing sonic similarity well.  
-   * The completed index, which is a highly optimized data structure for fast lookups, is then saved to the PostgreSQL database. This ensures it persists and only needs to be rebuilt when new music is analyzed.  
-2. **User Interface (similarity.html):**  
-   * The user navigates to the /similarity page.  
-   * An autocomplete search box allows the user to easily find a specific "seed" song by typing its title and/or artist. This search is powered by the /api/search\_tracks endpoint.  
-3. **High-Speed Similarity Search (/api/similar\_tracks):**  
-   * Once the user selects a seed song and initiates the search, the frontend calls this API endpoint with the song's unique item\_id.  
-   * For maximum performance, the backend loads the Voyager index from the database into memory upon starting up (load\voyager\_index\_for\_querying). This in-memory cache allows for near-instantaneous lookups.  
-   * The core function find\_nearest\_neighbors\_by\_id takes the seed song's ID, finds its corresponding vector within the Voyager index, and instantly retrieves the *N* closest vectors (the most similar songs) based on the pre-calculated angular distances.  
-   * The backend then fetches the metadata (title, artist) for these resulting song IDs from the main score table.  
-4. **Playlist Creation (/api/create\_playlist):**  
-   * The list of similar tracks, along with their distance from the seed song, is displayed to the user.  
-   * The user can then enter a desired playlist name and click a button.  
-   * This action calls the /api/create\_playlist endpoint, which takes the list of similar track IDs and the new name, and then uses the Jellyfin or Navidrome API to create the playlist directly on the server.
+Cleaning-Specific
 
-This entire workflow provides a fast and intuitive method for music discovery, moving beyond simple genre or tag-based recommendations to find songs that truly *sound* alike.
+* `CLEANING_SAFETY_LIMIT` — Maximum number of orphaned albums (or a related cap) the automatic cleaning operation will delete in a single run to avoid catastrophic data loss.
+* `MAX_QUEUED_ANALYSIS_JOBS` — Imported in the task module for coordination/limits; not directly user-adjustable for cleaning but used by task orchestration logic when needed.
 
-## Song Path Deep Dive - Deep dive
-Purpose: build an adaptive, fixed-length path of songs between a start and an end item that (a) sounds coherent, (b) avoids duplicate title/artist pairs, and (c) respects a realistic per-step distance estimated from the local neighborhood.
+Operational Notes
 
-Core steps (implementation highlights):
-- Entrypoint: `find_path_between_songs(start_item_id, end_item_id, Lreq)`.
-- Estimate local jump size δ_avg using `_calculate_local_average_jump_distance(...)` which chains nearest neighbors around the endpoints to compute typical step distances.
-- Compute direct distance D between start and end using the configured metric (`PATH_DISTANCE_METRIC` — angular or euclidean). Derive a core step count Lcore ≈ floor(D/δ_avg) (bounded and scaled by `PATH_LCORE_MULTIPLIER`) so the path length is realistic.
-- Interpolate backbone centroids between start and end with `interpolate_centroids(...)` (supports angular interpolation for cosine-style metric or linear interpolation for euclidean).
-- For each centroid, pick an actual track using `_find_best_unique_song(...)`. Candidates are fetched from the vector index (`find_nearest_neighbors_by_vector`) and filtered/deduplicated by:
-  - ID and normalized (artist,title) signature uniqueness,
-  - configurable duplicate-distance thresholds with a short lookback window,
-  - availability of metadata/embedding.
-- If the user-requested length Lreq > backbone length, the code will expand the backbone and repeat selection, still enforcing uniqueness and distance constraints. Final IDs are resolved to full track rows with `get_tracks_by_ids()` and returned.
+* The UI triggers the cleaning task via `/api/cleaning/start` and saves the returned job id to local state so it can poll and show progress. The UI also exposes a cancel button which calls `/api/cancel/<task_id>` to revoke the job.
+* All actions are logged; the final summary includes counts, lists of orphaned albums (up to safety limit), deleted_count, failed_deletions, and any warnings about index rebuild failures.
 
-Edge cases: the function gracefully handles missing embeddings, insufficient neighbors, and returns shorter paths if uniqueness constraints prevent filling every slot.
+```
 
-## Song Alchemy - Deep dive 
-Purpose: combine one-or-more "add" seeds and optional "subtract" seeds to return a playlist of similar tracks and a 2D visualization (embedding projection + centroids).
+## **10. Scheduled Tasks (Cron)**
 
-Core steps (implementation highlights):
-- Entrypoint: `song_alchemy(add_ids, subtract_ids, n_results, subtract_distance, temperature)`.
-- Compute add/sub centroids by averaging item vectors (`_compute_centroid_from_ids(...)` using `get_vector_by_id`).
-- Query voyager for candidates either by ID (`find_nearest_neighbors_by_id`) for single seeds or by vector (`find_nearest_neighbors_by_vector`) for centroid queries; request a superset and filter down.
-- Subtract filtering: remove candidates that are too close to the subtract centroid according to the configured metric (angular or euclidean) and threshold (`subtract_distance`).
-- Deduplicate and exclude seed IDs.
-- Projection for visualization: try to reuse a stored projection with `load_map_projection('main_map')`. For missing points compute a local 2D projection using helpers defined in `tasks/song_alchemy.py` in this preference order:
-  1. `_project_aligned_add_sub` (align X axis to add→subtract)
- 2. `_project_with_discriminant` (PCA + logistic discriminant)
- 3. `_project_with_umap` (if umap installed)
- 4. `_project_to_2d` (simple PCA/SVD fallback)
-- Sampling and selection: order candidates by distance to the add centroid; if `temperature > 0` apply a softmax over negative distances to sample stochastically; if `temperature == 0` return deterministic top-N.
-- Return payload includes `results`, `filtered_out` (items excluded by subtract filter, with 2D coordinates when available), `centroid_2d`, `add_points`, `sub_points`, and projection metadata used by the UI.
+The Scheduled Tasks feature provides a simple UI for defining cron-like schedules to automatically run recurring long-running jobs such as Analysis and Clustering. It uses a database-backed cron table and a background runner (`run_due_cron_jobs`) that enqueues jobs when the cron expression matches the current time.
 
-UI notes: `templates/alchemy.html` trims results to exactly N on the client and plots both selected and filtered-out items (so the user sees what was excluded and why).
+### **10.1. Functional Analysis (High-Level)**
 
-## Music Map - Deep dive 
-Purpose: provide a fast, interactive 2D scatter of the collection for exploration and selection; server-side builds and caches deterministic sampled payloads for client efficiency.
+From a user's perspective, Scheduled Tasks allow configuring periodic runs without manually starting Analysis or Clustering.
 
-Core steps (implementation highlights):
-- Builder: `build_map_cache()` reads `score` + `embedding` rows from PostgreSQL and attempts to reuse a previously-saved projection via `load_map_projection('main_map')`.
-- For missing coordinates, it computes projections using the same helper set used by Song Alchemy (UMAP/discriminant/PCA fallbacks) to keep visualization consistent.
-- Deterministic downsampling: `_sample_items(items, fraction)` uses linspace indices to produce 100%/75%/50%/25% buckets so results are reproducible and memory-friendly.
-- The builder stores JSON and gzipped bytes into the in-memory `MAP_JSON_CACHE` keyed by percent for fast HTTP responses.
+Key User Interactions & Workflow
 
-Front-end (Plotly) behavior (`templates/map.html`):
-- Client calls `/api/map?percent=<25|50|75|100>` and receives a lightweight list of items with `embedding_2d`, `item_id`, `title`, `artist`, and a compact `mood_vector` summary.
-- `topGenre()` extracts the top mood/genre label from the stored `mood_vector` string; `colorPaletteFor()` deterministically maps labels to colors.
-- Plot uses a single `scattergl` trace for performance, stores ids in `customdata`, and implements a manual legend with hide/show filtering, lasso selection, and client-side path overlays.
+1. The user navigates to the Scheduled Tasks page (`/cron`) which displays two editable fields (Analysis and Clustering), each with a cron expression input and an Enable checkbox (see `templates/cron.html`).
+2. The user enters cron expressions (for example, `0 2 * * 0-5` for nightly runs) and toggles Enable, then clicks Save.
+3. The frontend POSTs the configuration to `/api/cron` which inserts or updates rows in a `cron` database table.
+4. A background scheduler (the `run_due_cron_jobs` function) periodically reads enabled cron rows, evaluates whether the cron expression matches the current time, and enqueues corresponding RQ jobs when due. The function avoids duplicate runs by checking the `last_run` timestamp and skipping entries run in the last ~55 seconds.
+5. Each scheduled job is enqueued like a normal user-triggered job and appears in the same task/status panels (task_status table) so users can monitor, cancel, or inspect results.
 
-Performance notes: the heavy work (embedding projection) is done server-side and cached; the client avoids long-term in-memory retention by re-fetching on user-driven percent changes.
+Outcome
 
-## Sonic Fingerprint - Deep dive 
-Purpose: generate a personal playlist by averaging recently-played embeddings (a listening "fingerprint") and finding nearest neighbors to that fingerprint.
+Admins can automate regular maintenance or data-refresh tasks (analysis, clustering) using cron expressions stored in the DB. The system ensures idempotency and avoids accidental rapid re-enqueues.
 
-Core steps (implementation highlights):
-- Entrypoint: `generate_sonic_fingerprint(num_neighbors=None, user_creds=None)`.
-- Fetch the user's top-played songs from the configured media adapter (`get_top_played_songs(limit=...)`).
-- Retrieve embeddings for those seeds (`get_tracks_by_ids`) and build a weighted average vector where weights reflect recency: `get_last_played_time(...)` is used to compute decayed weights (more recent plays get higher weight); a default small weight is used when timestamps are missing.
-- Normalize the average fingerprint vector (sum of weighted vectors / total weight) and query the vector index (`find_nearest_neighbors_by_vector`) for neighbors to reach the requested playlist size.
-- Final playlist: seed songs (the top-played items that contributed to the fingerprint) are included first, then voyager neighbors are appended, skipping duplicates until the target count is reached.
+### **10.2. Technical Analysis (Algorithm-Level)**
 
-UI notes: `templates/sonic_fingerprint.html` collects optional adapter credentials (Jellyfin/Navidrome token/user) and displays results; playlist creation reuses the app's playlist creation API.
+The scheduled task subsystem is lightweight and intentionally conservative: it uses a simple cron expression matcher and enqueues existing RQ tasks with default parameters.
+
+Stage 1: CRUD UI and Persistence
+
+1. UI: The `/cron` page (client-side JS in `cron.html`) fetches existing cron rows from `/api/cron` and populates fields for Analysis and Clustering.
+2. Persistence: Saving writes to the `cron` table using `/api/cron` (POST), creating or updating rows containing `name`, `task_type`, `cron_expr`, and `enabled`.
+
+Stage 2: Cron Matching
+
+1. The `run_due_cron_jobs` function performs the scheduling loop. It loads enabled rows and calls `cron_matches_now(expr, ts)` to test if the cron expression matches the current timestamp.
+2. The cron matcher supports `*`, single numbers, comma-separated lists, and ranges (e.g., `1-5`), and compares minute, hour, day-of-month, month, and day-of-week fields. Note: the function converts Python's `tm_wday` to cron's 0=Sun..6=Sat semantics.
+
+Stage 3: Enqueueing Jobs
+
+1. If a cron row matches and has not recently run, `run_due_cron_jobs` generates a UUID job id, writes a TASK_STATUS_PENDING entry (for visibility), and enqueues the appropriate RQ job:
+   * For `analysis`: enqueues `tasks.analysis.run_analysis_task` with `(0, TOP_N_MOODS)` to process the whole library.
+   * For `clustering`: enqueues `tasks.clustering.run_clustering_task` with a kwargs bundle derived from configuration defaults (CLUSTER_ALGORITHM, NUM_CLUSTERS_MIN/MAX, PCA ranges, scoring weights, AI naming defaults, etc.).
+2. After enqueueing, it updates the `last_run` timestamp in the cron table to prevent duplicate immediate requeues.
+
+Stage 4: Observability & Safety
+
+1. Each cron-initiated job uses the same task-status/logging machinery as manual jobs, so progress, logs, and final summaries are available in the UI.
+2. The enqueued clustering job uses conservative defaults sourced from environment/config values to avoid accidental heavy runs—these defaults can be tuned in config.
+
+Error Handling & Resilience
+
+* The scheduler catches exceptions per-row and logs them without stopping the whole loop. If enqueueing fails for a row, it continues to process other rows.
+* The scheduler uses a small guard window (~55s) to avoid enqueuing the same job multiple times when the scheduler runs frequently.
+
+### **10.3. Environment Variable Configuration**
+
+Scheduled tasks reuse many core config values and a set of clustering/analysis defaults to build job parameters.
+
+Core Infra
+
+* `DATABASE_URL`, `REDIS_URL` — Required for reading cron rows and enqueueing RQ jobs.
+
+Analysis & Clustering Defaults (used when enqueueing cron jobs)
+
+* `TOP_N_MOODS` — Number of moods passed to analysis jobs when scheduled.
+* `CLUSTER_ALGORITHM`, `NUM_CLUSTERS_MIN`, `NUM_CLUSTERS_MAX`, `DBSCAN_EPS_MIN`, `DBSCAN_EPS_MAX`, `DBSCAN_MIN_SAMPLES_MIN`, `DBSCAN_MIN_SAMPLES_MAX`, `GMM_N_COMPONENTS_MIN`, `GMM_N_COMPONENTS_MAX`, `SPECTRAL_N_CLUSTERS_MIN`, `SPECTRAL_N_CLUSTERS_MAX`, `PCA_COMPONENTS_MIN`, `PCA_COMPONENTS_MAX` — Default ranges used to compose clustering kwargs.
+* `CLUSTERING_RUNS`, `MAX_SONGS_PER_CLUSTER`, `TOP_N_PLAYLISTS`, `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`, `STRATIFIED_SAMPLING_TARGET_PERCENTILE` — High-level clustering behavior used when cron enqueues clustering.
+* `SCORE_WEIGHT_*` and other scoring weights — Defaults applied to scheduled clustering runs.
+* `AI_MODEL_PROVIDER`, `OLLAMA_SERVER_URL`, `OLLAMA_MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `MISTRAL_API_KEY`, `MISTRAL_MODEL_NAME` — AI naming defaults applied when scheduled clustering requests automatic playlist naming.
+
+Operational Notes
+
+* The scheduler is intended to be invoked periodically (e.g., via a thread in `app.py` or a separate process). Ensure only one scheduler instance updates `last_run` to avoid duplicate enqueues in multi-process deployments (use a leader election or central cron runner if required).
+* Tuning the cron expressions and the clustering defaults is recommended to balance freshness and compute cost.

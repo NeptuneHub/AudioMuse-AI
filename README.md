@@ -10,9 +10,9 @@
 </p>
 
 
-AudioMuse-AI is an Open Source Dockerized environment that brings **automatic playlist generation** to your self-hosted music library. Using powerful tools like [Librosa](https://github.com/librosa/librosa) and [ONNX](https://onnx.ai/), it performs **sonic analysis** on your audio files locally, allowing you to curate the perfect playlist for any mood or occasion without relying on external APIs.
+AudioMuse-AI is an open-source, Dockerized environment that brings **automatic playlist generation** to your self-hosted music library. Using tools such as [Librosa](https://github.com/librosa/librosa) and [ONNX](https://onnx.ai/), it performs **sonic analysis** on your audio files locally, allowing you to curate playlists for any mood or occasion without relying on external APIs.
 
-Deploy it easily on your local machine with Docker Compose/Podman or scale it up in your Kubernetes cluster, with the support of **AMD64** and **ARM64** architecture. It integrate with API the main Music server like [Jellyfin](https://jellyfin.org), [Navidrome](https://www.navidrome.org/), [LMS](https://github.com/epoupon/lms/tree/master), [Lyrion](https://lyrion.org/), [Emby](https://emby.media) and many mores will come in the future.
+Deploy it easily on your local machine with Docker Compose or Podman, or scale it in a Kubernetes cluster (supports **AMD64** and **ARM64**). It integrates with the main music servers' APIs such as [Jellyfin](https://jellyfin.org), [Navidrome](https://www.navidrome.org/), [LMS](https://github.com/epoupon/lms/tree/master), [Lyrion](https://lyrion.org/), and [Emby](https://emby.media). More integrations may be added in the future.
 
 AudioMuse-AI lets you explore your music library in innovative ways, just **start with an initial analysis**, and you’ll unlock features like:
 * **Clustering**: Automatically groups sonically similar songs, creating genre-defying playlists based on the music's actual sound.
@@ -73,7 +73,7 @@ You can directly check the Helm Chart repo for more details and deployments exam
 
 ## **Quick Start Deployment on K3S**
 
-This section provides a minimal guide to deploy AudioMuse-AI on a K3S (Kubernetes) cluster by direct use of `deployment`
+This section provides a minimal guide to deploy AudioMuse-AI on a K3S (Kubernetes) cluster by directly using the `deployment` manifests.
 
 * **Prerequisites:**
     *   A running K3S cluster.
@@ -165,7 +165,7 @@ Choose the appropriate file based on your media server setup.
 
 For an alternative local setup, [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files are provided in the `deployment/podman-quadlets` directory for interacting with **Navidrome**. The unit files can  be edited for use with **Jellyfin**. 
 
-These files are configured to automatically update AudioMuse-AI using the [latest](#docker-image-tagging-strategy) stable release and should perform an automatic rollback if the updated image fails to start.     
+These files are configured to automatically update AudioMuse-AI using the [latest](#docker-image-tagging-strategy) stable release and should perform an automatic rollback if the updated image fails to start.
 
 **Prerequisites:**
 *   Podman and systemd.
@@ -201,21 +201,24 @@ These files are configured to automatically update AudioMuse-AI using the [lates
       
 ## **Hardware Requirements**
 
-AudioMuse-Ai is actually tested on:
-* **INTEL**: HP Mini PC with Intel i5-6500, 16 GB RAM and NVME SSD
-* **ARM**: Raspberry Pi 5 8GB RAM and NVME SSD
+AudioMuse-AI has been tested on:
+* **Intel**: HP Mini PC with Intel i5-6500, 16 GB RAM and NVMe SSD
+* **ARM**: Raspberry Pi 5, 8 GB RAM and NVMe SSD
 
-The **suggested requirements** are: 4core INTEL or ARM CPU (Producted from 2015 and above) with AVX support, 8GB ram and an SSD.
+Suggested requirements:
+* A 4-core Intel or ARM CPU (produced in 2015 or later) with AVX support
+* 8 GB RAM
+* SSD storage
 
-It can most probably run on older CPU (from 3rd gen and above) and with less ram (maybe 4GB) but I never tested.
+It may run on older CPUs (3rd generation and above) and with less RAM (for example, 4 GB), but these configurations are untested.
 
-Intel I7 CPU of first gen or older **DON'T WORK** because Tensorflow require AVX supprt.
+First-generation Intel i7 CPUs and older are not supported because TensorFlow requires AVX support.
 
-If you tested with CPU older than the suggested requirements, please track this in an issue ticket reporting your feedback.
+If you have tested the software on older CPUs, please open an issue to share your feedback.
 
-You can check the [Tested Hardware and Configuration](docs/HARDWARE.md) notes to look which one was already tested till now.
+You can check the [Tested Hardware and Configuration](docs/HARDWARE.md) notes to see which hardware has already been validated.
 
-**IMPORTANT** From `0.7.0-beta` ONNX replace Tensorflow. So there is the possibility that CPU not supported till can now work.
+**IMPORTANT:** From `v0.7.0-beta`, ONNX replaces TensorFlow. As a result, some CPUs previously not supported may now work.
 
 ### (Optional) Experimental Nvidia Support
 
@@ -257,7 +260,7 @@ The **mandatory** parameter that you need to change from the example are this:
 | `GEMINI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is GEMINI) Your Google Gemini API Key. | *(N/A - from Secret)* |
 | `MISTRAL_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MISTRAL) Your Mistral API Key.      | *(N/A - from Secret)* |
 
-These parameter could be leave as it is:
+These parameters can be left as-is:
 
 | Parameter               | Description                                  | Default Value     |
 |-------------------------|----------------------------------------------|-------------------|
@@ -266,7 +269,7 @@ These parameter could be leave as it is:
 | `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names. | `""` (empty - scan all) |
 | `ENABLE_PROXY_FIX` | Enable Proxy Fix for Flask when behind a reverse proxy. Example Nginx configuration: [config.py](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/config.py#L346) | `false` |
 
-This are the default parameters on wich the analysis or clustering task will be lunched. You will be able to change them to another value directly in the front-end:
+These are the default parameters used when launching analysis or clustering tasks. You can change them directly in the front-end.
 
 | Parameter                                   | Description                                                                                                                | Default Value   |
 |---------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|-----------------|
@@ -382,7 +385,7 @@ Our GitHub Actions workflow automatically builds and pushes Docker images. Here'
   * Ensures you're running a precise, versioned build.  
   * **Use for reproducible deployments or locking to a specific version.**
  
-**IMPORTANT** the `-nvidia` image are **experimantal** image. Try it if you want to help us to improve BUT we suggest to don't use it for normal daily use for now. 
+**IMPORTANT:** the `-nvidia` images are experimental. Try them if you want to help us improve the support, but we do not recommend using them for daily production use.
 
 ## **Key Technologies**
 

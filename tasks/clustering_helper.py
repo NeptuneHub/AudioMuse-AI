@@ -359,13 +359,24 @@ def _format_and_score_iteration_result(
         if not cluster_tracks_info: continue
         
         cluster_tracks_info.sort(key=lambda x: x["distance"])
+        # Track per-artist counts using a normalized author key. Treat MAX_SONGS_PER_ARTIST <= 0
+        # or None as DISABLED (no cap), consistent with other modules (path_manager/voyager_manager).
         count_per_artist = defaultdict(int)
         selected_tracks_for_playlist = []
         for t_item_info in cluster_tracks_info:
-            author = t_item_info["row"]["author"]
-            if count_per_artist[author] < MAX_SONGS_PER_ARTIST:
+            author = t_item_info["row"].get("author")
+            author_norm = (author or "").strip().lower()
+
+            # If MAX_SONGS_PER_ARTIST is not configured or <= 0, disable per-artist cap.
+            if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
+                allowed_by_artist = True
+            else:
+                allowed_by_artist = count_per_artist[author_norm] < MAX_SONGS_PER_ARTIST
+
+            if allowed_by_artist:
                 selected_tracks_for_playlist.append(t_item_info)
-                count_per_artist[author] += 1
+                count_per_artist[author_norm] += 1
+
             if max_songs_per_cluster > 0 and len(selected_tracks_for_playlist) >= max_songs_per_cluster:
                 break
         
