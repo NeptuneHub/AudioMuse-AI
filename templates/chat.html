@@ -185,7 +185,7 @@
                 mistralModelSelect.value = globalConfig.default_mistral_model_name || "ministral-3b-latest";
                 openaiModelSelect.value = globalConfig.default_openai_model_name || "gpt-4";
                 openaiApiKeyInput.value = globalConfig.openai_api_key || "sk-xxxxxx"; // Pre-fill OpenAI API Key
-                openaiBaseUrlInput.value = globalConfig.openai_base_url || "https://api.openai.com/v1/"; // Pre-fill OpenAI Base URL
+                openaiBaseUrlInput.value = globalConfig.openai_base_url || "https://api.openai.com/v1/chat/completions"; // Pre-fill OpenAI Base URL
                 openaiApiTokensInput.value = globalConfig.openai_api_tokens || 1000; // Pre-fill OpenAI API Tokens
             }
 
@@ -253,7 +253,6 @@
                     payload.ai_model = mistralModelSelect.value;
                 } else if (payload.ai_provider === 'OPENAI') {
                     payload.ai_model = openaiModelSelect.value;
-                    payload.openai_api_key = openaiApiKeyInput.value; // Include OpenAI API Key
                     payload.openai_base_url = openaiBaseUrlInput.value; // Include OpenAI Base URL
                     payload.openai_api_tokens = parseInt(openaiApiTokensInput.value, 10); // Include OpenAI API Tokens
                 }

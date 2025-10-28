@@ -206,7 +206,8 @@ OPENAI_MODEL_NAME = os.environ.get("OPENAI_MODEL_NAME", "gpt-4o-mini") # Default
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "sk-your-own-key") # Default Open-AI API key. Valid keys should be set via environment variables.
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", None) # Default Open-AI base URL. If using OpenAI directly, leave empty.
 OPENAI_API_CALL_DELAY_SECONDS = float(os.environ.get("OPENAI_API_CALL_DELAY_SECONDS", "2")) # Delay between OpenAI API calls to manage rate limits.
-OPENAI_API_TOKENS = int(os.environ.get("OPENAI_API_TOKENS", "1000")) # Delay between OpenAI API calls to manage rate limits.
+OPENAI_API_TOKENS = int(os.environ.get("OPENAI_API_TOKENS", "1000")) # Default max tokens for OpenAI API calls.
+OPENAI_API_TEMPERATURE = float(os.environ.get("OPENAI_API_TEMPERATURE", "0.7")) # Default temperature for OpenAI API calls.
 
 
 # Construct DATABASE_URL from individual components for better security in K8s

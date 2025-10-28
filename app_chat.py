@@ -192,11 +192,8 @@ def chat_home():
                             'default_openai_model_name': {
                                 'type': 'string', 'example': 'gpt-4o-mini'
                             },
-                            'default_openai_api_key': {
-                                'type': 'string', 'example': 'sk-your-own-key'
-                            },
                             'default_openai_base_url': {
-                                'type': 'string', 'example': 'https://api.openai.com/v1'
+                                'type': 'string', 'example': 'https://api.openai.com/v1/chat/completions'
                             },
                             'default_openai_api_tokens': {
                                 'type': 'integer', 'example': 1000
@@ -220,7 +217,6 @@ def chat_config_defaults_api():
         "default_gemini_model_name": GEMINI_MODEL_NAME,
         "default_mistral_model_name": MISTRAL_MODEL_NAME,
         "default_openai_model_name": OPENAI_MODEL_NAME,
-        "default_openai_api_key": OPENAI_API_KEY,
         "default_openai_base_url": OPENAI_BASE_URL,
         "default_openai_api_tokens": OPENAI_API_TOKENS
     }), 200
@@ -262,23 +258,22 @@ def chat_config_defaults_api():
                         'gemini_api_key': {
                             'type': 'string',
                             'description': 'Custom Gemini API key (optional, defaults to server configuration).',
+                            'example': 'YOUR-GEMINI-API-KEY-HERE'
                         },
                         'mistral_api_key': {
                             'type': 'string',
                             'description': 'Custom Mistral API key (optional, defaults to server configuration).',
-                        },
-                        'openai_model': {
-                            'type': 'string',
-                            'description': 'The specific OpenAI model name to use. Defaults to server config for OpenAI.',
-                            'example': 'gpt-4o-mini'
+                            'example': 'YOUR-MISTRAL-API-KEY-HERE'
                         },
                         'openai_api_key': {
                             'type': 'string',
                             'description': 'Custom OpenAI API key (optional, defaults to server configuration).',
+                            'example': 'sk-your-own-key'
                         },
                         'openai_base_url': {
                             'type': 'string',
                             'description': 'Custom OpenAI Base URL (optional, defaults to server configuration).',
+                            'example': 'https://api.openai.com/v1/chat/completions'
                         },
                         'openai_api_tokens': {
                             'type': 'integer',
@@ -597,8 +592,11 @@ Original full prompt context (for reference):
         
         elif ai_provider == "OPENAI":
             actual_model_used = ai_model_from_request or OPENAI_MODEL_NAME
+            openai_api_key_from_request = data.get('openai_api_key') or OPENAI_API_KEY
+            openai_base_url_from_request = data.get('openai_base_url') or OPENAI_BASE_URL
+            openai_api_tokens_from_request = data.get('openai_api_tokens') or OPENAI_API_TOKENS
             ai_response_message += f"Processing with OPENAI model: {actual_model_used}.\n"
-            raw_sql_from_ai_this_attempt = get_openai_playlist_name(current_prompt_for_ai, actual_model_used, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_API_TOKENS)
+            raw_sql_from_ai_this_attempt = get_openai_playlist_name(current_prompt_for_ai, actual_model_used, openai_api_key_from_request, openai_base_url_from_request, openai_api_tokens_from_request)
             if raw_sql_from_ai_this_attempt.startswith("Error:"):
                 ai_response_message += f"OpenAI API Error: {raw_sql_from_ai_this_attempt}\n"
                 last_error_for_retry = raw_sql_from_ai_this_attempt

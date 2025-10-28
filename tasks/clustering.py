@@ -842,7 +842,7 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
     logger.info(f"Enqueued batch job {new_job.id} for runs {start_run}-{start_run + num_iterations - 1}.")
 
 
-def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_model, gemini_key, gemini_model, mistral_key, mistral_model, embeddings_used, openai_model_name, openai_api_key, openai_base_url, openapi_api_tokens):
+def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_model, gemini_key, gemini_model, mistral_key, mistral_model, embeddings_used, openai_model_name, openai_api_key, openai_base_url, openai_api_tokens):
     """
     Uses AI to name playlists and formats them for creation.
     Returns a dictionary mapping final playlist names to lists of song tuples (id, title, author).
@@ -873,7 +873,7 @@ def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_mod
                     creative_prompt_template, feature1, feature2, feature3,
                     [{'title': s_title, 'author': s_author} for _, s_title, s_author in songs],
                     centroids.get(original_name, {}),
-                    openai_model_name, openai_api_key, openai_base_url, openapi_api_tokens
+                    openai_model_name, openai_api_key, openai_base_url, openai_api_tokens
                 )
                 if ai_name and "Error" not in ai_name:
                     final_name = ai_name.strip().replace("\n", " ")
