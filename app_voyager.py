@@ -250,6 +250,30 @@ def get_max_distance_endpoint():
     logger.error(f"Unexpected error computing max distance for {item_id}: {e}", exc_info=True)
     return jsonify({"error": "An unexpected error occurred."}), 500
 
+
+@voyager_bp.route('/api/track', methods=['GET'])
+def get_track_endpoint():
+  """
+  Fetch basic track metadata (title, author) for a given item_id.
+  Query param: item_id (required)
+  Response: { "item_id": str, "title": str, "author": str } or 404
+  """
+  item_id = request.args.get('item_id')
+  if not item_id:
+    return jsonify({"error": "Missing 'item_id' parameter."}), 400
+
+  try:
+    from app import get_score_data_by_ids
+    details = get_score_data_by_ids([item_id])
+    if not details:
+      return jsonify({"error": f"Item '{item_id}' not found."}), 404
+    # Return only the basic fields
+    d = details[0]
+    return jsonify({"item_id": d.get('item_id'), "title": d.get('title'), "author": d.get('author')}), 200
+  except Exception as e:
+    logger.error(f"Unexpected error fetching track {item_id}: {e}", exc_info=True)
+    return jsonify({"error": "An unexpected error occurred."}), 500
+
 @voyager_bp.route('/api/create_playlist', methods=['POST'])
 def create_media_server_playlist():
     """
