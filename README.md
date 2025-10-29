@@ -141,25 +141,31 @@ Choose the appropriate file based on your media server setup.
 *   Respect the [hardware requirements](#hardware-requirements)
 
 **Steps:**
-1.  **Navigate to the `deployment` directory:**
+1.  **Create your environment file:**
     ```bash
-    cd deployment
+    cp .env.example .env
     ```
+    you can find the example here: [.env.example](.env.example)
+    
 2.  **Review and Customize:**
-    The `docker-compose.yaml`, `docker-compose-navidrome.yaml` and `docker-compose-lyrion.yaml` files are pre-configured with default credentials and settings suitable for local testing. You can edit environment variables within this file directly (e.g., `JELLYFIN_URL`, `JELLYFIN_USER_ID`, `JELLYFIN_TOKEN` for **Jellyfin** or `NAVIDROME_URL`, `NAVIDROME_USER` and `NAVIDROME_PASSWORD` for **Navidrome**,  `LYRION_URL` for Lyrion that doesn't require any passwords).
+    Edit `.env` and provide the media-server credentials (e.g., `JELLYFIN_URL`, `JELLYFIN_USER_ID`, `JELLYFIN_TOKEN` or `NAVIDROME_*`, `EMBY_*`, `LYRION_URL`) along with any API keys (`GEMINI_API_KEY`, `MISTRAL_API_KEY`). The same values are injected into every compose file, so you only need to edit them here.
 3.  **Start the Services:**
     ```bash
-    docker compose up -d
+    docker compose -f deployment/docker-compose.yaml up -d
     ```
-    This command starts all services (Flask app, RQ workers, Redis, PostgreSQL) in detached mode (`-d`).
+    Swap the compose filename if you're targeting Navidrome (`docker-compose-navidrome.yaml`), Lyrion (`docker-compose-lyrion.yaml`) or Emby (`docker-compose-emby.yaml`). This command starts all services (Flask app, RQ workers, Redis, PostgreSQL) in detached mode (`-d`).
 4.  **Access the Application:**
     Once the containers are up, you can access the web UI at `http://localhost:8000`.
 5.  **Stopping the Services:**
     ```bash
-    docker compose down
+    docker compose -f deployment/docker-compose.yaml down
     ```
+    Swap the compose filename here as well if you started a different variant.
 **Note:**
   > If you use LMS instead of the password you need to create and use the Subsonic API token. Additional Subsonic API based Mediaserver could require it in place of the password.
+
+**Remote worker tip:**
+If you deploy a worker on different hardware (using `docker-compose-worker.yaml` or `docker-compose-worker-nvidia.yaml`), copy your `.env` to that machine and update `WORKER_POSTGRES_HOST` and `WORKER_REDIS_URL` so the worker can reach the main server.
 
 ## **Local Deployment with Podman Quadlets**
 

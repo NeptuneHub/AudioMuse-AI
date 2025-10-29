@@ -12,6 +12,7 @@ env/
 # Local environment variables
 # IMPORTANT: Never commit your .env file with secrets!
 .env*
+!.env.example
 # You can add an exception for an example file if you create one
 # !.env.example
 
