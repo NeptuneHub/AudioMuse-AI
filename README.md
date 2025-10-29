@@ -145,6 +145,8 @@ Choose the appropriate file based on your media server setup.
     ```bash
     cp .env.example .env
     ```
+    you can find the example here: [.env.example](.env.example)
+    
 2.  **Review and Customize:**
     Edit `.env` and provide the media-server credentials (e.g., `JELLYFIN_URL`, `JELLYFIN_USER_ID`, `JELLYFIN_TOKEN` or `NAVIDROME_*`, `EMBY_*`, `LYRION_URL`) along with any API keys (`GEMINI_API_KEY`, `MISTRAL_API_KEY`). The same values are injected into every compose file, so you only need to edit them here.
 3.  **Start the Services:**
