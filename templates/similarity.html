@@ -228,14 +228,43 @@
                         return;
                     }
 
-                    // Fetch exact max distance for the selected song and display it
+                    // Fetch exact max distance for the selected song and display it.
+                    // Also fetch the farthest song's title/artist when the API returns a farthest_item_id.
                     try {
                         const mdResp = await fetch(`{{ url_for('voyager_bp.get_max_distance_endpoint') }}?item_id=` + encodeURIComponent(itemId));
                         if (mdResp.ok) {
                             const md = await mdResp.json();
                             const maxDistDiv = document.getElementById('max-distance');
                             if (md && typeof md.max_distance === 'number') {
-                                maxDistDiv.textContent = 'Max distance: ' + md.max_distance.toFixed(4);
+                                // Default text with just the distance
+                                let text = 'Max distance: ' + md.max_distance.toFixed(4);
+
+                                // If server returned the farthest item's id, try to fetch its title/artist
+                                const farId = md.farthest_item_id || md.farthest_id || md.item_id || md.max_item_id || md.farthestItemId;
+                                if (farId) {
+                                    try {
+                                        const tdResp = await fetch(`{{ url_for('voyager_bp.get_track_endpoint') }}?item_id=` + encodeURIComponent(farId));
+                                        if (tdResp.ok) {
+                                            const td = await tdResp.json();
+                                            if (td && (td.title || td.author)) {
+                                                const title = td.title || 'Unknown title';
+                                                const author = td.author || 'Unknown artist';
+                                                text += ' — Farthest track: "' + title + '" by ' + author;
+                                            } else {
+                                                // If the endpoint returned something unexpected, show the id
+                                                text += ' — Farthest track ID: ' + farId;
+                                            }
+                                        } else {
+                                            // If the track endpoint failed, show the id only
+                                            text += ' — Farthest track ID: ' + farId;
+                                        }
+                                    } catch (errInner) {
+                                        console.error('Failed to fetch farthest track metadata:', errInner);
+                                        text += ' — Farthest track ID: ' + farId;
+                                    }
+                                }
+
+                                maxDistDiv.textContent = text;
                             } else {
                                 maxDistDiv.textContent = '';
                             }
