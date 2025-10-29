@@ -175,25 +175,134 @@ def load_voyager_index_for_querying(force_reload=False):
         voyager_index, id_map, reverse_id_map = None, None, None
     finally:
         cur.close()
-def build_and_store_voyager_index(db_conn=None, force_rebuild: bool = False):
+def build_and_store_voyager_index(db_conn=None):
+    """
+    Fetches all song embeddings, builds a new Voyager index, and stores it
+    atomically in the 'voyager_index_data' table in PostgreSQL.
+
+    Accepts an optional db_conn (psycopg2 connection). If None, the function
+    will acquire a connection via app_helper.get_db().
+    """
+    # Acquire DB connection if not provided
+    if db_conn is None:
+        try:
+            from app_helper import get_db
+            db_conn = get_db()
+        except Exception:
+            logger.error("build_and_store_voyager_index: no db_conn provided and get_db() failed.")
+            return
+
+    logger.info("Starting to build and store Voyager index...")
+
+    # Map the string metric from config to the voyager.Space enum
+    metric_str = VOYAGER_METRIC.lower()
+    if metric_str == 'angular':
+        space = voyager.Space.Cosine
+    elif metric_str == 'euclidean':
+        space = voyager.Space.Euclidean
+    elif metric_str == 'dot':
+        space = voyager.Space.InnerProduct
+    else:
+        logger.warning(f"Unknown Voyager metric '{VOYAGER_METRIC}'. Defaulting to Cosine.")
+        space = voyager.Space.Cosine
+
+    cur = db_conn.cursor()
+    try:
+        logger.info("Fetching all embeddings from the database...")
+        cur.execute("SELECT item_id, embedding FROM embedding")
+        all_embeddings = cur.fetchall()
+
+        if not all_embeddings:
+            logger.warning("No embeddings found in DB. Voyager index will not be built.")
+            return
+
+        logger.info(f"Found {len(all_embeddings)} embeddings to index.")
+
+        voyager_index_builder = voyager.Index(
+            space=space,
+            num_dimensions=EMBEDDING_DIMENSION,
+            M=VOYAGER_M,
+            ef_construction=VOYAGER_EF_CONSTRUCTION
+        )
+
+        local_id_map = {}
+        voyager_item_index = 0
+        vectors_to_add = []
+        ids_to_add = []
+
+        for item_id, embedding_blob in all_embeddings:
+            if embedding_blob is None:
+                logger.warning(f"Skipping item_id {item_id}: embedding data is NULL.")
+                continue
+
+            embedding_vector = np.frombuffer(embedding_blob, dtype=np.float32)
+
+            if embedding_vector.shape[0] != EMBEDDING_DIMENSION:
+                logger.warning(f"Skipping item_id {item_id}: embedding dimension mismatch. "
+                               f"Expected {EMBEDDING_DIMENSION}, got {embedding_vector.shape[0]}.")
+                continue
+
+            vectors_to_add.append(embedding_vector)
+            ids_to_add.append(voyager_item_index)
+            local_id_map[voyager_item_index] = item_id
+            voyager_item_index += 1
+
+        if not vectors_to_add:
+            logger.warning("No valid embeddings were found to add to the Voyager index. Aborting build process.")
+            return
+
+        logger.info(f"Adding {len(vectors_to_add)} items to the index...")
+        voyager_index_builder.add_items(np.array(vectors_to_add), ids=np.array(ids_to_add))
+
+        logger.info(f"Building index with {len(vectors_to_add)} items...")
+
+        temp_file_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".voyager") as tmp:
+                temp_file_path = tmp.name
+
+            voyager_index_builder.save(temp_file_path)
+
+            with open(temp_file_path, 'rb') as f:
+                index_binary_data = f.read()
+        finally:
+            if temp_file_path and os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+
+        logger.info(f"Voyager index binary data size to be stored: {len(index_binary_data)} bytes.")
+
+        if not index_binary_data:
+            logger.error("CRITICAL: Generated Voyager index file is empty. Aborting database storage.")
+            return
+
+        id_map_json = json.dumps(local_id_map)
+
+        logger.info(f"Storing Voyager index '{INDEX_NAME}' in the database...")
+        upsert_query = """
+            INSERT INTO voyager_index_data (index_name, index_data, id_map_json, embedding_dimension, created_at)
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (index_name) DO UPDATE SET
+                index_data = EXCLUDED.index_data,
+                id_map_json = EXCLUDED.id_map_json,
+                embedding_dimension = EXCLUDED.embedding_dimension,
+                created_at = CURRENT_TIMESTAMP;
         """
-        Placeholder/compatibility shim for the original index build function.
+        # Use psycopg2.Binary to ensure proper bytea handling
+        cur.execute(upsert_query, (INDEX_NAME, psycopg2.Binary(index_binary_data), id_map_json, EMBEDDING_DIMENSION))
+        db_conn.commit()
+        logger.info("Voyager index build and database storage complete.")
 
-        Many modules import this function at module-import time. The full index
-        builder is an expensive operation and may be invoked from CLI/worker
-        code paths. To avoid ImportError during startup, this stub provides a
-        no-op implementation that logs the call. If you need the full builder
-        behavior, replace this stub with the original implementation or call
-        the dedicated rebuild script.
-
-        Parameters:
-            db_conn: optional database connection (may be required by real builder)
-            force_rebuild: when True, a full rebuild should be forced (ignored by stub)
-
-        Returns: None
-        """
-        logger.info("build_and_store_voyager_index called (stub). force_rebuild=%s. No action taken.", force_rebuild)
-        return None
+    except Exception as e:
+        logger.error("An error occurred during Voyager index build: %s", e, exc_info=True)
+        try:
+            db_conn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
 
 def get_vector_by_id(item_id: str) -> np.ndarray | None:
     """
