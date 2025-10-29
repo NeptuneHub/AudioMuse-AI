@@ -15,16 +15,16 @@ services:
     environment:
       SERVICE_TYPE: "worker"
       MEDIASERVER_TYPE: "jellyfin"
-      JELLYFIN_USER_ID: "YOUR-JF-USER-ID" #for example: 0e45c44b3e2e4da7a2be11a72a1c8575
-      JELLYFIN_TOKEN: "YOUR-JF-TOKEN" # for example: e0b8c325bc1b426c81922b90c0aa2ff1
-      JELLYFIN_URL: "YOUR-JF-URL" # for example: http://jellyfin.192.168.3.131.nip.io:8087
-      POSTGRES_USER: "audiomuse"
-      POSTGRES_PASSWORD: "audiomusepassword"
-      POSTGRES_DB: "audiomusedb"
-      POSTGRES_HOST: "YOUR_SERVER_IP" # Replace with the IP of the server hosting Postgres
-      POSTGRES_PORT: "5432"
-      REDIS_URL: "redis://YOUR_SERVER_IP:6379/0"  # Points to server hosting Redis, for example: redis://192.168.3.131:6379/0
-      GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE"
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
+      JELLYFIN_URL: "${JELLYFIN_URL}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+      POSTGRES_HOST: "${WORKER_POSTGRES_HOST:-postgres}" # Replace via WORKER_POSTGRES_HOST in .env when running remotely
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${WORKER_REDIS_URL:-redis://redis:6379/0}"  # Set WORKER_REDIS_URL in .env for remote connections
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
       TEMP_DIR: "/app/temp_audio"
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"

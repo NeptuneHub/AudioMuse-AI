@@ -15,9 +15,9 @@ services:
     image: postgres:15-alpine
     container_name: audiomuse-postgres
     environment:
-      POSTGRES_USER: "audiomuse"
-      POSTGRES_PASSWORD: "audiomusepassword"
-      POSTGRES_DB: "audiomusedb"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
     ports:
       - "5432:5432" # Expose PostgreSQL port to the host
     volumes:
@@ -33,17 +33,17 @@ services:
     environment:
       SERVICE_TYPE: "flask" # Tells the container to run the Flask app
       MEDIASERVER_TYPE: "jellyfin" # Specify the media server type
-      JELLYFIN_USER_ID: "YOUR-JF-USER-ID" #for example: 0e45c44b3e2e4da7a2be11a72a1c8575
-      JELLYFIN_TOKEN: "YOUR-JF-TOKEN" # for example: e0b8c325bc1b426c81922b90c0aa2ff1
-      JELLYFIN_URL: "YOUR-JF-URL" # for example: http://jellyfin.192.168.3.131.nip.io:8087
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
+      JELLYFIN_URL: "${JELLYFIN_URL}"
       # DATABASE_URL is now constructed by config.py from the following:
-      POSTGRES_USER: "audiomuse"
-      POSTGRES_PASSWORD: "audiomusepassword"
-      POSTGRES_DB: "audiomusedb"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
       POSTGRES_HOST: "postgres" # Service name of the postgres container
-      POSTGRES_PORT: "5432"
-      REDIS_URL: "redis://redis:6379/0" # Connects to the 'redis' service
-      GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE" # From gemini-api-credentials secret
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
@@ -59,17 +59,17 @@ services:
     environment:
       SERVICE_TYPE: "worker" # Tells the container to run the RQ worker
       MEDIASERVER_TYPE: "jellyfin" # Specify the media server type
-      JELLYFIN_USER_ID: "YOUR-JF-USER-ID" #for example: 0e45c44b3e2e4da7a2be11a72a1c8575
-      JELLYFIN_TOKEN: "YOUR-JF-TOKEN" # for example: e0b8c325bc1b426c81922b90c0aa2ff1
-      JELLYFIN_URL: "YOUR-JF-URL" # for example: http://jellyfin.192.168.3.131.nip.io:8087
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
+      JELLYFIN_URL: "${JELLYFIN_URL}"
       # DATABASE_URL is now constructed by config.py from the following:
-      POSTGRES_USER: "audiomuse"
-      POSTGRES_PASSWORD: "audiomusepassword"
-      POSTGRES_DB: "audiomusedb"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
       POSTGRES_HOST: "postgres" # Service name of the postgres container
-      POSTGRES_PORT: "5432"
-      REDIS_URL: "redis://redis:6379/0" # Connects to the 'redis' service
-      GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE" # From gemini-api-credentials secret
+  POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-worker:/app/temp_audio # Volume for temporary audio files

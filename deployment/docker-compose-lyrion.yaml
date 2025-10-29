@@ -15,9 +15,9 @@ services:
     image: postgres:15-alpine
     container_name: audiomuse-postgres
     environment:
-      POSTGRES_USER: "audiomuse"
-      POSTGRES_PASSWORD: "audiomusepassword"
-      POSTGRES_DB: "audiomusedb"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
     ports:
       - "5432:5432" # Expose PostgreSQL port to the host
     volumes:
@@ -33,14 +33,14 @@ services:
     environment:
       SERVICE_TYPE: "flask"
       MEDIASERVER_TYPE: "lyrion"
-      LYRION_URL: "http://YOUR-LYRION-URL"
-      POSTGRES_USER: "audiomuse"
-      POSTGRES_PASSWORD: "audiomusepassword"
-      POSTGRES_DB: "audiomusedb"
+      LYRION_URL: "${LYRION_URL}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
       POSTGRES_HOST: "postgres"
-      POSTGRES_PORT: "5432"
-      REDIS_URL: "redis://redis:6379/0"
-      GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio
@@ -56,14 +56,14 @@ services:
     environment:
       SERVICE_TYPE: "worker"
       MEDIASERVER_TYPE: "lyrion"
-      LYRION_URL: "http://YOUR-LYRION-URL"
-      POSTGRES_USER: "audiomuse"
-      POSTGRES_PASSWORD: "audiomusepassword"
-      POSTGRES_DB: "audiomusedb"
+      LYRION_URL: "${LYRION_URL}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
       POSTGRES_HOST: "postgres"
-      POSTGRES_PORT: "5432"
-      REDIS_URL: "redis://redis:6379/0"
-      GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-worker:/app/temp_audio
