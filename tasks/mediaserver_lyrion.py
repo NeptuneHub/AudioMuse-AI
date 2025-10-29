@@ -298,6 +298,37 @@ def _jsonrpc_request(method, params, player_id=""):
     # Should not reach here; raise to be explicit
     raise LyrionAPIError("Unreachable: exceeded jsonrpc retry loop")
 
+
+def _count_albums(use_sort_new=True, page_size=100):
+    """Count total albums on the Lyrion server using the given paging mode.
+    Returns an integer count or None on fatal error.
+    """
+    total = 0
+    offset = 0
+    while True:
+        params = [offset, page_size, "sort:new"] if use_sort_new else [offset, page_size]
+        try:
+            resp = _jsonrpc_request("albums", params)
+        except Exception as e:
+            logger.warning(f"Unable to count albums (use_sort_new={use_sort_new}): {e}")
+            return None
+
+        page_albums = []
+        if isinstance(resp, dict) and "albums_loop" in resp:
+            page_albums = resp["albums_loop"]
+        elif isinstance(resp, list):
+            page_albums = resp
+
+        if not page_albums:
+            break
+
+        total += len(page_albums)
+        if len(page_albums) < page_size:
+            break
+        offset += len(page_albums)
+
+    return total
+
 def download_track(temp_dir, item):
     """Downloads a single track from Lyrion using its URL."""
     try:
@@ -344,9 +375,21 @@ def _get_all_albums_simple(limit):
 
     pages_fetched = 0
 
+    # Decide whether to use 'sort:new' or fall back to unsorted pagination.
+    # Only perform a full comparison when fetching the entire library (limit==0).
+    use_sort_new = True
+    if limit == 0:
+        logger.info("Counting Lyrion albums with and without 'sort:new' to decide pagination mode...")
+        sorted_total = _count_albums(use_sort_new=True, page_size=page_size)
+        unsorted_total = _count_albums(use_sort_new=False, page_size=page_size)
+        logger.info(f"Albums with sort:new = {sorted_total}, albums without sort = {unsorted_total}")
+        if unsorted_total is not None and sorted_total is not None and unsorted_total > sorted_total:
+            logger.info("Albums without sort are more numerous; proceeding with unsorted pagination for Lyrion.")
+            use_sort_new = False
+
     while True:
         req_count = page_size if (remaining is None or remaining > page_size) else remaining
-        params = [offset, req_count, "sort:new"]
+        params = [offset, req_count, "sort:new"] if use_sort_new else [offset, req_count]
 
         # Per-page retry: don't let a single slow/failed page stop the whole fetch
         page_response = None
@@ -571,9 +614,22 @@ def get_recent_albums(limit):
     filtered_no_album_id = 0
     filtered_no_path = 0
     
+    # Like the simple fetcher, try 'sort:new' first but fall back to
+    # unsorted pagination if that appears to return fewer albums. Only
+    # perform the full comparison when fetching the entire library.
+    use_sort_new = True
+    if fetch_all:
+        logger.info("Counting Lyrion albums with and without 'sort:new' to decide pagination mode (analysis of all albums)...")
+        sorted_total = _count_albums(use_sort_new=True, page_size=page_size)
+        unsorted_total = _count_albums(use_sort_new=False, page_size=page_size)
+        logger.info(f"Albums with sort:new = {sorted_total}, albums without sort = {unsorted_total}")
+        if unsorted_total is not None and sorted_total is not None and unsorted_total > sorted_total:
+            logger.info("Albums without sort are more numerous; proceeding with unsorted pagination for Lyrion.")
+            use_sort_new = False
+
     while True:
         # Get next batch of albums
-        params = [offset, page_size, "sort:new"]
+        params = [offset, page_size, "sort:new"] if use_sort_new else [offset, page_size]
         # Per-page retry: attempt several times before skipping this page
         page_response = None
         page_error = None
@@ -595,7 +651,6 @@ def get_recent_albums(limit):
             continue
 
         response = page_response
-
         if not response:
             # Legitimate empty response -> end of library
             break
