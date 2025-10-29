@@ -463,7 +463,7 @@ def get_config_endpoint():
         "ollama_server_url": OLLAMA_SERVER_URL, "ollama_model_name": OLLAMA_MODEL_NAME,
         "gemini_model_name": GEMINI_MODEL_NAME,
         "mistral_model_name": MISTRAL_MODEL_NAME,
-        "OPENAI_model_name": OPENAI_MODEL_NAME, "OENAPI_api_key": OPENAI_API_KEY, "OPENAI_base_url": OPENAI_BASE_URL, "OPENAI_api_tokens": OPENAI_API_TOKENS,
+        "OPENAI_model_name": OPENAI_MODEL_NAME, "OPENAI_base_url": OPENAI_BASE_URL, "OPENAI_api_tokens": OPENAI_API_TOKENS,
         "top_n_moods": TOP_N_MOODS, "mood_labels": MOOD_LABELS, "clustering_runs": CLUSTERING_RUNS,
         "top_n_playlists": TOP_N_PLAYLISTS,
         "enable_clustering_embeddings": ENABLE_CLUSTERING_EMBEDDINGS,

@@ -162,7 +162,6 @@ function renderConfig(config) {
     document.getElementById('config-mistral_model_name').value = config.mistral_model_name || 'ministral-3b-latest';
     document.getElementById('config-openai_model_name').value = config.openai_model_name || 'gpt-4';
     document.getElementById('config-openai_base_url').value = config.openai_base_url || 'https://api.openai.com/v1/chat/completions';
-    document.getElementById('config-openai_api_key').value = config.openai_api_key || 'sk-xxxxxxx';
     document.getElementById('config-openai_api_tokens').value = config.openai_api_tokens || 1000;
 }
 

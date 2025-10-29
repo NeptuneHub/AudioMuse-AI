@@ -269,16 +269,6 @@ def chat_config_defaults_api():
                             'type': 'string',
                             'description': 'Custom OpenAI API key (optional, defaults to server configuration).',
                             'example': 'sk-your-own-key'
-                        },
-                        'openai_base_url': {
-                            'type': 'string',
-                            'description': 'Custom OpenAI Base URL (optional, defaults to server configuration).',
-                            'example': 'https://api.openai.com/v1/chat/completions'
-                        },
-                        'openai_api_tokens': {
-                            'type': 'integer',
-                            'description': 'Maximum tokens for OpenAI API responses (optional).',
-                            'example': 1000
                         }
                     }
                 }
@@ -596,7 +586,7 @@ Original full prompt context (for reference):
             openai_base_url_from_request = data.get('openai_base_url') or OPENAI_BASE_URL
             openai_api_tokens_from_request = data.get('openai_api_tokens') or OPENAI_API_TOKENS
             ai_response_message += f"Processing with OPENAI model: {actual_model_used}.\n"
-            raw_sql_from_ai_this_attempt = get_openai_playlist_name(current_prompt_for_ai, actual_model_used, openai_api_key_from_request, openai_base_url_from_request, openai_api_tokens_from_request)
+            raw_sql_from_ai_this_attempt = get_openai_playlist_name(current_prompt_for_ai, actual_model_used, openai_api_key_from_request, openai_base_url_from_request, openai_api_tokens_from_request, base_expert_playlist_creator_prompt)
             if raw_sql_from_ai_this_attempt.startswith("Error:"):
                 ai_response_message += f"OpenAI API Error: {raw_sql_from_ai_this_attempt}\n"
                 last_error_for_retry = raw_sql_from_ai_this_attempt

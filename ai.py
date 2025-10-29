@@ -206,7 +206,7 @@ def get_mistral_playlist_name(mistral_api_key, model_name, full_prompt):
         return "Error: AI service is currently unavailable."
     
 # --- OpenAI Specific Function ---
-def get_openai_playlist_name(full_prompt, openai_model_name, openai_api_key, openai_base_url = None, max_tokens: int = 1000, stream: bool = True, temperature: float = 0.9) -> str:
+def get_openai_playlist_name(full_prompt, openai_model_name, openai_api_key, openai_base_url, max_tokens, system_prompt, stream: bool = True, temperature: float = 0.9) -> str:
     """
     Calls the OpenAI Chat Completions API (via SDK) to generate a playlist name.
 
@@ -241,10 +241,7 @@ def get_openai_playlist_name(full_prompt, openai_model_name, openai_api_key, ope
 
         # --- Define messages ---
         messages = [
-            {
-                "role": "system",
-                "content": "You generate short Playlist titles in plain text. The Playlist title needs to represent the mood and the activity of when you're listening to the playlist. The Playlist titles should be between 2 and 5 words long. You always return a single playlist name."
-            },
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": full_prompt}
         ]
 
@@ -308,7 +305,7 @@ def get_openai_playlist_name(full_prompt, openai_model_name, openai_api_key, ope
         return "Error: AI service is currently unavailable."
 
 # --- General AI Naming Function ---
-def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key, gemini_model_name, mistral_api_key, mistral_model_name, prompt_template, feature1, feature2, feature3, song_list, other_feature_scores_dict, openai_model_name, openai_api_key, openai_base_url):
+def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key, gemini_model_name, mistral_api_key, mistral_model_name, prompt_template, feature1, feature2, feature3, song_list, other_feature_scores_dict, openai_model_name, openai_api_key, openai_base_url, openai_max_tokens):
     """
     Selects and calls the appropriate AI model based on the provider.
     Constructs the full prompt including new features.
@@ -358,7 +355,6 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
 
     # --- Call the AI Model ---
     name = "AI Naming Skipped" # Default if provider is NONE or invalid
-
     if provider == "OLLAMA":
         name = get_ollama_playlist_name(ollama_url, ollama_model_name, full_prompt)
     elif provider == "GEMINI":
@@ -366,7 +362,8 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
     elif provider == "MISTRAL":
         name = get_mistral_playlist_name(mistral_api_key, mistral_model_name, full_prompt)
     elif provider == "OPENAI":
-        name = get_openai_playlist_name(full_prompt,openai_model_name, openai_api_key, openai_base_url)
+        system_prompt = "You generate short Playlist titles in plain text. The Playlist title needs to represent the mood and the activity of when you're listening to the playlist. The Playlist titles should be between 2 and 5 words long. You always return a single playlist name."
+        name = get_openai_playlist_name(full_prompt,openai_model_name, openai_api_key, openai_base_url, openai_max_tokens, system_prompt)
     # else: provider is NONE or invalid, name remains "AI Naming Skipped"
 
     # Apply length check and return final name or error
