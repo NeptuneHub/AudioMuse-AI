@@ -2,10 +2,11 @@ name: Build, Test, and Push AudioMuse AI Docker Image with NVIDIA support
 
 on:
   push:
-    branches:
-      - main      # Trigger for 'latest-nvidia'
+    # Only trigger on version tags to avoid automatic runs on direct pushes to main.
     tags:
       - 'v*.*.*'  # Trigger for version tags like v1.0.0
+  # Allow manual runs from the Actions UI
+  workflow_dispatch:
 
 jobs:
   build-and-test:
@@ -50,24 +51,23 @@ jobs:
           REPO_NAME_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           ALL_TAGS=""
 
-          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            # When compiling from main, push to 'latest-nvidia'
-            MAIN_TAG="ghcr.io/$REPO_NAME_LOWER:latest-nvidia"
-            ALL_TAGS="$MAIN_TAG"
-            echo "Building latest tag: $MAIN_TAG"
+              if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+                # When compiling from a version tag, create both the versioned tag and latest-nvidia
+                VERSION_TAG=$(echo "${GITHUB_REF}" | sed -e 's|refs/tags/v||g')
+                VERSIONED_TAG="ghcr.io/$REPO_NAME_LOWER:${VERSION_TAG}-nvidia"
+                LATEST_TAG="ghcr.io/$REPO_NAME_LOWER:latest-nvidia"
+                ALL_TAGS="${VERSIONED_TAG},${LATEST_TAG}"
+                echo "Building versioned tag: $VERSIONED_TAG"
+                echo "Also tagging as latest: $LATEST_TAG"
+              else
+                echo "This workflow is intended to run on tag pushes (refs/tags/v*). Exiting."
+                exit 1
+              fi
 
-          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            # When compiling from a version tag, create a versioned tag with '-nvidia' suffix
-            VERSION_TAG=$(echo "${GITHUB_REF}" | sed -e 's|refs/tags/v||g')
-            VERSIONED_TAG="ghcr.io/$REPO_NAME_LOWER:${VERSION_TAG}-nvidia"
-            ALL_TAGS="$VERSIONED_TAG"
-            echo "Building versioned tag: $VERSIONED_TAG"
-          fi
-
-          # Export the tags for subsequent steps
-          echo "docker_tags=$ALL_TAGS" >> "$GITHUB_OUTPUT"
-          # Also export a simplified tag for internal testing purposes
-          echo "test_tag=audiomuse-ai-temp:latest" >> "$GITHUB_OUTPUT"
+              # Export the tags for subsequent steps (comma-separated)
+              echo "docker_tags=$ALL_TAGS" >> "$GITHUB_OUTPUT"
+              # Also export a simplified tag for internal testing purposes
+              echo "test_tag=audiomuse-ai-temp:latest" >> "$GITHUB_OUTPUT"
 
       - name: Build Docker image (for testing)
         id: docker_build_test
