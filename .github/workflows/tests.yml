@@ -25,6 +25,8 @@ jobs:
         pip install pytest numpy==1.26.4 scipy==1.15.3 scikit-learn==1.7.2
         pip install pydub librosa==0.11.0 onnx==1.14.1 onnxruntime==1.15.1
         pip install redis rq Flask psycopg2-binary pyyaml
+        pip install ftfy requests google-generativeai mistralai
+        pip install voyager rapidfuzz sqlglot soundfile six flasgger umap-learn python-mpd2
 
     - name: Create mock config
       run: |
