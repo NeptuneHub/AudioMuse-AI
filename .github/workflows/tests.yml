@@ -21,10 +21,83 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pytest numpy
-        # Install minimal requirements for unit tests
-        if [ -f requirements.txt ]; then pip install -r requirements.txt || true; fi
+        # Install core dependencies needed for imports
+        pip install pytest numpy==1.26.4 scipy==1.15.3 scikit-learn==1.7.2
+        pip install pydub librosa==0.11.0 onnx==1.14.1 onnxruntime==1.15.1
+        pip install redis rq Flask psycopg2-binary pyyaml
+
+    - name: Create mock config
+      run: |
+        # Create a minimal config.py for tests
+        cat > config.py << 'EOF'
+        import os
+        TEMPO_MIN_BPM = 60
+        TEMPO_MAX_BPM = 180
+        ENERGY_MIN = 0.0
+        ENERGY_MAX = 1.0
+        TEMP_DIR = "/tmp"
+        MAX_DISTANCE = 0.5
+        MAX_SONGS_PER_CLUSTER = 100
+        MAX_SONGS_PER_ARTIST = 10
+        GMM_COVARIANCE_TYPE = "full"
+        MOOD_LABELS = []
+        OTHER_FEATURE_LABELS = []
+        EMBEDDING_MODEL_PATH = ""
+        PREDICTION_MODEL_PATH = ""
+        ENERGY_MAX = 1.0
+        ENERGY_MIN = 0.0
+        JELLYFIN_URL = ""
+        JELLYFIN_USER_ID = ""
+        JELLYFIN_TOKEN = ""
+        EMBY_URL = ""
+        EMBY_USER_ID = ""
+        EMBY_TOKEN = ""
+        REDIS_URL = "redis://localhost"
+        DATABASE_URL = ""
+        OLLAMA_SERVER_URL = ""
+        OLLAMA_MODEL_NAME = ""
+        AI_MODEL_PROVIDER = ""
+        GEMINI_API_KEY = ""
+        GEMINI_MODEL_NAME = ""
+        DANCEABILITY_MODEL_PATH = ""
+        AGGRESSIVE_MODEL_PATH = ""
+        HAPPY_MODEL_PATH = ""
+        PARTY_MODEL_PATH = ""
+        RELAXED_MODEL_PATH = ""
+        SAD_MODEL_PATH = ""
+        SCORE_WEIGHT_SILHOUETTE = 1.0
+        SCORE_WEIGHT_DAVIES_BOULDIN = 1.0
+        SCORE_WEIGHT_CALINSKI_HARABASZ = 1.0
+        SCORE_WEIGHT_DIVERSITY = 1.0
+        SCORE_WEIGHT_PURITY = 1.0
+        SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY = 1.0
+        SCORE_WEIGHT_OTHER_FEATURE_PURITY = 1.0
+        MUTATION_KMEANS_COORD_FRACTION = 0.1
+        MUTATION_INT_ABS_DELTA = 1
+        MUTATION_FLOAT_ABS_DELTA = 0.1
+        TOP_N_ELITES = 5
+        EXPLOITATION_START_FRACTION = 0.5
+        EXPLOITATION_PROBABILITY_CONFIG = 0.8
+        TOP_N_MOODS = 5
+        TOP_N_OTHER_FEATURES = 5
+        STRATIFIED_GENRES = []
+        MIN_SONGS_PER_GENRE_FOR_STRATIFICATION = 10
+        SAMPLING_PERCENTAGE_CHANGE_PER_RUN = 0.1
+        ITERATIONS_PER_BATCH_JOB = 10
+        MAX_CONCURRENT_BATCH_JOBS = 5
+        REBUILD_INDEX_BATCH_SIZE = 1000
+        MAX_QUEUED_ANALYSIS_JOBS = 5
+        TOP_K_MOODS_FOR_PURITY_CALCULATION = 3
+        LN_MOOD_DIVERSITY_STATS = []
+        LN_MOOD_PURITY_STATS = []
+        LN_OTHER_FEATURES_DIVERSITY_STATS = []
+        LN_OTHER_FEATURES_PURITY_STATS = []
+        STRATIFIED_SAMPLING_TARGET_PERCENTILE = 0.5
+        OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY = 0.5
+        AUDIO_LOAD_TIMEOUT = 600
+        NUM_RECENT_ALBUMS = 10
+        EOF
 
     - name: Run unit tests
       run: |
-        pytest tests/unit/ -v
+        pytest tests/unit/ -v --tb=short
