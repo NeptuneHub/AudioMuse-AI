@@ -143,9 +143,9 @@ Choose the appropriate file based on your media server setup.
 **Steps:**
 1.  **Create your environment file:**
     ```bash
-    cp .env.example .env
+    cp deployment/.env.example deployment/.env
     ```
-    you can find the example here: [.env.example](.env.example)
+    you can find the example here: [deployment/.env.example](deployment/.env.example)
     
 2.  **Review and Customize:**
     Edit `.env` and provide the media-server credentials (e.g., `JELLYFIN_URL`, `JELLYFIN_USER_ID`, `JELLYFIN_TOKEN` or `NAVIDROME_*`, `EMBY_*`, `LYRION_URL`) along with any API keys (`GEMINI_API_KEY`, `MISTRAL_API_KEY`). The same values are injected into every compose file, so you only need to edit them here.
@@ -154,9 +154,11 @@ Choose the appropriate file based on your media server setup.
     docker compose -f deployment/docker-compose.yaml up -d
     ```
     Swap the compose filename if you're targeting Navidrome (`docker-compose-navidrome.yaml`), Lyrion (`docker-compose-lyrion.yaml`) or Emby (`docker-compose-emby.yaml`). This command starts all services (Flask app, RQ workers, Redis, PostgreSQL) in detached mode (`-d`).
-4.  **Access the Application:**
+
+    **IMPORTANT:** both `docker-compose.yaml` and `.env` file need to be in the same directory.
+5.  **Access the Application:**
     Once the containers are up, you can access the web UI at `http://localhost:8000`.
-5.  **Stopping the Services:**
+6.  **Stopping the Services:**
     ```bash
     docker compose -f deployment/docker-compose.yaml down
     ```
