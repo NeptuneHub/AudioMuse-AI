@@ -1,0 +1,102 @@
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    ports:
+      - 8096:8096/tcp
+      - 7359:7359/udp
+    restart: 'unless-stopped'
+
+  redis:
+    image: redis:7-alpine
+    container_name: audiomuse-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: audiomuse-postgres
+    environment:
+      POSTGRES_USER: "audiomuse"
+      POSTGRES_PASSWORD: "audiomusepassword"
+      POSTGRES_DB: "audiomusedb"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  audiomuse-ai-flask:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/neptunehub/audiomuse-ai:devel
+    container_name: audiomuse-ai-flask-app
+    ports:
+      - "8000:8000"
+    environment:
+      SERVICE_TYPE: "flask"
+      MEDIASERVER_TYPE: "jellyfin"
+      JELLYFIN_USER_ID: "YOUR-JF-USER-ID"
+      JELLYFIN_TOKEN: "YOUR-JF-TOKEN"
+      JELLYFIN_URL: "http://jellyfin:8096"
+      POSTGRES_USER: "audiomuse"
+      POSTGRES_PASSWORD: "audiomusepassword"
+      POSTGRES_DB: "audiomusedb"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      REDIS_URL: "redis://redis:6379/0"
+      GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE"
+      MISTRAL_API_KEY: "YOUR_MISTRAL_API_KEY_HERE"
+      TEMP_DIR: "/app/temp_audio"
+      ENABLE_PROXY_FIX: "true"
+    volumes:
+      - temp-audio-flask:/app/temp_audio
+    depends_on:
+      - redis
+      - postgres
+      - jellyfin
+    restart: unless-stopped
+
+  audiomuse-ai-worker:
+    image: ghcr.io/neptunehub/audiomuse-ai:devel
+    container_name: audiomuse-ai-worker-instance
+    environment:
+      SERVICE_TYPE: "worker"
+      MEDIASERVER_TYPE: "jellyfin"
+      JELLYFIN_USER_ID: "YOUR-JF-USER-ID"
+      JELLYFIN_TOKEN: "YOUR-JF-TOKEN"
+      JELLYFIN_URL: "http://jellyfin:8096"
+      POSTGRES_USER: "audiomuse"
+      POSTGRES_PASSWORD: "audiomusepassword"
+      POSTGRES_DB: "audiomusedb"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      REDIS_URL: "redis://redis:6379/0"
+      GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE"
+      MISTRAL_API_KEY: "YOUR_MISTRAL_API_KEY_HERE"
+      TEMP_DIR: "/app/temp_audio"
+    volumes:
+      - temp-audio-worker:/app/temp_audio
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:latest
+    ports:
+      - "7777:80"
+    volumes:
+      - ./nginx-confd:/etc/nginx/conf.d:ro
+    depends_on:
+      - audiomuse-ai-flask
+
+volumes:
+  redis-data:
+  postgres-data:
+  temp-audio-flask:
+  temp-audio-worker:
+

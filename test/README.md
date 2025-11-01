@@ -99,3 +99,17 @@ PASSED
 ======================================================================================== 10 passed in 2364.92s (0:39:24) ========================================================================================
 (.venv) user@host:~/project$
 ```
+
+## Running tests through an reverse proxy
+
+The current docker-compose.yaml starts audiomuse-ai with all dependencies, jellyfin and nginx.
+It is setup to run behind a reverse proxy. The started audiomuse-ai can be accessed via the proxy `http://localhost:7777/am` or directly with `http://localhost:8000`.
+The started jellyfin is not configured to allow to run the test successfull.
+If you want to run the tests against an existing audiomse-ai instance you have to change the nginx configuration to point to it.
+See `./nginx-confd/reverse-proxy.conf` and the line with `proxy_pass http://audiomuse-ai-flask:8000/;`.
+
+Do run the tests against it you have to start execute: `docker compose up`.
+Set the base url to `BASE_URL = 'http://localhost:7777/am'`
+Your audiomuse instance should have set the following configuration to true `ENABLE_PROXY_FIX`.
+And run the test by executing: `python test.py`.
+
