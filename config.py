@@ -65,7 +65,7 @@ MIN_PLAYLIST_SIZE_FOR_TOP_N = int(os.environ.get("MIN_PLAYLIST_SIZE_FOR_TOP_N", 
 
 # --- Algorithm Choose Constants (Read from Environment Variables) ---
 CLUSTER_ALGORITHM = os.environ.get("CLUSTER_ALGORITHM", "kmeans") # accepted dbscan, kmeans, gmm, or spectral
-AI_MODEL_PROVIDER = os.environ.get("AI_MODEL_PROVIDER", "NONE").upper() # Accepted: OLLAMA, GEMINI, MISTRAL, NONE
+AI_MODEL_PROVIDER = os.environ.get("AI_MODEL_PROVIDER", "NONE").upper() # Accepted: OLLAMA, GEMINI, MISTRAL, OPENAI, NONE
 ENABLE_CLUSTERING_EMBEDDINGS = os.environ.get("ENABLE_CLUSTERING_EMBEDDINGS", "True").lower() == "true"
 
 # --- DBSCAN Only Constants (Ranges for Evolutionary Approach) ---
@@ -203,6 +203,14 @@ GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro") # Defa
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "YOUR-GEMINI-API-KEY-HERE")
 MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+
+OPENAI_MODEL_NAME = os.environ.get("OPENAI_MODEL_NAME", "gpt-4o-mini") # Default Open-AI model. Options: gpt-4o, gpt-4o-mini, gpt-3.5-turbo
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "sk-your-own-key") # Default Open-AI API key. Valid keys should be set via environment variables.
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", None) # Default Open-AI base URL. If using OpenAI directly, leave empty.
+OPENAI_API_CALL_DELAY_SECONDS = float(os.environ.get("OPENAI_API_CALL_DELAY_SECONDS", "2")) # Delay between OpenAI API calls to manage rate limits.
+OPENAI_API_TOKENS = int(os.environ.get("OPENAI_API_TOKENS", "1000")) # Default max tokens for OpenAI API calls.
+OPENAI_API_TEMPERATURE = float(os.environ.get("OPENAI_API_TEMPERATURE", "0.7")) # Default temperature for OpenAI API calls.
+
 
 # Construct DATABASE_URL from individual components for better security in K8s
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "audiomuse")
