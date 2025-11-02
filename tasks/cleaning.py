@@ -75,14 +75,20 @@ def identify_and_clean_orphaned_albums_task():
             
             if not all_media_server_albums:
                 log_and_update_main("⚠️ No albums found on media server.", 95, task_state=TASK_STATUS_PROGRESS)
-                # Still rebuild voyager index even when no albums found
-                log_and_update_main(f"🔄 Rebuilding voyager index...", 98)
+                # Still rebuild voyager index and map even when no albums found
+                log_and_update_main(f"🔄 Rebuilding voyager index and map...", 98)
                 try:
                     build_and_store_voyager_index(get_db())
-                    log_and_update_main(f"✅ Voyager index rebuilt successfully.", 99)
+                    from app_helper import build_and_store_map_projection
+                    build_and_store_map_projection('main_map')
+                    try:
+                        redis_conn.publish('index-updates', 'reload')
+                    except Exception:
+                        logger.debug('Could not publish index-updates to redis after rebuild.')
+                    log_and_update_main(f"✅ Voyager index and map rebuilt successfully.", 99)
                 except Exception as e:
-                    logger.warning(f"Failed to rebuild voyager index: {e}")
-                    log_and_update_main(f"⚠️ Warning: Failed to rebuild voyager index: {str(e)}", 99)
+                    logger.warning(f"Failed to rebuild voyager index and map: {e}")
+                    log_and_update_main(f"⚠️ Warning: Failed to rebuild voyager index and map: {str(e)}", 99)
                 
                 summary = {"status": "SUCCESS", "message": "No albums found on media server.", "orphaned_albums": [], "deleted_count": 0}
                 log_and_update_main("✅ Database cleaning completed - no albums on media server!", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
@@ -174,14 +180,20 @@ def identify_and_clean_orphaned_albums_task():
             
             if len(orphaned_track_ids) == 0:
                 log_and_update_main("✅ No orphaned tracks found. Database is clean!", 95, task_state=TASK_STATUS_PROGRESS)
-                # Still rebuild voyager index even when no cleaning needed
-                log_and_update_main(f"🔄 Rebuilding voyager index...", 98)
+                # Still rebuild voyager index and map even when no cleaning needed
+                log_and_update_main(f"🔄 Rebuilding voyager index and map...", 98)
                 try:
                     build_and_store_voyager_index(get_db())
-                    log_and_update_main(f"✅ Voyager index rebuilt successfully.", 99)
+                    from app_helper import build_and_store_map_projection
+                    build_and_store_map_projection('main_map')
+                    try:
+                        redis_conn.publish('index-updates', 'reload')
+                    except Exception:
+                        logger.debug('Could not publish index-updates to redis after rebuild.')
+                    log_and_update_main(f"✅ Voyager index and map rebuilt successfully.", 99)
                 except Exception as e:
-                    logger.warning(f"Failed to rebuild voyager index: {e}")
-                    log_and_update_main(f"⚠️ Warning: Failed to rebuild voyager index: {str(e)}", 99)
+                    logger.warning(f"Failed to rebuild voyager index and map: {e}")
+                    log_and_update_main(f"⚠️ Warning: Failed to rebuild voyager index and map: {str(e)}", 99)
                 
                 summary = {
                     "total_media_server_albums": len(all_media_server_albums),
@@ -219,14 +231,20 @@ def identify_and_clean_orphaned_albums_task():
             if deletion_result["status"] == "SUCCESS":
                 log_and_update_main(f"✅ Successfully deleted {deletion_result['deleted_count']} orphaned tracks.", 96)
                 
-                # Rebuild voyager index after cleaning like analysis does
-                log_and_update_main(f"🔄 Rebuilding voyager index after cleaning...", 98)
+                # Rebuild voyager index and map after cleaning like analysis does
+                log_and_update_main(f"🔄 Rebuilding voyager index and map after cleaning...", 98)
                 try:
                     build_and_store_voyager_index(get_db())
-                    log_and_update_main(f"✅ Voyager index rebuilt successfully after cleaning.", 99)
+                    from app_helper import build_and_store_map_projection
+                    build_and_store_map_projection('main_map')
+                    try:
+                        redis_conn.publish('index-updates', 'reload')
+                    except Exception:
+                        logger.debug('Could not publish index-updates to redis after rebuild.')
+                    log_and_update_main(f"✅ Voyager index and map rebuilt successfully after cleaning.", 99)
                 except Exception as e:
-                    logger.warning(f"Failed to rebuild voyager index after cleaning: {e}")
-                    log_and_update_main(f"⚠️ Warning: Failed to rebuild voyager index: {str(e)}", 99)
+                    logger.warning(f"Failed to rebuild voyager index and map after cleaning: {e}")
+                    log_and_update_main(f"⚠️ Warning: Failed to rebuild voyager index and map: {str(e)}", 99)
                 
                 safety_message = f" (Safety limit: deleted {len(orphaned_albums_list)} out of {total_orphaned_albums} albums)" if safety_limit_applied else ""
                 
