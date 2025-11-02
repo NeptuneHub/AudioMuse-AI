@@ -455,14 +455,17 @@ def load_map_projection(index_name, force_reload=False):
     global MAP_PROJECTION_CACHE
     # Try cache first (unless force_reload is True)
     if not force_reload and MAP_PROJECTION_CACHE and MAP_PROJECTION_CACHE.get('index_name') == index_name:
+        logger.info(f"Map projection '{index_name}' already loaded in cache. Skipping reload.")
         return MAP_PROJECTION_CACHE.get('id_map'), MAP_PROJECTION_CACHE.get('projection')
 
+    logger.info(f"Attempting to load map projection '{index_name}' from database into memory...")
     conn = get_db()
     cur = conn.cursor()
     try:
         cur.execute("SELECT projection_data, id_map_json FROM map_projection_data WHERE index_name = %s", (index_name,))
         row = cur.fetchone()
         if not row:
+            logger.warning(f"Map projection '{index_name}' not found in the database. Cache will be empty.")
             return None, None
         proj_blob, id_map_json = row[0], row[1]
         proj = np.frombuffer(proj_blob, dtype=np.float32)
@@ -471,9 +474,10 @@ def load_map_projection(index_name, force_reload=False):
             proj = proj.reshape((-1, 2))
         id_map = json.loads(id_map_json)
         MAP_PROJECTION_CACHE = {'index_name': index_name, 'id_map': id_map, 'projection': proj}
+        logger.info(f"Map projection '{index_name}' with {len(id_map)} items loaded successfully into memory.")
         return id_map, proj
     except Exception as e:
-        logger.error(f"Failed to load map projection: {e}")
+        logger.error(f"Failed to load map projection: {e}", exc_info=True)
         return None, None
     finally:
         cur.close()
