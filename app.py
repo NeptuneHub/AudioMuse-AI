@@ -527,6 +527,9 @@ def listen_for_index_reloads():
             load_voyager_index_for_querying(force_reload=True)
             from app_helper import load_map_projection
             load_map_projection('main_map', force_reload=True)
+            # Rebuild the map JSON cache used by the /api/map endpoint
+            from app_map import build_map_cache
+            build_map_cache()
             logger.info("In-memory Voyager index and map reloaded successfully by background listener.")
           except Exception as e:
             logger.error(f"Error reloading Voyager index or map from background listener: {e}", exc_info=True)
