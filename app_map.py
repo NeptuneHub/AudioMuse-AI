@@ -130,7 +130,7 @@ def build_map_cache():
     # Try to use precomputed projection if available
     id_map, proj = None, None
     try:
-        id_map, proj = load_map_projection('main_map')
+        id_map, proj = load_map_projection('main_map', force_reload=True)
     except Exception as e:
         logger.debug('load_map_projection failed: %s', e)
 
