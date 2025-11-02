@@ -643,8 +643,14 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
                 # Rebuild index in batches as before
                 if albums_completed > last_rebuild_count and (albums_completed - last_rebuild_count) >= REBUILD_INDEX_BATCH_SIZE:
-                    log_and_update_main(f"Batch of {albums_completed - last_rebuild_count} albums complete. Rebuilding index...", current_progress)
+                    log_and_update_main(f"Batch of {albums_completed - last_rebuild_count} albums complete. Rebuilding index and map...", current_progress)
                     build_and_store_voyager_index(get_db())
+                    # Also rebuild map projection
+                    try:
+                        from app_helper import build_and_store_map_projection
+                        build_and_store_map_projection('main_map')
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store map projection during batch rebuild: {e}")
                     try:
                         redis_conn.publish('index-updates', 'reload')
                     except Exception:

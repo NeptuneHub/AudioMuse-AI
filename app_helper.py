@@ -450,11 +450,11 @@ def save_map_projection(index_name, id_map, projection_array):
         cur.close()
 
 
-def load_map_projection(index_name):
+def load_map_projection(index_name, force_reload=False):
     """Load precomputed projection from DB. Returns (id_map, numpy_array) or (None, None)"""
     global MAP_PROJECTION_CACHE
-    # Try cache first
-    if MAP_PROJECTION_CACHE and MAP_PROJECTION_CACHE.get('index_name') == index_name:
+    # Try cache first (unless force_reload is True)
+    if not force_reload and MAP_PROJECTION_CACHE and MAP_PROJECTION_CACHE.get('index_name') == index_name:
         return MAP_PROJECTION_CACHE.get('id_map'), MAP_PROJECTION_CACHE.get('projection')
 
     conn = get_db()
