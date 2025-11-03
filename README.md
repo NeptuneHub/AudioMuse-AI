@@ -276,6 +276,9 @@ These parameters can be left as-is:
 | `CLEANING_SAFETY_LIMIT` | Max number of albums deleted during cleaning | `100`             |
 | `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names. | `""` (empty - scan all) |
 | `ENABLE_PROXY_FIX` | Enable Proxy Fix for Flask when behind a reverse proxy. Example Nginx configuration: [config.py](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/config.py#L346) | `false` |
+| `WORKER_URL` | This is the Url your worker instance runs on. The server instance uses this parameter to call the worker. Make sure to include /worker at the end of the url (e.g. http://worker.example.com:8029/worker) | `false` |
+| `WORKER_POSTGRES_HOST` | This is the Url of your the postgres service on your server. The worker uses this to connect the postgres service the flask app uses too. Make sure to not include a protocol (like "http") (e.g. 100.000.00.00) | `false` |
+| `WORKER_REDIS_URL` | This is the Url of your the redis service on your server. The worker uses this to connect to the redis service the flask app uses too. Make sure to include the protocol "redis://" and the dbindex "/0" (e.g. redis://100.000.00.00:6379/0)   | `false` |
 
 These are the default parameters used when launching analysis or clustering tasks. You can change them directly in the front-end.
 
