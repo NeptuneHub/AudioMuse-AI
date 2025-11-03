@@ -18,6 +18,7 @@ const aiModelProviderSelect = document.getElementById('config-ai_model_provider'
 const ollamaConfigGroup = document.getElementById('ollama-config-group');
 const geminiConfigGroup = document.getElementById('gemini-config-group');
 const mistralConfigGroup = document.getElementById('mistral-config-group');
+const openaiConfigGroup = document.getElementById('openai-config-group');
 
 // Task Buttons
 const startAnalysisBtn = document.getElementById('start-analysis-btn');
@@ -159,6 +160,9 @@ function renderConfig(config) {
     document.getElementById('config-ollama_model_name').value = config.ollama_model_name || 'mistral:7b';
     document.getElementById('config-gemini_model_name').value = config.gemini_model_name || 'gemini-2.5-pro';
     document.getElementById('config-mistral_model_name').value = config.mistral_model_name || 'ministral-3b-latest';
+    document.getElementById('config-openai_model_name').value = config.openai_model_name || 'gpt-4';
+    document.getElementById('config-openai_base_url').value = config.openai_base_url || 'https://api.openai.com/v1/chat/completions';
+    document.getElementById('config-openai_api_tokens').value = config.openai_api_tokens || 1000;
 }
 
 function toggleClusteringParams() {
@@ -192,6 +196,7 @@ function toggleAiConfig() {
     ollamaConfigGroup.classList.add('hidden');
     geminiConfigGroup.classList.add('hidden');
     mistralConfigGroup.classList.add('hidden');
+    openaiConfigGroup.classList.add('hidden');
 
     if (provider === 'OLLAMA') {
         ollamaConfigGroup.classList.remove('hidden');
@@ -199,6 +204,8 @@ function toggleAiConfig() {
         geminiConfigGroup.classList.remove('hidden');
     } else if (provider === 'MISTRAL') {
         mistralConfigGroup.classList.remove('hidden');
+    } else if (provider === 'OPENAI') {
+        openaiConfigGroup.classList.remove('hidden');
     }
 }
 
@@ -388,6 +395,9 @@ async function startTask(taskType) {
             ollama_model_name: document.getElementById('config-ollama_model_name').value,
             gemini_model_name: document.getElementById('config-gemini_model_name').value,
             mistral_model_name: document.getElementById('config-mistral_model_name').value,
+            openai_model_name: document.getElementById('config-openai_model_name').value,
+            openai_base_url: document.getElementById('config-openai_base_url').value,
+            openai_api_tokens: document.getElementById('config-openai_api_tokens').value,
             enable_clustering_embeddings: document.getElementById('config-enable_clustering_embeddings').checked
         });
     }
