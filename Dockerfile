@@ -1,6 +1,6 @@
 # or nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 (CUDA version can go as low as CUDA 12.2 but need to check)
-ARG BASE_IMAGE=ubuntu:22.04
-
+#ARG BASE_IMAGE=ubuntu:22.04
+ARG BASE_IMAGE=nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 FROM ubuntu:22.04 AS models
 
 SHELL ["/bin/bash", "-lc"]
@@ -86,7 +86,9 @@ RUN set -ux; \
     echo "apt-get attempt $n failed — retrying in $((n*n))s"; \
     sleep $((n*n)); \
   done; \
-  rm -rf /var/lib/apt/lists/*
+  rm -rf /var/lib/apt/lists/* \
+  apt-get remove -y python3-numpy || true; \
+  apt-get autoremove -y || true;
 
 #RUN test -f /usr/local/cuda-12.8/nvvm/libdevice/libdevice.10.bc
 
@@ -98,33 +100,43 @@ ARG BASE_IMAGE
 # pydub is for audio conversion
 # Pin numpy to a stable version to avoid numeric differences between builds
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --prefix=/install \
-      numpy==1.26.4 \
-      scipy==1.15.3 \
-      numba==0.60.0 \
-      soundfile==0.13.1 \
-      Flask \
-      Flask-Cors \
-      redis \
-      requests \
-      scikit-learn==1.7.2 \
-      rq \
-      pyyaml \
-      six \
-      voyager==2.1.0 \
-      rapidfuzz \
-      psycopg2-binary \
-      ftfy \
-      flasgger \
-      sqlglot \
-      google-generativeai \
-      mistralai \
-  umap-learn \
-      pydub \
-      python-mpd2 \
-      onnx==1.14.1 \
-      onnxruntime==1.15.1 \
-      librosa==0.11.0
+    bash -lc '\
+      GPU_PKGS="flatbuffers packaging protobuf sympy"; \
+      pip3 install --no-cache-dir numpy==1.26.4 || exit 1; \
+      pip3 install --no-cache-dir \
+        scipy==1.15.3 \
+        numba==0.60.0 \
+        soundfile==0.13.1 \
+        Flask \
+        Flask-Cors \
+        redis \
+        requests \
+        scikit-learn==1.7.2 \
+        rq \
+        pyyaml \
+        six \
+        voyager==2.1.0 \
+        rapidfuzz \
+        psycopg2-binary \
+        ftfy \
+        flasgger \
+        sqlglot \
+        google-generativeai \
+        mistralai \
+        umap-learn \
+        pydub \
+        python-mpd2 \
+        onnx==1.14.1 \
+        librosa==0.11.0 || exit 1; \
+      if [[ "${BASE_IMAGE}" =~ ^nvidia/cuda: ]]; then \
+        echo "Detected NVIDIA base image: installing GPU-only packages and onnxruntime-gpu"; \
+        pip3 install --no-cache-dir $GPU_PKGS || exit 1; \
+        pip3 install --no-cache-dir onnxruntime-gpu==1.15.1 || exit 1; \
+      else \
+        echo "CPU base image: installing onnxruntime (CPU) only"; \
+        pip3 install --no-cache-dir onnxruntime==1.15.1 || exit 1; \
+      fi'
+
 
 FROM base AS runner
 
@@ -134,7 +146,9 @@ ENV LANG=C.UTF-8 \
 
 WORKDIR /app
 
-COPY --from=libraries /install/ /usr/
+# COPY --from=libraries /install/ /usr/
+COPY --from=libraries /usr/local/lib/python3.10/dist-packages/ /usr/local/lib/python3.10/dist-packages/
+
 COPY --from=models /app/model/ /app/model/
 
 COPY . /app

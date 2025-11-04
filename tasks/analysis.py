@@ -343,15 +343,25 @@ def analyze_track(file_path, mood_labels_list, model_paths):
         logger.error(f"Spectrogram creation failed for {os.path.basename(file_path)}: {e}", exc_info=True)
         return None, None
 
-    # --- 3. Run Main Models (Embedding and Prediction) ---
+# --- 3. Run Main Models (Embedding and Prediction) ---
     try:
         # Load and run embedding model (ONNX)
-        embedding_sess = ort.InferenceSession(model_paths['embedding'])
+        # embedding_sess = ort.InferenceSession(model_paths['embedding'])
+        # ORIGINAL!!!: embedding_sess = ort.InferenceSession(model_paths['embedding'])
+        embedding_sess = ort.InferenceSession(
+            model_paths['embedding'],
+            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+        )
         embedding_feed_dict = {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches}
         embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
 
         # Load and run prediction model (ONNX)
-        prediction_sess = ort.InferenceSession(model_paths['prediction'])
+        # prediction_sess = ort.InferenceSession(model_paths['prediction'])
+        # ALSO CHANGED!!!
+        prediction_sess = ort.InferenceSession(
+            model_paths['prediction'],
+            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+        )
         prediction_feed_dict = {DEFINED_TENSOR_NAMES['prediction']['input']: embeddings_per_patch}
         mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
 
@@ -364,6 +374,7 @@ def analyze_track(file_path, mood_labels_list, model_paths):
     except Exception as e:
         logger.error(f"Main model inference failed for {os.path.basename(file_path)}: {e}", exc_info=True)
         return None, None
+
         
     # --- 4. Run Secondary Models ---
     other_predictions = {}
@@ -371,7 +382,12 @@ def analyze_track(file_path, mood_labels_list, model_paths):
     for key in ["danceable", "aggressive", "happy", "party", "relaxed", "sad"]:
         try:
             model_path = model_paths[key]
-            other_sess = ort.InferenceSession(model_path)
+            # other_sess = ort.InferenceSession(model_path)
+            # ALSO CHANGED !!!
+            other_sess = ort.InferenceSession(
+                model_path,
+                providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+            )
             feed_dict = {DEFINED_TENSOR_NAMES[key]['input']: embeddings_per_patch}
             probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
 
@@ -389,14 +405,6 @@ def analyze_track(file_path, mood_labels_list, model_paths):
         except Exception as e:
             logger.error(f"Error predicting '{key}' for {os.path.basename(file_path)}: {e}", exc_info=True)
             other_predictions[key] = 0.0
-
-    # --- 5. Final Aggregation for Storage ---
-    processed_embeddings = np.mean(embeddings_per_patch, axis=0)
-
-    return {
-        "tempo": float(tempo), "key": musical_key, "scale": scale,
-        "moods": moods, "energy": float(average_energy), **other_predictions
-    }, processed_embeddings
 
 
 
