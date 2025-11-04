@@ -110,7 +110,7 @@ def index():
             schema:
               type: string
     """
-    return render_template('index.html')
+    return render_template('index.html', title = 'AudioMuse-AI - Home Page', active='index')
 
 
 @app.route('/api/status/<task_id>', methods=['GET'])

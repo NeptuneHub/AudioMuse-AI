@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="app-version" content="{{ app_version }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }}</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon-32x32.ico') }}" sizes="32x32">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon-96x96.ico') }}" sizes="96x96">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon-128x128.ico') }}" sizes="128x128">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
+
+    {% block headAdditions %}
+        {# head additions from template will be set here #}
+    {% endblock %}
+</head>
+<body>
+    <div class="page-container">
+        <aside class="sidebar">
+            <nav>
+                <ul class="sidebar-nav">
+                    {% with %}
+                    {% include 'sidebar_navi.html' %}
+                    {% endwith %}
+                </ul>
+            </nav>
+        </aside>
+
+        <div class="main-content" id="main-content">
+            <button class="menu-toggle">&#9776;</button>
+            <div class="container">
+                {% block content %}
+                    {# content from template will be set here #}
+                {% endblock %}
+            </div>
+        </div>
+    </div>
+
+    {% block bodyAdditions %}
+        {# body additions from template will be set here #}
+    {% endblock %}
+</body>
+</html>
+{% block postHTMLScripts %}
+    {# postHTMLScripts from template will be set here #}
+{% endblock %}

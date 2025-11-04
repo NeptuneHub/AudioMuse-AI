@@ -32,7 +32,7 @@ def similarity_page():
             schema:
               type: string
     """
-    return render_template('similarity.html')
+    return render_template('similarity.html', title = 'AudioMuse-AI - Playlist from Similar Song', active='similarity')
 
 @voyager_bp.route('/api/search_tracks', methods=['GET'])
 def search_tracks_endpoint():

@@ -1,288 +1,262 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="app-version" content="{{ app_version }}">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>AudioMuse-AI - Home Page</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
-</head>
-<body>
-    <div class="page-container">
-        <aside class="sidebar">
-            <nav>
-                <ul class="sidebar-nav">
-                    {% with %}
-                    {% set active = 'index' %}
-                    {% include 'sidebar_navi.html' %}
-                    {% endwith %}
-                </ul>
-            </nav>
-        </aside>
+{% extends "includes/layout.html" %}
 
-        <div class="main-content" id="main-content">
-            <button class="menu-toggle">&#9776;</button>
-            <div class="container">
-                <div id="main-content-inner">
-                    <section>
-                        <div id="config-header">
-                            <div class="config-title-group">
-                                <h1>AudioMuse-AI - Analysis and Clustering</h1>
-                                <p class="subtitle">Discover new playlists by analyzing your music's unique fingerprint.</p>
-                            </div>
-                            <div class="header-controls">
-                                <div class="view-switcher">
-                                    <button id="basic-view-btn" class="active">Basic</button>
-                                    <button id="advanced-view-btn">Advanced</button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <form id="config-form">
-                            <!-- MODIFIED: Removed the "General Parameters" fieldset for Jellyfin details -->
-
-                            <fieldset>
-                                <legend>Analysis Parameters</legend>
-                                <div class="param-group">
-                                    <div>
-                                        <label for="config-num_recent_albums">Number of Recent Albums:</label>
-                                        <input type="number" id="config-num_recent_albums">
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-top_n_moods">Top N Moods:</label>
-                                        <input type="number" id="config-top_n_moods">
-                                    </div>
-                                </div>
-                            </fieldset>
-
-                            <fieldset>
-                                <legend>Clustering Parameters</legend>
-                                <div class="param-group">
-                                     <div id="basic-algorithm-display">
-                                        <label>Clustering Algorithm:</label>
-                                        <p style="font-weight: bold; padding: 0.5rem 0; margin:0;">K-Means</p>
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-cluster_algorithm">Clustering Algorithm:</label>
-                                        <select id="config-cluster_algorithm">
-                                            <option value="kmeans">K-Means</option>
-                                            <option value="dbscan">DBSCAN</option>
-                                            <option value="gmm">GMM</option>
-                                            <option value="spectral">Spectral</option>
-                                        </select>
-                                    </div>
-                                    <div>
-                                        <label for="config-top_n_playlists">TOP Playlist Number:</label>
-                                        <input type="number" id="config-top_n_playlists">
-                                    </div>
-                                    <div>
-                                        <label for="config-clustering_runs">Clustering Runs:</label>
-                                        <input type="number" id="config-clustering_runs">
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-max_distance">Max Distance:</label>
-                                        <input type="number" step="0.01" id="config-max_distance">
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-max_songs_per_cluster">Max Songs Per Cluster:</label>
-                                        <input type="number" id="config-max_songs_per_cluster">
-                                     </div>
-                                     <div class="advanced-param hidden">
-                                        <label for="config-pca_components_min">PCA Components Min:</label>
-                                        <input type="number" id="config-pca_components_min">
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-pca_components_max">PCA Components Max:</label>
-                                        <input type="number" id="config-pca_components_max">
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-min_songs_per_genre_for_stratification">Min Songs Per Genre for Stratification:</label>
-                                        <input type="number" id="config-min_songs_per_genre_for_stratification">
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-stratified_sampling_target_percentile">Stratified Sampling Target Percentile:</label>
-                                        <input type="number" id="config-stratified_sampling_target_percentile" min="0" max="100">
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-score_weight_diversity">Diversity Score Weight:</label>
-                                        <input type="number" step="0.01" id="config-score_weight_diversity">
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-score_weight_purity">Purity Score Weight:</label>
-                                        <input type="number" step="0.01" id="config-score_weight_purity">
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-score_weight_other_feature_diversity">Other Feature Diversity Weight:</label>
-                                        <input type="number" step="0.01" id="config-score_weight_other_feature_diversity">
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-score_weight_other_feature_purity">Other Feature Purity Weight:</label>
-                                        <input type="number" step="0.01" id="config-score_weight_other_feature_purity">
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-score_weight_silhouette">Silhouette Score Weight:</label>
-                                        <input type="number" step="0.01" id="config-score_weight_silhouette">
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-score_weight_davies_bouldin">Davies-Bouldin Score Weight:</label>
-                                        <input type="number" step="0.01" id="config-score_weight_davies_bouldin">
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-score_weight_calinski_harabasz">Calinski-Harabasz Score Weight:</label>
-
-                                        <input type="number" step="0.01" id="config-score_weight_calinski_harabasz">
-                                    </div>
-                                    <div class="advanced-param hidden">
-                                        <label for="config-enable_clustering_embeddings">Use Embeddings for Clustering:</label>
-                                        <input type="checkbox" id="config-enable_clustering_embeddings" style="width: auto; margin-left: 5px;">
-                                        <span class="tooltiptext">If checked, clustering will use audio embeddings. Otherwise, it uses score-based feature vectors.</span>
-                                    </div>
-                                </div>
-
-                                <!-- K-Means specific parameters (for Basic and Advanced K-Means view) -->
-                                <div id="kmeans-params-basic" class="hidden"> <!-- Initially hidden; JS controls visibility. Not an 'advanced-param' itself. -->
-                                    <h4>K-Means Specific:</h4>
-                                    <div class="param-group"> <!-- param-group for styling the inputs -->
-                                        <div>
-                                            <label for="config-num_clusters_min">Min Clusters:</label>
-                                            <input type="number" id="config-num_clusters_min">
-                                        </div>
-                                        <div>
-                                            <label for="config-num_clusters_max">Max Clusters:</label>
-                                            <input type="number" id="config-num_clusters_max">
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div id="dbscan-params" class="advanced-param hidden">
-                                    <h4>DBSCAN Specific:</h4>
-                                    <div>
-                                        <label for="config-dbscan_eps_min">DBSCAN Epsilon Min:</label>
-                                        <input type="number" step="0.01" id="config-dbscan_eps_min">
-                                    </div>
-                                    <div>
-                                        <label for="config-dbscan_eps_max">DBSCAN Epsilon Max:</label>
-                                        <input type="number" step="0.01" id="config-dbscan_eps_max">
-                                    </div>
-                                    <div>
-                                        <label for="config-dbscan_min_samples_min">DBSCAN Min Samples Min:</label>
-                                        <input type="number" id="config-dbscan_min_samples_min">
-                                    </div>
-                                    <div>
-                                        <label for="config-dbscan_min_samples_max">DBSCAN Min Samples Max:</label>
-                                        <input type="number" id="config-dbscan_min_samples_max">
-                                    </div>
-                                </div>
-
-                                <div id="gmm-params" class="advanced-param hidden">
-                                    <h4>GMM Specific:</h4>
-                                    <div>
-                                        <label for="config-gmm_n_components_min">GMM Components Min:</label>
-                                        <input type="number" id="config-gmm_n_components_min">
-                                    </div>
-                                    <div>
-                                        <label for="config-gmm_n_components_max">GMM Components Max:</label>
-                                        <input type="number" id="config-gmm_n_components_max">
-                                    </div>
-                                </div>
-
-                                <div id="spectral-params" class="advanced-param hidden">
-                                    <h4>Spectral Specific:</h4>
-                                    <div>
-                                        <label for="config-spectral_n_clusters_min">Spectral Clusters Min:</label>
-                                        <input type="number" id="config-spectral_n_clusters_min">
-                                    </div>
-                                    <div>
-                                        <label for="config-spectral_n_clusters_max">Spectral Clusters Max:</label>
-                                        <input type="number" id="config-spectral_n_clusters_max">
-                                    </div>
-                                </div>
-                            </fieldset>
-
-                            <fieldset>
-                                <legend>AI Playlist Naming</legend>
-                                <div class="param-group">
-                                    <div>
-                                        <label for="config-ai_model_provider">AI Provider:</label>
-                                        <select id="config-ai_model_provider">
-                                            <option value="OLLAMA">Ollama</option>
-                                            <option value="GEMINI">Gemini</option>
-                                            <option value="MISTRAL">Mistral</option>
-                                            <option value="NONE" selected>None</option>
-                                        </select>
-                                    </div>
-
-                                    <div id="ollama-config-group" class="hidden">
-                                         <h4>Ollama Configuration:</h4>
-                                        <div>
-                                            <label for="config-ollama_server_url">Ollama Server URL:</label>
-                                            <input type="text" id="config-ollama_server_url" value="http://127.0.0.1:11434/api/generate">
-                                        </div>
-                                        <div>
-                                            <label for="config-ollama_model_name">Ollama Model Name:</label>
-                                            <input type="text" id="config-ollama_model_name" value="mistral:7b">
-                                        </div>
-                                    </div>
-
-                                    <div id="gemini-config-group" class="hidden">
-                                         <h4>Gemini Configuration:</h4>
-                                        <div>
-                                            <label for="config-gemini_model_name">Gemini Model Name:</label>
-                                            <input type="text" id="config-gemini_model_name" value="gemini-2.5-pro">
-                                        </div>
-                                    </div>
-
-                                    <div id="mistral-config-group" class="hidden">
-                                         <h4>Mistral Configuration:</h4>
-                                        <div>
-                                            <label for="config-mistral_model_name">Mistral Model Name:</label>
-                                            <input type="text" id="config-mistral_model_name" value="ministral-3b-latest">
-                                        </div>
-                                    </div>
-                                </div>
-                            </fieldset>
-                        </form>
-                    </section>
-
-                    <section>
-                        <h2>Run Tasks</h2>
-                        <div class="task-buttons">
-                            <button id="start-analysis-btn">Start Analysis</button>
-                            <button id="start-clustering-btn">Start Clustering</button>
-                            <button id="fetch-playlists-btn">Fetch Playlists</button>
-                        </div>
-                        <button id="cancel-task-btn">Cancel Current Task</button>
-                    </section>
-
-                    <section>
-                        <h2>Task Status</h2>
-                        <div id="task-status-display">
-                            <p><span class="status-label">Task ID:</span> <span id="status-task-id">N/A</span></p>
-                            <p><span class="status-label">Running Time:</span> <span id="status-running-time">-- : -- : --</span></p>
-                            <p><span class="status-label">Type:</span> <span id="status-task-type">N/A</span></p>
-                            <p><span class="status-label">Status:</span> <span id="status-status">IDLE</span></p>
-                            <p><span class="status-label">Status Message:</span> <span id="status-log">N/A</span></p>
-                            <p><span class="status-label">Progress:</span> <span id="status-progress">0</span>%</p>
-                            <div class="progress-bar-container">
-                                <div id="progress-bar"></div>
-                            </div>
-                            <div style="margin-top: 1rem;">
-                                <h3>Details / Log:</h3>
-                                <pre id="status-details"></pre>
-                            </div>
-                        </div>
-                    </section>
-
-                    <section id="playlists-section">
-                        <h2>Generated Playlists</h2>
-                        <div id="playlists-container"></div>
-                    </section>
+{% block content %}
+<div id="main-content-inner">
+    <section>
+        <div id="config-header">
+            <div class="config-title-group">
+                <h1>AudioMuse-AI - Analysis and Clustering</h1>
+                <p class="subtitle">Discover new playlists by analyzing your music's unique fingerprint.</p>
+            </div>
+            <div class="header-controls">
+                <div class="view-switcher">
+                    <button id="basic-view-btn" class="active">Basic</button>
+                    <button id="advanced-view-btn">Advanced</button>
                 </div>
             </div>
         </div>
-    </div>
+
+        <form id="config-form">
+            <!-- MODIFIED: Removed the "General Parameters" fieldset for Jellyfin details -->
+            <fieldset>
+                <legend>Analysis Parameters</legend>
+                <div class="param-group">
+                    <div>
+                        <label for="config-num_recent_albums">Number of Recent Albums:</label>
+                        <input type="number" id="config-num_recent_albums">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-top_n_moods">Top N Moods:</label>
+                        <input type="number" id="config-top_n_moods">
+                    </div>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Clustering Parameters</legend>
+                <div class="param-group">
+                    <div id="basic-algorithm-display">
+                        <label>Clustering Algorithm:</label>
+                        <p style="font-weight: bold; padding: 0.5rem 0; margin:0;">K-Means</p>
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-cluster_algorithm">Clustering Algorithm:</label>
+                        <select id="config-cluster_algorithm">
+                            <option value="kmeans">K-Means</option>
+                            <option value="dbscan">DBSCAN</option>
+                            <option value="gmm">GMM</option>
+                            <option value="spectral">Spectral</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="config-top_n_playlists">TOP Playlist Number:</label>
+                        <input type="number" id="config-top_n_playlists">
+                    </div>
+                    <div>
+                        <label for="config-clustering_runs">Clustering Runs:</label>
+                        <input type="number" id="config-clustering_runs">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-max_distance">Max Distance:</label>
+                        <input type="number" step="0.01" id="config-max_distance">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-max_songs_per_cluster">Max Songs Per Cluster:</label>
+                        <input type="number" id="config-max_songs_per_cluster">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-pca_components_min">PCA Components Min:</label>
+                        <input type="number" id="config-pca_components_min">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-pca_components_max">PCA Components Max:</label>
+                        <input type="number" id="config-pca_components_max">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-min_songs_per_genre_for_stratification">Min Songs Per Genre for Stratification:</label>
+                        <input type="number" id="config-min_songs_per_genre_for_stratification">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-stratified_sampling_target_percentile">Stratified Sampling Target Percentile:</label>
+                        <input type="number" id="config-stratified_sampling_target_percentile" min="0" max="100">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-score_weight_diversity">Diversity Score Weight:</label>
+                        <input type="number" step="0.01" id="config-score_weight_diversity">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-score_weight_purity">Purity Score Weight:</label>
+                        <input type="number" step="0.01" id="config-score_weight_purity">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-score_weight_other_feature_diversity">Other Feature Diversity Weight:</label>
+                        <input type="number" step="0.01" id="config-score_weight_other_feature_diversity">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-score_weight_other_feature_purity">Other Feature Purity Weight:</label>
+                        <input type="number" step="0.01" id="config-score_weight_other_feature_purity">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-score_weight_silhouette">Silhouette Score Weight:</label>
+                        <input type="number" step="0.01" id="config-score_weight_silhouette">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-score_weight_davies_bouldin">Davies-Bouldin Score Weight:</label>
+                        <input type="number" step="0.01" id="config-score_weight_davies_bouldin">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-score_weight_calinski_harabasz">Calinski-Harabasz Score Weight:</label>
+                        <input type="number" step="0.01" id="config-score_weight_calinski_harabasz">
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-enable_clustering_embeddings">Use Embeddings for Clustering:</label>
+                        <input type="checkbox" id="config-enable_clustering_embeddings" style="width: auto; margin-left: 5px;">
+                        <span class="tooltiptext">If checked, clustering will use audio embeddings. Otherwise, it uses score-based feature vectors.</span>
+                    </div>
+                </div>
+
+                <!-- K-Means specific parameters (for Basic and Advanced K-Means view) -->
+                <div id="kmeans-params-basic" class="hidden"> <!-- Initially hidden; JS controls visibility. Not an 'advanced-param' itself. -->
+                    <h4>K-Means Specific:</h4>
+                    <div class="param-group"> <!-- param-group for styling the inputs -->
+                        <div>
+                            <label for="config-num_clusters_min">Min Clusters:</label>
+                            <input type="number" id="config-num_clusters_min">
+                        </div>
+                        <div>
+                            <label for="config-num_clusters_max">Max Clusters:</label>
+                            <input type="number" id="config-num_clusters_max">
+                        </div>
+                    </div>
+                </div>
+
+                <div id="dbscan-params" class="advanced-param hidden">
+                    <h4>DBSCAN Specific:</h4>
+                    <div>
+                        <label for="config-dbscan_eps_min">DBSCAN Epsilon Min:</label>
+                        <input type="number" step="0.01" id="config-dbscan_eps_min">
+                    </div>
+                    <div>
+                        <label for="config-dbscan_eps_max">DBSCAN Epsilon Max:</label>
+                        <input type="number" step="0.01" id="config-dbscan_eps_max">
+                    </div>
+                    <div>
+                        <label for="config-dbscan_min_samples_min">DBSCAN Min Samples Min:</label>
+                        <input type="number" id="config-dbscan_min_samples_min">
+                    </div>
+                    <div>
+                        <label for="config-dbscan_min_samples_max">DBSCAN Min Samples Max:</label>
+                        <input type="number" id="config-dbscan_min_samples_max">
+                    </div>
+                </div>
+
+                <div id="gmm-params" class="advanced-param hidden">
+                    <h4>GMM Specific:</h4>
+                    <div>
+                        <label for="config-gmm_n_components_min">GMM Components Min:</label>
+                        <input type="number" id="config-gmm_n_components_min">
+                    </div>
+                    <div>
+                        <label for="config-gmm_n_components_max">GMM Components Max:</label>
+                        <input type="number" id="config-gmm_n_components_max">
+                    </div>
+                </div>
+
+                <div id="spectral-params" class="advanced-param hidden">
+                    <h4>Spectral Specific:</h4>
+                    <div>
+                        <label for="config-spectral_n_clusters_min">Spectral Clusters Min:</label>
+                        <input type="number" id="config-spectral_n_clusters_min">
+                    </div>
+                    <div>
+                        <label for="config-spectral_n_clusters_max">Spectral Clusters Max:</label>
+                        <input type="number" id="config-spectral_n_clusters_max">
+                    </div>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>AI Playlist Naming</legend>
+                <div class="param-group">
+                    <div>
+                        <label for="config-ai_model_provider">AI Provider:</label>
+                        <select id="config-ai_model_provider">
+                            <option value="OLLAMA">Ollama</option>
+                            <option value="GEMINI">Gemini</option>
+                            <option value="MISTRAL">Mistral</option>
+                            <option value="NONE" selected>None</option>
+                        </select>
+                    </div>
+
+                    <div id="ollama-config-group" class="hidden">
+                        <h4>Ollama Configuration:</h4>
+                        <div>
+                            <label for="config-ollama_server_url">Ollama Server URL:</label>
+                            <input type="text" id="config-ollama_server_url" value="http://127.0.0.1:11434/api/generate">
+                        </div>
+                        <div>
+                            <label for="config-ollama_model_name">Ollama Model Name:</label>
+                            <input type="text" id="config-ollama_model_name" value="mistral:7b">
+                        </div>
+                    </div>
+
+                    <div id="gemini-config-group" class="hidden">
+                        <h4>Gemini Configuration:</h4>
+                        <div>
+                            <label for="config-gemini_model_name">Gemini Model Name:</label>
+                            <input type="text" id="config-gemini_model_name" value="gemini-2.5-pro">
+                        </div>
+                    </div>
+
+                    <div id="mistral-config-group" class="hidden">
+                        <h4>Mistral Configuration:</h4>
+                        <div>
+                            <label for="config-mistral_model_name">Mistral Model Name:</label>
+                            <input type="text" id="config-mistral_model_name" value="ministral-3b-latest">
+                        </div>
+                    </div>
+                </div>
+            </fieldset>
+        </form>
+    </section>
+
+    <section>
+        <h2>Run Tasks</h2>
+        <div class="task-buttons">
+            <button id="start-analysis-btn">Start Analysis</button>
+            <button id="start-clustering-btn">Start Clustering</button>
+            <button id="fetch-playlists-btn">Fetch Playlists</button>
+        </div>
+        <button id="cancel-task-btn">Cancel Current Task</button>
+    </section>
+
+    <section>
+        <h2>Task Status</h2>
+        <div id="task-status-display">
+            <p><span class="status-label">Task ID:</span> <span id="status-task-id">N/A</span></p>
+            <p><span class="status-label">Running Time:</span> <span id="status-running-time">-- : -- : --</span></p>
+            <p><span class="status-label">Type:</span> <span id="status-task-type">N/A</span></p>
+            <p><span class="status-label">Status:</span> <span id="status-status">IDLE</span></p>
+            <p><span class="status-label">Status Message:</span> <span id="status-log">N/A</span></p>
+            <p><span class="status-label">Progress:</span> <span id="status-progress">0</span>%</p>
+            <div class="progress-bar-container">
+                <div id="progress-bar"></div>
+            </div>
+            <div style="margin-top: 1rem;">
+                <h3>Details / Log:</h3>
+                <pre id="status-details"></pre>
+            </div>
+        </div>
+    </section>
+
+    <section id="playlists-section">
+        <h2>Generated Playlists</h2>
+        <div id="playlists-container"></div>
+    </section>
+</div>
+{% endblock %}
+
+{% block bodyAdditions %}
     <script src="{{ url_for('static', filename='menu.js') }}"></script>
     {% include 'script.html' %}
-</body>
-</html>
+{% endblock %}

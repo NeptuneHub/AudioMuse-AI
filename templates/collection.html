@@ -1,12 +1,6 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="app-version" content="{{ app_version }}">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>AudioMuse-AI - Collection Sync</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
     <!-- Import PocketBase SDK -->
     <script src="https://cdn.jsdelivr.net/npm/pocketbase/dist/pocketbase.umd.js"></script>
     <style>
@@ -38,7 +32,7 @@
         #logout-btn:hover {
             background-color: #dc2626;
         }
-        
+
         /* Styles for the privacy policy checkbox area */
         .privacy-ack-group {
             margin-top: 1rem;
@@ -59,113 +53,97 @@
             text-decoration: underline;
         }
     </style>
-</head>
-<body>
-    <div class="page-container">
-        <aside class="sidebar">
-            <nav>
-                <ul class="sidebar-nav">
-                    {% with %}
-                    {% set active = 'collection' %}
-                    {% include 'sidebar_navi.html' %}
-                    {% endwith %}
-                </ul>
-            </nav>
-        </aside>
+{% endblock %}
 
-        <div class="main-content" id="main-content">
-            <button class="menu-toggle">&#9776;</button>
-            <div class="container">
-                <div id="main-content-inner">
-                    <section>
-                        <div class="page-header">
-                            <h1>Collection Synchronization [EXPERIMENTAL]</h1>
-                            <p class="subtitle">Sync your songs analysis with a centralized cloud database.</p>
-                        </div>
-                    </section>
+{% block content %}
+<div id="main-content-inner">
+    <section>
+        <div class="page-header">
+            <h1>Collection Synchronization [EXPERIMENTAL]</h1>
+            <p class="subtitle">Sync your songs analysis with a centralized cloud database.</p>
+        </div>
+    </section>
 
-                    <!-- Login Section -->
-                    <section id="login-section">
-                        <h2>Authentication Required</h2>
-                        <p>Please log in with your GitHub account to enable synchronization.</p>
-                        <p>Continue only if you are comfortable with your data leaving your local environment.</p>
+    <!-- Login Section -->
+    <section id="login-section">
+        <h2>Authentication Required</h2>
+        <p>Please log in with your GitHub account to enable synchronization.</p>
+        <p>Continue only if you are comfortable with your data leaving your local environment.</p>
 
-                        <div class="param-group" style="display: none;">
-                            <div>
-                                <label for="pocketbase-url">Pocketbase Server URL:</label>
-                                <input type="text" id="pocketbase-url" value="https://pkb.silverycat.de/">
-                            </div>
-                        </div>
-                        
-                        <!-- Privacy Policy Acknowledgment -->
-                        <!-- This div will be moved by JavaScript when the user logs in -->
-                        <div class="privacy-ack-group">
-                            <input type="checkbox" id="privacy-ack" name="privacy-ack">
-                            <label for="privacy-ack">I have read and agree to the <a href="https://github.com/NeptuneHub/AudioMuse-AI/blob/main/PRIVACY.md" target="_blank" id="privacy-link">Privacy Policy</a>.</label>
-                        </div>
-
-                        <div class="task-buttons">
-                            <button id="github-login-btn" disabled>Login with GitHub</button>
-                        </div>
-                    </section>
-                    
-                    <!-- Main Application Content (hidden by default) -->
-                    <div id="app-content" style="display: none;">
-                        <section>
-                             <p>Logged in as: <b id="user-info"></b></p>
-                             <!-- The Privacy Policy group will be moved here by JS -->
-                             <div class="task-buttons">
-                                 <button id="logout-btn">Logout</button>
-                             </div>
-                        </section>
-
-                        <section>
-                            <form id="collection-form">
-                                <fieldset>
-                                    <legend>Sync Parameters</legend>
-                                    <div class="param-group">
-                                        <div>
-                                            <label for="num-albums">Number of Last Albums to Sync:</label>
-                                            <input type="number" id="num-albums" value="10">
-                                        </div>
-                                    </div>
-                                </fieldset>
-                            </form>
-                        </section>
-
-                        <section>
-                            <h2>Run Sync Task</h2>
-                            <div class="task-buttons">
-                                <button id="start-sync-btn">Start Synchronization</button>
-                            </div>
-                            <button id="cancel-sync-btn">Cancel Current Task</button>
-                        </section>
-
-                        <section>
-                            <h2>Task Status</h2>
-                            <div id="task-status-display">
-                                <p><span class="status-label">Task ID:</span> <span id="status-task-id">N/A</span></p>
-                                <p><span class="status-label">Running Time:</span> <span id="status-running-time">-- : -- : --</span></p>
-                                <p><span class="status-label">Type:</span> <span id="status-task-type">N/A</span></p>
-                                <p><span class="status-label">Status:</span> <span id="status-status">IDLE</span></p>
-                                <p><span class="status-label">Status Message:</span> <span id="status-log">N/A</span></p>
-                                <p><span class="status-label">Progress:</span> <span id="status-progress">0</span>%</p>
-                                <div class="progress-bar-container">
-                                    <div id="progress-bar"></div>
-                                </div>
-                                <div style="margin-top: 1rem;">
-                                    <h3>Details / Log:</h3>
-                                    <pre id="status-details"></pre>
-                                </div>
-                            </div>
-                        </section>
-                    </div>
-                </div>
+        <div class="param-group" style="display: none;">
+            <div>
+                <label for="pocketbase-url">Pocketbase Server URL:</label>
+                <input type="text" id="pocketbase-url" value="https://pkb.silverycat.de/">
             </div>
         </div>
+
+        <!-- Privacy Policy Acknowledgment -->
+        <!-- This div will be moved by JavaScript when the user logs in -->
+        <div class="privacy-ack-group">
+            <input type="checkbox" id="privacy-ack" name="privacy-ack">
+            <label for="privacy-ack">I have read and agree to the <a href="https://github.com/NeptuneHub/AudioMuse-AI/blob/main/PRIVACY.md" target="_blank" id="privacy-link">Privacy Policy</a>.</label>
+        </div>
+
+        <div class="task-buttons">
+            <button id="github-login-btn" disabled>Login with GitHub</button>
+        </div>
+    </section>
+
+    <!-- Main Application Content (hidden by default) -->
+    <div id="app-content" style="display: none;">
+        <section>
+            <p>Logged in as: <b id="user-info"></b></p>
+            <!-- The Privacy Policy group will be moved here by JS -->
+            <div class="task-buttons">
+                <button id="logout-btn">Logout</button>
+            </div>
+        </section>
+
+        <section>
+            <form id="collection-form">
+                <fieldset>
+                    <legend>Sync Parameters</legend>
+                    <div class="param-group">
+                        <div>
+                            <label for="num-albums">Number of Last Albums to Sync:</label>
+                            <input type="number" id="num-albums" value="10">
+                        </div>
+                    </div>
+                </fieldset>
+            </form>
+        </section>
+
+        <section>
+            <h2>Run Sync Task</h2>
+            <div class="task-buttons">
+                <button id="start-sync-btn">Start Synchronization</button>
+            </div>
+            <button id="cancel-sync-btn">Cancel Current Task</button>
+        </section>
+
+        <section>
+            <h2>Task Status</h2>
+            <div id="task-status-display">
+                <p><span class="status-label">Task ID:</span> <span id="status-task-id">N/A</span></p>
+                <p><span class="status-label">Running Time:</span> <span id="status-running-time">-- : -- : --</span></p>
+                <p><span class="status-label">Type:</span> <span id="status-task-type">N/A</span></p>
+                <p><span class="status-label">Status:</span> <span id="status-status">IDLE</span></p>
+                <p><span class="status-label">Status Message:</span> <span id="status-log">N/A</span></p>
+                <p><span class="status-label">Progress:</span> <span id="status-progress">0</span>%</p>
+                <div class="progress-bar-container">
+                    <div id="progress-bar"></div>
+                </div>
+                <div style="margin-top: 1rem;">
+                    <h3>Details / Log:</h3>
+                    <pre id="status-details"></pre>
+                </div>
+            </div>
+        </section>
     </div>
+</div>
+{% endblock %}
+
+{% block bodyAdditions %}
     <script src="{{ url_for('static', filename='menu.js') }}"></script>
     {% include 'collection_script.html' %}
-</body>
-</html>
-
+{% endblock %}

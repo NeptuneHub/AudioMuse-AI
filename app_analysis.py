@@ -30,7 +30,7 @@ def cleaning_page():
               type: string
     """
     from flask import render_template
-    return render_template('cleaning.html')
+    return render_template('cleaning.html', title = 'AudioMuse-AI - Database Cleaning', active='cleaning')
 
 @analysis_bp.route('/api/analysis/start', methods=['POST'])
 def start_analysis_endpoint():

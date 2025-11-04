@@ -28,7 +28,7 @@ def sonic_fingerprint_page():
     """
     try:
         # The default user info will now be fetched by an API call from the frontend
-        return render_template('sonic_fingerprint.html', mediaserver_type=MEDIASERVER_TYPE)
+        return render_template('sonic_fingerprint.html', mediaserver_type=MEDIASERVER_TYPE, title = 'AudioMuse-AI - Sonic Fingerprint', active='sonic_fingerprint')
     except Exception as e:
          logger.error(f"Error rendering sonic_fingerprint.html: {e}", exc_info=True)
          return "Sonic Fingerprint page not implemented yet. Use the API at /api/sonic_fingerprint/generate"

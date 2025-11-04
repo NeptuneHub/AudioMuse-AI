@@ -162,7 +162,7 @@ def chat_home():
     """
     Serves the main chat page.
     """
-    return render_template('chat.html')
+    return render_template('chat.html', title = 'AudioMuse-AI - Instant Playlist', active='chat')
 
 @chat_bp.route('/api/config_defaults', methods=['GET'])
 @swag_from({

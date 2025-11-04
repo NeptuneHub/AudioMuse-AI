@@ -1,14 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="app-version" content="{{ app_version }}">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AudioMuse-AI - Music Map</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
-    <script src="{{ url_for('static', filename='plotly-2.29.1.min.js') }}"></script>
-    <style>
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<script src="{{ url_for('static', filename='plotly-2.29.1.min.js') }}"></script>
+<style>
     /* small style for overlay toggle icons when hidden */
     .am-overlay-hidden { opacity: 0.35 !important; filter: grayscale(60%); }
     #overlay-controls a { cursor: pointer; }
@@ -23,110 +17,95 @@
         .map-search-row .map-search-col.button-col { width:auto; }
         .map-search-input { width: calc(100% - 12px); min-width:120px; font-size:13px; }
     }
-    </style>
-</head>
-<body>
-<div class="page-container">
-    <aside class="sidebar">
-        <nav>
-            <ul class="sidebar-nav">
-                {% with %}
-                {% set active = 'map' %}
-                {% include 'sidebar_navi.html' %}
-                {% endwith %}
-            </ul>
-        </nav>
-    </aside>
+</style>
+{% endblock %}
 
-    <div class="main-content" id="main-content">
-        <button class="menu-toggle">&#9776;</button>
-        <div class="container">
-            <section>
-                <header class="page-header">
-                    <h1>AudioMuse-AI - Music Map</h1>
-                    <p>Precompute your music map with a song analysis, then explore it interactively and create your playlist</p>
-                </header>
-                <div class="map-controls" style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
-                    <label for="map_size">Map size:</label>
-                    <div id="map_size" style="display:flex; gap:6px; align-items:center;">
-                        <button id="btn-pct-25" type="button" class="btn btn-primary">25%</button>
-                        <button id="btn-pct-50" type="button" class="btn btn-ghost">50%</button>
-                        <button id="btn-pct-75" type="button" class="btn btn-ghost">75%</button>
-                        <button id="btn-pct-100" type="button" class="btn btn-ghost">100%</button>
-                    </div>
-                    <button id="create-playlist" class="btn btn-primary">Create playlist</button>
-                    <button id="song-path-btn" class="btn btn-primary" disabled style="margin-left:6px;">Song Path</button>
-                    <button id="refresh-map" type="button" class="btn btn-ghost" title="Refresh map (clear overlays)" style="margin-left:6px;">Refresh</button>
-                    
-                    
-                    <div id="map-status" style="margin-left:12px;color:#6B7280"></div>
-                    <!-- Minimal search UI: Artist and Title (autocomplete + highlight) -->
-                    <div class="map-search-row">
-                        <div class="map-search-col">
-                            <label for="artist_search_map" style="font-size:12px;color:#374151">Artist</label>
-                            <input id="artist_search_map" class="map-search-input" type="text" placeholder="Artist name..." autocomplete="off">
-                            <div id="artist_autocomplete_results" class="autocomplete-results hidden" style="background:#fff;border:1px solid #e5e7eb;max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
-                        </div>
-                        <div class="map-search-col">
-                            <label for="title_search_map" style="font-size:12px;color:#374151">Title</label>
-                            <input id="title_search_map" class="map-search-input" type="text" placeholder="Track title..." autocomplete="off">
-                            <div id="title_autocomplete_results" class="autocomplete-results hidden" style="background:#fff;border:1px solid #e5e7eb;max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
-                        </div>
-                        <div class="map-search-col button-col">
-                            <label style="font-size:12px;color:transparent">&nbsp;</label>
-                            <button id="map_search_btn" class="btn btn-ghost btn-sm" type="button" style="margin-top:6px;">Search</button>
-                        </div>
-                    </div>
-                </div>
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Music Map</h1>
+        <p>Precompute your music map with a song analysis, then explore it interactively and create your playlist</p>
+    </header>
+    <div class="map-controls" style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+        <label for="map_size">Map size:</label>
+        <div id="map_size" style="display:flex; gap:6px; align-items:center;">
+            <button id="btn-pct-25" type="button" class="btn btn-primary">25%</button>
+            <button id="btn-pct-50" type="button" class="btn btn-ghost">50%</button>
+            <button id="btn-pct-75" type="button" class="btn btn-ghost">75%</button>
+            <button id="btn-pct-100" type="button" class="btn btn-ghost">100%</button>
+        </div>
+        <button id="create-playlist" class="btn btn-primary">Create playlist</button>
+        <button id="song-path-btn" class="btn btn-primary" disabled style="margin-left:6px;">Song Path</button>
+        <button id="refresh-map" type="button" class="btn btn-ghost" title="Refresh map (clear overlays)" style="margin-left:6px;">Refresh</button>
 
-                <div id="plot" style="width:100%;height:700px;"></div>
-                <!-- overlay toggles: small icons (search highlight, path line, path points) placed below the map and above the legend -->
-                <div id="overlay-controls" style="text-align:center;margin-top:8px;">
-                    <span class="overlay-item" style="display:inline-flex;align-items:center;margin-right:12px;">
-                        <a href="#" id="overlay-toggle-search" title="Toggle searched song" style="display:inline-flex;align-items:center;color:#111;text-decoration:none;font-size:14px;cursor:pointer;">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;flex:0 0 auto;">
-                                <circle cx="12" cy="12" r="6" fill="rgba(255,235,59,0.9)" stroke="#000" stroke-width="1.5" />
-                            </svg>
-                            <span class="overlay-label" style="font-size:14px;margin-left:6px;color:#374151;vertical-align:middle">search</span>
-                        </a>
-                    </span>
 
-                    <span class="overlay-item" style="display:inline-flex;align-items:center;margin-right:12px;">
-                        <a href="#" id="overlay-toggle-path" title="Toggle path line" style="display:inline-flex;align-items:center;color:#111;text-decoration:none;font-size:14px;cursor:pointer;">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;flex:0 0 auto;">
-                                <path d="M2 12 L8 8 L14 16 L22 10" stroke="#000" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" />
-                            </svg>
-                            <span class="overlay-label" style="font-size:14px;margin-left:6px;color:#374151;vertical-align:middle">path</span>
-                        </a>
-                    </span>
-
-                    <span class="overlay-item" style="display:inline-flex;align-items:center;margin-right:12px;">
-                        <a href="#" id="overlay-toggle-points" title="Toggle path points" style="display:inline-flex;align-items:center;color:#111;text-decoration:none;font-size:14px;cursor:pointer;">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;flex:0 0 auto;">
-                                <circle cx="6" cy="12" r="2" fill="#333" />
-                                <circle cx="12" cy="8" r="2" fill="#333" />
-                                <circle cx="18" cy="14" r="2" fill="#333" />
-                            </svg>
-                            <span class="overlay-label" style="font-size:14px;margin-left:6px;color:#374151;vertical-align:middle">pts</span>
-                        </a>
-                    </span>
-                </div>
-                <div id="map-projection-label" style="text-align:center;color:#6B7280;margin-top:8px"></div>
-                <!-- inline selection panel replaces debug panel -->
-                <div id="selection-panel-inline" style="display:block; margin-top:8px; background:#fff; color:#111; border:1px solid #e6eef8; padding:8px; border-radius:6px; font-size:14px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px">
-                        <strong>Selected songs</strong>
-                        <div>
-                            <button id="selection-clear" class="btn btn-ghost btn-sm">Clear all</button>
-                        </div>
-                    </div>
-                    <div id="selection-list"></div>
-                </div>
-            </section>
+        <div id="map-status" style="margin-left:12px;color:#6B7280"></div>
+        <!-- Minimal search UI: Artist and Title (autocomplete + highlight) -->
+        <div class="map-search-row">
+            <div class="map-search-col">
+                <label for="artist_search_map" style="font-size:12px;color:#374151">Artist</label>
+                <input id="artist_search_map" class="map-search-input" type="text" placeholder="Artist name..." autocomplete="off">
+                <div id="artist_autocomplete_results" class="autocomplete-results hidden" style="background:#fff;border:1px solid #e5e7eb;max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
+            </div>
+            <div class="map-search-col">
+                <label for="title_search_map" style="font-size:12px;color:#374151">Title</label>
+                <input id="title_search_map" class="map-search-input" type="text" placeholder="Track title..." autocomplete="off">
+                <div id="title_autocomplete_results" class="autocomplete-results hidden" style="background:#fff;border:1px solid #e5e7eb;max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
+            </div>
+            <div class="map-search-col button-col">
+                <label style="font-size:12px;color:transparent">&nbsp;</label>
+                <button id="map_search_btn" class="btn btn-ghost btn-sm" type="button" style="margin-top:6px;">Search</button>
+            </div>
         </div>
     </div>
-</div>
 
+    <div id="plot" style="width:100%;height:700px;"></div>
+    <!-- overlay toggles: small icons (search highlight, path line, path points) placed below the map and above the legend -->
+    <div id="overlay-controls" style="text-align:center;margin-top:8px;">
+        <span class="overlay-item" style="display:inline-flex;align-items:center;margin-right:12px;">
+            <a href="#" id="overlay-toggle-search" title="Toggle searched song" style="display:inline-flex;align-items:center;color:#111;text-decoration:none;font-size:14px;cursor:pointer;">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;flex:0 0 auto;">
+                    <circle cx="12" cy="12" r="6" fill="rgba(255,235,59,0.9)" stroke="#000" stroke-width="1.5" />
+                </svg>
+                <span class="overlay-label" style="font-size:14px;margin-left:6px;color:#374151;vertical-align:middle">search</span>
+            </a>
+        </span>
+
+        <span class="overlay-item" style="display:inline-flex;align-items:center;margin-right:12px;">
+            <a href="#" id="overlay-toggle-path" title="Toggle path line" style="display:inline-flex;align-items:center;color:#111;text-decoration:none;font-size:14px;cursor:pointer;">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;flex:0 0 auto;">
+                    <path d="M2 12 L8 8 L14 16 L22 10" stroke="#000" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                <span class="overlay-label" style="font-size:14px;margin-left:6px;color:#374151;vertical-align:middle">path</span>
+            </a>
+        </span>
+
+        <span class="overlay-item" style="display:inline-flex;align-items:center;margin-right:12px;">
+            <a href="#" id="overlay-toggle-points" title="Toggle path points" style="display:inline-flex;align-items:center;color:#111;text-decoration:none;font-size:14px;cursor:pointer;">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;flex:0 0 auto;">
+                    <circle cx="6" cy="12" r="2" fill="#333" />
+                    <circle cx="12" cy="8" r="2" fill="#333" />
+                    <circle cx="18" cy="14" r="2" fill="#333" />
+                </svg>
+                <span class="overlay-label" style="font-size:14px;margin-left:6px;color:#374151;vertical-align:middle">pts</span>
+            </a>
+        </span>
+    </div>
+    <div id="map-projection-label" style="text-align:center;color:#6B7280;margin-top:8px"></div>
+    <!-- inline selection panel replaces debug panel -->
+    <div id="selection-panel-inline" style="display:block; margin-top:8px; background:#fff; color:#111; border:1px solid #e6eef8; padding:8px; border-radius:6px; font-size:14px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px">
+            <strong>Selected songs</strong>
+            <div>
+                <button id="selection-clear" class="btn btn-ghost btn-sm">Clear all</button>
+            </div>
+        </div>
+        <div id="selection-list"></div>
+    </div>
+</section>
+{% endblock %}
+
+{% block bodyAdditions %}
 <script>
 async function fetchMapParam(param) {
     // param is a percent string like '25','50','75','100'
@@ -488,11 +467,11 @@ function removeFromSelection(id) {
 // selection panel is always visible now. Attach global handler for Clear all so it always works
     try {
         const clearBtnGlobal = document.getElementById('selection-clear');
-        if (clearBtnGlobal) clearBtnGlobal.onclick = () => { 
+        if (clearBtnGlobal) clearBtnGlobal.onclick = () => {
             // clear selection only (do NOT remove overlays; Refresh will remove overlays)
-            window._plotSelection = []; 
-            renderSelectionPanel(); 
-            document.getElementById('map-status').textContent = 'Selected 0 songs'; 
+            window._plotSelection = [];
+            renderSelectionPanel();
+            document.getElementById('map-status').textContent = 'Selected 0 songs';
         };
         // wire the three overlay toggle buttons (minimal wiring)
         try {
@@ -1127,8 +1106,9 @@ function clearMapOverlays() {
 <!-- debug button removed per user request -->
 
 <script src="{{ url_for('static', filename='menu.js') }}"></script>
-</body>
-</html>
+{% endblock %}
+
+{% block postHTMLScripts %}
 <script>
         // Improved create-playlist response handling: parse response text safely and surface status
         document.getElementById('create-playlist').onclick = async () => {
@@ -1196,3 +1176,4 @@ function clearMapOverlays() {
                 }
             };
 </script>
+{% endblock %}

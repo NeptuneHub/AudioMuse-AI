@@ -1,112 +1,87 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="app-version" content="{{ app_version }}">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AudioMuse-AI - Instant Playlist</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
-</head>
-<body>
+{% extends "includes/layout.html" %}
 
-<div class="page-container">
-    <aside class="sidebar">
-        <nav>
-            <ul class="sidebar-nav">
-                {% with %}
-                {% set active = 'chat' %}
-                {% include 'sidebar_navi.html' %}
-                {% endwith %}
-            </ul>
-        </nav>
-    </aside>
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Instant Playlist</h1>
+        <p>Tell me your mood, and I'll craft the perfect playlist for you.</p>
+    </header>
 
-    <div class="main-content" id="main-content">
-        <button class="menu-toggle">&#9776;</button>
-        <div class="container">
-            <section>
-                <header class="page-header">
-                    <h1>AudioMuse-AI - Instant Playlist</h1>
-                    <p>Tell me your mood, and I'll craft the perfect playlist for you.</p>
-                </header>
-
-                <!-- Main Form -->
-                <form id="playlistForm">
-                    <!-- AI Configuration Section -->
-                    <fieldset>
-                        <legend>AI Configuration</legend>
-                        <div class="param-group">
-                            <div>
-                                <label for="aiProvider">AI Provider</label>
-                                <select id="aiProvider">
-                                    <option value="NONE">None</option>
-                                    <option value="OLLAMA">Ollama</option>
-                                    <option value="GEMINI">Gemini</option>
-                                    <option value="MISTRAL">Mistral</option>
-                                </select>
-                            </div>
-                            <div id="ollamaConfig" class="hidden">
-                                <label for="ollamaModel">Ollama Model</label>
-                                <input type="text" id="ollamaModel" placeholder="e.g., mistral:7b">
-                                <div style="margin-top: 1.5rem;">
-                                    <label for="ollamaServerUrl">Ollama Server URL</label>
-                                    <input type="text" id="ollamaServerUrl" placeholder="e.g., http://localhost:11434/api/generate">
-                                </div>
-                            </div>
-                            <!-- REMOVED: The Gemini API Key input field is removed as it should not be sent from the frontend -->
-                            <div id="geminiConfig" class="hidden">
-                                <label for="geminiModel">Gemini Model</label>
-                                <input type="text" id="geminiModel" placeholder="e.g., gemini-2.5-pro">
-                            </div>
-                            <div id="mistralConfig" class="hidden">
-                                <label for="mistralModel">Mistral Model</label>
-                                <input type="text" id="mistralModel" placeholder="e.g., ministral-3b-latest">
-                            </div>
-                        </div>
-                    </fieldset>
-
-                    <!-- User Input Section -->
-                    <div class="param-group" style="margin-top: 2rem;">
-                        <div>
-                           <label for="userInput">What kind of music are you in the mood for?</label>
-                           <textarea id="userInput" placeholder="e.g., Upbeat indie rock for a summer road trip" rows="4" required></textarea>
-                        </div>
+    <!-- Main Form -->
+    <form id="playlistForm">
+        <!-- AI Configuration Section -->
+        <fieldset>
+            <legend>AI Configuration</legend>
+            <div class="param-group">
+                <div>
+                    <label for="aiProvider">AI Provider</label>
+                    <select id="aiProvider">
+                        <option value="NONE">None</option>
+                        <option value="OLLAMA">Ollama</option>
+                        <option value="GEMINI">Gemini</option>
+                        <option value="MISTRAL">Mistral</option>
+                    </select>
+                </div>
+                <div id="ollamaConfig" class="hidden">
+                    <label for="ollamaModel">Ollama Model</label>
+                    <input type="text" id="ollamaModel" placeholder="e.g., mistral:7b">
+                    <div style="margin-top: 1.5rem;">
+                        <label for="ollamaServerUrl">Ollama Server URL</label>
+                        <input type="text" id="ollamaServerUrl" placeholder="e.g., http://localhost:11434/api/generate">
                     </div>
-
-                    <!-- Submit Button -->
-                    <button type="submit" id="submitChat">
-                        <span>Get Playlist Idea</span>
-                    </button>
-                </form>
-            </section>
-
-            <!-- Response Section -->
-            <section>
-                <h2>AI Response</h2>
-                <div id="responseArea">
-                    <p class="italic">Your generated playlist will appear here...</p>
                 </div>
-                <!-- MODIFIED: Changed section title and form details to be more generic -->
-                <div id="createPlaylistSection" class="hidden">
-                    <h3>Create Playlist on Media Server</h3>
-                    <form id="createPlaylistForm">
-                        <input type="hidden" id="playlistItemIds" name="item_ids">
-                        <div class="param-group">
-                            <div>
-                                <label for="mediaServerPlaylistName">Playlist Name:</label>
-                                <input type="text" id="mediaServerPlaylistName" name="playlist_name" placeholder="Enter playlist name" required>
-                            </div>
-                        </div>
-                        <button type="submit" id="submitMediaServerPlaylist">Create Playlist</button>
-                    </form>
-                    <div id="mediaServerResponseArea"></div>
+                <!-- REMOVED: The Gemini API Key input field is removed as it should not be sent from the frontend -->
+                <div id="geminiConfig" class="hidden">
+                    <label for="geminiModel">Gemini Model</label>
+                    <input type="text" id="geminiModel" placeholder="e.g., gemini-2.5-pro">
                 </div>
-            </section>
+                <div id="mistralConfig" class="hidden">
+                    <label for="mistralModel">Mistral Model</label>
+                    <input type="text" id="mistralModel" placeholder="e.g., ministral-3b-latest">
+                </div>
+            </div>
+        </fieldset>
+
+        <!-- User Input Section -->
+        <div class="param-group" style="margin-top: 2rem;">
+            <div>
+                <label for="userInput">What kind of music are you in the mood for?</label>
+                <textarea id="userInput" placeholder="e.g., Upbeat indie rock for a summer road trip" rows="4" required></textarea>
+            </div>
         </div>
+
+        <!-- Submit Button -->
+        <button type="submit" id="submitChat">
+            <span>Get Playlist Idea</span>
+        </button>
+    </form>
+</section>
+
+<!-- Response Section -->
+<section>
+    <h2>AI Response</h2>
+    <div id="responseArea">
+        <p class="italic">Your generated playlist will appear here...</p>
     </div>
-</div>
-    
+    <!-- MODIFIED: Changed section title and form details to be more generic -->
+    <div id="createPlaylistSection" class="hidden">
+        <h3>Create Playlist on Media Server</h3>
+        <form id="createPlaylistForm">
+            <input type="hidden" id="playlistItemIds" name="item_ids">
+            <div class="param-group">
+                <div>
+                    <label for="mediaServerPlaylistName">Playlist Name:</label>
+                    <input type="text" id="mediaServerPlaylistName" name="playlist_name" placeholder="Enter playlist name" required>
+                </div>
+            </div>
+            <button type="submit" id="submitMediaServerPlaylist">Create Playlist</button>
+        </form>
+        <div id="mediaServerResponseArea"></div>
+    </div>
+</section>
+{% endblock %}
+
+{% block bodyAdditions %}
     <script>
         // --- Self-Executing Anonymous Function to Encapsulate Code ---
         (() => {
@@ -415,5 +390,5 @@
         })();
     </script>
     <script src="{{ url_for('static', filename='menu.js') }}"></script>
-</body>
-</html>
+    {% include 'script.html' %}
+{% endblock %}
