@@ -485,14 +485,30 @@ function removeFromSelection(id) {
 
 // 'Full' toggle removed; default behavior uses subsampling policy and WebGL renderer
 
-// Refresh button clears overlays (paths) and selection and forces new fetches on next load
+// Refresh button fully reloads the map to initial state: clears selection, overlays, and re-fetches data
 document.getElementById('refresh-map').addEventListener('click', () => {
     try {
-        // Clear overlays and transient selection state so next load fetches fresh data from server
-        clearMapOverlays();
+        // Clear all transient state
         window._plotSelection = [];
-        // update status; actual map data will be re-fetched on the next loadAndPlot call
-        document.getElementById('map-status').textContent = 'Refreshed (transient state cleared)';
+        window._mapOverlayShapes = [];
+        window._mapOverlaysVisible = true;
+        window._am_shapes_saved = {};
+        window._am_show_flags = {};
+        
+        // Determine which percent button is active
+        let activePct = '25';
+        try {
+            if (document.getElementById('btn-pct-50')?.classList.contains('btn-primary')) activePct = '50';
+            else if (document.getElementById('btn-pct-75')?.classList.contains('btn-primary')) activePct = '75';
+            else if (document.getElementById('btn-pct-100')?.classList.contains('btn-primary')) activePct = '100';
+        } catch (e) { /* default to 25% */ }
+        
+        // Update the selection panel to reflect the cleared state
+        try { renderSelectionPanel(); } catch(e) { /* ignore */ }
+        
+        // Fully reload the map with fresh data
+        document.getElementById('map-status').textContent = 'Refreshing map...';
+        loadAndPlot(activePct);
     } catch (e) { console.warn('refresh-map failed', e); }
 });
 
@@ -1090,9 +1106,9 @@ function clearMapOverlays() {
             try { Plotly.deleteTraces(gd, removeIdx); } catch(e) { console.warn('Plotly.deleteTraces failed', e); }
         }
         // remove any overlay shapes (highlights) as well
-        try { Plotly.relayout(gd, { shapes: [] }).catch(()=>{}); } catch(e) {}
-    // clear backup overlay state so overlays are fully cleared on Refresh
-    try { window._mapOverlayShapes = []; window._mapOverlaysVisible = true; } catch(e) {}
+        try { Plotly.relayout(gd, { shapes: [], selections: [] }).catch(()=>{}); } catch(e) {}
+        // clear backup overlay state so overlays are fully cleared on Refresh
+        try { window._mapOverlayShapes = []; window._mapOverlaysVisible = true; } catch(e) {}
         // clear selection and inline panel
         window._plotSelection = [];
         try { renderSelectionPanel(); } catch(e) { /* ignore */ }
