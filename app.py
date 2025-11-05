@@ -488,7 +488,7 @@ def get_playlists_endpoint():
     from collections import defaultdict # Local import if not used elsewhere globally
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
-    cur.execute("SELECT playlist_name, item_id, title, author FROM playlist ORDER BY playlist_name, title")
+    cur.execute("SELECT playlist_name, item_id, title, author FROM playlist ORDER BY playlist_name")
     rows = cur.fetchall()
     cur.close()
     playlists_data = defaultdict(list)
