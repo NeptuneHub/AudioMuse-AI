@@ -1,13 +1,7 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="app-version" content="{{ app_version }}">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AudioMuse-AI - Playlist from Similar Song</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
-    <style>
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
         /* Basic styling for the new checkbox container */
         .checkbox-container {
             display: flex;
@@ -15,99 +9,82 @@
             gap: 0.5rem; /* Space between checkbox and label */
             margin-top: 1rem; /* Align with other inputs */
         }
-    </style>
-</head>
-<body>
+</style>
+{% endblock %}
 
-<div class="page-container">
-    <aside class="sidebar">
-        <nav>
-            <ul class="sidebar-nav">
-                {% with %}
-                {% set active = 'similarity' %}
-                {% include 'sidebar_navi.html' %}
-                {% endwith %}
-            </ul>
-        </nav>
-    </aside>
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Playlist from Similar Song</h1>
+        <p>Find tracks similar to a given song and create a playlist.</p>
+    </header>
 
-    <div class="main-content" id="main-content">
-        <button class="menu-toggle">&#9776;</button>
-        <div class="container">
-            <section>
-                <header class="page-header">
-                    <h1>AudioMuse-AI - Playlist from Similar Song</h1>
-                    <p>Find tracks similar to a given song and create a playlist.</p>
-                </header>
+    <form id="similarity-form">
+        <input type="hidden" id="selected_item_id" name="item_id">
+        <div class="param-group">
+            <div class="autocomplete-container">
+                <label for="artist_search">Artist:</label>
+                <input type="text" id="artist_search" name="artist_search" placeholder="Start typing artist name..." autocomplete="off">
+            </div>
 
-                <form id="similarity-form">
-                    <input type="hidden" id="selected_item_id" name="item_id">
-                    <div class="param-group">
-                        <div class="autocomplete-container">
-                            <label for="artist_search">Artist:</label>
-                            <input type="text" id="artist_search" name="artist_search" placeholder="Start typing artist name..." autocomplete="off">
-                        </div>
+            <div class="autocomplete-container">
+                <label for="title_search">Track Title:</label>
+                <input type="text" id="title_search" name="title_search" placeholder="Start typing track title..." autocomplete="off">
+                <div id="autocomplete-results" class="autocomplete-results hidden"></div>
+            </div>
 
-                        <div class="autocomplete-container">
-                            <label for="title_search">Track Title:</label>
-                            <input type="text" id="title_search" name="title_search" placeholder="Start typing track title..." autocomplete="off">
-                            <div id="autocomplete-results" class="autocomplete-results hidden"></div>
-                        </div>
-
-                        <div>
-                            <label for="n">Number of results:</label>
-                            <input type="number" id="n" name="n" value="10" min="1" max="200">
-                        </div>
-                    </div>
-                     <div class="param-group">
-                        <div class="checkbox-container">
-                            <input type="checkbox" id="eliminate_duplicates" name="eliminate_duplicates" checked>
-                            <label for="eliminate_duplicates">Limit songs per artist in results</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <input type="checkbox" id="radius_similarity" name="radius_similarity" checked>
-                            <label for="radius_similarity">Radius Similarity</label>
-                        </div>
-                        <!--<div class="checkbox-container">
-                            <input type="checkbox" id="mood_similarity" name="mood_similarity">
-                            <label for="mood_similarity">Filter by mood similarity (danceability, energy, etc.)</label>
-                        </div>-->
-                    </div>
-                    <button type="submit">
-                        Find Similar Tracks
-                    </button>
-                </form>
-            </section>
-
-            <section id="results-container" class="hidden">
-                <h2>Results</h2>
-                <div id="max-distance" style="font-weight:600; margin-bottom:0.5rem;"></div>
-                <div id="status"></div>
-                <!-- Graph visualization removed (not needed) -->
-                <div id="results-table-wrapper"></div>
-            </section>
-
-            <section id="playlist-creator" class="hidden">
-                <h3>Create a Playlist from Results</h3>
-                <form id="playlist-form">
-                    <div class="param-group">
-                        <div>
-                           <label for="playlist_name">Playlist Name:</label>
-                           <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., My Awesome Mix">
-                        </div>
-                    </div>
-                    <!-- MODIFIED: Changed button text to be more generic -->
-                    <button type="submit" style="background-color: #16A34A;">
-                        Create Playlist on Media Server
-                    </button>
-                </form>
-                <div id="playlist-status"></div>
-            </section>
-        
+            <div>
+                <label for="n">Number of results:</label>
+                <input type="number" id="n" name="n" value="10" min="1" max="200">
+            </div>
         </div>
-    </div>
-</div>
+        <div class="param-group">
+            <div class="checkbox-container">
+                <input type="checkbox" id="eliminate_duplicates" name="eliminate_duplicates" checked>
+                <label for="eliminate_duplicates">Limit songs per artist in results</label>
+            </div>
+            <div class="checkbox-container">
+                <input type="checkbox" id="radius_similarity" name="radius_similarity" checked>
+                <label for="radius_similarity">Radius Similarity</label>
+            </div>
+            <!--<div class="checkbox-container">
+                <input type="checkbox" id="mood_similarity" name="mood_similarity">
+                <label for="mood_similarity">Filter by mood similarity (danceability, energy, etc.)</label>
+            </div>-->
+        </div>
+        <button type="submit">
+            Find Similar Tracks
+        </button>
+    </form>
+</section>
 
+<section id="results-container" class="hidden">
+    <h2>Results</h2>
+    <div id="max-distance" style="font-weight:600; margin-bottom:0.5rem;"></div>
+    <div id="status"></div>
+    <!-- Graph visualization removed (not needed) -->
+    <div id="results-table-wrapper"></div>
+</section>
+
+<section id="playlist-creator" class="hidden">
+    <h3>Create a Playlist from Results</h3>
+    <form id="playlist-form">
+        <div class="param-group">
+            <div>
+                <label for="playlist_name">Playlist Name:</label>
+                <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., My Awesome Mix">
+            </div>
+        </div>
+        <!-- MODIFIED: Changed button text to be more generic -->
+        <button type="submit" style="background-color: #16A34A;">
+            Create Playlist on Media Server
+        </button>
+    </form>
+    <div id="playlist-status"></div>
+</section>
+{% endblock %}
+
+{% block bodyAdditions %}
     <script>
         (() => {
             let currentTrackIds = [];
@@ -149,7 +126,7 @@
                     }
                 }, 300); // Debounce requests by 300ms
             };
-            
+
             const showAutocomplete = (tracks) => {
                 autocompleteResults.innerHTML = '';
                 if (tracks.length === 0) {
@@ -211,8 +188,8 @@
                 }
 
                 try {
-                    const params = new URLSearchParams({ 
-                        item_id: itemId, 
+                    const params = new URLSearchParams({
+                        item_id: itemId,
                         n: n,
                         eliminate_duplicates: eliminateDuplicates, // Always send true or false
                         radius_similarity: radiusSimilarity
@@ -222,7 +199,7 @@
                     const data = await response.json();
 
                     if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
-                    
+
                     if (data.length === 0) {
                         statusDiv.textContent = 'No similar tracks found.';
                         return;
@@ -297,7 +274,7 @@
             playlistForm.addEventListener('submit', async function (event) {
                 event.preventDefault();
                 const playlistName = document.getElementById('playlist_name').value;
-                
+
                 playlistStatusDiv.className = '';
                 if (!playlistName) {
                     playlistStatusDiv.textContent = 'Please enter a playlist name.';
@@ -310,7 +287,7 @@
                     return;
                 }
                 playlistStatusDiv.textContent = 'Creating playlist...';
-                
+
                 try {
                     const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                         method: 'POST',
@@ -333,5 +310,4 @@
         })();
     </script>
     <script src="{{ url_for('static', filename='menu.js') }}"></script>
-</body>
-</html>
+{% endblock %}

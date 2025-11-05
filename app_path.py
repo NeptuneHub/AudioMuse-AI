@@ -17,7 +17,7 @@ def path_page():
     Serves the frontend page for finding a path between songs.
     """
     # Pass the server default for path_fix_size so the UI checkbox reflects config/env
-    return render_template('path.html', path_fix_size=PATH_FIX_SIZE)
+    return render_template('path.html', path_fix_size=PATH_FIX_SIZE, title = 'AudioMuse-AI - Song Path', active='path')
 
 @path_bp.route('/api/find_path', methods=['GET'])
 def find_path_endpoint():

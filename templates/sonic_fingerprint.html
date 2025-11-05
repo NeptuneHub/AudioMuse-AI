@@ -1,13 +1,7 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="app-version" content="{{ app_version }}">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AudioMuse-AI - Sonic Fingerprint</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
-    <style>
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
         #fingerprint-form button {
             flex-grow: 1;
             color: white;
@@ -25,103 +19,86 @@
         #fingerprint-form button:hover {
             background-color: #1D4ED8;
         }
-    </style>
-</head>
-<body>
+</style>
+{% endblock %}
 
-<div class="page-container">
-    <aside class="sidebar">
-        <nav>
-            <ul class="sidebar-nav">
-                {% with %}
-                {% set active = 'sonic_fingerprint' %}
-                {% include 'sidebar_navi.html' %}
-                {% endwith %}
-            </ul>
-        </nav>
-    </aside>
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Sonic Fingerprint</h1>
+        <p>Generate a playlist based on your unique listening habits.</p>
+    </header>
 
-    <div class="main-content" id="main-content">
-        <button class="menu-toggle">&#9776;</button>
-        <div class="container">
-            <section>
-                <header class="page-header">
-                    <h1>AudioMuse-AI - Sonic Fingerprint</h1>
-                    <p>Generate a playlist based on your unique listening habits.</p>
-                </header>
+    <form id="fingerprint-form">
 
-                <form id="fingerprint-form">
-                    
-                    <fieldset>
-                        <legend>Your Credentials</legend>
-                        <p style="font-size: 0.875rem; color: #4B5563; margin-top: -0.5rem; margin-bottom: 1rem;">
-                            Enter your personal credentials to generate a fingerprint from your listening history.
-                        </p>
-                        <div class="param-group">
-                            {% if mediaserver_type == 'jellyfin' %}
-                            <div>
-                                <label for="jellyfin_user_identifier">Jellyfin Username or User ID:</label>
-                                <input type="text" id="jellyfin_user_identifier" name="jellyfin_user_identifier" required placeholder="Enter Jellyfin Username or User ID">
-                            </div>
-                            <div>
-                                <label for="jellyfin_token">API Token:</label>
-                                <input type="password" id="jellyfin_token" name="jellyfin_token" placeholder="Optional for default user, specify for other users">
-                            </div>
-                            {% elif mediaserver_type == 'navidrome' %}
-                            <div>
-                                <label for="navidrome_user">Navidrome Username:</label>
-                                <input type="text" id="navidrome_user" name="navidrome_user" required>
-                            </div>
-                            <div>
-                                <label for="navidrome_password">Password/API Token:</label>
-                                <input type="password" id="navidrome_password" name="navidrome_password" placeholder="Optional for default user, specify for other user">
-                            </div>
-                            {% endif %}
-                        </div>
-                    </fieldset>
+        <fieldset>
+            <legend>Your Credentials</legend>
+            <p style="font-size: 0.875rem; color: #4B5563; margin-top: -0.5rem; margin-bottom: 1rem;">
+                Enter your personal credentials to generate a fingerprint from your listening history.
+            </p>
+            <div class="param-group">
+                {% if mediaserver_type == 'jellyfin' %}
+                <div>
+                    <label for="jellyfin_user_identifier">Jellyfin Username or User ID:</label>
+                    <input type="text" id="jellyfin_user_identifier" name="jellyfin_user_identifier" required placeholder="Enter Jellyfin Username or User ID">
+                </div>
+                <div>
+                    <label for="jellyfin_token">API Token:</label>
+                    <input type="password" id="jellyfin_token" name="jellyfin_token" placeholder="Optional for default user, specify for other users">
+                </div>
+                {% elif mediaserver_type == 'navidrome' %}
+                <div>
+                    <label for="navidrome_user">Navidrome Username:</label>
+                    <input type="text" id="navidrome_user" name="navidrome_user" required>
+                </div>
+                <div>
+                    <label for="navidrome_password">Password/API Token:</label>
+                    <input type="password" id="navidrome_password" name="navidrome_password" placeholder="Optional for default user, specify for other user">
+                </div>
+                {% endif %}
+            </div>
+        </fieldset>
 
-                     <fieldset>
-                        <legend>Parameters</legend>
-                        <div class="param-group">
-                            <div>
-                                <label for="n">Number of results:</label>
-                                <input type="number" id="n" name="n" value="200" min="40" max="1000">
-                            </div>
-                        </div>
-                    </fieldset>
+        <fieldset>
+            <legend>Parameters</legend>
+            <div class="param-group">
+                <div>
+                    <label for="n">Number of results:</label>
+                    <input type="number" id="n" name="n" value="200" min="40" max="1000">
+                </div>
+            </div>
+        </fieldset>
 
-                    <button type="submit">
-                        Generate My Sonic Fingerprint
-                    </button>
-                </form>
-            </section>
+        <button type="submit">
+            Generate My Sonic Fingerprint
+        </button>
+    </form>
+</section>
 
-            <section id="results-container" class="hidden">
-                <h2>Results</h2>
-                <div id="status"></div>
-                <div id="results-table-wrapper"></div>
-            </section>
+<section id="results-container" class="hidden">
+    <h2>Results</h2>
+    <div id="status"></div>
+    <div id="results-table-wrapper"></div>
+</section>
 
-            <section id="playlist-creator" class="hidden">
-                <h3>Create a Playlist from Results</h3>
-                <form id="playlist-form">
-                    <div class="param-group">
-                        <div>
-                           <label for="playlist_name">Playlist Name:</label>
-                           <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., My Sonic Mix">
-                        </div>
-                    </div>
-                    <button type="submit" style="background-color: #16A34A;">
-                        Create Playlist on Media Server
-                    </button>
-                </form>
-                <div id="playlist-status"></div>
-            </section>
-        
+<section id="playlist-creator" class="hidden">
+    <h3>Create a Playlist from Results</h3>
+    <form id="playlist-form">
+        <div class="param-group">
+            <div>
+                <label for="playlist_name">Playlist Name:</label>
+                <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., My Sonic Mix">
+            </div>
         </div>
-    </div>
-</div>
+        <button type="submit" style="background-color: #16A34A;">
+            Create Playlist on Media Server
+        </button>
+    </form>
+    <div id="playlist-status"></div>
+</section>
+{% endblock %}
 
+{% block bodyAdditions %}
     <script>
         (() => {
             let currentTrackIds = [];
@@ -139,7 +116,7 @@
                 try {
                     const response = await fetch("{{ url_for('sonic_fingerprint_bp.get_media_server_defaults') }}");
                     if (!response.ok) return;
-                    
+
                     const data = await response.json();
 
                     if (mediaserverType === 'jellyfin' && data.default_user_id) {
@@ -194,7 +171,7 @@
                     const data = await response.json();
 
                     if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
-                    
+
                     if (data.length === 0) {
                         statusDiv.textContent = 'Could not generate fingerprint. No recommendations found. Check credentials and listening history.';
                         statusDiv.className = 'status-error';
@@ -254,7 +231,7 @@
                 }
 
                 playlistStatusDiv.textContent = 'Creating playlist...';
-                
+
                 try {
                     const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                         method: 'POST',
@@ -273,6 +250,4 @@
         })();
     </script>
     <script src="{{ url_for('static', filename='menu.js') }}"></script>
-</body>
-</html>
-
+{% endblock %}

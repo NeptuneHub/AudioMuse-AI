@@ -1,129 +1,109 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="app-version" content="{{ app_version }}">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AudioMuse-AI - Song Alchemy</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
-    <style>
-        /* All page-specific styles have been moved to style.css for centralization. */
-        @media (max-width: 768px) {
-            .alchemy-card .song-artist,
-            .alchemy-card .song-title {
-                font-size: 16px;
-            }
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    /* All page-specific styles have been moved to style.css for centralization. */
+    @media (max-width: 768px) {
+        .alchemy-card .song-artist,
+        .alchemy-card .song-title {
+            font-size: 16px;
         }
-        .alchemy-card-header .song-number {
-            /* Allow the song title/artist to wrap if it's too long */
-            white-space: normal;
-            word-break: break-word;
-            flex-shrink: 1;
-            min-width: 0; /* Necessary for text wrapping in a flex container */
-            line-height: 1.3; /* Adjust for better readability */
-        }
-    </style>
-</head>
-<body>
-<div class="page-container">
-    <aside class="sidebar">
-        <nav>
-            <ul class="sidebar-nav">
-                {% with %}
-                {% set active = 'alchemy' %}
-                {% include 'sidebar_navi.html' %}
-                {% endwith %}
-            </ul>
-        </nav>
-    </aside>
+    }
+    .alchemy-card-header .song-number {
+        /* Allow the song title/artist to wrap if it's too long */
+        white-space: normal;
+        word-break: break-word;
+        flex-shrink: 1;
+        min-width: 0; /* Necessary for text wrapping in a flex container */
+        line-height: 1.3; /* Adjust for better readability */
+    }
+</style>
+{% endblock %}
 
-    <div class="main-content" id="main-content">
-        <button class="menu-toggle">&#9776;</button>
-        <div class="container">
-            <section>
-                <header class="page-header">
-                    <h1>AudioMuse-AI - Song Alchemy</h1>
-                    <p>Select tracks to Include or Exclude — boost favorites with Include and remove unwanted flavors with Exclude.</p>
-                </header>
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Song Alchemy</h1>
+        <p>Select tracks to Include or Exclude — boost favorites with Include and remove unwanted flavors with Exclude.</p>
+    </header>
 
-                <form id="alchemy-form">
-                    <fieldset>
-                        <legend>Song Selection</legend>
-                        <div id="song-rows" class="param-group">
-                            <!-- Song cards will be injected here by JavaScript -->
-                        </div>
-                    </fieldset>
+    <form id="alchemy-form">
+        <fieldset>
+            <legend>Song Selection</legend>
+            <div id="song-rows" class="param-group">
+                <!-- Song cards will be injected here by JavaScript -->
+            </div>
+        </fieldset>
 
-                    <fieldset>
-                        <legend>Parameters</legend>
-                        <div class="param-group">
-                            <div>
-                                <label for="n_results">Number of results:</label>
-                                <input id="n_results" name="n_results" type="number" value="100" min="1" max="200" />
-                            </div>
-                            <div>
-                                <label for="temperature">Sampling temperature (τ)</label>
-                                <input id="temperature" name="temperature" type="number" step="0.1" min="0" max="10" value="1.0" />
-                                <div style="font-size:0.85rem;color:#6B7280;margin-top:6px;">Lower = more deterministic, Higher = more random</div>
-                            </div>
-                            <div>
-                                <label for="subtract_distance">Subtract distance threshold:</label>
-                                <div class="param-row">
-                                    <input id="subtract_distance" type="range" min="0" max="1" step="0.01" value="0.30" />
-                                    <span id="subtract_distance_label" style="font-weight: 500;">0.30</span>
-                                    <input id="subtract_distance_angular_input" type="number" min="0" max="1" step="0.01" value="0.30" />
-                                </div>
-                                <input id="subtract_distance_euclid" type="number" min="0" step="0.01" value="5.0" style="margin-top: 0.5rem;" />
-                            </div>
-                        </div>
-                    </fieldset>
-
-                    <div class="alchemy-controls task-buttons">
-                        <button id="run-alchemy" type="submit">Run Alchemy</button>
-                        <button id="add-row" type="button">Add Another Song</button>
-                    </div>
-                </form>
-            </section>
-
-            <section id="results" class="hidden">
-                <h2>Results</h2>
-                <div style="position: relative; width: 100%; max-width: 800px; margin: 0 auto 1.5rem auto;">
-                    <canvas id="alchemy-plot"></canvas>
-                    <div id="projection-label" style="text-align: center; font-size:0.9rem; color:#6B7280; margin-top:0.5rem; text-transform: capitalize;"></div>
+        <fieldset>
+            <legend>Parameters</legend>
+            <div class="param-group">
+                <div>
+                    <label for="n_results">Number of results:</label>
+                    <input id="n_results" name="n_results" type="number" value="100" min="1" max="200" />
                 </div>
-                <div id="results-table-wrapper">
-                     <table id="results-table">
-                        <thead>
-                            <tr>
-                                <th>Title</th>
-                                <th>Artist</th>
-                                <th>Distance</th>
-                            </tr>
-                        </thead>
-                        <tbody id="results-list">
-                        </tbody>
-                    </table>
+                <div>
+                    <label for="temperature">Sampling temperature (τ)</label>
+                    <input id="temperature" name="temperature" type="number" step="0.1" min="0" max="10" value="1.0" />
+                    <div style="font-size:0.85rem;color:#6B7280;margin-top:6px;">Lower = more deterministic, Higher = more random</div>
                 </div>
-            </section>
-            
-            <section id="playlist-creator" class="hidden">
-                <h3>Create a Playlist from Results</h3>
-                <form id="playlist-form">
-                    <div class="param-group">
-                        <div>
-                           <label for="playlist_name">Playlist Name:</label>
-                           <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., My Alchemy Mix">
-                        </div>
+                <div>
+                    <label for="subtract_distance">Subtract distance threshold:</label>
+                    <div class="param-row">
+                        <input id="subtract_distance" type="range" min="0" max="1" step="0.01" value="0.30" />
+                        <span id="subtract_distance_label" style="font-weight: 500;">0.30</span>
+                        <input id="subtract_distance_angular_input" type="number" min="0" max="1" step="0.01" value="0.30" />
                     </div>
-                    <button type="submit" style="background-color: #16A34A;">Create Playlist on Media Server</button>
-                </form>
-                <div id="playlist-status"></div>
-            </section>
+                    <input id="subtract_distance_euclid" type="number" min="0" step="0.01" value="5.0" style="margin-top: 0.5rem;" />
+                </div>
+            </div>
+        </fieldset>
+
+        <div class="alchemy-controls task-buttons">
+            <button id="run-alchemy" type="submit">Run Alchemy</button>
+            <button id="add-row" type="button">Add Another Song</button>
         </div>
+    </form>
+</section>
+
+<section id="results" class="hidden">
+    <h2>Results</h2>
+    <div style="position: relative; width: 100%; max-width: 800px; margin: 0 auto 1.5rem auto;">
+        <canvas id="alchemy-plot"></canvas>
+        <div id="projection-label" style="text-align: center; font-size:0.9rem; color:#6B7280; margin-top:0.5rem; text-transform: capitalize;"></div>
     </div>
-</div>
-    <script>
+    <div id="results-table-wrapper">
+        <table id="results-table">
+            <thead>
+            <tr>
+                <th>Title</th>
+                <th>Artist</th>
+                <th>Distance</th>
+            </tr>
+            </thead>
+            <tbody id="results-list">
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section id="playlist-creator" class="hidden">
+    <h3>Create a Playlist from Results</h3>
+    <form id="playlist-form">
+        <div class="param-group">
+            <div>
+                <label for="playlist_name">Playlist Name:</label>
+                <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., My Alchemy Mix">
+            </div>
+        </div>
+        <button type="submit" style="background-color: #16A34A;">Create Playlist on Media Server</button>
+    </form>
+    <div id="playlist-status"></div>
+</section>
+{% endblock %}
+
+{% block bodyAdditions %}
+<script>
     (async () => {
         // Fetch config to get ALCHEMY defaults
         let defaultN = 100;
@@ -173,7 +153,7 @@
                                 artistInputEl.value = track.author;
                                 titleInputEl.value = track.title;
                                 idEl.value = track.item_id;
-                                
+
                                 // UPDATE: Set text content of the new dedicated span
                                 selectedSongNameEl.textContent = `${track.title} — ${track.author}`;
 
@@ -257,7 +237,7 @@
             });
 
             setupAutocomplete(artistInput, titleInput, resultsEl, idEl, card, songNumberEl);
-            
+
             const closeBtn = card.querySelector('.card-close');
             if (closeBtn) {
                 closeBtn.addEventListener('click', () => {
@@ -277,7 +257,7 @@
                 songNumberEl.textContent = `Song ${idx + 1}`;
             });
         };
-        
+
         addRowBtn.addEventListener('click', () => makeRow());
         makeRow();
         makeRow();
@@ -342,7 +322,7 @@
                 // Require at least one ADD item; SUBTRACT items are optional
                 const addCount = valid.filter(i => i.op && i.op.toUpperCase() === 'ADD').length;
                 if (addCount < 1) { showMessageBox('Input Error', 'Please include at least one ADD song.'); return }
-                
+
                 const nInput = parseInt(document.getElementById('n_results').value || defaultN);
                 const n = Math.min(nInput, maxN);
                 // Read temperature from input; fallback to server config if available
@@ -355,7 +335,7 @@
 
                 const resp = await fetch("{{ url_for('alchemy_bp.alchemy_api') }}", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 const data = await resp.json();
-                
+
                 if (data.error) { showMessageBox('API Error', data.error); return }
 
                 const list = document.getElementById('results-list');
@@ -387,65 +367,65 @@
                             const subtract_centroid = data.subtract_centroid_2d ? { x: data.subtract_centroid_2d[0], y: data.subtract_centroid_2d[1], label: 'SUBTRACT Centroid' } : null;
                             const addPoints = (data.add_points || []).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
                             const subPoints = (data.sub_points || []).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                           
+
                             if (window._alchemyChart) {
                                 window._alchemyChart.destroy();
                             }
 
                             const datasets = [];
                             // Define styles for different data types
-                            if (removed.length) datasets.push({ 
-                                label: 'Removed (filtered out)', 
-                                data: removed, 
-                                backgroundColor: 'rgba(156, 163, 175, 0.5)', 
+                            if (removed.length) datasets.push({
+                                label: 'Removed (filtered out)',
+                                data: removed,
+                                backgroundColor: 'rgba(156, 163, 175, 0.5)',
                                 pointStyle: 'crossRot',
                                 pointRadius: 5,
                                 borderWidth: 2
                             });
-                            if (kept.length) datasets.push({ 
-                                label: 'Kept (results)', 
-                                data: kept, 
+                            if (kept.length) datasets.push({
+                                label: 'Kept (results)',
+                                data: kept,
                                 backgroundColor: 'rgba(59, 130, 246, 0.7)',
                                 borderColor: 'rgba(37, 99, 235, 1)',
                                 borderWidth: 1,
-                                pointRadius: 6 
+                                pointRadius: 6
                             });
-                            if (add_centroid) datasets.push({ 
-                                label: 'Add Centroid', 
-                                data: [add_centroid], 
+                            if (add_centroid) datasets.push({
+                                label: 'Add Centroid',
+                                data: [add_centroid],
                                 backgroundColor: 'rgba(253, 224, 71, 1)',
                                 borderColor: 'rgba(234, 179, 8, 1)',
                                 borderWidth: 2,
-                                pointStyle: 'star', 
-                                pointRadius: 15 
+                                pointStyle: 'star',
+                                pointRadius: 15
                             });
-                            if (subtract_centroid) datasets.push({ 
-                                label: 'Subtract Centroid', 
-                                data: [subtract_centroid], 
-                                backgroundColor: 'rgba(239, 68, 68, 1)', 
+                            if (subtract_centroid) datasets.push({
+                                label: 'Subtract Centroid',
+                                data: [subtract_centroid],
+                                backgroundColor: 'rgba(239, 68, 68, 1)',
                                 borderColor: 'rgba(159, 18, 57, 1)',
                                 borderWidth: 2,
-                                pointStyle: 'star', 
-                                pointRadius: 15 
+                                pointStyle: 'star',
+                                pointRadius: 15
                             });
-                            if (addPoints.length) datasets.push({ 
-                                label: 'Selected ADD song(s)', 
-                                data: addPoints, 
+                            if (addPoints.length) datasets.push({
+                                label: 'Selected ADD song(s)',
+                                data: addPoints,
                                 backgroundColor: 'rgba(34, 197, 94, 0.9)',
                                 borderColor: 'rgba(22, 163, 74, 1)',
                                 borderWidth: 2,
-                                pointStyle: 'triangle', 
+                                pointStyle: 'triangle',
                                 pointRadius: 12,
                                 rotation: 0
                             });
-                            if (subPoints.length) datasets.push({ 
-                                label: 'Selected SUBTRACT song(s)', 
-                                data: subPoints, 
+                            if (subPoints.length) datasets.push({
+                                label: 'Selected SUBTRACT song(s)',
+                                data: subPoints,
                                 backgroundColor: 'rgba(239, 68, 68, 0.9)',
                                 borderColor: 'rgba(220, 38, 38, 1)',
                                 borderWidth: 2,
-                                pointStyle: 'rect', 
-                                pointRadius: 10 
+                                pointStyle: 'rect',
+                                pointRadius: 10
                             });
 
                             const projLabel = document.getElementById('projection-label');
@@ -473,9 +453,9 @@
                                 options: {
                                     responsive: true,
                                     maintainAspectRatio: false,
-                                    plugins: { 
-                                        tooltip: { 
-                                            callbacks: { 
+                                    plugins: {
+                                        tooltip: {
+                                            callbacks: {
                                                 label: (ctx) => {
                                                     const label = ctx.raw.label || '';
                                                     const parts = label.split(' — ');
@@ -504,12 +484,12 @@
                                         }
                                     },
                                     scales: {
-                                        x: { 
+                                        x: {
                                             title: { display: true, text: xLabel, font: { size: 14 } },
                                             grid: { color: 'rgba(229, 231, 235, 0.5)'},
                                             ticks: { font: { size: 12 } }
                                         },
-                                        y: { 
+                                        y: {
                                             title: { display: true, text: yLabel, font: { size: 14 } },
                                             grid: { color: 'rgba(229, 231, 235, 0.5)'},
                                             ticks: { font: { size: 12 } }
@@ -550,58 +530,58 @@
                             }
 
                             const datasets = [];
-                            if (removed.length) datasets.push({ 
-                                label: 'Removed (filtered out)', 
-                                data: removed, 
-                                backgroundColor: 'rgba(156, 163, 175, 0.5)', 
+                            if (removed.length) datasets.push({
+                                label: 'Removed (filtered out)',
+                                data: removed,
+                                backgroundColor: 'rgba(156, 163, 175, 0.5)',
                                 pointStyle: 'crossRot',
                                 pointRadius: 5,
                                 borderWidth: 2
                             });
-                            if (kept.length) datasets.push({ 
-                                label: 'Kept (results)', 
-                                data: kept, 
+                            if (kept.length) datasets.push({
+                                label: 'Kept (results)',
+                                data: kept,
                                 backgroundColor: 'rgba(59, 130, 246, 0.7)',
                                 borderColor: 'rgba(37, 99, 235, 1)',
                                 borderWidth: 1,
-                                pointRadius: 6 
+                                pointRadius: 6
                             });
-                            if (add_centroid) datasets.push({ 
-                                label: 'Add Centroid', 
-                                data: [add_centroid], 
+                            if (add_centroid) datasets.push({
+                                label: 'Add Centroid',
+                                data: [add_centroid],
                                 backgroundColor: 'rgba(253, 224, 71, 1)',
                                 borderColor: 'rgba(234, 179, 8, 1)',
                                 borderWidth: 2,
-                                pointStyle: 'star', 
-                                pointRadius: 15 
+                                pointStyle: 'star',
+                                pointRadius: 15
                             });
-                            if (subtract_centroid) datasets.push({ 
-                                label: 'Subtract Centroid', 
-                                data: [subtract_centroid], 
-                                backgroundColor: 'rgba(239, 68, 68, 1)', 
+                            if (subtract_centroid) datasets.push({
+                                label: 'Subtract Centroid',
+                                data: [subtract_centroid],
+                                backgroundColor: 'rgba(239, 68, 68, 1)',
                                 borderColor: 'rgba(159, 18, 57, 1)',
                                 borderWidth: 2,
-                                pointStyle: 'star', 
-                                pointRadius: 15 
+                                pointStyle: 'star',
+                                pointRadius: 15
                             });
-                            if (addPoints.length) datasets.push({ 
-                                label: 'Selected ADD song(s)', 
-                                data: addPoints, 
+                            if (addPoints.length) datasets.push({
+                                label: 'Selected ADD song(s)',
+                                data: addPoints,
                                 backgroundColor: 'rgba(34, 197, 94, 0.9)',
                                 borderColor: 'rgba(22, 163, 74, 1)',
                                 borderWidth: 2,
-                                pointStyle: 'triangle', 
+                                pointStyle: 'triangle',
                                 pointRadius: 12,
                                 rotation: 0
                             });
-                            if (subPoints.length) datasets.push({ 
-                                label: 'Selected SUBTRACT song(s)', 
-                                data: subPoints, 
+                            if (subPoints.length) datasets.push({
+                                label: 'Selected SUBTRACT song(s)',
+                                data: subPoints,
                                 backgroundColor: 'rgba(239, 68, 68, 0.9)',
                                 borderColor: 'rgba(220, 38, 38, 1)',
                                 borderWidth: 2,
-                                pointStyle: 'rect', 
-                                pointRadius: 10 
+                                pointStyle: 'rect',
+                                pointRadius: 10
                             });
 
                             const projLabel = document.getElementById('projection-label');
@@ -629,9 +609,9 @@
                                 options: {
                                     responsive: true,
                                     maintainAspectRatio: false,
-                                    plugins: { 
-                                        tooltip: { 
-                                            callbacks: { 
+                                    plugins: {
+                                        tooltip: {
+                                            callbacks: {
                                                 label: (ctx) => {
                                                     const label = ctx.raw.label || '';
                                                     const parts = label.split(' — ');
@@ -660,12 +640,12 @@
                                         }
                                     },
                                     scales: {
-                                        x: { 
+                                        x: {
                                             title: { display: true, text: xLabel, font: { size: 14 } },
                                             grid: { color: 'rgba(229, 231, 235, 0.5)'},
                                             ticks: { font: { size: 12 } }
                                         },
-                                        y: { 
+                                        y: {
                                             title: { display: true, text: yLabel, font: { size: 14 } },
                                             grid: { color: 'rgba(229, 231, 235, 0.5)'},
                                             ticks: { font: { size: 12 } }
@@ -689,7 +669,7 @@
                 showMessageBox('Request Failed', 'Failed to run Alchemy. See console for details.');
             }
         });
-        
+
         function showMessageBox(title, message) {
             const boxId = 'custom-message-box';
             document.getElementById(boxId)?.remove();
@@ -703,8 +683,8 @@
         }
 
     })();
-    </script>
-    <script>
+</script>
+<script>
     // Playlist form wiring: reuse /api/create_playlist behavior from similarity.html
     (function() {
         const playlistForm = document.getElementById('playlist-form');
@@ -769,8 +749,7 @@
             }
         });
     })();
-    </script>
+</script>
 <script src="{{ url_for('static', filename='menu.js') }}"></script>
 <script src="{{ url_for('static', filename='chart.js') }}"></script>
-</body>
-</html>
+{% endblock %}

@@ -21,7 +21,7 @@ cron_bp = Blueprint('cron_bp', __name__)
 
 @cron_bp.route('/cron')
 def cron_page():
-    return render_template('cron.html')
+    return render_template('cron.html', title = 'AudioMuse-AI - Scheduled Tasks', active='cron')
 
 
 @cron_bp.route('/api/cron', methods=['GET'])

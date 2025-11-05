@@ -11,7 +11,7 @@ alchemy_bp = Blueprint('alchemy_bp', __name__, template_folder='../templates')
 
 @alchemy_bp.route('/alchemy', methods=['GET'])
 def alchemy_page():
-    return render_template('alchemy.html')
+    return render_template('alchemy.html', title = 'AudioMuse-AI - Song Alchemy', active='alchemy')
 
 
 @alchemy_bp.route('/api/alchemy', methods=['POST'])

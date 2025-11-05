@@ -17,7 +17,7 @@ collection_bp = Blueprint('collection_bp', __name__)
 @collection_bp.route('/collection')
 def collection_page():
     """Serves the HTML page for the Collection Sync feature."""
-    return render_template('collection.html')
+    return render_template('collection.html', title = 'AudioMuse-AI - Collection Sync', active='collection')
 
 def collection_task_failure_handler(job, connection, type, value, tb):
     """A failure handler for the main collection sync task, executed by the worker."""

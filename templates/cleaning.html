@@ -1,117 +1,96 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="app-version" content="{{ app_version }}">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>AudioMuse-AI - Database Cleaning</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
-    <style>
-        .cleaning-summary {
-            background-color: #e7f3ff;
-            border: 1px solid #b3d9ff;
-            border-radius: 8px;
-            padding: 1rem;
-            margin-bottom: 1.5rem;
-        }
-        .active-button {
-            background-color: #2563EB !important;
-            border-color: #2563EB !important;
-            color: white !important;
-        }
-        .active-button:hover {
-            background-color: #1D4ED8 !important;
-            border-color: #1D4ED8 !important;
-        }
-        .active-button:disabled {
-            background-color: #6c757d !important;
-            border-color: #6c757d !important;
-            cursor: not-allowed;
-        }
-        .danger-button {
-            background-color: #dc3545 !important;
-            border-color: #dc3545 !important;
-            color: white !important;
-        }
-        .danger-button:hover {
-            background-color: #c82333 !important;
-            border-color: #bd2130 !important;
-        }
-        .danger-button:disabled {
-            background-color: #6c757d !important;
-            border-color: #6c757d !important;
-            cursor: not-allowed;
-        }
-    </style>
-</head>
-<body>
-    <div class="page-container">
-        <aside class="sidebar">
-            <nav>
-                <ul class="sidebar-nav">
-                    {% with %}
-                    {% set active = 'cleaning' %}
-                    {% include 'sidebar_navi.html' %}
-                    {% endwith %}
-                </ul>
-            </nav>
-        </aside>
+{% extends "includes/layout.html" %}
 
-        <div class="main-content" id="main-content">
-            <button class="menu-toggle">&#9776;</button>
-            <div class="container">
-                <div id="main-content-inner">
-                    <section>
-                        <div class="page-header">
-                            <h1>Database Cleaning</h1>
-                            <p class="subtitle">Automatically scan and clean orphaned albums from the database that no longer exist on the media server.</p>
-                        </div>
-                    </section>
+{% block headAdditions %}
+<style>
+    .cleaning-summary {
+        background-color: #e7f3ff;
+        border: 1px solid #b3d9ff;
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1.5rem;
+    }
+    .active-button {
+        background-color: #2563EB !important;
+        border-color: #2563EB !important;
+        color: white !important;
+    }
+    .active-button:hover {
+        background-color: #1D4ED8 !important;
+        border-color: #1D4ED8 !important;
+    }
+    .active-button:disabled {
+        background-color: #6c757d !important;
+        border-color: #6c757d !important;
+        cursor: not-allowed;
+    }
+    .danger-button {
+        background-color: #dc3545 !important;
+        border-color: #dc3545 !important;
+        color: white !important;
+    }
+    .danger-button:hover {
+        background-color: #c82333 !important;
+        border-color: #bd2130 !important;
+    }
+    .danger-button:disabled {
+        background-color: #6c757d !important;
+        border-color: #6c757d !important;
+        cursor: not-allowed;
+    }
+</style>
+{% endblock %}
 
-                    <!-- Database Cleaning Section -->
-                    <section id="cleaning-section">
-                        <h2>Database Cleaning</h2>
-                        <p>Run a scan to identify and automatically remove albums that exist in the database but are no longer present on your media server.</p>
-                        
-                        <div class="task-buttons">
-                            <button id="start-clean-btn" class="active-button">Start Database Cleaning</button>
-                            <button id="cancel-clean-btn" class="danger-button" style="display: none;" disabled>Cancel Cleaning</button>
-                        </div>
+{% block content %}
+<div id="main-content-inner">
+    <section>
+        <div class="page-header">
+            <h1>Database Cleaning</h1>
+            <p class="subtitle">Automatically scan and clean orphaned albums from the database that no longer exist on the media server.</p>
+        </div>
+    </section>
 
-                        <!-- Task Status Display -->
-                        <div id="clean-status-display" style="display: none; margin-top: 1.5rem;">
-                            <h3>Cleaning Status</h3>
-                            <div id="task-status-display">
-                                <p><span class="status-label">Task ID:</span> <span id="status-task-id">N/A</span></p>
-                                <p><span class="status-label">Running Time:</span> <span id="status-running-time">-- : -- : --</span></p>
-                                <p><span class="status-label">Status:</span> <span id="status-status">IDLE</span></p>
-                                <p><span class="status-label">Progress:</span> <span id="status-progress">0</span>%</p>
-                                <div class="progress-bar-container">
-                                    <div id="progress-bar"></div>
-                                </div>
-                                <p><span class="status-label">Message:</span> <span id="status-message">N/A</span></p>
-                                <div style="margin-top: 1rem;">
-                                    <h4>Details / Log:</h4>
-                                    <pre id="status-details"></pre>
-                                </div>
-                            </div>
-                        </div>
+    <!-- Database Cleaning Section -->
+    <section id="cleaning-section">
+        <h2>Database Cleaning</h2>
+        <p>Run a scan to identify and automatically remove albums that exist in the database but are no longer present on your media server.</p>
 
-                        <!-- Cleaning Results -->
-                        <div id="cleaning-results" style="display: none; margin-top: 1.5rem;">
-                            <h3>Cleaning Results</h3>
-                            <div id="cleaning-summary" class="cleaning-summary">
-                                <!-- Summary will be populated by JavaScript -->
-                            </div>
-                        </div>
-                    </section>
+        <div class="task-buttons">
+            <button id="start-clean-btn" class="active-button">Start Database Cleaning</button>
+            <button id="cancel-clean-btn" class="danger-button" style="display: none;" disabled>Cancel Cleaning</button>
+        </div>
+
+        <!-- Task Status Display -->
+        <div id="clean-status-display" style="display: none; margin-top: 1.5rem;">
+            <h3>Cleaning Status</h3>
+            <div id="task-status-display">
+                <p><span class="status-label">Task ID:</span> <span id="status-task-id">N/A</span></p>
+                <p><span class="status-label">Running Time:</span> <span id="status-running-time">-- : -- : --</span></p>
+                <p><span class="status-label">Status:</span> <span id="status-status">IDLE</span></p>
+                <p><span class="status-label">Progress:</span> <span id="status-progress">0</span>%</p>
+                <div class="progress-bar-container">
+                    <div id="progress-bar"></div>
+                </div>
+                <p><span class="status-label">Message:</span> <span id="status-message">N/A</span></p>
+                <div style="margin-top: 1rem;">
+                    <h4>Details / Log:</h4>
+                    <pre id="status-details"></pre>
                 </div>
             </div>
         </div>
-    </div>
-    
-    <script>
+
+        <!-- Cleaning Results -->
+        <div id="cleaning-results" style="display: none; margin-top: 1.5rem;">
+            <h3>Cleaning Results</h3>
+            <div id="cleaning-summary" class="cleaning-summary">
+                <!-- Summary will be populated by JavaScript -->
+            </div>
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block bodyAdditions %}
+<script>
         // Global variables
         let currentTaskId = null;
         let cleanInterval = null;
@@ -151,7 +130,7 @@
                     const state = JSON.parse(saved);
                     currentTaskId = state.currentTaskId;
                     startTime = state.startTime;
-                    
+
                     if (state.cleanStatusVisible) {
                         cleanStatusDisplay.style.display = 'block';
                     }
@@ -178,7 +157,7 @@
                     if (lastTask && lastTask.task_id && lastTask.task_type === 'cleaning') {
                         displayTaskStatus(lastTask);
                         // If it was successful and has results, show them
-                        if (['SUCCESS', 'FINISHED'].includes((lastTask.status || lastTask.state || '').toUpperCase()) && 
+                        if (['SUCCESS', 'FINISHED'].includes((lastTask.status || lastTask.state || '').toUpperCase()) &&
                             lastTask.details?.final_summary_details) {
                             displayCleaningResults(lastTask.details.final_summary_details);
                             cleaningResults.style.display = 'block';
@@ -204,7 +183,7 @@
             document.getElementById('status-status').textContent = stateUpper;
             document.getElementById('status-progress').textContent = task.progress || 0;
             document.getElementById('progress-bar').style.width = `${task.progress || 0}%`;
-            
+
             let statusMessage = 'N/A';
             if (task.details) {
                 if (task.details.status_message) {
@@ -233,28 +212,28 @@
                 const activeResponse = await fetch("{{ url_for('get_active_tasks_endpoint') }}");
                 if (activeResponse.ok) {
                     const activeData = await activeResponse.json();
-                    if (activeData.task_id && activeData.task_type === 'cleaning' && 
+                    if (activeData.task_id && activeData.task_type === 'cleaning' &&
                         ['STARTED', 'PROGRESS'].includes(activeData.status)) {
                         // Resume existing active task
                         currentTaskId = activeData.task_id;
                         startTime = Date.now() - (activeData.running_time_seconds * 1000);
-                        
+
                         // Update UI to show active task
                         startCleanBtn.disabled = true;
                         cancelCleanBtn.style.display = 'inline-block';
                         cancelCleanBtn.disabled = false;
                         cleanStatusDisplay.style.display = 'block';
-                        
+
                         document.getElementById('status-task-id').textContent = currentTaskId;
-                        
+
                         // Start polling
                         pollTaskStatus();
-                        
+
                         saveTaskStateToStorage();
                         return true; // Active task found
                     }
                 }
-                
+
                 // If no active task, fetch and display last task
                 await fetchAndDisplayLastTask();
                 return false; // No active task
@@ -271,28 +250,28 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }
                 });
-                
+
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
-                
+
                 const data = await response.json();
                 currentTaskId = data.task_id;
-                
+
                 // Update UI - disable start, enable cancel
                 startCleanBtn.disabled = true;
                 cancelCleanBtn.style.display = 'inline-block';
                 cancelCleanBtn.disabled = false;
                 cleanStatusDisplay.style.display = 'block';
                 cleaningResults.style.display = 'none';
-                
+
                 document.getElementById('status-task-id').textContent = currentTaskId;
                 startTime = Date.now();
-                
+
                 // Save state and start polling
                 saveTaskStateToStorage();
                 pollTaskStatus();
-                
+
             } catch (error) {
                 console.error('Error starting cleaning:', error);
                 alert('Failed to start cleaning: ' + error.message);
@@ -302,7 +281,7 @@
         // Cancel cleaning function
         async function cancelCleaning() {
             if (!currentTaskId) return;
-            
+
             try {
                 await fetch("{{ url_for('cancel_task_endpoint', task_id=':currentTaskId:') }}".replace(':currentTaskId:', currentTaskId), { method: 'POST' });
                 resetUI();
@@ -316,7 +295,7 @@
         // Poll task status - SAME PATTERN AS ANALYSIS PAGE
         function pollTaskStatus() {
             if (cleanInterval) clearInterval(cleanInterval);
-            
+
             cleanInterval = setInterval(async () => {
                 if (!currentTaskId) {
                     // FORCE STOP: If no current task, immediately clear interval and return
@@ -324,7 +303,7 @@
                     cleanInterval = null;
                     return;
                 }
-                
+
                 try {
                     // POLL ACTIVE TASKS API LIKE ANALYSIS PAGE
                     const response = await fetch("{{ url_for('get_active_tasks_endpoint') }}");
@@ -337,9 +316,9 @@
                         resetCleaningUI();
                         return;
                     }
-                    
+
                     const activeTask = await response.json();
-                    
+
                     // Check if our task is still active
                     if (activeTask && activeTask.task_id === currentTaskId) {
                         // Task is still active, update status
@@ -348,16 +327,16 @@
                     } else {
                         // Task is no longer active - GET FINAL STATUS LIKE ANALYSIS PAGE
                         console.log(`Task ${currentTaskId} is no longer active - getting final status`);
-                        
+
                         try {
                             const finalStatusResponse = await fetch("{{ url_for('get_task_status_endpoint', task_id=':currentTaskId:') }}".replace(':currentTaskId:', currentTaskId));
                             if (finalStatusResponse.ok) {
                                 const finalStatusData = await finalStatusResponse.json();
                                 console.log('Final status received:', finalStatusData);
-                                
+
                                 // Update display with final status
                                 updateTaskStatus(finalStatusData);
-                                
+
                                 // Handle completion based on final status
                                 const finalStatus = (finalStatusData.state || finalStatusData.status || '').toUpperCase();
                                 if (finalStatus === 'SUCCESS') {
@@ -376,7 +355,7 @@
                             console.error('Error getting final status:', e);
                             handleCleaningComplete({ status: 'SUCCESS', task_id: currentTaskId });
                         }
-                        
+
                         // Clear polling regardless
                         clearInterval(cleanInterval);
                         cleanInterval = null;
@@ -401,17 +380,17 @@
             document.getElementById('status-progress').textContent = data.progress || 0;
             document.getElementById('progress-bar').style.width = `${data.progress || 0}%`;
             document.getElementById('status-message').textContent = data.details?.status_message || 'N/A';
-            
+
             // Update running time ONLY if task is still running
             if (startTime && !['SUCCESS', 'FAILURE', 'REVOKED'].includes(stateUpper)) {
                 const elapsed = Math.floor((Date.now() - startTime) / 1000);
                 const hours = Math.floor(elapsed / 3600);
                 const minutes = Math.floor((elapsed % 3600) / 60);
                 const seconds = elapsed % 60;
-                document.getElementById('status-running-time').textContent = 
+                document.getElementById('status-running-time').textContent =
                     `${hours.toString().padStart(2, '0')} : ${minutes.toString().padStart(2, '0')} : ${seconds.toString().padStart(2, '0')}`;
             }
-            
+
             // Update details - backend handles log truncation
             if (data.details) {
                 document.getElementById('status-details').textContent = JSON.stringify(data.details, null, 2);
@@ -421,7 +400,7 @@
         // Handle cleaning completion
         function handleCleaningComplete(data) {
             console.log('Cleaning completed - STOPPING TIMER AND RESETTING UI');
-            
+
             // FORCE STOP timer and polling
             if (cleanInterval) {
                 clearInterval(cleanInterval);
@@ -429,10 +408,10 @@
             }
             currentTaskId = null;
             startTime = null;
-            
+
             // RESET UI BUTTONS immediately
             resetCleaningUI();
-            
+
             const details = data.details?.final_summary_details;
             if (details) {
                 console.log('Displaying cleaning results');
@@ -443,7 +422,7 @@
                 console.log('No cleaning results data found');
                 alert('Cleaning completed but no results data found.');
             }
-            
+
             // Also update the task status display
             displayTaskStatus(data);
         }
@@ -451,7 +430,7 @@
         // Handle cleaning error
         function handleCleaningError(data) {
             console.log('Cleaning error - STOPPING TIMER AND RESETTING UI');
-            
+
             // FORCE STOP timer and polling
             if (cleanInterval) {
                 clearInterval(cleanInterval);
@@ -459,17 +438,17 @@
             }
             currentTaskId = null;
             startTime = null;
-            
+
             // RESET UI BUTTONS immediately
             resetCleaningUI();
-            
+
             alert(`Cleaning failed: ${data.details?.error_message || 'Unknown error'}`);
         }
 
         // Display cleaning results
         function displayCleaningResults(data) {
             const summaryDiv = document.getElementById('cleaning-summary');
-            
+
             if (data.deleted_count > 0) {
                 summaryDiv.innerHTML = `
                     <h3>✅ Database Cleaning Completed Successfully</h3>
@@ -478,7 +457,7 @@
                     <p><strong>Total tracks in database (before cleaning):</strong> ${data.total_database_tracks}</p>
                     <p><strong>Orphaned albums found:</strong> ${data.orphaned_albums_count}</p>
                     <p><strong>Orphaned tracks deleted:</strong> ${data.deleted_count}</p>
-                    ${data.failed_deletions && data.failed_deletions.length > 0 ? 
+                    ${data.failed_deletions && data.failed_deletions.length > 0 ?
                         `<p><strong>Failed deletions:</strong> ${data.failed_deletions.length}</p>` : ''}
                     <p style="color: #28a745; font-weight: bold;">Database cleaned successfully! ${data.deleted_count} orphaned tracks removed.</p>
                 `;
@@ -512,7 +491,6 @@
             cleaningResults.style.display = 'none';
             console.log('UI completely reset - all timers and intervals cleared');
         }
-    </script>
-    <script src="{{ url_for('static', filename='menu.js') }}"></script>
-</body>
-</html>
+</script>
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}

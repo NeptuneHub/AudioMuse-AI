@@ -220,7 +220,7 @@ def init_map_cache():
 @map_bp.route('/map')
 def map_ui():
     """Serve the map UI page."""
-    resp = render_template('map.html')
+    resp = render_template('map.html', title = 'AudioMuse-AI - Music Map', active='map')
     # Ensure the rendered page is not cached by browsers or intermediary caches.
     # We return a Response object below so Flask will set the appropriate headers.
     from flask import make_response
