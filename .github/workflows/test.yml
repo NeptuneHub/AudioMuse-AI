@@ -1,0 +1,53 @@
+name: Integration Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        # Install test requirements from test/requirements.txt
+        pip install -r test/requirements.txt
+
+    - name: Verify test files exist
+      run: |
+        echo "Checking for ONNX models in test/models/..."
+        ls -la test/models/
+        echo ""
+        echo "Checking for audio files in test/songs/..."
+        ls -la test/songs/
+
+    - name: Run integration tests
+      run: |
+        # Run the integration test with verbose output
+        pytest test/test_analysis_integration.py -s -v --tb=short
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: integration-test-results
+        path: |
+          test/*.log
+          test/temp/
+        retention-days: 7

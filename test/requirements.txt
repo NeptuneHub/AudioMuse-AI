@@ -1,3 +1,23 @@
-pytest>=6.0
-requests>=2.0
+# Core test/runtime packages for running the analysis unit test locally.
+# Install these in your virtualenv. We intentionally exclude system-level
+# components (ffmpeg, voyager index DB, etc.) which should be stubbed.
+
+numpy==1.26.4
+librosa==0.11.0
+scipy==1.15.3
+soundfile==0.13.1          # pysoundfile, used by librosa
+onnx==1.14.1
+onnxruntime==1.15.1
+pydub==0.25.1
+scikit-learn==1.7.2
+psycopg2-binary
+ftfy==6.1.1
+pytest>=7.0.0
+requests
+
+# Notes:
+# - ffmpeg (system binary) is NOT included here — keep pydub/ffmpeg calls stubbed or
+#   install ffmpeg separately on your machine if you want full fallback behavior.
+# - voyager is a system-level vector index; tests should keep a small stub rather
+#   than installing production Voyager binaries.
 
