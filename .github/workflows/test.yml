@@ -28,6 +28,20 @@ jobs:
         python -m pip install --upgrade pip
         # Install test requirements from test/requirements.txt
         pip install -r test/requirements.txt
+        # Install additional dependencies needed for importing tasks.analysis
+        pip install redis rq Flask pyyaml python-mpd2 rapidfuzz sqlglot umap-learn flasgger six
+
+    - name: Create mock config
+      run: |
+        # The integration test uses stubs but still needs config.py for imports
+        cat > config.py << 'EOF'
+        TEMP_DIR = "/tmp"
+        MOOD_LABELS = []
+        OTHER_FEATURE_LABELS = []
+        REDIS_URL = "redis://localhost"
+        DATABASE_URL = ""
+        EMBEDDING_DIMENSION = 200
+        EOF
 
     - name: Verify test files exist
       run: |
