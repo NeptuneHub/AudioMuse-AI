@@ -1,0 +1,107 @@
+version: '3.8'
+
+services:
+  # Redis service for RQ (task queue)
+  redis:
+    image: redis:7-alpine
+    container_name: audiomuse-redis
+    ports:
+      - "6379:6379" # Expose Redis port to the host
+    volumes:
+      - redis-data:/data # Persistent storage for Redis data
+    restart: unless-stopped
+
+  # PostgreSQL database service
+  postgres:
+    image: postgres:15-alpine
+    container_name: audiomuse-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # AudioMuse-AI Flask application service (GPU-enabled)
+  audiomuse-ai-flask:
+    build:
+      context: ../       # Build from project root (one level up from deployment/)
+      dockerfile: Dockerfile
+      # args:  # Uncomment for GPU build
+      #   BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+    container_name: audiomuse-ai-flask-app
+    ports:
+      - "8000:8000"
+    environment:
+      SERVICE_TYPE: "flask"
+      MEDIASERVER_TYPE: "navidrome"
+      NAVIDROME_URL: "${NAVIDROME_URL}"
+      NAVIDROME_USER: "${NAVIDROME_USER}"
+      NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      TEMP_DIR: "/app/temp_audio"
+    volumes:
+      - temp-audio-flask:/app/temp_audio
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+    # deploy:  # Uncomment for GPU runtime
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           device_ids: ["0"]
+    #           capabilities: [gpu]
+
+  # AudioMuse-AI RQ Worker service (GPU-enabled)
+  audiomuse-ai-worker:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+      # args:  # Uncomment for GPU build
+      #   BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+    container_name: audiomuse-ai-worker-instance
+    environment:
+      SERVICE_TYPE: "worker"
+      MEDIASERVER_TYPE: "navidrome"
+      NAVIDROME_URL: "${NAVIDROME_URL}"
+      NAVIDROME_USER: "${NAVIDROME_USER}"
+      NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      TEMP_DIR: "/app/temp_audio"
+    volumes:
+      - temp-audio-worker:/app/temp_audio
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+    # deploy:  # Uncomment for GPU runtime
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           device_ids: ["0"]
+    #           capabilities: [gpu]
+
+# Define volumes for persistent data and temporary files
+volumes:
+  redis-data:
+  postgres-data:
+  temp-audio-flask:
+  temp-audio-worker:
