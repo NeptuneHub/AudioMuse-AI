@@ -198,7 +198,9 @@ def get_tracks_from_album(album_id):
         # Apply artist field prioritization to each track
         for item in items:
             title = item.get('Name', 'Unknown')
-            item['AlbumArtist'] = _select_best_artist(item, title)
+            artist_name, artist_id = _select_best_artist(item, title)
+            item['AlbumArtist'] = artist_name
+            item['ArtistId'] = artist_id
         
         return items
     except Exception as e:
@@ -226,19 +228,28 @@ def _select_best_artist(item, title="Unknown"):
     """
     Selects the best artist field from Jellyfin item, prioritizing track artists over album artists.
     This helps avoid "Various Artists" issues in compilation albums.
+    Returns tuple: (artist_name, artist_id)
     """
     # Priority: Artists array (track artists) > AlbumArtist > fallback
-    if item.get('Artists') and len(item['Artists']) > 0:
+    # Jellyfin/Emby provides ArtistItems array with Id and Name
+    if item.get('ArtistItems') and len(item['ArtistItems']) > 0:
+        track_artist = item['ArtistItems'][0].get('Name', 'Unknown Artist')
+        artist_id = item['ArtistItems'][0].get('Id')
+        used_field = 'ArtistItems[0]'
+    elif item.get('Artists') and len(item['Artists']) > 0:
         track_artist = item['Artists'][0]  # Take first artist if multiple
+        artist_id = None
         used_field = 'Artists[0]'
     elif item.get('AlbumArtist'):
         track_artist = item['AlbumArtist']
+        artist_id = None
         used_field = 'AlbumArtist'
     else:
         track_artist = 'Unknown Artist'
+        artist_id = None
         used_field = 'fallback'
     
-    return track_artist
+    return track_artist, artist_id
 
 def get_all_songs():
     """Fetches all songs from Jellyfin using admin credentials."""
@@ -252,7 +263,9 @@ def get_all_songs():
         # Apply artist field prioritization to each item
         for item in items:
             title = item.get('Name', 'Unknown')
-            item['AlbumArtist'] = _select_best_artist(item, title)
+            artist_name, artist_id = _select_best_artist(item, title)
+            item['AlbumArtist'] = artist_name
+            item['ArtistId'] = artist_id
         
         return items
     except Exception as e:
@@ -320,14 +333,16 @@ def get_top_played_songs(limit, user_creds=None):
         r.raise_for_status()
         items = r.json().get("Items", [])
         
-        # Apply artist field prioritization to each track
+        # Apply artist field prioritization to each item
         for item in items:
             title = item.get('Name', 'Unknown')
-            item['AlbumArtist'] = _select_best_artist(item, title)
+            artist_name, artist_id = _select_best_artist(item, title)
+            item['AlbumArtist'] = artist_name
+            item['ArtistId'] = artist_id
         
         return items
     except Exception as e:
-        logger.error(f"Jellyfin get_top_played_songs failed for user {user_id}: {e}", exc_info=True)
+        logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)
         return []
 
 def get_last_played_time(item_id, user_creds=None):

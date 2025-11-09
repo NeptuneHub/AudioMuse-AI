@@ -83,6 +83,7 @@ def search_artists_endpoint():
 def get_similar_artists_endpoint():
     """
     Find similar artists for a given artist using GMM-based similarity.
+    Accepts either artist name or artist_id.
     ---
     tags:
       - Artist Similarity
@@ -90,7 +91,11 @@ def get_similar_artists_endpoint():
       - name: artist
         in: query
         description: The name of the artist.
-        required: true
+        schema:
+          type: string
+      - name: artist_id
+        in: query
+        description: The ID of the artist from the media server.
         schema:
           type: string
       - name: n
@@ -106,7 +111,7 @@ def get_similar_artists_endpoint():
           type: integer
     responses:
       200:
-        description: A list of similar artists with divergence scores.
+        description: A list of similar artists with divergence scores, artist names and IDs.
         content:
           application/json:
             schema:
@@ -116,6 +121,9 @@ def get_similar_artists_endpoint():
                 properties:
                   artist:
                     type: string
+                  artist_id:
+                    type: string
+                    nullable: true
                   divergence:
                     type: number
       400:
@@ -126,32 +134,36 @@ def get_similar_artists_endpoint():
         description: Artist similarity service unavailable.
     """
     artist = request.args.get('artist')
+    artist_id = request.args.get('artist_id')
     n = request.args.get('n', 10, type=int)
     ef_search = request.args.get('ef_search', type=int)
     
-    if not artist:
-        return jsonify({"error": "Missing 'artist' parameter"}), 400
+    # Accept either artist name or artist_id
+    query_artist = artist or artist_id
+    
+    if not query_artist:
+        return jsonify({"error": "Missing 'artist' or 'artist_id' parameter"}), 400
     
     try:
-        similar_artists = find_similar_artists(artist, n=n, ef_search=ef_search)
+        similar_artists = find_similar_artists(query_artist, n=n, ef_search=ef_search)
         
         if not similar_artists:
-            return jsonify({"error": f"Artist '{artist}' not found in index or no similar artists found."}), 404
+            return jsonify({"error": f"Artist '{query_artist}' not found in index or no similar artists found."}), 404
         
         return jsonify(similar_artists)
         
     except RuntimeError as e:
-        logger.error(f"Runtime error finding similar artists for '{artist}': {e}", exc_info=True)
+        logger.error(f"Runtime error finding similar artists for '{query_artist}': {e}", exc_info=True)
         return jsonify({"error": "The artist similarity search service is currently unavailable."}), 503
     except Exception as e:
-        logger.error(f"Unexpected error finding similar artists for '{artist}': {e}", exc_info=True)
+        logger.error(f"Unexpected error finding similar artists for '{query_artist}': {e}", exc_info=True)
         return jsonify({"error": "An unexpected error occurred."}), 500
 
 
 @artist_similarity_bp.route('/api/artist_tracks', methods=['GET'])
 def get_artist_tracks_endpoint():
     """
-    Get all tracks for a given artist.
+    Get all tracks for a given artist (by name or ID).
     ---
     tags:
       - Artist Similarity
@@ -159,7 +171,11 @@ def get_artist_tracks_endpoint():
       - name: artist
         in: query
         description: The name of the artist.
-        required: true
+        schema:
+          type: string
+      - name: artist_id
+        in: query
+        description: The ID of the artist from the media server.
         schema:
           type: string
     responses:
@@ -182,13 +198,17 @@ def get_artist_tracks_endpoint():
         description: Bad request, missing artist parameter.
     """
     artist = request.args.get('artist')
+    artist_id = request.args.get('artist_id')
     
-    if not artist:
-        return jsonify({"error": "Missing 'artist' parameter"}), 400
+    # Accept either artist name or artist_id
+    query_artist = artist or artist_id
+    
+    if not query_artist:
+        return jsonify({"error": "Missing 'artist' or 'artist_id' parameter"}), 400
     
     try:
-        tracks = get_artist_tracks(artist)
+        tracks = get_artist_tracks(query_artist)
         return jsonify(tracks)
     except Exception as e:
-        logger.error(f"Error getting tracks for artist '{artist}': {e}", exc_info=True)
+        logger.error(f"Error getting tracks for artist '{query_artist}': {e}", exc_info=True)
         return jsonify({"error": "An error occurred while fetching tracks."}), 500

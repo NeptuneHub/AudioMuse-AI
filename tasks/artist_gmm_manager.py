@@ -621,30 +621,40 @@ def load_artist_index_for_querying(force_reload=False):
             cur.close()
 
 
-def find_similar_artists(query_artist: str, n: int = 10, ef_search: Optional[int] = None) -> List[Dict]:
+def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = None) -> List[Dict]:
     """
     Find similar artists using the HNSW index.
+    Accepts either artist name or artist ID.
     
     Args:
-        query_artist: Name of the query artist
+        query_artist: Name or ID of the query artist
         n: Number of similar artists to return
         ef_search: HNSW search parameter (higher = more accurate but slower)
         
-    Returns: List of dictionaries with 'artist' and 'divergence' keys
+    Returns: List of dictionaries with 'artist', 'artist_id', and 'divergence' keys
     """
     if artist_index is None or artist_map is None or artist_gmm_params is None:
         logger.error("Artist index not loaded")
         raise RuntimeError("Artist similarity index not available")
     
+    # Try to resolve artist ID to name if it looks like an ID (not in reverse_artist_map)
+    artist_name = query_artist
     if query_artist not in reverse_artist_map:
-        logger.warning(f"Artist '{query_artist}' not found in index")
+        from app_helper_artist import get_artist_name_by_id
+        resolved_name = get_artist_name_by_id(query_artist)
+        if resolved_name:
+            artist_name = resolved_name
+            logger.info(f"Resolved artist ID '{query_artist}' to name '{artist_name}'")
+    
+    if artist_name not in reverse_artist_map:
+        logger.warning(f"Artist '{artist_name}' not found in index")
         return []
     
     # Get query artist's HNSW ID
-    query_id = reverse_artist_map[query_artist]
+    query_id = reverse_artist_map[artist_name]
     
     # Get query GMM parameters
-    query_gmm = artist_gmm_params[query_artist]
+    query_gmm = artist_gmm_params[artist_name]
     
     # Set ef_search if provided
     if ef_search is not None:
@@ -662,14 +672,18 @@ def find_similar_artists(query_artist: str, n: int = 10, ef_search: Optional[int
     # Build results (skip self)
     results = []
     
+    from app_helper_artist import get_artist_id_by_name
+    
     for idx, dist in zip(labels[0], distances[0]):
         if idx == query_id:
             continue  # Skip self
         
         candidate_artist = artist_map[idx]
+        candidate_artist_id = get_artist_id_by_name(candidate_artist)
         
         results.append({
             'artist': candidate_artist,
+            'artist_id': candidate_artist_id,
             'divergence': float(dist)  # Use L2 distance as similarity score
         })
     
@@ -680,17 +694,19 @@ def find_similar_artists(query_artist: str, n: int = 10, ef_search: Optional[int
 def search_artists_by_name(query: str, limit: int = 15) -> List[Dict]:
     """
     Search for artists by name (for autocomplete).
+    Returns both artist name and ID if available.
     
     Args:
         query: Search query string
         limit: Maximum number of results
         
-    Returns: List of dictionaries with artist information
+    Returns: List of dictionaries with artist information including artist_id
     """
     if not query:
         return []
     
     from app_helper import get_db
+    from app_helper_artist import get_artist_id_by_name
     
     conn = get_db()
     cur = conn.cursor()
@@ -710,8 +726,10 @@ def search_artists_by_name(query: str, limit: int = 15) -> List[Dict]:
         
         results = []
         for author, track_count in cur.fetchall():
+            artist_id = get_artist_id_by_name(author)
             results.append({
                 'artist': author,
+                'artist_id': artist_id,
                 'track_count': track_count
             })
         
@@ -725,16 +743,24 @@ def search_artists_by_name(query: str, limit: int = 15) -> List[Dict]:
         cur.close()
 
 
-def get_artist_tracks(artist_name: str) -> List[Dict]:
+def get_artist_tracks(artist_identifier: str) -> List[Dict]:
     """
-    Get all tracks for a given artist.
+    Get all tracks for a given artist (by name or ID).
     
     Args:
-        artist_name: Name of the artist
+        artist_identifier: Name or ID of the artist
         
     Returns: List of track dictionaries with item_id, title, author
     """
     from app_helper import get_db
+    from app_helper_artist import get_artist_name_by_id
+    
+    # Try to resolve ID to name if needed
+    artist_name = artist_identifier
+    if artist_identifier:
+        resolved_name = get_artist_name_by_id(artist_identifier)
+        if resolved_name:
+            artist_name = resolved_name
     
     conn = get_db()
     cur = conn.cursor()

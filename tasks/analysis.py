@@ -495,6 +495,21 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 progress = 10 + int(85 * (idx / float(total_tracks_in_album)))
                 log_and_update_album_task(f"Analyzing track: {track_name_full} ({idx}/{total_tracks_in_album})", progress, current_track_name=track_name_full)
 
+                # Store artist ID mapping for all tracks (even if already analyzed)
+                try:
+                    from app_helper_artist import upsert_artist_mapping
+                    artist_name = item.get('AlbumArtist')
+                    artist_id = item.get('ArtistId')
+                    logger.info(f"Track '{item.get('Name')}': artist_name='{artist_name}', artist_id='{artist_id}'")
+                    if artist_name and artist_id:
+                        upsert_artist_mapping(artist_name, artist_id)
+                        logger.info(f"✓ Stored artist mapping: '{artist_name}' → '{artist_id}'")
+                    else:
+                        if not artist_id:
+                            logger.warning(f"✗ No artist_id for track '{item.get('Name')}' by '{artist_name}'")
+                except Exception as mapping_error:
+                    logger.error(f"Failed to store artist mapping for '{artist_name}': {mapping_error}", exc_info=True)
+
                 if str(item['Id']) in existing_track_ids_set:
                     tracks_skipped_count += 1
                     continue
@@ -701,6 +716,20 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     checked_album_ids.add(album['Id'])
                     logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - no tracks returned by media server.")
                     continue
+
+                # Store artist ID mappings for all tracks in this album (even if already analyzed)
+                try:
+                    from app_helper_artist import upsert_artist_mapping
+                    for track in tracks:
+                        artist_name = track.get('AlbumArtist')
+                        artist_id = track.get('ArtistId')
+                        if artist_name and artist_id:
+                            upsert_artist_mapping(artist_name, artist_id)
+                            logger.info(f"✓ Mapped artist: '{artist_name}' → '{artist_id}'")
+                        elif artist_name and not artist_id:
+                            logger.warning(f"✗ No artist_id for '{artist_name}' in album '{album.get('Name')}'")
+                except Exception as e:
+                    logger.error(f"Failed to store artist mappings for album '{album.get('Name')}': {e}", exc_info=True)
 
                 # If all tracks already exist in DB, skip and log how many.
                 try:
