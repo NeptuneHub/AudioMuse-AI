@@ -267,6 +267,8 @@ textarea {
 #cancel-sync-btn,
 #playlistForm button,
 #similarity-form button,
+#waveform-form button,
+#artist-similarity-form button,
 #playlist-form button,
 #createPlaylistForm button {
     flex-grow: 1;
@@ -287,7 +289,11 @@ textarea {
 #fetch-playlists-btn,
 #start-sync-btn,
 #playlistForm button,
-#similarity-form button {
+#similarity-form button,
+#waveform-form button,
+#artist-similarity-form button,
+#find-artists-btn,
+#create-artist-playlist-btn {
     background-color: #2563EB;
 }
 
@@ -296,7 +302,11 @@ textarea {
 #fetch-playlists-btn:hover,
 #start-sync-btn:hover,
 #playlistForm button:hover,
-#similarity-form button:hover {
+#similarity-form button:hover,
+#waveform-form button:hover,
+#artist-similarity-form button:hover,
+#find-artists-btn:hover,
+#create-artist-playlist-btn:hover {
     background-color: #1D4ED8;
 }
 

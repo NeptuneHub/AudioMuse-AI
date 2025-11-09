@@ -1,0 +1,367 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    /* Artist-specific styling */
+    .artist-row.selected {
+        background-color: #f0f0f0 !important;
+    }
+    
+    .track-list-container {
+        background-color: #ffffff !important;
+    }
+    
+    .track-list {
+        background-color: #ffffff;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+    }
+    
+    .track-list h4 {
+        color: #0f0f1e;
+        margin-top: 0;
+        margin-bottom: 0.75rem;
+    }
+    
+    .track-list-item {
+        padding: 0.5rem;
+        border-bottom: 1px solid #e0e0e0;
+        color: #0f0f1e;
+    }
+    
+    .track-list-item:last-child {
+        border-bottom: none;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Artist Similarity</h1>
+        <p>Find artists with similar sound profiles using Gaussian Mixture Models.</p>
+    </header>
+
+    <form id="artist-similarity-form">
+        <div class="autocomplete-container">
+            <label for="artist_search">Search for an Artist:</label>
+            <input type="text" 
+                   id="artist_search" 
+                   name="artist_search" 
+                   placeholder="Start typing artist name..." 
+                   autocomplete="off"
+                   required>
+            <div id="autocomplete-results" class="autocomplete-results hidden"></div>
+        </div>
+
+        <div class="param-group">
+            <div>
+                <label for="n">Number of similar artists:</label>
+                <input type="number" id="n" name="n" value="10" min="1" max="50">
+            </div>
+        </div>
+
+        <button type="submit" id="find-artists-btn">Find Similar Artists</button>
+    </form>
+</section>
+
+<section id="results-container" class="hidden">
+    <h2>Similar Artists</h2>
+    <div id="status"></div>
+    <div id="results-table-wrapper"></div>
+</section>
+
+<section id="playlist-creator" class="hidden">
+    <h3>Create Playlist from Selected Artist</h3>
+    <div id="selected-artist-info"></div>
+    <form id="playlist-form">
+        <div class="param-group">
+            <div>
+                <label for="playlist_name">Playlist Name:</label>
+                <input type="text" 
+                       id="playlist_name" 
+                       name="playlist_name" 
+                       required 
+                       placeholder="e.g., Best of Artist">
+            </div>
+        </div>
+        <button type="submit" id="create-artist-playlist-btn">Create Playlist on Media Server</button>
+    </form>
+    <div id="playlist-status"></div>
+</section>
+{% endblock %}
+
+{% block bodyAdditions %}
+<script>
+    (() => {
+        let currentArtist = null;
+        let similarArtists = [];
+        let selectedArtist = null;
+        let selectedArtistTracks = [];
+        let searchTimeout;
+
+        const artistSearchForm = document.getElementById('artist-similarity-form');
+        const playlistForm = document.getElementById('playlist-form');
+        const artistInput = document.getElementById('artist_search');
+        const autocompleteResults = document.getElementById('autocomplete-results');
+        const resultsContainer = document.getElementById('results-container');
+        const playlistCreator = document.getElementById('playlist-creator');
+        const statusDiv = document.getElementById('status');
+        const resultsTableWrapper = document.getElementById('results-table-wrapper');
+        const playlistStatusDiv = document.getElementById('playlist-status');
+        const selectedArtistInfo = document.getElementById('selected-artist-info');
+
+        // --- Autocomplete Logic ---
+        const handleSearchInput = () => {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(async () => {
+                const query = artistInput.value.trim();
+
+                if (query.length < 2) {
+                    hideAutocomplete();
+                    return;
+                }
+
+                try {
+                    const params = new URLSearchParams({ query: query });
+                    const response = await fetch(`{{ url_for('artist_similarity_bp.search_artists_endpoint') }}?${params}`);
+                    const artists = await response.json();
+                    showAutocomplete(artists);
+                } catch (error) {
+                    console.error('Autocomplete search error:', error);
+                    hideAutocomplete();
+                }
+            }, 300);
+        };
+
+        const showAutocomplete = (artists) => {
+            autocompleteResults.innerHTML = '';
+            if (artists.length === 0) {
+                autocompleteResults.innerHTML = '<div class="autocomplete-item"><em>No artists found</em></div>';
+            } else {
+                artists.forEach(artist => {
+                    const itemDiv = document.createElement('div');
+                    itemDiv.className = 'autocomplete-item';
+                    itemDiv.innerHTML = `
+                        <span class="artist-name">${artist.artist}</span>
+                        <span class="track-count">(${artist.track_count} tracks)</span>
+                    `;
+                    itemDiv.addEventListener('click', () => selectArtist(artist.artist));
+                    autocompleteResults.appendChild(itemDiv);
+                });
+            }
+            autocompleteResults.classList.remove('hidden');
+        };
+
+        const hideAutocomplete = () => {
+            autocompleteResults.classList.add('hidden');
+        };
+
+        const selectArtist = (artistName) => {
+            artistInput.value = artistName;
+            currentArtist = artistName;
+            hideAutocomplete();
+        };
+
+        artistInput.addEventListener('input', handleSearchInput);
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.autocomplete-container')) {
+                hideAutocomplete();
+            }
+        });
+
+        // --- Main Form Submission ---
+        artistSearchForm.addEventListener('submit', async function (event) {
+            event.preventDefault();
+
+            const artist = artistInput.value.trim();
+            const n = document.getElementById('n').value;
+
+            if (!artist) {
+                statusDiv.textContent = 'Please select an artist from the autocomplete suggestions.';
+                statusDiv.className = 'status-error';
+                return;
+            }
+
+            resultsContainer.classList.remove('hidden');
+            playlistCreator.classList.add('hidden');
+            statusDiv.textContent = 'Searching for similar artists...';
+            statusDiv.className = '';
+            resultsTableWrapper.innerHTML = '';
+            currentArtist = artist;
+            selectedArtist = null;
+            selectedArtistTracks = [];
+
+            try {
+                const params = new URLSearchParams({
+                    artist: artist,
+                    n: n
+                });
+                const response = await fetch(`{{ url_for('artist_similarity_bp.get_similar_artists_endpoint') }}?${params}`);
+                const data = await response.json();
+
+                if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
+
+                if (data.length === 0) {
+                    statusDiv.textContent = 'No similar artists found.';
+                    statusDiv.className = 'status-error';
+                    return;
+                }
+
+                similarArtists = data;
+                statusDiv.textContent = `Found ${data.length} similar artists to "${artist}".`;
+                statusDiv.className = 'status-success';
+
+                // Build results table
+                const tableHTML = `
+                    <table class="results-table">
+                        <thead>
+                            <tr>
+                                <th>Artist</th>
+                                <th>Similarity Score</th>
+                                <th style="width: 100px;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.map((item, idx) => `
+                                <tr class="artist-row" data-artist="${item.artist}" data-index="${idx}">
+                                    <td>${item.artist}</td>
+                                    <td>${item.divergence.toFixed(4)}</td>
+                                    <td><button class="expand-btn show-songs-btn" data-artist="${item.artist}">Expand</button></td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                    <p style="margin-top: 1rem; color: #888; font-size: 0.9rem;">
+                        Click Expand to view tracks for an artist and create a playlist.
+                    </p>
+                `;
+                resultsTableWrapper.innerHTML = tableHTML;
+
+                // Add click handlers to expand buttons
+                document.querySelectorAll('.expand-btn').forEach(btn => {
+                    btn.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        const artistName = btn.dataset.artist;
+                        const row = btn.closest('tr');
+                        
+                        // Check if this artist is already expanded
+                        const nextRow = row.nextElementSibling;
+                        if (nextRow && nextRow.classList.contains('track-list-container')) {
+                            // Collapse this artist
+                            nextRow.remove();
+                            btn.textContent = 'Expand';
+                            row.classList.remove('selected');
+                        } else {
+                            // Collapse any other expanded artists
+                            document.querySelectorAll('.track-list-container').forEach(el => el.remove());
+                            document.querySelectorAll('.expand-btn').forEach(b => b.textContent = 'Expand');
+                            document.querySelectorAll('.artist-row').forEach(r => r.classList.remove('selected'));
+                            
+                            // Expand this artist
+                            btn.textContent = 'Collapse';
+                            row.classList.add('selected');
+                            await loadArtistTracks(artistName);
+                        }
+                    });
+                });
+
+            } catch (error) {
+                statusDiv.textContent = `Error: ${error.message}`;
+                statusDiv.className = 'status-error';
+                console.error('Fetch error:', error);
+            }
+        });
+
+        // --- Load Artist Tracks ---
+        async function loadArtistTracks(artistName) {
+            try {
+                // Fetch tracks
+                const params = new URLSearchParams({ artist: artistName });
+                const response = await fetch(`{{ url_for('artist_similarity_bp.get_artist_tracks_endpoint') }}?${params}`);
+                const tracks = await response.json();
+
+                if (!response.ok) throw new Error(tracks.error || 'Failed to fetch tracks');
+
+                selectedArtist = artistName;
+                selectedArtistTracks = tracks;
+
+                // Show playlist creator
+                playlistCreator.classList.remove('hidden');
+                selectedArtistInfo.innerHTML = `
+                    <p><strong>Selected Artist:</strong> ${artistName} (${tracks.length} tracks)</p>
+                `;
+                document.getElementById('playlist_name').value = `Best of ${artistName}`;
+                playlistStatusDiv.textContent = '';
+
+                // Add track list to results
+                const trackListHTML = `
+                    <div class="track-list">
+                        <h4>Tracks by ${artistName}:</h4>
+                        ${tracks.map(t => `
+                            <div class="track-list-item">${t.title}</div>
+                        `).join('')}
+                    </div>
+                `;
+                
+                // Insert track list after selected row
+                const selectedRow = document.querySelector(`.artist-row[data-artist="${artistName}"]`);
+                if (selectedRow) {
+                    const tr = document.createElement('tr');
+                    tr.className = 'track-list-container';
+                    tr.innerHTML = `<td colspan="3">${trackListHTML}</td>`;
+                    selectedRow.parentNode.insertBefore(tr, selectedRow.nextSibling);
+                }
+
+            } catch (error) {
+                console.error('Error loading artist tracks:', error);
+                alert(`Failed to load tracks for ${artistName}: ${error.message}`);
+            }
+        }
+
+        // --- Playlist Creation ---
+        playlistForm.addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const playlistName = document.getElementById('playlist_name').value;
+
+            playlistStatusDiv.className = '';
+            if (!playlistName) {
+                playlistStatusDiv.textContent = 'Please enter a playlist name.';
+                playlistStatusDiv.className = 'status-error';
+                return;
+            }
+            if (selectedArtistTracks.length === 0) {
+                playlistStatusDiv.textContent = 'No tracks selected. Please select an artist first.';
+                playlistStatusDiv.className = 'status-error';
+                return;
+            }
+
+            playlistStatusDiv.textContent = 'Creating playlist...';
+
+            try {
+                const trackIds = selectedArtistTracks.map(t => t.item_id);
+                
+                const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        playlist_name: playlistName,
+                        track_ids: trackIds
+                    }),
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || `HTTP error! status: ${response.status}`);
+                playlistStatusDiv.textContent = result.message;
+                playlistStatusDiv.className = 'status-success';
+            } catch (error) {
+                playlistStatusDiv.textContent = `Error: ${error.message}`;
+                playlistStatusDiv.className = 'status-error';
+                console.error('Playlist creation error:', error);
+            }
+        });
+    })();
+</script>
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}

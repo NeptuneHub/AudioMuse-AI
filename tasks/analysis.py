@@ -51,6 +51,8 @@ from ai import get_ai_playlist_name, creative_prompt_template
 from .commons import score_vector
 # MODIFIED: Import from voyager_manager instead of annoy_manager
 from .voyager_manager import build_and_store_voyager_index
+# Import artist GMM manager for artist similarity index
+from .artist_gmm_manager import build_and_store_artist_index
 # MODIFIED: The functions from mediaserver no longer need server-specific parameters.
 from .mediaserver import get_recent_albums, get_tracks_from_album, download_track
 
@@ -660,6 +662,13 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 if albums_completed > last_rebuild_count and (albums_completed - last_rebuild_count) >= REBUILD_INDEX_BATCH_SIZE:
                     log_and_update_main(f"Batch of {albums_completed - last_rebuild_count} albums complete. Rebuilding index and map...", current_progress)
                     build_and_store_voyager_index(get_db())
+                    # Also build artist similarity index
+                    try:
+                        build_and_store_artist_index(get_db())
+                        redis_conn.publish('index-updates', 'reload-artist')
+                        logger.info('Artist similarity index rebuilt during batch.')
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store artist similarity index during batch rebuild: {e}")
                     # Also rebuild map projection
                     try:
                         from app_helper import build_and_store_map_projection
@@ -741,6 +750,15 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             # MODIFIED: Call the voyager index builder
             build_and_store_voyager_index(get_db())
             redis_conn.publish('index-updates', 'reload')
+            
+            # Build artist similarity index
+            log_and_update_main("Building artist similarity index...", 96)
+            try:
+                build_and_store_artist_index(get_db())
+                redis_conn.publish('index-updates', 'reload-artist')
+                logger.info('Artist similarity index built and stored.')
+            except Exception as e:
+                logger.warning(f"Failed to build/store artist similarity index: {e}")
 
             # Build and store the 2D map projection for the web map (best-effort)
             try:

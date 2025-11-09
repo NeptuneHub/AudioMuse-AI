@@ -533,6 +533,16 @@ def listen_for_index_reloads():
             logger.info("In-memory Voyager index and map reloaded successfully by background listener.")
           except Exception as e:
             logger.error(f"Error reloading Voyager index or map from background listener: {e}", exc_info=True)
+      elif message_data == 'reload-artist':
+        # Reload artist similarity index
+        with app.app_context():
+          logger.info("Triggering in-memory artist similarity index reload from background listener.")
+          try:
+            from tasks.artist_gmm_manager import load_artist_index_for_querying
+            load_artist_index_for_querying(force_reload=True)
+            logger.info("In-memory artist similarity index reloaded successfully by background listener.")
+          except Exception as e:
+            logger.error(f"Error reloading artist similarity index from background listener: {e}", exc_info=True)
 
 
 
@@ -558,6 +568,8 @@ from app_collection import collection_bp
 from app_external import external_bp # --- NEW: Import the external blueprint ---
 from app_alchemy import alchemy_bp
 from app_map import map_bp
+from app_waveform import waveform_bp
+from app_artist_similarity import artist_similarity_bp
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -570,6 +582,8 @@ app.register_blueprint(collection_bp)
 app.register_blueprint(external_bp, url_prefix='/external') # --- NEW: Register the external blueprint ---
 app.register_blueprint(alchemy_bp)
 app.register_blueprint(map_bp)
+app.register_blueprint(waveform_bp)
+app.register_blueprint(artist_similarity_bp)
 
 if __name__ == '__main__':
   os.makedirs(TEMP_DIR, exist_ok=True)
@@ -578,6 +592,13 @@ if __name__ == '__main__':
     # --- Initial Voyager Index Load ---
     from tasks.voyager_manager import load_voyager_index_for_querying
     load_voyager_index_for_querying()
+    # --- Load Artist Similarity Index ---
+    from tasks.artist_gmm_manager import load_artist_index_for_querying
+    try:
+      load_artist_index_for_querying()
+      logger.info("Artist similarity index loaded at startup.")
+    except Exception as e:
+      logger.warning(f"Failed to load artist similarity index at startup: {e}")
     # Also try to load precomputed map projection into memory if available
     try:
       from app_helper import load_map_projection

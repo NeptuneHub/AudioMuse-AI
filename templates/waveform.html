@@ -1,0 +1,383 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    .waveform-container {
+        background-color: #FFFFFF;
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        border: 1px solid #E5E7EB;
+    }
+    
+    .waveform-canvas {
+        width: 100%;
+        height: 250px;
+        background: linear-gradient(180deg, #0a0a0f 0%, #151520 50%, #0a0a0f 100%);
+        border-radius: 8px;
+        display: block;
+        cursor: crosshair;
+        box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.5);
+    }
+    
+    .track-info {
+        margin-bottom: 1.5rem;
+        padding: 1rem;
+        background-color: #F9FAFB;
+        border-radius: 0.5rem;
+        border-left: 4px solid #3b82f6;
+    }
+    
+    .track-info h3 {
+        margin: 0 0 0.5rem 0;
+        color: #111827;
+        font-size: 1.25rem;
+        font-weight: 600;
+    }
+    
+    .track-info p {
+        margin: 0;
+        color: #4B5563;
+        font-size: 1rem;
+    }
+    
+    .loading-indicator {
+        text-align: center;
+        padding: 1rem;
+        color: #2563EB;
+        font-weight: 500;
+    }
+    
+    .loading-indicator::after {
+        content: '...';
+        animation: dots 1.5s steps(4, end) infinite;
+    }
+    
+    @keyframes dots {
+        0%, 20% { content: '.'; }
+        40% { content: '..'; }
+        60%, 100% { content: '...'; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Waveform Visualization</h1>
+        <p>Visualize the audio waveform of any track in your library.</p>
+    </header>
+
+    <form id="waveform-form">
+        <input type="hidden" id="selected_item_id" name="item_id">
+        <div class="param-group">
+            <div class="autocomplete-container">
+                <label for="artist_search">Artist:</label>
+                <input type="text" id="artist_search" name="artist_search" placeholder="Start typing artist name..." autocomplete="off">
+            </div>
+
+            <div class="autocomplete-container">
+                <label for="title_search">Track Title:</label>
+                <input type="text" id="title_search" name="title_search" placeholder="Start typing track title..." autocomplete="off">
+                <div id="autocomplete-results" class="autocomplete-results hidden"></div>
+            </div>
+        </div>
+        <button type="submit" id="generate-waveform-btn">Generate Waveform</button>
+    </form>
+</section>
+
+<section id="waveform-container" class="waveform-container hidden">
+    <div id="track-info" class="track-info">
+        <h3 id="track-title">Track Title</h3>
+        <p id="track-artist">Artist Name</p>
+    </div>
+    <canvas id="waveform-canvas" class="waveform-canvas"></canvas>
+    <div id="status"></div>
+</section>
+{% endblock %}
+
+{% block bodyAdditions %}
+    <script>
+        (() => {
+            let searchTimeout;
+
+            const waveformForm = document.getElementById('waveform-form');
+            const artistInput = document.getElementById('artist_search');
+            const titleInput = document.getElementById('title_search');
+            const selectedItemIdInput = document.getElementById('selected_item_id');
+            const autocompleteResults = document.getElementById('autocomplete-results');
+            const waveformContainer = document.getElementById('waveform-container');
+            const waveformCanvas = document.getElementById('waveform-canvas');
+            const trackTitle = document.getElementById('track-title');
+            const trackArtist = document.getElementById('track-artist');
+            const statusDiv = document.getElementById('status');
+
+            // --- Autocomplete Logic ---
+            const handleSearchInput = () => {
+                clearTimeout(searchTimeout);
+                searchTimeout = setTimeout(async () => {
+                    const artistQuery = artistInput.value.trim();
+                    const titleQuery = titleInput.value.trim();
+
+                    if (artistQuery.length < 3 && titleQuery.length < 3) {
+                        hideAutocomplete();
+                        return;
+                    }
+
+                    try {
+                        const params = new URLSearchParams({ artist: artistQuery, title: titleQuery });
+                        const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
+                        const tracks = await response.json();
+                        showAutocomplete(tracks);
+                    } catch (error) {
+                        console.error('Autocomplete search error:', error);
+                        hideAutocomplete();
+                    }
+                }, 300);
+            };
+
+            const showAutocomplete = (tracks) => {
+                autocompleteResults.innerHTML = '';
+                if (tracks.length === 0) {
+                    autocompleteResults.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
+                } else {
+                    tracks.forEach(track => {
+                        const itemDiv = document.createElement('div');
+                        itemDiv.className = 'autocomplete-item';
+                        itemDiv.innerHTML = '<div class="title">' + track.title + '</div><div class="artist">' + track.author + '</div>';
+                        itemDiv.addEventListener('click', () => selectTrack(track));
+                        autocompleteResults.appendChild(itemDiv);
+                    });
+                }
+                autocompleteResults.classList.remove('hidden');
+            };
+
+            const hideAutocomplete = () => {
+                autocompleteResults.classList.add('hidden');
+            };
+
+            const selectTrack = (track) => {
+                artistInput.value = track.author;
+                titleInput.value = track.title;
+                selectedItemIdInput.value = track.item_id;
+                hideAutocomplete();
+            };
+
+            artistInput.addEventListener('input', handleSearchInput);
+            titleInput.addEventListener('input', handleSearchInput);
+            document.addEventListener('click', (e) => {
+                if (!e.target.closest('.autocomplete-container')) {
+                    hideAutocomplete();
+                }
+            });
+
+            // --- Waveform Drawing Function ---
+            const drawWaveform = (peaks) => {
+                const canvas = waveformCanvas;
+                const ctx = canvas.getContext('2d');
+                
+                // Set canvas resolution (high-DPI support)
+                const dpr = window.devicePixelRatio || 1;
+                const rect = canvas.getBoundingClientRect();
+                canvas.width = rect.width * dpr;
+                canvas.height = rect.height * dpr;
+                ctx.scale(dpr, dpr);
+                
+                const width = rect.width;
+                const height = rect.height;
+                const middle = height / 2;
+                
+                // Clear canvas with dark gradient background
+                const bgGradient = ctx.createLinearGradient(0, 0, 0, height);
+                bgGradient.addColorStop(0, '#0a0a0f');
+                bgGradient.addColorStop(0.5, '#151520');
+                bgGradient.addColorStop(1, '#0a0a0f');
+                ctx.fillStyle = bgGradient;
+                ctx.fillRect(0, 0, width, height);
+                
+                // Draw subtle grid lines
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+                ctx.lineWidth = 1;
+                for (let i = 0; i < 5; i++) {
+                    const y = (height / 5) * i;
+                    ctx.beginPath();
+                    ctx.moveTo(0, y);
+                    ctx.lineTo(width, y);
+                    ctx.stroke();
+                }
+                
+                // Draw center line (slightly brighter)
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(0, middle);
+                ctx.lineTo(width, middle);
+                ctx.stroke();
+                
+                if (peaks.length === 0) {
+                    return;
+                }
+                
+                const samplesCount = peaks.length / 2;
+                const stepX = width / samplesCount;
+                
+                // Create vibrant gradient for the waveform
+                const waveGradient = ctx.createLinearGradient(0, 0, 0, height);
+                waveGradient.addColorStop(0, 'rgba(96, 165, 250, 0.9)');      // Light blue
+                waveGradient.addColorStop(0.25, 'rgba(59, 130, 246, 0.95)');  // Blue
+                waveGradient.addColorStop(0.5, 'rgba(37, 99, 235, 1)');       // Dark blue
+                waveGradient.addColorStop(0.75, 'rgba(59, 130, 246, 0.95)');  // Blue
+                waveGradient.addColorStop(1, 'rgba(96, 165, 250, 0.9)');      // Light blue
+                
+                // Draw filled waveform with smooth curves
+                ctx.fillStyle = waveGradient;
+                ctx.beginPath();
+                ctx.moveTo(0, middle);
+                
+                // Top wave (max peaks)
+                for (let i = 0; i < samplesCount; i++) {
+                    const maxPeak = peaks[i * 2 + 1];
+                    const x = i * stepX;
+                    const y = middle - (maxPeak * middle * 0.95); // Scale to 95% of height
+                    
+                    if (i === 0) {
+                        ctx.lineTo(x, y);
+                    } else {
+                        const prevX = (i - 1) * stepX;
+                        const prevMaxPeak = peaks[(i - 1) * 2 + 1];
+                        const prevY = middle - (prevMaxPeak * middle * 0.95);
+                        const cpX = (prevX + x) / 2;
+                        ctx.quadraticCurveTo(cpX, prevY, x, y);
+                    }
+                }
+                
+                // Bottom wave (min peaks) - draw in reverse
+                for (let i = samplesCount - 1; i >= 0; i--) {
+                    const minPeak = peaks[i * 2];
+                    const x = i * stepX;
+                    const y = middle - (minPeak * middle * 0.95);
+                    
+                    if (i === samplesCount - 1) {
+                        ctx.lineTo(x, y);
+                    } else {
+                        const nextX = (i + 1) * stepX;
+                        const nextMinPeak = peaks[(i + 1) * 2];
+                        const nextY = middle - (nextMinPeak * middle * 0.95);
+                        const cpX = (x + nextX) / 2;
+                        ctx.quadraticCurveTo(cpX, nextY, x, y);
+                    }
+                }
+                
+                ctx.closePath();
+                ctx.fill();
+                
+                // Add glowing outline effect
+                ctx.shadowBlur = 8;
+                ctx.shadowColor = 'rgba(59, 130, 246, 0.5)';
+                ctx.strokeStyle = 'rgba(96, 165, 250, 0.8)';
+                ctx.lineWidth = 2;
+                
+                // Outline top wave
+                ctx.beginPath();
+                ctx.moveTo(0, middle);
+                for (let i = 0; i < samplesCount; i++) {
+                    const maxPeak = peaks[i * 2 + 1];
+                    const x = i * stepX;
+                    const y = middle - (maxPeak * middle * 0.95);
+                    
+                    if (i === 0) {
+                        ctx.lineTo(x, y);
+                    } else {
+                        const prevX = (i - 1) * stepX;
+                        const prevMaxPeak = peaks[(i - 1) * 2 + 1];
+                        const prevY = middle - (prevMaxPeak * middle * 0.95);
+                        const cpX = (prevX + x) / 2;
+                        ctx.quadraticCurveTo(cpX, prevY, x, y);
+                    }
+                }
+                ctx.stroke();
+                
+                // Outline bottom wave
+                ctx.beginPath();
+                ctx.moveTo(0, middle);
+                for (let i = 0; i < samplesCount; i++) {
+                    const minPeak = peaks[i * 2];
+                    const x = i * stepX;
+                    const y = middle - (minPeak * middle * 0.95);
+                    
+                    if (i === 0) {
+                        ctx.lineTo(x, y);
+                    } else {
+                        const prevX = (i - 1) * stepX;
+                        const prevMinPeak = peaks[(i - 1) * 2];
+                        const prevY = middle - (prevMinPeak * middle * 0.95);
+                        const cpX = (prevX + x) / 2;
+                        ctx.quadraticCurveTo(cpX, prevY, x, y);
+                    }
+                }
+                ctx.stroke();
+                
+                // Reset shadow
+                ctx.shadowBlur = 0;
+            };
+
+            // --- Form Submission ---
+            waveformForm.addEventListener('submit', async function (event) {
+                event.preventDefault();
+
+                const itemId = selectedItemIdInput.value;
+
+                if (!itemId) {
+                    statusDiv.textContent = 'Please select a track from the autocomplete suggestions.';
+                    statusDiv.className = 'status-error';
+                    return;
+                }
+
+                // Show container and loading state
+                waveformContainer.classList.remove('hidden');
+                statusDiv.textContent = 'Generating waveform...';
+                statusDiv.className = 'loading-indicator';
+                
+                // Clear previous waveform
+                const ctx = waveformCanvas.getContext('2d');
+                ctx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+
+                try {
+                    const params = new URLSearchParams({ item_id: itemId });
+                    const response = await fetch(`{{ url_for('waveform_bp.get_waveform_endpoint') }}?${params}`);
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(data.error || `HTTP error! status: ${response.status}`);
+                    }
+
+                    // Update track info
+                    trackTitle.textContent = data.title || 'Unknown Title';
+                    trackArtist.textContent = data.author || 'Unknown Artist';
+
+                    // Draw waveform
+                    drawWaveform(data.peaks);
+
+                    statusDiv.textContent = `Waveform generated with ${data.peaks.length / 2} sample points.`;
+                    statusDiv.className = 'status-success';
+
+                } catch (error) {
+                    statusDiv.textContent = `Error: ${error.message}`;
+                    statusDiv.className = 'status-error';
+                    console.error('Waveform generation error:', error);
+                }
+            });
+
+            // Redraw waveform on window resize
+            let resizeTimeout;
+            window.addEventListener('resize', () => {
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(() => {
+                    // If we have peaks data stored, redraw
+                    // For simplicity, we'll just note that user can regenerate if needed
+                    // A more advanced implementation would cache the peaks data
+                }, 250);
+            });
+        })();
+    </script>
+    <script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}
