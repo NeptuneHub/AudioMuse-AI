@@ -259,7 +259,8 @@
             // Type toggle handler (Song ↔ Artist)
             typeToggleBtn.addEventListener('click', () => {
                 if (itemTypeHidden.value === 'song') {
-                    // Switch to Artist
+                    // Switch to Artist - keep artist name if present, clear title
+                    const currentArtist = artistInput.value.trim();
                     itemTypeHidden.value = 'artist';
                     typeToggleBtn.innerHTML = '🎤<br>Artist';
                     titleFieldRow.style.display = 'none';
@@ -268,15 +269,26 @@
                     titleInput.value = '';
                     idEl.value = '';
                     selectedSongNameEl.textContent = '';
+                    resultsEl.classList.add('hidden');
+                    resultsArtistEl.classList.add('hidden');
+                    
+                    // If artist name exists, trigger artist search to reload artist ID
+                    if (currentArtist.length >= 2) {
+                        artistInput.dispatchEvent(new Event('input'));
+                    }
                 } else {
-                    // Switch to Song
+                    // Switch to Song - clear everything to force fresh selection
                     itemTypeHidden.value = 'song';
                     typeToggleBtn.innerHTML = '🎵<br>Song';
                     titleFieldRow.style.display = '';
                     card.classList.remove('item-type-artist');
                     card.classList.add('item-type-song');
+                    artistInput.value = '';
+                    titleInput.value = '';
                     idEl.value = '';
                     selectedSongNameEl.textContent = '';
+                    resultsEl.classList.add('hidden');
+                    resultsArtistEl.classList.add('hidden');
                 }
             });
 

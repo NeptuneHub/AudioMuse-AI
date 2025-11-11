@@ -33,7 +33,7 @@ GMM_N_COMPONENTS_MAX = 10  # Maximum number of GMM components (will auto-select 
 GMM_COVARIANCE_TYPE = 'diag'  # 'diag' is faster than 'full' and works well for high-dim embeddings
 GMM_MAX_ITER = 100
 GMM_N_INIT = 3
-MIN_TRACKS_PER_ARTIST = 5  # Minimum tracks needed to build a GMM for an artist
+MIN_TRACKS_PER_ARTIST = 1  # Minimum tracks needed to build a GMM for an artist (lowered to include all artists)
 
 # HNSW index parameters
 HNSW_M = 32  # Number of bi-directional links created for every new element
@@ -65,18 +65,33 @@ def select_optimal_gmm_components(embeddings: np.ndarray, min_components: int = 
     """
     n_samples = len(embeddings)
     
-    # Limit max components based on data size
-    # Rule of thumb: at least 10 samples per component
-    max_feasible = max(min_components, min(max_components, n_samples // 10))
+    # Special case: 1 track = 1 component (no need for BIC search)
+    if n_samples == 1:
+        return 1
     
+    # Limit max components based on data size
+    # For small datasets: 1 component per track, capped at configured max
+    # For larger datasets: at least 5 samples per component (relaxed from 10)
+    if n_samples <= 5:
+        # Very small dataset: use 1 component per track (simple representation)
+        max_feasible = min(n_samples, max_components)
+    else:
+        # Larger dataset: at least 5 samples per component
+        max_feasible = max(min_components, min(max_components, n_samples // 5))
+    
+    # Ensure we have at least min_components (unless dataset is tiny)
     if max_feasible < min_components:
-        return min_components
+        max_feasible = min(min_components, n_samples)
+    
+    # Must have at least 1 component
+    if max_feasible < 1:
+        return 1
     
     best_bic = float('inf')
-    best_n_components = min_components
+    best_n_components = min(min_components, max_feasible)
     
     # Try different numbers of components
-    for n_components in range(min_components, max_feasible + 1):
+    for n_components in range(1, max_feasible + 1):
         try:
             gmm = GaussianMixture(
                 n_components=n_components,
@@ -98,7 +113,7 @@ def select_optimal_gmm_components(embeddings: np.ndarray, min_components: int = 
             logger.debug(f"Failed to fit GMM with {n_components} components: {e}")
             continue
     
-    logger.debug(f"Selected {best_n_components} components (BIC: {best_bic:.2f})")
+    logger.debug(f"Selected {best_n_components} components for {n_samples} samples (BIC: {best_bic:.2f})")
     return best_n_components
 
 
@@ -121,11 +136,8 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
         # Stack all embeddings into a single array
         all_embeddings = np.vstack(track_embeddings)
         
-        if len(all_embeddings) < GMM_N_COMPONENTS_MIN * 2:  # Need at least 2x minimum components
-            logger.warning(f"Artist '{artist_name}' has too few tracks: {len(all_embeddings)}")
-            return None
-        
         # Automatically select optimal number of components for this artist
+        # (handles small datasets gracefully, including single-track artists)
         optimal_n_components = select_optimal_gmm_components(all_embeddings)
         
         # Fit GMM to the embedding vectors
