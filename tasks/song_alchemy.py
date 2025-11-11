@@ -48,6 +48,10 @@ def _get_artist_gmm_vectors_and_weights(artist_identifier: str) -> Tuple[List[np
     means = np.array(gmm['means'])  # Shape: [n_components, embedding_dim]
     weights = np.array(gmm['weights'])  # Shape: [n_components]
     
+    # Log info about single-track artists for debugging
+    if gmm.get('is_single_track', False):
+        logger.info(f"Loaded single-track artist '{artist_name}' with 1 component")
+    
     return [means[i] for i in range(len(means))], weights.tolist()
 
 
@@ -798,13 +802,15 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
         if cid in details_map and cid in distances:
             scored_candidates.append((cid, distances[cid]))
 
-    # Determine temperature: use provided value or config default
+    # Temperature was already normalized earlier in the function, but double-check here
     if temperature is None:
         try:
             from config import ALCHEMY_TEMPERATURE as _cfg_temp
             temperature = float(_cfg_temp)
         except Exception:
             temperature = 1.0
+    
+    logger.info(f"Song Alchemy: Using temperature={temperature} for probabilistic sampling of {len(scored_candidates)} candidates")
 
     # Convert distances into similarity-like scores (smaller distance => higher similarity)
     # We'll negate distances so higher is better
@@ -826,14 +832,23 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     ordered.append(item)
             else:
                 # Softmax with temperature (temperature may be None or >0)
-                temps = [s / (temperature or 1.0) for s in raw_scores]
-                max_t = max(temps)
+                # Divide by temperature to get logits (higher temp = flatter distribution)
+                temps = [s / temperature for s in raw_scores]
+                max_t = max(temps) if temps else 0.0
                 exps = [math.exp(t - max_t) for t in temps]
                 total = sum(exps)
                 if total <= 0:
                     probs = [1.0 / len(exps)] * len(exps)
                 else:
                     probs = [e / total for e in exps]
+
+                # Log probability distribution stats to help debug temperature effect
+                if probs:
+                    max_prob = max(probs)
+                    min_prob = min(probs)
+                    mean_prob = sum(probs) / len(probs)
+                    logger.info(f"Temperature={temperature}: Probability distribution - max={max_prob:.4f}, min={min_prob:.6f}, mean={mean_prob:.4f}, entropy={(- sum(p * math.log(p) if p > 0 else 0 for p in probs)):.3f}")
+
 
                 # Weighted sampling without replacement to get n_results items (preserve projection/metadata)
                 chosen = []

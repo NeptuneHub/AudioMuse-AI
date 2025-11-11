@@ -122,6 +122,11 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
     Fit a Gaussian Mixture Model to represent an artist's sound profile.
     Uses the existing embedding vectors (same as used for song similarity).
     
+    For artists with < 5 songs: Uses each song as a GMM component with equal weights.
+    This is more honest than inventing artificial clusters - it represents the actual songs.
+    
+    For artists with >= 5 songs: Fits a proper GMM using sklearn's GaussianMixture.
+    
     Args:
         artist_name: Name of the artist
         track_embeddings: List of embedding vectors from the artist's tracks
@@ -135,9 +140,39 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
     try:
         # Stack all embeddings into a single array
         all_embeddings = np.vstack(track_embeddings)
+        n_samples, n_features = all_embeddings.shape
         
+        # For artists with few songs (< 5): use each song as its own component
+        # This is simpler and more honest than trying to fit a statistical model
+        if n_samples < 5:
+            logger.info(f"Artist '{artist_name}' has {n_samples} tracks - using each song as a GMM component with equal weights")
+            
+            # Use a small fixed covariance for numerical stability
+            # This acts like narrow Gaussians centered on each actual song
+            fixed_variance = 0.01
+            
+            # Each song becomes one component with equal weight
+            n_components = n_samples
+            weights = [1.0 / n_components] * n_components
+            means = all_embeddings.tolist()  # Each row is a song's embedding
+            covariances = [[fixed_variance] * n_features] * n_components  # Same small variance for all
+            
+            gmm_params = {
+                'weights': weights,
+                'means': means,
+                'covariances': covariances,
+                'n_components': n_components,
+                'covariance_type': GMM_COVARIANCE_TYPE,
+                'n_features': n_features,
+                'n_tracks': n_samples,
+                'is_few_songs': True  # Flag to identify few-song artists
+            }
+            
+            logger.info(f"Created {n_components}-component GMM for artist '{artist_name}' (1 component per song, equal weights)")
+            return gmm_params
+        
+        # Multi-song artist (>= 5 songs): fit GMM normally using sklearn
         # Automatically select optimal number of components for this artist
-        # (handles small datasets gracefully, including single-track artists)
         optimal_n_components = select_optimal_gmm_components(all_embeddings)
         
         # Fit GMM to the embedding vectors
@@ -159,7 +194,8 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
             'n_components': optimal_n_components,  # Store the actual number used
             'covariance_type': GMM_COVARIANCE_TYPE,
             'n_features': all_embeddings.shape[1],
-            'n_tracks': len(track_embeddings)
+            'n_tracks': len(track_embeddings),
+            'is_few_songs': False
         }
         
         logger.info(f"Fitted GMM for artist '{artist_name}' with {len(track_embeddings)} tracks, {optimal_n_components} components, {all_embeddings.shape[1]}-dim embeddings")
@@ -250,17 +286,17 @@ def sample_from_gmm(weights: np.ndarray, means: np.ndarray, covariances: np.ndar
     for i in range(n_samples):
         comp_idx = component_indices[i]
         mean = means[comp_idx]
-        cov = covariances[comp_idx]
+        cov_diag = covariances[comp_idx]  # Shape: [n_features] for 'diag' type
         
-        # Add regularization for numerical stability
-        cov_reg = cov + np.eye(n_features) * 1e-6
+        # Convert diagonal covariance to full matrix for multivariate_normal
+        # Add small regularization for numerical stability
+        cov_matrix = np.diag(cov_diag + 1e-6)
         
         try:
-            samples[i] = np.random.multivariate_normal(mean, cov_reg)
+            samples[i] = np.random.multivariate_normal(mean, cov_matrix)
         except np.linalg.LinAlgError:
-            # Fallback to diagonal covariance
-            cov_diag = np.diag(np.diag(cov_reg))
-            samples[i] = np.random.multivariate_normal(mean, cov_diag)
+            # Fallback: sample from univariate normals independently
+            samples[i] = mean + np.random.randn(n_features) * np.sqrt(cov_diag + 1e-6)
     
     return samples
 
@@ -285,29 +321,26 @@ def log_gmm_density(X: np.ndarray, weights: np.ndarray, means: np.ndarray, covar
     
     for k in range(n_components):
         mean = means[k]
-        cov = covariances[k]
+        cov_diag = covariances[k]  # Shape: [n_features] for 'diag' type
         
         # Multivariate Gaussian log probability
         diff = X - mean
         
-        # Add small epsilon to diagonal for numerical stability
-        cov_reg = cov + np.eye(cov.shape[0]) * 1e-6
+        # Add small regularization for numerical stability
+        cov_diag_reg = cov_diag + 1e-6
         
         try:
-            # Compute log determinant and inverse
-            sign, log_det = np.linalg.slogdet(cov_reg)
-            if sign <= 0:
-                log_det = 0  # Fallback
+            # For diagonal covariance, computations are simpler
+            # Log determinant: sum of log of diagonal elements
+            log_det = np.sum(np.log(cov_diag_reg))
             
-            cov_inv = np.linalg.inv(cov_reg)
-            
-            # Mahalanobis distance
-            mahal = np.sum(diff @ cov_inv * diff, axis=1)
+            # Mahalanobis distance: sum of (diff^2 / variance) for each dimension
+            mahal = np.sum(diff**2 / cov_diag_reg, axis=1)
             
             # Log probability
             log_probs[:, k] = np.log(weights[k] + 1e-10) - 0.5 * (log_det + mahal + X.shape[1] * np.log(2 * np.pi))
             
-        except np.linalg.LinAlgError:
+        except Exception as e:
             log_probs[:, k] = -np.inf
     
     # Use logsumexp for numerical stability
