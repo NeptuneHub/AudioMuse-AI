@@ -676,24 +676,40 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 # Rebuild index in batches as before
                 if albums_completed > last_rebuild_count and (albums_completed - last_rebuild_count) >= REBUILD_INDEX_BATCH_SIZE:
                     log_and_update_main(f"Batch of {albums_completed - last_rebuild_count} albums complete. Rebuilding index and map...", current_progress)
+                    
+                    # Build Voyager index
                     build_and_store_voyager_index(get_db())
-                    # Also build artist similarity index
+                    
+                    # Build artist similarity index
                     try:
                         build_and_store_artist_index(get_db())
-                        redis_conn.publish('index-updates', 'reload-artist')
                         logger.info('Artist similarity index rebuilt during batch.')
                     except Exception as e:
                         logger.warning(f"Failed to build/store artist similarity index during batch rebuild: {e}")
-                    # Also rebuild map projection
+                    
+                    # Build song map projection
                     try:
                         from app_helper import build_and_store_map_projection
                         build_and_store_map_projection('main_map')
+                        logger.info('Song map projection rebuilt during batch.')
                     except Exception as e:
                         logger.warning(f"Failed to build/store map projection during batch rebuild: {e}")
+                    
+                    # Build artist component projection
+                    try:
+                        from app_helper import build_and_store_artist_projection
+                        build_and_store_artist_projection('artist_map')
+                        logger.info('Artist component projection rebuilt during batch.')
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store artist projection during batch rebuild: {e}")
+                    
+                    # Publish single reload message to trigger Flask container to reload ALL indexes and maps
                     try:
                         redis_conn.publish('index-updates', 'reload')
-                    except Exception:
-                        logger.debug('Could not publish index-updates to redis during rebuild.')
+                        logger.info('Published reload message to Flask container after batch rebuild.')
+                    except Exception as e:
+                        logger.warning(f'Could not publish reload message to redis during batch rebuild: {e}')
+                    
                     last_rebuild_count = albums_completed
 
             for idx, album in enumerate(all_albums):
@@ -776,15 +792,13 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 time.sleep(5)
 
             log_and_update_main("Performing final index rebuild...", 95)
-            # MODIFIED: Call the voyager index builder
+            # Build Voyager index (song embeddings)
             build_and_store_voyager_index(get_db())
-            redis_conn.publish('index-updates', 'reload')
             
             # Build artist similarity index
             log_and_update_main("Building artist similarity index...", 96)
             try:
                 build_and_store_artist_index(get_db())
-                redis_conn.publish('index-updates', 'reload-artist')
                 logger.info('Artist similarity index built and stored.')
             except Exception as e:
                 logger.warning(f"Failed to build/store artist similarity index: {e}")
@@ -799,6 +813,24 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     logger.info('Precomputed map projection build returned no data (no embeddings?).')
             except Exception as e:
                 logger.warning(f"Failed to build/store precomputed map projection: {e}")
+            
+            # Build and store the 2D artist component projection
+            try:
+                from app_helper import build_and_store_artist_projection
+                built = build_and_store_artist_projection('artist_map')
+                if built:
+                    logger.info('Precomputed artist component projection built and stored.')
+                else:
+                    logger.info('Artist component projection build returned no data.')
+            except Exception as e:
+                logger.warning(f"Failed to build/store artist component projection: {e}")
+
+            # Publish reload message to trigger Flask container to reload all indexes and maps
+            try:
+                redis_conn.publish('index-updates', 'reload')
+                logger.info('Published reload message to Flask container after final analysis builds.')
+            except Exception as e:
+                logger.warning(f'Could not publish reload message to redis: {e}')
 
             final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
             log_and_update_main(final_message, 100, task_state=TASK_STATUS_SUCCESS)
