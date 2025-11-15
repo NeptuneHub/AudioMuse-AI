@@ -27,7 +27,13 @@
         <p>Precompute your music map with a song analysis, then explore it interactively and create your playlist</p>
     </header>
     <div class="map-controls" style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
-        <label for="map_size">Map size:</label>
+        <label for="map_size" class="label-with-tooltip">
+            Map size:
+            <span class="info-tooltip" tabindex="0">
+                <span class="info-icon"></span>
+                <span class="tooltip-text">How much of your library to display on the map. 25% = quick preview (faster loading). 100% = your entire library (may be slow on large collections). Start with 25-50% for exploration.</span>
+            </span>
+        </label>
         <div id="map_size" style="display:flex; gap:6px; align-items:center;">
             <button id="btn-pct-25" type="button" class="btn btn-primary">25%</button>
             <button id="btn-pct-50" type="button" class="btn btn-ghost">50%</button>

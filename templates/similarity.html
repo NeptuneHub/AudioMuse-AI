@@ -23,29 +23,59 @@
         <input type="hidden" id="selected_item_id" name="item_id">
         <div class="param-group">
             <div class="autocomplete-container">
-                <label for="artist_search">Artist:</label>
+                <label for="artist_search" class="label-with-tooltip">
+                    Artist:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Start typing an artist name to narrow down the song search. This helps find the exact track you're looking for.</span>
+                    </span>
+                </label>
                 <input type="text" id="artist_search" name="artist_search" placeholder="Start typing artist name..." autocomplete="off">
             </div>
 
             <div class="autocomplete-container">
-                <label for="title_search">Track Title:</label>
+                <label for="title_search" class="label-with-tooltip">
+                    Track Title:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Type the song name you want to find similar tracks to. As you type, suggestions will appear below.</span>
+                    </span>
+                </label>
                 <input type="text" id="title_search" name="title_search" placeholder="Start typing track title..." autocomplete="off">
                 <div id="autocomplete-results" class="autocomplete-results hidden"></div>
             </div>
 
             <div>
-                <label for="n">Number of results:</label>
+                <label for="n" class="label-with-tooltip">
+                    Number of results:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">How many similar songs to find. More results = longer playlist. Typical values: 10-50 songs for a good mix.</span>
+                    </span>
+                </label>
                 <input type="number" id="n" name="n" value="10" min="1" max="200">
             </div>
         </div>
         <div class="param-group">
             <div class="checkbox-container">
                 <input type="checkbox" id="eliminate_duplicates" name="eliminate_duplicates" checked>
-                <label for="eliminate_duplicates">Limit songs per artist in results</label>
+                <label for="eliminate_duplicates" class="label-with-tooltip">
+                    Limit songs per artist in results
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Prevents the playlist from being dominated by one artist. When enabled, limits how many tracks from the same artist can appear in results.</span>
+                    </span>
+                </label>
             </div>
             <div class="checkbox-container">
                 <input type="checkbox" id="radius_similarity" name="radius_similarity" checked>
-                <label for="radius_similarity">Radius Similarity</label>
+                <label for="radius_similarity" class="label-with-tooltip">
+                    Radius Similarity
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Groups similar songs into "buckets" and orders them for better listening flow. Recommended for smoother transitions between tracks.</span>
+                    </span>
+                </label>
             </div>
             <!--<div class="checkbox-container">
                 <input type="checkbox" id="mood_similarity" name="mood_similarity">

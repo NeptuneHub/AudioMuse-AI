@@ -67,16 +67,34 @@
             <legend>Parameters</legend>
             <div class="param-group">
                 <div>
-                    <label for="n_results">Number of results:</label>
+                    <label for="n_results" class="label-with-tooltip">
+                        Number of results:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">How many songs to find from your alchemy blend. Higher numbers give you more variety but may include less-similar songs. Try 100 for a full playlist, or 20-30 for a quick mix.</span>
+                        </span>
+                    </label>
                     <input id="n_results" name="n_results" type="number" value="100" min="1" max="200" />
                 </div>
                 <div>
-                    <label for="temperature">Sampling temperature (τ)</label>
+                    <label for="temperature" class="label-with-tooltip">
+                        Sampling temperature (τ)
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Controls randomness in song selection. 1.0 = balanced mix. Lower (0.1-0.5) = stick closer to your exact blend. Higher (1.5-3.0) = explore more unexpected songs. Like turning up the "surprise me" dial!</span>
+                        </span>
+                    </label>
                     <input id="temperature" name="temperature" type="number" step="0.1" min="0" max="10" value="1.0" />
                     <div style="font-size:0.85rem;color:#6B7280;margin-top:6px;">Lower = more deterministic, Higher = more random</div>
                 </div>
                 <div>
-                    <label for="subtract_distance">Subtract distance threshold:</label>
+                    <label for="subtract_distance" class="label-with-tooltip">
+                        Subtract distance threshold:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">How aggressively to exclude songs you marked as "Subtract". Lower values (0.1-0.3) = only remove very similar songs. Higher values (0.5-0.8) = remove anything remotely similar. Use this to filter out entire genres or moods you don't want.</span>
+                        </span>
+                    </label>
                     <div class="param-row">
                         <input id="subtract_distance" type="range" min="0" max="1" step="0.01" value="0.30" />
                         <span id="subtract_distance_label" style="font-weight: 500;">0.30</span>

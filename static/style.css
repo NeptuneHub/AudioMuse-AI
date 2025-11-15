@@ -918,3 +918,106 @@ tbody tr:hover {
         gap: 1rem;
     }
 }
+
+/* --- Tooltips / Info Icons --- */
+.info-tooltip {
+    position: relative;
+    display: inline-block;
+    margin-left: 0.35rem;
+    cursor: help;
+    vertical-align: middle;
+}
+
+.info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background-color: #3B82F6;
+    color: white;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: Georgia, serif;
+    line-height: 1;
+    user-select: none;
+    transition: background-color 0.2s;
+}
+
+.info-icon::before {
+    content: "i";
+    font-style: italic;
+    display: block;
+    padding-bottom: 1px; /* Fine-tune vertical centering */
+}
+
+.info-tooltip:hover .info-icon,
+.info-tooltip:focus .info-icon {
+    background-color: #2563EB;
+}
+
+/* Tooltip text */
+.tooltip-text {
+    visibility: hidden;
+    opacity: 0;
+    width: 280px;
+    background-color: #1F2937;
+    color: #F9FAFB;
+    text-align: left;
+    border-radius: 6px;
+    padding: 0.75rem;
+    position: absolute;
+    z-index: 1000;
+    bottom: 125%;
+    left: 50%;
+    margin-left: -140px;
+    font-size: 0.875rem;
+    line-height: 1.4;
+    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.2), 0 2px 4px -2px rgb(0 0 0 / 0.2);
+    transition: opacity 0.3s;
+    pointer-events: none;
+}
+
+/* Arrow */
+.tooltip-text::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    margin-left: -5px;
+    border-width: 5px;
+    border-style: solid;
+    border-color: #1F2937 transparent transparent transparent;
+}
+
+/* Show tooltip on hover/focus */
+.info-tooltip:hover .tooltip-text,
+.info-tooltip:focus .tooltip-text,
+.info-tooltip:active .tooltip-text {
+    visibility: visible;
+    opacity: 1;
+}
+
+/* Mobile: show tooltip below on smaller screens */
+@media (max-width: 640px) {
+    .tooltip-text {
+        width: 240px;
+        margin-left: -120px;
+        bottom: auto;
+        top: 125%;
+    }
+    
+    .tooltip-text::after {
+        top: auto;
+        bottom: 100%;
+        border-color: transparent transparent #1F2937 transparent;
+    }
+}
+
+/* Label with tooltip helper */
+.label-with-tooltip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}

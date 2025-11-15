@@ -171,7 +171,13 @@
 
     <form id="artist-similarity-form">
         <div class="autocomplete-container">
-            <label for="artist_search">Search for an Artist:</label>
+            <label for="artist_search" class="label-with-tooltip">
+                Search for an Artist:
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon"></span>
+                    <span class="tooltip-text">Start typing any artist name from your library. The search will show matching artists as you type. This feature uses AI-learned musical patterns to find similar artists.</span>
+                </span>
+            </label>
             <input type="text" 
                    id="artist_search" 
                    name="artist_search" 
@@ -183,13 +189,23 @@
 
         <div class="param-group">
             <div>
-                <label for="n">Number of similar artists:</label>
+                <label for="n" class="label-with-tooltip">
+                    Number of similar artists:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">How many similar artists to find. Try 10 for quick discovery, or 20-30 to explore deeper into similar sounds. More results = broader musical exploration.</span>
+                    </span>
+                </label>
                 <input type="number" id="n" name="n" value="10" min="1" max="50">
             </div>
             <div>
-                <label for="show_component_matches">
+                <label for="show_component_matches" class="label-with-tooltip">
                     <input type="checkbox" id="show_component_matches" name="show_component_matches" checked>
                     Show component matches (why artists are similar)
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Checked: See which musical "flavors" (components) the artists share, with example songs. This reveals WHY artists sound similar. Unchecked: Just show similar artists without details.</span>
+                    </span>
                 </label>
             </div>
         </div>

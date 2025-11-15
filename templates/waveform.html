@@ -71,12 +71,24 @@
         <input type="hidden" id="selected_item_id" name="item_id">
         <div class="param-group">
             <div class="autocomplete-container">
-                <label for="artist_search">Artist:</label>
+                <label for="artist_search" class="label-with-tooltip">
+                    Artist:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Filter by artist name to narrow down your track search. Start typing to see matching artists from your library.</span>
+                    </span>
+                </label>
                 <input type="text" id="artist_search" name="artist_search" placeholder="Start typing artist name..." autocomplete="off">
             </div>
 
             <div class="autocomplete-container">
-                <label for="title_search">Track Title:</label>
+                <label for="title_search" class="label-with-tooltip">
+                    Track Title:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Search for the song you want to visualize. The waveform shows the audio amplitude over time, helping you see the song's structure (intro, verse, chorus, etc.).</span>
+                    </span>
+                </label>
                 <input type="text" id="title_search" name="title_search" placeholder="Start typing track title..." autocomplete="off">
                 <div id="autocomplete-results" class="autocomplete-results hidden"></div>
             </div>
