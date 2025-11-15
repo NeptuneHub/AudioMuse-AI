@@ -589,12 +589,14 @@ th, td {
     padding: 0.75rem 1rem;
     border-bottom: 1px solid #E5E7EB;
     white-space: nowrap; /* Prevent text wrapping */
+    font-size: 0.9rem; /* Slightly smaller font */
 }
 
 th {
     background-color: #F3F4F6;
     font-weight: 600;
     color: #374151;
+    font-size: 0.875rem;
 }
 
 tbody tr:last-child td {
@@ -603,6 +605,78 @@ tbody tr:last-child td {
 
 tbody tr:hover {
     background-color: #f3f4f6;
+}
+
+/* Artist Similarity Table - Responsive adjustments */
+.results-table th,
+.results-table td {
+    font-size: 0.875rem; /* Reduce font size for results table */
+}
+
+.results-table td:first-child {
+    white-space: nowrap; /* Keep artist names on one line */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+}
+
+/* Mobile responsive table for artist similarity */
+@media (max-width: 768px) {
+    .results-table th,
+    .results-table td {
+        padding: 0.5rem;
+        font-size: 0.8rem;
+    }
+    
+    .results-table td:first-child {
+        max-width: 120px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    
+    .results-table .btn-sm {
+        padding: 0.25rem 0.4rem;
+        font-size: 0.75rem;
+        white-space: normal;
+        line-height: 1.2;
+    }
+    
+    .results-table th:nth-child(2),
+    .results-table td:nth-child(2) {
+        font-size: 0.75rem;
+    }
+}
+
+@media (max-width: 480px) {
+    /* Extra small screens - stack layout */
+    .results-table {
+        font-size: 0.75rem;
+    }
+    
+    .results-table th,
+    .results-table td {
+        padding: 0.4rem 0.3rem;
+        font-size: 0.75rem;
+    }
+    
+    .results-table td:first-child {
+        max-width: 90px;
+        font-size: 0.8rem;
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    
+    .results-table .btn-sm {
+        padding: 0.2rem 0.3rem;
+        font-size: 0.65rem;
+        min-width: auto;
+    }
+    
+    .results-table th:nth-child(3),
+    .results-table th:nth-child(4) {
+        font-size: 0.7rem;
+    }
 }
 
 #playlist-creator {
