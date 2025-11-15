@@ -666,7 +666,128 @@ def load_artist_index_for_querying(force_reload=False):
             cur.close()
 
 
-def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = None) -> List[Dict]:
+def get_representative_songs_for_component(artist_name: str, component_index: int, top_k: int = 3) -> List[Dict]:
+    """
+    Find the most representative songs for a specific GMM component.
+    
+    For few-song artists (< 5 songs): Each component IS a song, so just return that song.
+    For multi-song artists: Find songs whose embeddings are closest to the component mean.
+    
+    Args:
+        artist_name: Name of the artist
+        component_index: Index of the GMM component (0-based)
+        top_k: Number of representative songs to return
+        
+    Returns: List of song dictionaries with item_id, title, distance_to_component
+    """
+    from app_helper import get_db
+    
+    # Get GMM parameters for this artist
+    if artist_gmm_params is None or artist_name not in artist_gmm_params:
+        logger.warning(f"No GMM found for artist '{artist_name}'")
+        return []
+    
+    gmm_params = artist_gmm_params[artist_name]
+    
+    # Get the component mean (centroid)
+    means = np.array(gmm_params['means'])
+    if component_index >= len(means):
+        logger.warning(f"Component index {component_index} out of range for artist '{artist_name}'")
+        return []
+    
+    component_mean = means[component_index]
+    
+    # Fetch all tracks and embeddings for this artist
+    conn = get_db()
+    cur = conn.cursor()
+    
+    try:
+        cur.execute("""
+            SELECT s.item_id, s.title, e.embedding
+            FROM score s
+            JOIN embedding e ON s.item_id = e.item_id
+            WHERE s.author = %s AND e.embedding IS NOT NULL
+            ORDER BY s.title
+        """, (artist_name,))
+        
+        rows = cur.fetchall()
+        
+        if not rows:
+            return []
+        
+        # Compute distances from each song to the component mean
+        song_distances = []
+        for item_id, title, embedding_bytes in rows:
+            embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
+            distance = np.linalg.norm(embedding - component_mean)
+            song_distances.append({
+                'item_id': item_id,
+                'title': title,
+                'distance_to_component': float(distance)
+            })
+        
+        # Sort by distance and return top-k closest songs
+        song_distances.sort(key=lambda x: x['distance_to_component'])
+        return song_distances[:top_k]
+        
+    except Exception as e:
+        logger.error(f"Failed to get representative songs for artist '{artist_name}': {e}")
+        return []
+    
+    finally:
+        cur.close()
+
+
+def compute_component_matches(gmm1_params: Dict, gmm2_params: Dict, artist1_name: str, artist2_name: str, top_k: int = 3) -> List[Dict]:
+    """
+    Find which GMM components match between two artists.
+    Shows which "sound profiles" are similar between artists.
+    
+    Args:
+        gmm1_params: GMM parameters for first artist
+        gmm2_params: GMM parameters for second artist
+        artist1_name: Name of first artist (query artist)
+        artist2_name: Name of second artist (candidate)
+        top_k: Number of top component matches to return
+        
+    Returns: List of component matches with distances and representative songs
+    """
+    means1 = np.array(gmm1_params['means'])  # Shape: [n_components1, n_features]
+    means2 = np.array(gmm2_params['means'])  # Shape: [n_components2, n_features]
+    weights1 = np.array(gmm1_params['weights'])
+    weights2 = np.array(gmm2_params['weights'])
+    
+    # Compute pairwise distances between all components
+    # Distance[i,j] = distance between component i of artist1 and component j of artist2
+    distances = np.linalg.norm(means1[:, np.newaxis, :] - means2[np.newaxis, :, :], axis=2)
+    
+    # Find top-k closest component pairs
+    flat_indices = np.argsort(distances.ravel())[:top_k]
+    matches = []
+    
+    for flat_idx in flat_indices:
+        comp1_idx = flat_idx // distances.shape[1]
+        comp2_idx = flat_idx % distances.shape[1]
+        distance = distances[comp1_idx, comp2_idx]
+        
+        # Get representative songs for each component
+        artist1_songs = get_representative_songs_for_component(artist1_name, comp1_idx, top_k=3)
+        artist2_songs = get_representative_songs_for_component(artist2_name, comp2_idx, top_k=3)
+        
+        matches.append({
+            'component1_index': int(comp1_idx),
+            'component2_index': int(comp2_idx),
+            'distance': float(distance),
+            'component1_weight': float(weights1[comp1_idx]),
+            'component2_weight': float(weights2[comp2_idx]),
+            'artist1_representative_songs': artist1_songs,
+            'artist2_representative_songs': artist2_songs
+        })
+    
+    return matches
+
+
+def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = None, include_component_matches: bool = False) -> List[Dict]:
     """
     Find similar artists using the HNSW index.
     Accepts either artist name or artist ID.
@@ -675,8 +796,10 @@ def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = N
         query_artist: Name or ID of the query artist
         n: Number of similar artists to return
         ef_search: HNSW search parameter (higher = more accurate but slower)
+        include_component_matches: If True, include component-level similarity explanation
         
-    Returns: List of dictionaries with 'artist', 'artist_id', and 'divergence' keys
+    Returns: List of dictionaries with 'artist', 'artist_id', 'divergence' keys
+             If include_component_matches=True, also includes 'component_matches' key
     """
     if artist_index is None or artist_map is None or artist_gmm_params is None:
         logger.error("Artist index not loaded")
@@ -725,12 +848,28 @@ def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = N
         
         candidate_artist = artist_map[idx]
         candidate_artist_id = get_artist_id_by_name(candidate_artist)
+        candidate_gmm = artist_gmm_params[candidate_artist]
         
-        results.append({
+        result = {
             'artist': candidate_artist,
             'artist_id': candidate_artist_id,
             'divergence': float(dist)  # Use L2 distance as similarity score
-        })
+        }
+        
+        # Add component-level matching if requested
+        if include_component_matches:
+            component_matches = compute_component_matches(
+                query_gmm, 
+                candidate_gmm, 
+                artist_name, 
+                candidate_artist,
+                top_k=3  # Top 3 component matches
+            )
+            result['component_matches'] = component_matches
+            result['query_artist_components'] = query_gmm['n_components']
+            result['candidate_artist_components'] = candidate_gmm['n_components']
+        
+        results.append(result)
     
     # Return top N (already sorted by HNSW)
     return results[:n]

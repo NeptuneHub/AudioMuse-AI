@@ -34,6 +34,69 @@
     .track-list-item:last-child {
         border-bottom: none;
     }
+    
+    .component-match {
+        font-size: 0.85rem;
+        margin: 0.2rem 0;
+        padding: 0.3rem;
+        background-color: #f8f8f8;
+        border-left: 3px solid #4CAF50;
+        border-radius: 2px;
+    }
+    
+    .component-match strong {
+        color: #2196F3;
+    }
+    
+    .component-distance {
+        color: #666;
+        font-style: italic;
+    }
+    
+    .component-songs {
+        margin-top: 0.3rem;
+        font-size: 0.8rem;
+        padding-left: 1rem;
+    }
+    
+    .component-songs-title {
+        font-weight: bold;
+        color: #555;
+        margin-top: 0.2rem;
+    }
+    
+    .song-item {
+        color: #333;
+        padding: 0.1rem 0;
+    }
+    
+    .song-item::before {
+        content: "♫ ";
+        color: #4CAF50;
+    }
+    
+    .expand-actions {
+        display: flex;
+        gap: 0.5rem;
+    }
+    
+    .expand-actions button {
+        padding: 0.3rem 0.6rem;
+        font-size: 0.85rem;
+    }
+    
+    .component-match-songs {
+        background-color: #e8f5e9;
+        border-left: 3px solid #4CAF50;
+        padding: 0.5rem;
+        margin: 0.3rem 0;
+    }
+    
+    .component-match-header {
+        font-weight: bold;
+        color: #2e7d32;
+        margin-bottom: 0.3rem;
+    }
 </style>
 {% endblock %}
 
@@ -60,6 +123,12 @@
             <div>
                 <label for="n">Number of similar artists:</label>
                 <input type="number" id="n" name="n" value="10" min="1" max="50">
+            </div>
+            <div>
+                <label for="show_component_matches">
+                    <input type="checkbox" id="show_component_matches" name="show_component_matches" checked>
+                    Show component matches (why artists are similar)
+                </label>
             </div>
         </div>
 
@@ -172,12 +241,51 @@
             }
         });
 
+        // --- Helper: Format Component Matches ---
+        const formatComponentMatches = (item) => {
+            if (!item.component_matches || item.component_matches.length === 0) {
+                return '<em>No component data</em>';
+            }
+            
+            return item.component_matches.map(match => {
+                const comp1 = match.component1_index + 1; // 1-indexed for display
+                const comp2 = match.component2_index + 1;
+                const distance = match.distance.toFixed(3);
+                
+                // Format representative songs for component 1
+                const songs1 = match.artist1_representative_songs || [];
+                const songs1HTML = songs1.length > 0 
+                    ? `<div class="component-songs">
+                        <div class="component-songs-title">Component ${comp1} songs:</div>
+                        ${songs1.map(s => `<div class="song-item">${s.title}</div>`).join('')}
+                       </div>`
+                    : '';
+                
+                // Format representative songs for component 2
+                const songs2 = match.artist2_representative_songs || [];
+                const songs2HTML = songs2.length > 0
+                    ? `<div class="component-songs">
+                        <div class="component-songs-title">Component ${comp2} songs:</div>
+                        ${songs2.map(s => `<div class="song-item">${s.title}</div>`).join('')}
+                       </div>`
+                    : '';
+                
+                return `<div class="component-match">
+                    <strong>C${comp1}</strong> ↔ <strong>C${comp2}</strong>
+                    <span class="component-distance">(dist: ${distance})</span>
+                    ${songs1HTML}
+                    ${songs2HTML}
+                </div>`;
+            }).join('');
+        };
+
         // --- Main Form Submission ---
         artistSearchForm.addEventListener('submit', async function (event) {
             event.preventDefault();
 
             const artist = artistInput.value.trim();
             const n = document.getElementById('n').value;
+            const showComponentMatches = document.getElementById('show_component_matches').checked;
 
             if (!artist) {
                 statusDiv.textContent = 'Please select an artist from the autocomplete suggestions.';
@@ -197,7 +305,8 @@
             try {
                 const params = new URLSearchParams({
                     artist: artist,
-                    n: n
+                    n: n,
+                    include_component_matches: showComponentMatches
                 });
                 const response = await fetch(`{{ url_for('artist_similarity_bp.get_similar_artists_endpoint') }}?${params}`);
                 const data = await response.json();
@@ -221,7 +330,8 @@
                             <tr>
                                 <th>Artist</th>
                                 <th>Similarity Score</th>
-                                <th style="width: 100px;">Actions</th>
+                                <th>Expand Artist Songs</th>
+                                ${showComponentMatches ? '<th>Expand Component Matches</th>' : ''}
                             </tr>
                         </thead>
                         <tbody>
@@ -229,13 +339,24 @@
                                 <tr class="artist-row" data-artist="${item.artist}" data-index="${idx}">
                                     <td>${item.artist}</td>
                                     <td>${item.divergence.toFixed(4)}</td>
-                                    <td><button class="expand-btn show-songs-btn" data-artist="${item.artist}">Expand</button></td>
+                                    <td>
+                                        <button class="btn btn-primary btn-sm expand-btn" data-artist="${item.artist}" data-mode="full">
+                                            Show All Songs
+                                        </button>
+                                    </td>
+                                    ${showComponentMatches ? `
+                                        <td>
+                                            <button class="btn btn-primary btn-sm expand-btn" data-artist="${item.artist}" data-mode="components">
+                                                Show Matches
+                                            </button>
+                                        </td>
+                                    ` : ''}
                                 </tr>
                             `).join('')}
                         </tbody>
                     </table>
                     <p style="margin-top: 1rem; color: #888; font-size: 0.9rem;">
-                        Click Expand to view tracks for an artist and create a playlist.
+                        Click "Show All Songs" to view all tracks, or "Show Matches" to see component match songs from both artists.
                     </p>
                 `;
                 resultsTableWrapper.innerHTML = tableHTML;
@@ -245,25 +366,39 @@
                     btn.addEventListener('click', async (e) => {
                         e.stopPropagation();
                         const artistName = btn.dataset.artist;
+                        const mode = btn.dataset.mode; // 'full' or 'components'
                         const row = btn.closest('tr');
                         
-                        // Check if this artist is already expanded
+                        // Check if THIS EXACT BUTTON's row is already expanded with the same mode
                         const nextRow = row.nextElementSibling;
-                        if (nextRow && nextRow.classList.contains('track-list-container')) {
-                            // Collapse this artist
+                        const isThisRowExpanded = nextRow && nextRow.classList.contains('track-list-container');
+                        const isSameButtonClicked = isThisRowExpanded && btn.textContent === 'Collapse';
+                        
+                        if (isSameButtonClicked) {
+                            // Collapse only this artist (same button clicked twice)
                             nextRow.remove();
-                            btn.textContent = 'Expand';
+                            btn.textContent = mode === 'full' ? 'Show All Songs' : 'Show Matches';
                             row.classList.remove('selected');
                         } else {
                             // Collapse any other expanded artists
                             document.querySelectorAll('.track-list-container').forEach(el => el.remove());
-                            document.querySelectorAll('.expand-btn').forEach(b => b.textContent = 'Expand');
+                            document.querySelectorAll('.expand-btn').forEach(b => {
+                                const bMode = b.dataset.mode;
+                                b.textContent = bMode === 'full' ? 'Show All Songs' : 'Show Matches';
+                            });
                             document.querySelectorAll('.artist-row').forEach(r => r.classList.remove('selected'));
                             
                             // Expand this artist
                             btn.textContent = 'Collapse';
                             row.classList.add('selected');
-                            await loadArtistTracks(artistName);
+                            
+                            if (mode === 'full') {
+                                await loadArtistTracks(artistName, 'full');
+                            } else {
+                                // Load component match songs
+                                const artistData = similarArtists.find(a => a.artist === artistName);
+                                await loadComponentMatchSongs(artistName, artistData);
+                            }
                         }
                     });
                 });
@@ -275,8 +410,8 @@
             }
         });
 
-        // --- Load Artist Tracks ---
-        async function loadArtistTracks(artistName) {
+        // --- Load Artist Tracks (Full or Component Matches) ---
+        async function loadArtistTracks(artistName, mode = 'full') {
             try {
                 // Fetch tracks
                 const params = new URLSearchParams({ artist: artistName });
@@ -291,7 +426,7 @@
                 // Show playlist creator
                 playlistCreator.classList.remove('hidden');
                 selectedArtistInfo.innerHTML = `
-                    <p><strong>Selected Artist:</strong> ${artistName} (${tracks.length} tracks)</p>
+                    <p><strong>Selected Artist:</strong> ${artistName} (${tracks.length} tracks) - <em>Full artist tracks</em></p>
                 `;
                 document.getElementById('playlist_name').value = `Best of ${artistName}`;
                 playlistStatusDiv.textContent = '';
@@ -299,7 +434,7 @@
                 // Add track list to results
                 const trackListHTML = `
                     <div class="track-list">
-                        <h4>Tracks by ${artistName}:</h4>
+                        <h4>All Tracks by ${artistName}:</h4>
                         ${tracks.map(t => `
                             <div class="track-list-item">${t.title}</div>
                         `).join('')}
@@ -311,7 +446,8 @@
                 if (selectedRow) {
                     const tr = document.createElement('tr');
                     tr.className = 'track-list-container';
-                    tr.innerHTML = `<td colspan="3">${trackListHTML}</td>`;
+                    const colspan = document.getElementById('show_component_matches').checked ? '4' : '3';
+                    tr.innerHTML = `<td colspan="${colspan}">${trackListHTML}</td>`;
                     selectedRow.parentNode.insertBefore(tr, selectedRow.nextSibling);
                 }
 
@@ -320,6 +456,127 @@
                 alert(`Failed to load tracks for ${artistName}: ${error.message}`);
             }
         }
+
+        // --- Load Component Match Songs ---
+        async function loadComponentMatchSongs(artistName, artistData) {
+            if (!artistData || !artistData.component_matches) {
+                alert('No component match data available');
+                return;
+            }
+
+            try {
+                // Store songs grouped by match (DO NOT DEDUPLICATE ACROSS MATCHES!)
+                const songsByMatch = [];
+                
+                artistData.component_matches.forEach((match, matchIndex) => {
+                    const matchSongs = [];
+                    
+                    // Add songs from query artist (artist1)
+                    if (match.artist1_representative_songs) {
+                        match.artist1_representative_songs.forEach(song => {
+                            matchSongs.push({
+                                item_id: song.item_id,
+                                title: song.title,
+                                artist: currentArtist,
+                                match_index: matchIndex,
+                                component1: match.component1_index + 1,
+                                component2: match.component2_index + 1
+                            });
+                        });
+                    }
+                    
+                    // Add songs from candidate artist (artist2)
+                    if (match.artist2_representative_songs) {
+                        match.artist2_representative_songs.forEach(song => {
+                            matchSongs.push({
+                                item_id: song.item_id,
+                                title: song.title,
+                                artist: artistName,
+                                match_index: matchIndex,
+                                component1: match.component1_index + 1,
+                                component2: match.component2_index + 1
+                            });
+                        });
+                    }
+                    
+                    songsByMatch.push(matchSongs);
+                });
+
+                // Flatten for total count
+                const allSongs = songsByMatch.flat();
+                
+                if (allSongs.length === 0) {
+                    alert('No songs found in component matches');
+                    return;
+                }
+
+                selectedArtist = artistName;
+                selectedArtistTracks = songsByMatch; // Store as array of match groups!
+
+                // Show playlist creator
+                playlistCreator.classList.remove('hidden');
+                selectedArtistInfo.innerHTML = `
+                    <p><strong>Component Matches:</strong> ${currentArtist} × ${artistName}</p>
+                    <p><em>${allSongs.length} total songs from ${songsByMatch.length} component matches</em></p>
+                `;
+                document.getElementById('playlist_name').value = `${currentArtist} × ${artistName} Matches`;
+                playlistStatusDiv.textContent = '';
+
+                // Build component match display grouped by match (NOT SHUFFLED FOR DISPLAY)
+                let matchHTML = '<div class="track-list"><h4>Component Match Songs (Both Artists):</h4>';
+                
+                artistData.component_matches.forEach(match => {
+                    const comp1 = match.component1_index + 1;
+                    const comp2 = match.component2_index + 1;
+                    
+                    matchHTML += `
+                        <div class="component-match-songs">
+                            <div class="component-match-header">
+                                Component Match: ${currentArtist} C${comp1} ↔ ${artistName} C${comp2}
+                            </div>
+                            <div style="margin-top: 0.5rem;">
+                                <strong>${currentArtist}:</strong>
+                                ${match.artist1_representative_songs.map(s => `
+                                    <div class="song-item">${s.title}</div>
+                                `).join('')}
+                            </div>
+                            <div style="margin-top: 0.5rem;">
+                                <strong>${artistName}:</strong>
+                                ${match.artist2_representative_songs.map(s => `
+                                    <div class="song-item">${s.title}</div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                matchHTML += '</div>';
+                
+                // Insert after selected row
+                const selectedRow = document.querySelector(`.artist-row[data-artist="${artistName}"]`);
+                if (selectedRow) {
+                    const tr = document.createElement('tr');
+                    tr.className = 'track-list-container';
+                    const colspan = document.getElementById('show_component_matches').checked ? '4' : '3';
+                    tr.innerHTML = `<td colspan="${colspan}">${matchHTML}</td>`;
+                    selectedRow.parentNode.insertBefore(tr, selectedRow.nextSibling);
+                }
+
+            } catch (error) {
+                console.error('Error loading component match songs:', error);
+                alert(`Failed to load component matches: ${error.message}`);
+            }
+        }
+
+        // --- Helper: Shuffle Array (Fisher-Yates) ---
+        const shuffleArray = (array) => {
+            const shuffled = [...array]; // Create a copy
+            for (let i = shuffled.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+            }
+            return shuffled;
+        };
 
         // --- Playlist Creation ---
         playlistForm.addEventListener('submit', async function (event) {
@@ -332,7 +589,7 @@
                 playlistStatusDiv.className = 'status-error';
                 return;
             }
-            if (selectedArtistTracks.length === 0) {
+            if (!selectedArtistTracks || selectedArtistTracks.length === 0) {
                 playlistStatusDiv.textContent = 'No tracks selected. Please select an artist first.';
                 playlistStatusDiv.className = 'status-error';
                 return;
@@ -341,14 +598,26 @@
             playlistStatusDiv.textContent = 'Creating playlist...';
 
             try {
-                const trackIds = selectedArtistTracks.map(t => t.item_id);
+                let finalTrackIds = [];
+                
+                // Check if this is component matches (array of arrays) or regular tracks (flat array)
+                if (Array.isArray(selectedArtistTracks[0]) && selectedArtistTracks[0].length > 0 && 'match_index' in selectedArtistTracks[0][0]) {
+                    // Component matches: shuffle each match group separately, then concatenate
+                    selectedArtistTracks.forEach(matchGroup => {
+                        const shuffledGroup = shuffleArray(matchGroup);
+                        finalTrackIds.push(...shuffledGroup.map(t => t.item_id));
+                    });
+                } else {
+                    // Regular artist tracks: just get the IDs
+                    finalTrackIds = selectedArtistTracks.map(t => t.item_id);
+                }
                 
                 const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         playlist_name: playlistName,
-                        track_ids: trackIds
+                        track_ids: finalTrackIds
                     }),
                 });
                 const result = await response.json();

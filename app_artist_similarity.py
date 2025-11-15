@@ -109,6 +109,12 @@ def get_similar_artists_endpoint():
         description: HNSW search parameter (higher = more accurate but slower).
         schema:
           type: integer
+      - name: include_component_matches
+        in: query
+        description: Include component-level similarity explanation.
+        schema:
+          type: boolean
+          default: false
     responses:
       200:
         description: A list of similar artists with divergence scores, artist names and IDs.
@@ -126,6 +132,9 @@ def get_similar_artists_endpoint():
                     nullable: true
                   divergence:
                     type: number
+                  component_matches:
+                    type: array
+                    description: Component-level matches (only if include_component_matches=true)
       400:
         description: Bad request, missing artist parameter.
       404:
@@ -137,6 +146,7 @@ def get_similar_artists_endpoint():
     artist_id = request.args.get('artist_id')
     n = request.args.get('n', 10, type=int)
     ef_search = request.args.get('ef_search', type=int)
+    include_component_matches = request.args.get('include_component_matches', 'false').lower() == 'true'
     
     # Accept either artist name or artist_id
     query_artist = artist or artist_id
@@ -145,7 +155,12 @@ def get_similar_artists_endpoint():
         return jsonify({"error": "Missing 'artist' or 'artist_id' parameter"}), 400
     
     try:
-        similar_artists = find_similar_artists(query_artist, n=n, ef_search=ef_search)
+        similar_artists = find_similar_artists(
+            query_artist, 
+            n=n, 
+            ef_search=ef_search,
+            include_component_matches=include_component_matches
+        )
         
         if not similar_artists:
             return jsonify({"error": f"Artist '{query_artist}' not found in index or no similar artists found."}), 404
