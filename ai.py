@@ -41,16 +41,19 @@ def clean_playlist_name(name):
     return cleaned_name
 
 
-# --- Ollama Specific Function ---
-def get_ollama_playlist_name(ollama_url, model_name, full_prompt):
+# --- OpenAI-Compatible API Function (used for both Ollama and OpenAI/OpenRouter) ---
+def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api_key="no-key-needed"):
     """
-    Calls a self-hosted Ollama instance to get a playlist name.
+    Calls an OpenAI-compatible API endpoint to get a playlist name.
+    This works for Ollama (no API key needed) and OpenAI/OpenRouter (API key required).
     This version handles streaming responses and extracts only the non-think part.
 
     Args:
-        ollama_url (str): The URL of your Ollama instance (e.g., "http://192.168.3.15:11434/api/generate").
-        model_name (str): The Ollama model to use (e.g., "deepseek-r1:1.5b").
+        server_url (str): The URL of the API endpoint (e.g., "http://192.168.3.15:11434/api/generate" for Ollama,
+                         or "https://openrouter.ai/api/v1/chat/completions" for OpenRouter).
+        model_name (str): The model to use (e.g., "deepseek-r1:1.5b" for Ollama, "openai/gpt-4" for OpenRouter).
         full_prompt (str): The complete prompt text to send to the model.
+        api_key (str): API key for authentication. Use "no-key-needed" for Ollama.
     Returns:
         str: The extracted playlist name from the model's response, or an error message.
     """
@@ -71,10 +74,14 @@ def get_ollama_playlist_name(ollama_url, model_name, full_prompt):
         "Content-Type": "application/json"
     }
 
-    try:
-        logger.debug("Starting API call for model '%s' at '%s'.", model_name, ollama_url)
+    # Add Authorization header if API key is provided and not the default "no-key-needed"
+    if api_key and api_key != "no-key-needed":
+        headers["Authorization"] = f"Bearer {api_key}"
 
-        response = requests.post(ollama_url, headers=headers, data=json.dumps(payload), stream=True, timeout=960) # Increased timeout
+    try:
+        logger.debug("Starting API call for model '%s' at '%s'.", model_name, server_url)
+
+        response = requests.post(server_url, headers=headers, data=json.dumps(payload), stream=True, timeout=960) # Increased timeout
         response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
         full_raw_response_content = ""
         for line in response.iter_lines():
@@ -101,12 +108,27 @@ def get_ollama_playlist_name(ollama_url, model_name, full_prompt):
 
     except requests.exceptions.RequestException as e:
         # Catch network-related errors, bad HTTP responses, etc.
-        logger.error("Error calling Ollama API: %s", e, exc_info=True)
+        logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
         return "Error: AI service is currently unavailable."
     except Exception as e:
         # Catch any other unexpected errors.
-        logger.error("An unexpected error occurred in get_ollama_playlist_name", exc_info=True)
+        logger.error("An unexpected error occurred in get_openai_compatible_playlist_name", exc_info=True)
         return "Error: AI service is currently unavailable."
+
+# --- Ollama Specific Function (wrapper for backward compatibility) ---
+def get_ollama_playlist_name(ollama_url, model_name, full_prompt):
+    """
+    Calls a self-hosted Ollama instance to get a playlist name.
+    This is a wrapper around get_openai_compatible_playlist_name for backward compatibility.
+
+    Args:
+        ollama_url (str): The URL of your Ollama instance (e.g., "http://192.168.3.15:11434/api/generate").
+        model_name (str): The Ollama model to use (e.g., "deepseek-r1:1.5b").
+        full_prompt (str): The complete prompt text to send to the model.
+    Returns:
+        str: The extracted playlist name from the model's response, or an error message.
+    """
+    return get_openai_compatible_playlist_name(ollama_url, model_name, full_prompt, api_key="no-key-needed")
 
 # --- Gemini Specific Function ---
 def get_gemini_playlist_name(gemini_api_key, model_name, full_prompt):
@@ -205,7 +227,7 @@ def get_mistral_playlist_name(mistral_api_key, model_name, full_prompt):
         return "Error: AI service is currently unavailable."
 
 # --- General AI Naming Function ---
-def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key, gemini_model_name, mistral_api_key, mistral_model_name, prompt_template, feature1, feature2, feature3, song_list, other_feature_scores_dict):
+def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key, gemini_model_name, mistral_api_key, mistral_model_name, prompt_template, feature1, feature2, feature3, song_list, other_feature_scores_dict, openai_server_url=None, openai_model_name=None, openai_api_key=None):
     """
     Selects and calls the appropriate AI model based on the provider.
     Constructs the full prompt including new features.
@@ -258,6 +280,11 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
 
     if provider == "OLLAMA":
         name = get_ollama_playlist_name(ollama_url, ollama_model_name, full_prompt)
+    elif provider == "OPENAI":
+        # Use OpenAI-compatible API with API key
+        if not openai_server_url or not openai_model_name or not openai_api_key:
+            return "Error: OpenAI configuration is incomplete. Please provide server URL, model name, and API key."
+        name = get_openai_compatible_playlist_name(openai_server_url, openai_model_name, full_prompt, openai_api_key)
     elif provider == "GEMINI":
         name = get_gemini_playlist_name(gemini_api_key, gemini_model_name, full_prompt)
     elif provider == "MISTRAL":
