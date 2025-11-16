@@ -1,10 +1,12 @@
 <li><a href="{{ url_for('index') }}" {% if active == 'index' %}class="active"{% endif %}>Analysis and Clustering</a></li>
 <li><a href="{{ url_for('chat_bp.chat_home') }}" {% if active == 'chat' %}class="active"{% endif %}>Instant Playlist</a></li>
 <li><a href="{{ url_for('voyager_bp.similarity_page') }}" {% if active == 'similarity' %}class="active"{% endif %}>Playlist from Similar Song</a></li>
+<li><a href="{{ url_for('artist_similarity_bp.artist_similarity_page') }}" {% if active == 'artist_similarity' %}class="active"{% endif %}>Artist Similarity</a></li>
 <li><a href="{{ url_for('path_bp.path_page') }}" {% if active == 'path' %}class="active"{% endif %}>Song Path</a></li>
 <li><a href="{{ url_for('alchemy_bp.alchemy_page') }}" {% if active == 'alchemy' %}class="active"{% endif %}>Song Alchemy</a></li>
 <li><a href="{{ url_for('map_bp.map_ui') }}" {% if active == 'map' %}class="active"{% endif %}>Music Map</a></li>
 <li><a href="{{ url_for('sonic_fingerprint_bp.sonic_fingerprint_page') }}" {% if active == 'sonic_fingerprint' %}class="active"{% endif %}>Sonic Fingerprint</a></li>
+<li><a href="{{ url_for('waveform_bp.waveform_page') }}" {% if active == 'waveform' %}class="active"{% endif %}>Waveform</a></li>
 <!-- <li><a href="{{ url_for('collection_bp.collection_page') }}" {% if active == 'collection' %}class="active"{% endif %}">Collection Sync</a></li> -->
 <li><a href="{{ url_for('analysis_bp.cleaning_page') }}" {% if active == 'cleaning' %}class="active"{% endif %}>Cleaning</a></li>
 <li><a href="{{ url_for('cron_bp.cron_page') }}" {% if active == 'cron' %}class="active"{% endif %}>Scheduled Tasks</a></li>

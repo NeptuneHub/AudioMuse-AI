@@ -17,16 +17,27 @@
         </div>
 
         <form id="config-form">
-            <!-- MODIFIED: Removed the "General Parameters" fieldset for Jellyfin details -->
             <fieldset>
                 <legend>Analysis Parameters</legend>
                 <div class="param-group">
                     <div>
-                        <label for="config-num_recent_albums">Number of Recent Albums:</label>
+                        <label for="config-num_recent_albums" class="label-with-tooltip">
+                            Number of Recent Albums:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">How many recently added albums to analyze. Set to 0 to analyze your entire music library. Use a smaller number (like 5-10) to quickly test new additions without re-analyzing everything.</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-num_recent_albums">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-top_n_moods">Top N Moods:</label>
+                        <label for="config-top_n_moods" class="label-with-tooltip">
+                            Top N Moods:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">How many dominant moods to identify for each song (e.g., energetic, calm, dark). Higher numbers capture more subtle moods but use more processing power. Default of 5 works well for most libraries.</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-top_n_moods">
                     </div>
                 </div>
@@ -36,11 +47,23 @@
                 <legend>Clustering Parameters</legend>
                 <div class="param-group">
                     <div id="basic-algorithm-display">
-                        <label>Clustering Algorithm:</label>
+                        <label class="label-with-tooltip">
+                            Clustering Algorithm:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">The method used to group similar songs together. K-Means is recommended for most users - it's fast and creates balanced playlists. Advanced users can try other algorithms.</span>
+                            </span>
+                        </label>
                         <p style="font-weight: bold; padding: 0.5rem 0; margin:0;">K-Means</p>
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-cluster_algorithm">Clustering Algorithm:</label>
+                        <label for="config-cluster_algorithm" class="label-with-tooltip">
+                            Clustering Algorithm:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">K-Means: Balanced groups (recommended). DBSCAN: Finds natural clusters of any shape. GMM: Softer boundaries between groups. Spectral: Good for complex patterns.</span>
+                            </span>
+                        </label>
                         <select id="config-cluster_algorithm">
                             <option value="kmeans">K-Means</option>
                             <option value="dbscan">DBSCAN</option>
@@ -49,69 +72,164 @@
                         </select>
                     </div>
                     <div>
-                        <label for="config-top_n_playlists">TOP Playlist Number:</label>
+                        <label for="config-top_n_playlists" class="label-with-tooltip">
+                            TOP Playlist Number:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">How many playlists to create from your library. More playlists means smaller, more focused collections. Try 8-12 for a medium library (1000-5000 songs).</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-top_n_playlists">
                     </div>
                     <div>
-                        <label for="config-clustering_runs">Clustering Runs:</label>
+                        <label for="config-clustering_runs" class="label-with-tooltip">
+                            Clustering Runs:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">How many times to try different groupings to find the best playlists. More runs = better results but takes longer. 5000 is a good balance for most libraries.</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-clustering_runs">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-max_distance">Max Distance:</label>
+                        <label for="config-max_distance" class="label-with-tooltip">
+                            Max Distance:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Maximum sonic difference allowed between songs in the same playlist. Lower values = more similar songs within each playlist. Range: 0.0 (identical) to 1.0 (very different).</span>
+                            </span>
+                        </label>
                         <input type="number" step="0.01" id="config-max_distance">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-max_songs_per_cluster">Max Songs Per Cluster:</label>
+                        <label for="config-max_songs_per_cluster" class="label-with-tooltip">
+                            Max Songs Per Cluster:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Limit playlist size to this many songs. Set to 0 for no limit. Useful to prevent huge playlists that are hard to listen through.</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-max_songs_per_cluster">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-pca_components_min">PCA Components Min:</label>
+                        <label for="config-pca_components_min" class="label-with-tooltip">
+                            PCA Components Min:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Principal Component Analysis simplifies song data. Minimum number of components to use (0 to disable PCA). Lower = faster but less accurate. Advanced users only.</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-pca_components_min">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-pca_components_max">PCA Components Max:</label>
+                        <label for="config-pca_components_max" class="label-with-tooltip">
+                            PCA Components Max:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Maximum number of PCA components. Higher = more detailed analysis but slower. For embeddings: try 50-199. For feature vectors: try 8-20.</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-pca_components_max">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-min_songs_per_genre_for_stratification">Min Songs Per Genre for Stratification:</label>
+                        <label for="config-min_songs_per_genre_for_stratification" class="label-with-tooltip">
+                            Min Songs Per Genre for Stratification:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">When testing different clustering approaches, sample at least this many songs from each genre. Ensures all music styles are represented. Default: 100.</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-min_songs_per_genre_for_stratification">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-stratified_sampling_target_percentile">Stratified Sampling Target Percentile:</label>
+                        <label for="config-stratified_sampling_target_percentile" class="label-with-tooltip">
+                            Stratified Sampling Target Percentile:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Percentile used to determine target sample size per genre (0-100). 50 means use median genre size. Higher = more songs sampled. Advanced users only.</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-stratified_sampling_target_percentile" min="0" max="100">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-score_weight_diversity">Diversity Score Weight:</label>
+                        <label for="config-score_weight_diversity" class="label-with-tooltip">
+                            Diversity Score Weight:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">How much to prioritize different moods BETWEEN playlists. Higher = each playlist has a more unique vibe. Default: 2.0</span>
+                            </span>
+                        </label>
                         <input type="number" step="0.01" id="config-score_weight_diversity">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-score_weight_purity">Purity Score Weight:</label>
+                        <label for="config-score_weight_purity" class="label-with-tooltip">
+                            Purity Score Weight:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">How much to prioritize similar moods WITHIN each playlist. Higher = more consistent vibe within playlists. Default: 1.0</span>
+                            </span>
+                        </label>
                         <input type="number" step="0.01" id="config-score_weight_purity">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-score_weight_other_feature_diversity">Other Feature Diversity Weight:</label>
+                        <label for="config-score_weight_other_feature_diversity" class="label-with-tooltip">
+                            Other Feature Diversity Weight:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Like Diversity Score but for technical audio features (tempo, key, etc.) instead of moods. Usually keep at 0 to focus on moods.</span>
+                            </span>
+                        </label>
                         <input type="number" step="0.01" id="config-score_weight_other_feature_diversity">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-score_weight_other_feature_purity">Other Feature Purity Weight:</label>
+                        <label for="config-score_weight_other_feature_purity" class="label-with-tooltip">
+                            Other Feature Purity Weight:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Like Purity Score but for technical audio features instead of moods. Usually keep at 0 to focus on moods.</span>
+                            </span>
+                        </label>
                         <input type="number" step="0.01" id="config-score_weight_other_feature_purity">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-score_weight_silhouette">Silhouette Score Weight:</label>
+                        <label for="config-score_weight_silhouette" class="label-with-tooltip">
+                            Silhouette Score Weight:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Measures how well-separated clusters are. Higher = prioritize clear boundaries between playlists. Usually keep at 0 unless experimenting.</span>
+                            </span>
+                        </label>
                         <input type="number" step="0.01" id="config-score_weight_silhouette">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-score_weight_davies_bouldin">Davies-Bouldin Score Weight:</label>
+                        <label for="config-score_weight_davies_bouldin" class="label-with-tooltip">
+                            Davies-Bouldin Score Weight:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Another cluster separation measure. Lower is better (so this score is minimized). Usually keep at 0 unless experimenting.</span>
+                            </span>
+                        </label>
                         <input type="number" step="0.01" id="config-score_weight_davies_bouldin">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-score_weight_calinski_harabasz">Calinski-Harabasz Score Weight:</label>
+                        <label for="config-score_weight_calinski_harabasz" class="label-with-tooltip">
+                            Calinski-Harabasz Score Weight:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Measures cluster quality by comparing within-cluster vs between-cluster variance. Usually keep at 0 unless experimenting.</span>
+                            </span>
+                        </label>
                         <input type="number" step="0.01" id="config-score_weight_calinski_harabasz">
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-enable_clustering_embeddings">Use Embeddings for Clustering:</label>
+                        <label for="config-enable_clustering_embeddings" class="label-with-tooltip">
+                            Use Embeddings for Clustering:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Checked: Use AI-learned song fingerprints (more accurate). Unchecked: Use calculated features like tempo and energy (faster). Recommended: keep checked.</span>
+                            </span>
+                        </label>
                         <input type="checkbox" id="config-enable_clustering_embeddings" style="width: auto; margin-left: 5px;">
-                        <span class="tooltiptext">If checked, clustering will use audio embeddings. Otherwise, it uses score-based feature vectors.</span>
                     </div>
                 </div>
 
@@ -120,11 +238,23 @@
                     <h4>K-Means Specific:</h4>
                     <div class="param-group"> <!-- param-group for styling the inputs -->
                         <div>
-                            <label for="config-num_clusters_min">Min Clusters:</label>
+                            <label for="config-num_clusters_min" class="label-with-tooltip">
+                                Min Clusters:
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">Minimum number of playlists K-Means can create. Lower = fewer, larger playlists. Try 40 for a medium library.</span>
+                                </span>
+                            </label>
                             <input type="number" id="config-num_clusters_min">
                         </div>
                         <div>
-                            <label for="config-num_clusters_max">Max Clusters:</label>
+                            <label for="config-num_clusters_max" class="label-with-tooltip">
+                                Max Clusters:
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">Maximum number of playlists K-Means can create. Higher = more, smaller playlists. Try 100 for a medium library.</span>
+                                </span>
+                            </label>
                             <input type="number" id="config-num_clusters_max">
                         </div>
                     </div>
@@ -133,19 +263,43 @@
                 <div id="dbscan-params" class="advanced-param hidden">
                     <h4>DBSCAN Specific:</h4>
                     <div>
-                        <label for="config-dbscan_eps_min">DBSCAN Epsilon Min:</label>
+                        <label for="config-dbscan_eps_min" class="label-with-tooltip">
+                            DBSCAN Epsilon Min:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Minimum distance to consider songs as neighbors. Lower = tighter, more exclusive clusters. Advanced users only. Range: 0.1-0.5</span>
+                            </span>
+                        </label>
                         <input type="number" step="0.01" id="config-dbscan_eps_min">
                     </div>
                     <div>
-                        <label for="config-dbscan_eps_max">DBSCAN Epsilon Max:</label>
+                        <label for="config-dbscan_eps_max" class="label-with-tooltip">
+                            DBSCAN Epsilon Max:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Maximum distance to consider songs as neighbors. Higher = looser, more inclusive clusters. Advanced users only. Range: 0.1-0.5</span>
+                            </span>
+                        </label>
                         <input type="number" step="0.01" id="config-dbscan_eps_max">
                     </div>
                     <div>
-                        <label for="config-dbscan_min_samples_min">DBSCAN Min Samples Min:</label>
+                        <label for="config-dbscan_min_samples_min" class="label-with-tooltip">
+                            DBSCAN Min Samples Min:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Minimum songs needed to form a cluster core. Lower = more small playlists. Advanced users only. Range: 5-20</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-dbscan_min_samples_min">
                     </div>
                     <div>
-                        <label for="config-dbscan_min_samples_max">DBSCAN Min Samples Max:</label>
+                        <label for="config-dbscan_min_samples_max" class="label-with-tooltip">
+                            DBSCAN Min Samples Max:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Maximum songs needed to form a cluster core. Higher = fewer, larger playlists. Advanced users only. Range: 5-20</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-dbscan_min_samples_max">
                     </div>
                 </div>
@@ -153,11 +307,23 @@
                 <div id="gmm-params" class="advanced-param hidden">
                     <h4>GMM Specific:</h4>
                     <div>
-                        <label for="config-gmm_n_components_min">GMM Components Min:</label>
+                        <label for="config-gmm_n_components_min" class="label-with-tooltip">
+                            GMM Components Min:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Minimum number of Gaussian components (similar to clusters). GMM allows songs to belong partially to multiple playlists. Advanced users only.</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-gmm_n_components_min">
                     </div>
                     <div>
-                        <label for="config-gmm_n_components_max">GMM Components Max:</label>
+                        <label for="config-gmm_n_components_max" class="label-with-tooltip">
+                            GMM Components Max:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Maximum number of Gaussian components. Higher = more nuanced groupings but slower computation. Advanced users only.</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-gmm_n_components_max">
                     </div>
                 </div>
@@ -165,11 +331,23 @@
                 <div id="spectral-params" class="advanced-param hidden">
                     <h4>Spectral Specific:</h4>
                     <div>
-                        <label for="config-spectral_n_clusters_min">Spectral Clusters Min:</label>
+                        <label for="config-spectral_n_clusters_min" class="label-with-tooltip">
+                            Spectral Clusters Min:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Minimum number of clusters for Spectral clustering. Spectral is good at finding complex patterns and non-spherical groups. Advanced users only.</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-spectral_n_clusters_min">
                     </div>
                     <div>
-                        <label for="config-spectral_n_clusters_max">Spectral Clusters Max:</label>
+                        <label for="config-spectral_n_clusters_max" class="label-with-tooltip">
+                            Spectral Clusters Max:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Maximum number of clusters for Spectral clustering. Higher = more playlists but much slower. Advanced users only.</span>
+                            </span>
+                        </label>
                         <input type="number" id="config-spectral_n_clusters_max">
                     </div>
                 </div>
@@ -179,7 +357,13 @@
                 <legend>AI Playlist Naming</legend>
                 <div class="param-group">
                     <div>
-                        <label for="config-ai_model_provider">AI Provider:</label>
+                        <label for="config-ai_model_provider" class="label-with-tooltip">
+                            AI Provider:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">OPTIONAL: Choose an AI service to generate creative playlist names for your clustering results. This is just for naming - it doesn't affect how playlists are created. Select "None" if you prefer default names or don't want to use AI.</span>
+                            </span>
+                        </label>
                         <select id="config-ai_model_provider">
                             <option value="OLLAMA">Ollama</option>
                             <option value="GEMINI">Gemini</option>

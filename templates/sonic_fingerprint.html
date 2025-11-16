@@ -39,20 +39,44 @@
             <div class="param-group">
                 {% if mediaserver_type == 'jellyfin' %}
                 <div>
-                    <label for="jellyfin_user_identifier">Jellyfin Username or User ID:</label>
+                    <label for="jellyfin_user_identifier" class="label-with-tooltip">
+                        Jellyfin Username or User ID:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Your Jellyfin username or user ID. This is used to fetch your personal listening history from the media server.</span>
+                        </span>
+                    </label>
                     <input type="text" id="jellyfin_user_identifier" name="jellyfin_user_identifier" required placeholder="Enter Jellyfin Username or User ID">
                 </div>
                 <div>
-                    <label for="jellyfin_token">API Token:</label>
+                    <label for="jellyfin_token" class="label-with-tooltip">
+                        API Token:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Optional: Your Jellyfin API token. Only needed if you're not the default user or if accessing another user's fingerprint.</span>
+                        </span>
+                    </label>
                     <input type="password" id="jellyfin_token" name="jellyfin_token" placeholder="Optional for default user, specify for other users">
                 </div>
                 {% elif mediaserver_type == 'navidrome' %}
                 <div>
-                    <label for="navidrome_user">Navidrome Username:</label>
+                    <label for="navidrome_user" class="label-with-tooltip">
+                        Navidrome Username:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Your Navidrome username. This is used to fetch your personal listening history from the media server.</span>
+                        </span>
+                    </label>
                     <input type="text" id="navidrome_user" name="navidrome_user" required>
                 </div>
                 <div>
-                    <label for="navidrome_password">Password/API Token:</label>
+                    <label for="navidrome_password" class="label-with-tooltip">
+                        Password/API Token:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Optional: Your Navidrome password or API token. Only needed if you're not the default user or if accessing another user's fingerprint.</span>
+                        </span>
+                    </label>
                     <input type="password" id="navidrome_password" name="navidrome_password" placeholder="Optional for default user, specify for other user">
                 </div>
                 {% endif %}
@@ -63,7 +87,13 @@
             <legend>Parameters</legend>
             <div class="param-group">
                 <div>
-                    <label for="n">Number of results:</label>
+                    <label for="n" class="label-with-tooltip">
+                        Number of results:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">How many songs to include in your personalized playlist. Higher numbers (200+) give you more variety based on your listening patterns. Try 100-200 for a comprehensive fingerprint.</span>
+                        </span>
+                    </label>
                     <input type="number" id="n" name="n" value="200" min="40" max="1000">
                 </div>
             </div>

@@ -215,19 +215,24 @@ def _select_best_artist(song_item, title="Unknown"):
     """
     Selects the best artist field from Navidrome song item, prioritizing track artists over album artists.
     This helps avoid "Various Artists" issues in compilation albums.
+    Returns tuple: (artist_name, artist_id)
     """
     # Priority: artist (track artist) > albumArtist > fallback
+    # Navidrome provides artistId and albumArtistId
     if song_item.get('artist'):
         track_artist = song_item['artist']
+        artist_id = song_item.get('artistId')
         used_field = 'artist'
     elif song_item.get('albumArtist'):
         track_artist = song_item['albumArtist']
+        artist_id = song_item.get('albumArtistId')
         used_field = 'albumArtist'
     else:
         track_artist = 'Unknown Artist'
+        artist_id = None
         used_field = 'fallback'
     
-    return track_artist
+    return track_artist, artist_id
 
 def get_all_songs():
     """
@@ -255,14 +260,19 @@ def get_all_songs():
                 songs = response["searchResult3"]["song"]
                 if not songs: break
                 
-                # Apply artist field prioritization to each song
+                # Note: search3 song objects don't have separate artistId/albumArtistId fields
+                # They only have 'artist' (name) and 'artistId' (which is the album artist ID)
+                # So we use the artist name and artistId (album artist) as best we can
                 for s in songs:
                     title = s.get('title', 'Unknown')
-                    artist = _select_best_artist(s, title)
+                    artist_name = s.get('artist', 'Unknown Artist')
+                    # artistId in search3 response refers to the album artist
+                    artist_id = s.get('artistId')
                     all_songs.append({
                         'Id': s.get('id'), 
                         'Name': title, 
-                        'AlbumArtist': artist, 
+                        'AlbumArtist': artist_name,
+                        'ArtistId': artist_id,
                         'Path': s.get('path')
                     })
                 
@@ -310,7 +320,8 @@ def get_all_songs():
                 all_songs.append({
                     'Id': song.get('Id'), 
                     'Name': song.get('Name'), 
-                    'AlbumArtist': song.get('AlbumArtist'), 
+                    'AlbumArtist': song.get('AlbumArtist'),
+                    'ArtistId': song.get('ArtistId'),
                     'Path': song.get('Path')
                 })
 
@@ -415,12 +426,14 @@ def get_tracks_from_album(album_id, user_creds=None):
         result = []
         for s in songs:
             title = s.get('title', 'Unknown')
-            artist = _select_best_artist(s, title)
+            artist, artist_id = _select_best_artist(s, title)
+            logger.debug(f"getAlbum track '{title}': artist='{artist}', artist_id='{artist_id}', raw_artistId='{s.get('artistId')}', raw_albumArtistId='{s.get('albumArtistId')}'")
             result.append({
                 **s, 
                 'Id': s.get('id'), 
                 'Name': title, 
-                'AlbumArtist': artist, 
+                'AlbumArtist': artist,
+                'ArtistId': artist_id,
                 'Path': s.get('path')
             })
         return result

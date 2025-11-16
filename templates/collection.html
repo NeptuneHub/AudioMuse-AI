@@ -72,7 +72,13 @@
 
         <div class="param-group" style="display: none;">
             <div>
-                <label for="pocketbase-url">Pocketbase Server URL:</label>
+                <label for="pocketbase-url" class="label-with-tooltip">
+                    Pocketbase Server URL:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">The cloud server URL where your song analysis data will be synchronized. This is set by the administrator. Default: https://pkb.silverycat.de/</span>
+                    </span>
+                </label>
                 <input type="text" id="pocketbase-url" value="https://pkb.silverycat.de/">
             </div>
         </div>
@@ -105,7 +111,13 @@
                     <legend>Sync Parameters</legend>
                     <div class="param-group">
                         <div>
-                            <label for="num-albums">Number of Last Albums to Sync:</label>
+                            <label for="num-albums" class="label-with-tooltip">
+                                Number of Last Albums to Sync:
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">How many of your most recently added albums to synchronize to the cloud. Start with 10 for testing, then increase to sync more of your library. 0 = sync entire library (may take a long time).</span>
+                                </span>
+                            </label>
                             <input type="number" id="num-albums" value="10">
                         </div>
                     </div>
