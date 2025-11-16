@@ -115,7 +115,7 @@ CLUSTERING_MAX_FAILED_BATCHES = int(os.environ.get("CLUSTERING_MAX_FAILED_BATCHE
 CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS = int(os.environ.get("CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS", "30")) # How often to check batch status
 
 # --- Batching Constants for Analysis ---
-REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "10")) # Rebuild Voyager index after this many albums are analyzed.
+REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "100")) # Rebuild Voyager index after this many albums are analyzed.
 AUDIO_LOAD_TIMEOUT = int(os.getenv("AUDIO_LOAD_TIMEOUT", "600")) # Timeout in seconds for loading a single audio file.
 
 # --- Guided Evolutionary Clustering Constants ---
