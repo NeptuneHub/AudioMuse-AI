@@ -57,18 +57,8 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
     Returns:
         str: The extracted playlist name from the model's response, or an error message.
     """
-    # Ollama API endpoint is usually just the base URL + /api/generate
-    options = {
-        "num_predict": 5000, # Max tokens to generate
-        "temperature": 0.9
-    }
-
-    payload = {
-        "model": model_name,
-        "prompt": full_prompt,
-        "stream": True, # We handle streaming to get the full response
-        "options": options
-    }
+    # Detect which format to use based on API key and URL
+    is_openai_format = api_key != "no-key-needed" or "openai" in server_url.lower() or "openrouter" in server_url.lower()
 
     headers = {
         "Content-Type": "application/json"
@@ -78,40 +68,96 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
     if api_key and api_key != "no-key-needed":
         headers["Authorization"] = f"Bearer {api_key}"
 
-    try:
-        logger.debug("Starting API call for model '%s' at '%s'.", model_name, server_url)
+    # Prepare payload based on format
+    if is_openai_format:
+        # OpenAI/OpenRouter format uses chat completions
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": full_prompt}],
+            "stream": True,
+            "temperature": 0.9,
+            "max_tokens": 5000
+        }
+    else:
+        # Ollama format uses generate endpoint
+        payload = {
+            "model": model_name,
+            "prompt": full_prompt,
+            "stream": True,
+            "options": {
+                "num_predict": 5000,
+                "temperature": 0.9
+            }
+        }
 
-        response = requests.post(server_url, headers=headers, data=json.dumps(payload), stream=True, timeout=960) # Increased timeout
-        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+    try:
+        logger.debug("Starting API call for model '%s' at '%s' (format: %s).", model_name, server_url, "OpenAI" if is_openai_format else "Ollama")
+
+        response = requests.post(server_url, headers=headers, data=json.dumps(payload), stream=True, timeout=960)
+        response.raise_for_status()
         full_raw_response_content = ""
+
         for line in response.iter_lines():
-            if line:
-                try:
-                    chunk = json.loads(line)
+            if not line:
+                continue
+
+            line_str = line.decode('utf-8', errors='ignore').strip()
+
+            # Skip SSE comments (lines starting with :)
+            if line_str.startswith(':'):
+                continue
+
+            # Handle SSE data format (OpenRouter/OpenAI)
+            if line_str.startswith('data: '):
+                line_str = line_str[6:]  # Remove 'data: ' prefix
+
+                # Check for end of stream marker
+                if line_str == '[DONE]':
+                    break
+
+            # Try to parse JSON
+            try:
+                chunk = json.loads(line_str)
+
+                # Extract content based on format
+                if is_openai_format:
+                    # OpenAI/OpenRouter format
+                    if 'choices' in chunk and len(chunk['choices']) > 0:
+                        choice = chunk['choices'][0]
+
+                        # Check for finish
+                        if choice.get('finish_reason') == 'stop':
+                            break
+
+                        # Extract text from delta.content or text field
+                        if 'delta' in choice and 'content' in choice['delta']:
+                            full_raw_response_content += choice['delta']['content']
+                        elif 'text' in choice:
+                            full_raw_response_content += choice['text']
+                else:
+                    # Ollama format
                     if 'response' in chunk:
                         full_raw_response_content += chunk['response']
                     if chunk.get('done'):
-                        break # Stop processing when the 'done' signal is received
-                except json.JSONDecodeError:
-                    logger.warning("Could not decode JSON line from stream: %s", line.decode('utf-8', errors='ignore'))
-                    continue
+                        break
 
-        # Ollama models often include thought blocks, extract text after common thought tags
-        # Using a simple approach: find the last occurrence of common thought block enders
-        thought_enders = ["</think>", "[/INST]", "[/THOUGHT]"] # Add other common patterns if needed
+            except json.JSONDecodeError:
+                logger.debug("Could not decode JSON line from stream: %s", line_str)
+                continue
+
+        # Extract text after common thought tags
+        thought_enders = ["</think>", "[/INST]", "[/THOUGHT]"]
         extracted_text = full_raw_response_content.strip()
         for end_tag in thought_enders:
              if end_tag in extracted_text:
-                 extracted_text = extracted_text.split(end_tag, 1)[-1].strip() # Take everything after the last tag
-        # The final cleaning and length check is done in the general function
+                 extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
+
         return extracted_text
 
     except requests.exceptions.RequestException as e:
-        # Catch network-related errors, bad HTTP responses, etc.
         logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
         return "Error: AI service is currently unavailable."
     except Exception as e:
-        # Catch any other unexpected errors.
         logger.error("An unexpected error occurred in get_openai_compatible_playlist_name", exc_info=True)
         return "Error: AI service is currently unavailable."
 
