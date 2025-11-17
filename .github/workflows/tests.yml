@@ -26,7 +26,7 @@ jobs:
         pip install pydub librosa==0.11.0 onnx==1.14.1 onnxruntime==1.19.2
         pip install redis rq Flask psycopg2-binary pyyaml
         pip install ftfy requests google-generativeai mistralai
-        pip install voyager rapidfuzz sqlglot soundfile six flasgger umap-learn python-mpd2
+        pip install voyager rapidfuzz sqlglot soundfile six flasgger umap-learn python-mpd2 hnswlib
 
     - name: Create mock config
       run: |

@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 # In-memory cache for the precomputed 2D map projection (optional)
 MAP_PROJECTION_CACHE = None
 
+# In-memory cache for the precomputed 2D artist component projections
+ARTIST_PROJECTION_CACHE = None
+
 # --- Constants ---
 MAX_LOG_ENTRIES_STORED = 10 # Max number of recent log entries to store in the database per task
 
@@ -91,10 +94,16 @@ def init_db():
         if not cur.fetchone()[0]: cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
         # Create 'voyager_index_data' table
         cur.execute("CREATE TABLE IF NOT EXISTS voyager_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        # Create 'artist_index_data' table for artist GMM-based HNSW index
+        cur.execute("CREATE TABLE IF NOT EXISTS artist_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, artist_map_json TEXT NOT NULL, gmm_params_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'map_projection_data' table for precomputed 2D map projections
         cur.execute("CREATE TABLE IF NOT EXISTS map_projection_data (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        # Create 'artist_component_projection' table for precomputed 2D artist component projections
+        cur.execute("CREATE TABLE IF NOT EXISTS artist_component_projection (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, artist_component_map_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'cron' table to hold scheduled jobs (very small and simple)
         cur.execute("CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        # Create 'artist_mapping' table to map artist names to media server artist IDs
+        cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
         db.commit()
 
 # --- Status Constants ---
@@ -537,14 +546,149 @@ def build_and_store_map_projection(index_name='main_map'):
         # update in-memory cache
         global MAP_PROJECTION_CACHE
         MAP_PROJECTION_CACHE = {'index_name': index_name, 'id_map': ids, 'projection': projections}
-        # Publish reload message to redis so web process(es) can reload
-        try:
-            redis_conn.publish('index-updates', 'reload')
-        except Exception:
-            logger.debug('Could not publish reload message to redis (maybe redis not available).')
+        # Note: Caller (analysis task) is responsible for publishing reload message after all builds complete
         return True
     except Exception as e:
         logger.error(f"Failed to build and store map projection: {e}")
+        return False
+
+
+def load_artist_projection(index_name='artist_map', force_reload=False):
+    """Load precomputed artist component projection from DB. 
+    Returns (artist_component_map, numpy_array) or (None, None).
+    artist_component_map format: [{'artist_id': '...', 'component_idx': 0, 'weight': 0.3}, ...]
+    """
+    global ARTIST_PROJECTION_CACHE
+    # Try cache first (unless force_reload is True)
+    if not force_reload and ARTIST_PROJECTION_CACHE and ARTIST_PROJECTION_CACHE.get('index_name') == index_name:
+        logger.info(f"Artist projection '{index_name}' already loaded in cache. Skipping reload.")
+        return ARTIST_PROJECTION_CACHE.get('component_map'), ARTIST_PROJECTION_CACHE.get('projection')
+
+    logger.info(f"Attempting to load artist projection '{index_name}' from database into memory...")
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT projection_data, artist_component_map_json FROM artist_component_projection WHERE index_name = %s", (index_name,))
+        row = cur.fetchone()
+        if not row:
+            logger.warning(f"Artist projection '{index_name}' not found in the database. Cache will be empty.")
+            return None, None
+        proj_blob, component_map_json = row[0], row[1]
+        proj = np.frombuffer(proj_blob, dtype=np.float32)
+        # infer shape as (-1,2) if length divisible by 2
+        if proj.size % 2 == 0:
+            proj = proj.reshape((-1, 2))
+        component_map = json.loads(component_map_json)
+        ARTIST_PROJECTION_CACHE = {'index_name': index_name, 'component_map': component_map, 'projection': proj}
+        logger.info(f"Artist projection '{index_name}' with {len(component_map)} components loaded successfully into memory.")
+        return component_map, proj
+    except Exception as e:
+        logger.error(f"Failed to load artist projection: {e}", exc_info=True)
+        return None, None
+    finally:
+        cur.close()
+
+
+def save_artist_projection(index_name, component_map, projections):
+    """Save artist component projection to database.
+    component_map: [{'artist_id': '...', 'component_idx': 0, 'weight': 0.3}, ...]
+    projections: numpy array of shape (N, 2)
+    """
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        component_map_json = json.dumps(component_map)
+        proj_blob = projections.astype(np.float32).tobytes()
+        cur.execute("INSERT INTO artist_component_projection (index_name, projection_data, artist_component_map_json) VALUES (%s, %s, %s) ON CONFLICT (index_name) DO UPDATE SET projection_data = EXCLUDED.projection_data, artist_component_map_json = EXCLUDED.artist_component_map_json, created_at = CURRENT_TIMESTAMP", (index_name, proj_blob, component_map_json))
+        conn.commit()
+        logger.info(f"Saved artist projection '{index_name}' with {len(component_map)} components to database.")
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to save artist projection: {e}", exc_info=True)
+    finally:
+        cur.close()
+
+
+def build_and_store_artist_projection(index_name='artist_map'):
+    """Compute 2D projection for all artist GMM components and store it.
+    This will be called during analysis to create the artist component map.
+    Returns True on success.
+    """
+    from tasks.artist_gmm_manager import artist_gmm_params, load_artist_index_for_querying
+    from tasks.song_alchemy import _project_with_umap, _project_to_2d
+    
+    # Always reload artist GMM params from database (force reload to ensure fresh data)
+    load_artist_index_for_querying(force_reload=True)
+    
+    # Re-import after loading to get the updated global variable
+    from tasks.artist_gmm_manager import artist_gmm_params as loaded_params
+    
+    if not loaded_params:
+        logger.warning("No artist GMM params available to build artist projection.")
+        return False
+    
+    # Collect all artist component vectors
+    component_map = []
+    vectors = []
+    
+    for artist_name, gmm in loaded_params.items():
+        means = np.array(gmm['means'])  # Shape: [n_components, embedding_dim]
+        weights = np.array(gmm['weights'])  # Shape: [n_components]
+        
+        # Get artist_id (use artist_name if no mapping exists)
+        from app_helper_artist import get_artist_id_by_name
+        artist_id = get_artist_id_by_name(artist_name) or artist_name
+        
+        for comp_idx in range(len(means)):
+            component_map.append({
+                'artist_id': artist_id,
+                'artist_name': artist_name,
+                'component_idx': comp_idx,
+                'weight': float(weights[comp_idx])
+            })
+            vectors.append(means[comp_idx])
+    
+    if not vectors:
+        logger.info('No artist component vectors available to build projection.')
+        return False
+    
+    mat = np.vstack(vectors)
+    projections = None
+    
+    try:
+        logger.info(f"Starting to build artist projection: {mat.shape[0]} component vectors found.")
+        # Try UMAP first
+        if _project_with_umap is not None:
+            projections = _project_with_umap([v for v in mat])
+    except Exception as e:
+        logger.warning(f"UMAP projection failed for artist components: {e}")
+        projections = None
+    
+    # Fallback to PCA
+    if projections is None:
+        try:
+            if _project_to_2d is not None:
+                projections = _project_to_2d([v for v in mat])
+        except Exception as e:
+            logger.warning(f"PCA projection failed for artist components: {e}")
+            projections = None
+    
+    if projections is None:
+        projections = np.zeros((mat.shape[0], 2), dtype=np.float32)
+    else:
+        projections = np.array(projections, dtype=np.float32)
+    
+    logger.info(f"Computed artist projection shape: {projections.shape}")
+    
+    try:
+        save_artist_projection(index_name, component_map, projections)
+        # Update in-memory cache
+        global ARTIST_PROJECTION_CACHE
+        ARTIST_PROJECTION_CACHE = {'index_name': index_name, 'component_map': component_map, 'projection': projections}
+        # Note: Caller (analysis task) is responsible for publishing reload message after all builds complete
+        return True
+    except Exception as e:
+        logger.error(f"Failed to build and store artist projection: {e}")
         return False
 
 

@@ -17,6 +17,34 @@
         min-width: 0; /* Necessary for text wrapping in a flex container */
         line-height: 1.3; /* Adjust for better readability */
     }
+    
+    .type-toggle-btn {
+        background: #3B82F6;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        padding: 8px 12px;
+        cursor: pointer;
+        font-size: 0.85rem;
+        font-weight: 500;
+        line-height: 1.2;
+        text-align: center;
+        min-width: 65px;
+        margin-right: 8px;
+        transition: background-color 0.2s;
+    }
+    
+    .type-toggle-btn:hover {
+        background: #2563EB;
+    }
+    
+    .item-type-artist .type-toggle-btn {
+        background: #8B5CF6;
+    }
+    
+    .item-type-artist .type-toggle-btn:hover {
+        background: #7C3AED;
+    }
 </style>
 {% endblock %}
 
@@ -24,14 +52,14 @@
 <section>
     <header class="page-header">
         <h1>AudioMuse-AI - Song Alchemy</h1>
-        <p>Select tracks to Include or Exclude — boost favorites with Include and remove unwanted flavors with Exclude.</p>
+        <p>Select tracks or artists to Include or Exclude — boost favorites with Include and remove unwanted flavors with Exclude.</p>
     </header>
 
     <form id="alchemy-form">
         <fieldset>
-            <legend>Song Selection</legend>
+            <legend>Artist and/or Song Selection</legend>
             <div id="song-rows" class="param-group">
-                <!-- Song cards will be injected here by JavaScript -->
+                <!-- Item cards will be injected here by JavaScript -->
             </div>
         </fieldset>
 
@@ -39,16 +67,34 @@
             <legend>Parameters</legend>
             <div class="param-group">
                 <div>
-                    <label for="n_results">Number of results:</label>
+                    <label for="n_results" class="label-with-tooltip">
+                        Number of results:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">How many songs to find from your alchemy blend. Higher numbers give you more variety but may include less-similar songs. Try 100 for a full playlist, or 20-30 for a quick mix.</span>
+                        </span>
+                    </label>
                     <input id="n_results" name="n_results" type="number" value="100" min="1" max="200" />
                 </div>
                 <div>
-                    <label for="temperature">Sampling temperature (τ)</label>
+                    <label for="temperature" class="label-with-tooltip">
+                        Sampling temperature (τ)
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Controls randomness in song selection. 1.0 = balanced mix. Lower (0.1-0.5) = stick closer to your exact blend. Higher (1.5-3.0) = explore more unexpected songs. Like turning up the "surprise me" dial!</span>
+                        </span>
+                    </label>
                     <input id="temperature" name="temperature" type="number" step="0.1" min="0" max="10" value="1.0" />
                     <div style="font-size:0.85rem;color:#6B7280;margin-top:6px;">Lower = more deterministic, Higher = more random</div>
                 </div>
                 <div>
-                    <label for="subtract_distance">Subtract distance threshold:</label>
+                    <label for="subtract_distance" class="label-with-tooltip">
+                        Subtract distance threshold:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">How aggressively to exclude songs you marked as "Subtract". Lower values (0.1-0.3) = only remove very similar songs. Higher values (0.5-0.8) = remove anything remotely similar. Use this to filter out entire genres or moods you don't want.</span>
+                        </span>
+                    </label>
                     <div class="param-row">
                         <input id="subtract_distance" type="range" min="0" max="1" step="0.01" value="0.30" />
                         <span id="subtract_distance_label" style="font-weight: 500;">0.30</span>
@@ -61,7 +107,7 @@
 
         <div class="alchemy-controls task-buttons">
             <button id="run-alchemy" type="submit">Run Alchemy</button>
-            <button id="add-row" type="button">Add Another Song</button>
+            <button id="add-row" type="button">Add Another Item</button>
         </div>
     </form>
 </section>
@@ -180,28 +226,30 @@
         function makeRow() {
             const rowCount = document.querySelectorAll('.alchemy-card').length;
             const card = document.createElement('div');
-            card.className = 'alchemy-card op-add-active'; // Default to ADD
+            card.className = 'alchemy-card op-add-active item-type-song'; // Default to ADD and Song
             card.innerHTML = `
                 <div class="alchemy-card-header">
                     <div class="left-group">
+                        <button type="button" class="type-toggle-btn" title="Toggle Song/Artist">🎵<br>Song</button>
                         <div class="op-buttons">
                             <button type="button" class="op-btn op-add active">Include</button>
                             <button type="button" class="op-btn op-sub">Exclude</button>
                         </div>
                         <div class="song-details-wrapper">
-                            <strong class="song-number">Song ${rowCount + 1}</strong>
+                            <strong class="song-number">Item ${rowCount + 1}</strong>
                             <span class="selected-song-name"></span>
                         </div>
                     </div>
-                    <button type="button" class="card-close" aria-label="Remove song">&times;</button>
+                    <button type="button" class="card-close" aria-label="Remove item">&times;</button>
                 </div>
                 <div class="field-row">
                     <label>Artist</label>
                      <div class="autocomplete-container">
                         <input type="text" placeholder="Start typing artist..." class="song-artist" />
+                        <div class="autocomplete-results-artist hidden"></div>
                     </div>
                 </div>
-                <div class="field-row">
+                <div class="field-row title-field">
                     <label>Title</label>
                     <div class="autocomplete-container">
                         <input type="text" placeholder="Start typing title..." class="song-title" />
@@ -209,16 +257,58 @@
                     </div>
                 </div>
                 <input type="hidden" class="song-id" />
+                <input type="hidden" class="item-type" value="song" />
                 <input type="hidden" class="op" value="ADD" />
             `;
             const artistInput = card.querySelector('.song-artist');
             const titleInput = card.querySelector('.song-title');
+            const titleFieldRow = card.querySelector('.title-field');
             const resultsEl = card.querySelector('.autocomplete-results');
+            const resultsArtistEl = card.querySelector('.autocomplete-results-artist');
             const idEl = card.querySelector('.song-id');
             const opHidden = card.querySelector('.op');
+            const itemTypeHidden = card.querySelector('.item-type');
             const songNumberEl = card.querySelector('.song-number');
             const opAddBtn = card.querySelector('.op-add');
             const opSubBtn = card.querySelector('.op-sub');
+            const typeToggleBtn = card.querySelector('.type-toggle-btn');
+            const selectedSongNameEl = card.querySelector('.selected-song-name');
+
+            // Type toggle handler (Song ↔ Artist)
+            typeToggleBtn.addEventListener('click', () => {
+                if (itemTypeHidden.value === 'song') {
+                    // Switch to Artist - keep artist name if present, clear title
+                    const currentArtist = artistInput.value.trim();
+                    itemTypeHidden.value = 'artist';
+                    typeToggleBtn.innerHTML = '🎤<br>Artist';
+                    titleFieldRow.style.display = 'none';
+                    card.classList.remove('item-type-song');
+                    card.classList.add('item-type-artist');
+                    titleInput.value = '';
+                    idEl.value = '';
+                    selectedSongNameEl.textContent = '';
+                    resultsEl.classList.add('hidden');
+                    resultsArtistEl.classList.add('hidden');
+                    
+                    // If artist name exists, trigger artist search to reload artist ID
+                    if (currentArtist.length >= 2) {
+                        artistInput.dispatchEvent(new Event('input'));
+                    }
+                } else {
+                    // Switch to Song - clear everything to force fresh selection
+                    itemTypeHidden.value = 'song';
+                    typeToggleBtn.innerHTML = '🎵<br>Song';
+                    titleFieldRow.style.display = '';
+                    card.classList.remove('item-type-artist');
+                    card.classList.add('item-type-song');
+                    artistInput.value = '';
+                    titleInput.value = '';
+                    idEl.value = '';
+                    selectedSongNameEl.textContent = '';
+                    resultsEl.classList.add('hidden');
+                    resultsArtistEl.classList.add('hidden');
+                }
+            });
 
             // Operation button handlers
             opAddBtn.addEventListener('click', () => {
@@ -236,7 +326,50 @@
                 card.classList.remove('op-add-active');
             });
 
+            // Setup autocomplete for songs (existing logic)
             setupAutocomplete(artistInput, titleInput, resultsEl, idEl, card, songNumberEl);
+
+            // Setup autocomplete for artists
+            let artistSearchTimeout;
+            artistInput.addEventListener('input', async () => {
+                clearTimeout(artistSearchTimeout);
+                const query = artistInput.value.trim();
+                
+                // Only show artist autocomplete when in artist mode
+                if (itemTypeHidden.value !== 'artist' || query.length < 2) {
+                    resultsArtistEl.classList.add('hidden');
+                    return;
+                }
+                
+                artistSearchTimeout = setTimeout(async () => {
+                    try {
+                        const response = await fetch(`{{ url_for('alchemy_bp.search_artists') }}?query=${encodeURIComponent(query)}`);
+                        const artists = await response.json();
+                        resultsArtistEl.innerHTML = '';
+                        
+                        if (artists.length === 0) {
+                            resultsArtistEl.innerHTML = '<div class="autocomplete-item"><em>No artists found</em></div>';
+                        } else {
+                            artists.forEach(artist => {
+                                const itemDiv = document.createElement('div');
+                                itemDiv.className = 'autocomplete-item';
+                                itemDiv.innerHTML = `<div class="title">${artist.artist}</div><div class="artist">${artist.track_count} tracks</div>`;
+                                itemDiv.addEventListener('click', () => {
+                                    artistInput.value = artist.artist;
+                                    idEl.value = artist.artist_id || artist.artist;
+                                    selectedSongNameEl.textContent = artist.artist;
+                                    resultsArtistEl.classList.add('hidden');
+                                });
+                                resultsArtistEl.appendChild(itemDiv);
+                            });
+                        }
+                        resultsArtistEl.classList.remove('hidden');
+                    } catch (error) {
+                        console.error('Artist autocomplete error:', error);
+                        resultsArtistEl.classList.add('hidden');
+                    }
+                }, 300);
+            });
 
             const closeBtn = card.querySelector('.card-close');
             if (closeBtn) {
@@ -253,8 +386,7 @@
         const updateNumbers = () => {
             Array.from(document.querySelectorAll('.alchemy-card')).forEach((card, idx) => {
                 const songNumberEl = card.querySelector('.song-number');
-                // UPDATE: This function now only needs to update the "Song X" label.
-                songNumberEl.textContent = `Song ${idx + 1}`;
+                songNumberEl.textContent = `Item ${idx + 1}`;
             });
         };
 
@@ -317,11 +449,15 @@
             e.preventDefault();
             try {
                 const rows = [...document.querySelectorAll('.alchemy-card')];
-                const items = rows.map(r => ({ id: r.querySelector('.song-id').value.trim(), op: r.querySelector('.op').value }));
+                const items = rows.map(r => ({ 
+                    id: r.querySelector('.song-id').value.trim(), 
+                    op: r.querySelector('.op').value,
+                    type: r.querySelector('.item-type').value
+                }));
                 const valid = items.filter(i => i.id);
-                // Require at least one ADD item; SUBTRACT items are optional
+                // Require at least one ADD item (song or artist)
                 const addCount = valid.filter(i => i.op && i.op.toUpperCase() === 'ADD').length;
-                if (addCount < 1) { showMessageBox('Input Error', 'Please include at least one ADD song.'); return }
+                if (addCount < 1) { showMessageBox('Input Error', 'Please include at least one ADD item (song or artist).'); return }
 
                 const nInput = parseInt(document.getElementById('n_results').value || defaultN);
                 const n = Math.min(nInput, maxN);
@@ -365,8 +501,12 @@
                             const removed = (data.filtered_out || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r) }));
                             const add_centroid = data.add_centroid_2d ? { x: data.add_centroid_2d[0], y: data.add_centroid_2d[1], label: 'ADD Centroid' } : null;
                             const subtract_centroid = data.subtract_centroid_2d ? { x: data.subtract_centroid_2d[0], y: data.subtract_centroid_2d[1], label: 'SUBTRACT Centroid' } : null;
-                            const addPoints = (data.add_points || []).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                            const subPoints = (data.sub_points || []).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
+                            
+                            // Separate songs from artist components
+                            const addSongs = (data.add_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
+                            const addArtistComponents = (data.add_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
+                            const subSongs = (data.sub_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
+                            const subArtistComponents = (data.sub_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
 
                             if (window._alchemyChart) {
                                 window._alchemyChart.destroy();
@@ -408,24 +548,41 @@
                                 pointStyle: 'star',
                                 pointRadius: 15
                             });
-                            if (addPoints.length) datasets.push({
-                                label: 'Selected ADD song(s)',
-                                data: addPoints,
+                            if (addSongs.length) datasets.push({
+                                label: 'Selected ADD Songs',
+                                data: addSongs,
                                 backgroundColor: 'rgba(34, 197, 94, 0.9)',
                                 borderColor: 'rgba(22, 163, 74, 1)',
                                 borderWidth: 2,
-                                pointStyle: 'triangle',
-                                pointRadius: 12,
-                                rotation: 0
+                                pointStyle: 'circle',
+                                pointRadius: 10
                             });
-                            if (subPoints.length) datasets.push({
-                                label: 'Selected SUBTRACT song(s)',
-                                data: subPoints,
+                            if (addArtistComponents.length) datasets.push({
+                                label: 'Selected ADD Artist Components',
+                                data: addArtistComponents,
+                                backgroundColor: 'rgba(134, 239, 172, 0.9)',
+                                borderColor: 'rgba(34, 197, 94, 1)',
+                                borderWidth: 2,
+                                pointStyle: 'rect',
+                                pointRadius: 8
+                            });
+                            if (subSongs.length) datasets.push({
+                                label: 'Selected SUBTRACT Songs',
+                                data: subSongs,
                                 backgroundColor: 'rgba(239, 68, 68, 0.9)',
                                 borderColor: 'rgba(220, 38, 38, 1)',
                                 borderWidth: 2,
-                                pointStyle: 'rect',
+                                pointStyle: 'circle',
                                 pointRadius: 10
+                            });
+                            if (subArtistComponents.length) datasets.push({
+                                label: 'Selected SUBTRACT Artist Components',
+                                data: subArtistComponents,
+                                backgroundColor: 'rgba(252, 165, 165, 0.9)',
+                                borderColor: 'rgba(239, 68, 68, 1)',
+                                borderWidth: 2,
+                                pointStyle: 'rect',
+                                pointRadius: 8
                             });
 
                             const projLabel = document.getElementById('projection-label');
@@ -522,8 +679,12 @@
                             const kept = [];
                             const add_centroid = data.add_centroid_2d ? { x: data.add_centroid_2d[0], y: data.add_centroid_2d[1], label: 'ADD Centroid' } : null;
                             const subtract_centroid = data.subtract_centroid_2d ? { x: data.subtract_centroid_2d[0], y: data.subtract_centroid_2d[1], label: 'SUBTRACT Centroid' } : null;
-                            const addPoints = (data.add_points || []).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                            const subPoints = (data.sub_points || []).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
+                            
+                            // Separate songs from artist components
+                            const addSongs = (data.add_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
+                            const addArtistComponents = (data.add_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
+                            const subSongs = (data.sub_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
+                            const subArtistComponents = (data.sub_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
 
                             if (window._alchemyChart) {
                                 window._alchemyChart.destroy();
@@ -564,24 +725,41 @@
                                 pointStyle: 'star',
                                 pointRadius: 15
                             });
-                            if (addPoints.length) datasets.push({
-                                label: 'Selected ADD song(s)',
-                                data: addPoints,
+                            if (addSongs.length) datasets.push({
+                                label: 'Selected ADD Songs',
+                                data: addSongs,
                                 backgroundColor: 'rgba(34, 197, 94, 0.9)',
                                 borderColor: 'rgba(22, 163, 74, 1)',
                                 borderWidth: 2,
-                                pointStyle: 'triangle',
-                                pointRadius: 12,
-                                rotation: 0
+                                pointStyle: 'circle',
+                                pointRadius: 10
                             });
-                            if (subPoints.length) datasets.push({
-                                label: 'Selected SUBTRACT song(s)',
-                                data: subPoints,
+                            if (addArtistComponents.length) datasets.push({
+                                label: 'Selected ADD Artist Components',
+                                data: addArtistComponents,
+                                backgroundColor: 'rgba(134, 239, 172, 0.9)',
+                                borderColor: 'rgba(34, 197, 94, 1)',
+                                borderWidth: 2,
+                                pointStyle: 'rect',
+                                pointRadius: 8
+                            });
+                            if (subSongs.length) datasets.push({
+                                label: 'Selected SUBTRACT Songs',
+                                data: subSongs,
                                 backgroundColor: 'rgba(239, 68, 68, 0.9)',
                                 borderColor: 'rgba(220, 38, 38, 1)',
                                 borderWidth: 2,
-                                pointStyle: 'rect',
+                                pointStyle: 'circle',
                                 pointRadius: 10
+                            });
+                            if (subArtistComponents.length) datasets.push({
+                                label: 'Selected SUBTRACT Artist Components',
+                                data: subArtistComponents,
+                                backgroundColor: 'rgba(252, 165, 165, 0.9)',
+                                borderColor: 'rgba(239, 68, 68, 1)',
+                                borderWidth: 2,
+                                pointStyle: 'rect',
+                                pointRadius: 8
                             });
 
                             const projLabel = document.getElementById('projection-label');

@@ -63,33 +63,67 @@
 
         <div class="param-group">
             <div class="autocomplete-container">
-                <label for="start_artist_search">Start Song Artist:</label>
+                <label for="start_artist_search" class="label-with-tooltip">
+                    Start Song Artist:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Filter by artist to narrow down your song search. Start typing to see matching artists from your library.</span>
+                    </span>
+                </label>
                 <input type="text" id="start_artist_search" name="start_artist_search" placeholder="Start typing artist name..." autocomplete="off">
             </div>
 
             <div class="autocomplete-container">
-                <label for="start_title_search">Start Song Title:</label>
+                <label for="start_title_search" class="label-with-tooltip">
+                    Start Song Title:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">The first song of your musical journey. Type to search your library. The path will smoothly transition from this song to your end song.</span>
+                    </span>
+                </label>
                 <input type="text" id="start_title_search" name="start_title_search" placeholder="Start typing track title..." autocomplete="off">
                 <div id="start-autocomplete-results" class="autocomplete-results hidden"></div>
             </div>
 
             <div class="autocomplete-container">
-                <label for="end_artist_search">End Song Artist:</label>
+                <label for="end_artist_search" class="label-with-tooltip">
+                    End Song Artist:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Filter by artist to narrow down your destination song search. Start typing to see matching artists from your library.</span>
+                    </span>
+                </label>
                 <input type="text" id="end_artist_search" name="end_artist_search" placeholder="Start typing artist name..." autocomplete="off">
             </div>
             <div class="autocomplete-container">
-                <label for="end_title_search">End Song Title:</label>
+                <label for="end_title_search" class="label-with-tooltip">
+                    End Song Title:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">The destination song of your journey. The algorithm finds the smoothest sonic path between your start and end songs, creating a seamless listening experience.</span>
+                    </span>
+                </label>
                 <input type="text" id="end_title_search" name="end_title_search" placeholder="Start typing track title..." autocomplete="off">
                 <div id="end-autocomplete-results" class="autocomplete-results hidden"></div>
             </div>
 
             <div>
-                <label for="max_steps">Songs in path:</label>
+                <label for="max_steps" class="label-with-tooltip">
+                    Songs in path:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">How many songs in your path from start to finish. 10-15 = quick journey. 25-50 = gradual transition. Higher numbers create smoother, more subtle sonic changes between songs.</span>
+                    </span>
+                </label>
                 <input type="number" id="max_steps" name="max_steps" value="25" min="10" max="200">
             </div>
             <div>
-                <label for="path_fix_size_checkbox" style="display:flex;align-items:center;gap:8px;">
+                <label for="path_fix_size_checkbox" class="label-with-tooltip" style="display:flex;align-items:center;gap:8px;">
                     <input type="checkbox" id="path_fix_size_checkbox" name="path_fix_size" {% if path_fix_size %}checked{% endif %} style="margin-right:6px"> Keep path size exact
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Checked: Path will have EXACTLY the number of songs you specified (may include less-similar transitions if needed). Unchecked: Path may be shorter if a good connection can't be found.</span>
+                    </span>
                 </label>
             </div>
         </div>
