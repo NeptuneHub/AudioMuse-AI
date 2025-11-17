@@ -1,11 +1,11 @@
 # tasks/artist_gmm_manager.py
 """
-Artist Similarity using Gaussian Mixture Models (GMM) and HNSW Index.
+Artist Similarity using Gaussian Mixture Models (GMM) and Voyager Index.
 
 This module implements artist similarity by:
 1. Using existing embedding vectors (same as song similarity) for all tracks per artist
 2. Fitting a GMM to the embedding vectors to represent each artist's "sound profile"
-3. Building an HNSW index for fast approximate nearest neighbor search
+3. Building a Voyager index for fast approximate nearest neighbor search
 4. Using Jeffreys Divergence (symmetric KL divergence) to measure GMM similarity
 
 This approach is fast (no audio re-processing) and consistent with the song similarity system.
@@ -16,13 +16,14 @@ import logging
 import json
 import pickle
 import tempfile
+import io
 import numpy as np
 import threading
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 
 from sklearn.mixture import GaussianMixture
-import hnswlib
+import voyager  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -35,18 +36,18 @@ GMM_MAX_ITER = 100
 GMM_N_INIT = 3
 MIN_TRACKS_PER_ARTIST = 1  # Minimum tracks needed to build a GMM for an artist (lowered to include all artists)
 
-# HNSW index parameters
-HNSW_M = 32  # Number of bi-directional links created for every new element
-HNSW_EF_CONSTRUCTION = 200  # Size of the dynamic list during index construction
-HNSW_EF_SEARCH = 100  # Size of the dynamic list during search (can be adjusted at query time)
+# Voyager index parameters (similar to song index)
+VOYAGER_M = 32  # Number of bi-directional links created for every new element
+VOYAGER_EF_CONSTRUCTION = 200  # Size of the dynamic list during index construction
+VOYAGER_EF_SEARCH = 100  # Size of the dynamic list during search (can be adjusted at query time)
 
 # Monte Carlo sampling for KL divergence approximation
 MC_SAMPLES = 500  # Number of samples for Monte Carlo KL divergence estimation (reduced for speed)
 
 # --- Global cache for the loaded artist index ---
-artist_index = None  # hnswlib.Index object
-artist_map = None  # {hnsw_int_id: artist_name}
-reverse_artist_map = None  # {artist_name: hnsw_int_id}
+artist_index = None  # voyager.Index object
+artist_map = None  # {voyager_int_id: artist_name}
+reverse_artist_map = None  # {artist_name: voyager_int_id}
 artist_gmm_params = None  # {artist_name: gmm_params_dict}
 _index_lock = threading.Lock()
 
@@ -370,7 +371,8 @@ def compute_jeffreys_divergence(gmm1_params: Dict, gmm2_params: Dict) -> float:
 
 def serialize_gmm_for_hnsw(gmm_params: Dict) -> np.ndarray:
     """
-    Serialize GMM parameters into a fixed-size vector for HNSW indexing.
+    Serialize GMM parameters into a fixed-size vector for Voyager indexing.
+    (Function name kept for backward compatibility)
     
     We compute a weighted average of the component means, weighted by the
     component weights. This gives a single representative vector for the GMM
@@ -395,13 +397,13 @@ def serialize_gmm_for_hnsw(gmm_params: Dict) -> np.ndarray:
 
 def build_and_store_artist_index(db_conn=None):
     """
-    Build HNSW index for artist similarity using GMM representations.
+    Build Voyager index for artist similarity using GMM representations.
     
     This function:
     1. Fetches all artists and their tracks from the database
     2. Extracts audio features for each track
     3. Fits a GMM for each artist
-    4. Builds an HNSW index for fast similarity search
+    4. Builds a Voyager index for fast similarity search
     5. Stores the index in the database
     
     Args:
@@ -411,7 +413,7 @@ def build_and_store_artist_index(db_conn=None):
         from app_helper import get_db
         db_conn = get_db()
     
-    logger.info("Starting to build artist similarity index using GMM + HNSW...")
+    logger.info("Starting to build artist similarity index using GMM + Voyager...")
     
     cur = db_conn.cursor()
     
@@ -487,21 +489,19 @@ def build_and_store_artist_index(db_conn=None):
             logger.warning("No valid GMMs created, skipping index build")
             return
         
-        # Step 3: Build HNSW index
-        logger.info("Building HNSW index...")
+        # Step 3: Build Voyager index
+        logger.info("Building Voyager index...")
         
         # Determine dimensionality from first GMM
         first_gmm = artist_gmms[artist_names_list[0]]
         gmm_vector_dim = len(serialize_gmm_for_hnsw(first_gmm))
         
-        logger.info(f"HNSW vector dimension: {gmm_vector_dim}")
+        logger.info(f"Voyager vector dimension: {gmm_vector_dim}")
         
-        # Initialize HNSW index
-        # Note: We use L2 space here, but actual similarity will use custom Jeffreys divergence
-        # The HNSW index is primarily for fast approximate search structure
-        index = hnswlib.Index(space='l2', dim=gmm_vector_dim)
-        index.init_index(max_elements=len(artist_gmms), ef_construction=HNSW_EF_CONSTRUCTION, M=HNSW_M)
-        index.set_ef(HNSW_EF_SEARCH)
+        # Initialize Voyager index
+        # Note: We use L2 (Euclidean) space here, but actual similarity will use custom Jeffreys divergence
+        # The Voyager index is primarily for fast approximate search structure
+        index = voyager.Index(voyager.Space.Euclidean, num_dimensions=gmm_vector_dim, M=VOYAGER_M, ef_construction=VOYAGER_EF_CONSTRUCTION)
         
         # Create mappings
         artist_map_dict = {}
@@ -511,36 +511,35 @@ def build_and_store_artist_index(db_conn=None):
         vectors = []
         ids = []
         
-        for hnsw_id, artist_name in enumerate(artist_names_list):
+        for voyager_id, artist_name in enumerate(artist_names_list):
             gmm_params = artist_gmms[artist_name]
             
             # Serialize GMM to vector
             gmm_vector = serialize_gmm_for_hnsw(gmm_params)
             
             vectors.append(gmm_vector)
-            ids.append(hnsw_id)
+            ids.append(voyager_id)
             
-            artist_map_dict[hnsw_id] = artist_name
-            reverse_artist_map_dict[artist_name] = hnsw_id
+            artist_map_dict[voyager_id] = artist_name
+            reverse_artist_map_dict[artist_name] = voyager_id
         
-        # Add all vectors to index
+        # Add all vectors to index (batch add for better performance)
         vectors_array = np.array(vectors)
         ids_array = np.array(ids)
+        index.add_items(vectors_array, ids=ids_array)
         
-        index.add_items(vectors_array, ids_array)
-        
-        logger.info(f"Added {len(artist_gmms)} artists to HNSW index")
+        logger.info(f"Added {len(artist_gmms)} artists to Voyager index")
         
         # Step 4: Serialize and store in database
         logger.info("Serializing and storing index in database...")
         
-        # Serialize index to temp file then read bytes (hnswlib doesn't have save_to_bytes)
+        # Serialize index to bytes using temp file (voyager uses save/load with files)
         temp_file_path = None
         try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".hnsw") as tmp:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".voyager") as tmp:
                 temp_file_path = tmp.name
             
-            index.save_index(temp_file_path)
+            index.save(temp_file_path)
             
             with open(temp_file_path, 'rb') as f:
                 index_bytes = f.read()
@@ -579,7 +578,7 @@ def build_and_store_artist_index(db_conn=None):
 
 def load_artist_index_for_querying(force_reload=False):
     """
-    Load the artist HNSW index from database into memory.
+    Load the artist Voyager index from database into memory.
     
     Args:
         force_reload: If True, force reload even if already loaded
@@ -630,26 +629,9 @@ def load_artist_index_for_querying(force_reload=False):
             # Store GMM parameters
             artist_gmm_params = gmm_params_dict
             
-            # Determine dimensionality
-            first_artist = artist_map[0]
-            first_gmm = gmm_params_dict[first_artist]
-            gmm_vector_dim = len(serialize_gmm_for_hnsw(first_gmm))
-            
-            # Load HNSW index from bytes using temp file
-            index = hnswlib.Index(space='l2', dim=gmm_vector_dim)
-            
-            temp_file_path = None
-            try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".hnsw") as tmp:
-                    temp_file_path = tmp.name
-                    tmp.write(index_bytes)
-                
-                index.load_index(temp_file_path, max_elements=len(artist_map))
-            finally:
-                if temp_file_path and os.path.exists(temp_file_path):
-                    os.remove(temp_file_path)
-            
-            index.set_ef(HNSW_EF_SEARCH)
+            # Load Voyager index from bytes using BytesIO stream
+            index_stream = io.BytesIO(index_bytes)
+            index = voyager.Index.load(index_stream)
             
             artist_index = index
             
@@ -789,13 +771,13 @@ def compute_component_matches(gmm1_params: Dict, gmm2_params: Dict, artist1_name
 
 def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = None, include_component_matches: bool = False) -> List[Dict]:
     """
-    Find similar artists using the HNSW index.
+    Find similar artists using the Voyager index.
     Accepts either artist name or artist ID.
     
     Args:
         query_artist: Name or ID of the query artist
         n: Number of similar artists to return
-        ef_search: HNSW search parameter (higher = more accurate but slower)
+        ef_search: Voyager search parameter (higher = more accurate but slower)
         include_component_matches: If True, include component-level similarity explanation
         
     Returns: List of dictionaries with 'artist', 'artist_id', 'divergence' keys
@@ -818,17 +800,17 @@ def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = N
         logger.warning(f"Artist '{artist_name}' not found in index")
         return []
     
-    # Get query artist's HNSW ID
+    # Get query artist's Voyager ID
     query_id = reverse_artist_map[artist_name]
     
     # Get query GMM parameters
     query_gmm = artist_gmm_params[artist_name]
     
-    # Set ef_search if provided
+    # Set ef_search if provided (voyager uses .ef property instead of set_ef method)
     if ef_search is not None:
-        artist_index.set_ef(ef_search)
+        artist_index.ef = ef_search
     
-    # HNSW search: get similar artists based on weighted mean distance
+    # Voyager search: get similar artists based on weighted mean distance
     k_candidates = min(n + 1, len(artist_map))  # +1 to account for self
     
     # Get query vector (weighted mean of GMM)
@@ -871,7 +853,7 @@ def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = N
         
         results.append(result)
     
-    # Return top N (already sorted by HNSW)
+    # Return top N (already sorted by Voyager)
     return results[:n]
 
 
