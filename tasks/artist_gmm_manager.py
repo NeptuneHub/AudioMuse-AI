@@ -816,15 +816,19 @@ def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = N
     # Get query vector (weighted mean of GMM)
     query_vector = serialize_gmm_for_hnsw(query_gmm)
     
-    # Search
-    labels, distances = artist_index.knn_query(query_vector, k=k_candidates)
+    # Voyager search: get similar artists based on weighted mean distance
+    try:
+        labels, distances = artist_index.query(query_vector, k=k_candidates)
+    except Exception as e:
+        logger.error(f"Voyager query failed for artist '{artist_name}': {e}", exc_info=True)
+        return []
     
     # Build results (skip self)
     results = []
     
     from app_helper_artist import get_artist_id_by_name
     
-    for idx, dist in zip(labels[0], distances[0]):
+    for idx, dist in zip(labels, distances):
         if idx == query_id:
             continue  # Skip self
         
