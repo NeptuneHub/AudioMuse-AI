@@ -41,11 +41,131 @@ def clean_playlist_name(name):
     return cleaned_name
 
 
-# --- Ollama Specific Function ---
+# --- OpenAI-Compatible API Function (used for both Ollama and OpenAI/OpenRouter) ---
+def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api_key="no-key-needed"):
+    """
+    Calls an OpenAI-compatible API endpoint to get a playlist name.
+    This works for Ollama (no API key needed) and OpenAI/OpenRouter (API key required).
+    This version handles streaming responses and extracts only the non-think part.
+
+    Args:
+        server_url (str): The URL of the API endpoint (e.g., "http://192.168.3.15:11434/api/generate" for Ollama,
+                         or "https://openrouter.ai/api/v1/chat/completions" for OpenRouter).
+        model_name (str): The model to use (e.g., "deepseek-r1:1.5b" for Ollama, "openai/gpt-4" for OpenRouter).
+        full_prompt (str): The complete prompt text to send to the model.
+        api_key (str): API key for authentication. Use "no-key-needed" for Ollama.
+    Returns:
+        str: The extracted playlist name from the model's response, or an error message.
+    """
+    # Detect which format to use based on API key and URL
+    is_openai_format = api_key != "no-key-needed" or "openai" in server_url.lower() or "openrouter" in server_url.lower()
+
+    headers = {
+        "Content-Type": "application/json"
+    }
+
+    # Add Authorization header if API key is provided and not the default "no-key-needed"
+    if api_key and api_key != "no-key-needed":
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    # Prepare payload based on format
+    if is_openai_format:
+        # OpenAI/OpenRouter format uses chat completions
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": full_prompt}],
+            "stream": True,
+            "temperature": 0.9,
+            "max_tokens": 5000
+        }
+    else:
+        # Ollama format uses generate endpoint
+        payload = {
+            "model": model_name,
+            "prompt": full_prompt,
+            "stream": True,
+            "options": {
+                "num_predict": 5000,
+                "temperature": 0.9
+            }
+        }
+
+    try:
+        logger.debug("Starting API call for model '%s' at '%s' (format: %s).", model_name, server_url, "OpenAI" if is_openai_format else "Ollama")
+
+        response = requests.post(server_url, headers=headers, data=json.dumps(payload), stream=True, timeout=960)
+        response.raise_for_status()
+        full_raw_response_content = ""
+
+        for line in response.iter_lines():
+            if not line:
+                continue
+
+            line_str = line.decode('utf-8', errors='ignore').strip()
+
+            # Skip SSE comments (lines starting with :)
+            if line_str.startswith(':'):
+                continue
+
+            # Handle SSE data format (OpenRouter/OpenAI)
+            if line_str.startswith('data: '):
+                line_str = line_str[6:]  # Remove 'data: ' prefix
+
+                # Check for end of stream marker
+                if line_str == '[DONE]':
+                    break
+
+            # Try to parse JSON
+            try:
+                chunk = json.loads(line_str)
+
+                # Extract content based on format
+                if is_openai_format:
+                    # OpenAI/OpenRouter format
+                    if 'choices' in chunk and len(chunk['choices']) > 0:
+                        choice = chunk['choices'][0]
+
+                        # Check for finish
+                        if choice.get('finish_reason') == 'stop':
+                            break
+
+                        # Extract text from delta.content or text field
+                        if 'delta' in choice and 'content' in choice['delta']:
+                            full_raw_response_content += choice['delta']['content']
+                        elif 'text' in choice:
+                            full_raw_response_content += choice['text']
+                else:
+                    # Ollama format
+                    if 'response' in chunk:
+                        full_raw_response_content += chunk['response']
+                    if chunk.get('done'):
+                        break
+
+            except json.JSONDecodeError:
+                logger.debug("Could not decode JSON line from stream: %s", line_str)
+                continue
+
+        # Extract text after common thought tags
+        thought_enders = ["</think>", "[/INST]", "[/THOUGHT]"]
+        extracted_text = full_raw_response_content.strip()
+        for end_tag in thought_enders:
+             if end_tag in extracted_text:
+                 extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
+
+        return extracted_text
+
+    except requests.exceptions.RequestException as e:
+        logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
+        return "Error: AI service is currently unavailable."
+    except Exception as e:
+        logger.error("An unexpected error occurred in get_openai_compatible_playlist_name", exc_info=True)
+        return "Error: AI service is currently unavailable."
+
+# --- Ollama Specific Function (wrapper for backward compatibility) ---
 def get_ollama_playlist_name(ollama_url, model_name, full_prompt):
     """
     Calls a self-hosted Ollama instance to get a playlist name.
-    This version handles streaming responses and extracts only the non-think part.
+    This is a wrapper around get_openai_compatible_playlist_name for backward compatibility.
 
     Args:
         ollama_url (str): The URL of your Ollama instance (e.g., "http://192.168.3.15:11434/api/generate").
@@ -54,59 +174,7 @@ def get_ollama_playlist_name(ollama_url, model_name, full_prompt):
     Returns:
         str: The extracted playlist name from the model's response, or an error message.
     """
-    # Ollama API endpoint is usually just the base URL + /api/generate
-    options = {
-        "num_predict": 5000, # Max tokens to generate
-        "temperature": 0.9
-    }
-
-    payload = {
-        "model": model_name,
-        "prompt": full_prompt,
-        "stream": True, # We handle streaming to get the full response
-        "options": options
-    }
-
-    headers = {
-        "Content-Type": "application/json"
-    }
-
-    try:
-        logger.debug("Starting API call for model '%s' at '%s'.", model_name, ollama_url)
-
-        response = requests.post(ollama_url, headers=headers, data=json.dumps(payload), stream=True, timeout=960) # Increased timeout
-        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-        full_raw_response_content = ""
-        for line in response.iter_lines():
-            if line:
-                try:
-                    chunk = json.loads(line)
-                    if 'response' in chunk:
-                        full_raw_response_content += chunk['response']
-                    if chunk.get('done'):
-                        break # Stop processing when the 'done' signal is received
-                except json.JSONDecodeError:
-                    logger.warning("Could not decode JSON line from stream: %s", line.decode('utf-8', errors='ignore'))
-                    continue
-
-        # Ollama models often include thought blocks, extract text after common thought tags
-        # Using a simple approach: find the last occurrence of common thought block enders
-        thought_enders = ["</think>", "[/INST]", "[/THOUGHT]"] # Add other common patterns if needed
-        extracted_text = full_raw_response_content.strip()
-        for end_tag in thought_enders:
-             if end_tag in extracted_text:
-                 extracted_text = extracted_text.split(end_tag, 1)[-1].strip() # Take everything after the last tag
-        # The final cleaning and length check is done in the general function
-        return extracted_text
-
-    except requests.exceptions.RequestException as e:
-        # Catch network-related errors, bad HTTP responses, etc.
-        logger.error("Error calling Ollama API: %s", e, exc_info=True)
-        return "Error: AI service is currently unavailable."
-    except Exception as e:
-        # Catch any other unexpected errors.
-        logger.error("An unexpected error occurred in get_ollama_playlist_name", exc_info=True)
-        return "Error: AI service is currently unavailable."
+    return get_openai_compatible_playlist_name(ollama_url, model_name, full_prompt, api_key="no-key-needed")
 
 # --- Gemini Specific Function ---
 def get_gemini_playlist_name(gemini_api_key, model_name, full_prompt):
@@ -205,7 +273,7 @@ def get_mistral_playlist_name(mistral_api_key, model_name, full_prompt):
         return "Error: AI service is currently unavailable."
 
 # --- General AI Naming Function ---
-def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key, gemini_model_name, mistral_api_key, mistral_model_name, prompt_template, feature1, feature2, feature3, song_list, other_feature_scores_dict):
+def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key, gemini_model_name, mistral_api_key, mistral_model_name, prompt_template, feature1, feature2, feature3, song_list, other_feature_scores_dict, openai_server_url=None, openai_model_name=None, openai_api_key=None):
     """
     Selects and calls the appropriate AI model based on the provider.
     Constructs the full prompt including new features.
@@ -258,6 +326,11 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
 
     if provider == "OLLAMA":
         name = get_ollama_playlist_name(ollama_url, ollama_model_name, full_prompt)
+    elif provider == "OPENAI":
+        # Use OpenAI-compatible API with API key
+        if not openai_server_url or not openai_model_name or not openai_api_key:
+            return "Error: OpenAI configuration is incomplete. Please provide server URL, model name, and API key."
+        name = get_openai_compatible_playlist_name(openai_server_url, openai_model_name, full_prompt, openai_api_key)
     elif provider == "GEMINI":
         name = get_gemini_playlist_name(gemini_api_key, gemini_model_name, full_prompt)
     elif provider == "MISTRAL":

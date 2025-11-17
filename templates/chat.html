@@ -18,6 +18,7 @@
                     <select id="aiProvider">
                         <option value="NONE">None</option>
                         <option value="OLLAMA">Ollama</option>
+                        <option value="OPENAI">OpenAI / OpenRouter</option>
                         <option value="GEMINI">Gemini</option>
                         <option value="MISTRAL">Mistral</option>
                     </select>
@@ -28,6 +29,18 @@
                     <div style="margin-top: 1.5rem;">
                         <label for="ollamaServerUrl">Ollama Server URL</label>
                         <input type="text" id="ollamaServerUrl" placeholder="e.g., http://localhost:11434/api/generate">
+                    </div>
+                </div>
+                <div id="openaiConfig" class="hidden">
+                    <label for="openaiModel">OpenAI Model</label>
+                    <input type="text" id="openaiModel" placeholder="e.g., openai/gpt-4 or meta-llama/llama-3.2-3b-instruct:free">
+                    <div style="margin-top: 1.5rem;">
+                        <label for="openaiServerUrl">OpenAI Server URL</label>
+                        <input type="text" id="openaiServerUrl" placeholder="e.g., https://openrouter.ai/api/v1/chat/completions">
+                    </div>
+                    <div style="margin-top: 1.5rem;">
+                        <label for="openaiApiKey">API Key</label>
+                        <input type="password" id="openaiApiKey" placeholder="Enter your OpenAI/OpenRouter API key">
                     </div>
                 </div>
                 <!-- REMOVED: The Gemini API Key input field is removed as it should not be sent from the frontend -->
@@ -90,10 +103,14 @@
             // --- DOM Element References ---
             const aiProviderSelect = document.getElementById('aiProvider');
             const ollamaConfigDiv = document.getElementById('ollamaConfig');
+            const openaiConfigDiv = document.getElementById('openaiConfig');
             const geminiConfigDiv = document.getElementById('geminiConfig');
             const mistralConfigDiv = document.getElementById('mistralConfig');
             const ollamaModelSelect = document.getElementById('ollamaModel');
             const ollamaServerUrlInput = document.getElementById('ollamaServerUrl'); // Added Ollama Server URL input
+            const openaiModelSelect = document.getElementById('openaiModel');
+            const openaiServerUrlInput = document.getElementById('openaiServerUrl');
+            const openaiApiKeyInput = document.getElementById('openaiApiKey');
             const geminiModelSelect = document.getElementById('geminiModel');
             const mistralModelSelect = document.getElementById('mistralModel');
             const playlistForm = document.getElementById('playlistForm');
@@ -136,7 +153,11 @@
                 // ollamaModelSelect.innerHTML = ''; // Not needed for input field
                 ollamaModelSelect.value = globalConfig.default_ollama_model_name || ""; // Set default value for input
                 ollamaServerUrlInput.value = globalConfig.ollama_server_url || "http://localhost:11434/api/generate"; // Pre-fill Ollama Server URL
-                
+
+                openaiModelSelect.value = globalConfig.default_openai_model_name || ""; // Set default value for OpenAI
+                openaiServerUrlInput.value = globalConfig.openai_server_url || "https://openrouter.ai/api/v1/chat/completions"; // Pre-fill OpenAI Server URL
+                openaiApiKeyInput.value = ""; // Don't pre-fill API key for security
+
                 geminiModelSelect.value = globalConfig.default_gemini_model_name || "gemini-2.5-pro";
                 mistralModelSelect.value = globalConfig.default_mistral_model_name || "ministral-3b-latest";
             }
@@ -149,18 +170,27 @@
                 const provider = aiProviderSelect.value;
                 if (provider === 'OLLAMA') {
                     ollamaConfigDiv.classList.remove('hidden');
+                    openaiConfigDiv.classList.add('hidden');
+                    geminiConfigDiv.classList.add('hidden');
+                    mistralConfigDiv.classList.add('hidden');
+                } else if (provider === 'OPENAI') {
+                    ollamaConfigDiv.classList.add('hidden');
+                    openaiConfigDiv.classList.remove('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.add('hidden');
                 } else if (provider === 'GEMINI') {
                     ollamaConfigDiv.classList.add('hidden');
+                    openaiConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.remove('hidden');
                     mistralConfigDiv.classList.add('hidden');
                 } else if (provider === 'MISTRAL') {
                     ollamaConfigDiv.classList.add('hidden');
+                    openaiConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.remove('hidden');
                 } else {
                     ollamaConfigDiv.classList.add('hidden');
+                    openaiConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.add('hidden');
                 }
@@ -189,6 +219,10 @@
                 if (payload.ai_provider === 'OLLAMA') {
                     payload.ai_model = ollamaModelSelect.value;
                     payload.ollama_server_url = ollamaServerUrlInput.value; // Include Ollama Server URL
+                } else if (payload.ai_provider === 'OPENAI') {
+                    payload.ai_model = openaiModelSelect.value;
+                    payload.openai_server_url = openaiServerUrlInput.value; // Include OpenAI Server URL
+                    payload.openai_api_key = openaiApiKeyInput.value; // Include OpenAI API Key
                 } else if (payload.ai_provider === 'GEMINI') {
                     payload.ai_model = geminiModelSelect.value;
                     // REMOVED: The API key is no longer sent from the frontend
