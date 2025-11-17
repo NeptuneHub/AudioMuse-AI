@@ -498,10 +498,34 @@ def build_and_store_artist_index(db_conn=None):
         
         logger.info(f"Voyager vector dimension: {gmm_vector_dim}")
         
+        # Adaptive parameters based on dataset size
+        # For small datasets, Voyager needs smaller M and ef_construction values
+        num_artists = len(artist_gmms)
+        
+        # M: number of bi-directional links (should be smaller for small datasets)
+        # Rule of thumb: M should be at most num_elements / 2, typically 12-48
+        if num_artists < 100:
+            M = min(12, max(4, num_artists // 4))
+        elif num_artists < 1000:
+            M = 16
+        else:
+            M = VOYAGER_M
+        
+        # ef_construction: must be > M, but not too large for small datasets
+        # Rule of thumb: 2*M to 10*M depending on size
+        if num_artists < 100:
+            ef_construction = max(M + 1, min(100, num_artists * 2))
+        elif num_artists < 1000:
+            ef_construction = 100
+        else:
+            ef_construction = VOYAGER_EF_CONSTRUCTION
+        
+        logger.info(f"Using adaptive Voyager parameters for {num_artists} artists: M={M}, ef_construction={ef_construction}")
+        
         # Initialize Voyager index
         # Note: We use L2 (Euclidean) space here, but actual similarity will use custom Jeffreys divergence
         # The Voyager index is primarily for fast approximate search structure
-        index = voyager.Index(voyager.Space.Euclidean, num_dimensions=gmm_vector_dim, M=VOYAGER_M, ef_construction=VOYAGER_EF_CONSTRUCTION)
+        index = voyager.Index(voyager.Space.Euclidean, num_dimensions=gmm_vector_dim, M=M, ef_construction=ef_construction)
         
         # Create mappings
         artist_map_dict = {}
@@ -524,11 +548,17 @@ def build_and_store_artist_index(db_conn=None):
             reverse_artist_map_dict[artist_name] = voyager_id
         
         # Add all vectors to index (batch add for better performance)
-        vectors_array = np.array(vectors)
-        ids_array = np.array(ids)
-        index.add_items(vectors_array, ids=ids_array)
-        
-        logger.info(f"Added {len(artist_gmms)} artists to Voyager index")
+        try:
+            vectors_array = np.array(vectors, dtype=np.float32)
+            ids_array = np.array(ids, dtype=np.int64)
+            
+            logger.info(f"Adding {len(vectors)} vectors with shape {vectors_array.shape} to Voyager index...")
+            index.add_items(vectors_array, ids=ids_array)
+            
+            logger.info(f"Successfully added {len(artist_gmms)} artists to Voyager index (num_elements={index.num_elements})")
+        except Exception as e:
+            logger.error(f"Failed to add items to Voyager index: {e}", exc_info=True)
+            raise
         
         # Step 4: Serialize and store in database
         logger.info("Serializing and storing index in database...")
@@ -539,10 +569,16 @@ def build_and_store_artist_index(db_conn=None):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".voyager") as tmp:
                 temp_file_path = tmp.name
             
+            logger.info(f"Saving Voyager index to temp file: {temp_file_path}")
             index.save(temp_file_path)
             
             with open(temp_file_path, 'rb') as f:
                 index_bytes = f.read()
+            
+            logger.info(f"Index serialized to {len(index_bytes)} bytes")
+        except Exception as e:
+            logger.error(f"Failed to serialize Voyager index: {e}", exc_info=True)
+            raise
         finally:
             if temp_file_path and os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
@@ -616,9 +652,13 @@ def load_artist_index_for_querying(force_reload=False):
             
             index_bytes, artist_map_json, gmm_params_json = row
             
+            logger.info(f"Retrieved artist index from database: {len(index_bytes)} bytes")
+            
             # Deserialize mappings and GMM parameters
             artist_map_dict = json.loads(artist_map_json)
             gmm_params_dict = json.loads(gmm_params_json)
+            
+            logger.info(f"Deserialized metadata: {len(artist_map_dict)} artists")
             
             # Convert string keys to integers for artist_map
             artist_map = {int(k): v for k, v in artist_map_dict.items()}
@@ -630,12 +670,17 @@ def load_artist_index_for_querying(force_reload=False):
             artist_gmm_params = gmm_params_dict
             
             # Load Voyager index from bytes using BytesIO stream
-            index_stream = io.BytesIO(index_bytes)
-            index = voyager.Index.load(index_stream)
-            
-            artist_index = index
-            
-            logger.info(f"Artist index loaded successfully ({len(artist_map)} artists)")
+            logger.info("Loading Voyager index from BytesIO stream...")
+            try:
+                index_stream = io.BytesIO(index_bytes)
+                index = voyager.Index.load(index_stream)
+                
+                artist_index = index
+                
+                logger.info(f"Artist index loaded successfully ({len(artist_map)} artists, num_elements={artist_index.num_elements})")
+            except Exception as load_error:
+                logger.error(f"Failed to load Voyager index from BytesIO: {load_error}", exc_info=True)
+                raise
             
         except Exception as e:
             logger.error(f"Failed to load artist index: {e}", exc_info=True)
