@@ -326,7 +326,7 @@ def start_clustering_endpoint():
             "ollama_model_name_param": data.get('ollama_model_name', OLLAMA_MODEL_NAME),
             "openai_server_url_param": data.get('openai_server_url', OPENAI_SERVER_URL),
             "openai_model_name_param": data.get('openai_model_name', OPENAI_MODEL_NAME),
-            "openai_api_key_param": data.get('openai_api_key', OPENAI_API_KEY),
+            "openai_api_key_param": data.get('openai_api_key') or OPENAI_API_KEY,  # Use env var if empty string
             # This line already falls back to the config value if the request doesn't contain it.
             "gemini_api_key_param": data.get('gemini_api_key', GEMINI_API_KEY),
             "gemini_model_name_param": data.get('gemini_model_name', GEMINI_MODEL_NAME),

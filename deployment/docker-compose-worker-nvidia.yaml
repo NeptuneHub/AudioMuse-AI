@@ -24,7 +24,12 @@ services:
       POSTGRES_HOST: "${WORKER_POSTGRES_HOST:-postgres}" # Replace via WORKER_POSTGRES_HOST in .env when running remotely
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
       REDIS_URL: "${WORKER_REDIS_URL:-redis://redis:6379/0}"  # Set WORKER_REDIS_URL in .env for remote connections
+      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      OPENAI_SERVER_URL: "${OPENAI_SERVER_URL}"
+      OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       TEMP_DIR: "/app/temp_audio"
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"

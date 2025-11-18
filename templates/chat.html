@@ -56,10 +56,6 @@
                         <label for="openaiServerUrl">OpenAI Server URL</label>
                         <input type="text" id="openaiServerUrl" placeholder="e.g., https://openrouter.ai/api/v1/chat/completions">
                     </div>
-                    <div style="margin-top: 1.5rem;">
-                        <label for="openaiApiKey">API Key</label>
-                        <input type="password" id="openaiApiKey" placeholder="Enter your OpenAI/OpenRouter API key">
-                    </div>
                 </div>
                 <!-- REMOVED: The Gemini API Key input field is removed as it should not be sent from the frontend -->
                 <div id="geminiConfig" class="hidden">
@@ -146,7 +142,6 @@
             const ollamaServerUrlInput = document.getElementById('ollamaServerUrl'); // Added Ollama Server URL input
             const openaiModelSelect = document.getElementById('openaiModel');
             const openaiServerUrlInput = document.getElementById('openaiServerUrl');
-            const openaiApiKeyInput = document.getElementById('openaiApiKey');
             const geminiModelSelect = document.getElementById('geminiModel');
             const mistralModelSelect = document.getElementById('mistralModel');
             const playlistForm = document.getElementById('playlistForm');
@@ -192,7 +187,6 @@
 
                 openaiModelSelect.value = globalConfig.default_openai_model_name || ""; // Set default value for OpenAI
                 openaiServerUrlInput.value = globalConfig.openai_server_url || "https://openrouter.ai/api/v1/chat/completions"; // Pre-fill OpenAI Server URL
-                openaiApiKeyInput.value = ""; // Don't pre-fill API key for security
 
                 geminiModelSelect.value = globalConfig.default_gemini_model_name || "gemini-2.5-pro";
                 mistralModelSelect.value = globalConfig.default_mistral_model_name || "ministral-3b-latest";
@@ -258,7 +252,6 @@
                 } else if (payload.ai_provider === 'OPENAI') {
                     payload.ai_model = openaiModelSelect.value;
                     payload.openai_server_url = openaiServerUrlInput.value; // Include OpenAI Server URL
-                    payload.openai_api_key = openaiApiKeyInput.value; // Include OpenAI API Key
                 } else if (payload.ai_provider === 'GEMINI') {
                     payload.ai_model = geminiModelSelect.value;
                     // REMOVED: The API key is no longer sent from the frontend
