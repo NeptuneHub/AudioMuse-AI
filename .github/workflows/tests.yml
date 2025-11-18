@@ -21,12 +21,16 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # Install core dependencies needed for imports
-        pip install pytest numpy==1.26.4 scipy==1.15.3 scikit-learn==1.7.2
-        pip install pydub librosa==0.11.0 onnx==1.14.1 onnxruntime==1.19.2
-        pip install redis rq Flask psycopg2-binary pyyaml
-        pip install ftfy requests google-generativeai mistralai
-        pip install voyager rapidfuzz sqlglot soundfile six flasgger umap-learn python-mpd2 hnswlib
+        # Install core test dependencies (matches test/requirements.txt)
+        pip install pytest>=7.0.0
+        pip install numpy==1.26.4 scipy==1.15.3 scikit-learn==1.7.2
+        pip install librosa==0.11.0 soundfile==0.13.1 numba==0.60.0 resampy
+        pip install onnx>=1.16.0 onnxruntime==1.19.2
+        pip install pydub
+        pip install psycopg2-binary ftfy requests
+        # Additional runtime dependencies needed for imports
+        pip install redis rq Flask pyyaml voyager rapidfuzz sqlglot six flasgger umap-learn python-mpd2
+        pip install google-generativeai mistralai
 
     - name: Create mock config
       run: |
