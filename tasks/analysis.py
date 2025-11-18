@@ -51,6 +51,8 @@ from ai import get_ai_playlist_name, creative_prompt_template
 from .commons import score_vector
 # MODIFIED: Import from voyager_manager instead of annoy_manager
 from .voyager_manager import build_and_store_voyager_index
+# Import artist GMM manager for artist similarity index
+from .artist_gmm_manager import build_and_store_artist_index
 # MODIFIED: The functions from mediaserver no longer need server-specific parameters.
 from .mediaserver import get_recent_albums, get_tracks_from_album, download_track
 
@@ -493,6 +495,21 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 progress = 10 + int(85 * (idx / float(total_tracks_in_album)))
                 log_and_update_album_task(f"Analyzing track: {track_name_full} ({idx}/{total_tracks_in_album})", progress, current_track_name=track_name_full)
 
+                # Store artist ID mapping for all tracks (even if already analyzed)
+                try:
+                    from app_helper_artist import upsert_artist_mapping
+                    artist_name = item.get('AlbumArtist')
+                    artist_id = item.get('ArtistId')
+                    logger.info(f"Track '{item.get('Name')}': artist_name='{artist_name}', artist_id='{artist_id}'")
+                    if artist_name and artist_id:
+                        upsert_artist_mapping(artist_name, artist_id)
+                        logger.info(f"✓ Stored artist mapping: '{artist_name}' → '{artist_id}'")
+                    else:
+                        if not artist_id:
+                            logger.warning(f"✗ No artist_id for track '{item.get('Name')}' by '{artist_name}'")
+                except Exception as mapping_error:
+                    logger.error(f"Failed to store artist mapping for '{artist_name}': {mapping_error}", exc_info=True)
+
                 if str(item['Id']) in existing_track_ids_set:
                     tracks_skipped_count += 1
                     continue
@@ -659,17 +676,40 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 # Rebuild index in batches as before
                 if albums_completed > last_rebuild_count and (albums_completed - last_rebuild_count) >= REBUILD_INDEX_BATCH_SIZE:
                     log_and_update_main(f"Batch of {albums_completed - last_rebuild_count} albums complete. Rebuilding index and map...", current_progress)
+                    
+                    # Build Voyager index
                     build_and_store_voyager_index(get_db())
-                    # Also rebuild map projection
+                    
+                    # Build artist similarity index
+                    try:
+                        build_and_store_artist_index(get_db())
+                        logger.info('Artist similarity index rebuilt during batch.')
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store artist similarity index during batch rebuild: {e}")
+                    
+                    # Build song map projection
                     try:
                         from app_helper import build_and_store_map_projection
                         build_and_store_map_projection('main_map')
+                        logger.info('Song map projection rebuilt during batch.')
                     except Exception as e:
                         logger.warning(f"Failed to build/store map projection during batch rebuild: {e}")
+                    
+                    # Build artist component projection
+                    try:
+                        from app_helper import build_and_store_artist_projection
+                        build_and_store_artist_projection('artist_map')
+                        logger.info('Artist component projection rebuilt during batch.')
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store artist projection during batch rebuild: {e}")
+                    
+                    # Publish single reload message to trigger Flask container to reload ALL indexes and maps
                     try:
                         redis_conn.publish('index-updates', 'reload')
-                    except Exception:
-                        logger.debug('Could not publish index-updates to redis during rebuild.')
+                        logger.info('Published reload message to Flask container after batch rebuild.')
+                    except Exception as e:
+                        logger.warning(f'Could not publish reload message to redis during batch rebuild: {e}')
+                    
                     last_rebuild_count = albums_completed
 
             for idx, album in enumerate(all_albums):
@@ -692,6 +732,20 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     checked_album_ids.add(album['Id'])
                     logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - no tracks returned by media server.")
                     continue
+
+                # Store artist ID mappings for all tracks in this album (even if already analyzed)
+                try:
+                    from app_helper_artist import upsert_artist_mapping
+                    for track in tracks:
+                        artist_name = track.get('AlbumArtist')
+                        artist_id = track.get('ArtistId')
+                        if artist_name and artist_id:
+                            upsert_artist_mapping(artist_name, artist_id)
+                            logger.info(f"✓ Mapped artist: '{artist_name}' → '{artist_id}'")
+                        elif artist_name and not artist_id:
+                            logger.warning(f"✗ No artist_id for '{artist_name}' in album '{album.get('Name')}'")
+                except Exception as e:
+                    logger.error(f"Failed to store artist mappings for album '{album.get('Name')}': {e}", exc_info=True)
 
                 # If all tracks already exist in DB, skip and log how many.
                 try:
@@ -738,9 +792,16 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 time.sleep(5)
 
             log_and_update_main("Performing final index rebuild...", 95)
-            # MODIFIED: Call the voyager index builder
+            # Build Voyager index (song embeddings)
             build_and_store_voyager_index(get_db())
-            redis_conn.publish('index-updates', 'reload')
+            
+            # Build artist similarity index
+            log_and_update_main("Building artist similarity index...", 96)
+            try:
+                build_and_store_artist_index(get_db())
+                logger.info('Artist similarity index built and stored.')
+            except Exception as e:
+                logger.warning(f"Failed to build/store artist similarity index: {e}")
 
             # Build and store the 2D map projection for the web map (best-effort)
             try:
@@ -752,6 +813,24 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     logger.info('Precomputed map projection build returned no data (no embeddings?).')
             except Exception as e:
                 logger.warning(f"Failed to build/store precomputed map projection: {e}")
+            
+            # Build and store the 2D artist component projection
+            try:
+                from app_helper import build_and_store_artist_projection
+                built = build_and_store_artist_projection('artist_map')
+                if built:
+                    logger.info('Precomputed artist component projection built and stored.')
+                else:
+                    logger.info('Artist component projection build returned no data.')
+            except Exception as e:
+                logger.warning(f"Failed to build/store artist component projection: {e}")
+
+            # Publish reload message to trigger Flask container to reload all indexes and maps
+            try:
+                redis_conn.publish('index-updates', 'reload')
+                logger.info('Published reload message to Flask container after final analysis builds.')
+            except Exception as e:
+                logger.warning(f'Could not publish reload message to redis: {e}')
 
             final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
             log_and_update_main(final_message, 100, task_state=TASK_STATUS_SUCCESS)

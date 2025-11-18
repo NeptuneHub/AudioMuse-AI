@@ -14,13 +14,25 @@
         </div>
 
         <div style="max-width:100%; margin-top:1rem;">
-            <label style="display:block;margin-bottom:.5rem;">Analysis</label>
+            <label style="display:block;margin-bottom:.5rem;" class="label-with-tooltip">
+                Analysis
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon"></span>
+                    <span class="tooltip-text">Schedule automatic song analysis. Uses cron notation: 5 fields (minute hour day month weekday). Example: "0 2 * * 0-5" = 2:00 AM every day except Saturday. "0 2 * * *" = 2:00 AM daily.</span>
+                </span>
+            </label>
             <input id="analysis-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 2 * * 0-5)">
             <div style="margin-top:.5rem;"><input id="analysis-enabled" type="checkbox"> Enable</div>
 
             <hr style="margin:1rem 0;">
 
-            <label style="display:block;margin-bottom:.5rem;">Clustering</label>
+            <label style="display:block;margin-bottom:.5rem;" class="label-with-tooltip">
+                Clustering
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon"></span>
+                    <span class="tooltip-text">Schedule automatic playlist clustering. Uses cron notation: 5 fields (minute hour day month weekday). Example: "0 2 * * 6" = 2:00 AM every Saturday. Run less frequently than analysis since it processes all analyzed songs.</span>
+                </span>
+            </label>
             <input id="clustering-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 2 * * 6)">
             <div style="margin-top:.5rem;"><input id="clustering-enabled" type="checkbox"> Enable</div>
 

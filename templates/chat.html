@@ -14,7 +14,13 @@
             <legend>AI Configuration</legend>
             <div class="param-group">
                 <div>
-                    <label for="aiProvider">AI Provider</label>
+                    <label for="aiProvider" class="label-with-tooltip">
+                        AI Provider
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Choose an AI service to help create your playlist. Gemini and Mistral are cloud services (require API key). Ollama runs locally on your computer. "None" lets you describe moods manually.</span>
+                        </span>
+                    </label>
                     <select id="aiProvider">
                         <option value="NONE">None</option>
                         <option value="OLLAMA">Ollama</option>
@@ -24,10 +30,22 @@
                     </select>
                 </div>
                 <div id="ollamaConfig" class="hidden">
-                    <label for="ollamaModel">Ollama Model</label>
+                    <label for="ollamaModel" class="label-with-tooltip">
+                        Ollama Model
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">The specific AI model running on your Ollama server. Popular choices: mistral:7b, llama2, phi. Larger models give better results but need more RAM.</span>
+                        </span>
+                    </label>
                     <input type="text" id="ollamaModel" placeholder="e.g., mistral:7b">
                     <div style="margin-top: 1.5rem;">
-                        <label for="ollamaServerUrl">Ollama Server URL</label>
+                        <label for="ollamaServerUrl" class="label-with-tooltip">
+                            Ollama Server URL
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">The web address where your Ollama server is running. Usually http://localhost:11434/api/generate if running on the same machine.</span>
+                            </span>
+                        </label>
                         <input type="text" id="ollamaServerUrl" placeholder="e.g., http://localhost:11434/api/generate">
                     </div>
                 </div>
@@ -45,11 +63,23 @@
                 </div>
                 <!-- REMOVED: The Gemini API Key input field is removed as it should not be sent from the frontend -->
                 <div id="geminiConfig" class="hidden">
-                    <label for="geminiModel">Gemini Model</label>
+                    <label for="geminiModel" class="label-with-tooltip">
+                        Gemini Model
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Google's AI model to use. gemini-2.0-flash-exp is fast and free. gemini-2.5-pro gives better quality but may have usage limits.</span>
+                        </span>
+                    </label>
                     <input type="text" id="geminiModel" placeholder="e.g., gemini-2.5-pro">
                 </div>
                 <div id="mistralConfig" class="hidden">
-                    <label for="mistralModel">Mistral Model</label>
+                    <label for="mistralModel" class="label-with-tooltip">
+                        Mistral Model
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Mistral AI's model to use. ministral-3b-latest is lightweight and fast. mistral-large-latest gives the best understanding of complex requests.</span>
+                        </span>
+                    </label>
                     <input type="text" id="mistralModel" placeholder="e.g., ministral-3b-latest">
                 </div>
             </div>
@@ -58,7 +88,13 @@
         <!-- User Input Section -->
         <div class="param-group" style="margin-top: 2rem;">
             <div>
-                <label for="userInput">What kind of music are you in the mood for?</label>
+                <label for="userInput" class="label-with-tooltip">
+                    What kind of music are you in the mood for?
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Describe the vibe you want! Examples: "Upbeat songs for a workout", "Calm acoustic music for studying", "Dark and moody electronic". The AI will find songs that match your description.</span>
+                    </span>
+                </label>
                 <textarea id="userInput" placeholder="e.g., Upbeat indie rock for a summer road trip" rows="4" required></textarea>
             </div>
         </div>

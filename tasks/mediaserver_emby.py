@@ -261,7 +261,9 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
     # Apply artist field prioritization to standalone tracks
     for track in all_tracks:
         title = track.get('Name', 'Unknown')
-        track['AlbumArtist'] = _select_best_artist(track, title)
+        artist_name, artist_id = _select_best_artist(track, title)
+        track['AlbumArtist'] = artist_name
+        track['ArtistId'] = artist_id
 
     if all_tracks:
         logger.info(f"Found {len(all_tracks)} recent standalone tracks (not in albums)")
@@ -470,19 +472,28 @@ def _select_best_artist(item, title="Unknown"):
     """
     Selects the best artist field from Emby item, prioritizing track artists over album artists.
     This helps avoid "Various Artists" issues in compilation albums.
+    Returns tuple: (artist_name, artist_id)
     """
     # Priority: Artists array (track artists) > AlbumArtist > fallback
-    if item.get('Artists') and len(item['Artists']) > 0:
+    # Emby provides ArtistItems array with Id and Name
+    if item.get('ArtistItems') and len(item['ArtistItems']) > 0:
+        track_artist = item['ArtistItems'][0].get('Name', 'Unknown Artist')
+        artist_id = item['ArtistItems'][0].get('Id')
+        used_field = 'ArtistItems[0]'
+    elif item.get('Artists') and len(item['Artists']) > 0:
         track_artist = item['Artists'][0]  # Take first artist if multiple
+        artist_id = None
         used_field = 'Artists[0]'
     elif item.get('AlbumArtist'):
         track_artist = item['AlbumArtist']
+        artist_id = None
         used_field = 'AlbumArtist'
     else:
         track_artist = 'Unknown Artist'
+        artist_id = None
         used_field = 'fallback'
     
-    return track_artist
+    return track_artist, artist_id
 
 def get_all_songs(user_creds=None):
     # Emby might have a maximum number of items returned per request.
@@ -510,7 +521,9 @@ def get_all_songs(user_creds=None):
             # Apply artist field prioritization
             for item in items:
                 title = item.get('Name', 'Unknown')
-                item['AlbumArtist'] = _select_best_artist(item, title)
+                artist_name, artist_id = _select_best_artist(item, title)
+                item['AlbumArtist'] = artist_name
+                item['ArtistId'] = artist_id
 
             all_items.extend(items)
 
@@ -660,7 +673,9 @@ def get_top_played_songs(limit, user_creds=None):
         # Apply artist field prioritization to each track
         for item in items:
             title = item.get('Name', 'Unknown')
-            item['AlbumArtist'] = _select_best_artist(item, title)
+            artist_name, artist_id = _select_best_artist(item, title)
+            item['AlbumArtist'] = artist_name
+            item['ArtistId'] = artist_id
         
         return items
     except Exception as e:
