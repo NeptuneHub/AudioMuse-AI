@@ -573,6 +573,7 @@ from app_alchemy import alchemy_bp
 from app_map import map_bp
 from app_waveform import waveform_bp
 from app_artist_similarity import artist_similarity_bp
+from app_extend_playlist import extend_playlist_bp
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -587,6 +588,7 @@ app.register_blueprint(alchemy_bp)
 app.register_blueprint(map_bp)
 app.register_blueprint(waveform_bp)
 app.register_blueprint(artist_similarity_bp)
+app.register_blueprint(extend_playlist_bp)
 
 if __name__ == '__main__':
   os.makedirs(TEMP_DIR, exist_ok=True)

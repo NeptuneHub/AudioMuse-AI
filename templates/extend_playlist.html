@@ -1,0 +1,510 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    .param-group {
+        display: flex;
+        gap: 1.5rem;
+        margin-bottom: 1rem;
+        flex-wrap: wrap;
+    }
+
+    .param-group > div {
+        flex: 1;
+        min-width: 200px;
+    }
+
+    .slider-container {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .slider-value {
+        font-weight: 600;
+        color: var(--primary-color, #3B82F6);
+    }
+
+    input[type="range"] {
+        width: 100%;
+    }
+
+    .results-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 1rem;
+    }
+
+    .results-table th,
+    .results-table td {
+        padding: 0.75rem;
+        text-align: left;
+        border-bottom: 1px solid #e5e7eb;
+    }
+
+    .results-table th {
+        background-color: #f3f4f6;
+        font-weight: 600;
+    }
+
+    .results-table tr:hover {
+        background-color: #f9fafb;
+    }
+
+    .action-buttons {
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .btn-accept {
+        background-color: #16A34A;
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+    }
+
+    .btn-accept:hover {
+        background-color: #15803D;
+    }
+
+    .btn-decline {
+        background-color: #DC2626;
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+    }
+
+    .btn-decline:hover {
+        background-color: #B91C1C;
+    }
+
+    .accepted-row {
+        background-color: #D1FAE5 !important;
+    }
+
+    .declined-row {
+        background-color: #FEE2E2 !important;
+        opacity: 0.6;
+    }
+
+    .status-badge {
+        display: inline-block;
+        padding: 0.25rem 0.75rem;
+        border-radius: 0.375rem;
+        font-size: 0.875rem;
+        font-weight: 600;
+    }
+
+    .status-accepted {
+        background-color: #16A34A;
+        color: white;
+    }
+
+    .status-declined {
+        background-color: #DC2626;
+        color: white;
+    }
+
+    .stats-container {
+        display: flex;
+        gap: 1.5rem;
+        margin-bottom: 1rem;
+        padding: 1rem;
+        background-color: #f3f4f6;
+        border-radius: 0.5rem;
+    }
+
+    .stat-item {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+    }
+
+    .stat-label {
+        font-size: 0.875rem;
+        color: #6B7280;
+    }
+
+    .stat-value {
+        font-size: 1.25rem;
+        font-weight: 700;
+        color: #1F2937;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Extend Playlist</h1>
+        <p>Find songs similar to an entire playlist and expand it with curated selections.</p>
+    </header>
+
+    <form id="extend-playlist-form">
+        <div class="param-group">
+            <div>
+                <label for="playlist_select" class="label-with-tooltip">
+                    Select Playlist:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Choose a playlist from your library to extend with similar songs.</span>
+                    </span>
+                </label>
+                <select id="playlist_select" name="playlist_select" required>
+                    <option value="">-- Select a playlist --</option>
+                </select>
+            </div>
+
+            <div>
+                <label for="max_songs" class="label-with-tooltip">
+                    Maximum Songs:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Maximum number of similar songs to find. Fewer songs may be returned based on your similarity threshold.</span>
+                    </span>
+                </label>
+                <input type="number" id="max_songs" name="max_songs" value="50" min="1" max="200">
+            </div>
+        </div>
+
+        <div class="param-group">
+            <div class="slider-container">
+                <label for="similarity_threshold" class="label-with-tooltip">
+                    Similarity Threshold: <span id="threshold_value" class="slider-value">0.50</span>
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Lower values = more similar songs. Higher values = more diverse results. Range: 0.0 (most similar) to 1.0 (least similar).</span>
+                    </span>
+                </label>
+                <input type="range" id="similarity_threshold" name="similarity_threshold"
+                       min="0" max="1" step="0.01" value="0.50">
+            </div>
+        </div>
+
+        <button type="submit">
+            Find Similar Songs
+        </button>
+    </form>
+</section>
+
+<section id="stats-container" class="hidden">
+    <div class="stats-container">
+        <div class="stat-item">
+            <span class="stat-label">Original Playlist Songs</span>
+            <span id="stat-original" class="stat-value">0</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">Accepted Songs</span>
+            <span id="stat-accepted" class="stat-value">0</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">Declined Songs</span>
+            <span id="stat-declined" class="stat-value">0</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">Suggested Songs</span>
+            <span id="stat-suggested" class="stat-value">0</span>
+        </div>
+    </div>
+</section>
+
+<section id="results-container" class="hidden">
+    <h2>Similar Songs</h2>
+    <div id="status"></div>
+    <div id="results-table-wrapper"></div>
+</section>
+
+<section id="playlist-creator" class="hidden">
+    <h3>Save Extended Playlist</h3>
+    <form id="save-playlist-form">
+        <div class="param-group">
+            <div>
+                <label for="new_playlist_name">New Playlist Name:</label>
+                <input type="text" id="new_playlist_name" name="new_playlist_name" required
+                       placeholder="e.g., My Extended Playlist">
+            </div>
+        </div>
+        <button type="submit" style="background-color: #16A34A;">
+            Save Playlist to Media Server
+        </button>
+    </form>
+    <div id="playlist-status"></div>
+</section>
+{% endblock %}
+
+{% block bodyAdditions %}
+<script>
+    (() => {
+        let acceptedIds = [];
+        let declinedIds = [];
+        let currentPlaylistName = '';
+        let playlistStats = {
+            original: 0,
+            accepted: 0,
+            declined: 0,
+            suggested: 0
+        };
+
+        const extendForm = document.getElementById('extend-playlist-form');
+        const savePlaylistForm = document.getElementById('save-playlist-form');
+        const playlistSelect = document.getElementById('playlist_select');
+        const maxSongsInput = document.getElementById('max_songs');
+        const similarityThresholdInput = document.getElementById('similarity_threshold');
+        const thresholdValueSpan = document.getElementById('threshold_value');
+        const resultsContainer = document.getElementById('results-container');
+        const statsContainer = document.getElementById('stats-container');
+        const playlistCreator = document.getElementById('playlist-creator');
+        const statusDiv = document.getElementById('status');
+        const resultsTableWrapper = document.getElementById('results-table-wrapper');
+        const playlistStatusDiv = document.getElementById('playlist-status');
+
+        // Update threshold display
+        similarityThresholdInput.addEventListener('input', () => {
+            thresholdValueSpan.textContent = parseFloat(similarityThresholdInput.value).toFixed(2);
+        });
+
+        // Load playlists on page load
+        async function loadPlaylists() {
+            try {
+                const response = await fetch("{{ url_for('get_playlists_endpoint') }}");
+                const playlists = await response.json();
+
+                playlistSelect.innerHTML = '<option value="">-- Select a playlist --</option>';
+                for (const [playlistName, tracks] of Object.entries(playlists)) {
+                    const option = document.createElement('option');
+                    option.value = playlistName;
+                    option.textContent = `${playlistName} (${tracks.length} songs)`;
+                    playlistSelect.appendChild(option);
+                }
+            } catch (error) {
+                console.error('Failed to load playlists:', error);
+                statusDiv.textContent = 'Failed to load playlists. Please try again.';
+                statusDiv.style.color = 'red';
+            }
+        }
+
+        // Update stats display
+        function updateStats() {
+            document.getElementById('stat-original').textContent = playlistStats.original;
+            document.getElementById('stat-accepted').textContent = playlistStats.accepted;
+            document.getElementById('stat-declined').textContent = playlistStats.declined;
+            document.getElementById('stat-suggested').textContent = playlistStats.suggested;
+        }
+
+        // Find similar songs
+        async function findSimilarSongs() {
+            const playlistName = playlistSelect.value;
+            const maxSongs = parseInt(maxSongsInput.value);
+            const similarityThreshold = parseFloat(similarityThresholdInput.value);
+
+            if (!playlistName) {
+                statusDiv.textContent = 'Please select a playlist.';
+                statusDiv.style.color = 'red';
+                return;
+            }
+
+            currentPlaylistName = playlistName;
+            statusDiv.textContent = 'Searching for similar songs...';
+            statusDiv.style.color = 'blue';
+
+            try {
+                const response = await fetch("{{ url_for('extend_playlist_bp.extend_playlist_api') }}", {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        playlist_name: playlistName,
+                        max_songs: maxSongs,
+                        similarity_threshold: similarityThreshold,
+                        accepted_ids: acceptedIds,
+                        excluded_ids: declinedIds
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to find similar songs');
+                }
+
+                // Update stats
+                playlistStats.original = data.playlist_song_count;
+                playlistStats.accepted = data.accepted_count;
+                playlistStats.declined = data.excluded_count;
+                playlistStats.suggested = data.results.length;
+                updateStats();
+
+                // Display results
+                displayResults(data.results);
+
+                statusDiv.textContent = `Found ${data.results.length} similar songs.`;
+                statusDiv.style.color = 'green';
+                resultsContainer.classList.remove('hidden');
+                statsContainer.classList.remove('hidden');
+
+                // Show save button if we have accepted songs
+                if (acceptedIds.length > 0) {
+                    playlistCreator.classList.remove('hidden');
+                }
+
+            } catch (error) {
+                console.error('Search failed:', error);
+                statusDiv.textContent = error.message;
+                statusDiv.style.color = 'red';
+            }
+        }
+
+        // Display results table
+        function displayResults(results) {
+            if (results.length === 0) {
+                resultsTableWrapper.innerHTML = '<p>No similar songs found with the current settings. Try adjusting the similarity threshold.</p>';
+                return;
+            }
+
+            let tableHTML = `
+                <table class="results-table">
+                    <thead>
+                        <tr>
+                            <th>Title</th>
+                            <th>Artist</th>
+                            <th>Distance</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            results.forEach(track => {
+                const isAccepted = acceptedIds.includes(track.item_id);
+                const isDeclined = declinedIds.includes(track.item_id);
+                const rowClass = isAccepted ? 'accepted-row' : (isDeclined ? 'declined-row' : '');
+                const distance = track.distance ? track.distance.toFixed(4) : 'N/A';
+
+                let actionButtons = '';
+                if (isAccepted) {
+                    actionButtons = '<span class="status-badge status-accepted">ACCEPTED</span>';
+                } else if (isDeclined) {
+                    actionButtons = '<span class="status-badge status-declined">DECLINED</span>';
+                } else {
+                    actionButtons = `
+                        <div class="action-buttons">
+                            <button class="btn-accept" onclick="acceptSong('${track.item_id}')">Accept</button>
+                            <button class="btn-decline" onclick="declineSong('${track.item_id}')">Decline</button>
+                        </div>
+                    `;
+                }
+
+                tableHTML += `
+                    <tr class="${rowClass}" data-item-id="${track.item_id}">
+                        <td>${track.title || 'Unknown'}</td>
+                        <td>${track.author || 'Unknown'}</td>
+                        <td>${distance}</td>
+                        <td>${actionButtons}</td>
+                    </tr>
+                `;
+            });
+
+            tableHTML += `
+                    </tbody>
+                </table>
+            `;
+
+            resultsTableWrapper.innerHTML = tableHTML;
+        }
+
+        // Accept a song
+        window.acceptSong = function(itemId) {
+            if (!acceptedIds.includes(itemId)) {
+                acceptedIds.push(itemId);
+                // Remove from declined if it was there
+                declinedIds = declinedIds.filter(id => id !== itemId);
+                // Re-run search with updated lists
+                findSimilarSongs();
+            }
+        };
+
+        // Decline a song
+        window.declineSong = function(itemId) {
+            if (!declinedIds.includes(itemId)) {
+                declinedIds.push(itemId);
+                // Remove from accepted if it was there
+                acceptedIds = acceptedIds.filter(id => id !== itemId);
+                // Re-run search with updated lists
+                findSimilarSongs();
+            }
+        };
+
+        // Form submission
+        extendForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            // Reset accepted/declined lists when starting a new search
+            if (playlistSelect.value !== currentPlaylistName) {
+                acceptedIds = [];
+                declinedIds = [];
+            }
+            await findSimilarSongs();
+        });
+
+        // Save extended playlist
+        savePlaylistForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const newPlaylistName = document.getElementById('new_playlist_name').value.trim();
+
+            if (!newPlaylistName) {
+                playlistStatusDiv.textContent = 'Please enter a playlist name.';
+                playlistStatusDiv.style.color = 'red';
+                return;
+            }
+
+            if (acceptedIds.length === 0) {
+                playlistStatusDiv.textContent = 'Please accept at least one song before saving.';
+                playlistStatusDiv.style.color = 'red';
+                return;
+            }
+
+            playlistStatusDiv.textContent = 'Saving playlist...';
+            playlistStatusDiv.style.color = 'blue';
+
+            try {
+                const response = await fetch("{{ url_for('extend_playlist_bp.save_extended_playlist') }}", {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        original_playlist_name: currentPlaylistName,
+                        new_playlist_name: newPlaylistName,
+                        accepted_ids: acceptedIds
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to save playlist');
+                }
+
+                playlistStatusDiv.textContent = data.message;
+                playlistStatusDiv.style.color = 'green';
+
+                // Reload playlists to include the new one
+                setTimeout(() => {
+                    loadPlaylists();
+                }, 1000);
+
+            } catch (error) {
+                console.error('Save failed:', error);
+                playlistStatusDiv.textContent = error.message;
+                playlistStatusDiv.style.color = 'red';
+            }
+        });
+
+        // Load playlists on page load
+        loadPlaylists();
+    })();
+</script>
+{% endblock %}
