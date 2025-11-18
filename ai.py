@@ -164,6 +164,12 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
              if end_tag in extracted_text:
                  extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
 
+        # Log the raw response for debugging (consistent with Gemini/Mistral)
+        if extracted_text:
+            logger.info("OpenAI/OpenRouter API returned: '%s'", extracted_text)
+        else:
+            logger.warning("OpenAI/OpenRouter returned empty content. Full raw response: %s", full_raw_response_content[:500])
+
         return extracted_text
 
     except requests.exceptions.RequestException as e:
