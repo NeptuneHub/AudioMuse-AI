@@ -211,7 +211,7 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
     Constructs the full prompt including new features.
     Applies length constraints after getting the name.
     """
-    MIN_LENGTH = 15
+    MIN_LENGTH = 10
     MAX_LENGTH = 40
 
     # --- Prepare feature descriptions for the prompt ---
