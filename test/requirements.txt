@@ -1,20 +1,24 @@
 # Core test/runtime packages for running the analysis unit test locally.
 # Install these in your virtualenv. We intentionally exclude system-level
 # components (ffmpeg, voyager index DB, etc.) which should be stubbed.
+# IMPORTANT: Versions aligned with Dockerfile where possible
+# NOTE: onnx version differs - Dockerfile uses 1.14.1 (Python 3.10/Ubuntu 22.04)
+#       but we need >=1.16.0 for Python 3.12+ pre-built wheels
 
 numpy==1.26.4
 librosa==0.11.0
 scipy==1.15.3
-soundfile==0.13.1          # pysoundfile, used by librosa
-onnx==1.14.1
-onnxruntime==1.15.1
-pydub==0.25.1
+numba==0.60.0
+soundfile==0.13.1
+resampy
+onnx>=1.16.0               # Newer version needed for Python 3.12 compatibility
+onnxruntime==1.19.2
+pydub
 scikit-learn==1.7.2
 psycopg2-binary
-ftfy==6.1.1
+ftfy
 pytest>=7.0.0
 requests
-hnswlib
 
 # Notes:
 # - ffmpeg (system binary) is NOT included here — keep pydub/ffmpeg calls stubbed or
