@@ -160,7 +160,6 @@ function renderConfig(config) {
     document.getElementById('config-ollama_model_name').value = config.ollama_model_name || 'mistral:7b';
     document.getElementById('config-openai_server_url').value = config.openai_server_url || 'https://openrouter.ai/api/v1/chat/completions';
     document.getElementById('config-openai_model_name').value = config.openai_model_name || '';
-    document.getElementById('config-openai_api_key').value = ''; // Don't pre-fill API key for security
     document.getElementById('config-gemini_model_name').value = config.gemini_model_name || 'gemini-2.5-pro';
     document.getElementById('config-mistral_model_name').value = config.mistral_model_name || 'ministral-3b-latest';
 }
@@ -395,7 +394,6 @@ async function startTask(taskType) {
             ollama_model_name: document.getElementById('config-ollama_model_name').value,
             openai_server_url: document.getElementById('config-openai_server_url').value,
             openai_model_name: document.getElementById('config-openai_model_name').value,
-            openai_api_key: document.getElementById('config-openai_api_key').value,
             gemini_model_name: document.getElementById('config-gemini_model_name').value,
             mistral_model_name: document.getElementById('config-mistral_model_name').value,
             enable_clustering_embeddings: document.getElementById('config-enable_clustering_embeddings').checked
