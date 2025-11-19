@@ -77,13 +77,17 @@ class GPUKMeans:
                     X_gpu = X
 
                 # Create and fit GPU model
-                self.model = cuKMeans(
-                    n_clusters=self.n_clusters,
-                    init=self.init,
-                    n_init=self.n_init,
-                    random_state=self.random_state,
-                    output_type='numpy'  # Return numpy arrays for compatibility
-                )
+                # Build kwargs dynamically to avoid passing None to cuKMeans
+                kmeans_kwargs = {
+                    'n_clusters': int(self.n_clusters),
+                    'init': self.init,
+                    'n_init': int(self.n_init),
+                    'output_type': 'numpy'  # Return numpy arrays for compatibility
+                }
+                if self.random_state is not None:
+                    kmeans_kwargs['random_state'] = int(self.random_state)
+
+                self.model = cuKMeans(**kmeans_kwargs)
 
                 labels = self.model.fit_predict(X_gpu)
                 self.cluster_centers_ = self.model.cluster_centers_
