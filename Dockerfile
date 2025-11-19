@@ -129,9 +129,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         resampy \
         librosa==0.11.0 || exit 1; \
       if [[ "${BASE_IMAGE}" =~ ^nvidia/cuda: ]]; then \
-        echo "Detected NVIDIA base image: installing GPU-only packages and onnxruntime-gpu"; \
+        echo "Detected NVIDIA base image: installing GPU-only packages, onnxruntime-gpu, and RAPIDS cuML"; \
         pip3 install --no-cache-dir $GPU_PKGS || exit 1; \
         pip3 install --no-cache-dir onnxruntime-gpu==1.19.2 || exit 1; \
+        echo "Installing RAPIDS cuML for GPU-accelerated clustering..."; \
+        pip3 install --no-cache-dir cupy-cuda12x || exit 1; \
+        pip3 install --no-cache-dir --extra-index-url=https://pypi.nvidia.com cuml-cu12==24.12.* || exit 1; \
       else \
         echo "CPU base image: installing onnxruntime (CPU) only"; \
         pip3 install --no-cache-dir onnxruntime==1.19.2 || exit 1; \

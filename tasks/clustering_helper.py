@@ -16,6 +16,14 @@ from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
 from sklearn.neighbors import NearestNeighbors
 
+# GPU clustering support (optional)
+try:
+    from .clustering_gpu import get_clustering_model, get_pca_model
+    GPU_CLUSTERING_AVAILABLE = True
+except ImportError:
+    GPU_CLUSTERING_AVAILABLE = False
+    logger.debug("GPU clustering module not available, using CPU only")
+
 # RQ imports for safe result fetching
 from rq.job import Job
 from rq.exceptions import NoSuchJobError
@@ -26,7 +34,8 @@ from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DI
                     LN_MOOD_PURITY_STATS, LN_MOOD_DIVERSITY_EMBEDING_STATS,
                     LN_MOOD_PURITY_EMBEDING_STATS, LN_OTHER_FEATURES_DIVERSITY_STATS,
                     LN_OTHER_FEATURES_PURITY_STATS,
-                    OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY)
+                    OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
+                    USE_GPU_CLUSTERING)
 from .commons import score_vector
 
 logger = logging.getLogger(__name__)
@@ -77,7 +86,12 @@ def _perform_single_clustering_iteration(
         # 4. Apply PCA if specified by the generated parameters
         pca_model, data_after_pca = None, data_to_cluster
         if params['pca_config']['enabled']:
-            pca_model = PCA(n_components=params['pca_config']['components'])
+            # Use GPU PCA if available and enabled
+            if USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE:
+                pca_model = get_pca_model(n_components=params['pca_config']['components'], use_gpu=True)
+            else:
+                pca_model = PCA(n_components=params['pca_config']['components'])
+
             data_after_pca = pca_model.fit_transform(data_to_cluster)
             params['pca_config']['components'] = pca_model.n_components_ # Update with actual components
 
@@ -245,49 +259,65 @@ def _mutate_parameters(elite_params, mutation_cfg, method, data, pca_ranges, num
 # --- Step 3 & 4: Apply Models ---
 
 def _apply_clustering_model(data, method_config, log_prefix, run_idx):
-    """Initializes and fits the specified clustering model."""
+    """Initializes and fits the specified clustering model (with optional GPU acceleration)."""
     method = method_config['method']
     params = method_config['params']
     model = None
     try:
+        # Validate parameters before creating model
         if method == 'kmeans':
             if params.get('n_clusters', 0) < 2:
                 return None, None, None
-            model = KMeans(n_clusters=params['n_clusters'], init='k-means++', n_init=10)
-
-        elif method == 'dbscan':
-            model = DBSCAN(eps=params['eps'], min_samples=params['min_samples'])
-
         elif method == 'gmm':
             if params.get('n_components', 0) < 2 or params['n_components'] > data.shape[0]:
                 return None, None, None
-            model = GaussianMixture(
-                n_components=params['n_components'],
-                covariance_type=GMM_COVARIANCE_TYPE,
-                init_params='k-means++',
-                n_init=10,
-                random_state=None,
-                reg_covar=1e-4
-            )
-
         elif method == 'spectral':
             if params.get('n_clusters', 0) < 2 or params['n_clusters'] >= data.shape[0]:
                 return None, None, None
-            model = SpectralClustering(
-                n_clusters=params['n_clusters'],
-                assign_labels='kmeans',
-                affinity='nearest_neighbors',
-                n_neighbors=SPECTRAL_N_NEIGHBORS,
-                random_state=params.get("random_state"),
-                n_init=10,
-                verbose=False
-            )
-        
-        if model is None:
-            raise ValueError(f"Unsupported clustering method: {method}")
-        
-        labels = model.fit_predict(data)
-        
+
+        # Use GPU clustering if enabled and available
+        use_gpu = USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE
+
+        if use_gpu:
+            try:
+                model = get_clustering_model(method, params, use_gpu=True)
+                labels = model.fit_predict(data)
+                logger.debug(f"{log_prefix} Iteration {run_idx}: GPU clustering used for {method}")
+            except Exception as e:
+                logger.warning(f"{log_prefix} GPU clustering failed, falling back to CPU: {e}")
+                use_gpu = False
+
+        # Use CPU clustering (either by choice or as fallback)
+        if not use_gpu:
+            if method == 'kmeans':
+                model = KMeans(n_clusters=params['n_clusters'], init='k-means++', n_init=10)
+            elif method == 'dbscan':
+                model = DBSCAN(eps=params['eps'], min_samples=params['min_samples'])
+            elif method == 'gmm':
+                model = GaussianMixture(
+                    n_components=params['n_components'],
+                    covariance_type=GMM_COVARIANCE_TYPE,
+                    init_params='k-means++',
+                    n_init=10,
+                    random_state=None,
+                    reg_covar=1e-4
+                )
+            elif method == 'spectral':
+                model = SpectralClustering(
+                    n_clusters=params['n_clusters'],
+                    assign_labels='kmeans',
+                    affinity='nearest_neighbors',
+                    n_neighbors=SPECTRAL_N_NEIGHBORS,
+                    random_state=params.get("random_state"),
+                    n_init=10,
+                    verbose=False
+                )
+            else:
+                raise ValueError(f"Unsupported clustering method: {method}")
+
+            labels = model.fit_predict(data)
+
+        # Extract cluster centers
         centers = {}
         if hasattr(model, 'cluster_centers_') and model.cluster_centers_ is not None:
             centers = {i: center for i, center in enumerate(model.cluster_centers_)}
