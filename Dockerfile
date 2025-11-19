@@ -99,46 +99,46 @@ ARG BASE_IMAGE
 # pydub is for audio conversion
 # Pin numpy to a stable version to avoid numeric differences between builds
 RUN --mount=type=cache,target=/root/.cache/pip \
-    bash -lc '\
-      GPU_PKGS="flatbuffers packaging protobuf sympy"; \
-      pip3 install --no-cache-dir numpy==1.26.4 || exit 1; \
-      pip3 install --no-cache-dir \
-        scipy==1.15.3 \
-        numba==0.60.0 \
-        soundfile==0.13.1 \
-        Flask \
-        Flask-Cors \
-        redis \
-        requests \
-        scikit-learn==1.7.2 \
-        rq \
-        pyyaml \
-        six \
-        voyager==2.1.0 \
-        rapidfuzz \
-        psycopg2-binary \
-        ftfy \
-        flasgger \
-        sqlglot \
-        google-generativeai \
-        mistralai \
-        umap-learn \
-        pydub \
-        python-mpd2 \
-        onnx==1.14.1 \
-        resampy \
-        librosa==0.11.0 || exit 1; \
-      if [[ "${BASE_IMAGE}" =~ ^nvidia/cuda: ]]; then \
-        echo "Detected NVIDIA base image: installing GPU-only packages, onnxruntime-gpu, and RAPIDS cuML"; \
-        pip3 install --no-cache-dir $GPU_PKGS || exit 1; \
-        pip3 install --no-cache-dir onnxruntime-gpu==1.19.2 || exit 1; \
-        echo "Installing RAPIDS cuML for GPU-accelerated clustering..."; \
-        pip3 install --no-cache-dir cupy-cuda12x || exit 1; \
-        pip3 install --no-cache-dir --extra-index-url=https://pypi.nvidia.com cuml-cu12==24.12.* || exit 1; \
-      else \
-        echo "CPU base image: installing onnxruntime (CPU) only"; \
-        pip3 install --no-cache-dir onnxruntime==1.19.2 || exit 1; \
-      fi'
+    set -ux; \
+    GPU_PKGS="flatbuffers packaging protobuf sympy"; \
+    pip3 install --no-cache-dir numpy==1.26.4 || exit 1; \
+    pip3 install --no-cache-dir \
+      scipy==1.15.3 \
+      numba==0.60.0 \
+      soundfile==0.13.1 \
+      Flask \
+      Flask-Cors \
+      redis \
+      requests \
+      scikit-learn==1.7.2 \
+      rq \
+      pyyaml \
+      six \
+      voyager==2.1.0 \
+      rapidfuzz \
+      psycopg2-binary \
+      ftfy \
+      flasgger \
+      sqlglot \
+      google-generativeai \
+      mistralai \
+      umap-learn \
+      pydub \
+      python-mpd2 \
+      onnx==1.14.1 \
+      resampy \
+      librosa==0.11.0 || exit 1; \
+    if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
+      echo "Detected NVIDIA base image: installing GPU-only packages, onnxruntime-gpu, and RAPIDS cuML"; \
+      pip3 install --no-cache-dir $GPU_PKGS || exit 1; \
+      pip3 install --no-cache-dir onnxruntime-gpu==1.19.2 || exit 1; \
+      echo "Installing RAPIDS cuML for GPU-accelerated clustering..."; \
+      pip3 install --no-cache-dir cupy-cuda12x || exit 1; \
+      pip3 install --no-cache-dir --extra-index-url=https://pypi.nvidia.com cuml-cu12==24.12.* || exit 1; \
+    else \
+      echo "CPU base image: installing onnxruntime (CPU) only"; \
+      pip3 install --no-cache-dir onnxruntime==1.19.2 || exit 1; \
+    fi
 
 
 FROM base AS runner
