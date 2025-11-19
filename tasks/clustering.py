@@ -858,7 +858,7 @@ def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_mod
             continue
 
         final_name = original_name
-        if ai_provider in ["OLLAMA", "GEMINI", "MISTRAL"]:
+        if ai_provider in ["OLLAMA", "OPENAI", "GEMINI", "MISTRAL"]:
             try:
                 # Simplified feature extraction for AI prompt
                 name_parts = original_name.split('_')

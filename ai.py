@@ -68,6 +68,11 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
     if api_key and api_key != "no-key-needed":
         headers["Authorization"] = f"Bearer {api_key}"
 
+    # Add OpenRouter-specific headers if using OpenRouter
+    if "openrouter" in server_url.lower():
+        headers["HTTP-Referer"] = "https://github.com/NeptuneHub/AudioMuse-AI"
+        headers["X-Title"] = "AudioMuse-AI"
+
     # Prepare payload based on format
     if is_openai_format:
         # OpenAI/OpenRouter format uses chat completions
@@ -91,6 +96,13 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
         }
 
     try:
+        # Add delay for OpenAI/OpenRouter to respect rate limits
+        if is_openai_format:
+            openai_call_delay = int(os.environ.get("OPENAI_API_CALL_DELAY_SECONDS", "7"))
+            if openai_call_delay > 0:
+                logger.debug("Waiting for %ss before OpenAI/OpenRouter API call to respect rate limits.", openai_call_delay)
+                time.sleep(openai_call_delay)
+
         logger.debug("Starting API call for model '%s' at '%s' (format: %s).", model_name, server_url, "OpenAI" if is_openai_format else "Ollama")
 
         response = requests.post(server_url, headers=headers, data=json.dumps(payload), stream=True, timeout=960)
@@ -151,6 +163,12 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
         for end_tag in thought_enders:
              if end_tag in extracted_text:
                  extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
+
+        # Log the raw response for debugging (consistent with Gemini/Mistral)
+        if extracted_text:
+            logger.info("OpenAI/OpenRouter API returned: '%s'", extracted_text)
+        else:
+            logger.warning("OpenAI/OpenRouter returned empty content. Full raw response: %s", full_raw_response_content[:500])
 
         return extracted_text
 
@@ -279,7 +297,7 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
     Constructs the full prompt including new features.
     Applies length constraints after getting the name.
     """
-    MIN_LENGTH = 15
+    MIN_LENGTH = 10
     MAX_LENGTH = 40
 
     # --- Prepare feature descriptions for the prompt ---
