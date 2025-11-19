@@ -1,0 +1,114 @@
+version: '3.8'
+services:
+  # Redis service for RQ (task queue)
+  redis:
+    image: redis:7-alpine
+    container_name: audiomuse-redis
+    ports:
+      - "6379:6379" # Expose Redis port to the host
+    volumes:
+      - redis-data:/data # Persistent storage for Redis data
+    restart: unless-stopped
+
+  # PostgreSQL database service
+  postgres:
+    image: postgres:15-alpine
+    container_name: audiomuse-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+    ports:
+      - "5432:5432" # Expose PostgreSQL port to the host
+    volumes:
+      - postgres-data:/var/lib/postgresql/data # Persistent storage for PostgreSQL data
+    restart: unless-stopped
+
+  # AudioMuse-AI Flask application service
+  audiomuse-ai-flask:
+    image: ghcr.io/neptunehub/audiomuse-ai:latest # Reflects deployment.yaml
+    container_name: audiomuse-ai-flask-app
+    ports:
+      - "8000:8000" # Map host port 8000 to container port 8000
+    environment:
+      SERVICE_TYPE: "flask" # Tells the container to run the Flask app
+      MEDIASERVER_TYPE: "jellyfin" # Specify the media server type
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
+      JELLYFIN_URL: "${JELLYFIN_URL}"
+      # DATABASE_URL is now constructed by config.py from the following:
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+      POSTGRES_HOST: "postgres" # Service name of the postgres container
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
+      AI_MODEL_PROVIDER: "OPENAI"
+      OPENAI_API_KEY: "any-random-string" # Dummy key to enable local model usage
+      OPENAI_SERVER_URL: "http://172.17.0.1:12434/engines/llama.cpp/v1/chat/completions" #This is the API endpoint for local DMR model from within the Docker container. 
+      OPENAI_MODEL_NAME: "ai/qwen3:0.6B-Q4_0"
+      TEMP_DIR: "/app/temp_audio"
+    # Use tmpfs to process audio files in memory for better performance. this reduuces disk I/O but might use more RAM.
+    # Mounted directories are not shared between containers, so each container gets its own tmpfs instance.
+    # Increase tmpfs size for very large audio files as needed.
+    # If host RAM is limited, use a Docker volume instead of tmpfs.
+    # For more info on tmpfs: https://docs.docker.com/engine/storage/tmpfs/
+    tmpfs:
+      - /app/temp_audio:rw,size=1000m
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+    models:
+      - llm # Specify that LLM models are used in this service
+
+  # AudioMuse-AI RQ Worker service
+  audiomuse-ai-worker:
+    image: ghcr.io/neptunehub/audiomuse-ai:latest # Reflects deployment.yaml
+    container_name: audiomuse-ai-worker-instance
+    environment:
+      SERVICE_TYPE: "worker" # Tells the container to run the RQ worker
+      MEDIASERVER_TYPE: "jellyfin" # Specify the media server type
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
+      JELLYFIN_URL: "${JELLYFIN_URL}"
+      # DATABASE_URL is now constructed by config.py from the following:
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+      POSTGRES_HOST: "postgres" # Service name of the postgres container
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
+      AI_MODEL_PROVIDER: "OPENAI"
+      OPENAI_API_KEY: "any-random-string" # Dummy key to enable local model usage
+      OPENAI_SERVER_URL: "http://172.17.0.1:12434/engines/llama.cpp/v1/chat/completions" #This is the API endpoint for local DMR model from within the Docker container. 
+      OPENAI_MODEL_NAME: "ai/qwen3:0.6B-Q4_0"
+      TEMP_DIR: "/app/temp_audio"
+    # Use tmpfs to process audio files in memory for better performance. this reduuces disk I/O but might use more RAM.
+    # Mounted directories are not shared between containers, so each container gets its own tmpfs instance.
+    # Increase tmpfs size for very large audio files as needed.
+    # If host RAM is limited, use a Docker volume instead of tmpfs.
+    # For more info on tmpfs: https://docs.docker.com/engine/storage/tmpfs/
+    tmpfs:
+      - /app/temp_audio:rw,size=1000m
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+    models:
+      - llm # Specify that LLM models are used in this service
+
+# Using Docker Model Runner (DMR)
+# - Make sure your Docker Engine version supports the AI features and that the docker-model-plugin is installed.
+# - Follow Docker's setup guide: https://docs.docker.com/ai/model-runner/get-started/#docker-engine
+# - Once DMR is configured, you can download and run AI models locally just like Docker images — no code changes to this compose file are required.
+# - For model integration with docker-compose, see: https://docs.docker.com/ai/compose/models-and-compose/
+models:
+  llm:
+    model: ai/qwen3:0.6B-Q4_0 # Lightweight local model for testing. Change as needed; if changed, ensure it matches OPENAI_MODEL_NAME.
+
+
+# Define volumes for persistent data and temporary files
+volumes:
+  redis-data:
+  postgres-data:
