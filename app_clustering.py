@@ -14,7 +14,9 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
     DBSCAN_MIN_SAMPLES_MIN, DBSCAN_MIN_SAMPLES_MAX, GMM_N_COMPONENTS_MIN, GMM_N_COMPONENTS_MAX, \
     SPECTRAL_N_CLUSTERS_MIN, SPECTRAL_N_CLUSTERS_MAX, ENABLE_CLUSTERING_EMBEDDINGS, \
     PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, MOOD_LABELS, TOP_N_MOODS, \
-    AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME, \
+    AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, \
+    OPENAI_SERVER_URL, OPENAI_MODEL_NAME, OPENAI_API_KEY, \
+    GEMINI_API_KEY, GEMINI_MODEL_NAME, \
     TOP_N_PLAYLISTS, MISTRAL_API_KEY, MISTRAL_MODEL_NAME
 
 # RQ import
@@ -322,6 +324,9 @@ def start_clustering_endpoint():
             "ai_model_provider_param": data.get('ai_model_provider', AI_MODEL_PROVIDER).upper(),
             "ollama_server_url_param": data.get('ollama_server_url', OLLAMA_SERVER_URL),
             "ollama_model_name_param": data.get('ollama_model_name', OLLAMA_MODEL_NAME),
+            "openai_server_url_param": data.get('openai_server_url', OPENAI_SERVER_URL),
+            "openai_model_name_param": data.get('openai_model_name', OPENAI_MODEL_NAME),
+            "openai_api_key_param": data.get('openai_api_key') or OPENAI_API_KEY,  # Use env var if empty string
             # This line already falls back to the config value if the request doesn't contain it.
             "gemini_api_key_param": data.get('gemini_api_key', GEMINI_API_KEY),
             "gemini_model_name_param": data.get('gemini_model_name', GEMINI_MODEL_NAME),

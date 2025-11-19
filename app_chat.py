@@ -15,12 +15,13 @@ logger = logging.getLogger(__name__)
 # This assumes config.py is in the same directory as app_chat.py or accessible via Python path.
 from config import (
     OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME,
+    OPENAI_SERVER_URL, OPENAI_MODEL_NAME, OPENAI_API_KEY, # Import OpenAI config
     GEMINI_MODEL_NAME, GEMINI_API_KEY, # Import GEMINI_API_KEY from config
     MISTRAL_MODEL_NAME, MISTRAL_API_KEY,
     AI_MODEL_PROVIDER, # Default AI provider
     AI_CHAT_DB_USER_NAME, AI_CHAT_DB_USER_PASSWORD, # Import new config
 )
-from ai import get_gemini_playlist_name, get_ollama_playlist_name, get_mistral_playlist_name # Import functions to call AI
+from ai import get_gemini_playlist_name, get_ollama_playlist_name, get_mistral_playlist_name, get_openai_compatible_playlist_name # Import functions to call AI
 
 # Create a Blueprint for chat-related routes
 chat_bp = Blueprint('chat_bp', __name__,
@@ -185,6 +186,12 @@ def chat_home():
                             'ollama_server_url': {
                                 'type': 'string', 'example': 'http://127.0.0.1:11434/api/generate'
                             },
+                            'default_openai_model_name': {
+                                'type': 'string', 'example': 'gpt-4'
+                            },
+                            'openai_server_url': {
+                                'type': 'string', 'example': 'https://openrouter.ai/api/v1/chat/completions'
+                            },
                             'default_gemini_model_name': {
                                 'type': 'string', 'example': 'gemini-2.5-pro'
                             },
@@ -207,6 +214,8 @@ def chat_config_defaults_api():
         "default_ai_provider": AI_MODEL_PROVIDER,
         "default_ollama_model_name": OLLAMA_MODEL_NAME,
         "ollama_server_url": OLLAMA_SERVER_URL, # Ollama server URL might be useful for display/info
+        "default_openai_model_name": OPENAI_MODEL_NAME,
+        "openai_server_url": OPENAI_SERVER_URL, # OpenAI server URL for display/info
         "default_gemini_model_name": GEMINI_MODEL_NAME,
         "default_mistral_model_name": MISTRAL_MODEL_NAME,
     }), 200
@@ -231,9 +240,9 @@ def chat_config_defaults_api():
                         },
                         'ai_provider': {
                             'type': 'string',
-                            'description': 'The AI provider to use (OLLAMA, GEMINI, MISTRAL, NONE). Defaults to server config.',
+                            'description': 'The AI provider to use (OLLAMA, OPENAI, GEMINI, MISTRAL, NONE). Defaults to server config.',
                             'example': 'GEMINI',
-                            'enum': ['OLLAMA', 'GEMINI', "MISTRAL", 'NONE']
+                            'enum': ['OLLAMA', 'OPENAI', 'GEMINI', "MISTRAL", 'NONE']
                         },
                         'ai_model': {
                             'type': 'string',
@@ -244,6 +253,15 @@ def chat_config_defaults_api():
                             'type': 'string',
                             'description': 'Custom Ollama server URL (if ai_provider is OLLAMA).',
                             'example': 'http://localhost:11434/api/generate'
+                        },
+                        'openai_server_url': {
+                            'type': 'string',
+                            'description': 'Custom OpenAI/OpenRouter server URL (if ai_provider is OPENAI).',
+                            'example': 'https://openrouter.ai/api/v1/chat/completions'
+                        },
+                        'openai_api_key': {
+                            'type': 'string',
+                            'description': 'OpenAI/OpenRouter API key (required if ai_provider is OPENAI).',
                         },
                         'gemini_api_key': {
                             'type': 'string',
@@ -337,6 +355,8 @@ def chat_playlist_api():
         data_for_log['gemini_api_key'] = 'API-KEY' # Masked
     if 'mistral_api_key' in data_for_log and data_for_log['mistral_api_key']:
         data_for_log['mistral_api_key'] = 'API-KEY' # Masked
+    if 'openai_api_key' in data_for_log and data_for_log['openai_api_key']:
+        data_for_log['openai_api_key'] = 'API-KEY' # Masked
     logger.debug("chat_playlist_api called. Raw request data: %s", data_for_log)
     from app_helper import get_db # Import get_db here, inside the function
     if not data or 'userInput' not in data:
@@ -514,7 +534,7 @@ Original full prompt context (for reference):
             current_prompt_for_ai = base_expert_playlist_creator_prompt.replace("{user_input_placeholder}", original_user_input)
 
         raw_sql_from_ai_this_attempt = None
-        # --- Call AI (Ollama/Gemini/Mistral) ---
+        # --- Call AI (Ollama/OpenAI/Gemini/Mistral) ---
         if ai_provider == "OLLAMA":
             actual_model_used = ai_model_from_request or OLLAMA_MODEL_NAME
             ollama_url_from_request = data.get('ollama_server_url', OLLAMA_SERVER_URL)
@@ -524,6 +544,25 @@ Original full prompt context (for reference):
                 ai_response_message += f"Ollama API Error: {raw_sql_from_ai_this_attempt}\n"
                 last_error_for_retry = raw_sql_from_ai_this_attempt # Store error
                 raw_sql_from_ai_this_attempt = None # Mark as failed AI call
+
+        elif ai_provider == "OPENAI":
+            actual_model_used = ai_model_from_request or OPENAI_MODEL_NAME
+            # Get OpenAI configuration from request, or fall back to server config
+            openai_url_from_request = data.get('openai_server_url', OPENAI_SERVER_URL)
+            openai_api_key_from_request = data.get('openai_api_key') or OPENAI_API_KEY
+            if not openai_api_key_from_request:
+                error_msg = "Error: OpenAI API key is missing. Please provide a valid API key or set it in the server configuration."
+                ai_response_message += error_msg + "\n"
+                if attempt_num == 0:
+                    return jsonify({"response": {"message": ai_response_message, "original_request": original_user_input, "ai_provider_used": ai_provider, "ai_model_selected": actual_model_used, "executed_query": None, "query_results": None}}), 400
+                last_error_for_retry = error_msg
+                break
+            ai_response_message += f"Processing with OPENAI model: {actual_model_used} (at {openai_url_from_request}).\n"
+            raw_sql_from_ai_this_attempt = get_openai_compatible_playlist_name(openai_url_from_request, actual_model_used, current_prompt_for_ai, openai_api_key_from_request)
+            if raw_sql_from_ai_this_attempt.startswith("Error:"):
+                ai_response_message += f"OpenAI API Error: {raw_sql_from_ai_this_attempt}\n"
+                last_error_for_retry = raw_sql_from_ai_this_attempt
+                raw_sql_from_ai_this_attempt = None
 
         elif ai_provider == "GEMINI":
             actual_model_used = ai_model_from_request or GEMINI_MODEL_NAME

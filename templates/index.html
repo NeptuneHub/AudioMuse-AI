@@ -366,6 +366,7 @@
                         </label>
                         <select id="config-ai_model_provider">
                             <option value="OLLAMA">Ollama</option>
+                            <option value="OPENAI">OpenAI / OpenRouter</option>
                             <option value="GEMINI">Gemini</option>
                             <option value="MISTRAL">Mistral</option>
                             <option value="NONE" selected>None</option>
@@ -381,6 +382,18 @@
                         <div>
                             <label for="config-ollama_model_name">Ollama Model Name:</label>
                             <input type="text" id="config-ollama_model_name" value="mistral:7b">
+                        </div>
+                    </div>
+
+                    <div id="openai-config-group" class="hidden">
+                        <h4>OpenAI / OpenRouter Configuration:</h4>
+                        <div>
+                            <label for="config-openai_server_url">OpenAI Server URL:</label>
+                            <input type="text" id="config-openai_server_url" value="https://openrouter.ai/api/v1/chat/completions">
+                        </div>
+                        <div>
+                            <label for="config-openai_model_name">OpenAI Model Name:</label>
+                            <input type="text" id="config-openai_model_name" value="">
                         </div>
                     </div>
 

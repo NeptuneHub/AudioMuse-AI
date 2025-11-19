@@ -16,6 +16,7 @@ const gmmParamsDiv = document.getElementById('gmm-params');
 const spectralParamsDiv = document.getElementById('spectral-params'); // New reference for Spectral
 const aiModelProviderSelect = document.getElementById('config-ai_model_provider');
 const ollamaConfigGroup = document.getElementById('ollama-config-group');
+const openaiConfigGroup = document.getElementById('openai-config-group');
 const geminiConfigGroup = document.getElementById('gemini-config-group');
 const mistralConfigGroup = document.getElementById('mistral-config-group');
 
@@ -157,6 +158,8 @@ function renderConfig(config) {
     aiModelProviderSelect.value = config.ai_model_provider || 'NONE';
     document.getElementById('config-ollama_server_url').value = config.ollama_server_url || 'http://127.0.0.1:11434/api/generate';
     document.getElementById('config-ollama_model_name').value = config.ollama_model_name || 'mistral:7b';
+    document.getElementById('config-openai_server_url').value = config.openai_server_url || 'https://openrouter.ai/api/v1/chat/completions';
+    document.getElementById('config-openai_model_name').value = config.openai_model_name || '';
     document.getElementById('config-gemini_model_name').value = config.gemini_model_name || 'gemini-2.5-pro';
     document.getElementById('config-mistral_model_name').value = config.mistral_model_name || 'ministral-3b-latest';
 }
@@ -190,11 +193,14 @@ function toggleClusteringParams() {
 function toggleAiConfig() {
     const provider = aiModelProviderSelect.value;
     ollamaConfigGroup.classList.add('hidden');
+    openaiConfigGroup.classList.add('hidden');
     geminiConfigGroup.classList.add('hidden');
     mistralConfigGroup.classList.add('hidden');
 
     if (provider === 'OLLAMA') {
         ollamaConfigGroup.classList.remove('hidden');
+    } else if (provider === 'OPENAI') {
+        openaiConfigGroup.classList.remove('hidden');
     } else if (provider === 'GEMINI') {
         geminiConfigGroup.classList.remove('hidden');
     } else if (provider === 'MISTRAL') {
@@ -386,6 +392,8 @@ async function startTask(taskType) {
             ai_model_provider: aiModelProviderSelect.value,
             ollama_server_url: document.getElementById('config-ollama_server_url').value,
             ollama_model_name: document.getElementById('config-ollama_model_name').value,
+            openai_server_url: document.getElementById('config-openai_server_url').value,
+            openai_model_name: document.getElementById('config-openai_model_name').value,
             gemini_model_name: document.getElementById('config-gemini_model_name').value,
             mistral_model_name: document.getElementById('config-mistral_model_name').value,
             enable_clustering_embeddings: document.getElementById('config-enable_clustering_embeddings').checked

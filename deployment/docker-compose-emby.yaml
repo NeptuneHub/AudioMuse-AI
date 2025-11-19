@@ -43,6 +43,10 @@ services:
       POSTGRES_HOST: "postgres" # Service name of the postgres container
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
       REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
+      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      OPENAI_SERVER_URL: "${OPENAI_SERVER_URL}"
+      OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
       GEMINI_API_KEY: "${GEMINI_API_KEY}" # From gemini-api-credentials secret
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}" # From mistral-api-credentials secret
       TEMP_DIR: "/app/temp_audio"
@@ -70,6 +74,10 @@ services:
       POSTGRES_HOST: "postgres" # Service name of the postgres container
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
       REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
+      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      OPENAI_SERVER_URL: "${OPENAI_SERVER_URL}"
+      OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
       GEMINI_API_KEY: "${GEMINI_API_KEY}" # From gemini-api-credentials secret
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       TEMP_DIR: "/app/temp_audio"
