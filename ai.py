@@ -95,89 +95,116 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
             }
         }
 
-    try:
-        # Add delay for OpenAI/OpenRouter to respect rate limits
-        if is_openai_format:
-            openai_call_delay = int(os.environ.get("OPENAI_API_CALL_DELAY_SECONDS", "7"))
-            if openai_call_delay > 0:
-                logger.debug("Waiting for %ss before OpenAI/OpenRouter API call to respect rate limits.", openai_call_delay)
-                time.sleep(openai_call_delay)
+    max_retries = 3
+    base_delay = 5
 
-        logger.debug("Starting API call for model '%s' at '%s' (format: %s).", model_name, server_url, "OpenAI" if is_openai_format else "Ollama")
+    for attempt in range(max_retries + 1):
+        try:
+            # Add delay for OpenAI/OpenRouter to respect rate limits (only on first attempt or if not 429 retry)
+            if is_openai_format and attempt == 0:
+                openai_call_delay = int(os.environ.get("OPENAI_API_CALL_DELAY_SECONDS", "7"))
+                if openai_call_delay > 0:
+                    logger.debug("Waiting for %ss before OpenAI/OpenRouter API call to respect rate limits.", openai_call_delay)
+                    time.sleep(openai_call_delay)
 
-        response = requests.post(server_url, headers=headers, data=json.dumps(payload), stream=True, timeout=960)
-        response.raise_for_status()
-        full_raw_response_content = ""
+            logger.debug("Starting API call for model '%s' at '%s' (format: %s). Attempt %d/%d", model_name, server_url, "OpenAI" if is_openai_format else "Ollama", attempt + 1, max_retries + 1)
 
-        for line in response.iter_lines():
-            if not line:
-                continue
+            response = requests.post(server_url, headers=headers, data=json.dumps(payload), stream=True, timeout=960)
+            response.raise_for_status()
+            full_raw_response_content = ""
 
-            line_str = line.decode('utf-8', errors='ignore').strip()
+            for line in response.iter_lines():
+                if not line:
+                    continue
 
-            # Skip SSE comments (lines starting with :)
-            if line_str.startswith(':'):
-                continue
+                line_str = line.decode('utf-8', errors='ignore').strip()
 
-            # Handle SSE data format (OpenRouter/OpenAI)
-            if line_str.startswith('data: '):
-                line_str = line_str[6:]  # Remove 'data: ' prefix
+                # Skip SSE comments (lines starting with :)
+                if line_str.startswith(':'):
+                    continue
 
-                # Check for end of stream marker
-                if line_str == '[DONE]':
-                    break
+                # Handle SSE data format (OpenRouter/OpenAI)
+                if line_str.startswith('data: '):
+                    line_str = line_str[6:]  # Remove 'data: ' prefix
 
-            # Try to parse JSON
-            try:
-                chunk = json.loads(line_str)
-
-                # Extract content based on format
-                if is_openai_format:
-                    # OpenAI/OpenRouter format
-                    if 'choices' in chunk and len(chunk['choices']) > 0:
-                        choice = chunk['choices'][0]
-
-                        # Check for finish
-                        if choice.get('finish_reason') == 'stop':
-                            break
-
-                        # Extract text from delta.content or text field
-                        if 'delta' in choice and 'content' in choice['delta']:
-                            full_raw_response_content += choice['delta']['content']
-                        elif 'text' in choice:
-                            full_raw_response_content += choice['text']
-                else:
-                    # Ollama format
-                    if 'response' in chunk:
-                        full_raw_response_content += chunk['response']
-                    if chunk.get('done'):
+                    # Check for end of stream marker
+                    if line_str == '[DONE]':
                         break
 
-            except json.JSONDecodeError:
-                logger.debug("Could not decode JSON line from stream: %s", line_str)
-                continue
+                # Try to parse JSON
+                try:
+                    chunk = json.loads(line_str)
 
-        # Extract text after common thought tags
-        thought_enders = ["</think>", "[/INST]", "[/THOUGHT]"]
-        extracted_text = full_raw_response_content.strip()
-        for end_tag in thought_enders:
-             if end_tag in extracted_text:
-                 extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
+                    # Extract content based on format
+                    if is_openai_format:
+                        # OpenAI/OpenRouter format
+                        if 'choices' in chunk and len(chunk['choices']) > 0:
+                            choice = chunk['choices'][0]
 
-        # Log the raw response for debugging (consistent with Gemini/Mistral)
-        if extracted_text:
-            logger.info("OpenAI/OpenRouter API returned: '%s'", extracted_text)
-        else:
-            logger.warning("OpenAI/OpenRouter returned empty content. Full raw response: %s", full_raw_response_content[:500])
+                            # Check for finish
+                            if choice.get('finish_reason') == 'stop':
+                                break
 
-        return extracted_text
+                        # Extract text from delta.content or text field
+                        if 'delta' in choice:
+                            content = choice['delta'].get('content')
+                            if content is not None:
+                                full_raw_response_content += content
+                        elif 'text' in choice:
+                            text = choice.get('text')
+                            if text is not None:
+                                full_raw_response_content += text
+                    else:
+                        # Ollama format
+                        if 'response' in chunk:
+                            full_raw_response_content += chunk['response']
+                        if chunk.get('done'):
+                            break
 
-    except requests.exceptions.RequestException as e:
-        logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
-        return "Error: AI service is currently unavailable."
-    except Exception as e:
-        logger.error("An unexpected error occurred in get_openai_compatible_playlist_name", exc_info=True)
-        return "Error: AI service is currently unavailable."
+                except json.JSONDecodeError:
+                    logger.debug("Could not decode JSON line from stream: %s", line_str)
+                    continue
+
+            # Extract text after common thought tags
+            thought_enders = ["</think>", "[/INST]", "[/THOUGHT]"]
+            extracted_text = full_raw_response_content.strip()
+            for end_tag in thought_enders:
+                 if end_tag in extracted_text:
+                     extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
+
+            # Log the raw response for debugging (consistent with Gemini/Mistral)
+            if extracted_text:
+                logger.info("OpenAI/OpenRouter API returned: '%s'", extracted_text)
+                return extracted_text
+            else:
+                logger.warning("OpenAI/OpenRouter returned empty content. Full raw response: %s", full_raw_response_content)
+                if attempt < max_retries:
+                    sleep_time = base_delay * (2 ** attempt)
+                    logger.info("Retrying in %s seconds due to empty content...", sleep_time)
+                    time.sleep(sleep_time)
+                    continue
+                else:
+                    return "Error: AI returned empty content after retries."
+
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429:
+                logger.warning("Rate limit exceeded (429). Attempt %d/%d", attempt + 1, max_retries + 1)
+                if attempt < max_retries:
+                    sleep_time = base_delay * (2 ** attempt)
+                    logger.info("Retrying in %s seconds...", sleep_time)
+                    time.sleep(sleep_time)
+                    continue
+            logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
+            return "Error: AI service is currently unavailable."
+            
+        except requests.exceptions.RequestException as e:
+            logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
+            return "Error: AI service is currently unavailable."
+        except Exception as e:
+            logger.error("An unexpected error occurred in get_openai_compatible_playlist_name", exc_info=True)
+            return "Error: AI service is currently unavailable."
+    
+    return "Error: Max retries exceeded."
 
 # --- Ollama Specific Function (wrapper for backward compatibility) ---
 def get_ollama_playlist_name(ollama_url, model_name, full_prompt):
