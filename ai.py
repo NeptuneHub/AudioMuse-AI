@@ -229,8 +229,10 @@ def get_gemini_playlist_name(gemini_api_key, model_name, full_prompt):
         # Extract text from the response # type: ignore
         if response and response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
             extracted_text = "".join(part.text for part in response.candidates[0].content.parts)
+            # Log the raw response for debugging (consistent with OpenAI/OpenRouter)
+            logger.info("Gemini API returned: '%s'", extracted_text)
         else:
-            logger.debug("Gemini returned no content. Raw response: %s", response)
+            logger.warning("Gemini returned no content. Raw response: %s", response)
             return "Error: Gemini returned no content."
 
         # The final cleaning and length check is done in the general function
@@ -279,8 +281,10 @@ def get_mistral_playlist_name(mistral_api_key, model_name, full_prompt):
         # Extract text from the response # type: ignore
         if response and response.choices[0].message.content:
             extracted_text = response.choices[0].message.content
+            # Log the raw response for debugging (consistent with OpenAI/OpenRouter)
+            logger.info("Mistral API returned: '%s'", extracted_text)
         else:
-            logger.debug("Mistral returned no content. Raw response: %s", response)
+            logger.warning("Mistral returned no content. Raw response: %s", response)
             return "Error: mistral returned no content."
 
         # The final cleaning and length check is done in the general function
