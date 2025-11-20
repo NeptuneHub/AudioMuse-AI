@@ -1,14 +1,16 @@
 # syntax=docker/dockerfile:1
 ARG BASE_IMAGE=ubuntu:22.04
+
+# ============================================================================
+# Stage 1: Download ML models (cached separately)
+# ============================================================================
 FROM ubuntu:22.04 AS models
 
 SHELL ["/bin/bash", "-lc"]
 
-# Tip: If you can, host these models in a GCS/S3 bucket or single zip to speed this up.
-# Existing logic kept, but ensure this stage is only invalidated if URLs change.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends wget ca-certificates curl
+    apt-get update && apt-get install -y --no-install-recommends wget ca-certificates
 
 RUN set -eux; \
     urls=( \
@@ -28,43 +30,41 @@ RUN set -eux; \
     wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 --header="User-Agent: AudioMuse-Docker/1.0" -O "$fname" "$u" || exit 1; \
     done
 
-FROM ${BASE_IMAGE} AS base
+# ============================================================================
+# Stage 2: Builder - Install build tools and compile Python packages
+# ============================================================================
+FROM ${BASE_IMAGE} AS builder
 ARG BASE_IMAGE
 SHELL ["/bin/bash", "-c"]
 
-# Utilize caching for apt to speed up system dependency installation
+# Install build dependencies (gcc, g++, python-dev, etc.)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     set -ux; \
     apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip python3-dev \
-      libfftw3-3 libyaml-0-2 libsamplerate0 \
-      libsndfile1 \
-      ffmpeg wget git vim \
-      redis-tools curl \
-      supervisor strace procps iputils-ping \
-      libopenblas-dev liblapack-dev libpq-dev \
       gcc g++ \
+      libfftw3-dev libyaml-dev libsamplerate0-dev \
+      libsndfile1-dev libopenblas-dev liblapack-dev libpq-dev \
+      wget curl \
       "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)"
 
-FROM base AS libraries
-ARG BASE_IMAGE
-
-# REMOVED --no-cache-dir to allow pip caching
-# Split installation to layer dependencies
-
-# 1. Heavy GPU dependencies (Rarely change, take long to download)
+# Heavy GPU dependencies (cached separately for faster rebuilds)
 RUN --mount=type=cache,target=/root/.cache/pip \
     if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
-      pip3 install cupy-cuda12x onnxruntime-gpu==1.19.2; \
-      pip3 install --extra-index-url=https://pypi.nvidia.com cuml-cu12==24.12.*; \
+      pip3 install --no-warn-script-location \
+        cupy-cuda12x \
+        onnxruntime-gpu==1.19.2; \
+      pip3 install --no-warn-script-location \
+        --extra-index-url=https://pypi.nvidia.com \
+        cuml-cu12==24.12.*; \
     else \
-      pip3 install onnxruntime==1.19.2; \
+      pip3 install --no-warn-script-location onnxruntime==1.19.2; \
     fi
 
-# 2. Standard Libraries (More likely to change)
+# Standard dependencies
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install \
+    pip3 install --no-warn-script-location \
       numpy==1.26.4 \
       scipy==1.15.3 \
       numba==0.60.0 \
@@ -75,36 +75,65 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       ftfy flasgger sqlglot google-generativeai \
       mistralai umap-learn pydub python-mpd2 \
       onnx==1.14.1 resampy librosa==0.11.0 \
-      flatbuffers packaging protobuf sympy
+      flatbuffers packaging protobuf sympy \
+    && find /usr/local/lib/python3.10/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/lib/python3.10/dist-packages -type f -name "*.pyc" -delete \
+    && find /usr/local/lib/python3.10/dist-packages -type f -name "*.pyo" -delete
 
-FROM base AS runner
+# ============================================================================
+# Stage 3: Runtime - Minimal production image
+# ============================================================================
+FROM ${BASE_IMAGE} AS runtime
+ARG BASE_IMAGE
+SHELL ["/bin/bash", "-c"]
 
 ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive
 
+# Install ONLY runtime dependencies (no gcc, g++, python-dev, vim, git, etc.)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    set -ux; \
+    apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-pip \
+      libfftw3-3 libyaml-0-2 libsamplerate0 \
+      libsndfile1 libopenblas0 liblapack3 libpq5 \
+      ffmpeg curl \
+      supervisor procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install CUDA compiler if using NVIDIA base image (required for Cupy JIT)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+      "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}" \
+      "cuda-libraries-dev-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}" \
+      "cuda-cudart-dev-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; \
+    fi
+
 WORKDIR /app
 
-# Copy pre-installed libraries
-COPY --from=libraries /usr/local/lib/python3.10/dist-packages/ /usr/local/lib/python3.10/dist-packages/
+# Copy Python packages from builder
+COPY --from=builder /usr/local/lib/python3.10/dist-packages/ /usr/local/lib/python3.10/dist-packages/
 
-# Copy models (cached from stage 1)
+# Copy models from model stage
 COPY --from=models /app/model/ /app/model/
 
-# Copy source code LAST so it doesn't invalidate previous layers
+# Copy application code (last to maximize cache hits)
 COPY deployment/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY . /app
 
-# ... (Environment variables remain the same) ...
-
-ENV ORT_DISABLE_ALL_OPTIMIZATIONS=1
-ENV ORT_ENABLE_CPU_FP16_OPS=0
-ENV ORT_DISABLE_AVX512=1
-ENV ORT_FORCE_SHARED_PROVIDER=1
-ENV MKL_ENABLE_INSTRUCTIONS=AVX2
-ENV MKL_DYNAMIC=FALSE
-ENV ORT_DISABLE_MEMORY_PATTERN_OPTIMIZATION=1
-ENV PYTHONPATH=/usr/local/lib/python3/dist-packages:/app
+# ONNX Runtime optimizations
+ENV ORT_DISABLE_ALL_OPTIMIZATIONS=1 \
+    ORT_ENABLE_CPU_FP16_OPS=0 \
+    ORT_DISABLE_AVX512=1 \
+    ORT_FORCE_SHARED_PROVIDER=1 \
+    MKL_ENABLE_INSTRUCTIONS=AVX2 \
+    MKL_DYNAMIC=FALSE \
+    ORT_DISABLE_MEMORY_PATTERN_OPTIMIZATION=1 \
+    PYTHONPATH=/usr/local/lib/python3/dist-packages:/app
 
 EXPOSE 8000
 
