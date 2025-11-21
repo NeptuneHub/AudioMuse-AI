@@ -11,7 +11,7 @@ docker rmi audiomuse-ai:local-nvidia 2>/dev/null
 
 # Build with BuildKit (Required)
 DOCKER_BUILDKIT=1 docker build \
-  --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-runtime-ubuntu22.04 \
+  --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 \
   -t audiomuse-ai:local-nvidia .
 ```
 
