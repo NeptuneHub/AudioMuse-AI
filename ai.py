@@ -68,6 +68,11 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
     if api_key and api_key != "no-key-needed":
         headers["Authorization"] = f"Bearer {api_key}"
 
+    # Add OpenRouter-specific headers if using OpenRouter
+    if "openrouter" in server_url.lower():
+        headers["HTTP-Referer"] = "https://github.com/NeptuneHub/AudioMuse-AI"
+        headers["X-Title"] = "AudioMuse-AI"
+
     # Prepare payload based on format
     if is_openai_format:
         # OpenAI/OpenRouter format uses chat completions
@@ -75,8 +80,8 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
             "model": model_name,
             "messages": [{"role": "user", "content": full_prompt}],
             "stream": True,
-            "temperature": 0.9,
-            "max_tokens": 5000
+            "temperature": 0.7,
+            "max_tokens": 8000
         }
     else:
         # Ollama format uses generate endpoint
@@ -85,81 +90,125 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
             "prompt": full_prompt,
             "stream": True,
             "options": {
-                "num_predict": 5000,
-                "temperature": 0.9
+                "num_predict": 8000,
+                "temperature": 0.7
             }
         }
 
-    try:
-        logger.debug("Starting API call for model '%s' at '%s' (format: %s).", model_name, server_url, "OpenAI" if is_openai_format else "Ollama")
+    max_retries = 3
+    base_delay = 5
 
-        response = requests.post(server_url, headers=headers, data=json.dumps(payload), stream=True, timeout=960)
-        response.raise_for_status()
-        full_raw_response_content = ""
+    for attempt in range(max_retries + 1):
+        try:
+            # Add delay for OpenAI/OpenRouter to respect rate limits (only on first attempt or if not 429 retry)
+            if is_openai_format and attempt == 0:
+                openai_call_delay = int(os.environ.get("OPENAI_API_CALL_DELAY_SECONDS", "7"))
+                if openai_call_delay > 0:
+                    logger.debug("Waiting for %ss before OpenAI/OpenRouter API call to respect rate limits.", openai_call_delay)
+                    time.sleep(openai_call_delay)
 
-        for line in response.iter_lines():
-            if not line:
-                continue
+            logger.debug("Starting API call for model '%s' at '%s' (format: %s). Attempt %d/%d", model_name, server_url, "OpenAI" if is_openai_format else "Ollama", attempt + 1, max_retries + 1)
 
-            line_str = line.decode('utf-8', errors='ignore').strip()
+            response = requests.post(server_url, headers=headers, data=json.dumps(payload), stream=True, timeout=960)
+            response.raise_for_status()
+            full_raw_response_content = ""
 
-            # Skip SSE comments (lines starting with :)
-            if line_str.startswith(':'):
-                continue
+            for line in response.iter_lines():
+                if not line:
+                    continue
 
-            # Handle SSE data format (OpenRouter/OpenAI)
-            if line_str.startswith('data: '):
-                line_str = line_str[6:]  # Remove 'data: ' prefix
+                line_str = line.decode('utf-8', errors='ignore').strip()
 
-                # Check for end of stream marker
-                if line_str == '[DONE]':
-                    break
+                # Skip SSE comments (lines starting with :)
+                if line_str.startswith(':'):
+                    continue
 
-            # Try to parse JSON
-            try:
-                chunk = json.loads(line_str)
+                # Handle SSE data format (OpenRouter/OpenAI)
+                if line_str.startswith('data: '):
+                    line_str = line_str[6:]  # Remove 'data: ' prefix
 
-                # Extract content based on format
-                if is_openai_format:
-                    # OpenAI/OpenRouter format
-                    if 'choices' in chunk and len(chunk['choices']) > 0:
-                        choice = chunk['choices'][0]
-
-                        # Check for finish
-                        if choice.get('finish_reason') == 'stop':
-                            break
-
-                        # Extract text from delta.content or text field
-                        if 'delta' in choice and 'content' in choice['delta']:
-                            full_raw_response_content += choice['delta']['content']
-                        elif 'text' in choice:
-                            full_raw_response_content += choice['text']
-                else:
-                    # Ollama format
-                    if 'response' in chunk:
-                        full_raw_response_content += chunk['response']
-                    if chunk.get('done'):
+                    # Check for end of stream marker
+                    if line_str == '[DONE]':
                         break
 
-            except json.JSONDecodeError:
-                logger.debug("Could not decode JSON line from stream: %s", line_str)
-                continue
+                # Try to parse JSON
+                try:
+                    chunk = json.loads(line_str)
 
-        # Extract text after common thought tags
-        thought_enders = ["</think>", "[/INST]", "[/THOUGHT]"]
-        extracted_text = full_raw_response_content.strip()
-        for end_tag in thought_enders:
-             if end_tag in extracted_text:
-                 extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
+                    # Extract content based on format
+                    if is_openai_format:
+                        # OpenAI/OpenRouter format
+                        if 'choices' in chunk and len(chunk['choices']) > 0:
+                            choice = chunk['choices'][0]
 
-        return extracted_text
+                            # Check for finish
+                            finish_reason = choice.get('finish_reason')
+                            if finish_reason == 'stop':
+                                break
+                            elif finish_reason == 'length':
+                                logger.warning("Response truncated due to max_tokens limit")
+                                break
 
-    except requests.exceptions.RequestException as e:
-        logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
-        return "Error: AI service is currently unavailable."
-    except Exception as e:
-        logger.error("An unexpected error occurred in get_openai_compatible_playlist_name", exc_info=True)
-        return "Error: AI service is currently unavailable."
+                            # Extract text from delta.content or text field
+                            if 'delta' in choice:
+                                content = choice['delta'].get('content')
+                                if content is not None:
+                                    full_raw_response_content += content
+                            elif 'text' in choice:
+                                text = choice.get('text')
+                                if text is not None:
+                                    full_raw_response_content += text
+                    else:
+                        # Ollama format
+                        if 'response' in chunk:
+                            full_raw_response_content += chunk['response']
+                        if chunk.get('done'):
+                            break
+
+                except json.JSONDecodeError:
+                    logger.debug("Could not decode JSON line from stream: %s", line_str)
+                    continue
+
+            # Extract text after common thought tags
+            thought_enders = ["</think>", "[/INST]", "[/THOUGHT]"]
+            extracted_text = full_raw_response_content.strip()
+            for end_tag in thought_enders:
+                 if end_tag in extracted_text:
+                     extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
+
+            # Log the raw response for debugging (consistent with Gemini/Mistral)
+            if extracted_text:
+                logger.info("OpenAI/OpenRouter API returned: '%s'", extracted_text)
+                return extracted_text
+            else:
+                logger.warning("OpenAI/OpenRouter returned empty content. Full raw response: %s", full_raw_response_content)
+                if attempt < max_retries:
+                    sleep_time = base_delay * (2 ** attempt)
+                    logger.info("Retrying in %s seconds due to empty content...", sleep_time)
+                    time.sleep(sleep_time)
+                    continue
+                else:
+                    return "Error: AI returned empty content after retries."
+
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429:
+                logger.warning("Rate limit exceeded (429). Attempt %d/%d", attempt + 1, max_retries + 1)
+                if attempt < max_retries:
+                    sleep_time = base_delay * (2 ** attempt)
+                    logger.info("Retrying in %s seconds...", sleep_time)
+                    time.sleep(sleep_time)
+                    continue
+            logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
+            return "Error: AI service is currently unavailable."
+            
+        except requests.exceptions.RequestException as e:
+            logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
+            return "Error: AI service is currently unavailable."
+        except Exception as e:
+            logger.error("An unexpected error occurred in get_openai_compatible_playlist_name", exc_info=True)
+            return "Error: AI service is currently unavailable."
+    
+    return "Error: Max retries exceeded."
 
 # --- Ollama Specific Function (wrapper for backward compatibility) ---
 def get_ollama_playlist_name(ollama_url, model_name, full_prompt):
@@ -211,8 +260,10 @@ def get_gemini_playlist_name(gemini_api_key, model_name, full_prompt):
         # Extract text from the response # type: ignore
         if response and response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
             extracted_text = "".join(part.text for part in response.candidates[0].content.parts)
+            # Log the raw response for debugging (consistent with OpenAI/OpenRouter)
+            logger.info("Gemini API returned: '%s'", extracted_text)
         else:
-            logger.debug("Gemini returned no content. Raw response: %s", response)
+            logger.warning("Gemini returned no content. Raw response: %s", response)
             return "Error: Gemini returned no content."
 
         # The final cleaning and length check is done in the general function
@@ -261,8 +312,10 @@ def get_mistral_playlist_name(mistral_api_key, model_name, full_prompt):
         # Extract text from the response # type: ignore
         if response and response.choices[0].message.content:
             extracted_text = response.choices[0].message.content
+            # Log the raw response for debugging (consistent with OpenAI/OpenRouter)
+            logger.info("Mistral API returned: '%s'", extracted_text)
         else:
-            logger.debug("Mistral returned no content. Raw response: %s", response)
+            logger.warning("Mistral returned no content. Raw response: %s", response)
             return "Error: mistral returned no content."
 
         # The final cleaning and length check is done in the general function
@@ -279,7 +332,7 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
     Constructs the full prompt including new features.
     Applies length constraints after getting the name.
     """
-    MIN_LENGTH = 15
+    MIN_LENGTH = 5
     MAX_LENGTH = 40
 
     # --- Prepare feature descriptions for the prompt ---
@@ -321,31 +374,45 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
 
     logger.info("Sending prompt to AI (%s):\n%s", provider, full_prompt)
 
-    # --- Call the AI Model ---
-    name = "AI Naming Skipped" # Default if provider is NONE or invalid
+    # --- Call the AI Model with Retry Logic ---
+    max_retries = 3
+    current_prompt = full_prompt
+    
+    for attempt in range(max_retries):
+        name = "AI Naming Skipped" # Default if provider is NONE or invalid
 
-    if provider == "OLLAMA":
-        name = get_ollama_playlist_name(ollama_url, ollama_model_name, full_prompt)
-    elif provider == "OPENAI":
-        # Use OpenAI-compatible API with API key
-        if not openai_server_url or not openai_model_name or not openai_api_key:
-            return "Error: OpenAI configuration is incomplete. Please provide server URL, model name, and API key."
-        name = get_openai_compatible_playlist_name(openai_server_url, openai_model_name, full_prompt, openai_api_key)
-    elif provider == "GEMINI":
-        name = get_gemini_playlist_name(gemini_api_key, gemini_model_name, full_prompt)
-    elif provider == "MISTRAL":
-        name = get_mistral_playlist_name(mistral_api_key, mistral_model_name, full_prompt)
-    # else: provider is NONE or invalid, name remains "AI Naming Skipped"
+        if provider == "OLLAMA":
+            name = get_ollama_playlist_name(ollama_url, ollama_model_name, current_prompt)
+        elif provider == "OPENAI":
+            # Use OpenAI-compatible API with API key
+            if not openai_server_url or not openai_model_name or not openai_api_key:
+                return "Error: OpenAI configuration is incomplete. Please provide server URL, model name, and API key."
+            name = get_openai_compatible_playlist_name(openai_server_url, openai_model_name, current_prompt, openai_api_key)
+        elif provider == "GEMINI":
+            name = get_gemini_playlist_name(gemini_api_key, gemini_model_name, current_prompt)
+        elif provider == "MISTRAL":
+            name = get_mistral_playlist_name(mistral_api_key, mistral_model_name, current_prompt)
+        # else: provider is NONE or invalid, name remains "AI Naming Skipped"
 
-    # Apply length check and return final name or error
-    # Only apply length check if a name was actually generated (not the skip message or an API error message)
-    if name not in ["AI Naming Skipped"] and not name.startswith("Error"):
-        cleaned_name = clean_playlist_name(name)
-        if MIN_LENGTH <= len(cleaned_name) <= MAX_LENGTH:
-            return cleaned_name
+        # Apply length check and return final name or error
+        # Only apply length check if a name was actually generated (not the skip message or an API error message)
+        if name not in ["AI Naming Skipped"] and not name.startswith("Error"):
+            cleaned_name = clean_playlist_name(name)
+            if MIN_LENGTH <= len(cleaned_name) <= MAX_LENGTH:
+                return cleaned_name
+            else:
+                # Name failed length check
+                logger.warning(f"AI generated name '{cleaned_name}' ({len(cleaned_name)} chars) outside {MIN_LENGTH}-{MAX_LENGTH} range. Attempt {attempt + 1}/{max_retries}")
+                if attempt < max_retries - 1:
+                    # Prepare feedback for next attempt
+                    feedback = f"\n\nFEEDBACK: The previous title you generated ('{cleaned_name}') was {len(cleaned_name)} characters long. It MUST be between {MIN_LENGTH} and {MAX_LENGTH} characters. Please try again."
+                    current_prompt = full_prompt + feedback
+                    continue # Try again
+                else:
+                    # Return an error message indicating the length issue, but include the cleaned name for debugging
+                    return f"Error: AI generated name '{cleaned_name}' ({len(cleaned_name)} chars) outside {MIN_LENGTH}-{MAX_LENGTH} range after {max_retries} attempts."
         else:
-            # Return an error message indicating the length issue, but include the cleaned name for debugging
-            return f"Error: AI generated name '{cleaned_name}' ({len(cleaned_name)} chars) outside {MIN_LENGTH}-{MAX_LENGTH} range."
-    else:
-        # Return the original skip message or API error message
-        return name
+            # API error or skipped
+            return name
+            
+    return "Error: Max retries exceeded in get_ai_playlist_name"
