@@ -139,6 +139,7 @@ Choose the appropriate file based on your media server setup.
 *   Docker and Docker Compose installed.
 *   `Jellyfin` or `Navidrome` or `Lyrion` or `Emby` installed.
 *   Respect the [hardware requirements](#hardware-requirements)
+*   Optionally, you can install the `docker-model-plugin` to enable the use of the [Docker Model Runner](https://docs.docker.com/ai/model-runner/get-started/#docker-engine) for running AI models locally. If you choose this setup, use `deployment/docker-compose-dmr.yaml` to configure AudioMuse-AI to communicate with DMR through an OpenAI-compatible API interface.
 
 **Steps:**
 1.  **Create your environment file:**
