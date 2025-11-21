@@ -880,6 +880,8 @@ def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_mod
                 )
                 if ai_name and "Error" not in ai_name:
                     final_name = ai_name.strip().replace("\n", " ")
+                else:
+                    logger.warning(f"AI naming failed for '{original_name}': {ai_name}. Using original name.")
             except Exception as e:
                 logger.warning(f"AI naming failed for '{original_name}': {e}. Using original name.")
 
