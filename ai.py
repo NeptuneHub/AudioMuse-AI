@@ -80,8 +80,8 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
             "model": model_name,
             "messages": [{"role": "user", "content": full_prompt}],
             "stream": True,
-            "temperature": 0.9,
-            "max_tokens": 5000
+            "temperature": 0.7,
+            "max_tokens": 8000
         }
     else:
         # Ollama format uses generate endpoint
@@ -90,8 +90,8 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
             "prompt": full_prompt,
             "stream": True,
             "options": {
-                "num_predict": 5000,
-                "temperature": 0.9
+                "num_predict": 8000,
+                "temperature": 0.7
             }
         }
 
@@ -142,18 +142,22 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                             choice = chunk['choices'][0]
 
                             # Check for finish
-                            if choice.get('finish_reason') == 'stop':
+                            finish_reason = choice.get('finish_reason')
+                            if finish_reason == 'stop':
+                                break
+                            elif finish_reason == 'length':
+                                logger.warning("Response truncated due to max_tokens limit")
                                 break
 
-                        # Extract text from delta.content or text field
-                        if 'delta' in choice:
-                            content = choice['delta'].get('content')
-                            if content is not None:
-                                full_raw_response_content += content
-                        elif 'text' in choice:
-                            text = choice.get('text')
-                            if text is not None:
-                                full_raw_response_content += text
+                            # Extract text from delta.content or text field
+                            if 'delta' in choice:
+                                content = choice['delta'].get('content')
+                                if content is not None:
+                                    full_raw_response_content += content
+                            elif 'text' in choice:
+                                text = choice.get('text')
+                                if text is not None:
+                                    full_raw_response_content += text
                     else:
                         # Ollama format
                         if 'response' in chunk:
@@ -328,7 +332,7 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
     Constructs the full prompt including new features.
     Applies length constraints after getting the name.
     """
-    MIN_LENGTH = 10
+    MIN_LENGTH = 5
     MAX_LENGTH = 40
 
     # --- Prepare feature descriptions for the prompt ---
@@ -370,31 +374,45 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
 
     logger.info("Sending prompt to AI (%s):\n%s", provider, full_prompt)
 
-    # --- Call the AI Model ---
-    name = "AI Naming Skipped" # Default if provider is NONE or invalid
+    # --- Call the AI Model with Retry Logic ---
+    max_retries = 3
+    current_prompt = full_prompt
+    
+    for attempt in range(max_retries):
+        name = "AI Naming Skipped" # Default if provider is NONE or invalid
 
-    if provider == "OLLAMA":
-        name = get_ollama_playlist_name(ollama_url, ollama_model_name, full_prompt)
-    elif provider == "OPENAI":
-        # Use OpenAI-compatible API with API key
-        if not openai_server_url or not openai_model_name or not openai_api_key:
-            return "Error: OpenAI configuration is incomplete. Please provide server URL, model name, and API key."
-        name = get_openai_compatible_playlist_name(openai_server_url, openai_model_name, full_prompt, openai_api_key)
-    elif provider == "GEMINI":
-        name = get_gemini_playlist_name(gemini_api_key, gemini_model_name, full_prompt)
-    elif provider == "MISTRAL":
-        name = get_mistral_playlist_name(mistral_api_key, mistral_model_name, full_prompt)
-    # else: provider is NONE or invalid, name remains "AI Naming Skipped"
+        if provider == "OLLAMA":
+            name = get_ollama_playlist_name(ollama_url, ollama_model_name, current_prompt)
+        elif provider == "OPENAI":
+            # Use OpenAI-compatible API with API key
+            if not openai_server_url or not openai_model_name or not openai_api_key:
+                return "Error: OpenAI configuration is incomplete. Please provide server URL, model name, and API key."
+            name = get_openai_compatible_playlist_name(openai_server_url, openai_model_name, current_prompt, openai_api_key)
+        elif provider == "GEMINI":
+            name = get_gemini_playlist_name(gemini_api_key, gemini_model_name, current_prompt)
+        elif provider == "MISTRAL":
+            name = get_mistral_playlist_name(mistral_api_key, mistral_model_name, current_prompt)
+        # else: provider is NONE or invalid, name remains "AI Naming Skipped"
 
-    # Apply length check and return final name or error
-    # Only apply length check if a name was actually generated (not the skip message or an API error message)
-    if name not in ["AI Naming Skipped"] and not name.startswith("Error"):
-        cleaned_name = clean_playlist_name(name)
-        if MIN_LENGTH <= len(cleaned_name) <= MAX_LENGTH:
-            return cleaned_name
+        # Apply length check and return final name or error
+        # Only apply length check if a name was actually generated (not the skip message or an API error message)
+        if name not in ["AI Naming Skipped"] and not name.startswith("Error"):
+            cleaned_name = clean_playlist_name(name)
+            if MIN_LENGTH <= len(cleaned_name) <= MAX_LENGTH:
+                return cleaned_name
+            else:
+                # Name failed length check
+                logger.warning(f"AI generated name '{cleaned_name}' ({len(cleaned_name)} chars) outside {MIN_LENGTH}-{MAX_LENGTH} range. Attempt {attempt + 1}/{max_retries}")
+                if attempt < max_retries - 1:
+                    # Prepare feedback for next attempt
+                    feedback = f"\n\nFEEDBACK: The previous title you generated ('{cleaned_name}') was {len(cleaned_name)} characters long. It MUST be between {MIN_LENGTH} and {MAX_LENGTH} characters. Please try again."
+                    current_prompt = full_prompt + feedback
+                    continue # Try again
+                else:
+                    # Return an error message indicating the length issue, but include the cleaned name for debugging
+                    return f"Error: AI generated name '{cleaned_name}' ({len(cleaned_name)} chars) outside {MIN_LENGTH}-{MAX_LENGTH} range after {max_retries} attempts."
         else:
-            # Return an error message indicating the length issue, but include the cleaned name for debugging
-            return f"Error: AI generated name '{cleaned_name}' ({len(cleaned_name)} chars) outside {MIN_LENGTH}-{MAX_LENGTH} range."
-    else:
-        # Return the original skip message or API error message
-        return name
+            # API error or skipped
+            return name
+            
+    return "Error: Max retries exceeded in get_ai_playlist_name"
