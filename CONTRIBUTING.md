@@ -84,7 +84,7 @@ docker-compose up --build -d
 ### PR Requirements
 When submitting a pull request, ensure:
 
-* **Clear description:** Explain what the PR achieves and why the change is needed
+* **Clear description:** Explain what the PR achieves and why the change is needed. Also cleary explain how to test it.
 * **Testing:** Verify core features work on at least one architecture (Intel/ARM) and one media server:
   * Analysis and Clustering
   * Instant Playlist
