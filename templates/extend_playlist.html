@@ -2,6 +2,7 @@
 
 {% block headAdditions %}
 <style>
+    /* Existing Styles */
     .param-group {
         display: flex;
         gap: 1.5rem;
@@ -33,6 +34,7 @@
         width: 100%;
         border-collapse: collapse;
         margin-top: 1rem;
+        margin-bottom: 60px; /* Space for player */
     }
 
     .results-table th,
@@ -82,6 +84,25 @@
 
     .btn-exclude:hover {
         background-color: #B91C1C;
+    }
+
+    .btn-play {
+        background-color: #3B82F6;
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+    }
+
+    .btn-play:hover {
+        background-color: #2563EB;
     }
 
     .included-row {
@@ -136,6 +157,172 @@
         font-weight: 700;
         color: #1F2937;
     }
+
+    /* Filter Builder Styles */
+    .filter-builder {
+        background-color: #1f2937;
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        color: white;
+        margin-bottom: 1.5rem;
+    }
+
+    .filter-header {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .filter-header select {
+        background-color: #374151;
+        color: white;
+        border: 1px solid #4b5563;
+        padding: 0.5rem;
+        border-radius: 0.375rem;
+    }
+
+    .filter-row {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 0.75rem;
+        flex-wrap: wrap;
+    }
+
+    .filter-row select, .filter-row input {
+        background-color: #374151;
+        color: white;
+        border: 1px solid #4b5563;
+        padding: 0.5rem;
+        border-radius: 0.375rem;
+        flex: 1;
+        min-width: 150px;
+    }
+
+    .btn-add-filter, .btn-remove-filter {
+        background: none;
+        border: none;
+        color: #9ca3af;
+        font-size: 1.5rem;
+        cursor: pointer;
+        line-height: 1;
+    }
+
+    .btn-add-filter:hover { color: white; }
+    .btn-remove-filter:hover { color: #ef4444; }
+
+    .tab-container {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 1rem;
+        border-bottom: 2px solid #e5e7eb;
+    }
+
+    .tab-btn {
+        padding: 0.75rem 1.5rem;
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-weight: 600;
+        color: #6b7280;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+    }
+
+    .tab-btn.active {
+        color: var(--primary-color, #3B82F6);
+        border-bottom-color: var(--primary-color, #3B82F6);
+    }
+
+    /* Sticky Player Styles */
+    .sticky-player {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background-color: #111827;
+        color: white;
+        padding: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 2rem;
+        box-shadow: 0 -4px 6px -1px rgba(0, 0, 0, 0.1);
+        z-index: 1000;
+        border-top: 1px solid #374151;
+    }
+
+    .player-info {
+        flex: 0 0 250px;
+        overflow: hidden;
+        white-space: nowrap;
+    }
+
+    .player-title {
+        font-weight: 700;
+        font-size: 1.1rem;
+        text-overflow: ellipsis;
+        overflow: hidden;
+    }
+
+    .player-artist {
+        font-size: 0.9rem;
+        color: #9ca3af;
+        text-overflow: ellipsis;
+        overflow: hidden;
+    }
+
+    .player-controls {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .player-buttons {
+        display: flex;
+        justify-content: center;
+        gap: 1rem;
+        align-items: center;
+    }
+
+    .player-btn {
+        background: none;
+        border: none;
+        color: white;
+        cursor: pointer;
+        font-size: 1.5rem;
+    }
+
+    .player-btn:hover { color: var(--primary-color, #3B82F6); }
+
+    .progress-container {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        font-size: 0.875rem;
+        color: #9ca3af;
+    }
+
+    .progress-bar {
+        flex: 1;
+        height: 4px;
+        background-color: #374151;
+        border-radius: 2px;
+        position: relative;
+        cursor: pointer;
+    }
+
+    .progress-fill {
+        height: 100%;
+        background-color: var(--primary-color, #3B82F6);
+        border-radius: 2px;
+        width: 0%;
+    }
+
+    /* Hidden class utility */
+    .hidden { display: none !important; }
+
 </style>
 {% endblock %}
 
@@ -143,32 +330,57 @@
 <section>
     <header class="page-header">
         <h1>AudioMuse-AI - Extend Playlist</h1>
-        <p>Find songs similar to an entire playlist and expand it with curated selections.</p>
+        <p>Create dynamic playlists using existing playlists or Smart Filters, and discover similar tracks.</p>
     </header>
 
+    <!-- Source Selection Tabs -->
+    <div class="tab-container">
+        <button class="tab-btn active" onclick="switchTab('smart')">Smart Filters</button>
+        <button class="tab-btn" onclick="switchTab('playlist')">Existing Playlist</button>
+    </div>
+
     <form id="extend-playlist-form">
-        <div class="param-group">
+
+        <!-- Smart Filters Section -->
+        <div id="smart-filters-section" class="filter-builder">
+            <div class="filter-header">
+                <span>Match</span>
+                <select id="match-mode" name="match_mode">
+                    <option value="all">all</option>
+                    <option value="any">any</option>
+                </select>
+                <span>of the following rules:</span>
+                <button type="button" class="btn-add-filter" onclick="addFilterRow()">+</button>
+            </div>
+            <div id="filter-rows">
+                <!-- Filter rows will be added here -->
+            </div>
+        </div>
+
+        <!-- Existing Playlist Section -->
+        <div id="playlist-section" class="param-group hidden">
             <div>
                 <label for="playlist_select" class="label-with-tooltip">
                     Select Playlist:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Choose a playlist from your library to extend with similar
-                            songs.</span>
+                        <span class="tooltip-text">Choose a playlist from your library to extend with similar songs.</span>
                     </span>
                 </label>
-                <select id="playlist_select" name="playlist_select" required>
+                <select id="playlist_select" name="playlist_select">
                     <option value="">-- Select a playlist --</option>
                 </select>
             </div>
+        </div>
 
+        <!-- Common Parameters -->
+        <div class="param-group">
             <div>
                 <label for="max_songs" class="label-with-tooltip">
                     Maximum Songs:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Maximum number of similar songs to find. Fewer songs may be returned
-                            based on your similarity threshold.</span>
+                        <span class="tooltip-text">Maximum number of similar songs to find.</span>
                     </span>
                 </label>
                 <input type="number" id="max_songs" name="max_songs" value="50" min="1" max="200">
@@ -181,12 +393,10 @@
                     Similarity Threshold: <span id="threshold_value" class="slider-value">0.50</span>
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Lower values = more similar songs. Higher values = more diverse
-                            results. Range: 0.0 (most similar) to 1.0 (least similar).</span>
+                        <span class="tooltip-text">Lower values = more similar songs. Higher values = more diverse results. Range: 0.0 (most similar) to 1.0 (least similar).</span>
                     </span>
                 </label>
-                <input type="range" id="similarity_threshold" name="similarity_threshold" min="0" max="1" step="0.01"
-                    value="0.50">
+                <input type="range" id="similarity_threshold" name="similarity_threshold" min="0" max="1" step="0.01" value="0.50">
             </div>
         </div>
 
@@ -199,7 +409,7 @@
 <section id="stats-container" class="hidden">
     <div class="stats-container">
         <div class="stat-item">
-            <span class="stat-label">Original Playlist Songs</span>
+            <span class="stat-label">Source Songs</span>
             <span id="stat-original" class="stat-value">0</span>
         </div>
         <div class="stat-item">
@@ -229,8 +439,7 @@
         <div class="param-group">
             <div>
                 <label for="new_playlist_name">New Playlist Name:</label>
-                <input type="text" id="new_playlist_name" name="new_playlist_name" required
-                    placeholder="e.g., My Extended Playlist">
+                <input type="text" id="new_playlist_name" name="new_playlist_name" required placeholder="e.g., My Extended Playlist">
             </div>
         </div>
         <button type="submit" style="background-color: #16A34A;">
@@ -239,276 +448,494 @@
     </form>
     <div id="playlist-status"></div>
 </section>
+
+<!-- Sticky Web Player -->
+<div id="web-player" class="sticky-player hidden">
+    <audio id="audio-element"></audio>
+    <div class="player-info">
+        <div id="player-title" class="player-title">Not Playing</div>
+        <div id="player-artist" class="player-artist"></div>
+    </div>
+    <div class="player-controls">
+        <div class="player-buttons">
+            <button class="player-btn" onclick="seek(-10)">&#8634;</button>
+            <button id="play-pause-btn" class="player-btn" onclick="togglePlay()">&#9658;</button>
+            <button class="player-btn" onclick="seek(10)">&#8635;</button>
+        </div>
+        <div class="progress-container">
+            <span id="current-time">0:00</span>
+            <div class="progress-bar" onclick="seekTo(event)">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <span id="duration">0:00</span>
+        </div>
+    </div>
+    <div style="flex: 0 0 100px;">
+        <!-- Volume or other controls if needed -->
+    </div>
+</div>
+
 {% endblock %}
 
 {% block bodyAdditions %}
 <script src="{{ url_for('static', filename='menu.js') }}"></script>
 <script>
-    (() => {
-        let includedIds = [];
-        let excludedIds = [];
-        let currentPlaylistName = '';
-        let playlistStats = {
-            original: 0,
-            included: 0,
-            excluded: 0,
-            suggested: 0
-        };
+    // --- Global Variables ---
+    let activeTab = 'smart';
+    let includedIds = [];
+    let excludedIds = [];
+    let playlistStats = { original: 0, included: 0, excluded: 0, suggested: 0 };
 
-        const extendForm = document.getElementById('extend-playlist-form');
-        const savePlaylistForm = document.getElementById('save-playlist-form');
-        const playlistSelect = document.getElementById('playlist_select');
-        const maxSongsInput = document.getElementById('max_songs');
-        const similarityThresholdInput = document.getElementById('similarity_threshold');
-        const thresholdValueSpan = document.getElementById('threshold_value');
-        const resultsContainer = document.getElementById('results-container');
-        const statsContainer = document.getElementById('stats-container');
-        const playlistCreator = document.getElementById('playlist-creator');
-        const statusDiv = document.getElementById('status');
-        const resultsTableWrapper = document.getElementById('results-table-wrapper');
-        const playlistStatusDiv = document.getElementById('playlist-status');
+    // Fields config
+    const filterFields = [
+        { value: 'album', label: 'Album Title' },
+        { value: 'artist', label: 'Artist' },
+        { value: 'title', label: 'Track Title' },
+        { value: 'bpm', label: 'BPM' },
+        { value: 'energy', label: 'Energy' },
+        { value: 'key', label: 'Key' },
+        { value: 'scale', label: 'Scale' },
+        { value: 'mood', label: 'Mood' }
+    ];
+
+    const operators = {
+        text: [
+            { value: 'contains', label: 'contains' },
+            { value: 'does_not_contain', label: 'does not contain' },
+            { value: 'is', label: 'is' },
+            { value: 'is_not', label: 'is not' }
+        ],
+        number: [
+            { value: 'is', label: 'is' },
+            { value: 'greater_than', label: 'is greater than' },
+            { value: 'less_than', label: 'is less than' }
+        ]
+    };
+
+    // --- Initialization ---
+    (() => {
+        // Load playlists for the select dropdown
+        loadPlaylists();
+
+        // Add initial filter row
+        addFilterRow();
 
         // Update threshold display
-        similarityThresholdInput.addEventListener('input', () => {
-            thresholdValueSpan.textContent = parseFloat(similarityThresholdInput.value).toFixed(2);
+        document.getElementById('similarity_threshold').addEventListener('input', (e) => {
+            document.getElementById('threshold_value').textContent = parseFloat(e.target.value).toFixed(2);
         });
 
-        // Load playlists on page load
-        async function loadPlaylists() {
-            try {
-                const response = await fetch("{{ url_for('get_playlists_endpoint') }}");
-                const playlists = await response.json();
+        // Player events
+        const audio = document.getElementById('audio-element');
+        audio.addEventListener('timeupdate', updateProgress);
+        audio.addEventListener('ended', () => {
+            document.getElementById('play-pause-btn').innerHTML = '&#9658;';
+        });
+    })();
 
-                playlistSelect.innerHTML = '<option value="">-- Select a playlist --</option>';
-                for (const [playlistName, tracks] of Object.entries(playlists)) {
-                    const option = document.createElement('option');
-                    option.value = playlistName;
-                    option.textContent = `${playlistName} (${tracks.length} songs)`;
-                    playlistSelect.appendChild(option);
-                }
-            } catch (error) {
-                console.error('Failed to load playlists:', error);
-                statusDiv.textContent = 'Failed to load playlists. Please try again.';
-                statusDiv.style.color = 'red';
+    // --- Tab Switching ---
+    window.switchTab = function(tab) {
+        activeTab = tab;
+        document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+        event.target.classList.add('active');
+
+        if (tab === 'smart') {
+            document.getElementById('smart-filters-section').classList.remove('hidden');
+            document.getElementById('playlist-section').classList.add('hidden');
+        } else {
+            document.getElementById('smart-filters-section').classList.add('hidden');
+            document.getElementById('playlist-section').classList.remove('hidden');
+        }
+
+        // Reset lists on tab switch
+        includedIds = [];
+        excludedIds = [];
+    };
+
+    // --- Filter Builder Logic ---
+    window.addFilterRow = function() {
+        const row = document.createElement('div');
+        row.className = 'filter-row';
+
+        // Field Select
+        const fieldSelect = document.createElement('select');
+        fieldSelect.className = 'filter-field';
+        filterFields.forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f.value;
+            opt.textContent = f.label;
+            fieldSelect.appendChild(opt);
+        });
+
+        // Operator Select
+        const opSelect = document.createElement('select');
+        opSelect.className = 'filter-operator';
+
+        // Value Input
+        const valInput = document.createElement('input');
+        valInput.type = 'text';
+        valInput.className = 'filter-value';
+
+        // Remove Button
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn-remove-filter';
+        removeBtn.innerHTML = '&times;';
+        removeBtn.onclick = () => row.remove();
+
+        // Update operators when field changes
+        fieldSelect.onchange = () => updateOperators(fieldSelect, opSelect, valInput);
+
+        row.appendChild(fieldSelect);
+        row.appendChild(opSelect);
+        row.appendChild(valInput);
+        row.appendChild(removeBtn);
+
+        document.getElementById('filter-rows').appendChild(row);
+        updateOperators(fieldSelect, opSelect, valInput); // Initialize
+    };
+
+    function updateOperators(fieldSelect, opSelect, valInput) {
+        const field = fieldSelect.value;
+        opSelect.innerHTML = '';
+        const ops = (['bpm', 'energy'].includes(field)) ? operators.number : operators.text;
+
+        ops.forEach(op => {
+            const opt = document.createElement('option');
+            opt.value = op.value;
+            opt.textContent = op.label;
+            opSelect.appendChild(opt);
+        });
+
+        valInput.type = (['bpm', 'energy'].includes(field)) ? 'number' : 'text';
+    }
+
+    function getFilters() {
+        const rows = document.querySelectorAll('.filter-row');
+        const filters = [];
+        rows.forEach(row => {
+            const field = row.querySelector('.filter-field').value;
+            const operator = row.querySelector('.filter-operator').value;
+            const value = row.querySelector('.filter-value').value;
+            if (value) {
+                filters.push({ field, operator, value });
             }
+        });
+        return filters;
+    }
+
+    // --- API Interaction ---
+    async function loadPlaylists() {
+        try {
+            const response = await fetch("{{ url_for('get_playlists_endpoint') }}");
+            const playlists = await response.json();
+            const select = document.getElementById('playlist_select');
+            select.innerHTML = '<option value="">-- Select a playlist --</option>';
+            for (const [name, tracks] of Object.entries(playlists)) {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = `${name} (${tracks.length} songs)`;
+                select.appendChild(option);
+            }
+        } catch (error) {
+            console.error('Failed to load playlists:', error);
         }
+    }
 
-        // Update stats display
-        function updateStats() {
-            document.getElementById('stat-original').textContent = playlistStats.original;
-            document.getElementById('stat-included').textContent = playlistStats.included;
-            document.getElementById('stat-excluded').textContent = playlistStats.excluded;
-            document.getElementById('stat-suggested').textContent = playlistStats.suggested;
-        }
+    async function findSimilarSongs() {
+        const statusDiv = document.getElementById('status');
+        const maxSongs = parseInt(document.getElementById('max_songs').value);
+        const threshold = parseFloat(document.getElementById('similarity_threshold').value);
 
-        // Find similar songs
-        async function findSimilarSongs() {
-            const playlistName = playlistSelect.value;
-            const maxSongs = parseInt(maxSongsInput.value);
-            const similarityThreshold = parseFloat(similarityThresholdInput.value);
+        let payload = {
+            max_songs: maxSongs,
+            similarity_threshold: threshold,
+            included_ids: includedIds,
+            excluded_ids: excludedIds
+        };
 
+        if (activeTab === 'smart') {
+            const filters = getFilters();
+            if (filters.length === 0) {
+                statusDiv.textContent = 'Please add at least one filter.';
+                statusDiv.style.color = 'red';
+                return;
+            }
+            payload.filters = filters;
+            payload.match_mode = document.getElementById('match-mode').value;
+        } else {
+            const playlistName = document.getElementById('playlist_select').value;
             if (!playlistName) {
                 statusDiv.textContent = 'Please select a playlist.';
                 statusDiv.style.color = 'red';
                 return;
             }
-
-            currentPlaylistName = playlistName;
-            statusDiv.textContent = 'Searching for similar songs...';
-            statusDiv.style.color = 'blue';
-
-            try {
-                const response = await fetch("{{ url_for('extend_playlist_bp.extend_playlist_api') }}", {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        playlist_name: playlistName,
-                        max_songs: maxSongs,
-                        similarity_threshold: similarityThreshold,
-                        included_ids: includedIds,
-                        excluded_ids: excludedIds
-                    })
-                });
-
-                const data = await response.json();
-
-                if (!response.ok) {
-                    throw new Error(data.error || 'Failed to find similar songs');
-                }
-
-                // Update stats
-                playlistStats.original = data.playlist_song_count;
-                playlistStats.included = data.included_count;
-                playlistStats.excluded = data.excluded_count;
-                playlistStats.suggested = data.results.length;
-                updateStats();
-
-                // Display results
-                displayResults(data.results);
-
-                statusDiv.textContent = `Found ${data.results.length} similar songs.`;
-                statusDiv.style.color = 'green';
-                resultsContainer.classList.remove('hidden');
-                statsContainer.classList.remove('hidden');
-
-                // Show save button if we have included songs
-                if (includedIds.length > 0) {
-                    playlistCreator.classList.remove('hidden');
-                }
-
-            } catch (error) {
-                console.error('Search failed:', error);
-                statusDiv.textContent = error.message;
-                statusDiv.style.color = 'red';
-            }
+            payload.playlist_name = playlistName;
         }
 
-        // Display results table
-        function displayResults(results) {
-            if (results.length === 0) {
-                resultsTableWrapper.innerHTML = '<p>No similar songs found with the current settings. Try adjusting the similarity threshold.</p>';
-                return;
-            }
+        statusDiv.textContent = 'Searching...';
+        statusDiv.style.color = 'blue';
 
-            let tableHTML = `
-                <table class="results-table">
-                    <thead>
-                        <tr>
-                            <th>Title</th>
-                            <th>Artist</th>
-                            <th>Distance</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-            `;
-
-            results.forEach(track => {
-                const isIncluded = includedIds.includes(track.item_id);
-                const isExcluded = excludedIds.includes(track.item_id);
-                const rowClass = isIncluded ? 'included-row' : (isExcluded ? 'excluded-row' : '');
-                const distance = track.distance ? track.distance.toFixed(4) : 'N/A';
-
-                let actionButtons = '';
-                if (isIncluded) {
-                    actionButtons = '<span class="status-badge status-included">INCLUDED</span>';
-                } else if (isExcluded) {
-                    actionButtons = '<span class="status-badge status-excluded">EXCLUDED</span>';
-                } else {
-                    actionButtons = `
-                        <div class="action-buttons">
-                            <button class="btn-include" onclick="includeSong('${track.item_id}')">Include</button>
-                            <button class="btn-exclude" onclick="excludeSong('${track.item_id}')">Exclude</button>
-                        </div>
-                    `;
-                }
-
-                tableHTML += `
-                    <tr class="${rowClass}" data-item-id="${track.item_id}">
-                        <td>${track.title || 'Unknown'}</td>
-                        <td>${track.author || 'Unknown'}</td>
-                        <td>${distance}</td>
-                        <td>${actionButtons}</td>
-                    </tr>
-                `;
+        try {
+            const response = await fetch("{{ url_for('extend_playlist_bp.extend_playlist_api') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
             });
 
-            tableHTML += `
-                    </tbody>
-                </table>
-            `;
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Search failed');
 
-            resultsTableWrapper.innerHTML = tableHTML;
+            // Update Stats
+            playlistStats = {
+                original: data.playlist_song_count,
+                included: data.included_count,
+                excluded: data.excluded_count,
+                suggested: data.results.length
+            };
+            updateStatsDisplay();
+
+            displayResults(data.results);
+
+            statusDiv.textContent = `Found ${data.results.length} songs.`;
+            statusDiv.style.color = 'green';
+
+            document.getElementById('results-container').classList.remove('hidden');
+            document.getElementById('stats-container').classList.remove('hidden');
+            if (includedIds.length > 0) {
+                document.getElementById('playlist-creator').classList.remove('hidden');
+            }
+
+        } catch (error) {
+            statusDiv.textContent = error.message;
+            statusDiv.style.color = 'red';
+        }
+    }
+
+    function updateStatsDisplay() {
+        document.getElementById('stat-original').textContent = playlistStats.original;
+        document.getElementById('stat-included').textContent = playlistStats.included;
+        document.getElementById('stat-excluded').textContent = playlistStats.excluded;
+        document.getElementById('stat-suggested').textContent = playlistStats.suggested;
+    }
+
+    function displayResults(results) {
+        const wrapper = document.getElementById('results-table-wrapper');
+        if (results.length === 0) {
+            wrapper.innerHTML = '<p>No similar songs found.</p>';
+            return;
         }
 
-        // Include a song
-        window.includeSong = function (itemId) {
-            if (!includedIds.includes(itemId)) {
-                includedIds.push(itemId);
-                // Remove from excluded if it was there
-                excludedIds = excludedIds.filter(id => id !== itemId);
-                // Re-run search with updated lists
-                findSimilarSongs();
-            }
-        };
+        let html = `
+            <table class="results-table">
+                <thead>
+                    <tr>
+                        <th style="width: 50px;">Play</th>
+                        <th>Title</th>
+                        <th>Artist</th>
+                        <th>Distance</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
 
-        // Exclude a song
-        window.excludeSong = function (itemId) {
-            if (!excludedIds.includes(itemId)) {
-                excludedIds.push(itemId);
-                // Remove from included if it was there
-                includedIds = includedIds.filter(id => id !== itemId);
-                // Re-run search with updated lists
-                findSimilarSongs();
-            }
-        };
+        results.forEach(track => {
+            const isIncluded = includedIds.includes(track.item_id);
+            const isExcluded = excludedIds.includes(track.item_id);
+            let rowClass = isIncluded ? 'included-row' : (isExcluded ? 'excluded-row' : '');
 
-        // Form submission
-        extendForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            // Reset included/excluded lists when starting a new search
-            if (playlistSelect.value !== currentPlaylistName) {
-                includedIds = [];
-                excludedIds = [];
-            }
-            await findSimilarSongs();
+            // Escape strings for safe usage in onclick
+            const safeTitle = (track.title || 'Unknown').replace(/'/g, "\\'");
+            const safeArtist = (track.song_artist || track.author || 'Unknown').replace(/'/g, "\\'");
+            const safeUrl = (track.stream_url || '').replace(/'/g, "\\'");
+
+            html += `
+                <tr class="${rowClass}">
+                    <td>
+                        ${safeUrl ?
+                            `<button class="btn-play" onclick="playSong('${safeUrl}', '${safeTitle}', '${safeArtist}')">&#9658;</button>`
+                            : '-'}
+                    </td>
+                    <td>${track.title || 'Unknown'}</td>
+                    <td>${track.song_artist || track.author || 'Unknown'}</td>
+                    <td>${track.distance ? track.distance.toFixed(4) : 'N/A'}</td>
+                    <td>
+                        ${isIncluded ? '<span class="status-badge status-included">INCLUDED</span>' :
+                          isExcluded ? '<span class="status-badge status-excluded">EXCLUDED</span>' :
+                          `<div class="action-buttons">
+                               <button class="btn-include" onclick="includeSong('${track.item_id}')">Include</button>
+                               <button class="btn-exclude" onclick="excludeSong('${track.item_id}')">Exclude</button>
+                           </div>`
+                        }
+                    </td>
+                </tr>
+            `;
         });
 
-        // Save extended playlist
-        savePlaylistForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
+        html += '</tbody></table>';
+        wrapper.innerHTML = html;
+    }
 
-            const newPlaylistName = document.getElementById('new_playlist_name').value.trim();
+    // --- Actions ---
+    window.includeSong = function(id) {
+        if (!includedIds.includes(id)) {
+            includedIds.push(id);
+            excludedIds = excludedIds.filter(x => x !== id);
+            findSimilarSongs();
+        }
+    };
 
-            if (!newPlaylistName) {
-                playlistStatusDiv.textContent = 'Please enter a playlist name.';
-                playlistStatusDiv.style.color = 'red';
-                return;
+    window.excludeSong = function(id) {
+        if (!excludedIds.includes(id)) {
+            excludedIds.push(id);
+            includedIds = includedIds.filter(x => x !== id);
+            findSimilarSongs();
+        }
+    };
+
+    document.getElementById('extend-playlist-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        // Reset inclusion/exclusion on new primary search
+        // But we might want to keep them if refining?
+        // The original logic reset them if playlist changed.
+        // Here let's keep simple: reset if user explicitly changes source, but refining via 'Find Similar' usually implies keeping context?
+        // Actually, re-clicking Find Similar with same settings is usually a "refresh" or "update".
+        // If we want to preserve, we shouldn't reset.
+        // However, if filters changed drastically, previous includes might be invalid? No, they are just IDs.
+        // Let's keep them to allow iterative building.
+        findSimilarSongs();
+    });
+
+    // --- Playlist Saving ---
+    document.getElementById('save-playlist-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const name = document.getElementById('new_playlist_name').value;
+        const statusDiv = document.getElementById('playlist-status');
+
+        if (!name || includedIds.length === 0) {
+            statusDiv.textContent = 'Please provide a name and include at least one song.';
+            return;
+        }
+
+        statusDiv.textContent = 'Saving...';
+        try {
+            // For saving, we need a "source" name. If filters were used, we can just say "Smart Playlist".
+            // But the API expects `original_playlist_name`.
+            // If we used filters, we don't have an original playlist name.
+            // We should update the backend `save_extended_playlist` to not strictly require `original_playlist_name` if we have `included_ids`.
+            // Wait, the backend `save_extended_playlist` uses `original_playlist_name` to get `original_ids` and combine them.
+            // If we are in Filter mode, there is no "original playlist".
+            // The user creates a NEW playlist from the "Included" songs (which are selected from results).
+            // If the user wants the *seed* songs too, we currently don't track the seed IDs separately on frontend easily without returning them.
+            // For now, let's assume in Filter mode, we ONLY save the `included_ids`.
+            // But the backend requires `original_playlist_name`.
+
+            // I need to tweak the backend save function or pass a dummy name.
+            // Actually, if I use smart filters, I probably want the result to be just the found songs + includes?
+            // Let's assume for now the user selects "Include" on the ones they want.
+
+            // I'll send a special flag or handle it.
+            // Ideally, I should update the backend `save_extended_playlist` to accept `filters` too, or just a list of IDs.
+            // But `save_extended_playlist` logic is: Original Tracks + Included Tracks.
+            // If Source is Playlist: Original = Playlist Tracks.
+            // If Source is Filters: Original = Filter Matches (Seed).
+
+            // Simplification: Just pass `included_ids` as the full list? No, backend appends.
+            // Let's pass the current `playlist_name` if in playlist mode.
+            // If in Filter mode, pass a dummy or empty string, and update backend to handle it.
+
+            let payload = {
+                new_playlist_name: name,
+                included_ids: includedIds
+            };
+
+            if (activeTab === 'playlist') {
+                payload.original_playlist_name = document.getElementById('playlist_select').value;
+            } else {
+                payload.filters = getFilters();
+                payload.match_mode = document.getElementById('match-mode').value;
             }
 
-            if (includedIds.length === 0) {
-                playlistStatusDiv.textContent = 'Please include at least one song before saving.';
-                playlistStatusDiv.style.color = 'red';
-                return;
+            const response = await fetch("{{ url_for('extend_playlist_bp.save_extended_playlist') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await response.json();
+            if (response.ok) {
+                statusDiv.textContent = 'Saved successfully!';
+                statusDiv.style.color = 'green';
+                loadPlaylists(); // Refresh list
+            } else {
+                throw new Error(data.error);
             }
+        } catch (e) {
+            statusDiv.textContent = e.message;
+            statusDiv.style.color = 'red';
+        }
+    });
 
-            playlistStatusDiv.textContent = 'Saving playlist...';
-            playlistStatusDiv.style.color = 'blue';
+    // --- Player Logic ---
+    window.playSong = function(url, title, artist) {
+        if (!url) return;
 
-            try {
-                const response = await fetch("{{ url_for('extend_playlist_bp.save_extended_playlist') }}", {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        original_playlist_name: currentPlaylistName,
-                        new_playlist_name: newPlaylistName,
-                        included_ids: includedIds
-                    })
-                });
+        const audio = document.getElementById('audio-element');
+        const player = document.getElementById('web-player');
 
-                const data = await response.json();
+        player.classList.remove('hidden');
+        document.getElementById('player-title').textContent = title;
+        document.getElementById('player-artist').textContent = artist;
 
-                if (!response.ok) {
-                    throw new Error(data.error || 'Failed to save playlist');
-                }
+        audio.src = url;
+        audio.play();
+        document.getElementById('play-pause-btn').innerHTML = '&#10074;&#10074;'; // Pause symbol
+    };
 
-                playlistStatusDiv.textContent = data.message;
-                playlistStatusDiv.style.color = 'green';
+    window.togglePlay = function() {
+        const audio = document.getElementById('audio-element');
+        const btn = document.getElementById('play-pause-btn');
+        if (audio.paused) {
+            audio.play();
+            btn.innerHTML = '&#10074;&#10074;';
+        } else {
+            audio.pause();
+            btn.innerHTML = '&#9658;';
+        }
+    };
 
-                // Reload playlists to include the new one
-                setTimeout(() => {
-                    loadPlaylists();
-                }, 1000);
+    window.seek = function(seconds) {
+        const audio = document.getElementById('audio-element');
+        audio.currentTime += seconds;
+    };
 
-            } catch (error) {
-                console.error('Save failed:', error);
-                playlistStatusDiv.textContent = error.message;
-                playlistStatusDiv.style.color = 'red';
-            }
-        });
+    function updateProgress() {
+        const audio = document.getElementById('audio-element');
+        const current = audio.currentTime;
+        const duration = audio.duration;
 
-        // Load playlists on page load
-        loadPlaylists();
-    })();
+        if (isNaN(duration)) return;
+
+        document.getElementById('current-time').textContent = formatTime(current);
+        document.getElementById('duration').textContent = formatTime(duration);
+
+        const pct = (current / duration) * 100;
+        document.getElementById('progress-fill').style.width = `${pct}%`;
+    }
+
+    window.seekTo = function(e) {
+        const audio = document.getElementById('audio-element');
+        const bar = e.currentTarget;
+        const pct = e.offsetX / bar.offsetWidth;
+        audio.currentTime = pct * audio.duration;
+    };
+
+    function formatTime(s) {
+        const m = Math.floor(s / 60);
+        const sec = Math.floor(s % 60);
+        return `${m}:${sec.toString().padStart(2, '0')}`;
+    }
+
 </script>
 {% endblock %}

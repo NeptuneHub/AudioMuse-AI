@@ -31,13 +31,96 @@ def _compute_centroid_from_ids(ids: list) -> np.ndarray:
     return np.mean(vectors, axis=0)
 
 
+def _get_stream_url(item_id):
+    """Constructs a stream URL for the given item based on configuration."""
+    # Use Download endpoint with API key for authenticated playback
+    if config.MEDIASERVER_TYPE == 'jellyfin' or config.MEDIASERVER_TYPE == 'emby':
+        token = config.JELLYFIN_TOKEN if config.MEDIASERVER_TYPE == 'jellyfin' else config.EMBY_TOKEN
+        base_url = config.JELLYFIN_URL if config.MEDIASERVER_TYPE == 'jellyfin' else config.EMBY_URL
+        return f"{base_url}/Items/{item_id}/Download?api_key={token}"
+    elif config.MEDIASERVER_TYPE == 'navidrome':
+        # Navidrome/Subsonic stream url
+        return f"{config.NAVIDROME_URL}/rest/stream?id={item_id}&u={config.NAVIDROME_USER}&p={config.NAVIDROME_PASSWORD}&v=1.16.1&c=AudioMuse"
+    # Fallback or other servers might need different logic
+    return ""
+
+
+def _build_filter_query(filters, match_mode='all'):
+    """
+    Builds a SQL WHERE clause from smart filters.
+    filters: list of dicts {field, operator, value}
+    match_mode: 'all' (AND) or 'any' (OR)
+    """
+    if not filters:
+        return "1=1", []
+
+    clauses = []
+    params = []
+
+    # Map UI fields to DB columns
+    field_map = {
+        'album': 'album',
+        'artist': 'author', # Search both author and song_artist? For now author is main artist.
+        'title': 'title',
+        'bpm': 'tempo',
+        'energy': 'energy',
+        'key': 'key',
+        'scale': 'scale',
+        'mood': 'mood_vector'
+    }
+
+    for f in filters:
+        field = f.get('field')
+        operator = f.get('operator')
+        value = f.get('value')
+
+        db_col = field_map.get(field)
+        if not db_col:
+            continue
+
+        if operator == 'contains':
+            clauses.append(f"{db_col} ILIKE %s")
+            params.append(f"%{value}%")
+        elif operator == 'does_not_contain':
+            clauses.append(f"{db_col} NOT ILIKE %s")
+            params.append(f"%{value}%")
+        elif operator == 'is':
+            clauses.append(f"{db_col} = %s")
+            params.append(value)
+        elif operator == 'is_not':
+            clauses.append(f"{db_col} != %s")
+            params.append(value)
+        elif operator == 'greater_than':
+            try:
+                val = float(value)
+                clauses.append(f"{db_col} > %s")
+                params.append(val)
+            except ValueError:
+                continue
+        elif operator == 'less_than':
+            try:
+                val = float(value)
+                clauses.append(f"{db_col} < %s")
+                params.append(val)
+            except ValueError:
+                continue
+
+    if not clauses:
+        return "1=1", []
+
+    join_op = " AND " if match_mode == 'all' else " OR "
+    return f"({join_op.join(clauses)})", params
+
+
 @extend_playlist_bp.route('/api/extend_playlist', methods=['POST'])
 def extend_playlist_api():
     """
     Extend a playlist by finding similar songs.
 
     POST payload: {
-        "playlist_name": "My Playlist",
+        "playlist_name": "My Playlist", # Optional if filters are provided
+        "filters": [ ... ],             # Optional, used if playlist_name is not provided
+        "match_mode": "all",            # 'all' or 'any' for filters
         "max_songs": 50,
         "similarity_threshold": 0.5,
         "included_ids": [],  # Songs that have been included (to include in centroid)
@@ -46,7 +129,7 @@ def extend_playlist_api():
 
     Returns: {
         "results": [
-            {"item_id": str, "title": str, "author": str, "distance": float},
+            {"item_id": str, "title": str, "author": str, "song_artist": str, "distance": float, "stream_url": str},
             ...
         ]
     }
@@ -54,26 +137,43 @@ def extend_playlist_api():
     payload = request.get_json() or {}
 
     playlist_name = payload.get('playlist_name')
+    filters = payload.get('filters')
+    match_mode = payload.get('match_mode', 'all')
+
     max_songs = payload.get('max_songs', 50)
     similarity_threshold = payload.get('similarity_threshold', 0.5)
     included_ids = payload.get('included_ids', [])
     excluded_ids = payload.get('excluded_ids', [])
 
-    if not playlist_name:
-        return jsonify({"error": "Missing 'playlist_name'"}), 400
+    if not playlist_name and not filters:
+        return jsonify({"error": "Missing 'playlist_name' or 'filters'"}), 400
 
     try:
-        # Get all songs from the playlist
         conn = get_db()
         cur = conn.cursor(cursor_factory=DictCursor)
-        cur.execute("SELECT item_id FROM playlist WHERE playlist_name = %s", (playlist_name,))
-        rows = cur.fetchall()
+        playlist_ids = []
+
+        if playlist_name:
+            # Get all songs from the playlist
+            cur.execute("SELECT item_id FROM playlist WHERE playlist_name = %s", (playlist_name,))
+            rows = cur.fetchall()
+            playlist_ids = [row['item_id'] for row in rows]
+
+            if not playlist_ids:
+                return jsonify({"error": f"Playlist '{playlist_name}' not found or is empty"}), 404
+
+        elif filters:
+            # Build query from filters
+            where_clause, params = _build_filter_query(filters, match_mode)
+            query = f"SELECT item_id FROM score WHERE {where_clause} LIMIT 1000" # Limit seed size
+            cur.execute(query, tuple(params))
+            rows = cur.fetchall()
+            playlist_ids = [row['item_id'] for row in rows]
+
+            if not playlist_ids:
+                 return jsonify({"error": "No songs found matching the filters"}), 404
+
         cur.close()
-
-        playlist_ids = [row['item_id'] for row in rows]
-
-        if not playlist_ids:
-            return jsonify({"error": f"Playlist '{playlist_name}' not found or is empty"}), 404
 
         # Combine original playlist songs with included songs for positive centroid calculation
         all_ids_for_centroid = list(set(playlist_ids + included_ids))
@@ -115,6 +215,14 @@ def extend_playlist_api():
         # Determine filtering threshold based on distance metric
         subtract_threshold = config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR if config.PATH_DISTANCE_METRIC == 'angular' else config.ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN
 
+        # Gather item IDs to fetch additional metadata
+        candidate_ids = [r.get('item_id') for r in neighbor_results]
+
+        # Fetch metadata for candidates
+        from app_helper import get_score_data_by_ids
+        metadata_list = get_score_data_by_ids(candidate_ids)
+        metadata_map = {m['item_id']: m for m in metadata_list}
+
         for result in neighbor_results:
             item_id = result.get('item_id')
             distance = result.get('distance', 0)
@@ -146,6 +254,18 @@ def extend_playlist_api():
 
             # Filter by similarity threshold (lower distance = more similar)
             if distance <= similarity_threshold:
+                # Enrich with song_artist and stream_url
+                meta = metadata_map.get(item_id, {})
+                # Use song_artist if available, fallback to author (Album Artist usually)
+                result['song_artist'] = meta.get('song_artist') or meta.get('author')
+                # Ensure title is present (sometimes missing in vector result)
+                if not result.get('title'):
+                    result['title'] = meta.get('title')
+                if not result.get('author'):
+                    result['author'] = meta.get('author')
+
+                result['stream_url'] = _get_stream_url(item_id)
+
                 filtered_results.append(result)
 
             # Stop if we have enough results
@@ -170,7 +290,9 @@ def save_extended_playlist():
     Save an extended playlist to the media server.
 
     POST payload: {
-        "original_playlist_name": "My Playlist",
+        "original_playlist_name": "My Playlist", # Optional if filters are provided
+        "filters": [...],                        # Optional if original_playlist_name is provided
+        "match_mode": "all",
         "new_playlist_name": "My Extended Playlist",
         "included_ids": []  # Songs that were included
     }
@@ -180,29 +302,47 @@ def save_extended_playlist():
     payload = request.get_json() or {}
 
     original_playlist_name = payload.get('original_playlist_name')
+    filters = payload.get('filters')
+    match_mode = payload.get('match_mode', 'all')
     new_playlist_name = payload.get('new_playlist_name')
     included_ids = payload.get('included_ids', [])
 
-    if not original_playlist_name:
-        return jsonify({"error": "Missing 'original_playlist_name'"}), 400
+    if not original_playlist_name and not filters:
+        return jsonify({"error": "Missing source (original_playlist_name or filters)"}), 400
 
     if not new_playlist_name:
         return jsonify({"error": "Missing 'new_playlist_name'"}), 400
 
     try:
-        # Get all songs from the original playlist
         conn = get_db()
         cur = conn.cursor(cursor_factory=DictCursor)
-        cur.execute("SELECT item_id FROM playlist WHERE playlist_name = %s", (original_playlist_name,))
-        rows = cur.fetchall()
+        original_ids = []
+
+        if original_playlist_name:
+            # Get all songs from the original playlist
+            cur.execute("SELECT item_id FROM playlist WHERE playlist_name = %s", (original_playlist_name,))
+            rows = cur.fetchall()
+            original_ids = [row['item_id'] for row in rows]
+
+            if not original_ids:
+                cur.close()
+                return jsonify({"error": f"Original playlist '{original_playlist_name}' not found or is empty"}), 404
+
+        elif filters:
+            # Get songs matching filters
+            where_clause, params = _build_filter_query(filters, match_mode)
+            query = f"SELECT item_id FROM score WHERE {where_clause} LIMIT 1000"
+            cur.execute(query, tuple(params))
+            rows = cur.fetchall()
+            original_ids = [row['item_id'] for row in rows]
+
+            if not original_ids:
+                cur.close()
+                return jsonify({"error": "No songs found matching the filters to save"}), 404
+
         cur.close()
 
-        original_ids = [row['item_id'] for row in rows]
-
-        if not original_ids:
-            return jsonify({"error": f"Original playlist '{original_playlist_name}' not found or is empty"}), 404
-
-        # Combine original playlist with included songs
+        # Combine original source songs with included songs
         all_track_ids = original_ids + included_ids
 
         # Remove duplicates while preserving order
