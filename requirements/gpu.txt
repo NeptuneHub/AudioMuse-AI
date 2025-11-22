@@ -1,0 +1,5 @@
+--extra-index-url https://pypi.nvidia.com
+cupy-cuda12x
+onnxruntime-gpu==1.19.2
+cuml-cu12==24.12.*
+voyager==2.1.0

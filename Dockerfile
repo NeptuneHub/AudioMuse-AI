@@ -37,6 +37,9 @@ FROM ${BASE_IMAGE} AS builder
 ARG BASE_IMAGE
 SHELL ["/bin/bash", "-c"]
 
+# Install uv for fast package management
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
 # Install build dependencies (gcc, g++, python-dev, etc.)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -49,36 +52,21 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       wget curl \
       "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)"
 
+# Copy requirements
+WORKDIR /app
+COPY requirements/ /app/requirements/
+
 # Heavy GPU dependencies (cached separately for faster rebuilds)
-RUN --mount=type=cache,target=/root/.cache/pip \
+RUN --mount=type=cache,target=/root/.cache/uv \
     if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
-      pip3 install --no-warn-script-location \
-        cupy-cuda12x \
-        onnxruntime-gpu==1.19.2; \
-      pip3 install --no-warn-script-location \
-        --extra-index-url=https://pypi.nvidia.com \
-        cuml-cu12==24.12.*; \
-      # Install Voyager only for GPU/Modern CPU image (assumes AVX support)
-      pip3 install --no-warn-script-location voyager==2.1.0; \
+      uv pip install --system -r /app/requirements/gpu.txt; \
     else \
-      pip3 install --no-warn-script-location onnxruntime==1.19.2; \
-      # Note: voyager is skipped here to support old CPUs (AVX incompatibility)
+      uv pip install --system -r /app/requirements/cpu.txt; \
     fi
 
 # Standard dependencies
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --no-warn-script-location \
-      numpy==1.26.4 \
-      scipy==1.15.3 \
-      numba==0.60.0 \
-      soundfile==0.13.1 \
-      Flask Flask-Cors redis requests \
-      scikit-learn==1.7.2 rq pyyaml six \
-      rapidfuzz psycopg2-binary \
-      ftfy flasgger sqlglot google-generativeai \
-      mistralai umap-learn pydub python-mpd2 \
-      onnx==1.14.1 resampy librosa==0.11.0 \
-      flatbuffers packaging protobuf sympy \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system -r /app/requirements/common.txt \
     && find /usr/local/lib/python3.10/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.10/dist-packages -type f -name "*.pyc" -delete \
     && find /usr/local/lib/python3.10/dist-packages -type f -name "*.pyo" -delete
