@@ -522,7 +522,11 @@ def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song
 
         # --- OPTIMIZATION: O(1) set lookup instead of O(N) list loop ---
         if current_signature not in added_songs_signatures:
-            unique_songs.append(song)
+            # Enrich the result with title and author
+            song_enriched = song.copy()
+            song_enriched['title'] = current_details.get('title')
+            song_enriched['author'] = current_details.get('author')
+            unique_songs.append(song_enriched)
             added_songs_signatures.add(current_signature)
         else:
             # This log was present before, keep it for consistency
@@ -1364,19 +1368,13 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
             if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
                 final_results = unique_results_by_song
             else:
-                item_ids_to_check = [r['item_id'] for r in unique_results_by_song]
-                
-                track_details_list = get_score_data_by_ids(item_ids_to_check)
-                details_map = {d['item_id']: {'author': d['author']} for d in track_details_list}
-
                 artist_counts = {}
                 final_results = []
                 for song in unique_results_by_song:
-                    song_id = song['item_id']
-                    author = details_map.get(song_id, {}).get('author')
+                    author = song.get('author')
 
                     if not author:
-                        logger.warning(f"Could not find author for item_id {song_id} during artist deduplication. Skipping.")
+                        logger.warning(f"Could not find author for item_id {song['item_id']} during artist deduplication. Skipping.")
                         continue
 
                     current_count = artist_counts.get(author, 0)
@@ -1477,7 +1475,11 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
         is_duplicate = any(_is_same_song(current_details['title'], current_details['author'], added['title'], added['author']) for added in added_songs_details)
         
         if not is_duplicate:
-            unique_songs_by_content.append(song)
+            # Enrich the result with title and author
+            song_enriched = song.copy()
+            song_enriched['title'] = current_details.get('title')
+            song_enriched['author'] = current_details.get('author')
+            unique_songs_by_content.append(song_enriched)
             added_songs_details.append(current_details)
 
     if eliminate_duplicates:
@@ -1488,7 +1490,8 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
             artist_counts = {}
             final_results = []
             for song in unique_songs_by_content:
-                author = item_details.get(song['item_id'], {}).get('author')
+                # author = item_details.get(song['item_id'], {}).get('author')
+                author = song.get('author')
                 if not author:
                     continue
 

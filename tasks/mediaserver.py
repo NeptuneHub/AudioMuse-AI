@@ -175,6 +175,15 @@ def get_all_songs():
     if config.MEDIASERVER_TYPE == 'emby': return emby_get_all_songs()
     return []
 
+def get_all_playlists():
+    """Fetches all playlists using admin credentials."""
+    if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_get_all_playlists()
+    if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_all_playlists()
+    if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_all_playlists()
+    if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_all_playlists()
+    if config.MEDIASERVER_TYPE == 'emby': return emby_get_all_playlists()
+    return []
+
 def get_playlist_by_name(playlist_name):
     """Finds a playlist by name using admin credentials."""
     if not playlist_name: raise ValueError("Playlist name is required.")

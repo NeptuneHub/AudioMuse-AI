@@ -793,8 +793,11 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
         distances[cid] = dist
 
     # Fetch details
-    details = get_score_data_by_ids(candidate_ids)
-    details_map = {d['item_id']: d for d in details}
+    # details = get_score_data_by_ids(candidate_ids)
+    # details_map = {d['item_id']: d for d in details}
+    
+    # Create a map from item_id to neighbor dict which now contains title/author
+    details_map = {n['item_id']: n for n in neighbors}
 
     # Build a list of scored candidates for probabilistic sampling
     scored_candidates = []

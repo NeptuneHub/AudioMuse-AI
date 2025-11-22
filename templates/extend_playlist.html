@@ -9,7 +9,7 @@
         flex-wrap: wrap;
     }
 
-    .param-group > div {
+    .param-group>div {
         flex: 1;
         min-width: 200px;
     }
@@ -56,7 +56,7 @@
         gap: 0.5rem;
     }
 
-    .btn-accept {
+    .btn-include {
         background-color: #16A34A;
         color: white;
         border: none;
@@ -66,11 +66,11 @@
         font-size: 0.875rem;
     }
 
-    .btn-accept:hover {
+    .btn-include:hover {
         background-color: #15803D;
     }
 
-    .btn-decline {
+    .btn-exclude {
         background-color: #DC2626;
         color: white;
         border: none;
@@ -80,15 +80,15 @@
         font-size: 0.875rem;
     }
 
-    .btn-decline:hover {
+    .btn-exclude:hover {
         background-color: #B91C1C;
     }
 
-    .accepted-row {
+    .included-row {
         background-color: #D1FAE5 !important;
     }
 
-    .declined-row {
+    .excluded-row {
         background-color: #FEE2E2 !important;
         opacity: 0.6;
     }
@@ -101,12 +101,12 @@
         font-weight: 600;
     }
 
-    .status-accepted {
+    .status-included {
         background-color: #16A34A;
         color: white;
     }
 
-    .status-declined {
+    .status-excluded {
         background-color: #DC2626;
         color: white;
     }
@@ -153,7 +153,8 @@
                     Select Playlist:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Choose a playlist from your library to extend with similar songs.</span>
+                        <span class="tooltip-text">Choose a playlist from your library to extend with similar
+                            songs.</span>
                     </span>
                 </label>
                 <select id="playlist_select" name="playlist_select" required>
@@ -166,7 +167,8 @@
                     Maximum Songs:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Maximum number of similar songs to find. Fewer songs may be returned based on your similarity threshold.</span>
+                        <span class="tooltip-text">Maximum number of similar songs to find. Fewer songs may be returned
+                            based on your similarity threshold.</span>
                     </span>
                 </label>
                 <input type="number" id="max_songs" name="max_songs" value="50" min="1" max="200">
@@ -179,11 +181,12 @@
                     Similarity Threshold: <span id="threshold_value" class="slider-value">0.50</span>
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Lower values = more similar songs. Higher values = more diverse results. Range: 0.0 (most similar) to 1.0 (least similar).</span>
+                        <span class="tooltip-text">Lower values = more similar songs. Higher values = more diverse
+                            results. Range: 0.0 (most similar) to 1.0 (least similar).</span>
                     </span>
                 </label>
-                <input type="range" id="similarity_threshold" name="similarity_threshold"
-                       min="0" max="1" step="0.01" value="0.50">
+                <input type="range" id="similarity_threshold" name="similarity_threshold" min="0" max="1" step="0.01"
+                    value="0.50">
             </div>
         </div>
 
@@ -200,12 +203,12 @@
             <span id="stat-original" class="stat-value">0</span>
         </div>
         <div class="stat-item">
-            <span class="stat-label">Accepted Songs</span>
-            <span id="stat-accepted" class="stat-value">0</span>
+            <span class="stat-label">Included Songs</span>
+            <span id="stat-included" class="stat-value">0</span>
         </div>
         <div class="stat-item">
-            <span class="stat-label">Declined Songs</span>
-            <span id="stat-declined" class="stat-value">0</span>
+            <span class="stat-label">Excluded Songs</span>
+            <span id="stat-excluded" class="stat-value">0</span>
         </div>
         <div class="stat-item">
             <span class="stat-label">Suggested Songs</span>
@@ -227,7 +230,7 @@
             <div>
                 <label for="new_playlist_name">New Playlist Name:</label>
                 <input type="text" id="new_playlist_name" name="new_playlist_name" required
-                       placeholder="e.g., My Extended Playlist">
+                    placeholder="e.g., My Extended Playlist">
             </div>
         </div>
         <button type="submit" style="background-color: #16A34A;">
@@ -239,15 +242,16 @@
 {% endblock %}
 
 {% block bodyAdditions %}
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
 <script>
     (() => {
-        let acceptedIds = [];
-        let declinedIds = [];
+        let includedIds = [];
+        let excludedIds = [];
         let currentPlaylistName = '';
         let playlistStats = {
             original: 0,
-            accepted: 0,
-            declined: 0,
+            included: 0,
+            excluded: 0,
             suggested: 0
         };
 
@@ -292,8 +296,8 @@
         // Update stats display
         function updateStats() {
             document.getElementById('stat-original').textContent = playlistStats.original;
-            document.getElementById('stat-accepted').textContent = playlistStats.accepted;
-            document.getElementById('stat-declined').textContent = playlistStats.declined;
+            document.getElementById('stat-included').textContent = playlistStats.included;
+            document.getElementById('stat-excluded').textContent = playlistStats.excluded;
             document.getElementById('stat-suggested').textContent = playlistStats.suggested;
         }
 
@@ -321,8 +325,8 @@
                         playlist_name: playlistName,
                         max_songs: maxSongs,
                         similarity_threshold: similarityThreshold,
-                        accepted_ids: acceptedIds,
-                        excluded_ids: declinedIds
+                        included_ids: includedIds,
+                        excluded_ids: excludedIds
                     })
                 });
 
@@ -334,8 +338,8 @@
 
                 // Update stats
                 playlistStats.original = data.playlist_song_count;
-                playlistStats.accepted = data.accepted_count;
-                playlistStats.declined = data.excluded_count;
+                playlistStats.included = data.included_count;
+                playlistStats.excluded = data.excluded_count;
                 playlistStats.suggested = data.results.length;
                 updateStats();
 
@@ -347,8 +351,8 @@
                 resultsContainer.classList.remove('hidden');
                 statsContainer.classList.remove('hidden');
 
-                // Show save button if we have accepted songs
-                if (acceptedIds.length > 0) {
+                // Show save button if we have included songs
+                if (includedIds.length > 0) {
                     playlistCreator.classList.remove('hidden');
                 }
 
@@ -380,21 +384,21 @@
             `;
 
             results.forEach(track => {
-                const isAccepted = acceptedIds.includes(track.item_id);
-                const isDeclined = declinedIds.includes(track.item_id);
-                const rowClass = isAccepted ? 'accepted-row' : (isDeclined ? 'declined-row' : '');
+                const isIncluded = includedIds.includes(track.item_id);
+                const isExcluded = excludedIds.includes(track.item_id);
+                const rowClass = isIncluded ? 'included-row' : (isExcluded ? 'excluded-row' : '');
                 const distance = track.distance ? track.distance.toFixed(4) : 'N/A';
 
                 let actionButtons = '';
-                if (isAccepted) {
-                    actionButtons = '<span class="status-badge status-accepted">ACCEPTED</span>';
-                } else if (isDeclined) {
-                    actionButtons = '<span class="status-badge status-declined">DECLINED</span>';
+                if (isIncluded) {
+                    actionButtons = '<span class="status-badge status-included">INCLUDED</span>';
+                } else if (isExcluded) {
+                    actionButtons = '<span class="status-badge status-excluded">EXCLUDED</span>';
                 } else {
                     actionButtons = `
                         <div class="action-buttons">
-                            <button class="btn-accept" onclick="acceptSong('${track.item_id}')">Accept</button>
-                            <button class="btn-decline" onclick="declineSong('${track.item_id}')">Decline</button>
+                            <button class="btn-include" onclick="includeSong('${track.item_id}')">Include</button>
+                            <button class="btn-exclude" onclick="excludeSong('${track.item_id}')">Exclude</button>
                         </div>
                     `;
                 }
@@ -417,23 +421,23 @@
             resultsTableWrapper.innerHTML = tableHTML;
         }
 
-        // Accept a song
-        window.acceptSong = function(itemId) {
-            if (!acceptedIds.includes(itemId)) {
-                acceptedIds.push(itemId);
-                // Remove from declined if it was there
-                declinedIds = declinedIds.filter(id => id !== itemId);
+        // Include a song
+        window.includeSong = function (itemId) {
+            if (!includedIds.includes(itemId)) {
+                includedIds.push(itemId);
+                // Remove from excluded if it was there
+                excludedIds = excludedIds.filter(id => id !== itemId);
                 // Re-run search with updated lists
                 findSimilarSongs();
             }
         };
 
-        // Decline a song
-        window.declineSong = function(itemId) {
-            if (!declinedIds.includes(itemId)) {
-                declinedIds.push(itemId);
-                // Remove from accepted if it was there
-                acceptedIds = acceptedIds.filter(id => id !== itemId);
+        // Exclude a song
+        window.excludeSong = function (itemId) {
+            if (!excludedIds.includes(itemId)) {
+                excludedIds.push(itemId);
+                // Remove from included if it was there
+                includedIds = includedIds.filter(id => id !== itemId);
                 // Re-run search with updated lists
                 findSimilarSongs();
             }
@@ -442,10 +446,10 @@
         // Form submission
         extendForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            // Reset accepted/declined lists when starting a new search
+            // Reset included/excluded lists when starting a new search
             if (playlistSelect.value !== currentPlaylistName) {
-                acceptedIds = [];
-                declinedIds = [];
+                includedIds = [];
+                excludedIds = [];
             }
             await findSimilarSongs();
         });
@@ -462,8 +466,8 @@
                 return;
             }
 
-            if (acceptedIds.length === 0) {
-                playlistStatusDiv.textContent = 'Please accept at least one song before saving.';
+            if (includedIds.length === 0) {
+                playlistStatusDiv.textContent = 'Please include at least one song before saving.';
                 playlistStatusDiv.style.color = 'red';
                 return;
             }
@@ -478,7 +482,7 @@
                     body: JSON.stringify({
                         original_playlist_name: currentPlaylistName,
                         new_playlist_name: newPlaylistName,
-                        accepted_ids: acceptedIds
+                        included_ids: includedIds
                     })
                 });
 

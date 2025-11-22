@@ -40,8 +40,8 @@ def extend_playlist_api():
         "playlist_name": "My Playlist",
         "max_songs": 50,
         "similarity_threshold": 0.5,
-        "accepted_ids": [],  # Songs that have been accepted (to include in centroid)
-        "excluded_ids": []   # Songs that have been declined (to exclude from results)
+        "included_ids": [],  # Songs that have been included (to include in centroid)
+        "excluded_ids": []   # Songs that have been excluded (to exclude from results)
     }
 
     Returns: {
@@ -56,7 +56,7 @@ def extend_playlist_api():
     playlist_name = payload.get('playlist_name')
     max_songs = payload.get('max_songs', 50)
     similarity_threshold = payload.get('similarity_threshold', 0.5)
-    accepted_ids = payload.get('accepted_ids', [])
+    included_ids = payload.get('included_ids', [])
     excluded_ids = payload.get('excluded_ids', [])
 
     if not playlist_name:
@@ -75,36 +75,74 @@ def extend_playlist_api():
         if not playlist_ids:
             return jsonify({"error": f"Playlist '{playlist_name}' not found or is empty"}), 404
 
-        # Combine original playlist songs with accepted songs for centroid calculation
-        all_ids_for_centroid = list(set(playlist_ids + accepted_ids))
+        # Combine original playlist songs with included songs for positive centroid calculation
+        all_ids_for_centroid = list(set(playlist_ids + included_ids))
 
-        # Compute centroid of all songs
-        centroid = _compute_centroid_from_ids(all_ids_for_centroid)
+        # Compute positive centroid
+        positive_centroid = _compute_centroid_from_ids(all_ids_for_centroid)
 
-        if centroid is None:
+        if positive_centroid is None:
             return jsonify({"error": "Failed to compute playlist centroid"}), 500
+
+        # Compute excluded centroid if there are excluded songs
+        excluded_centroid = None
+        if excluded_ids:
+            excluded_centroid = _compute_centroid_from_ids(excluded_ids)
+
+        # Adjust query vector: Subtract excluded centroid from positive centroid
+        # We weight the exclusion to avoid pushing it too far, but enough to be effective.
+        # Using a heuristic weight of 0.5 for now.
+        query_vector = positive_centroid
+        if excluded_centroid is not None:
+            # Normalize vectors to ensure consistent subtraction magnitude?
+            # For now, simple subtraction.
+            query_vector = positive_centroid - (excluded_centroid * 0.5)
 
         # Find similar songs
         # Request more songs than needed to account for filtering
-        n_candidates = max_songs * 3
+        n_candidates = max_songs * 5  # Increased buffer for exclusion filtering
 
         neighbor_results = find_nearest_neighbors_by_vector(
-            centroid,
+            query_vector,
             n=n_candidates,
             eliminate_duplicates=True
         )
 
         # Filter results
         filtered_results = []
-        already_included_ids = set(playlist_ids + accepted_ids + excluded_ids)
+        already_included_ids = set(playlist_ids + included_ids + excluded_ids)
+
+        # Determine filtering threshold based on distance metric
+        subtract_threshold = config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR if config.PATH_DISTANCE_METRIC == 'angular' else config.ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN
 
         for result in neighbor_results:
             item_id = result.get('item_id')
             distance = result.get('distance', 0)
 
-            # Skip if already in playlist, accepted, or excluded
+            # Skip if already in playlist, included, or excluded
             if item_id in already_included_ids:
                 continue
+
+            # Active Exclusion Filtering: Check distance to excluded centroid
+            if excluded_centroid is not None:
+                vec = get_vector_by_id(item_id)
+                if vec is not None:
+                    v_cand = np.array(vec, dtype=float)
+                    
+                    if config.PATH_DISTANCE_METRIC == 'angular':
+                        # Angular distance
+                        v1 = excluded_centroid / (np.linalg.norm(excluded_centroid) or 1.0)
+                        v2 = v_cand / (np.linalg.norm(v_cand) or 1.0)
+                        cosine = np.clip(np.dot(v1, v2), -1.0, 1.0)
+                        dist_to_excluded = np.arccos(cosine) / np.pi
+                        
+                        if dist_to_excluded < subtract_threshold:
+                            continue # Too close to excluded songs
+                    else:
+                        # Euclidean distance
+                        dist_to_excluded = np.linalg.norm(excluded_centroid - v_cand)
+                        if dist_to_excluded < subtract_threshold:
+                            continue # Too close to excluded songs
 
             # Filter by similarity threshold (lower distance = more similar)
             if distance <= similarity_threshold:
@@ -117,7 +155,7 @@ def extend_playlist_api():
         return jsonify({
             "results": filtered_results,
             "playlist_song_count": len(playlist_ids),
-            "accepted_count": len(accepted_ids),
+            "included_count": len(included_ids),
             "excluded_count": len(excluded_ids)
         })
 
@@ -134,7 +172,7 @@ def save_extended_playlist():
     POST payload: {
         "original_playlist_name": "My Playlist",
         "new_playlist_name": "My Extended Playlist",
-        "accepted_ids": []  # Songs that were accepted
+        "included_ids": []  # Songs that were included
     }
     """
     from tasks.voyager_manager import create_playlist_from_ids
@@ -143,7 +181,7 @@ def save_extended_playlist():
 
     original_playlist_name = payload.get('original_playlist_name')
     new_playlist_name = payload.get('new_playlist_name')
-    accepted_ids = payload.get('accepted_ids', [])
+    included_ids = payload.get('included_ids', [])
 
     if not original_playlist_name:
         return jsonify({"error": "Missing 'original_playlist_name'"}), 400
@@ -164,8 +202,8 @@ def save_extended_playlist():
         if not original_ids:
             return jsonify({"error": f"Original playlist '{original_playlist_name}' not found or is empty"}), 404
 
-        # Combine original playlist with accepted songs
-        all_track_ids = original_ids + accepted_ids
+        # Combine original playlist with included songs
+        all_track_ids = original_ids + included_ids
 
         # Remove duplicates while preserving order
         seen = set()
@@ -186,7 +224,7 @@ def save_extended_playlist():
             "playlist_id": new_playlist_id,
             "total_songs": len(final_track_ids),
             "original_songs": len(original_ids),
-            "new_songs": len(accepted_ids)
+            "new_songs": len(included_ids)
         }), 201
 
     except Exception as e:

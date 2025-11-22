@@ -92,6 +92,55 @@ def teardown_db(e=None):
 with app.app_context():
     init_db()
 
+    # Clean up any stale main tasks from previous runs (e.g., after container restarts)
+    # This ensures tasks stuck in PENDING/STARTED states are cleaned up on startup
+    try:
+        db = get_db()
+        cur = db.cursor()
+        current_time = time.time()
+
+        # Find main tasks (main_analysis, main_clustering) stuck in non-terminal states
+        # Only clean up tasks that start with 'main_' to avoid affecting other tasks like fetch_playlists
+        pending_status = TASK_STATUS_PENDING
+        started_status = TASK_STATUS_STARTED
+
+        cur.execute("""
+            SELECT task_id, task_type, status, start_time
+            FROM task_status
+            WHERE parent_task_id IS NULL
+              AND task_type LIKE %s
+              AND status IN (%s, %s)
+        """, ('main_%', pending_status, started_status))
+
+        stale_tasks = cur.fetchall()
+
+        if stale_tasks:
+            for task_id, task_type, status, start_time in stale_tasks:
+                age_seconds = int(current_time - start_time) if start_time else 0
+                revoked_details = {
+                    "message": f"Task revoked on startup: was stuck in {status} state (age: {age_seconds}s)",
+                    "original_status": status,
+                    "revoked_by": "startup_cleanup",
+                    "log": [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Startup cleanup detected stale task in {status} state. Marking as REVOKED."]
+                }
+
+                cur.execute("""
+                    UPDATE task_status
+                    SET status = %s, details = %s, progress = 100, timestamp = NOW(), end_time = %s
+                    WHERE task_id = %s
+                """, (TASK_STATUS_REVOKED, json.dumps(revoked_details), current_time, task_id))
+
+                app.logger.info(f"Startup cleanup: revoked stale task {task_id} (type: {task_type}, was in {status})")
+
+            db.commit()
+            app.logger.info(f"Startup cleanup completed: {len(stale_tasks)} stale task(s) revoked")
+        else:
+            app.logger.info("Startup cleanup: no stale tasks found")
+
+        cur.close()
+    except Exception as e:
+        app.logger.error(f"Error during startup cleanup: {e}", exc_info=True)
+
 
 # --- API Endpoints ---
 

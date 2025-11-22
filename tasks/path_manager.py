@@ -193,8 +193,8 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
         return []
 
     candidate_ids = [c['item_id'] for c in candidates_voyager]
-    candidate_details = get_score_data_by_ids(candidate_ids)
-    details_map = {d['item_id']: d for d in candidate_details}
+    # candidate_details = get_score_data_by_ids(candidate_ids)
+    # details_map = {d['item_id']: d for d in candidate_details}
 
     # Scan in order (nearest first) and collect acceptable candidates
     for candidate in candidates_voyager:
@@ -207,21 +207,26 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
         if candidate_id in used_song_ids:
             continue # Skip if already used by ID
 
-        details = details_map.get(candidate_id)
-        if not details:
-            continue # Skip if no details found
+        # details = details_map.get(candidate_id)
+        # if not details:
+        #     continue # Skip if no details found
+        
+        title = candidate.get('title')
+        author = candidate.get('author')
+        if not title or not author:
+             continue
 
         # Check if this is a duplicate by Artist/Title signature
-        signature = _normalize_signature(details.get('author'), details.get('title'))
+        signature = _normalize_signature(author, title)
         if signature in used_signatures:
             logger.debug(f"Filtering song (NAME/ID FILTER): '{details.get('title')}' by '{details.get('author')}' as it is already in the path.")
             continue
 
         # Enforce global per-artist cap if configured. Treat MAX_SONGS_PER_ARTIST <= 0 as DISABLED.
-        author_norm = (details.get('author') or '').strip().lower()
+        author_norm = (author or '').strip().lower()
         if artist_counts is not None and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
             if artist_counts.get(author_norm, 0) >= MAX_SONGS_PER_ARTIST:
-                logger.debug(f"Filtering song (ARTIST CAP) '{details.get('title')}' by '{details.get('author')}' because artist cap {MAX_SONGS_PER_ARTIST} reached.")
+                logger.debug(f"Filtering song (ARTIST CAP) '{title}' by '{author}' because artist cap {MAX_SONGS_PER_ARTIST} reached.")
                 continue
 
         candidate_vector = get_vector_by_id(candidate_id)
@@ -237,7 +242,7 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
                     distance_from_prev = get_distance(candidate_vector, prev_song_details['vector'])
                     if distance_from_prev < threshold:
                         logger.debug(
-                            f"Filtering song (DISTANCE FILTER) with {metric_name} distance: '{details.get('title')}' by '{details.get('author')}' "
+                            f"Filtering song (DISTANCE FILTER) with {metric_name} distance: '{title}' by '{author}' "
                             f"due to direct distance of {distance_from_prev:.4f} from "
                             f"'{prev_song_details['title']}' by '{prev_song_details['author']}' (Threshold: {threshold})."
                         )
@@ -253,7 +258,7 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
                     distance_from_prev = get_distance(candidate_vector, prev_song_details['vector'])
                     if distance_from_prev < threshold:
                         logger.debug(
-                            f"Filtering song (INTERNAL JOB DISTANCE FILTER) with {metric_name} distance: '{details.get('title')}' by '{details.get('author')}' "
+                            f"Filtering song (INTERNAL JOB DISTANCE FILTER) with {metric_name} distance: '{title}' by '{author}' "
                             f"due to direct distance of {distance_from_prev:.4f} from "
                             f"'{prev_song_details['title']}' by '{prev_song_details['author']}' (Threshold: {threshold})."
                         )
@@ -267,8 +272,8 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
             "item_id": candidate_id,
             "signature": signature,
             "vector": candidate_vector,
-            "title": details.get('title'),
-            "author": details.get('author')
+            "title": title,
+            "author": author
         })
 
         # IMPORTANT: Add to used_song_ids and used_signatures immediately

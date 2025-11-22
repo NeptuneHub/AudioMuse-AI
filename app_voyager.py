@@ -201,22 +201,20 @@ def get_similar_tracks_endpoint():
 
         from app import get_score_data_by_ids
 
-        neighbor_ids = [n['item_id'] for n in neighbor_results]
-        neighbor_details = get_score_data_by_ids(neighbor_ids)
+        # neighbor_ids = [n['item_id'] for n in neighbor_results]
+        # neighbor_details = get_score_data_by_ids(neighbor_ids)
 
-        details_map = {d['item_id']: d for d in neighbor_details}
-        distance_map = {n['item_id']: n['distance'] for n in neighbor_results}
+        # details_map = {d['item_id']: d for d in neighbor_details}
+        # distance_map = {n['item_id']: n['distance'] for n in neighbor_results}
 
         final_results = []
-        for neighbor_id in neighbor_ids:
-            if neighbor_id in details_map:
-                track_info = details_map[neighbor_id]
-                final_results.append({
-                    "item_id": track_info['item_id'],
-                    "title": track_info['title'],
-                    "author": track_info['author'],
-                    "distance": distance_map[neighbor_id]
-                })
+        for track_info in neighbor_results:
+             final_results.append({
+                 "item_id": track_info['item_id'],
+                 "title": track_info.get('title'),
+                 "author": track_info.get('author'),
+                 "distance": track_info['distance']
+             })
 
         return jsonify(final_results)
     except RuntimeError as e:

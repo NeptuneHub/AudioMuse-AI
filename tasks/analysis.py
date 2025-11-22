@@ -846,3 +846,5 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             logger.critical(f"FATAL ERROR: Analysis failed: {e}", exc_info=True)
             log_and_update_main(f"❌ Main analysis failed: {e}", current_progress, task_state=TASK_STATUS_FAILURE, error_message=str(e), traceback=traceback.format_exc())
             raise
+
+

@@ -767,3 +767,27 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
              cancelled_count += cancel_job_and_children_recursive(child_job_id, reason="Cancelled due to parent task revocation.")
         
     return cancelled_count
+
+def clean_up_previous_main_tasks():
+    """
+    Finds any 'active' main tasks (main_analysis, main_clustering, cleaning) in the database
+    and marks them as REVOKED. It also attempts to cancel them in RQ.
+    This is used to ensure only one main task runs at a time.
+    """
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        # Find tasks that are conceptually 'active'
+        cur.execute(f"SELECT task_id, task_type FROM task_status WHERE task_type IN ('main_analysis', 'main_clustering', 'cleaning') AND status IN ('{TASK_STATUS_PENDING}', '{TASK_STATUS_STARTED}', '{TASK_STATUS_PROGRESS}')")
+        rows = cur.fetchall()
+        
+        for r in rows:
+            job_id = r['task_id']
+            task_type = r['task_type']
+            logger.info(f"Cleaning up previous main task: {job_id} ({task_type})")
+            cancel_job_and_children_recursive(job_id, task_type_from_db=task_type, reason="Cleanup before new main task.")
+            
+    except Exception as e:
+        logger.error(f"Error during clean_up_previous_main_tasks: {e}")
+    finally:
+        cur.close()

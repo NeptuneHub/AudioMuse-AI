@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor
-from app_helper import get_db, rq_queue_high, save_task_status, TASK_STATUS_PENDING
+from app_helper import get_db, rq_queue_high, save_task_status, TASK_STATUS_PENDING, clean_up_previous_main_tasks
 import uuid, time, logging
 from config import (
     TOP_N_MOODS,
@@ -116,6 +116,10 @@ def run_due_cron_jobs():
                 continue
             if cron_matches_now(r['cron_expr'], now_ts):
                 task_type = r['task_type']
+                
+                # Clean up previous main tasks before starting a new one
+                clean_up_previous_main_tasks()
+                
                 job_id = str(uuid.uuid4())
                 # mark queued in task_status
                 save_task_status(job_id, f"main_{task_type}", TASK_STATUS_PENDING, details={"message": "Enqueued by cron."})
