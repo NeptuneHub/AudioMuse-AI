@@ -3,10 +3,20 @@ import json
 import logging
 import tempfile
 import numpy as np
-import voyager # type: ignore
 import psycopg2 # type: ignore
 from psycopg2.extras import DictCursor
 import io 
+
+# Attempt to import Voyager (may be missing on non-AVX systems)
+try:
+    import voyager  # type: ignore
+    VOYAGER_AVAILABLE = True
+except ImportError:
+    logging.getLogger(__name__).warning("Voyager library not found. HNSW-based features will be disabled (non-AVX CPU detected).")
+    VOYAGER_AVAILABLE = False
+except Exception as e:
+    logging.getLogger(__name__).error(f"Error importing Voyager: {e}")
+    VOYAGER_AVAILABLE = False
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
@@ -183,6 +193,10 @@ def build_and_store_voyager_index(db_conn=None):
     Accepts an optional db_conn (psycopg2 connection). If None, the function
     will acquire a connection via app_helper.get_db().
     """
+    if not VOYAGER_AVAILABLE:
+        logger.warning("Voyager not available - skipping index build")
+        return
+
     # Acquire DB connection if not provided
     if db_conn is None:
         try:

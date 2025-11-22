@@ -22,10 +22,28 @@ import threading
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 
-from sklearn.mixture import GaussianMixture
-import voyager  # type: ignore
-
 logger = logging.getLogger(__name__)
+
+# GPU Acceleration: Try to import cuML for GMM; fallback to CPU sklearn
+try:
+    from cuml.mixture import GaussianMixture
+    GPU_ACCELERATION_AVAILABLE = True
+    logger.info("GPU acceleration enabled for Artist GMM (using cuML).")
+except ImportError:
+    from sklearn.mixture import GaussianMixture
+    GPU_ACCELERATION_AVAILABLE = False
+    logger.info("GPU acceleration not available for Artist GMM. Using CPU (sklearn).")
+
+# Attempt to import Voyager (may be missing on non-AVX systems)
+try:
+    import voyager  # type: ignore
+    VOYAGER_AVAILABLE = True
+except ImportError:
+    logger.warning("Voyager library not found. Artist similarity features relying on HNSW index will be disabled. This is expected on non-AVX CPUs.")
+    VOYAGER_AVAILABLE = False
+except Exception as e:
+    logger.error(f"Error importing Voyager: {e}")
+    VOYAGER_AVAILABLE = False
 
 # --- Configuration ---
 ARTIST_INDEX_NAME = 'artist_similarity_index'
@@ -94,18 +112,40 @@ def select_optimal_gmm_components(embeddings: np.ndarray, min_components: int = 
     # Try different numbers of components
     for n_components in range(1, max_feasible + 1):
         try:
-            gmm = GaussianMixture(
-                n_components=n_components,
-                covariance_type=GMM_COVARIANCE_TYPE,
-                max_iter=GMM_MAX_ITER,
-                n_init=GMM_N_INIT,
-                random_state=42
-            )
+            gmm_kwargs = {
+                'n_components': n_components,
+                'covariance_type': GMM_COVARIANCE_TYPE,
+                'max_iter': GMM_MAX_ITER,
+                'n_init': GMM_N_INIT,
+                'random_state': 42
+            }
+
+            gmm = GaussianMixture(**gmm_kwargs)
             gmm.fit(embeddings)
             
             # Compute BIC (lower is better)
-            bic = gmm.bic(embeddings)
-            
+            # Check if bic method exists (cuml GMM has bic?)
+            # If not available in cuML (it might not be), we might have to skip BIC or fallback to AIC/score
+            if hasattr(gmm, 'bic'):
+                bic = gmm.bic(embeddings)
+            else:
+                # Fallback calculation if cuML doesn't provide bic directly
+                # BIC = k * ln(n) - 2 * ln(L)
+                # k = number of free parameters
+                # L = likelihood
+                # n_features * n_components + n_components * n_features (diag cov) + n_components - 1 (weights)
+                n_features = embeddings.shape[1]
+                n_samples = len(embeddings)
+                # n_params for diag cov:
+                # means: n_components * n_features
+                # covars: n_components * n_features
+                # weights: n_components - 1
+                n_params = n_components * n_features * 2 + n_components - 1
+
+                score = gmm.score(embeddings) # Average log likelihood per sample
+                log_likelihood = score * n_samples
+                bic = n_params * np.log(n_samples) - 2 * log_likelihood
+
             if bic < best_bic:
                 best_bic = bic
                 best_n_components = n_components
@@ -177,21 +217,43 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
         optimal_n_components = select_optimal_gmm_components(all_embeddings)
         
         # Fit GMM to the embedding vectors
-        gmm = GaussianMixture(
-            n_components=optimal_n_components,
-            covariance_type=GMM_COVARIANCE_TYPE,
-            max_iter=GMM_MAX_ITER,
-            n_init=GMM_N_INIT,
-            random_state=42
-        )
+        # Build kwargs dynamically to handle API differences (random_state vs seed) or GPU requirements
+        gmm_kwargs = {
+            'n_components': optimal_n_components,
+            'covariance_type': GMM_COVARIANCE_TYPE,
+            'max_iter': GMM_MAX_ITER,
+            'n_init': GMM_N_INIT,
+        }
         
+        # cuML and sklearn handle random state differently
+        if GPU_ACCELERATION_AVAILABLE:
+            gmm_kwargs['random_state'] = 42
+        else:
+            gmm_kwargs['random_state'] = 42
+
+        gmm = GaussianMixture(**gmm_kwargs)
         gmm.fit(all_embeddings)
         
         # Extract GMM parameters
+        # Note: cuML attributes might be slightly different or return cupy arrays which need to be converted
+        weights = gmm.weights_
+        means = gmm.means_
+        covariances = gmm.covariances_
+
+        # Convert from cupy if needed (cuml returns cupy arrays)
+        if hasattr(weights, 'get'): weights = weights.get() # cupy -> numpy
+        if hasattr(means, 'get'): means = means.get()
+        if hasattr(covariances, 'get'): covariances = covariances.get()
+
+        # Also ensure they are lists for JSON serialization
+        if hasattr(weights, 'tolist'): weights = weights.tolist()
+        if hasattr(means, 'tolist'): means = means.tolist()
+        if hasattr(covariances, 'tolist'): covariances = covariances.tolist()
+
         gmm_params = {
-            'weights': gmm.weights_.tolist(),
-            'means': gmm.means_.tolist(),
-            'covariances': gmm.covariances_.tolist(),
+            'weights': weights,
+            'means': means,
+            'covariances': covariances,
             'n_components': optimal_n_components,  # Store the actual number used
             'covariance_type': GMM_COVARIANCE_TYPE,
             'n_features': all_embeddings.shape[1],
@@ -409,6 +471,10 @@ def build_and_store_artist_index(db_conn=None):
     Args:
         db_conn: Database connection (if None, will acquire one)
     """
+    if not VOYAGER_AVAILABLE:
+        logger.warning("Voyager not available - skipping artist index build")
+        return
+
     if db_conn is None:
         from app_helper import get_db
         db_conn = get_db()
@@ -621,6 +687,10 @@ def load_artist_index_for_querying(force_reload=False):
     """
     global artist_index, artist_map, reverse_artist_map, artist_gmm_params
     
+    if not VOYAGER_AVAILABLE:
+        logger.warning("Voyager not available - cannot load artist index")
+        return
+
     with _index_lock:
         if artist_index is not None and not force_reload:
             logger.info("Artist index already loaded in memory")
@@ -828,6 +898,10 @@ def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = N
     Returns: List of dictionaries with 'artist', 'artist_id', 'divergence' keys
              If include_component_matches=True, also includes 'component_matches' key
     """
+    if not VOYAGER_AVAILABLE:
+        logger.error("Voyager is not available. Cannot find similar artists.")
+        raise RuntimeError("Artist similarity service unavailable (Missing Voyager/AVX support)")
+
     if artist_index is None or artist_map is None or artist_gmm_params is None:
         logger.error("Artist index not loaded")
         raise RuntimeError("Artist similarity index not available")

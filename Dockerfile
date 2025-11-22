@@ -58,8 +58,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       pip3 install --no-warn-script-location \
         --extra-index-url=https://pypi.nvidia.com \
         cuml-cu12==24.12.*; \
+      # Install Voyager only for GPU/Modern CPU image (assumes AVX support)
+      pip3 install --no-warn-script-location voyager==2.1.0; \
     else \
       pip3 install --no-warn-script-location onnxruntime==1.19.2; \
+      # Note: voyager is skipped here to support old CPUs (AVX incompatibility)
     fi
 
 # Standard dependencies
@@ -71,7 +74,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       soundfile==0.13.1 \
       Flask Flask-Cors redis requests \
       scikit-learn==1.7.2 rq pyyaml six \
-      voyager==2.1.0 rapidfuzz psycopg2-binary \
+      rapidfuzz psycopg2-binary \
       ftfy flasgger sqlglot google-generativeai \
       mistralai umap-learn pydub python-mpd2 \
       onnx==1.14.1 resampy librosa==0.11.0 \
