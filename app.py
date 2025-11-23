@@ -94,10 +94,15 @@ with app.app_context():
 
     # Clean up any stale main tasks from previous runs (e.g., after container restarts)
     # This ensures tasks stuck in PENDING/STARTED states are cleaned up on startup
+    # IMPORTANT: Only clean up tasks that are truly stale (older than 60 seconds)
+    # to avoid revoking recently created tasks during development reloads
     try:
         db = get_db()
         cur = db.cursor()
         current_time = time.time()
+
+        # Minimum age in seconds before a task is considered stale
+        MIN_STALE_AGE_SECONDS = 60
 
         # Find main tasks (main_analysis, main_clustering) stuck in non-terminal states
         # Only clean up tasks that start with 'main_' to avoid affecting other tasks like fetch_playlists
@@ -112,11 +117,20 @@ with app.app_context():
               AND status IN (%s, %s)
         """, ('main_%', pending_status, started_status))
 
-        stale_tasks = cur.fetchall()
+        potential_stale_tasks = cur.fetchall()
+        stale_tasks = []
 
-        if stale_tasks:
-            for task_id, task_type, status, start_time in stale_tasks:
+        if potential_stale_tasks:
+            for task_id, task_type, status, start_time in potential_stale_tasks:
                 age_seconds = int(current_time - start_time) if start_time else 0
+
+                # Only revoke tasks that are older than MIN_STALE_AGE_SECONDS
+                if age_seconds >= MIN_STALE_AGE_SECONDS:
+                    stale_tasks.append((task_id, task_type, status, start_time, age_seconds))
+                else:
+                    app.logger.info(f"Startup cleanup: skipping recent task {task_id} (age: {age_seconds}s < {MIN_STALE_AGE_SECONDS}s)")
+
+            for task_id, task_type, status, start_time, age_seconds in stale_tasks:
                 revoked_details = {
                     "message": f"Task revoked on startup: was stuck in {status} state (age: {age_seconds}s)",
                     "original_status": status,
@@ -130,12 +144,15 @@ with app.app_context():
                     WHERE task_id = %s
                 """, (TASK_STATUS_REVOKED, json.dumps(revoked_details), current_time, task_id))
 
-                app.logger.info(f"Startup cleanup: revoked stale task {task_id} (type: {task_type}, was in {status})")
+                app.logger.info(f"Startup cleanup: revoked stale task {task_id} (type: {task_type}, was in {status}, age: {age_seconds}s)")
 
-            db.commit()
-            app.logger.info(f"Startup cleanup completed: {len(stale_tasks)} stale task(s) revoked")
+            if stale_tasks:
+                db.commit()
+                app.logger.info(f"Startup cleanup completed: {len(stale_tasks)} stale task(s) revoked")
+            else:
+                app.logger.info("Startup cleanup: no truly stale tasks found (some tasks were too recent)")
         else:
-            app.logger.info("Startup cleanup: no stale tasks found")
+            app.logger.info("Startup cleanup: no pending/started tasks found")
 
         cur.close()
     except Exception as e:

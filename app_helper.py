@@ -303,21 +303,6 @@ def track_exists(item_id):
     Returns False otherwise, indicating a re-analysis is needed.
     """
     conn = get_db() # This now calls the function within this file
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT s.item_id
-        FROM score s
-        JOIN embedding e ON s.item_id = e.item_id
-        WHERE s.item_id = %s
-          AND s.other_features IS NOT NULL AND s.other_features != ''
-          AND s.energy IS NOT NULL
-          AND s.mood_vector IS NOT NULL AND s.mood_vector != ''
-          AND s.tempo IS NOT NULL
-    """, (item_id,))
-    row = cur.fetchone()
-    cur.close()
-    return row is not None
-
 def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, song_artist=None, album_artist=None):
     """Saves track analysis and embedding in a single transaction."""
     # Sanitize string inputs to remove NUL characters

@@ -145,6 +145,8 @@ def extend_playlist_api():
     included_ids = payload.get('included_ids', [])
     excluded_ids = payload.get('excluded_ids', [])
 
+    search_only = payload.get('search_only', False)
+
     if not playlist_name and not filters:
         return jsonify({"error": "Missing 'playlist_name' or 'filters'"}), 400
 
@@ -174,6 +176,35 @@ def extend_playlist_api():
                  return jsonify({"error": "No songs found matching the filters"}), 404
 
         cur.close()
+
+        # --- SEARCH ONLY MODE ---
+        if search_only:
+            # If search_only is True, we just return the metadata for the found playlist_ids (which came from filters)
+            # We don't do centroid calculation or neighbor search.
+            
+            # Fetch metadata
+            from app_helper import get_score_data_by_ids
+            metadata_list = get_score_data_by_ids(playlist_ids)
+            
+            results = []
+            for meta in metadata_list:
+                # Enrich with stream url
+                item_id = meta['item_id']
+                meta['stream_url'] = _get_stream_url(item_id)
+                # Ensure song_artist is present (fallback to author)
+                meta['song_artist'] = meta.get('song_artist') or meta.get('author')
+                # Distance is 0 for exact matches
+                meta['distance'] = 0.0
+                results.append(meta)
+                
+            return jsonify({
+                "results": results,
+                "playlist_song_count": len(results),
+                "included_count": 0,
+                "excluded_count": 0
+            })
+
+        # --- EXTEND MODE (Default) ---
 
         # Combine original playlist songs with included songs for positive centroid calculation
         all_ids_for_centroid = list(set(playlist_ids + included_ids))
@@ -258,6 +289,9 @@ def extend_playlist_api():
                 meta = metadata_map.get(item_id, {})
                 # Use song_artist if available, fallback to author (Album Artist usually)
                 result['song_artist'] = meta.get('song_artist') or meta.get('author')
+                result['album'] = meta.get('album')
+                result['album_artist'] = meta.get('album_artist')
+
                 # Ensure title is present (sometimes missing in vector result)
                 if not result.get('title'):
                     result['title'] = meta.get('title')

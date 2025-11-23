@@ -34,7 +34,8 @@
         width: 100%;
         border-collapse: collapse;
         margin-top: 1rem;
-        margin-bottom: 60px; /* Space for player */
+        margin-bottom: 60px;
+        /* Space for player */
     }
 
     .results-table th,
@@ -158,13 +159,14 @@
         color: #1F2937;
     }
 
-    /* Filter Builder Styles */
+    /* Filter Builder Styles - Light Theme */
     .filter-builder {
-        background-color: #1f2937;
+        background-color: #f9fafb;
         padding: 1.5rem;
         border-radius: 0.5rem;
-        color: white;
+        color: #1f2937;
         margin-bottom: 1.5rem;
+        border: 1px solid #e5e7eb;
     }
 
     .filter-header {
@@ -175,9 +177,9 @@
     }
 
     .filter-header select {
-        background-color: #374151;
-        color: white;
-        border: 1px solid #4b5563;
+        background-color: white;
+        color: #1f2937;
+        border: 1px solid #d1d5db;
         padding: 0.5rem;
         border-radius: 0.375rem;
     }
@@ -190,17 +192,28 @@
         flex-wrap: wrap;
     }
 
-    .filter-row select, .filter-row input {
-        background-color: #374151;
-        color: white;
-        border: 1px solid #4b5563;
+    .filter-row select,
+    .filter-row input {
+        background-color: white;
+        color: #1f2937;
+        border: 1px solid #d1d5db;
         padding: 0.5rem;
         border-radius: 0.375rem;
         flex: 1;
         min-width: 150px;
     }
 
-    .btn-add-filter, .btn-remove-filter {
+    .btn-add-filter {
+        background: none;
+        border: none;
+        color: #3B82F6;
+        font-size: 1.5rem;
+        cursor: pointer;
+        line-height: 1;
+        font-weight: bold;
+    }
+
+    .btn-remove-filter {
         background: none;
         border: none;
         color: #9ca3af;
@@ -209,8 +222,13 @@
         line-height: 1;
     }
 
-    .btn-add-filter:hover { color: white; }
-    .btn-remove-filter:hover { color: #ef4444; }
+    .btn-add-filter:hover {
+        color: #2563EB;
+    }
+
+    .btn-remove-filter:hover {
+        color: #EF4444;
+    }
 
     .tab-container {
         display: flex;
@@ -294,7 +312,9 @@
         font-size: 1.5rem;
     }
 
-    .player-btn:hover { color: var(--primary-color, #3B82F6); }
+    .player-btn:hover {
+        color: var(--primary-color, #3B82F6);
+    }
 
     .progress-container {
         display: flex;
@@ -321,8 +341,9 @@
     }
 
     /* Hidden class utility */
-    .hidden { display: none !important; }
-
+    .hidden {
+        display: none !important;
+    }
 </style>
 {% endblock %}
 
@@ -335,8 +356,8 @@
 
     <!-- Source Selection Tabs -->
     <div class="tab-container">
-        <button class="tab-btn active" onclick="switchTab('smart')">Smart Filters</button>
-        <button class="tab-btn" onclick="switchTab('playlist')">Existing Playlist</button>
+        <button class="tab-btn active" onclick="switchTab(event, 'smart')">Smart Filters</button>
+        <button class="tab-btn" onclick="switchTab(event, 'playlist')">Existing Playlist</button>
     </div>
 
     <form id="extend-playlist-form">
@@ -355,6 +376,10 @@
             <div id="filter-rows">
                 <!-- Filter rows will be added here -->
             </div>
+            <!-- Search Button for Smart Filters -->
+            <button type="button" id="btn-search-filters" onclick="findSimilarSongs(true)" style="margin-top: 1rem;">
+                Search
+            </button>
         </div>
 
         <!-- Existing Playlist Section -->
@@ -364,7 +389,8 @@
                     Select Playlist:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Choose a playlist from your library to extend with similar songs.</span>
+                        <span class="tooltip-text">Choose a playlist from your library to extend with similar
+                            songs.</span>
                     </span>
                 </label>
                 <select id="playlist_select" name="playlist_select">
@@ -373,36 +399,40 @@
             </div>
         </div>
 
-        <!-- Common Parameters -->
-        <div class="param-group">
-            <div>
-                <label for="max_songs" class="label-with-tooltip">
-                    Maximum Songs:
-                    <span class="info-tooltip" tabindex="0">
-                        <span class="info-icon"></span>
-                        <span class="tooltip-text">Maximum number of similar songs to find.</span>
-                    </span>
-                </label>
-                <input type="number" id="max_songs" name="max_songs" value="50" min="1" max="200">
+        <!-- Common Parameters (Only visible for Playlist Extend mode) -->
+        <div id="extend-params" class="hidden">
+            <div class="param-group">
+                <div>
+                    <label for="max_songs" class="label-with-tooltip">
+                        Maximum Songs:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Maximum number of similar songs to find.</span>
+                        </span>
+                    </label>
+                    <input type="number" id="max_songs" name="max_songs" value="50" min="1" max="200">
+                </div>
             </div>
-        </div>
 
-        <div class="param-group">
-            <div class="slider-container">
-                <label for="similarity_threshold" class="label-with-tooltip">
-                    Similarity Threshold: <span id="threshold_value" class="slider-value">0.50</span>
-                    <span class="info-tooltip" tabindex="0">
-                        <span class="info-icon"></span>
-                        <span class="tooltip-text">Lower values = more similar songs. Higher values = more diverse results. Range: 0.0 (most similar) to 1.0 (least similar).</span>
-                    </span>
-                </label>
-                <input type="range" id="similarity_threshold" name="similarity_threshold" min="0" max="1" step="0.01" value="0.50">
+            <div class="param-group">
+                <div class="slider-container">
+                    <label for="similarity_threshold" class="label-with-tooltip">
+                        Similarity Threshold: <span id="threshold_value" class="slider-value">0.50</span>
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Lower values = more similar songs. Higher values = more
+                                diverse results. Range: 0.0 (most similar) to 1.0 (least similar).</span>
+                        </span>
+                    </label>
+                    <input type="range" id="similarity_threshold" name="similarity_threshold" min="0" max="1"
+                        step="0.01" value="0.50">
+                </div>
             </div>
-        </div>
 
-        <button type="submit">
-            Find Similar Songs
-        </button>
+            <button type="submit" id="btn-extend-playlist">
+                Find Similar Songs
+            </button>
+        </div>
     </form>
 </section>
 
@@ -439,7 +469,8 @@
         <div class="param-group">
             <div>
                 <label for="new_playlist_name">New Playlist Name:</label>
-                <input type="text" id="new_playlist_name" name="new_playlist_name" required placeholder="e.g., My Extended Playlist">
+                <input type="text" id="new_playlist_name" name="new_playlist_name" required
+                    placeholder="e.g., My Extended Playlist">
             </div>
         </div>
         <button type="submit" style="background-color: #16A34A;">
@@ -461,6 +492,7 @@
             <button class="player-btn" onclick="seek(-10)">&#8634;</button>
             <button id="play-pause-btn" class="player-btn" onclick="togglePlay()">&#9658;</button>
             <button class="player-btn" onclick="seek(10)">&#8635;</button>
+            <button class="player-btn" onclick="stopPlayer()" style="font-size: 1.2rem;">&#9632;</button>
         </div>
         <div class="progress-container">
             <span id="current-time">0:00</span>
@@ -512,48 +544,36 @@
         ]
     };
 
-    // --- Initialization ---
-    (() => {
-        // Load playlists for the select dropdown
-        loadPlaylists();
-
-        // Add initial filter row
-        addFilterRow();
-
-        // Update threshold display
-        document.getElementById('similarity_threshold').addEventListener('input', (e) => {
-            document.getElementById('threshold_value').textContent = parseFloat(e.target.value).toFixed(2);
-        });
-
-        // Player events
-        const audio = document.getElementById('audio-element');
-        audio.addEventListener('timeupdate', updateProgress);
-        audio.addEventListener('ended', () => {
-            document.getElementById('play-pause-btn').innerHTML = '&#9658;';
-        });
-    })();
-
     // --- Tab Switching ---
-    window.switchTab = function(tab) {
+    window.switchTab = function (event, tab) {
         activeTab = tab;
         document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-        event.target.classList.add('active');
+        if (event && event.currentTarget) {
+            event.currentTarget.classList.add('active');
+        }
 
         if (tab === 'smart') {
             document.getElementById('smart-filters-section').classList.remove('hidden');
             document.getElementById('playlist-section').classList.add('hidden');
+            document.getElementById('extend-params').classList.add('hidden'); // Hide extend params in search mode
         } else {
             document.getElementById('smart-filters-section').classList.add('hidden');
             document.getElementById('playlist-section').classList.remove('hidden');
+            document.getElementById('extend-params').classList.remove('hidden'); // Show extend params in playlist mode
         }
 
-        // Reset lists on tab switch
+        // Reset lists and clear results on tab switch
         includedIds = [];
         excludedIds = [];
+        document.getElementById('results-container').classList.add('hidden');
+        document.getElementById('stats-container').classList.add('hidden');
+        document.getElementById('playlist-creator').classList.add('hidden');
+        document.getElementById('results-table-wrapper').innerHTML = '';
+        document.getElementById('status').textContent = '';
     };
 
     // --- Filter Builder Logic ---
-    window.addFilterRow = function() {
+    window.addFilterRow = function () {
         const row = document.createElement('div');
         row.className = 'filter-row';
 
@@ -624,6 +644,27 @@
         return filters;
     }
 
+    // --- Initialization ---
+    (() => {
+        // Load playlists for the select dropdown
+        loadPlaylists();
+
+        // Add initial filter row
+        addFilterRow();
+
+        // Update threshold display
+        document.getElementById('similarity_threshold').addEventListener('input', (e) => {
+            document.getElementById('threshold_value').textContent = parseFloat(e.target.value).toFixed(2);
+        });
+
+        // Player events
+        const audio = document.getElementById('audio-element');
+        audio.addEventListener('timeupdate', updateProgress);
+        audio.addEventListener('ended', () => {
+            document.getElementById('play-pause-btn').innerHTML = '&#9658;';
+        });
+    })();
+
     // --- API Interaction ---
     async function loadPlaylists() {
         try {
@@ -642,7 +683,8 @@
         }
     }
 
-    async function findSimilarSongs() {
+    window.findSimilarSongs = async function (searchOnly = false) {
+        console.log('findSimilarSongs called', { searchOnly, activeTab });
         const statusDiv = document.getElementById('status');
         const maxSongs = parseInt(document.getElementById('max_songs').value);
         const threshold = parseFloat(document.getElementById('similarity_threshold').value);
@@ -651,11 +693,13 @@
             max_songs: maxSongs,
             similarity_threshold: threshold,
             included_ids: includedIds,
-            excluded_ids: excludedIds
+            excluded_ids: excludedIds,
+            search_only: searchOnly
         };
 
         if (activeTab === 'smart') {
             const filters = getFilters();
+            console.log('Filters:', filters);
             if (filters.length === 0) {
                 statusDiv.textContent = 'Please add at least one filter.';
                 statusDiv.style.color = 'red';
@@ -673,7 +717,7 @@
             payload.playlist_name = playlistName;
         }
 
-        statusDiv.textContent = 'Searching...';
+        statusDiv.textContent = searchOnly ? 'Searching...' : 'Finding similar songs...';
         statusDiv.style.color = 'blue';
 
         try {
@@ -697,7 +741,7 @@
 
             displayResults(data.results);
 
-            statusDiv.textContent = `Found ${data.results.length} songs.`;
+            statusDiv.textContent = searchOnly ? `Found ${data.results.length} matching songs.` : `Found ${data.results.length} similar songs.`;
             statusDiv.style.color = 'green';
 
             document.getElementById('results-container').classList.remove('hidden');
@@ -707,10 +751,11 @@
             }
 
         } catch (error) {
+            console.error('Search error:', error);
             statusDiv.textContent = error.message;
             statusDiv.style.color = 'red';
         }
-    }
+    };
 
     function updateStatsDisplay() {
         document.getElementById('stat-original').textContent = playlistStats.original;
@@ -733,6 +778,8 @@
                         <th style="width: 50px;">Play</th>
                         <th>Title</th>
                         <th>Artist</th>
+                        <th>Album</th>
+                        <th>Album Artist</th>
                         <th>Distance</th>
                         <th>Actions</th>
                     </tr>
@@ -747,27 +794,31 @@
 
             // Escape strings for safe usage in onclick
             const safeTitle = (track.title || 'Unknown').replace(/'/g, "\\'");
-            const safeArtist = (track.song_artist || track.author || 'Unknown').replace(/'/g, "\\'");
+            // Use song_artist if available, fallback to author
+            const displayArtist = track.song_artist || track.author || 'Unknown';
+            const safeArtist = displayArtist.replace(/'/g, "\\'");
             const safeUrl = (track.stream_url || '').replace(/'/g, "\\'");
 
             html += `
                 <tr class="${rowClass}">
                     <td>
                         ${safeUrl ?
-                            `<button class="btn-play" onclick="playSong('${safeUrl}', '${safeTitle}', '${safeArtist}')">&#9658;</button>`
-                            : '-'}
+                    `<button class="btn-play" onclick="playSong('${safeUrl}', '${safeTitle}', '${safeArtist}')">&#9658;</button>`
+                    : '-'}
                     </td>
                     <td>${track.title || 'Unknown'}</td>
-                    <td>${track.song_artist || track.author || 'Unknown'}</td>
+                    <td>${displayArtist}</td>
+                    <td>${track.album || '-'}</td>
+                    <td>${track.album_artist || '-'}</td>
                     <td>${track.distance ? track.distance.toFixed(4) : 'N/A'}</td>
                     <td>
                         ${isIncluded ? '<span class="status-badge status-included">INCLUDED</span>' :
-                          isExcluded ? '<span class="status-badge status-excluded">EXCLUDED</span>' :
-                          `<div class="action-buttons">
+                    isExcluded ? '<span class="status-badge status-excluded">EXCLUDED</span>' :
+                        `<div class="action-buttons">
                                <button class="btn-include" onclick="includeSong('${track.item_id}')">Include</button>
                                <button class="btn-exclude" onclick="excludeSong('${track.item_id}')">Exclude</button>
                            </div>`
-                        }
+                }
                     </td>
                 </tr>
             `;
@@ -778,7 +829,7 @@
     }
 
     // --- Actions ---
-    window.includeSong = function(id) {
+    window.includeSong = function (id) {
         if (!includedIds.includes(id)) {
             includedIds.push(id);
             excludedIds = excludedIds.filter(x => x !== id);
@@ -786,7 +837,7 @@
         }
     };
 
-    window.excludeSong = function(id) {
+    window.excludeSong = function (id) {
         if (!excludedIds.includes(id)) {
             excludedIds.push(id);
             includedIds = includedIds.filter(x => x !== id);
@@ -796,15 +847,7 @@
 
     document.getElementById('extend-playlist-form').addEventListener('submit', (e) => {
         e.preventDefault();
-        // Reset inclusion/exclusion on new primary search
-        // But we might want to keep them if refining?
-        // The original logic reset them if playlist changed.
-        // Here let's keep simple: reset if user explicitly changes source, but refining via 'Find Similar' usually implies keeping context?
-        // Actually, re-clicking Find Similar with same settings is usually a "refresh" or "update".
-        // If we want to preserve, we shouldn't reset.
-        // However, if filters changed drastically, previous includes might be invalid? No, they are just IDs.
-        // Let's keep them to allow iterative building.
-        findSimilarSongs();
+        findSimilarSongs(false); // Default submit is Extend mode
     });
 
     // --- Playlist Saving ---
@@ -820,31 +863,6 @@
 
         statusDiv.textContent = 'Saving...';
         try {
-            // For saving, we need a "source" name. If filters were used, we can just say "Smart Playlist".
-            // But the API expects `original_playlist_name`.
-            // If we used filters, we don't have an original playlist name.
-            // We should update the backend `save_extended_playlist` to not strictly require `original_playlist_name` if we have `included_ids`.
-            // Wait, the backend `save_extended_playlist` uses `original_playlist_name` to get `original_ids` and combine them.
-            // If we are in Filter mode, there is no "original playlist".
-            // The user creates a NEW playlist from the "Included" songs (which are selected from results).
-            // If the user wants the *seed* songs too, we currently don't track the seed IDs separately on frontend easily without returning them.
-            // For now, let's assume in Filter mode, we ONLY save the `included_ids`.
-            // But the backend requires `original_playlist_name`.
-
-            // I need to tweak the backend save function or pass a dummy name.
-            // Actually, if I use smart filters, I probably want the result to be just the found songs + includes?
-            // Let's assume for now the user selects "Include" on the ones they want.
-
-            // I'll send a special flag or handle it.
-            // Ideally, I should update the backend `save_extended_playlist` to accept `filters` too, or just a list of IDs.
-            // But `save_extended_playlist` logic is: Original Tracks + Included Tracks.
-            // If Source is Playlist: Original = Playlist Tracks.
-            // If Source is Filters: Original = Filter Matches (Seed).
-
-            // Simplification: Just pass `included_ids` as the full list? No, backend appends.
-            // Let's pass the current `playlist_name` if in playlist mode.
-            // If in Filter mode, pass a dummy or empty string, and update backend to handle it.
-
             let payload = {
                 new_playlist_name: name,
                 included_ids: includedIds
@@ -878,7 +896,7 @@
     });
 
     // --- Player Logic ---
-    window.playSong = function(url, title, artist) {
+    window.playSong = function (url, title, artist) {
         if (!url) return;
 
         const audio = document.getElementById('audio-element');
@@ -893,7 +911,7 @@
         document.getElementById('play-pause-btn').innerHTML = '&#10074;&#10074;'; // Pause symbol
     };
 
-    window.togglePlay = function() {
+    window.togglePlay = function () {
         const audio = document.getElementById('audio-element');
         const btn = document.getElementById('play-pause-btn');
         if (audio.paused) {
@@ -905,7 +923,15 @@
         }
     };
 
-    window.seek = function(seconds) {
+    window.stopPlayer = function () {
+        const audio = document.getElementById('audio-element');
+        audio.pause();
+        audio.currentTime = 0;
+        document.getElementById('web-player').classList.add('hidden');
+        document.getElementById('play-pause-btn').innerHTML = '&#9658;';
+    };
+
+    window.seek = function (seconds) {
         const audio = document.getElementById('audio-element');
         audio.currentTime += seconds;
     };
@@ -924,7 +950,7 @@
         document.getElementById('progress-fill').style.width = `${pct}%`;
     }
 
-    window.seekTo = function(e) {
+    window.seekTo = function (e) {
         const audio = document.getElementById('audio-element');
         const bar = e.currentTarget;
         const pct = e.offsetX / bar.offsetWidth;

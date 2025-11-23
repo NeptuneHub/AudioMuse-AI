@@ -477,7 +477,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 with get_db() as conn, conn.cursor() as cur:
                     # MODIFIED: Cast the integer track IDs to TEXT for the database query.
                     track_ids_as_strings = [str(id) for id in track_ids]
-                    cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL", (tuple(track_ids_as_strings),))
+                    cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL AND s.album IS NOT NULL AND s.album != '' AND s.song_artist IS NOT NULL AND s.song_artist != ''", (tuple(track_ids_as_strings),))
                     return {row[0] for row in cur.fetchall()}
 
             existing_track_ids_set = get_existing_track_ids( [str(t['Id']) for t in tracks])
@@ -630,7 +630,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 with get_db() as conn, conn.cursor() as cur:
                     # Convert integer track IDs to strings for database comparison
                     track_ids_as_strings = [str(track_id) for track_id in track_ids]
-                    cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL", (tuple(track_ids_as_strings),))
+                    cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL AND s.album IS NOT NULL AND s.album != '' AND s.song_artist IS NOT NULL AND s.song_artist != ''", (tuple(track_ids_as_strings),))
                     return {row[0] for row in cur.fetchall()}
 
             def monitor_and_clear_jobs():

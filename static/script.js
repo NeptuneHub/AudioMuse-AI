@@ -535,6 +535,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.assert(cancelTaskEndpointUrl, "Missing cancelTaskEndpointUrl url variable");
     console.assert(startFetchPlaylistsEndpointUrl, "Missing startFetchPlaylistsEndpointUrl url variable");
 
+    // Attach event listeners to buttons
+    startAnalysisBtn.addEventListener('click', () => startTask('analysis'));
+    startClusteringBtn.addEventListener('click', () => startTask('clustering'));
+    fetchPlaylistsBtn.addEventListener('click', () => startTask('fetch_playlists'));
+    cancelTaskBtn.addEventListener('click', cancelTask);
+
+    // View switcher buttons
+    basicViewBtn.addEventListener('click', () => switchView('basic'));
+    advancedViewBtn.addEventListener('click', () => switchView('advanced'));
+
+    // Algorithm and AI provider change listeners
+    clusterAlgorithmSelect.addEventListener('change', toggleClusteringParams);
+    aiModelProviderSelect.addEventListener('change', toggleAiConfig);
+
     await fetchConfig();
     if (!await checkActiveTasks()) {
         await fetchAndDisplayOverallLastTask();
