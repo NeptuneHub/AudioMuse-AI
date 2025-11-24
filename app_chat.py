@@ -21,7 +21,12 @@ from config import (
     AI_MODEL_PROVIDER, # Default AI provider
     AI_CHAT_DB_USER_NAME, AI_CHAT_DB_USER_PASSWORD, # Import new config
 )
-from ai import get_gemini_playlist_name, get_ollama_playlist_name, get_mistral_playlist_name, get_openai_compatible_playlist_name # Import functions to call AI
+from ai import (
+    get_gemini_playlist_name, get_ollama_playlist_name, get_mistral_playlist_name, 
+    get_openai_compatible_playlist_name, call_ai_for_chat,
+    chat_step1_understand_prompt, chat_step2_expand_prompt, chat_step3_explore_prompt
+) # Import functions to call AI
+from tasks.chat_manager import call_ai_step, explore_database_for_matches, execute_action
 
 # Create a Blueprint for chat-related routes
 chat_bp = Blueprint('chat_bp', __name__,
@@ -345,348 +350,421 @@ def chat_config_defaults_api():
 })
 def chat_playlist_api():
     """
-    Process user chat input to generate a playlist idea using AI.
-    This is a synchronous endpoint.
+    Process user chat input to generate a playlist idea using AI with multi-step approach.
+    Steps:
+    1. Understand user request
+    2. Expand with AI knowledge (similar artists, top songs, etc.)
+    3. Explore database to find what actually exists
+    4. Generate optimized SQL query based on real data
     """
     data = request.get_json()
     # Mask API key if present in the debug log
     data_for_log = dict(data) if data else {}
     if 'gemini_api_key' in data_for_log and data_for_log['gemini_api_key']:
-        data_for_log['gemini_api_key'] = 'API-KEY' # Masked
+        data_for_log['gemini_api_key'] = 'API-KEY'
     if 'mistral_api_key' in data_for_log and data_for_log['mistral_api_key']:
-        data_for_log['mistral_api_key'] = 'API-KEY' # Masked
+        data_for_log['mistral_api_key'] = 'API-KEY'
     if 'openai_api_key' in data_for_log and data_for_log['openai_api_key']:
-        data_for_log['openai_api_key'] = 'API-KEY' # Masked
+        data_for_log['openai_api_key'] = 'API-KEY'
     logger.debug("chat_playlist_api called. Raw request data: %s", data_for_log)
-    from app_helper import get_db # Import get_db here, inside the function
+    
+    from app_helper import get_db
+    
     if not data or 'userInput' not in data:
         return jsonify({"error": "Missing userInput in request"}), 400
 
     original_user_input = data.get('userInput')
-    # Use AI provider from request, or fallback to global config, then to "NONE"
-    ai_provider = data.get('ai_provider', AI_MODEL_PROVIDER).upper() # Use the imported constant
-    ai_model_from_request = data.get('ai_model') # Model selected by user on chat page
-
-    ai_response_message = f"Received your request: '{original_user_input}'.\n"
-    actual_model_used = None
-
-    # Variables to hold the final state after potential retries
-    final_query_results_list = None
-    final_executed_query_str = None # The SQL string that was last attempted or successfully executed
+    ai_provider = data.get('ai_provider', AI_MODEL_PROVIDER).upper()
+    ai_model_from_request = data.get('ai_model')
     
-    # Variables for retry logic
-    last_raw_sql_from_ai = None
-    last_error_for_retry = None
-
-    # Define the prompt structure once, to be used by any provider that needs it.
-    # The [USER INPUT] placeholder will be replaced dynamically.
-    base_expert_playlist_creator_prompt = """
-    You are a specialized AI with expert-level knowledge of music trends (Spotify charts, YouTube trending songs, MTV hits, radio top charts, film soundtracks, etc.) and proficiency in PostgreSQL.
-
-    **Your Mission:**
-    Convert the user's natural language playlist request into a precise, accurate, and optimized PostgreSQL SQL query for the `public.score` table.
-
-    ### Step-by-Step Instructions:
-
-    1. **Interpret the Request Thoughtfully:**
-
-    * Clearly identify the user's intent: Are they asking for trending/top/popular hits, mood-based playlists, or specific themes?
-    * Recall specific current hit song titles and artists matching the user's description.
-
-    2. **SQL Query Requirements:**
-
-    * Return ONLY the raw SQL query—no markdown, no comments, no explanations.
-    * Always use:
-
-        ```sql
-        SELECT item_id, title, author
-        FROM public.score
-        ```
-    * For general requests, conclude your query with:
-
-        ```sql
-        ORDER BY random()
-        LIMIT 100
-        ```
-    * If the user explicitly requests ordered top/best/famous results, sort appropriately without randomization.
-
-    3. **Critical Formatting Rules:**
-
-    * To include single quotes (`'`) inside strings, use two single quotes (`''`). Example:
-
-        ```sql
-        'Don''t Stop Believin'''
-        ```
-    * When matching songs, always use precise matching criteria:
-
-        ```sql
-        WHERE (title = 'Exact Song Title' AND author ILIKE '%Artist Name%')
-        ```
-
-    4. **Mood and Feature Filtering:**
-
-    * For `mood_vector` or `other_features` columns:
-
-        * Extract numeric values using regex and CAST to float:
-
-        ```sql
-        CAST(regexp_replace(substring(mood_vector FROM 'rock:([0-9]*\.?[0-9]+)'), 'rock:', '') AS float) >= threshold
-        ```
-    * Recommended thresholds when asked for MEDIUM or HIGH:
-
-        * `mood_vector`: ≥ 0.2 and < 1
-        * `other_features`: ≥ 0.5 and < 1
-        * `energy`: between ≥ 0.08 and 0.15
-        * `tempo`: between ≥ 110 and 200
-
-    5. **Database Structure Reference:**
-
-    ```sql
-    public.score
-    (
-        item_id,
-        title,
-        author,
-        tempo numeric (40-200),
-        key text,
-        scale text,
-        mood_vector text (e.g. 'pop:0.8,rock:0.3'),
-        other_features text (e.g. 'danceable:0.7,party:0.6'),
-        energy numeric (0-0.15)
-    )
-    ```
-
-    6. **Available Labels:**
-
-    * **MOOD\_LABELS:**
-
-        ```
-        rock, pop, alternative, indie, electronic, female vocalists, dance, 00s, alternative rock, jazz, beautiful, metal, chillout, male vocalists, classic rock, soul, indie rock, electronica, 80s, folk, 90s, chill, instrumental, punk, oldies, blues, hard rock, ambient, acoustic, experimental, female vocalist, guitar, Hip-Hop, 70s, party, country, funk, electro, heavy metal, Progressive rock, 60s, rnb, indie pop, sad, House, happy
-        ```
-    * **OTHER\_FEATURE\_LABELS:**
-
-        ```
-        danceable, aggressive, happy, party, relaxed, sad
-        ```
-
-    7. **PostgreSQL Syntax:**
-
-    * When using UNION ALL, encapsulate it correctly:
-
-        ```sql
-        SELECT item_id, title, author
-        FROM (
-        SELECT item_id, title, author FROM public.score WHERE condition1
-        UNION ALL
-        SELECT item_id, title, author FROM public.score WHERE condition2
-        ) AS combined_results
-        ORDER BY random()
-        LIMIT 100
-        ```
-    * Avoid aliasing individual SELECT statements within UNION ALL.
-
-    **Your Task:**
-    Generate a precise and contextually optimized SQL query for the user's request:
-    "{user_input_placeholder}"
-    """
-
-    max_retries = 2 # Max 2 retries, so 3 attempts total
-    for attempt_num in range(max_retries + 1):
-        ai_response_message += f"\n--- Attempt {attempt_num + 1} of {max_retries + 1} ---\n"
+    log_messages = []
+    log_messages.append(f"Received request: '{original_user_input}'")
+    log_messages.append(f"Using AI provider: {ai_provider}")
+    
+    # Check if AI provider is NONE
+    if ai_provider == "NONE":
+        return jsonify({
+            "response": {
+                "message": "No AI provider selected. Please configure an AI provider to use this feature.",
+                "original_request": original_user_input,
+                "ai_provider_used": ai_provider,
+                "ai_model_selected": None,
+                "executed_query": None,
+                "query_results": None
+            }
+        }), 200
+    
+    # Build AI configuration object
+    ai_config = {
+        'provider': ai_provider,
+        'ollama_url': data.get('ollama_server_url', OLLAMA_SERVER_URL),
+        'ollama_model': ai_model_from_request or OLLAMA_MODEL_NAME,
+        'openai_url': data.get('openai_server_url', OPENAI_SERVER_URL),
+        'openai_model': ai_model_from_request or OPENAI_MODEL_NAME,
+        'openai_key': data.get('openai_api_key') or OPENAI_API_KEY,
+        'gemini_key': data.get('gemini_api_key') or GEMINI_API_KEY,
+        'gemini_model': ai_model_from_request or GEMINI_MODEL_NAME,
+        'mistral_key': data.get('mistral_api_key') or MISTRAL_API_KEY,
+        'mistral_model': ai_model_from_request or MISTRAL_MODEL_NAME
+    }
+    
+    # Validate API keys for cloud providers
+    if ai_provider == "OPENAI" and not ai_config['openai_key']:
+        error_msg = "Error: OpenAI API key is missing. Please provide a valid API key or set it in the server configuration."
+        log_messages.append(error_msg)
+        return jsonify({"response": {
+            "message": "\n".join(log_messages),
+            "original_request": original_user_input,
+            "ai_provider_used": ai_provider,
+            "ai_model_selected": ai_config.get('openai_model'),
+            "executed_query": None,
+            "query_results": None
+        }}), 400
+    
+    if ai_provider == "GEMINI" and (not ai_config['gemini_key'] or ai_config['gemini_key'] == "YOUR-GEMINI-API-KEY-HERE"):
+        error_msg = "Error: Gemini API key is missing. Please provide a valid API key or set it in the server configuration."
+        log_messages.append(error_msg)
+        return jsonify({"response": {
+            "message": "\n".join(log_messages),
+            "original_request": original_user_input,
+            "ai_provider_used": ai_provider,
+            "ai_model_selected": ai_config.get('gemini_model'),
+            "executed_query": None,
+            "query_results": None
+        }}), 400
+    
+    if ai_provider == "MISTRAL" and (not ai_config['mistral_key'] or ai_config['mistral_key'] == "YOUR-MISTRAL-API-KEY-HERE"):
+        error_msg = "Error: Mistral API key is missing. Please provide a valid API key or set it in the server configuration."
+        log_messages.append(error_msg)
+        return jsonify({"response": {
+            "message": "\n".join(log_messages),
+            "original_request": original_user_input,
+            "ai_provider_used": ai_provider,
+            "ai_model_selected": ai_config.get('mistral_model'),
+            "executed_query": None,
+            "query_results": None
+        }}), 400
+    
+    final_query_results_list = None
+    final_executed_query_str = None
+    actual_model_used = ai_config.get(f'{ai_provider.lower()}_model')
+    
+    # Main processing with up to 3 total attempts
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        log_messages.append(f"\n========== ATTEMPT {attempt + 1} OF {max_attempts} ==========")
         
-        current_prompt_for_ai = ""
-        retry_reason_for_prompt = last_error_for_retry # Capture before it's potentially overwritten
-
-        if attempt_num > 0: # This is a retry
-            ai_response_message += f"Retrying due to previous issue: {retry_reason_for_prompt}\n"
-            if "no results" in str(retry_reason_for_prompt).lower():
-                retry_prompt_text = f"""The user's original request was: '{original_user_input}'
-Your previous SQL query attempt was:
-```sql
-{last_raw_sql_from_ai}
-```
-This query was valid but returned no songs.
-Please make the query less stringent to find some matching songs. For example, you could broaden search terms, adjust thresholds, or simplify conditions.
-Regenerate a SQL query based on the original instructions and user request, but aim for wider results.
-Ensure all SQL rules are followed.
-Return ONLY the new SQL query.
----
-Original full prompt context (for reference):
-{base_expert_playlist_creator_prompt.replace("{user_input_placeholder}", original_user_input)}
-"""
-            else: # SQL or DB Error
-                retry_prompt_text = f"""The user's original request was: '{original_user_input}'
-Your previous SQL query attempt was:
-```sql
-{last_raw_sql_from_ai}
-```
-This query resulted in the following error: '{retry_reason_for_prompt}'
-Please carefully review the error and your previous SQL.
-Then, regenerate a corrected SQL query based on the original instructions and user request.
-Ensure all SQL rules are followed, especially for string escaping (e.g., 'Player''s Choice') and query structure.
-Return ONLY the corrected SQL query.
----
-Original full prompt context (for reference):
-{base_expert_playlist_creator_prompt.replace("{user_input_placeholder}", original_user_input)}
-"""
-            current_prompt_for_ai = retry_prompt_text
-        else: # First attempt
-            current_prompt_for_ai = base_expert_playlist_creator_prompt.replace("{user_input_placeholder}", original_user_input)
-
-        raw_sql_from_ai_this_attempt = None
-        # --- Call AI (Ollama/OpenAI/Gemini/Mistral) ---
-        if ai_provider == "OLLAMA":
-            actual_model_used = ai_model_from_request or OLLAMA_MODEL_NAME
-            ollama_url_from_request = data.get('ollama_server_url', OLLAMA_SERVER_URL)
-            ai_response_message += f"Processing with OLLAMA model: {actual_model_used} (at {ollama_url_from_request}).\n"
-            raw_sql_from_ai_this_attempt = get_ollama_playlist_name(ollama_url_from_request, actual_model_used, current_prompt_for_ai)
-            if raw_sql_from_ai_this_attempt.startswith("Error:") or raw_sql_from_ai_this_attempt.startswith("An unexpected error occurred:"):
-                ai_response_message += f"Ollama API Error: {raw_sql_from_ai_this_attempt}\n"
-                last_error_for_retry = raw_sql_from_ai_this_attempt # Store error
-                raw_sql_from_ai_this_attempt = None # Mark as failed AI call
-
-        elif ai_provider == "OPENAI":
-            actual_model_used = ai_model_from_request or OPENAI_MODEL_NAME
-            # Get OpenAI configuration from request, or fall back to server config
-            openai_url_from_request = data.get('openai_server_url', OPENAI_SERVER_URL)
-            openai_api_key_from_request = data.get('openai_api_key') or OPENAI_API_KEY
-            if not openai_api_key_from_request:
-                error_msg = "Error: OpenAI API key is missing. Please provide a valid API key or set it in the server configuration."
-                ai_response_message += error_msg + "\n"
-                if attempt_num == 0:
-                    return jsonify({"response": {"message": ai_response_message, "original_request": original_user_input, "ai_provider_used": ai_provider, "ai_model_selected": actual_model_used, "executed_query": None, "query_results": None}}), 400
-                last_error_for_retry = error_msg
-                break
-            ai_response_message += f"Processing with OPENAI model: {actual_model_used} (at {openai_url_from_request}).\n"
-            raw_sql_from_ai_this_attempt = get_openai_compatible_playlist_name(openai_url_from_request, actual_model_used, current_prompt_for_ai, openai_api_key_from_request)
-            if raw_sql_from_ai_this_attempt.startswith("Error:"):
-                ai_response_message += f"OpenAI API Error: {raw_sql_from_ai_this_attempt}\n"
-                last_error_for_retry = raw_sql_from_ai_this_attempt
-                raw_sql_from_ai_this_attempt = None
-
-        elif ai_provider == "GEMINI":
-            actual_model_used = ai_model_from_request or GEMINI_MODEL_NAME
-            # MODIFIED: Get API key from request, but fall back to server config if not provided.
-            gemini_api_key_from_request = data.get('gemini_api_key') or GEMINI_API_KEY
-            if not gemini_api_key_from_request or gemini_api_key_from_request == "YOUR-GEMINI-API-KEY-HERE":
-                error_msg = "Error: Gemini API key is missing. Please provide a valid API key or set it in the server configuration."
-                ai_response_message += error_msg + "\n"
-                if attempt_num == 0:
-                    return jsonify({"response": {"message": ai_response_message, "original_request": original_user_input, "ai_provider_used": ai_provider, "ai_model_selected": actual_model_used, "executed_query": None, "query_results": None}}), 400
-                last_error_for_retry = error_msg
-                break
-            ai_response_message += f"Processing with GEMINI model: {actual_model_used}.\n"
-            raw_sql_from_ai_this_attempt = get_gemini_playlist_name(gemini_api_key_from_request, actual_model_used, current_prompt_for_ai)
-            if raw_sql_from_ai_this_attempt.startswith("Error:"):
-                ai_response_message += f"Gemini API Error: {raw_sql_from_ai_this_attempt}\n"
-                last_error_for_retry = raw_sql_from_ai_this_attempt
-                raw_sql_from_ai_this_attempt = None
-
-        elif ai_provider == "MISTRAL":
-            actual_model_used = ai_model_from_request or MISTRAL_MODEL_NAME
-            # MODIFIED: Get API key from request, but fall back to server config if not provided.
-            mistral_api_key_from_request = data.get('mistral_api_key') or MISTRAL_API_KEY
-            if not mistral_api_key_from_request or mistral_api_key_from_request == "YOUR-MISTRAL-API-KEY-HERE":
-                error_msg = "Error: Mistral API key is missing. Please provide a valid API key or set it in the server configuration."
-                ai_response_message += error_msg + "\n"
-                if attempt_num == 0:
-                    return jsonify({"response": {"message": ai_response_message, "original_request": original_user_input, "ai_provider_used": ai_provider, "ai_model_selected": actual_model_used, "executed_query": None, "query_results": None}}), 400
-                last_error_for_retry = error_msg
-                break
-            ai_response_message += f"Processing with MISTRAL model: {actual_model_used}.\n"
-            raw_sql_from_ai_this_attempt = get_mistral_playlist_name(mistral_api_key_from_request, actual_model_used, current_prompt_for_ai)
-            if raw_sql_from_ai_this_attempt.startswith("Error:"):
-                ai_response_message += f"Mistral API Error: {raw_sql_from_ai_this_attempt}\n"
-                last_error_for_retry = raw_sql_from_ai_this_attempt
-                raw_sql_from_ai_this_attempt = None
-
-        elif ai_provider == "NONE":
-            ai_response_message += "No AI provider selected. Input acknowledged."
-            break 
-        else:
-            ai_response_message += f"AI Provider '{ai_provider}' is not recognized."
-            break 
-
-        last_raw_sql_from_ai = raw_sql_from_ai_this_attempt # Store for potential next retry
-
-        if not raw_sql_from_ai_this_attempt: # If AI call failed
-            if attempt_num >= max_retries: break 
-            continue # Try next attempt if AI call itself failed and retries are left
-
-        ai_response_message += f"AI raw response (SQL query attempt):\n{raw_sql_from_ai_this_attempt}\n"
+        # STEP 1: AI creates execution plan
+        step1_prompt = chat_step1_understand_prompt.format(user_input=original_user_input)
+        plan, error = call_ai_step("STEP 1: AI Planning Execution Strategy", step1_prompt, ai_config, log_messages)
         
-        cleaned_sql_this_attempt, validation_err_msg = clean_and_validate_sql(raw_sql_from_ai_this_attempt)
-        final_executed_query_str = cleaned_sql_this_attempt # Store the latest cleaned query for display
-
-        if validation_err_msg:
-            last_error_for_retry = validation_err_msg
-            ai_response_message += f"SQL Validation Error: {validation_err_msg}\n"
-            if attempt_num >= max_retries: break 
-            continue 
-        
-        ai_response_message += "SQL query validated successfully. Attempting execution...\n"
-
-        # Ensure AI user is configured (only if an AI provider was used)
-        if ai_provider != "NONE":
-            try:
-                _ensure_ai_user_configured(get_db())
-                if not ai_user_setup_done: 
-                    raise Exception("AI user setup flag not set after configuration attempt.")
-            except Exception as setup_err:
-                # Log detailed error on the server (including stack trace) but keep client-facing messages generic
-                logger.exception("Error during AI user setup in chat_playlist_api")
-                ai_response_message += "Critical Error: Could not ensure AI user setup. Query will not be executed.\n"
-                last_error_for_retry = "AI user setup failed"
-                break 
-
-        # --- Execute Query ---
-        if cleaned_sql_this_attempt and ai_user_setup_done :
-            try:
-                with get_db().cursor(cursor_factory=DictCursor) as cur:
-                    cur.execute(f"SET LOCAL ROLE {AI_CHAT_DB_USER_NAME};")
-                    cur.execute(cleaned_sql_this_attempt)
-                    results = cur.fetchall()
-                    get_db().commit()
-                
-                if results:
-                    final_query_results_list = [] 
-                    for row in results:
-                        final_query_results_list.append({
-                            "item_id": row.get("item_id"), "title": row.get("title"), "artist": row.get("author")
-                        })
-                    ai_response_message += f"Successfully executed query. Found {len(final_query_results_list)} songs.\n"
-                    final_executed_query_str = cleaned_sql_this_attempt # Store successful query
-                    break # Success, exit retry loop
-                else:
-                    ai_response_message += "Query executed successfully, but found no matching songs.\n"
-                    last_error_for_retry = "Query returned no results."
-                    # final_executed_query_str is already set to cleaned_sql_this_attempt
-                    if attempt_num >= max_retries: break
-                    continue # Go to next retry for "no results"
-
-            except Exception as db_exec_error:
-                get_db().rollback()
-                # Log full exception for diagnostics, but do not return exception text to the client
-                logger.exception("Error executing AI generated query in chat_playlist_api")
-                ai_response_message += "Database Error executing query. Please check server logs.\n"
-                last_error_for_retry = "Database execution error"
-                if attempt_num >= max_retries: break
+        if error or not plan:
+            if attempt < max_attempts - 1:
+                log_messages.append("Step 1 failed, retrying...")
                 continue
-        elif cleaned_sql_this_attempt and not ai_user_setup_done:
-             ai_response_message += "AI User setup was not completed successfully. Query was not executed for security reasons.\n"
-             last_error_for_retry = "AI User setup failed prior to query execution."
-             break # Cannot execute without user setup
-
-    # --- After retry loop ---
-    if not final_query_results_list and last_error_for_retry:
-        ai_response_message += f"\nFailed to generate and execute a valid query that returns results after {attempt_num + 1} attempt(s). Last issue: {last_error_for_retry}\n"
-
-    return jsonify({"response": {"message": ai_response_message, 
-                                 "original_request": original_user_input, 
-                                 "ai_provider_used": ai_provider, 
-                                 "ai_model_selected": actual_model_used, 
-                                 "executed_query": final_executed_query_str, # Show last attempted/successful query
-                                 "query_results": final_query_results_list}}), 200
+            else:
+                log_messages.append("Failed to create execution plan after all attempts.")
+                break
+        
+        intent = plan.get('intent', original_user_input)
+        execution_plan = plan.get('execution_plan', [])
+        strategy = plan.get('strategy', 'unknown')
+        target_count = plan.get('target_count', 100)
+        
+        log_messages.append(f"\n📋 AI EXECUTION PLAN:")
+        log_messages.append(f"   Intent: {intent}")
+        log_messages.append(f"   Strategy: {strategy}")
+        log_messages.append(f"   Target songs: {target_count}")
+        log_messages.append(f"   Actions: {len(execution_plan)}")
+        
+        if not execution_plan:
+            log_messages.append("   ⚠️ No actions in execution plan, falling back to AI approach")
+            # Fallback to old AI approach
+            execution_plan = [{
+                "action": "ai_full_process",
+                "params": {}
+            }]
+        
+        # STEP 2: Execute the plan
+        all_songs = []
+        song_ids_seen = set()
+        actions_executed = 0
+        successful_actions = []  # Track which actions succeeded for potential expansion
+        executed_queries = []  # Track actual SQL queries for transparency
+        
+        for i, action in enumerate(execution_plan):
+            action_type = action.get('action')
+            
+            # Handle AI brainstorming titles action (for temporal queries)
+            if action_type == "ai_brainstorm_titles":
+                log_messages.append(f"\n🧠 ACTION {i+1}: AI Brainstorming song titles and artists...")
+                
+                # Call Step 2: AI expansion
+                from ai import chat_step2_expand_prompt
+                step2_prompt = chat_step2_expand_prompt.format(
+                    intent=intent,
+                    keywords=[],
+                    artist_names=[],
+                    temporal_context='recent years'
+                )
+                
+                expansion, error = call_ai_step("STEP 2: AI Music Knowledge Expansion", step2_prompt, ai_config, log_messages)
+                
+                if error or not expansion:
+                    log_messages.append("   ❌ AI brainstorming failed, falling back to genre query...")
+                    # Fallback to pop genre query
+                    fallback_action = {"action": "database_genre_query", "params": {"genre": "pop"}, "get_songs": 100}
+                    songs = execute_action(fallback_action, get_db(), log_messages, ai_config)
+                else:
+                    expanded_artists = expansion.get('expanded_artists', [])
+                    expanded_song_titles = expansion.get('expanded_song_titles', [])
+                    
+                    log_messages.append(f"   ✓ AI suggested {len(expanded_artists)} artists")
+                    log_messages.append(f"   ✓ AI suggested {len(expanded_song_titles)} song titles")
+                    
+                    # Search database for these titles and artists
+                    db_results = explore_database_for_matches(
+                        get_db(),
+                        expanded_artists,
+                        [],
+                        expanded_song_titles,
+                        log_messages
+                    )
+                    
+                    found_artists = db_results['found_artists']
+                    found_song_titles = db_results['found_song_titles']
+                    
+                    # Build query from found matches
+                    if found_song_titles or found_artists:
+                        with get_db().cursor(cursor_factory=DictCursor) as cur:
+                            # Query using found titles and artists
+                            if found_song_titles:
+                                # Query specific song titles
+                                title_author_tuples = ', '.join([f"('{t[0].replace(chr(39), chr(39)+chr(39))}', '{t[1].replace(chr(39), chr(39)+chr(39))}')" for t in found_song_titles[:50]])
+                                sql = f"""
+                                    SELECT DISTINCT item_id, title, author FROM (
+                                        SELECT item_id, title, author FROM public.score
+                                        WHERE (title, author) IN ({title_author_tuples})
+                                        ORDER BY RANDOM()
+                                    ) AS randomized LIMIT %s
+                                """
+                                cur.execute(sql, [action.get('get_songs', 100)])
+                                results = cur.fetchall()
+                                songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
+                                log_messages.append(f"   ✓ Found {len(songs)} songs by matching specific titles")
+                            
+                            # If not enough songs, add from found artists
+                            if len(songs) < 50 and found_artists:
+                                log_messages.append(f"   ⚠️ Only {len(songs)} from titles, adding from artists...")
+                                placeholders = ','.join(['%s'] * len(found_artists[:20]))
+                                sql = f"""
+                                    SELECT DISTINCT item_id, title, author FROM (
+                                        SELECT item_id, title, author FROM public.score
+                                        WHERE author IN ({placeholders})
+                                        ORDER BY RANDOM()
+                                    ) AS randomized LIMIT %s
+                                """
+                                cur.execute(sql, found_artists[:20] + [action.get('get_songs', 100)])
+                                results = cur.fetchall()
+                                artist_songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
+                                
+                                # Add only new songs
+                                for s in artist_songs:
+                                    if s['item_id'] not in [x['item_id'] for x in songs]:
+                                        songs.append(s)
+                                        if len(songs) >= action.get('get_songs', 100):
+                                            break
+                                
+                                log_messages.append(f"   ✓ Added {len(artist_songs)} songs from popular artists (total: {len(songs)})")
+                    else:
+                        log_messages.append("   ❌ No matching titles/artists found in database, falling back to genre...")
+                        fallback_action = {"action": "database_genre_query", "params": {"genre": "pop"}, "get_songs": 100}
+                        songs = execute_action(fallback_action, get_db(), log_messages, ai_config)
+                
+                actions_executed += 1
+                if songs:
+                    successful_actions.append((action, songs))
+                
+                # Deduplicate and add to collection
+                for song in songs:
+                    if song['item_id'] not in song_ids_seen:
+                        all_songs.append(song)
+                        song_ids_seen.add(song['item_id'])
+                
+                log_messages.append(f"   📊 Progress: {len(all_songs)}/{target_count} songs collected")
+                # Don't break - continue executing remaining actions
+                    
+            # Handle other AI brainstorming actions - skip for now
+            elif action_type in ["ai_brainstorm_songs", "ai_brainstorm_artists", "database_custom_query", "ai_full_process"]:
+                log_messages.append(f"\n⚠️ ACTION {i+1}: {action_type} not yet implemented, skipping...")
+                continue
+            
+            # Execute API-based actions (artist_similarity_api, song_similarity_api, database_genre_query)
+            else:
+                songs = execute_action(action, get_db(), log_messages, ai_config)
+                actions_executed += 1
+                
+                # Track successful actions for potential expansion
+                if songs:
+                    successful_actions.append((action, songs))
+                
+                # Deduplicate and add to collection
+                for song in songs:
+                    if song['item_id'] not in song_ids_seen:
+                        all_songs.append(song)
+                        song_ids_seen.add(song['item_id'])
+                
+                log_messages.append(f"   📊 Progress: {len(all_songs)}/{target_count} songs collected")
+                # Don't break - continue executing remaining actions
+        
+        # Log completion of all planned actions
+        log_messages.append(f"\n✅ Executed {actions_executed}/{len(execution_plan)} planned actions")
+        log_messages.append(f"   Collected {len(all_songs)} unique songs total")
+        
+        # PROGRESSIVE REFINEMENT: If we don't have enough songs, keep expanding
+        expansion_round = 1
+        max_expansion_rounds = 5
+        
+        while len(all_songs) < target_count and successful_actions and expansion_round <= max_expansion_rounds:
+            songs_needed = target_count - len(all_songs)
+            log_messages.append(f"\n🔄 PROGRESSIVE REFINEMENT (Round {expansion_round}): Need {songs_needed} more songs")
+            log_messages.append(f"   Expanding {len(successful_actions)} successful action(s)...")
+            
+            # Request MORE songs each round to overcome duplicates
+            # Round 1: +50, Round 2: +100, Round 3: +150, etc.
+            songs_per_action = (songs_needed // len(successful_actions)) + (50 * expansion_round)
+            
+            songs_added_this_round = 0
+            
+            for orig_action, orig_songs in successful_actions:
+                if len(all_songs) >= target_count:
+                    break
+                    
+                # Re-execute with progressively higher song count
+                expanded_action = orig_action.copy()
+                expanded_action['get_songs'] = songs_per_action
+                
+                log_messages.append(f"   Expanding {orig_action.get('action')} (requesting {songs_per_action} songs)...")
+                additional_songs = execute_action(expanded_action, get_db(), log_messages, ai_config)
+                
+                # Add new unique songs
+                new_count = 0
+                for song in additional_songs:
+                    if song['item_id'] not in song_ids_seen:
+                        all_songs.append(song)
+                        song_ids_seen.add(song['item_id'])
+                        new_count += 1
+                        songs_added_this_round += 1
+                        if len(all_songs) >= target_count:
+                            break
+                
+                if new_count > 0:
+                    log_messages.append(f"   ✓ Added {new_count} new songs (total: {len(all_songs)})")
+            
+            # If we didn't add any songs this round, no point continuing
+            if songs_added_this_round == 0:
+                log_messages.append(f"   ⚠️ No new unique songs found in round {expansion_round}, stopping expansion")
+                break
+                
+            expansion_round += 1
+        
+        # CRITICAL: Always return results if we have any
+        if all_songs:
+            # Limit to target count
+            final_query_results_list = all_songs[:target_count]
+            
+            # Build query description with actual actions executed
+            query_parts = []
+            has_api_calls = False
+            has_database_queries = False
+            
+            for action in execution_plan[:actions_executed]:
+                action_type = action.get('action')
+                if action_type == 'artist_hits_query':
+                    artist = action.get('params', {}).get('artist')
+                    query_parts.append(f"🧠 AI: Artist Hits ({artist})")
+                    has_api_calls = True  # It uses AI knowledge
+                elif action_type == 'artist_similarity_api':
+                    artist = action.get('params', {}).get('artist')
+                    query_parts.append(f"🔍 API: Artist Similarity ({artist})")
+                    has_api_calls = True
+                elif action_type == 'artist_similarity_filtered':
+                    artist = action.get('params', {}).get('artist')
+                    filters = action.get('params', {}).get('filters', {})
+                    filter_desc = []
+                    if filters.get('genre'):
+                        filter_desc.append(f"genre={filters['genre']}")
+                    if filters.get('tempo'):
+                        filter_desc.append(f"tempo={filters['tempo']}")
+                    if filters.get('energy'):
+                        filter_desc.append(f"energy={filters['energy']}")
+                    filter_str = f" [{', '.join(filter_desc)}]" if filter_desc else ""
+                    query_parts.append(f"🔍 API: Artist Similarity ({artist}){filter_str}")
+                    has_api_calls = True
+                elif action_type == 'song_similarity_api':
+                    title = action.get('params', {}).get('song_title')
+                    artist = action.get('params', {}).get('artist')
+                    query_parts.append(f"🔍 API: Song Similarity ('{title}' by {artist})")
+                    has_api_calls = True
+                elif action_type == 'database_genre_query':
+                    genre = action.get('params', {}).get('genre') or 'all'
+                    tempo = action.get('params', {}).get('tempo')
+                    energy = action.get('params', {}).get('energy')
+                    
+                    # Build query description with filters
+                    filter_parts = [f"mood_vector LIKE %{genre}%"]
+                    if tempo:
+                        tempo_cond = {'slow': 'tempo < 90', 'medium': 'tempo BETWEEN 90 AND 140', 'fast': 'tempo > 140', 'high': 'tempo > 140'}.get(tempo, 'tempo IS NOT NULL')
+                        filter_parts.append(tempo_cond)
+                    if energy:
+                        energy_cond = {'low': 'energy < 0.05', 'medium': 'energy BETWEEN 0.05 AND 0.10', 'high': 'energy > 0.10'}.get(energy, 'energy IS NOT NULL')
+                        filter_parts.append(energy_cond)
+                    
+                    query_parts.append(f"💾 SQL: Genre Query ({' AND '.join(filter_parts)})")
+                    has_database_queries = True
+                elif action_type == 'database_tempo_energy_query':
+                    tempo = action.get('params', {}).get('tempo', 'medium')
+                    energy = action.get('params', {}).get('energy', 'medium')
+                    tempo_cond = {'slow': 'tempo < 90', 'medium': 'tempo BETWEEN 90 AND 140', 'fast': 'tempo > 140', 'high': 'tempo > 140'}.get(tempo, 'tempo IS NOT NULL')
+                    energy_cond = {'low': 'energy < 0.05', 'medium': 'energy BETWEEN 0.05 AND 0.10', 'high': 'energy > 0.10'}.get(energy, 'energy IS NOT NULL')
+                    query_parts.append(f"💾 SQL: Tempo/Energy Query (WHERE {tempo_cond} AND {energy_cond})")
+                    has_database_queries = True
+            
+            # Build final query string with execution method indicator
+            execution_method = ""
+            if has_api_calls and has_database_queries:
+                execution_method = "[HYBRID: API + SQL] "
+            elif has_api_calls:
+                execution_method = "[API ONLY] "
+            elif has_database_queries:
+                execution_method = "[SQL ONLY] "
+            
+            final_executed_query_str = f"{execution_method}AI Execution Plan ({strategy}): {' + '.join(query_parts)}"
+            
+            log_messages.append(f"\n✅ SUCCESS! Collected {len(final_query_results_list)} songs")
+            log_messages.append(f"   Strategy: {strategy}")
+            log_messages.append(f"   Actions executed: {actions_executed}/{len(execution_plan)}")
+            break  # Success - exit attempt loop
+        else:
+            log_messages.append(f"\n⚠️ No songs collected from {actions_executed} actions")
+            if attempt < max_attempts - 1:
+                log_messages.append("Retrying with simpler approach...")
+                continue
+            else:
+                log_messages.append("❌ Failed to collect songs after all attempts")
+                break
+    
+    # Return final response
+    return jsonify({
+        "response": {
+            "message": "\n".join(log_messages),
+            "original_request": original_user_input,
+            "ai_provider_used": ai_provider,
+            "ai_model_selected": actual_model_used,
+            "executed_query": final_executed_query_str,
+            "query_results": final_query_results_list
+        }
+    }), 200
 
 @chat_bp.route('/api/create_playlist', methods=['POST'])
 @swag_from({
