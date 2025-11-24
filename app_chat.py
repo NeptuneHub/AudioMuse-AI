@@ -518,9 +518,12 @@ def chat_playlist_api():
                 else:
                     expanded_artists = expansion.get('expanded_artists', [])
                     expanded_song_titles = expansion.get('expanded_song_titles', [])
+                    expanded_song_artist_pairs = expansion.get('expanded_song_artist_pairs', [])
                     
                     log_messages.append(f"   ✓ AI suggested {len(expanded_artists)} artists")
                     log_messages.append(f"   ✓ AI suggested {len(expanded_song_titles)} song titles")
+                    if expanded_song_artist_pairs:
+                        log_messages.append(f"   ✓ AI suggested {len(expanded_song_artist_pairs)} song-artist pairs")
                     
                     # Search database for these titles and artists
                     db_results = explore_database_for_matches(
@@ -528,7 +531,8 @@ def chat_playlist_api():
                         expanded_artists,
                         [],
                         expanded_song_titles,
-                        log_messages
+                        log_messages,
+                        expanded_song_artist_pairs  # Pass the paired data
                     )
                     
                     found_artists = db_results['found_artists']

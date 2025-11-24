@@ -71,10 +71,12 @@ def call_ai_step(step_name, prompt, ai_config, log_messages):
         return None, error_msg
 
 
-def explore_database_for_matches(db_conn, expanded_artists, expanded_keywords, expanded_song_titles, log_messages):
+def explore_database_for_matches(db_conn, expanded_artists, expanded_keywords, expanded_song_titles, log_messages, expanded_song_artist_pairs=None):
     """
     Explores the database to find what actually exists.
     Returns dict with found_artists, artist_song_count, found_keywords, found_song_titles.
+    
+    expanded_song_artist_pairs: List of {"title": "...", "artist": "..."} dicts for precise matching
     """
     log_messages.append("\n--- Database Exploration ---")
     
@@ -85,8 +87,106 @@ def explore_database_for_matches(db_conn, expanded_artists, expanded_keywords, e
     
     try:
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            # PRIORITY: Search for specific song titles first (critical for temporal queries)
-            if expanded_song_titles:
+            # PRIORITY 1: Search for song-artist PAIRS first (most accurate for temporal queries)
+            if expanded_song_artist_pairs:
+                log_messages.append(f"Searching for {len(expanded_song_artist_pairs)} specific song-artist pairs...")
+                seen_song_titles = set()  # Track (title, author) pairs to avoid duplicates
+                
+                for pair in expanded_song_artist_pairs:
+                    song_title = pair.get('title')
+                    artist_name = pair.get('artist')
+                    
+                    if not song_title or not artist_name:
+                        continue
+                    
+                    # Create simplified versions for matching
+                    simplified_title = ''.join(c.lower() for c in song_title if c.isalnum())
+                    simplified_artist = ''.join(c.lower() for c in artist_name if c.isalnum())
+                    
+                    # Query with BOTH title AND artist matching
+                    query = """
+                        SELECT DISTINCT title, author
+                        FROM public.score
+                        WHERE 
+                            -- Match title (exact or alphanumeric-only)
+                            (LOWER(title) = LOWER(%s) OR LOWER(REGEXP_REPLACE(title, '[^a-zA-Z0-9]', '', 'g')) = %s)
+                            AND
+                            -- Match artist (case-insensitive partial match OR alphanumeric-only)
+                            (LOWER(author) ILIKE %s OR LOWER(REGEXP_REPLACE(author, '[^a-zA-Z0-9]', '', 'g')) LIKE %s)
+                        LIMIT 5
+                    """
+                    
+                    try:
+                        cur.execute(query, (song_title, simplified_title, f"%{artist_name}%", f"%{simplified_artist}%"))
+                        results = cur.fetchall()
+                        
+                        for row in results:
+                            title_author_pair = (row['title'], row['author'])
+                            if title_author_pair not in seen_song_titles:
+                                found_song_titles.append(title_author_pair)
+                                seen_song_titles.add(title_author_pair)
+                    except Exception as e:
+                        # Fallback to simpler query without regex
+                        cur.execute("""
+                            SELECT DISTINCT title, author
+                            FROM public.score
+                            WHERE LOWER(title) = LOWER(%s) AND LOWER(author) ILIKE %s
+                            LIMIT 5
+                        """, (song_title, f"%{artist_name}%"))
+                        results = cur.fetchall()
+                        
+                        for row in results:
+                            title_author_pair = (row['title'], row['author'])
+                            if title_author_pair not in seen_song_titles:
+                                found_song_titles.append(title_author_pair)
+                                seen_song_titles.add(title_author_pair)
+                
+                if found_song_titles:
+                    log_messages.append(f"Found {len(found_song_titles)} unique matching song-artist pairs:")
+                    for title, artist in found_song_titles[:10]:
+                        log_messages.append(f"  - '{title}' by {artist}")
+                else:
+                    log_messages.append("⚠️ No matching song-artist pairs found in database")
+                    # FALLBACK: Try searching by title only (relaxed matching)
+                    log_messages.append("   Trying fallback: searching by title only...")
+                    for pair in expanded_song_artist_pairs[:20]:  # Limit fallback attempts
+                        song_title = pair.get('title')
+                        if not song_title:
+                            continue
+                        
+                        simplified_title = ''.join(c.lower() for c in song_title if c.isalnum())
+                        
+                        try:
+                            cur.execute("""
+                                SELECT DISTINCT title, author
+                                FROM public.score
+                                WHERE 
+                                    LOWER(title) = LOWER(%s) 
+                                    OR LOWER(REGEXP_REPLACE(title, '[^a-zA-Z0-9]', '', 'g')) = %s
+                                LIMIT 10
+                            """, (song_title, simplified_title))
+                            results = cur.fetchall()
+                            
+                            for row in results:
+                                title_author_pair = (row['title'], row['author'])
+                                if title_author_pair not in seen_song_titles:
+                                    found_song_titles.append(title_author_pair)
+                                    seen_song_titles.add(title_author_pair)
+                        except:
+                            # Simpler fallback
+                            cur.execute("SELECT DISTINCT title, author FROM public.score WHERE LOWER(title) = LOWER(%s) LIMIT 10", (song_title,))
+                            results = cur.fetchall()
+                            for row in results:
+                                title_author_pair = (row['title'], row['author'])
+                                if title_author_pair not in seen_song_titles:
+                                    found_song_titles.append(title_author_pair)
+                                    seen_song_titles.add(title_author_pair)
+                    
+                    if found_song_titles:
+                        log_messages.append(f"   ✓ Fallback found {len(found_song_titles)} songs by title only")
+            
+            # PRIORITY 2: Search for specific song titles (fallback if no pairs provided)
+            elif expanded_song_titles:
                 log_messages.append(f"Searching for {len(expanded_song_titles)} specific song titles...")
                 seen_song_titles = set()  # Track (title, author) pairs to avoid duplicates
                 
@@ -547,9 +647,36 @@ Provide 20-30 of their most well-known hits."""
                 return []
             
             similar_songs = find_nearest_neighbors_by_id(target_item_id, n=get_songs_count)
-            songs = [{"item_id": s['item_id'], "title": s['title'], "artist": s['author']} for s in similar_songs]
-            log_messages.append(f"   ✓ Retrieved {len(songs)} similar songs")
-            return songs
+            
+            # find_nearest_neighbors_by_id returns [{"item_id": ..., "distance": ...}]
+            # We need to fetch title and author from database
+            if similar_songs:
+                item_ids = [s['item_id'] for s in similar_songs]
+                with db_conn.cursor(cursor_factory=DictCursor) as cur:
+                    # Use ANY to query multiple IDs efficiently
+                    sql = "SELECT item_id, title, author FROM public.score WHERE item_id = ANY(%s)"
+                    cur.execute(sql, (item_ids,))
+                    results = cur.fetchall()
+                    
+                    # Create lookup map
+                    details_map = {r['item_id']: {'title': r['title'], 'author': r['author']} for r in results}
+                    
+                    # Build final song list with title and artist
+                    songs = []
+                    for s in similar_songs:
+                        item_id = s['item_id']
+                        if item_id in details_map:
+                            songs.append({
+                                "item_id": item_id,
+                                "title": details_map[item_id]['title'],
+                                "artist": details_map[item_id]['author']
+                            })
+                    
+                log_messages.append(f"   ✓ Retrieved {len(songs)} similar songs")
+                return songs
+            else:
+                log_messages.append(f"   ⚠️ No similar songs found")
+                return []
             
         elif action_type == "database_genre_query":
             genre = params.get('genre')

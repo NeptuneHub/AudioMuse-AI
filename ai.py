@@ -56,9 +56,15 @@ The AI must be SMART about when to combine vs separate actions:
 
 **STEP 2: For EACH thing, choose the right action type:**
 
+**Song-related (HIGHEST PRIORITY - check this FIRST):**
+- **CRITICAL**: If user mentions BOTH artist AND song title → **song_similarity_api**
+  * Examples: "similar to Bohemian Rhapsody by Queen", "songs like By The Way by Red Hot Chili Peppers"
+  * Pattern: "similar to [SONG TITLE] by [ARTIST]" or "like [ARTIST] [SONG TITLE]"
+  * Extract song_title and artist, use song_similarity_api(song_title, artist)
+
 **Artist-related:**
 - "hits/songs/popular by [artist]" → **artist_hits_query** (AI suggests their famous songs)
-- "similar to [artist]" or "like [artist]" → **artist_similarity_api** (find similar artists)
+- "similar to [artist]" or "like [artist]" (NO song title) → **artist_similarity_api** (find similar artists)
 - "[artist] but [filters]" → **artist_similarity_filtered** (similar artists with filters)
 - **CRITICAL**: When user asks for "similar to X and Y", prioritize artist_similarity_api
   * FIRST: Use artist_similarity_api for each artist (returns 100-150 songs each)
@@ -208,6 +214,12 @@ FILTER MODE (ONE thing with constraints):
 **Request: "songs like Bohemian Rhapsody"**
 {{"intent": "songs similar to Bohemian Rhapsody by Queen", "execution_plan": [{{"action": "song_similarity_api", "params": {{"song_title": "Bohemian Rhapsody", "artist": "Queen"}}, "get_songs": 100}}], "strategy": "song_similarity", "target_count": 100}}
 
+**Request: "similar to By The Way by Red Hot Chili Peppers"**
+{{"intent": "songs similar to By The Way by Red Hot Chili Peppers", "execution_plan": [{{"action": "song_similarity_api", "params": {{"song_title": "By The Way", "artist": "Red Hot Chili Peppers"}}, "get_songs": 100}}], "strategy": "song_similarity", "target_count": 100}}
+
+**Request: "songs similar to Red Hot Chili Peppers"**
+{{"intent": "songs from artists similar to Red Hot Chili Peppers", "execution_plan": [{{"action": "artist_similarity_api", "params": {{"artist": "Red Hot Chili Peppers"}}, "get_songs": 100}}], "strategy": "artist_similarity", "target_count": 100}}
+
 **Request: "chill songs"**
 {{"intent": "relaxing chill music", "execution_plan": [{{"action": "database_tempo_energy_query", "params": {{"tempo": "slow", "energy": "low"}}, "get_songs": 100}}], "strategy": "mood_energy_direct", "target_count": 100}}
 
@@ -248,6 +260,10 @@ INSTEAD: You should use Step 2 (AI expansion) to suggest specific popular song t
 For these queries, use broad artist or genre search, then AI will refine with specific titles.
 
 **IMPORTANT:**
+- **SONG vs ARTIST recognition is CRITICAL**:
+  * If user says "similar to [SONG TITLE] by [ARTIST]" → Use song_similarity_api (e.g., "By The Way by Red Hot Chili Peppers")
+  * If user says "similar to [ARTIST]" with NO song title → Use artist_similarity_api (e.g., "Red Hot Chili Peppers")
+  * Common song title indicators: "by [artist]", specific capitalized words that are song names
 - **ai_brainstorm_titles** is ONLY for temporal queries ("recent years", "90s", "2020s")
 - Do NOT use ai_brainstorm_titles for genre, mood, or artist requests
 - When user mentions specific artists ("include X", "also Y"), ALWAYS use artist_similarity_api for them
@@ -272,11 +288,6 @@ Return ONLY the JSON execution plan for THIS request:
 
 chat_step2_expand_prompt = """
 You are a music knowledge expert with deep understanding of current music charts, radio hits, and artist relationships.
-
-User wants: {intent}
-Mentioned keywords: {keywords}
-Mentioned artists: {artist_names}
-Time period: {temporal_context}
 
 **CRITICAL: You must use your REAL KNOWLEDGE of actual music artists, charts, and trends.**
 
@@ -307,22 +318,40 @@ Examples of what you should know:
 Expand this request with your music knowledge. Provide ONLY a JSON object (no markdown, no extra text) with:
 - "expanded_artists": List of 15-25 REAL artist names that match the request
 - "expanded_song_titles": List of 30-60 REAL specific song titles ONLY IF temporal_context exists, otherwise EMPTY LIST []
+- "expanded_song_artist_pairs": List of {{"title": "...", "artist": "..."}} objects - ONLY for temporal queries where you know the correct artist for each song
 - "expanded_keywords": List of additional relevant search terms (genres, moods, eras)
 - "search_strategy": Brief description of what to look for
 
+**CRITICAL FOR TEMPORAL QUERIES**: Always include "expanded_song_artist_pairs" with the CORRECT artist for each song!
+
 **DO NOT make up fake artist or song names. Use only REAL titles you know exist.**
 
+**IMPORTANT: In your response, use NORMAL JSON braces, not doubled braces. Example format:**
+- CORRECT: {{"title": "Anti-Hero", "artist": "Taylor Swift"}}
+- WRONG: {{{{"title": "Anti-Hero", "artist": "Taylor Swift"}}}}
+
 **Example 1 - TEMPORAL query ("top radio songs recent years"):**
-{{"expanded_artists": ["Taylor Swift", "Miley Cyrus", "The Weeknd", "Dua Lipa", "Harry Styles", "SZA", "Olivia Rodrigo", "Bad Bunny", "Drake"], "expanded_song_titles": ["Anti-Hero", "Flowers", "As It Was", "Vampire", "Kill Bill", "Unholy", "Calm Down", "Die For You", "Cruel Summer", "Shivers", "Heat Waves", "Levitating", "Blinding Lights", "Save Your Tears", "Peaches", "Good 4 U", "drivers license"], "expanded_keywords": ["pop", "radio hits", "2020s", "recent", "contemporary"], "search_strategy": "Look for specific popular song titles from 2020-2024 that dominated radio and streaming charts"}}
+{{"expanded_artists": ["Taylor Swift", "Miley Cyrus", "The Weeknd"], "expanded_song_titles": ["Anti-Hero", "Flowers", "As It Was"], "expanded_song_artist_pairs": [{{"title": "Anti-Hero", "artist": "Taylor Swift"}}, {{"title": "Flowers", "artist": "Miley Cyrus"}}, {{"title": "As It Was", "artist": "Harry Styles"}}], "expanded_keywords": ["pop", "radio hits", "2020s"], "search_strategy": "Look for specific popular song titles from 2020-2024"}}
 
 **Example 2 - GENRE query ("metal songs"):**
-{{"expanded_artists": ["Metallica", "Iron Maiden", "Slayer", "Megadeth", "Judas Priest", "Black Sabbath", "Pantera", "Tool", "System of a Down", "Lamb of God", "Gojira", "Mastodon", "Opeth"], "expanded_song_titles": [], "expanded_keywords": ["heavy metal", "metal", "hard rock", "metalcore", "death metal", "thrash metal"], "search_strategy": "Look for metal artists and use mood_vector filtering for 'metal' genre"}}
+{{"expanded_artists": ["Metallica", "Iron Maiden", "Slayer", "Megadeth", "Judas Priest", "Black Sabbath", "Pantera", "Tool", "System of a Down", "Lamb of God", "Gojira", "Mastodon", "Opeth"], "expanded_song_titles": [], "expanded_song_artist_pairs": [], "expanded_keywords": ["heavy metal", "metal", "hard rock", "metalcore", "death metal", "thrash metal"], "search_strategy": "Look for metal artists and use mood_vector filtering for 'metal' genre"}}
 
 **Example 3 - GENRE query ("chill indie music"):**
-{{"expanded_artists": ["Bon Iver", "Phoebe Bridgers", "The National", "Fleet Foxes", "Sufjan Stevens", "Iron & Wine", "The Shins", "Death Cab for Cutie"], "expanded_song_titles": [], "expanded_keywords": ["indie", "indie rock", "chill", "acoustic", "mellow"], "search_strategy": "Look for indie artists with chill, mellow sound"}}
+{{"expanded_artists": ["Bon Iver", "Phoebe Bridgers", "The National", "Fleet Foxes", "Sufjan Stevens", "Iron & Wine", "The Shins", "Death Cab for Cutie"], "expanded_song_titles": [], "expanded_song_artist_pairs": [], "expanded_keywords": ["indie", "indie rock", "chill", "acoustic", "mellow"], "search_strategy": "Look for indie artists with chill, mellow sound"}}
 
 **Example 4 - TEMPORAL query ("90s hits"):**
-{{"expanded_artists": ["Nirvana", "Oasis", "Radiohead", "The Smashing Pumpkins", "Pearl Jam", "Red Hot Chili Peppers", "Green Day"], "expanded_song_titles": ["Smells Like Teen Spirit", "Wonderwall", "Creep", "1979", "Jeremy", "Under the Bridge", "Basket Case", "Wannabe", "One", "No Rain"], "expanded_keywords": ["90s", "alternative rock", "grunge", "britpop"], "search_strategy": "Look for specific hit songs from the 1990s"}}
+{{"expanded_artists": ["Nirvana", "Oasis", "Radiohead"], "expanded_song_titles": ["Smells Like Teen Spirit", "Wonderwall", "Creep"], "expanded_song_artist_pairs": [{{"title": "Smells Like Teen Spirit", "artist": "Nirvana"}}, {{"title": "Wonderwall", "artist": "Oasis"}}, {{"title": "Creep", "artist": "Radiohead"}}], "expanded_keywords": ["90s", "alternative rock", "grunge"], "search_strategy": "Look for specific hit songs from the 1990s"}}
+
+---
+
+**NOW EXPAND THIS ACTUAL REQUEST (return only ONE JSON object for THIS request, ignore examples above):**
+
+User wants: {intent}
+Mentioned keywords: {keywords}
+Mentioned artists: {artist_names}
+Time period: {temporal_context}
+
+Return ONLY ONE JSON object for this request:
 """
 
 chat_step3_explore_prompt = """
