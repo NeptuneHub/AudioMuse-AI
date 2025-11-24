@@ -830,6 +830,19 @@ Provide 20-30 of their most well-known hits."""
             log_messages.append(f"   ✓ Retrieved {len(songs)} songs (tempo: {tempo_level}, energy: {energy_level})")
             return songs
             
+        elif action_type == "ai_brainstorm_titles":
+            """
+            AI brainstorms specific song titles and artists for temporal queries.
+            This is NOT a regular action - it triggers the Step 2 AI expansion flow.
+            Used for: "recent hits", "90s songs", "top radio", "classic hits"
+            
+            This action is handled specially in app_chat.py, not here in execute_action.
+            If we reach this point, something went wrong with the flow.
+            """
+            log_messages.append(f"   ⚠️ ai_brainstorm_titles should be handled by app_chat.py Step 2, not execute_action")
+            log_messages.append(f"   This indicates a flow error - action should not reach execute_action")
+            return []
+        
         elif action_type == "vibe_match":
             """
             Creative/subjective query interpreter.
