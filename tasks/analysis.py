@@ -200,7 +200,8 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
     
     # --- Primary Method: Direct Librosa Load ---
     try:
-        audio, sr = librosa.load(file_path, sr=target_sr, mono=True, duration=AUDIO_LOAD_TIMEOUT)
+        # Use kaiser_fast for speed
+        audio, sr = librosa.load(file_path, sr=target_sr, mono=True, duration=AUDIO_LOAD_TIMEOUT, res_type='kaiser_fast')
         
         # An empty audio signal is a failure condition, so we raise an error to trigger the fallback.
         if audio is None or audio.size == 0:
@@ -254,7 +255,9 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
         logger.info(f"Fallback: Converted {os.path.basename(file_path)} to temporary WAV for robust loading.")
         
         # Load the safe, downsampled WAV file
-        audio, sr = librosa.load(temp_wav_path, sr=target_sr, mono=True, duration=AUDIO_LOAD_TIMEOUT)
+        # Load the safe, downsampled WAV file
+        # Use kaiser_fast for speed
+        audio, sr = librosa.load(temp_wav_path, sr=target_sr, mono=True, duration=AUDIO_LOAD_TIMEOUT, res_type='kaiser_fast')
         
         # Final check on the fallback's output for silence or emptiness
         if audio is None or audio.size == 0 or not np.any(audio):
@@ -271,30 +274,26 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
         if temp_wav_path and os.path.exists(temp_wav_path):
             os.remove(temp_wav_path)
 
-def analyze_track(file_path, mood_labels_list, model_paths):
-    """
-    Analyzes a single track. This function is now completely self-contained to ensure
-    that no TensorFlow state bleeds over between different track analyses.
-    """
-    # Clear Keras session if available (no-op when using ONNX runtime)
-    try:
-        from tensorflow.keras import backend as K
-        K.clear_session()
-    except Exception:
-        pass
-    logger.info(f"Starting analysis for: {os.path.basename(file_path)}")
+# --- Refactored Analysis Functions for Batch Processing ---
 
+def process_audio_and_embedding(file_path, embedding_session):
+    """
+    Loads audio, computes CPU features (tempo, key, energy), creates spectrogram,
+    and generates the embedding using the provided session.
+    Returns: (cpu_features_dict, embedding_vector)
+    """
     # --- 1. Load Audio and Compute Basic Features ---
     audio, sr = robust_load_audio_with_fallback(file_path, target_sr=16000)
     
     if audio is None or not np.any(audio) or audio.size == 0:
-        logger.warning(f"Could not load a valid audio signal for {os.path.basename(file_path)} after all attempts. Skipping track.")
+        logger.warning(f"Could not load a valid audio signal for {os.path.basename(file_path)}. Skipping.")
         return None, None
 
+    # CPU-bound features
     tempo, _ = librosa.beat.beat_track(y=audio, sr=sr)
     average_energy = np.mean(librosa.feature.rms(y=audio))
     
-    # Improved key/scale detection
+    # Key/Scale detection
     chroma = librosa.feature.chroma_stft(y=audio, sr=sr)
     chroma_mean = np.mean(chroma, axis=1)
     key_vals = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -314,107 +313,79 @@ def analyze_track(file_path, mood_labels_list, model_paths):
         musical_key = key_vals[minor_key_idx]
         scale = 'minor'
 
+    cpu_features = {
+        "tempo": float(tempo),
+        "energy": float(average_energy),
+        "key": musical_key,
+        "scale": scale
+    }
 
     # --- 2. Prepare Spectrograms --- 
     try:
-        # Using the spectrogram settings confirmed to work for the main model
         n_mels, hop_length, n_fft, frame_size = 96, 256, 512, 187
         mel_spec = librosa.feature.melspectrogram(y=audio, sr=sr, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels, window='hann', center=False, power=2.0, norm='slaney', htk=False)
-
-
         log_mel_spec = np.log10(1 + 10000 * mel_spec)
-
         spec_patches = [log_mel_spec[:, i:i+frame_size] for i in range(0, log_mel_spec.shape[1] - frame_size + 1, frame_size)]
+        
         if not spec_patches:
-            logger.warning(f"Track too short to create spectrogram patches: {os.path.basename(file_path)}")
+            logger.warning(f"Track too short for spectrogram: {os.path.basename(file_path)}")
             return None, None
         
         transposed_patches = np.array(spec_patches).transpose(0, 2, 1)
-
-        # =================================================================
-        # === START: CORRECT FIX FOR DATA TYPE PRECISION ===
-        # The crash on specific CPUs is due to a float precision mismatch. The model
-        # expects float32, but the array can sometimes be float64. Explicitly casting
-        # to float32 is the correct, minimal fix that preserves all data and
-        # ensures compatibility.
         final_patches = transposed_patches.astype(np.float32)
-        # === END: CORRECT FIX FOR DATA TYPE PRECISION ===
-        # =================================================================
 
     except Exception as e:
         logger.error(f"Spectrogram creation failed for {os.path.basename(file_path)}: {e}", exc_info=True)
         return None, None
 
-# --- 3. Run Main Models (Embedding and Prediction) ---
+    # --- 3. Run Embedding Model ---
     try:
-        # Load and run embedding model (ONNX)
-        # embedding_sess = ort.InferenceSession(model_paths['embedding'])
-        # ORIGINAL!!!: embedding_sess = ort.InferenceSession(model_paths['embedding'])
-        embedding_sess = ort.InferenceSession(
-            model_paths['embedding'],
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
-        )
         embedding_feed_dict = {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches}
-        embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
-
-        # Load and run prediction model (ONNX)
-        # prediction_sess = ort.InferenceSession(model_paths['prediction'])
-        # ALSO CHANGED!!!
-        prediction_sess = ort.InferenceSession(
-            model_paths['prediction'],
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
-        )
-        prediction_feed_dict = {DEFINED_TENSOR_NAMES['prediction']['input']: embeddings_per_patch}
-        mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
-
-        averaged_logits = np.mean(mood_logits, axis=0)
-        # Apply sigmoid to convert raw model outputs (logits) into probabilities
-        final_mood_predictions = sigmoid(averaged_logits)
-
-        moods = {label: float(score) for label, score in zip(mood_labels_list, final_mood_predictions)}
+        embeddings_per_patch = run_inference(embedding_session, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+        
+        # Average patches to get single embedding vector
+        processed_embedding = np.mean(embeddings_per_patch, axis=0)
+        
+        # Return the raw patch embeddings too if needed for other models? 
+        # Actually, other models take 'embeddings_per_patch' as input.
+        # Wait, the original code passed `embeddings_per_patch` to prediction models.
+        # So we must return `embeddings_per_patch` to be used by subsequent phases.
+        # But `processed_embedding` is what gets saved to DB.
+        
+        return cpu_features, embeddings_per_patch
 
     except Exception as e:
-        logger.error(f"Main model inference failed for {os.path.basename(file_path)}: {e}", exc_info=True)
+        logger.error(f"Embedding inference failed for {os.path.basename(file_path)}: {e}", exc_info=True)
         return None, None
 
+def predict_moods(prediction_session, embeddings_per_patch, mood_labels_list):
+    try:
+        prediction_feed_dict = {DEFINED_TENSOR_NAMES['prediction']['input']: embeddings_per_patch}
+        mood_logits = run_inference(prediction_session, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
+        averaged_logits = np.mean(mood_logits, axis=0)
+        final_mood_predictions = sigmoid(averaged_logits)
+        return {label: float(score) for label, score in zip(mood_labels_list, final_mood_predictions)}
+    except Exception as e:
+        logger.error(f"Mood prediction failed: {e}")
+        return {}
+
+def predict_other_feature(session, embeddings_per_patch, feature_key):
+    try:
+        feed_dict = {DEFINED_TENSOR_NAMES[feature_key]['input']: embeddings_per_patch}
+        probabilities_per_patch = run_inference(session, feed_dict, DEFINED_TENSOR_NAMES[feature_key]['output'])
+
+        if probabilities_per_patch is None:
+            return 0.0
         
-    # --- 4. Run Secondary Models ---
-    other_predictions = {}
-
-    for key in ["danceable", "aggressive", "happy", "party", "relaxed", "sad"]:
-        try:
-            model_path = model_paths[key]
-            # other_sess = ort.InferenceSession(model_path)
-            # ALSO CHANGED !!!
-            other_sess = ort.InferenceSession(
-                model_path,
-                providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
-            )
-            feed_dict = {DEFINED_TENSOR_NAMES[key]['input']: embeddings_per_patch}
-            probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
-
-            if probabilities_per_patch is None:
-                other_predictions[key] = 0.0
-            else:
-                if isinstance(probabilities_per_patch, np.ndarray) and probabilities_per_patch.ndim == 2 and probabilities_per_patch.shape[1] == 2:
-                    # Using the CLASS_INDEX_MAP to select the correct probability
-                    positive_class_index = CLASS_INDEX_MAP.get(key, 0)
-                    class_probs = probabilities_per_patch[:, positive_class_index]
-                    other_predictions[key] = float(np.mean(class_probs))
-                else:
-                    other_predictions[key] = 0.0
-
-        except Exception as e:
-            logger.error(f"Error predicting '{key}' for {os.path.basename(file_path)}: {e}", exc_info=True)
-            other_predictions[key] = 0.0
-
-    # --- 5. Final Aggregation for Storage ---
-    processed_embeddings = np.mean(embeddings_per_patch, axis=0)
-
-    return {
-        "tempo": float(tempo), "key": musical_key, "scale": scale,
-        "moods": moods, "energy": float(average_energy), **other_predictions
-    }, processed_embeddings
+        if isinstance(probabilities_per_patch, np.ndarray) and probabilities_per_patch.ndim == 2 and probabilities_per_patch.shape[1] == 2:
+            positive_class_index = CLASS_INDEX_MAP.get(feature_key, 0)
+            class_probs = probabilities_per_patch[:, positive_class_index]
+            return float(np.mean(class_probs))
+        else:
+            return 0.0
+    except Exception as e:
+        logger.error(f"Feature '{feature_key}' prediction failed: {e}")
+        return 0.0
 
 
 # --- RQ Task Definitions ---
@@ -483,6 +454,18 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             existing_track_ids_set = get_existing_track_ids( [str(t['Id']) for t in tracks])
             total_tracks_in_album = len(tracks)
 
+            # --- PHASE 1: Audio Loading, CPU Features, and Embeddings ---
+            log_and_update_album_task(f"Phase 1/4: Processing audio and generating embeddings...", 10)
+            
+            track_results = {} # Store results by track ID
+            
+            # Initialize Embedding Session ONLY
+            try:
+                embedding_sess = ort.InferenceSession(model_paths['embedding'], providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+            except Exception as e:
+                logger.critical(f"Failed to initialize embedding model: {e}")
+                return {"status": "FAILURE", "message": "Embedding model init failed"}
+
             for idx, item in enumerate(tracks, 1):
                 if current_job:
                     task_info = get_task_info_from_db(current_task_id)
@@ -491,69 +474,119 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         log_and_update_album_task(f"Stopping album analysis for '{album_name}' due to parent/self revocation.", current_progress_val, task_state=TASK_STATUS_REVOKED)
                         return {"status": "REVOKED"}
 
-                track_name_full = f"{item['Name']} by {item.get('AlbumArtist', 'Unknown')}"
-                progress = 10 + int(85 * (idx / float(total_tracks_in_album)))
-                log_and_update_album_task(f"Analyzing track: {track_name_full} ({idx}/{total_tracks_in_album})", progress, current_track_name=track_name_full)
-
-                # Store artist ID mapping for all tracks (even if already analyzed)
-                try:
-                    from app_helper_artist import upsert_artist_mapping
-                    artist_name = item.get('AlbumArtist')
-                    artist_id = item.get('ArtistId')
-                    logger.info(f"Track '{item.get('Name')}': artist_name='{artist_name}', artist_id='{artist_id}'")
-                    if artist_name and artist_id:
-                        upsert_artist_mapping(artist_name, artist_id)
-                        logger.info(f"✓ Stored artist mapping: '{artist_name}' → '{artist_id}'")
-                    else:
-                        if not artist_id:
-                            logger.warning(f"✗ No artist_id for track '{item.get('Name')}' by '{artist_name}'")
-                except Exception as mapping_error:
-                    logger.error(f"Failed to store artist mapping for '{artist_name}': {mapping_error}", exc_info=True)
-
                 if str(item['Id']) in existing_track_ids_set:
                     tracks_skipped_count += 1
                     continue
-                
-                # MODIFIED: Call to download_track simplified. Assumes it gets server details from config.
+
+                track_name_full = f"{item['Name']} by {item.get('AlbumArtist', 'Unknown')}"
+                progress = 10 + int(30 * (idx / float(total_tracks_in_album))) # Phase 1 is 10-40%
+                log_and_update_album_task(f"Processing audio: {track_name_full} ({idx}/{total_tracks_in_album})", progress, current_track_name=track_name_full)
+
+                # Store artist mapping
+                try:
+                    from app_helper_artist import upsert_artist_mapping
+                    if item.get('AlbumArtist') and item.get('ArtistId'):
+                        upsert_artist_mapping(item.get('AlbumArtist'), item.get('ArtistId'))
+                except Exception:
+                    pass
+
                 path = download_track(TEMP_DIR, item)
                 if not path:
                     continue
 
                 try:
-                    analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths)
-                    if analysis is None:
-                        logger.warning(f"Skipping track {track_name_full} as analysis returned None.")
+                    cpu_features, embeddings_per_patch = process_audio_and_embedding(path, embedding_sess)
+                    
+                    if cpu_features and embeddings_per_patch is not None:
+                        # Store everything needed for next phases
+                        track_results[item['Id']] = {
+                            'item': item,
+                            'cpu_features': cpu_features,
+                            'embeddings_per_patch': embeddings_per_patch
+                        }
+                    else:
+                        logger.warning(f"Failed to process audio for {track_name_full}")
                         tracks_skipped_count += 1
-                        continue
-                    
-                    top_moods = dict(sorted(analysis['moods'].items(), key=lambda i: i[1], reverse=True)[:top_n_moods])
-                    other_features = ",".join([f"{k}:{analysis.get(k, 0.0):.2f}" for k in OTHER_FEATURE_LABELS])
-                    
-                    logger.info(f"SUCCESSFULLY ANALYZED '{track_name_full}' (ID: {item['Id']}):")
-                    logger.info(f"  - Tempo: {analysis['tempo']:.2f}, Energy: {analysis['energy']:.4f}, Key: {analysis['key']} {analysis['scale']}")
-                    logger.info(f"  - Top Moods: {top_moods}")
-                    logger.info(f"  - Other Features: {other_features}")
-                    
-                    save_track_analysis_and_embedding(
-                        item['Id'],
-                        item['Name'],
-                        item.get('AlbumArtist', 'Unknown'), # This is the "Best Artist" (often Song Artist) from Jellyfin logic
-                        analysis['tempo'],
-                        analysis['key'],
-                        analysis['scale'],
-                        top_moods,
-                        embedding,
-                        energy=analysis['energy'],
-                        other_features=other_features,
-                        album=album_name,
-                        song_artist=item.get('SongArtist'),
-                        album_artist=item.get('OriginalAlbumArtist')
-                    )
-                    
-                    tracks_analyzed_count += 1
                 finally:
                     if path and os.path.exists(path):
                         os.remove(path)
+
+            # Unload Embedding Session
+            del embedding_sess
+            import gc
+            gc.collect()
+
+            if not track_results:
+                log_and_update_album_task(f"No tracks successfully processed in Phase 1.", 100, task_state=TASK_STATUS_SUCCESS)
+                return {"status": "SUCCESS", "tracks_analyzed": 0}
+
+            # --- PHASE 2: Mood Prediction ---
+            log_and_update_album_task(f"Phase 2/4: Predicting moods...", 40)
+            try:
+                prediction_sess = ort.InferenceSession(model_paths['prediction'], providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+                
+                for i, (tid, data) in enumerate(track_results.items()):
+                    moods = predict_moods(prediction_sess, data['embeddings_per_patch'], MOOD_LABELS)
+                    track_results[tid]['moods'] = moods
+                    # Update progress slightly
+                    if i % 5 == 0:
+                        log_and_update_album_task(f"Predicting moods... ({i+1}/{len(track_results)})", 40 + int(20 * (i / len(track_results))))
+
+                del prediction_sess
+                gc.collect()
+            except Exception as e:
+                logger.error(f"Phase 2 failed: {e}")
+                raise
+
+            # --- PHASE 3: Other Features ---
+            log_and_update_album_task(f"Phase 3/4: Predicting other features...", 60)
+            other_feature_keys = ["danceable", "aggressive", "happy", "party", "relaxed", "sad"]
+            
+            for f_idx, key in enumerate(other_feature_keys):
+                log_and_update_album_task(f"Predicting feature: {key}...", 60 + int(30 * (f_idx / len(other_feature_keys))))
+                try:
+                    sess = ort.InferenceSession(model_paths[key], providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+                    for tid, data in track_results.items():
+                        val = predict_other_feature(sess, data['embeddings_per_patch'], key)
+                        track_results[tid][key] = val
+                    del sess
+                    gc.collect()
+                except Exception as e:
+                    logger.error(f"Failed to predict feature {key}: {e}")
+                    # Continue with other features, assume 0.0 for this one
+                    for tid in track_results:
+                        track_results[tid][key] = 0.0
+
+            # --- PHASE 4: Saving Results ---
+            log_and_update_album_task(f"Phase 4/4: Saving results...", 90)
+            
+            for tid, data in track_results.items():
+                item = data['item']
+                cpu = data['cpu_features']
+                moods = data['moods']
+                
+                # Calculate average embedding for storage
+                avg_embedding = np.mean(data['embeddings_per_patch'], axis=0)
+                
+                top_moods = dict(sorted(moods.items(), key=lambda i: i[1], reverse=True)[:top_n_moods])
+                other_features_str = ",".join([f"{k}:{data.get(k, 0.0):.2f}" for k in OTHER_FEATURE_LABELS])
+
+                save_track_analysis_and_embedding(
+                    item['Id'],
+                    item['Name'],
+                    item.get('AlbumArtist', 'Unknown'),
+                    cpu['tempo'],
+                    cpu['key'],
+                    cpu['scale'],
+                    top_moods,
+                    avg_embedding,
+                    energy=cpu['energy'],
+                    other_features=other_features_str,
+                    album=album_name,
+                    song_artist=item.get('SongArtist'),
+                    album_artist=item.get('OriginalAlbumArtist')
+                )
+                tracks_analyzed_count += 1
 
             summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album}
             log_and_update_album_task(f"Album '{album_name}' analysis complete.", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)

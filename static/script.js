@@ -333,7 +333,7 @@ function displayTaskStatus(task) {
     }
 
     let statusMessage = 'N/A';
-    if (task.details) {
+    if (task.details && typeof task.details === 'object') {
         if (task.details.status_message) {
             statusMessage = task.details.status_message;
         } else if (Array.isArray(task.details.log) && task.details.log.length > 0) {
@@ -344,9 +344,72 @@ function displayTaskStatus(task) {
     }
     statusLog.textContent = statusMessage;
 
+    // FIX: Sanitize and limit details display to prevent memory crashes
+    try {
+        let detailsToShow = task.details;
 
-    statusDetails.textContent = typeof task.details === 'object' ? JSON.stringify(task.details, null, 2) : task.details;
-    statusDetails.scrollTop = statusDetails.scrollHeight;
+        // Remove large arrays that don't need to be displayed
+        if (detailsToShow && typeof detailsToShow === 'object') {
+            detailsToShow = { ...detailsToShow };
+
+            // Remove internal tracking arrays
+            delete detailsToShow.checked_album_ids;
+            delete detailsToShow.clustering_run_job_ids;
+
+            // Limit log to last 20 entries to prevent DOM bloat
+            if (Array.isArray(detailsToShow.log)) {
+                const logLength = detailsToShow.log.length;
+                if (logLength > 20) {
+                    detailsToShow.log = [
+                        `... (${logLength - 20} earlier entries hidden)`,
+                        ...detailsToShow.log.slice(-20)
+                    ];
+                }
+            }
+
+            // Remove initial_centroids from best_params if present (can be huge)
+            if (detailsToShow.best_params?.clustering_method_config?.params?.initial_centroids) {
+                detailsToShow.best_params.clustering_method_config.params.initial_centroids = '[hidden - too large]';
+            }
+        }
+
+        const jsonString = typeof detailsToShow === 'object'
+            ? JSON.stringify(detailsToShow, null, 2)
+            : String(detailsToShow || '');
+
+        // Limit total JSON size to 50KB to prevent browser slowdown
+        if (jsonString.length > 50000) {
+            statusDetails.textContent = jsonString.substring(0, 50000) + '\n\n... [Output truncated - too large]';
+        } else {
+            statusDetails.textContent = jsonString;
+        }
+    } catch (e) {
+        console.error('Error displaying task details:', e);
+        statusDetails.textContent = `[Error displaying details: ${e.message}]\n\nTask ID: ${task.task_id || 'N/A'}\nStatus: ${stateUpper}`;
+    }
+
+    // FIX: Only auto-scroll if user is already near the bottom (prevents jarring UX)
+    const isNearBottom = statusDetails.scrollHeight - statusDetails.scrollTop <= statusDetails.clientHeight + 100;
+    if (isNearBottom) {
+        statusDetails.scrollTop = statusDetails.scrollHeight;
+    }
+}
+
+/**
+ * Cleans up old task details from memory to prevent unbounded growth.
+ * Keeps only the 5 most recent tasks in lastPolledTaskDetails.
+ */
+function cleanupOldTaskDetails() {
+    const MAX_STORED_TASKS = 5;
+    const taskIds = Object.keys(lastPolledTaskDetails);
+    if (taskIds.length > MAX_STORED_TASKS) {
+        // Remove oldest tasks (keep only the last 5)
+        const tasksToRemove = taskIds.slice(0, taskIds.length - MAX_STORED_TASKS);
+        tasksToRemove.forEach(id => {
+            delete lastPolledTaskDetails[id];
+        });
+        console.log(`Cleaned up ${tasksToRemove.length} old task entries from memory`);
+    }
 }
 
 async function startTask(taskType) {
@@ -555,6 +618,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateCancelButtonState(true);
     }
     setInterval(checkActiveTasks, 3000);
+
+    // Clean up old task details periodically to prevent memory leaks
+    setInterval(cleanupOldTaskDetails, 30000); // Every 30 seconds
 });
 
 

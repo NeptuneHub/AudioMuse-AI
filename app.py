@@ -284,19 +284,20 @@ def get_task_status_endpoint(task_id):
     elif response['state'] == 'UNKNOWN': # Not in RQ and not in DB
         return jsonify(response), 404
 
-    # Prune 'checked_album_ids' from details if the task is analysis-related
-    if response.get('task_type_from_db') and 'analysis' in response['task_type_from_db']:
-        if isinstance(response.get('details'), dict):
-            response['details'].pop('checked_album_ids', None)
-    
-    # Truncate log entries to last 10 entries for all task types
-    if isinstance(response.get('details'), dict) and 'log' in response['details']:
-        log_entries = response['details']['log']
-        if isinstance(log_entries, list) and len(log_entries) > 10:
-            response['details']['log'] = [
-                f"... ({len(log_entries) - 10} earlier log entries truncated)",
-                *log_entries[-10:]
-            ]
+    # Prune large fields from details for all task types
+    if isinstance(response.get('details'), dict):
+        # Remove internal tracking arrays
+        response['details'].pop('checked_album_ids', None)
+        response['details'].pop('clustering_run_job_ids', None)
+
+        # Truncate log entries to last 20 entries (consistent with other endpoints)
+        if 'log' in response['details']:
+            log_entries = response['details']['log']
+            if isinstance(log_entries, list) and len(log_entries) > 20:
+                response['details']['log'] = [
+                    f"... ({len(log_entries) - 20} earlier log entries truncated)",
+                    *log_entries[-20:]
+                ]
     
     # Clean up the final response to remove confusing raw time columns
     response.pop('timestamp', None)
@@ -424,8 +425,10 @@ def get_last_overall_task_status_endpoint():
     if last_task_row:
         last_task_data = dict(last_task_row)
         if last_task_data.get('details'):
-            try: last_task_data['details'] = json.loads(last_task_data['details'])
-            except json.JSONDecodeError: pass
+            try:
+                last_task_data['details'] = json.loads(last_task_data['details'])
+            except json.JSONDecodeError:
+                pass
 
         # Calculate running time in Python
         start_time = last_task_data.get('start_time')
@@ -435,15 +438,21 @@ def get_last_overall_task_status_endpoint():
             last_task_data['running_time_seconds'] = max(0, effective_end_time - start_time)
         else:
             last_task_data['running_time_seconds'] = 0.0
-        
-        # Truncate log entries to last 10 entries
-        if isinstance(last_task_data.get('details'), dict) and 'log' in last_task_data['details']:
-            log_entries = last_task_data['details']['log']
-            if isinstance(log_entries, list) and len(log_entries) > 10:
-                last_task_data['details']['log'] = [
-                    f"... ({len(log_entries) - 10} earlier log entries truncated)",
-                    *log_entries[-10:]
-                ]
+
+        # Prune large fields and truncate log to match frontend expectations
+        if isinstance(last_task_data.get('details'), dict):
+            # Remove internal tracking arrays
+            last_task_data['details'].pop('clustering_run_job_ids', None)
+            last_task_data['details'].pop('checked_album_ids', None)
+
+            # Truncate log entries to last 20 entries (consistent with active_tasks)
+            if 'log' in last_task_data['details']:
+                log_entries = last_task_data['details']['log']
+                if isinstance(log_entries, list) and len(log_entries) > 20:
+                    last_task_data['details']['log'] = [
+                        f"... ({len(log_entries) - 20} earlier log entries truncated)",
+                        *log_entries[-20:]
+                    ]
         
         # Clean up raw time columns before sending response
         last_task_data.pop('start_time', None)
@@ -489,11 +498,22 @@ def get_active_tasks_endpoint():
                 if isinstance(task_item['details'], dict):
                     task_item['details'].pop('clustering_run_job_ids', None)
                     task_item['details'].pop('checked_album_ids', None)
+
+                    # Truncate log to last 20 entries to match frontend expectations
+                    if 'log' in task_item['details'] and isinstance(task_item['details']['log'], list):
+                        log_entries = task_item['details']['log']
+                        if len(log_entries) > 20:
+                            task_item['details']['log'] = [
+                                f"... ({len(log_entries) - 20} earlier log entries truncated)",
+                                *log_entries[-20:]
+                            ]
+
+                    # Remove initial_centroids if present (can be huge)
                     if 'best_params' in task_item['details'] and \
                        isinstance(task_item['details']['best_params'], dict) and \
                        'clustering_method_config' in task_item['details']['best_params'] and \
                        isinstance(task_item['details']['best_params']['clustering_method_config'], dict) and \
-                       'params' in task_item['details']['best_params']['clustering_method_config']['params'] and \
+                       'params' in task_item['details']['best_params']['clustering_method_config'] and \
                        isinstance(task_item['details']['best_params']['clustering_method_config']['params'], dict):
                         task_item['details']['best_params']['clustering_method_config']['params'].pop('initial_centroids', None)
 

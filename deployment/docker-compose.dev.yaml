@@ -1,0 +1,181 @@
+version: '3.8'
+services:
+  # Redis service for RQ (task queue)
+  redis:
+    image: redis:7-alpine
+    container_name: audiomuse-redis-dev
+    ports:
+      - "6379:6379" # Expose Redis port to the host
+    volumes:
+      - redis-data:/data # Persistent storage for Redis data
+    restart: unless-stopped
+
+  # PostgreSQL database service
+  postgres:
+    image: postgres:15-alpine
+    container_name: audiomuse-postgres-dev
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+    ports:
+      - "5432:5432" # Expose PostgreSQL port to the host
+    volumes:
+      - postgres-data:/var/lib/postgresql/data # Persistent storage for PostgreSQL data
+    restart: unless-stopped
+
+  # AudioMuse-AI Flask application service (DEV MODE)
+  audiomuse-ai-flask:
+    image: audiomuse-ai:local-nvidia
+    container_name: audiomuse-ai-flask-app-dev
+    ports:
+      - "8000:8000" # Map host port 8000 to container port 8000
+    environment:
+      SERVICE_TYPE: "flask" # Tells the container to run the Flask app
+      MEDIASERVER_TYPE: "jellyfin" # Specify the media server type
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
+      JELLYFIN_URL: "${JELLYFIN_URL}"
+      # DATABASE_URL is now constructed by config.py from the following:
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+      POSTGRES_HOST: "postgres" # Service name of the postgres container
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
+      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      OPENAI_SERVER_URL: "${OPENAI_SERVER_URL}"
+      OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
+      TEMP_DIR: "/app/temp_audio"
+      FLASK_ENV: "development" # Enable Flask debug mode
+      FLASK_DEBUG: "1"
+    volumes:
+      # Mount all application code as volumes for live editing
+      - ../app.py:/app/app.py
+      - ../app_alchemy.py:/app/app_alchemy.py
+      - ../app_analysis.py:/app/app_analysis.py
+      - ../app_artist_similarity.py:/app/app_artist_similarity.py
+      - ../app_chat.py:/app/app_chat.py
+      - ../app_clustering.py:/app/app_clustering.py
+      - ../app_collection.py:/app/app_collection.py
+      - ../app_cron.py:/app/app_cron.py
+      - ../app_extend_playlist.py:/app/app_extend_playlist.py
+      - ../app_external.py:/app/app_external.py
+      - ../app_helper.py:/app/app_helper.py
+      - ../app_helper_artist.py:/app/app_helper_artist.py
+      - ../app_map.py:/app/app_map.py
+      - ../app_path.py:/app/app_path.py
+      - ../app_sonic_fingerprint.py:/app/app_sonic_fingerprint.py
+      - ../app_voyager.py:/app/app_voyager.py
+      - ../app_waveform.py:/app/app_waveform.py
+      - ../ai.py:/app/ai.py
+      - ../config.py:/app/config.py
+      - ../rq_janitor.py:/app/rq_janitor.py
+      - ../rq_worker.py:/app/rq_worker.py
+      - ../rq_worker_high_priority.py:/app/rq_worker_high_priority.py
+      - ../verify_changes.py:/app/verify_changes.py
+      # Mount directories
+      - ../static:/app/static
+      - ../templates:/app/templates
+      - ../tasks:/app/tasks
+      - ../query:/app/query
+      - ../test:/app/test
+      - ../tests:/app/tests
+      # Supervisor config
+      - ./supervisord.conf:/etc/supervisor/conf.d/supervisord.conf
+      # Temp audio directory
+      - temp-audio-flask:/app/temp_audio
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  # AudioMuse-AI RQ Worker service (DEV MODE)
+  audiomuse-ai-worker:
+    image: audiomuse-ai:local-nvidia
+    container_name: audiomuse-ai-worker-instance-dev
+    environment:
+      SERVICE_TYPE: "worker" # Tells the container to run the RQ worker
+      MEDIASERVER_TYPE: "jellyfin" # Specify the media server type
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
+      JELLYFIN_URL: "${JELLYFIN_URL}"
+      # DATABASE_URL is now constructed by config.py from the following:
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+      POSTGRES_HOST: "postgres" # Service name of the postgres container
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
+      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      OPENAI_SERVER_URL: "${OPENAI_SERVER_URL}"
+      OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
+      TEMP_DIR: "/app/temp_audio"
+    volumes:
+      # Mount all application code as volumes for live editing
+      - ../app.py:/app/app.py
+      - ../app_alchemy.py:/app/app_alchemy.py
+      - ../app_analysis.py:/app/app_analysis.py
+      - ../app_artist_similarity.py:/app/app_artist_similarity.py
+      - ../app_chat.py:/app/app_chat.py
+      - ../app_clustering.py:/app/app_clustering.py
+      - ../app_collection.py:/app/app_collection.py
+      - ../app_cron.py:/app/app_cron.py
+      - ../app_extend_playlist.py:/app/app_extend_playlist.py
+      - ../app_external.py:/app/app_external.py
+      - ../app_helper.py:/app/app_helper.py
+      - ../app_helper_artist.py:/app/app_helper_artist.py
+      - ../app_map.py:/app/app_map.py
+      - ../app_path.py:/app/app_path.py
+      - ../app_sonic_fingerprint.py:/app/app_sonic_fingerprint.py
+      - ../app_voyager.py:/app/app_voyager.py
+      - ../app_waveform.py:/app/app_waveform.py
+      - ../ai.py:/app/ai.py
+      - ../config.py:/app/config.py
+      - ../rq_janitor.py:/app/rq_janitor.py
+      - ../rq_worker.py:/app/rq_worker.py
+      - ../rq_worker_high_priority.py:/app/rq_worker_high_priority.py
+      - ../verify_changes.py:/app/verify_changes.py
+      # Mount directories
+      - ../static:/app/static
+      - ../templates:/app/templates
+      - ../tasks:/app/tasks
+      - ../query:/app/query
+      - ../test:/app/test
+      - ../tests:/app/tests
+      # Supervisor config
+      - ./supervisord.conf:/etc/supervisor/conf.d/supervisord.conf
+      # Temp audio directory
+      - temp-audio-worker:/app/temp_audio
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+
+# Define volumes for persistent data and temporary files
+volumes:
+  redis-data:
+    external:
+      name: audiomuse_redis-data
+  postgres-data:
+    external:
+      name: audiomuse_postgres-data
+  temp-audio-flask:
+    external:
+      name: audiomuse_temp-audio-flask
+  temp-audio-worker:
+    external:
+      name: audiomuse_temp-audio-worker
