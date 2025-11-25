@@ -274,6 +274,9 @@ def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> L
     """Use AI to brainstorm songs from its knowledge for ANY request when tools aren't enough."""
     from ai import call_ai_for_chat
     
+    # Ensure get_songs is int (Gemini may return float)
+    get_songs = int(get_songs) if get_songs is not None else 100
+    
     db_conn = get_db_connection()
     log_messages = []
     
@@ -409,6 +412,9 @@ Suggest songs for "{user_request}" now:"""
 
 def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int) -> List[Dict]:
     """Synchronous implementation of song similarity API."""
+    # Ensure get_songs is int (Gemini may return float)
+    get_songs = int(get_songs) if get_songs is not None else 100
+    
     db_conn = get_db_connection()
     log_messages = []
     
@@ -508,6 +514,9 @@ def _database_genre_query_sync(
     key: Optional[str] = None
 ) -> List[Dict]:
     """Synchronous implementation of flexible database search with multiple optional filters."""
+    # Ensure get_songs is int (Gemini may return float)
+    get_songs = int(get_songs) if get_songs is not None else 100
+    
     db_conn = get_db_connection()
     log_messages = []
     
