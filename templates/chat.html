@@ -380,19 +380,28 @@
 
                 // --- 2. Processing Details (Collapsible per Attempt) ---
                 if (sections.attempts.length > 0) {
-                    const processingTitle = document.createElement('h3');
-                    processingTitle.style.marginTop = '1.5rem';
-                    processingTitle.style.marginBottom = '1rem';
-                    processingTitle.textContent = 'AI Processing Details';
-                    responseArea.appendChild(processingTitle);
-                    
-                    sections.attempts.forEach((attempt, attemptIdx) => {
-                        const attemptDetails = document.createElement('details');
-                        attemptDetails.style.marginBottom = '1rem';
-                        // Keep all attempts collapsed by default
-                        attemptDetails.open = false;
-                        
-                        const attemptSummary = document.createElement('summary');
+                const processingDetails = document.createElement('details');
+                processingDetails.style.marginTop = '1.5rem';
+                processingDetails.style.marginBottom = '1rem';
+                processingDetails.open = false; // Collapsed by default
+                
+                const processingSummary = document.createElement('summary');
+                processingSummary.style.cursor = 'pointer';
+                processingSummary.style.fontWeight = '600';
+                processingSummary.style.padding = '0.75rem';
+                processingSummary.style.backgroundColor = '#E0E7FF';
+                processingSummary.style.borderRadius = '0.375rem';
+                processingSummary.style.borderLeft = '4px solid #6366F1';
+                processingSummary.textContent = `AI Processing Details (${sections.attempts.length} iterations)`;
+                processingDetails.appendChild(processingSummary);
+                
+                const processingContent = document.createElement('div');
+                processingContent.style.padding = '1rem';
+                
+                sections.attempts.forEach((attempt, attemptIdx) => {
+                    const attemptDetails = document.createElement('details');
+                    attemptDetails.style.marginBottom = '1rem';
+                    attemptDetails.open = false; // All collapsed                        const attemptSummary = document.createElement('summary');
                         attemptSummary.style.cursor = 'pointer';
                         attemptSummary.style.fontWeight = '600';
                         attemptSummary.style.padding = '0.75rem';
@@ -462,8 +471,11 @@
                         });
                         
                         attemptDetails.appendChild(attemptContent);
-                        responseArea.appendChild(attemptDetails);
+                        processingContent.appendChild(attemptDetails);
                     });
+                    
+                    processingDetails.appendChild(processingContent);
+                    responseArea.appendChild(processingDetails);
                 }
 
                 // --- 3. Executed Query (Collapsed by default) ---

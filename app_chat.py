@@ -350,12 +350,15 @@ def chat_config_defaults_api():
 })
 def chat_playlist_api():
     """
-    Process user chat input to generate a playlist idea using AI with multi-step approach.
-    Steps:
-    1. Understand user request
-    2. Expand with AI knowledge (similar artists, top songs, etc.)
-    3. Explore database to find what actually exists
-    4. Generate optimized SQL query based on real data
+    Process user chat input to generate a playlist using AI with MCP tools.
+    
+    MCP TOOLS (4 CORE):
+    1. artist_similarity - Songs from similar artists
+    2. song_similarity - Songs similar to a specific song  
+    3. search_database - Search by genre, mood, tempo, energy, key (ALL filters in ONE call)
+    4. ai_brainstorm - AI suggests famous songs (trending, top hits, radio classics, etc.)
+    
+    AI analyzes request → calls tools → combines results → returns 100 songs
     """
     data = request.get_json()
     # Mask API key if present in the debug log
@@ -369,6 +372,7 @@ def chat_playlist_api():
     logger.debug("chat_playlist_api called. Raw request data: %s", data_for_log)
     
     from app_helper import get_db
+    from ai_mcp_client import call_ai_with_mcp_tools, execute_mcp_tool, get_mcp_tools
     
     if not data or 'userInput' not in data:
         return jsonify({"error": "Missing userInput in request"}), 400
@@ -378,8 +382,413 @@ def chat_playlist_api():
     ai_model_from_request = data.get('ai_model')
     
     log_messages = []
-    log_messages.append(f"Received request: '{original_user_input}'")
-    log_messages.append(f"Using AI provider: {ai_provider}")
+    log_messages.append(f"🎵 NEW MCP-BASED PLAYLIST GENERATION")
+    log_messages.append(f"Request: '{original_user_input}'")
+    log_messages.append(f"AI Provider: {ai_provider}")
+    
+    # Check if AI provider is NONE
+    if ai_provider == "NONE":
+        return jsonify({
+            "response": {
+                "message": "No AI provider selected. Please configure an AI provider to use this feature.",
+                "original_request": original_user_input,
+                "ai_provider_used": ai_provider,
+                "ai_model_selected": None,
+                "executed_query": None,
+                "query_results": None
+            }
+        }), 200
+    
+    # Build AI configuration object
+    ai_config = {
+        'provider': ai_provider,
+        'ollama_url': data.get('ollama_server_url', OLLAMA_SERVER_URL),
+        'ollama_model': ai_model_from_request or OLLAMA_MODEL_NAME,
+        'openai_url': data.get('openai_server_url', OPENAI_SERVER_URL),
+        'openai_model': ai_model_from_request or OPENAI_MODEL_NAME,
+        'openai_key': data.get('openai_api_key') or OPENAI_API_KEY,
+        'gemini_key': data.get('gemini_api_key') or GEMINI_API_KEY,
+        'gemini_model': ai_model_from_request or GEMINI_MODEL_NAME,
+        'mistral_key': data.get('mistral_api_key') or MISTRAL_API_KEY,
+        'mistral_model': ai_model_from_request or MISTRAL_MODEL_NAME
+    }
+    
+    # Validate API keys for cloud providers
+    if ai_provider == "OPENAI" and not ai_config['openai_key']:
+        error_msg = "Error: OpenAI API key is missing. Please provide a valid API key."
+        log_messages.append(error_msg)
+        return jsonify({"response": {
+            "message": "\n".join(log_messages),
+            "original_request": original_user_input,
+            "ai_provider_used": ai_provider,
+            "ai_model_selected": ai_config.get('openai_model'),
+            "executed_query": None,
+            "query_results": None
+        }}), 400
+    
+    if ai_provider == "GEMINI" and (not ai_config['gemini_key'] or ai_config['gemini_key'] == "YOUR-GEMINI-API-KEY-HERE"):
+        error_msg = "Error: Gemini API key is missing. Please provide a valid API key."
+        log_messages.append(error_msg)
+        return jsonify({"response": {
+            "message": "\n".join(log_messages),
+            "original_request": original_user_input,
+            "ai_provider_used": ai_provider,
+            "ai_model_selected": ai_config.get('gemini_model'),
+            "executed_query": None,
+            "query_results": None
+        }}), 400
+    
+    if ai_provider == "MISTRAL" and (not ai_config['mistral_key'] or ai_config['mistral_key'] == "YOUR-MISTRAL-API-KEY-HERE"):
+        error_msg = "Error: Mistral API key is missing. Please provide a valid API key."
+        log_messages.append(error_msg)
+        return jsonify({"response": {
+            "message": "\n".join(log_messages),
+            "original_request": original_user_input,
+            "ai_provider_used": ai_provider,
+            "ai_model_selected": ai_config.get('mistral_model'),
+            "executed_query": None,
+            "query_results": None
+        }}), 400
+    
+    # ====================
+    # MCP AGENTIC WORKFLOW
+    # ====================
+    
+    log_messages.append("\n🤖 Using MCP Agentic Workflow for playlist generation")
+    log_messages.append("Target: 100 songs")
+    
+    # Get MCP tools
+    mcp_tools = get_mcp_tools()
+    log_messages.append(f"Available tools: {', '.join([t['name'] for t in mcp_tools])}")
+    
+    # Agentic workflow - AI iteratively calls tools until enough songs
+    all_songs = []
+    song_ids_seen = set()
+    song_sources = {}  # Maps item_id -> tool_name to track which tool added each song
+    tool_execution_summary = []
+    tools_used_history = []
+    
+    max_iterations = 5  # Prevent infinite loops
+    target_song_count = 100
+    
+    for iteration in range(max_iterations):
+        current_song_count = len(all_songs)
+        
+        log_messages.append(f"\n{'='*60}")
+        log_messages.append(f"ITERATION {iteration + 1}/{max_iterations}")
+        log_messages.append(f"Current progress: {current_song_count}/{target_song_count} songs")
+        log_messages.append(f"{'='*60}")
+        
+        # Check if we have enough songs
+        if current_song_count >= target_song_count:
+            log_messages.append(f"✅ Target reached! Stopping iteration.")
+            break
+        
+        # Build context for AI about current state
+        if iteration == 0:
+            ai_context = f"""Build a {target_song_count}-song playlist for: "{original_user_input}"
+
+=== STEP 1: ANALYZE INTENT ===
+First, understand what the user wants:
+- Specific song + artist? → Use exact API lookup (song_similarity)
+- Similar to an artist? → Use exact API lookup (artist_similarity)
+- Genre/mood/tempo/energy? → Use exact DB search (search_database)
+- Everything else? → Use AI knowledge (ai_brainstorm)
+
+=== YOUR 4 TOOLS ===
+1. song_similarity(song_title, artist, get_songs) - Exact API: find similar songs (NEEDS both title+artist)
+2. artist_similarity(artist, get_songs) - Exact API: find songs from SIMILAR artists (NOT artist's own songs)
+3. search_database(genres, moods, tempo_min, tempo_max, energy_min, energy_max, key, get_songs) - Exact DB: filter by attributes (COMBINE all filters in ONE call)
+4. ai_brainstorm(user_request, get_songs) - AI knowledge: for ANYTHING else (artist's own songs, trending, era, complex requests)
+
+=== DECISION RULES ===
+"similar to [TITLE] by [ARTIST]" → song_similarity (exact API)
+"songs like [ARTIST]" → artist_similarity (exact API)
+"[GENRE]/[MOOD]/[TEMPO]/[ENERGY]" → search_database (exact DB search)
+"[ARTIST] songs/hits", "trending", "era", etc. → ai_brainstorm (AI knowledge)
+
+=== EXAMPLES ===
+"Similar to Smells Like Teen Spirit by Nirvana" → song_similarity(song_title="Smells Like Teen Spirit", song_artist="Nirvana", get_songs=100)
+"songs like AC/DC" → artist_similarity(artist="AC/DC", get_songs=100)
+"AC/DC songs" → ai_brainstorm(user_request="AC/DC songs", get_songs=100)
+"energetic rock music" → search_database(genres=["rock"], energy_min=0.08, moods=["happy"], get_songs=100)
+"running 120 bpm" → search_database(tempo_min=115, tempo_max=125, energy_min=0.08, get_songs=100)
+"post lunch" → search_database(moods=["relaxed"], energy_min=0.03, energy_max=0.08, tempo_min=80, tempo_max=110, get_songs=100)
+"trending 2025" → ai_brainstorm(user_request="trending 2025", get_songs=100)
+"greatest hits Red Hot Chili Peppers" → ai_brainstorm(user_request="greatest hits RHCP", get_songs=100)
+"Metal like AC/DC + Metallica" → artist_similarity("AC/DC", 50) + artist_similarity("Metallica", 50)
+
+VALID DB VALUES:
+GENRES: rock, pop, metal, jazz, electronic, dance, alternative, indie, punk, blues, hard rock, heavy metal, Hip-Hop, funk, country, soul, 00s, 90s, 80s, 70s, 60s
+MOODS: danceable, aggressive, happy, party, relaxed, sad
+TEMPO: 40-200 BPM | ENERGY: 0.01-0.15
+
+Now analyze the request and call tools:"""
+        else:
+            songs_needed = target_song_count - current_song_count
+            previous_tools_str = ", ".join([f"{t['name']}({t.get('songs', 0)} songs)" for t in tools_used_history])
+            
+            ai_context = f"""User request: {original_user_input}
+Goal: {target_song_count} songs total
+Current: {current_song_count} songs
+Needed: {songs_needed} MORE songs
+
+Previous tools: {previous_tools_str}
+
+Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs."""
+        
+        # AI decides which tools to call
+        log_messages.append(f"\n--- AI Decision (Iteration {iteration + 1}) ---")
+        tool_calling_result = call_ai_with_mcp_tools(
+            provider=ai_provider,
+            user_message=ai_context,
+            tools=mcp_tools,
+            ai_config=ai_config,
+            log_messages=log_messages
+        )
+        
+        if 'error' in tool_calling_result:
+            error_msg = tool_calling_result['error']
+            log_messages.append(f"❌ AI tool calling failed: {error_msg}")
+            
+            # Fallback based on iteration
+            if iteration == 0:
+                log_messages.append("\n🔄 Fallback: Trying genre search...")
+                fallback_result = execute_mcp_tool('search_database', {'genres': ['pop', 'rock'], 'get_songs': 100}, ai_config)
+                if 'songs' in fallback_result:
+                    songs = fallback_result['songs']
+                    for song in songs:
+                        if song['item_id'] not in song_ids_seen:
+                            all_songs.append(song)
+                            song_ids_seen.add(song['item_id'])
+                    tools_used_history.append({'name': 'search_database', 'songs': len(songs)})
+                    log_messages.append(f"   Fallback added {len(songs)} songs")
+            else:
+                log_messages.append("   Stopping iteration due to AI error")
+                break
+            continue
+        
+        # Execute the tools AI selected
+        tool_calls = tool_calling_result.get('tool_calls', [])
+        
+        if not tool_calls:
+            log_messages.append("⚠️ AI returned no tool calls. Stopping iteration.")
+            break
+        
+        log_messages.append(f"\n--- Executing {len(tool_calls)} Tool(s) ---")
+        
+        iteration_songs_added = 0
+        
+        for i, tool_call in enumerate(tool_calls):
+            tool_name = tool_call.get('name')
+            tool_args = tool_call.get('arguments', {})
+            
+            log_messages.append(f"\n🔧 Tool {i+1}/{len(tool_calls)}: {tool_name}")
+            log_messages.append(f"   Arguments: {json.dumps(tool_args, indent=6)}")
+            
+            # Execute the tool
+            tool_result = execute_mcp_tool(tool_name, tool_args, ai_config)
+            
+            if 'error' in tool_result:
+                log_messages.append(f"   ❌ Error: {tool_result['error']}")
+                tools_used_history.append({'name': tool_name, 'args': tool_args, 'songs': 0, 'error': True})
+                continue
+            
+            # Extract songs from result
+            songs = tool_result.get('songs', [])
+            log_messages.append(f"   ✅ Retrieved {len(songs)} songs from database")
+            
+            if tool_result.get('message'):
+                for line in tool_result['message'].split('\n'):
+                    if line.strip():
+                        log_messages.append(f"   {line}")
+            
+            # Add to collection (deduplicate)
+            new_songs = 0
+            new_song_list = []
+            for song in songs:
+                if song['item_id'] not in song_ids_seen:
+                    all_songs.append(song)
+                    song_ids_seen.add(song['item_id'])
+                    song_sources[song['item_id']] = tool_name  # Track which tool added this song
+                    new_songs += 1
+                    new_song_list.append(song)
+            
+            iteration_songs_added += new_songs
+            log_messages.append(f"   📊 Added {new_songs} NEW unique songs")
+            
+            # Show first 5 songs added (reduced from 10)
+            if new_song_list:
+                preview_count = min(5, len(new_song_list))
+                log_messages.append(f"   🎵 Sample songs: {preview_count}/{new_songs}")
+                for j, song in enumerate(new_song_list[:preview_count]):
+                    title = song.get('title', 'Unknown')
+                    artist = song.get('artist', 'Unknown')
+                    log_messages.append(f"      {j+1}. {title} - {artist}")
+            
+            # Track for summary (include arguments for visibility)
+            tools_used_history.append({'name': tool_name, 'args': tool_args, 'songs': new_songs})
+            
+            # Format args for summary - show key parameters only
+            args_summary = []
+            if tool_name == "search_database":
+                if 'genres' in tool_args and tool_args['genres']:
+                    args_summary.append(f"genres={tool_args['genres']}")
+                if 'moods' in tool_args and tool_args['moods']:
+                    args_summary.append(f"moods={tool_args['moods']}")
+                if 'tempo_min' in tool_args or 'tempo_max' in tool_args:
+                    tempo_str = f"{tool_args.get('tempo_min', '')}..{tool_args.get('tempo_max', '')}"
+                    args_summary.append(f"tempo={tempo_str}")
+                if 'energy_min' in tool_args or 'energy_max' in tool_args:
+                    energy_str = f"{tool_args.get('energy_min', '')}..{tool_args.get('energy_max', '')}"
+                    args_summary.append(f"energy={energy_str}")
+                if 'valence_min' in tool_args or 'valence_max' in tool_args:
+                    valence_str = f"{tool_args.get('valence_min', '')}..{tool_args.get('valence_max', '')}"
+                    args_summary.append(f"valence={valence_str}")
+                if 'key' in tool_args:
+                    args_summary.append(f"key={tool_args['key']}")
+            elif tool_name in ["artist_similarity", "artist_hits"]:
+                if 'artist' in tool_args or 'artist_name' in tool_args:
+                    artist = tool_args.get('artist') or tool_args.get('artist_name')
+                    args_summary.append(f"artist='{artist}'")
+                if 'count' in tool_args:
+                    args_summary.append(f"count={tool_args['count']}")
+            elif tool_name == "song_similarity":
+                if 'song_title' in tool_args:
+                    args_summary.append(f"song='{tool_args['song_title']}'")
+                if 'song_artist' in tool_args:
+                    args_summary.append(f"artist='{tool_args['song_artist']}'")
+            elif tool_name == "search_by_tempo_energy":
+                if 'tempo_min' in tool_args or 'tempo_max' in tool_args:
+                    tempo_str = f"{tool_args.get('tempo_min', '')}..{tool_args.get('tempo_max', '')}"
+                    args_summary.append(f"tempo={tempo_str}")
+                if 'energy_min' in tool_args or 'energy_max' in tool_args:
+                    energy_str = f"{tool_args.get('energy_min', '')}..{tool_args.get('energy_max', '')}"
+                    args_summary.append(f"energy={energy_str}")
+            elif tool_name == "vibe_match":
+                if 'vibe_description' in tool_args:
+                    vibe = tool_args['vibe_description'][:30]
+                    args_summary.append(f"vibe='{vibe}...'")
+            elif tool_name == "ai_brainstorm":
+                if 'user_request' in tool_args:
+                    req = tool_args['user_request'][:35]
+                    args_summary.append(f"req='{req}...'")
+            elif tool_name == "popular_songs":
+                if 'description' in tool_args:
+                    desc = tool_args['description'][:30]
+                    args_summary.append(f"desc='{desc}...'")
+            
+            args_str = ", ".join(args_summary) if args_summary else ""
+            tool_summary = f"{tool_name}({args_str}, +{new_songs})" if args_str else f"{tool_name}(+{new_songs})"
+            tool_execution_summary.append(tool_summary)
+        
+        log_messages.append(f"\n📈 Iteration {iteration + 1} Summary:")
+        log_messages.append(f"   Songs added this iteration: {iteration_songs_added}")
+        log_messages.append(f"   Total songs now: {len(all_songs)}/{target_song_count}")
+        
+        # If no new songs were added, stop iteration
+        if iteration_songs_added == 0:
+            log_messages.append("\n⚠️ No new songs added this iteration. Stopping.")
+            break
+    
+    # Prepare final results
+    if all_songs:
+        # Proportional sampling to ensure representation from all tools
+        if len(all_songs) <= target_song_count:
+            # We have fewer songs than target, use all
+            final_query_results_list = all_songs
+        else:
+            # We have more songs than target - sample proportionally from each tool
+            # Group songs by their source tool
+            songs_by_tool = {}
+            for song in all_songs:
+                tool_name = song_sources.get(song['item_id'], 'unknown')
+                if tool_name not in songs_by_tool:
+                    songs_by_tool[tool_name] = []
+                songs_by_tool[tool_name].append(song)
+            
+            # Calculate proportional allocation
+            total_collected = len(all_songs)
+            final_query_results_list = []
+            
+            for tool_name, tool_songs in songs_by_tool.items():
+                # Proportional share: (tool_songs / total_collected) * target
+                proportion = len(tool_songs) / total_collected
+                allocated = int(proportion * target_song_count)
+                
+                # Take allocated songs from this tool
+                selected = tool_songs[:allocated]
+                final_query_results_list.extend(selected)
+            
+            # If we didn't reach target due to rounding, add remaining songs
+            if len(final_query_results_list) < target_song_count:
+                remaining_needed = target_song_count - len(final_query_results_list)
+                remaining_songs = [s for s in all_songs if s not in final_query_results_list]
+                final_query_results_list.extend(remaining_songs[:remaining_needed])
+            
+            # Truncate if we somehow went over (shouldn't happen)
+            final_query_results_list = final_query_results_list[:target_song_count]
+        
+        final_executed_query_str = f"MCP Agentic ({len(tools_used_history)} tools, {iteration + 1} iterations): {' → '.join(tool_execution_summary)}"
+        
+        log_messages.append(f"\n✅ SUCCESS! Generated playlist with {len(final_query_results_list)} songs")
+        log_messages.append(f"   Total songs collected: {len(all_songs)}")
+        if len(all_songs) > target_song_count:
+            log_messages.append(f"   ⚖️ Proportionally sampled {len(all_songs) - target_song_count} excess songs to meet target of {target_song_count}")
+        log_messages.append(f"   Iterations used: {iteration + 1}/{max_iterations}")
+        log_messages.append(f"   Tools called: {len(tools_used_history)}")
+        
+        # Show tool contribution breakdown (collected vs final)
+        log_messages.append(f"\n📊 Tool Contribution (Collected → Final Playlist):")
+        
+        # Count songs in final playlist by tool
+        final_by_tool = {}
+        for song in final_query_results_list:
+            tool_name = song_sources.get(song['item_id'], 'unknown')
+            final_by_tool[tool_name] = final_by_tool.get(tool_name, 0) + 1
+        
+        for tool_info in tools_used_history:
+            tool_name = tool_info['name']
+            song_count = tool_info.get('songs', 0)
+            args = tool_info.get('args', {})
+            args_preview = []
+            if 'artist' in args:
+                args_preview.append(f"artist='{args['artist']}'")
+            elif 'artist_name' in args:
+                args_preview.append(f"artist='{args['artist_name']}'")
+            if 'song_title' in args:
+                args_preview.append(f"title='{args['song_title']}'")
+            if 'genres' in args and args['genres']:
+                args_preview.append(f"genres={args['genres'][:2]}")
+            if 'moods' in args and args['moods']:
+                args_preview.append(f"moods={args['moods'][:2]}")
+            if 'user_request' in args:
+                args_preview.append(f"request='{args['user_request'][:30]}...'")
+            
+            args_str = ", ".join(args_preview) if args_preview else "no filters"
+            final_count = final_by_tool.get(tool_name, 0)
+            if song_count != final_count:
+                log_messages.append(f"   • {tool_name}({args_str}): {song_count} collected → {final_count} in final playlist")
+            else:
+                log_messages.append(f"   • {tool_name}({args_str}): {song_count} songs")
+    else:
+        log_messages.append("\n⚠️ No songs collected from agentic workflow")
+        final_query_results_list = None
+        final_executed_query_str = "MCP Agentic: No results"
+    
+    actual_model_used = ai_config.get(f'{ai_provider.lower()}_model')
+    
+    # Return final response
+    return jsonify({
+        "response": {
+            "message": "\n".join(log_messages),
+            "original_request": original_user_input,
+            "ai_provider_used": ai_provider,
+            "ai_model_selected": actual_model_used,
+            "executed_query": final_executed_query_str,
+            "query_results": final_query_results_list
+        }
+    }), 200
     
     # Check if AI provider is NONE
     if ai_provider == "NONE":
@@ -444,331 +853,7 @@ def chat_playlist_api():
             "executed_query": None,
             "query_results": None
         }}), 400
-    
-    final_query_results_list = None
-    final_executed_query_str = None
-    actual_model_used = ai_config.get(f'{ai_provider.lower()}_model')
-    
-    # Main processing with up to 3 total attempts
-    max_attempts = 3
-    for attempt in range(max_attempts):
-        log_messages.append(f"\n========== ATTEMPT {attempt + 1} OF {max_attempts} ==========")
-        
-        # STEP 1: AI creates execution plan
-        step1_prompt = chat_step1_understand_prompt.format(user_input=original_user_input)
-        plan, error = call_ai_step("STEP 1: AI Planning Execution Strategy", step1_prompt, ai_config, log_messages)
-        
-        if error or not plan:
-            if attempt < max_attempts - 1:
-                log_messages.append("Step 1 failed, retrying...")
-                continue
-            else:
-                log_messages.append("Failed to create execution plan after all attempts.")
-                break
-        
-        intent = plan.get('intent', original_user_input)
-        execution_plan = plan.get('execution_plan', [])
-        strategy = plan.get('strategy', 'unknown')
-        target_count = plan.get('target_count', 100)
-        
-        log_messages.append(f"\n📋 AI EXECUTION PLAN:")
-        log_messages.append(f"   Intent: {intent}")
-        log_messages.append(f"   Strategy: {strategy}")
-        log_messages.append(f"   Target songs: {target_count}")
-        log_messages.append(f"   Actions: {len(execution_plan)}")
-        
-        if not execution_plan:
-            log_messages.append("   ⚠️ No actions in execution plan, falling back to AI approach")
-            # Fallback to old AI approach
-            execution_plan = [{
-                "action": "ai_full_process",
-                "params": {}
-            }]
-        
-        # STEP 2: Execute the plan
-        all_songs = []
-        song_ids_seen = set()
-        actions_executed = 0
-        successful_actions = []  # Track which actions succeeded for potential expansion
-        executed_queries = []  # Track actual SQL queries for transparency
-        
-        for i, action in enumerate(execution_plan):
-            action_type = action.get('action')
-            
-            # Handle AI brainstorming titles action (for temporal queries)
-            if action_type == "ai_brainstorm_titles":
-                log_messages.append(f"\n🧠 ACTION {i+1}: AI Brainstorming song titles and artists...")
-                
-                # Call Step 2: AI expansion
-                from ai import chat_step2_expand_prompt
-                step2_prompt = chat_step2_expand_prompt.format(
-                    intent=intent,
-                    keywords=[],
-                    artist_names=[],
-                    temporal_context='recent years'
-                )
-                
-                expansion, error = call_ai_step("STEP 2: AI Music Knowledge Expansion", step2_prompt, ai_config, log_messages)
-                
-                if error or not expansion:
-                    log_messages.append("   ❌ AI brainstorming failed, falling back to genre query...")
-                    # Fallback to pop genre query
-                    fallback_action = {"action": "database_genre_query", "params": {"genre": "pop"}, "get_songs": 100}
-                    songs = execute_action(fallback_action, get_db(), log_messages, ai_config)
-                else:
-                    expanded_artists = expansion.get('expanded_artists', [])
-                    expanded_song_titles = expansion.get('expanded_song_titles', [])
-                    expanded_song_artist_pairs = expansion.get('expanded_song_artist_pairs', [])
-                    
-                    log_messages.append(f"   ✓ AI suggested {len(expanded_artists)} artists")
-                    log_messages.append(f"   ✓ AI suggested {len(expanded_song_titles)} song titles")
-                    if expanded_song_artist_pairs:
-                        log_messages.append(f"   ✓ AI suggested {len(expanded_song_artist_pairs)} song-artist pairs")
-                    
-                    # Search database for these titles and artists
-                    db_results = explore_database_for_matches(
-                        get_db(),
-                        expanded_artists,
-                        [],
-                        expanded_song_titles,
-                        log_messages,
-                        expanded_song_artist_pairs  # Pass the paired data
-                    )
-                    
-                    found_artists = db_results['found_artists']
-                    found_song_titles = db_results['found_song_titles']
-                    
-                    # Build query from found matches
-                    if found_song_titles or found_artists:
-                        with get_db().cursor(cursor_factory=DictCursor) as cur:
-                            # Query using found titles and artists
-                            if found_song_titles:
-                                # Query specific song titles
-                                title_author_tuples = ', '.join([f"('{t[0].replace(chr(39), chr(39)+chr(39))}', '{t[1].replace(chr(39), chr(39)+chr(39))}')" for t in found_song_titles[:50]])
-                                sql = f"""
-                                    SELECT DISTINCT item_id, title, author FROM (
-                                        SELECT item_id, title, author FROM public.score
-                                        WHERE (title, author) IN ({title_author_tuples})
-                                        ORDER BY RANDOM()
-                                    ) AS randomized LIMIT %s
-                                """
-                                cur.execute(sql, [action.get('get_songs', 100)])
-                                results = cur.fetchall()
-                                songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
-                                log_messages.append(f"   ✓ Found {len(songs)} songs by matching specific titles")
-                            
-                            # If not enough songs, add from found artists
-                            if len(songs) < 50 and found_artists:
-                                log_messages.append(f"   ⚠️ Only {len(songs)} from titles, adding from artists...")
-                                placeholders = ','.join(['%s'] * len(found_artists[:20]))
-                                sql = f"""
-                                    SELECT DISTINCT item_id, title, author FROM (
-                                        SELECT item_id, title, author FROM public.score
-                                        WHERE author IN ({placeholders})
-                                        ORDER BY RANDOM()
-                                    ) AS randomized LIMIT %s
-                                """
-                                cur.execute(sql, found_artists[:20] + [action.get('get_songs', 100)])
-                                results = cur.fetchall()
-                                artist_songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
-                                
-                                # Add only new songs
-                                for s in artist_songs:
-                                    if s['item_id'] not in [x['item_id'] for x in songs]:
-                                        songs.append(s)
-                                        if len(songs) >= action.get('get_songs', 100):
-                                            break
-                                
-                                log_messages.append(f"   ✓ Added {len(artist_songs)} songs from popular artists (total: {len(songs)})")
-                    else:
-                        log_messages.append("   ❌ No matching titles/artists found in database, falling back to genre...")
-                        fallback_action = {"action": "database_genre_query", "params": {"genre": "pop"}, "get_songs": 100}
-                        songs = execute_action(fallback_action, get_db(), log_messages, ai_config)
-                
-                actions_executed += 1
-                if songs:
-                    successful_actions.append((action, songs))
-                
-                # Deduplicate and add to collection
-                for song in songs:
-                    if song['item_id'] not in song_ids_seen:
-                        all_songs.append(song)
-                        song_ids_seen.add(song['item_id'])
-                
-                log_messages.append(f"   📊 Progress: {len(all_songs)}/{target_count} songs collected")
-                # Don't break - continue executing remaining actions
-                    
-            # Handle other AI brainstorming actions - skip for now
-            elif action_type in ["ai_brainstorm_songs", "ai_brainstorm_artists", "database_custom_query", "ai_full_process"]:
-                log_messages.append(f"\n⚠️ ACTION {i+1}: {action_type} not yet implemented, skipping...")
-                continue
-            
-            # Execute API-based actions (artist_similarity_api, song_similarity_api, database_genre_query)
-            else:
-                songs = execute_action(action, get_db(), log_messages, ai_config)
-                actions_executed += 1
-                
-                # Track successful actions for potential expansion
-                if songs:
-                    successful_actions.append((action, songs))
-                
-                # Deduplicate and add to collection
-                for song in songs:
-                    if song['item_id'] not in song_ids_seen:
-                        all_songs.append(song)
-                        song_ids_seen.add(song['item_id'])
-                
-                log_messages.append(f"   📊 Progress: {len(all_songs)}/{target_count} songs collected")
-                # Don't break - continue executing remaining actions
-        
-        # Log completion of all planned actions
-        log_messages.append(f"\n✅ Executed {actions_executed}/{len(execution_plan)} planned actions")
-        log_messages.append(f"   Collected {len(all_songs)} unique songs total")
-        
-        # PROGRESSIVE REFINEMENT: If we don't have enough songs, keep expanding
-        expansion_round = 1
-        max_expansion_rounds = 5
-        
-        while len(all_songs) < target_count and successful_actions and expansion_round <= max_expansion_rounds:
-            songs_needed = target_count - len(all_songs)
-            log_messages.append(f"\n🔄 PROGRESSIVE REFINEMENT (Round {expansion_round}): Need {songs_needed} more songs")
-            log_messages.append(f"   Expanding {len(successful_actions)} successful action(s)...")
-            
-            # Request MORE songs each round to overcome duplicates
-            # Round 1: +50, Round 2: +100, Round 3: +150, etc.
-            songs_per_action = (songs_needed // len(successful_actions)) + (50 * expansion_round)
-            
-            songs_added_this_round = 0
-            
-            for orig_action, orig_songs in successful_actions:
-                if len(all_songs) >= target_count:
-                    break
-                    
-                # Re-execute with progressively higher song count
-                expanded_action = orig_action.copy()
-                expanded_action['get_songs'] = songs_per_action
-                
-                log_messages.append(f"   Expanding {orig_action.get('action')} (requesting {songs_per_action} songs)...")
-                additional_songs = execute_action(expanded_action, get_db(), log_messages, ai_config)
-                
-                # Add new unique songs
-                new_count = 0
-                for song in additional_songs:
-                    if song['item_id'] not in song_ids_seen:
-                        all_songs.append(song)
-                        song_ids_seen.add(song['item_id'])
-                        new_count += 1
-                        songs_added_this_round += 1
-                        if len(all_songs) >= target_count:
-                            break
-                
-                if new_count > 0:
-                    log_messages.append(f"   ✓ Added {new_count} new songs (total: {len(all_songs)})")
-            
-            # If we didn't add any songs this round, no point continuing
-            if songs_added_this_round == 0:
-                log_messages.append(f"   ⚠️ No new unique songs found in round {expansion_round}, stopping expansion")
-                break
-                
-            expansion_round += 1
-        
-        # CRITICAL: Always return results if we have any
-        if all_songs:
-            # Limit to target count
-            final_query_results_list = all_songs[:target_count]
-            
-            # Build query description with actual actions executed
-            query_parts = []
-            has_api_calls = False
-            has_database_queries = False
-            
-            for action in execution_plan[:actions_executed]:
-                action_type = action.get('action')
-                if action_type == 'artist_hits_query':
-                    artist = action.get('params', {}).get('artist')
-                    query_parts.append(f"🧠 AI: Artist Hits ({artist})")
-                    has_api_calls = True  # It uses AI knowledge
-                elif action_type == 'artist_similarity_api':
-                    artist = action.get('params', {}).get('artist')
-                    query_parts.append(f"🔍 API: Artist Similarity ({artist})")
-                    has_api_calls = True
-                elif action_type == 'artist_similarity_filtered':
-                    artist = action.get('params', {}).get('artist')
-                    filters = action.get('params', {}).get('filters', {})
-                    filter_desc = []
-                    if filters.get('genre'):
-                        filter_desc.append(f"genre={filters['genre']}")
-                    if filters.get('tempo'):
-                        filter_desc.append(f"tempo={filters['tempo']}")
-                    if filters.get('energy'):
-                        filter_desc.append(f"energy={filters['energy']}")
-                    filter_str = f" [{', '.join(filter_desc)}]" if filter_desc else ""
-                    query_parts.append(f"🔍 API: Artist Similarity ({artist}){filter_str}")
-                    has_api_calls = True
-                elif action_type == 'song_similarity_api':
-                    title = action.get('params', {}).get('song_title')
-                    artist = action.get('params', {}).get('artist')
-                    query_parts.append(f"🔍 API: Song Similarity ('{title}' by {artist})")
-                    has_api_calls = True
-                elif action_type == 'database_genre_query':
-                    genre = action.get('params', {}).get('genre') or 'all'
-                    tempo = action.get('params', {}).get('tempo')
-                    energy = action.get('params', {}).get('energy')
-                    
-                    # Build query description with filters
-                    filter_parts = [f"mood_vector LIKE %{genre}%"]
-                    if tempo:
-                        tempo_cond = {'slow': 'tempo < 90', 'medium': 'tempo BETWEEN 90 AND 140', 'fast': 'tempo > 140', 'high': 'tempo > 140'}.get(tempo, 'tempo IS NOT NULL')
-                        filter_parts.append(tempo_cond)
-                    if energy:
-                        energy_cond = {'low': 'energy < 0.05', 'medium': 'energy BETWEEN 0.05 AND 0.10', 'high': 'energy > 0.10'}.get(energy, 'energy IS NOT NULL')
-                        filter_parts.append(energy_cond)
-                    
-                    query_parts.append(f"💾 SQL: Genre Query ({' AND '.join(filter_parts)})")
-                    has_database_queries = True
-                elif action_type == 'database_tempo_energy_query':
-                    tempo = action.get('params', {}).get('tempo', 'medium')
-                    energy = action.get('params', {}).get('energy', 'medium')
-                    tempo_cond = {'slow': 'tempo < 90', 'medium': 'tempo BETWEEN 90 AND 140', 'fast': 'tempo > 140', 'high': 'tempo > 140'}.get(tempo, 'tempo IS NOT NULL')
-                    energy_cond = {'low': 'energy < 0.05', 'medium': 'energy BETWEEN 0.05 AND 0.10', 'high': 'energy > 0.10'}.get(energy, 'energy IS NOT NULL')
-                    query_parts.append(f"💾 SQL: Tempo/Energy Query (WHERE {tempo_cond} AND {energy_cond})")
-                    has_database_queries = True
-            
-            # Build final query string with execution method indicator
-            execution_method = ""
-            if has_api_calls and has_database_queries:
-                execution_method = "[HYBRID: API + SQL] "
-            elif has_api_calls:
-                execution_method = "[API ONLY] "
-            elif has_database_queries:
-                execution_method = "[SQL ONLY] "
-            
-            final_executed_query_str = f"{execution_method}AI Execution Plan ({strategy}): {' + '.join(query_parts)}"
-            
-            log_messages.append(f"\n✅ SUCCESS! Collected {len(final_query_results_list)} songs")
-            log_messages.append(f"   Strategy: {strategy}")
-            log_messages.append(f"   Actions executed: {actions_executed}/{len(execution_plan)}")
-            break  # Success - exit attempt loop
-        else:
-            log_messages.append(f"\n⚠️ No songs collected from {actions_executed} actions")
-            if attempt < max_attempts - 1:
-                log_messages.append("Retrying with simpler approach...")
-                continue
-            else:
-                log_messages.append("❌ Failed to collect songs after all attempts")
-                break
-    
-    # Return final response
-    return jsonify({
-        "response": {
-            "message": "\n".join(log_messages),
-            "original_request": original_user_input,
-            "ai_provider_used": ai_provider,
-            "ai_model_selected": actual_model_used,
-            "executed_query": final_executed_query_str,
-            "query_results": final_query_results_list
-        }
-    }), 200
+
 
 @chat_bp.route('/api/create_playlist', methods=['POST'])
 @swag_from({

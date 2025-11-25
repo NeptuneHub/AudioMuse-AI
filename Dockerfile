@@ -127,7 +127,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         python-mpd2 \
         onnx==1.14.1 \
         resampy \
-        librosa==0.11.0 || exit 1; \
+        librosa==0.11.0 \
+        mcp \
+        httpx || exit 1; \
       if [[ "${BASE_IMAGE}" =~ ^nvidia/cuda: ]]; then \
         echo "Detected NVIDIA base image: installing GPU-only packages and onnxruntime-gpu"; \
         pip3 install --no-cache-dir $GPU_PKGS || exit 1; \
