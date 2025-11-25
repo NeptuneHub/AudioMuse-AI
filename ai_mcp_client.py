@@ -55,12 +55,56 @@ def _call_gemini_with_tools(user_message: str, tools: List[Dict], ai_config: Dic
         genai.configure(api_key=api_key)
         
         # Convert MCP tools to Gemini function declarations
+        # Gemini uses a different schema format - need to convert types
+        def convert_schema_for_gemini(schema):
+            """Convert JSON Schema to Gemini-compatible format."""
+            if not isinstance(schema, dict):
+                return schema
+            
+            result = {}
+            
+            # Convert type field
+            if 'type' in schema:
+                schema_type = schema['type']
+                # Gemini uses uppercase type names
+                type_map = {
+                    'string': 'STRING',
+                    'number': 'NUMBER',
+                    'integer': 'INTEGER',
+                    'boolean': 'BOOLEAN',
+                    'array': 'ARRAY',
+                    'object': 'OBJECT'
+                }
+                result['type'] = type_map.get(schema_type, schema_type.upper())
+            
+            # Copy description
+            if 'description' in schema:
+                result['description'] = schema['description']
+            
+            # Handle properties recursively
+            if 'properties' in schema:
+                result['properties'] = {
+                    k: convert_schema_for_gemini(v) 
+                    for k, v in schema['properties'].items()
+                }
+            
+            # Handle array items
+            if 'items' in schema:
+                result['items'] = convert_schema_for_gemini(schema['items'])
+            
+            # Copy required and enum (Gemini doesn't support 'default')
+            for field in ['required', 'enum']:
+                if field in schema:
+                    result[field] = schema[field]
+            
+            return result
+        
         function_declarations = []
         for tool in tools:
             func_decl = {
                 "name": tool['name'],
                 "description": tool['description'],
-                "parameters": tool['inputSchema']
+                "parameters": convert_schema_for_gemini(tool['inputSchema'])
             }
             function_declarations.append(func_decl)
         
