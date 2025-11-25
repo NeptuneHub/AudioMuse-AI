@@ -464,9 +464,10 @@ def chat_playlist_api():
     # Agentic workflow - AI iteratively calls tools until enough songs
     all_songs = []
     song_ids_seen = set()
-    song_sources = {}  # Maps item_id -> tool_name to track which tool added each song
+    song_sources = {}  # Maps item_id -> tool_call_index to track which tool call added each song
     tool_execution_summary = []
     tools_used_history = []
+    tool_call_counter = 0  # Track each tool call separately
     
     max_iterations = 5  # Prevent infinite loops
     target_song_count = 100
@@ -591,7 +592,8 @@ Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs.
             
             if 'error' in tool_result:
                 log_messages.append(f"   ❌ Error: {tool_result['error']}")
-                tools_used_history.append({'name': tool_name, 'args': tool_args, 'songs': 0, 'error': True})
+                tools_used_history.append({'name': tool_name, 'args': tool_args, 'songs': 0, 'error': True, 'call_index': tool_call_counter})
+                tool_call_counter += 1
                 continue
             
             # Extract songs from result
@@ -610,7 +612,7 @@ Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs.
                 if song['item_id'] not in song_ids_seen:
                     all_songs.append(song)
                     song_ids_seen.add(song['item_id'])
-                    song_sources[song['item_id']] = tool_name  # Track which tool added this song
+                    song_sources[song['item_id']] = tool_call_counter  # Track which tool CALL added this song
                     new_songs += 1
                     new_song_list.append(song)
             
@@ -627,7 +629,8 @@ Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs.
                     log_messages.append(f"      {j+1}. {title} - {artist}")
             
             # Track for summary (include arguments for visibility)
-            tools_used_history.append({'name': tool_name, 'args': tool_args, 'songs': new_songs})
+            tools_used_history.append({'name': tool_name, 'args': tool_args, 'songs': new_songs, 'call_index': tool_call_counter})
+            tool_call_counter += 1
             
             # Format args for summary - show key parameters only
             args_summary = []
@@ -698,25 +701,29 @@ Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs.
             # We have fewer songs than target, use all
             final_query_results_list = all_songs
         else:
-            # We have more songs than target - sample proportionally from each tool
-            # Group songs by their source tool
-            songs_by_tool = {}
+            # We have more songs than target - sample proportionally from each tool CALL
+            # Group songs by their source tool call (not just tool name!)
+            songs_by_call = {}
             for song in all_songs:
-                tool_name = song_sources.get(song['item_id'], 'unknown')
-                if tool_name not in songs_by_tool:
-                    songs_by_tool[tool_name] = []
-                songs_by_tool[tool_name].append(song)
+                call_index = song_sources.get(song['item_id'], -1)
+                if call_index not in songs_by_call:
+                    songs_by_call[call_index] = []
+                songs_by_call[call_index].append(song)
             
             # Calculate proportional allocation
             total_collected = len(all_songs)
             final_query_results_list = []
             
-            for tool_name, tool_songs in songs_by_tool.items():
+            for call_index, tool_songs in songs_by_call.items():
                 # Proportional share: (tool_songs / total_collected) * target
                 proportion = len(tool_songs) / total_collected
                 allocated = int(proportion * target_song_count)
                 
-                # Take allocated songs from this tool
+                # Ensure each tool call gets at least 1 song if it contributed any
+                if allocated == 0 and len(tool_songs) > 0:
+                    allocated = 1
+                
+                # Take allocated songs from this tool call
                 selected = tool_songs[:allocated]
                 final_query_results_list.extend(selected)
             
@@ -741,11 +748,11 @@ Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs.
         # Show tool contribution breakdown (collected vs final)
         log_messages.append(f"\n📊 Tool Contribution (Collected → Final Playlist):")
         
-        # Count songs in final playlist by tool
-        final_by_tool = {}
+        # Count songs in final playlist by tool call
+        final_by_call = {}
         for song in final_query_results_list:
-            tool_name = song_sources.get(song['item_id'], 'unknown')
-            final_by_tool[tool_name] = final_by_tool.get(tool_name, 0) + 1
+            call_index = song_sources.get(song['item_id'], -1)
+            final_by_call[call_index] = final_by_call.get(call_index, 0) + 1
         
         for tool_info in tools_used_history:
             tool_name = tool_info['name']
@@ -766,7 +773,8 @@ Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs.
                 args_preview.append(f"request='{args['user_request'][:30]}...'")
             
             args_str = ", ".join(args_preview) if args_preview else "no filters"
-            final_count = final_by_tool.get(tool_name, 0)
+            call_index = tool_info.get('call_index', -1)
+            final_count = final_by_call.get(call_index, 0)
             if song_count != final_count:
                 log_messages.append(f"   • {tool_name}({args_str}): {song_count} collected → {final_count} in final playlist")
             else:
