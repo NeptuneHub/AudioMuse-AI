@@ -561,9 +561,9 @@ Return ONLY the JSON object with tool_calls array:"""
 
 
 def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
-    """Execute an MCP tool - 4 CORE TOOLS."""
+    """Execute an MCP tool - 5 CORE TOOLS."""
     from tasks.mcp_server import (_artist_similarity_api_sync, _song_similarity_api_sync, 
-                                    _database_genre_query_sync, _ai_brainstorm_sync)
+                                    _database_genre_query_sync, _ai_brainstorm_sync, _song_alchemy_sync)
     
     try:
         if tool_name == "artist_similarity":
@@ -576,6 +576,33 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
             return _song_similarity_api_sync(
                 tool_args['song_title'],
                 tool_args['song_artist'],
+                tool_args.get('get_songs', 100)
+            )
+        elif tool_name == "song_alchemy":
+            # Handle both formats: ["artist1", "artist2"] or [{"type": "artist", "id": "artist1"}]
+            add_items = tool_args.get('add_items', [])
+            subtract_items = tool_args.get('subtract_items', [])
+            
+            # Normalize to proper format if AI sent simple strings
+            def normalize_items(items):
+                if not items:
+                    return []
+                normalized = []
+                for item in items:
+                    if isinstance(item, str):
+                        # Simple string -> assume artist
+                        normalized.append({"type": "artist", "id": item})
+                    elif isinstance(item, dict):
+                        # Already proper format
+                        normalized.append(item)
+                return normalized
+            
+            add_items = normalize_items(add_items)
+            subtract_items = normalize_items(subtract_items)
+            
+            return _song_alchemy_sync(
+                add_items,
+                subtract_items,
                 tool_args.get('get_songs', 100)
             )
         elif tool_name == "search_database":
@@ -604,30 +631,21 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
 
 
 def get_mcp_tools() -> List[Dict]:
-    """Get the list of available MCP tools - 4 CORE TOOLS."""
+    """Get the list of available MCP tools - 5 CORE TOOLS.
+    
+    ⚠️ CRITICAL: ALWAYS choose tools in THIS ORDER (most specific → most general):
+    1. SONG_SIMILARITY - for specific song title + artist
+    2. ARTIST_SIMILARITY - for songs FROM specific artist(s)
+    3. SONG_ALCHEMY - for 'sounds LIKE' blending multiple artists/songs
+    4. AI_BRAINSTORM - for world knowledge (artist's own songs, era, awards)
+    5. SEARCH_DATABASE - for genre/mood/tempo filters (last resort)
+    
+    Never skip to a general tool when a specific tool can handle the request!
+    """
     return [
         {
-            "name": "artist_similarity",
-            "description": "EXACT API: Find songs from similar artists (NOT the artist's own songs).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "artist": {
-                        "type": "string",
-                        "description": "Artist name"
-                    },
-                    "get_songs": {
-                        "type": "integer",
-                        "description": "Number of songs",
-                        "default": 100
-                    }
-                },
-                "required": ["artist"]
-            }
-        },
-        {
             "name": "song_similarity",
-            "description": "EXACT API: Find songs similar to a specific song (requires title+artist).",
+            "description": "🥇 PRIORITY #1: MOST SPECIFIC - Find songs similar to a specific song (requires exact title+artist). ✅ USE when user mentions a SPECIFIC SONG TITLE.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -649,8 +667,99 @@ def get_mcp_tools() -> List[Dict]:
             }
         },
         {
+            "name": "artist_similarity",
+            "description": "🥈 PRIORITY #2: Find songs FROM similar artists (NOT the artist's own songs). ✅ USE for: 'songs FROM Artist X, Artist Y' (call once per artist). ❌ DON'T USE for: 'sounds LIKE multiple artists' (use song_alchemy #3).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "artist": {
+                        "type": "string",
+                        "description": "Artist name"
+                    },
+                    "get_songs": {
+                        "type": "integer",
+                        "description": "Number of songs",
+                        "default": 100
+                    }
+                },
+                "required": ["artist"]
+            }
+        },
+        {
+            "name": "song_alchemy",
+            "description": "🥉 PRIORITY #3: VECTOR ARITHMETIC - Blend or subtract artists/songs using musical math. ✅ BEST for: 'SOUNDS LIKE / PLAY LIKE multiple artists' ('play like Iron Maiden, Metallica, Deep Purple'), 'like X but NOT Y', 'Artist A meets Artist B'. ❌ DON'T USE for: 'songs FROM artists' (use #2), single artist (use #2), genre/mood (use #5). Examples: 'play like Iron Maiden + Metallica + Deep Purple' = add all 3; 'Beatles but not ballads' = add Beatles, subtract ballads.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "add_items": {
+                        "type": "array",
+                        "description": "Items to ADD (blend into result). Each item: {type: 'song' or 'artist', id: 'artist_name' or 'song_title by artist'}",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["song", "artist"],
+                                    "description": "Item type: 'song' or 'artist'"
+                                },
+                                "id": {
+                                    "type": "string",
+                                    "description": "For artist: 'Artist Name'; For song: 'Song Title by Artist Name'"
+                                }
+                            },
+                            "required": ["type", "id"]
+                        }
+                    },
+                    "subtract_items": {
+                        "type": "array",
+                        "description": "Items to SUBTRACT (remove from result). Same format as add_items.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["song", "artist"],
+                                    "description": "Item type: 'song' or 'artist'"
+                                },
+                                "id": {
+                                    "type": "string",
+                                    "description": "For artist: 'Artist Name'; For song: 'Song Title by Artist Name'"
+                                }
+                            },
+                            "required": ["type", "id"]
+                        }
+                    },
+                    "get_songs": {
+                        "type": "integer",
+                        "description": "Number of songs",
+                        "default": 100
+                    }
+                },
+                "required": ["add_items"]
+            }
+        },
+        {
+            "name": "ai_brainstorm",
+            "description": "🏅 PRIORITY #4: AI world knowledge - Use ONLY when other tools CAN'T work. ✅ USE for: artist's OWN songs, specific era/year, trending songs, award winners, chart hits. ❌ DON'T USE for: 'sounds like' (use #3), artist similarity (use #2), genre/mood (use #5).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "user_request": {
+                        "type": "string",
+                        "description": "User's request"
+                    },
+                    "get_songs": {
+                        "type": "integer",
+                        "description": "Number of songs",
+                        "default": 100
+                    }
+                },
+                "required": ["user_request"]
+            }
+        },
+        {
             "name": "search_database",
-            "description": "EXACT DB: Search by genre/mood/tempo/energy filters. COMBINE all filters in ONE call!",
+            "description": "🎖️ PRIORITY #5: MOST GENERAL (last resort) - Search by genre/mood/tempo/energy filters. ✅ USE for: genre/mood/tempo combinations when NO specific artists/songs mentioned. ❌ DON'T USE if you can use tools #1-4. COMBINE all filters in ONE call!",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -690,25 +799,6 @@ def get_mcp_tools() -> List[Dict]:
                         "default": 100
                     }
                 }
-            }
-        },
-        {
-            "name": "ai_brainstorm",
-            "description": "AI KNOWLEDGE: Suggest songs for complex requests (artist's own songs, trending, era, etc.).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "user_request": {
-                        "type": "string",
-                        "description": "User's request"
-                    },
-                    "get_songs": {
-                        "type": "integer",
-                        "description": "Number of songs",
-                        "default": 100
-                    }
-                },
-                "required": ["user_request"]
             }
         }
     ]

@@ -1017,6 +1017,45 @@ Provide the JSON now:"""
             songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
             log_messages.append(f"   ✓ Retrieved {len(songs)} songs matching vibe '{vibe_description}'")
             return songs
+        
+        elif action_type == "song_alchemy":
+            """
+            Song Alchemy - Vector arithmetic on songs/artists.
+            Blends musical styles (add multiple artists) or removes unwanted vibes (subtract).
+            """
+            from tasks.song_alchemy import song_alchemy
+            
+            add_items = params.get('add_items', [])
+            subtract_items = params.get('subtract_items')
+            
+            if not add_items:
+                log_messages.append(f"   ❌ No add_items provided for song_alchemy")
+                return []
+            
+            log_messages.append(f"   🧪 Alchemizing: ADD {len(add_items)} items" + (f", SUBTRACT {len(subtract_items)} items" if subtract_items else ""))
+            
+            # Log what's being added/subtracted
+            for item in add_items:
+                log_messages.append(f"      + {item.get('type', '?')}: {item.get('id', '?')}")
+            if subtract_items:
+                for item in subtract_items:
+                    log_messages.append(f"      - {item.get('type', '?')}: {item.get('id', '?')}")
+            
+            try:
+                result = song_alchemy(
+                    add_items=add_items,
+                    subtract_items=subtract_items,
+                    n_results=get_songs_count
+                )
+                
+                songs = result.get('results', [])
+                log_messages.append(f"   ✓ Retrieved {len(songs)} songs from alchemy")
+                return songs
+                
+            except Exception as e:
+                logger.exception(f"Song alchemy failed: {e}")
+                log_messages.append(f"   ❌ Alchemy error: {str(e)}")
+                return []
             
         else:
             log_messages.append(f"   ⚠️ Unknown action type: {action_type}")

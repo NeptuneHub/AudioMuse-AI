@@ -503,6 +503,56 @@ def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int)
         db_conn.close()
 
 
+def _song_alchemy_sync(add_items: List[Dict], subtract_items: Optional[List[Dict]] = None, get_songs: int = 100) -> Dict:
+    """
+    Synchronous implementation of song alchemy - blend or subtract musical vibes.
+    
+    Args:
+        add_items: List of items to ADD (blend). Each item: {'type': 'song'|'artist', 'id': '...'}
+        subtract_items: Optional list of items to SUBTRACT. Each item: {'type': 'song'|'artist', 'id': '...'}
+        get_songs: Number of results to return
+    
+    Returns:
+        Dict with 'songs' (list of song dicts) and 'message' (log string)
+    """
+    from tasks.song_alchemy import song_alchemy
+    
+    log_messages = []
+    
+    try:
+        log_messages.append(f"Song Alchemy: ADD {len(add_items)} items" + (f", SUBTRACT {len(subtract_items)} items" if subtract_items else ""))
+        
+        # Log what's being added
+        for item in add_items:
+            item_type = item.get('type', 'unknown')
+            item_id = item.get('id', 'unknown')
+            log_messages.append(f"  + ADD {item_type}: {item_id}")
+        
+        # Log what's being subtracted
+        if subtract_items:
+            for item in subtract_items:
+                item_type = item.get('type', 'unknown')
+                item_id = item.get('id', 'unknown')
+                log_messages.append(f"  - SUBTRACT {item_type}: {item_id}")
+        
+        # Call song alchemy
+        result = song_alchemy(
+            add_items=add_items,
+            subtract_items=subtract_items,
+            n_results=get_songs
+        )
+        
+        songs = result.get('results', [])
+        log_messages.append(f"Retrieved {len(songs)} songs from alchemy")
+        
+        return {"songs": songs, "message": "\n".join(log_messages)}
+        
+    except Exception as e:
+        logger.exception(f"Error in song alchemy: {e}")
+        log_messages.append(f"Error: {str(e)}")
+        return {"songs": [], "message": "\n".join(log_messages)}
+
+
 def _database_genre_query_sync(
     genres: Optional[List[str]] = None, 
     get_songs: int = 100,
@@ -897,6 +947,81 @@ async def list_tools() -> List[Tool]:
                         "default": 100
                     }
                 }
+            }
+        ),
+        Tool(
+            name="song_alchemy",
+            description="""VECTOR ARITHMETIC: Musical math - blend artists/songs or remove unwanted vibes.
+
+WHEN TO USE THIS TOOL:
+✅ USE for these patterns:
+  - "Like X but NOT Y" → add X, subtract Y
+  - "Mix/blend two artists" → add both artists
+  - "Artist X meets Artist Y" → add both
+  - "This song but calmer/faster/darker" → add song, subtract mood
+  - "Remove unwanted vibe" → add wanted, subtract unwanted
+  
+❌ DO NOT USE for:
+  - Simple artist search → use artist_similarity instead
+  - Genre/mood search → use search_database instead
+  - Just finding similar songs → use song_similarity instead
+  
+EXAMPLES:
+  ✅ "Songs like The Beatles but not ballads" → add_items: Beatles (artist), subtract_items: slow ballad song
+  ✅ "Radiohead meets Pink Floyd" → add_items: Radiohead (artist) + Pink Floyd (artist)
+  ✅ "Energetic rock but not aggressive" → add_items: energetic rock songs, subtract_items: aggressive song
+  ❌ "Find AC/DC songs" → WRONG! Use artist_similarity or artist_hits instead
+  ❌ "Metal songs" → WRONG! Use search_database with genres=['metal'] instead
+
+CRITICAL: You can ADD/SUBTRACT both ARTISTS and SONGS. Each item needs 'type' ('artist' or 'song') and 'id'.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "add_items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["song", "artist"],
+                                    "description": "Type of item: 'song' for specific songs, 'artist' for artist's style"
+                                },
+                                "id": {
+                                    "type": "string",
+                                    "description": "Item ID from database (item_id for songs, artist name for artists)"
+                                }
+                            },
+                            "required": ["type", "id"]
+                        },
+                        "description": "Items to ADD (blend together). REQUIRED - at least one item."
+                    },
+                    "subtract_items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["song", "artist"],
+                                    "description": "Type of item: 'song' for specific songs, 'artist' for artist's style"
+                                },
+                                "id": {
+                                    "type": "string",
+                                    "description": "Item ID from database (item_id for songs, artist name for artists)"
+                                }
+                            },
+                            "required": ["type", "id"]
+                        },
+                        "description": "Items to SUBTRACT (remove this vibe). OPTIONAL - use only for 'but not' requests."
+                    },
+                    "get_songs": {
+                        "type": "integer",
+                        "description": "Number of results to return",
+                        "default": 100
+                    }
+                },
+                "required": ["add_items"]
             }
         ),
         Tool(
