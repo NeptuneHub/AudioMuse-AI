@@ -141,15 +141,26 @@ Call the appropriate tools now to fulfill the user's request."""
         
         log_messages.append(f"Gemini response type: {type(response)}")
         
+        # Helper to recursively convert protobuf objects to dict
+        def convert_to_dict(obj):
+            """Recursively convert protobuf objects (like RepeatedComposite) to native Python types."""
+            if hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes)):
+                if hasattr(obj, 'items'):  # dict-like
+                    return {k: convert_to_dict(v) for k, v in obj.items()}
+                else:  # list-like
+                    return [convert_to_dict(item) for item in obj]
+            return obj
+        
         # Extract function calls
         tool_calls = []
         if hasattr(response, 'candidates') and response.candidates:
             for part in response.candidates[0].content.parts:
                 if hasattr(part, 'function_call'):
                     fc = part.function_call
+                    # Recursively convert protobuf args to native Python types
                     tool_calls.append({
                         "name": fc.name,
-                        "arguments": dict(fc.args)
+                        "arguments": convert_to_dict(dict(fc.args))
                     })
         
         if not tool_calls:

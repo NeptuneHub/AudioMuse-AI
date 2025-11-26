@@ -584,8 +584,24 @@ Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs.
             tool_name = tool_call.get('name')
             tool_args = tool_call.get('arguments', {})
             
+            # Convert tool_args to dict if it's a protobuf object (for Gemini)
+            # Need to recursively convert nested protobuf objects
+            def convert_to_dict(obj):
+                if hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes)):
+                    if hasattr(obj, 'items'):  # dict-like
+                        return {k: convert_to_dict(v) for k, v in obj.items()}
+                    else:  # list-like
+                        return [convert_to_dict(item) for item in obj]
+                return obj
+            
+            tool_args = convert_to_dict(tool_args)
+            
             log_messages.append(f"\n🔧 Tool {i+1}/{len(tool_calls)}: {tool_name}")
-            log_messages.append(f"   Arguments: {json.dumps(tool_args, indent=6)}")
+            try:
+                log_messages.append(f"   Arguments: {json.dumps(tool_args, indent=6)}")
+            except TypeError:
+                # If still not serializable, convert to string representation
+                log_messages.append(f"   Arguments: {str(tool_args)}")
             
             # Execute the tool
             tool_result = execute_mcp_tool(tool_name, tool_args, ai_config)
