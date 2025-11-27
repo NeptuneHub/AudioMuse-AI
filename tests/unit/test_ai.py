@@ -239,7 +239,8 @@ class TestGetOllamaPlaylistName:
             "http://localhost:11434/api/generate",
             "deepseek-r1:1.5b",
             "test prompt",
-            api_key="no-key-needed"
+            api_key="no-key-needed",
+            skip_delay=False
         )
         assert result == "Test Playlist"
 

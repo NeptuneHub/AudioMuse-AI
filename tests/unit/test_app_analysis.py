@@ -170,10 +170,10 @@ class TestStartAnalysisEndpoint:
         mock_job.get_status.return_value = "queued"
         mock_queue.enqueue.return_value = mock_job
 
-        # Send request without JSON body
+        # Send request with empty JSON body (minimum required)
         response = client.post(
             '/api/analysis/start',
-            content_type='application/json'
+            json={}
         )
 
         # Should still work with defaults
