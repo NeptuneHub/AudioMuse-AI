@@ -29,3 +29,4 @@ protobuf
 sympy
 mcp
 httpx
+voyager==2.1.0
