@@ -1,3 +1,27 @@
+# CPU Architecture Requirements
+
+AudioMuse-AI requires specific CPU instruction sets due to the pre-compiled Python packages (NumPy, SciPy, ONNX Runtime) used for audio analysis.
+
+## Supported Architectures
+
+| Architecture | Instruction Set Required | Status | Examples |
+|:-------------|:-------------------------|:-------|:---------|
+| **x86_64** (Intel/AMD) | AVX2 | Required | Intel 4th gen (Haswell)+, AMD Zen+ |
+| **ARM64** (aarch64) | NEON | Standard on all ARM64 | Raspberry Pi 4/5, AWS Graviton, Apple Silicon |
+
+## NOT Supported
+
+| Architecture | Reason | Examples |
+|:-------------|:-------|:---------|
+| x86_64 without AVX | PyPI wheels require AVX2 instructions | Intel Celeron N3160, Atom pre-2013 |
+| 32-bit x86 | Not supported by dependencies | Legacy 32-bit systems |
+
+**Why AVX2?** The pre-compiled PyPI wheels for NumPy, SciPy, and ONNX Runtime are optimized with AVX2 instructions. Running on CPUs without AVX2 will cause "Illegal instruction" errors.
+
+**ARM64 Works Differently:** ARM processors use NEON instructions (not AVX). ARM64 PyPI wheels are compiled for NEON, which is standard on all ARM64 CPUs.
+
+---
+
 # Tested HW and Configuration WITH ONNX (from version 0.7.0-beta)
 | Issue ID | HW | CONFIGURATION | Supported | Notes |
 | :--- | :--- | :--- | :--- | :--- |
@@ -26,5 +50,5 @@ This table collect all the HW and configuration from the different issue in this
 | [#74](https://github.com/NeptuneHub/AudioMuse-AI/issues/74) | **CPU:** Amd Ryzen 3600 | Docker Compose, Navidrome v0.58.0 | ✅ Yes | - |
 | [#65](https://github.com/NeptuneHub/AudioMuse-AI/issues/65) | **CPU:** N100 | Docker Compose, Navidrome | ✅ Yes | - |
 | [#93](https://github.com/NeptuneHub/AudioMuse-AI/issues/93) | **CPU:** AMD Ryzen AI 9 HX 370 w/ Radeon 890M 64bit | Podman with docker-compose (v5.6.1), Jellyfin v10.10.7, AudioMuse-AI v0.6.8-beta | 🚧 In Progress | A bug with CPU-specific behavior was fixed in the `:devel` branch by adding ENV TF_ENABLE_ONEDNN_OPTS=0. Probably a new parameter will be added in deployment/yaml file. |
-| [#56](https://github.com/NeptuneHub/AudioMuse-AI/issues/56) | **CPU:** Intel Celeron CPU N3160 | Docker Compose, Unraid 7.1.4 | ❌ No | Flask app failed with an `Illegal instruction` error. This is a hardware limitation: TensorFlow requires **AVX CPU support**, which the Celeron N3160 lacks. |
+| [#56](https://github.com/NeptuneHub/AudioMuse-AI/issues/56) | **CPU:** Intel Celeron CPU N3160 | Docker Compose, Unraid 7.1.4 | ❌ No | Flask app failed with an `Illegal instruction` error. This is a hardware limitation: **AVX2 CPU support is required** (NumPy, SciPy, ONNX Runtime PyPI wheels are compiled with AVX2), which the Celeron N3160 lacks. |
 

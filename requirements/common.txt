@@ -27,3 +27,5 @@ flatbuffers
 packaging
 protobuf
 sympy
+mcp
+httpx
