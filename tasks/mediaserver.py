@@ -204,21 +204,21 @@ def create_playlist(base_name, item_ids):
     elif config.MEDIASERVER_TYPE == 'mpd': mpd_create_playlist(base_name, item_ids)
     elif config.MEDIASERVER_TYPE == 'emby': emby_create_playlist(base_name, item_ids)
 
-def create_instant_playlist(playlist_name, item_ids, user_creds=None):
+def create_instant_playlist(playlist_name, item_ids, user_creds=None, add_instant_suffix=True):
     """Creates an instant playlist. Uses user_creds if provided, otherwise admin."""
     if not playlist_name: raise ValueError("Playlist name is required.")
     if not item_ids: raise ValueError("Track IDs are required.")
-    
+
     if config.MEDIASERVER_TYPE == 'jellyfin':
-        return jellyfin_create_instant_playlist(playlist_name, item_ids, user_creds)
+        return jellyfin_create_instant_playlist(playlist_name, item_ids, user_creds, add_instant_suffix)
     if config.MEDIASERVER_TYPE == 'navidrome':
-        return navidrome_create_instant_playlist(playlist_name, item_ids, user_creds)
+        return navidrome_create_instant_playlist(playlist_name, item_ids, user_creds, add_instant_suffix)
     if config.MEDIASERVER_TYPE == 'lyrion':
-        return lyrion_create_instant_playlist(playlist_name, item_ids)
+        return lyrion_create_instant_playlist(playlist_name, item_ids, add_instant_suffix)
     if config.MEDIASERVER_TYPE == 'mpd':
-        return mpd_create_instant_playlist(playlist_name, item_ids, user_creds)
+        return mpd_create_instant_playlist(playlist_name, item_ids, user_creds, add_instant_suffix)
     if config.MEDIASERVER_TYPE == 'emby':
-        return emby_create_instant_playlist(playlist_name, item_ids, user_creds)
+        return emby_create_instant_playlist(playlist_name, item_ids, user_creds, add_instant_suffix)
     return None
 
 def get_top_played_songs(limit, user_creds=None):

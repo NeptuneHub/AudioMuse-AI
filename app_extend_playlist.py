@@ -459,8 +459,8 @@ def save_extended_playlist():
         if not final_track_ids:
             return jsonify({"error": "No valid track IDs were provided"}), 400
 
-        # Create playlist on media server
-        new_playlist_id = create_playlist_from_ids(new_playlist_name, final_track_ids)
+        # Create playlist on media server (use exact name, no _instant suffix)
+        new_playlist_id = create_playlist_from_ids(new_playlist_name, final_track_ids, add_instant_suffix=False)
 
         return jsonify({
             "message": f"Playlist '{new_playlist_name}' created successfully with {len(final_track_ids)} songs!",

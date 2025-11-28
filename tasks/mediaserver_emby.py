@@ -701,7 +701,7 @@ def get_last_played_time(item_id, user_creds=None):
         logger.error(f"Emby get_last_played_time failed for item {item_id}, user {user_id}: {e}", exc_info=True)
         return None
 
-def create_instant_playlist(playlist_name, item_ids, user_creds=None):
+def create_instant_playlist(playlist_name, item_ids, user_creds=None, add_instant_suffix=True):
     # is this duplicate of create_playlist?
     """
     Creates a new instant playlist on Emby for a specific user.
@@ -716,7 +716,7 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
 
     try:
         # Build playlist name according to convention
-        final_playlist_name = f"{playlist_name.strip()}_instant"
+        final_playlist_name = f"{playlist_name.strip()}_instant" if add_instant_suffix else playlist_name.strip()
 
         # Construct the API endpoint — note the use of query parameters,
         # not JSON payload, per Emby API spec

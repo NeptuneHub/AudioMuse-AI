@@ -1090,7 +1090,7 @@ def get_last_played_time(item_id):
     logger.warning("Lyrion's JSON-RPC API does not provide a 'last played time' for individual tracks.")
     return None
 
-def create_instant_playlist(playlist_name, item_ids):
+def create_instant_playlist(playlist_name, item_ids, add_instant_suffix=True):
     """Creates a new instant playlist on Lyrion for a specific user, with batching."""
-    final_playlist_name = f"{playlist_name.strip()}_instant"
+    final_playlist_name = f"{playlist_name.strip()}_instant" if add_instant_suffix else playlist_name.strip()
     return _create_playlist_batched(final_playlist_name, item_ids)

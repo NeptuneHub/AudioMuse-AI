@@ -1618,14 +1618,18 @@ def search_tracks_by_title_and_artist(title_query: str, artist_query: str, limit
     return results
 
 
-def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: dict = None):
+def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: dict = None, add_instant_suffix: bool = True):
     """
     Creates a new playlist on the configured media server with the provided name and track IDs.
+
+    Args:
+        add_instant_suffix: If True (default), appends '_instant' to the playlist name.
+                           Set to False for Playlist Builder to use exact user-provided name.
     """
     try:
         # Use the mediaserver dispatcher (imported at module top) to create the playlist.
         # This avoids importing app_external which may not export the helper.
-        created_playlist = create_instant_playlist(playlist_name, track_ids, user_creds=user_creds)
+        created_playlist = create_instant_playlist(playlist_name, track_ids, user_creds=user_creds, add_instant_suffix=add_instant_suffix)
         
         if not created_playlist:
             raise Exception("Playlist creation failed. The media server did not return a playlist object.")
