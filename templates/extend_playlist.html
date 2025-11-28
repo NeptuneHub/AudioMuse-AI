@@ -2,6 +2,11 @@
 
 {% block headAdditions %}
 <style>
+    /* Override container max-width for wider layout */
+    .container {
+        max-width: 1400px;
+    }
+
     /* Existing Styles */
     .param-group {
         display: flex;
@@ -133,13 +138,69 @@
         color: white;
     }
 
+    /* Flex container for stats and save playlist side by side */
+    .stats-save-row {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 1rem;
+        flex-wrap: wrap;
+        align-items: stretch;
+    }
+
     .stats-container {
         display: flex;
-        gap: 1.5rem;
-        margin-bottom: 1rem;
-        padding: 1rem;
-        background-color: #f3f4f6;
+        gap: 2rem;
+        padding: 0.75rem 1.5rem;
+        background-color: #F9FAFB;
+        border: 1px solid #E5E7EB;
         border-radius: 0.5rem;
+        flex: 1;
+        align-items: center;
+        justify-content: space-around;
+    }
+
+    /* Override for the inline save playlist box to match alignment */
+    .stats-save-row #playlist-creator {
+        margin-top: 0;
+        flex: 1;
+        max-width: 50%;
+        padding: 0.75rem 1.5rem;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 1rem;
+    }
+
+    .stats-save-row #playlist-creator h3 {
+        margin: 0;
+        font-size: 1rem;
+        white-space: nowrap;
+    }
+
+    /* Target the form to ensure it takes available space */
+    .stats-save-row #playlist-creator form {
+        flex: 1;
+        display: flex;
+        align-items: center;
+    }
+
+    /* Make input wider and match button height */
+    .stats-save-row #playlist-creator input[type="text"] {
+        flex: 1;
+        height: 40px;
+        padding: 0 0.75rem;
+        margin: 0;
+    }
+
+    /* Ensure button matches input height */
+    .stats-save-row #playlist-creator button {
+        height: 40px;
+        padding: 0 1.25rem;
+        margin: 0 !important;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        white-space: nowrap;
     }
 
     .stat-item {
@@ -340,9 +401,132 @@
         width: 0%;
     }
 
+    /* Save playlist inline form styling */
+    .save-playlist-inline {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.75rem 1rem;
+        background-color: #f3f4f6;
+        border-radius: 0.5rem;
+        flex: 0 1 50%;
+        max-width: 50%;
+    }
+
+    .save-playlist-inline h3 {
+        margin: 0;
+        font-size: 0.875rem;
+        color: #6B7280;
+        white-space: nowrap;
+    }
+
+    .save-playlist-inline input[type="text"] {
+        flex: 1;
+        min-width: 150px;
+        padding: 0.5rem;
+        border: 1px solid #d1d5db;
+        border-radius: 0.375rem;
+    }
+
+    .save-playlist-inline button {
+        white-space: nowrap;
+    }
+
+    .save-playlist-inline #playlist-status {
+        font-size: 0.875rem;
+        white-space: nowrap;
+    }
+
     /* Hidden class utility */
     .hidden {
         display: none !important;
+    }
+
+    /* Results table container - part of normal page flow */
+    .results-table-container {
+        margin-bottom: 60px;
+    }
+
+    /* Stacked title and artist in table cell */
+    .track-info {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .track-title {
+        font-weight: 600;
+        color: #1f2937;
+    }
+
+    .track-artist {
+        font-size: 0.875rem;
+        color: #6b7280;
+    }
+
+    /* Dropdown styling for filter values */
+    .filter-value-dropdown {
+        background-color: white;
+        color: #1f2937;
+        border: 1px solid #d1d5db;
+        padding: 0.5rem;
+        border-radius: 0.375rem;
+        flex: 1;
+        min-width: 150px;
+    }
+
+    /* Button styling for Send to Extend */
+    .btn-send-extend {
+        background-color: #8B5CF6;
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+        margin-left: 0.5rem;
+    }
+
+    .btn-send-extend:hover {
+        background-color: #7C3AED;
+    }
+
+    /* Fetch Playlists button styling */
+    .btn-fetch-playlists {
+        background-color: #6366F1;
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+        margin-left: 0.5rem;
+    }
+
+    .btn-fetch-playlists:hover {
+        background-color: #4F46E5;
+    }
+
+    .btn-fetch-playlists:disabled {
+        background-color: #9CA3AF;
+        cursor: not-allowed;
+    }
+
+    .fetch-status {
+        font-size: 0.875rem;
+        margin-left: 0.5rem;
+        display: inline-block;
+    }
+
+    .fetch-status.loading {
+        color: #3B82F6;
+    }
+
+    .fetch-status.success {
+        color: #16A34A;
+    }
+
+    .fetch-status.error {
+        color: #DC2626;
     }
 </style>
 {% endblock %}
@@ -350,8 +534,8 @@
 {% block content %}
 <section>
     <header class="page-header">
-        <h1>AudioMuse-AI - Extend Playlist</h1>
-        <p>Create dynamic playlists using existing playlists or Smart Filters, and discover similar tracks.</p>
+        <h1>AudioMuse-AI - Playlist Builder</h1>
+        <p>Create dynamic playlists using Smart Filters or existing playlists, and discover similar tracks.</p>
     </header>
 
     <!-- Source Selection Tabs -->
@@ -377,9 +561,14 @@
                 <!-- Filter rows will be added here -->
             </div>
             <!-- Search Button for Smart Filters -->
-            <button type="button" id="btn-search-filters" onclick="findSimilarSongs(true)" style="margin-top: 1rem;">
-                Search
-            </button>
+            <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
+                <button type="button" id="btn-search-filters" onclick="findSimilarSongs(true)">
+                    Search
+                </button>
+                <button type="button" id="btn-send-to-extend" class="btn-send-extend" onclick="sendToExtendPlaylist()">
+                    Send to Extend Playlist
+                </button>
+            </div>
         </div>
 
         <!-- Existing Playlist Section -->
@@ -393,9 +582,15 @@
                             songs.</span>
                     </span>
                 </label>
-                <select id="playlist_select" name="playlist_select">
-                    <option value="">-- Select a playlist --</option>
-                </select>
+                <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                    <select id="playlist_select" name="playlist_select" style="flex: 1; min-width: 200px;">
+                        <option value="">-- Select a playlist --</option>
+                    </select>
+                    <button type="button" id="btn-fetch-playlists" class="btn-fetch-playlists" onclick="fetchPlaylists()">
+                        Fetch Playlists
+                    </button>
+                    <span id="fetch-status" class="fetch-status"></span>
+                </div>
             </div>
         </div>
 
@@ -437,22 +632,27 @@
 </section>
 
 <section id="stats-container" class="hidden">
-    <div class="stats-container">
-        <div class="stat-item">
-            <span class="stat-label">Source Songs</span>
-            <span id="stat-original" class="stat-value">0</span>
+    <div class="stats-save-row">
+        <div class="stats-container">
+            <div class="stat-item">
+                <span class="stat-label">Selected Songs</span>
+                <span id="stat-selected" class="stat-value">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Total Songs</span>
+                <span id="stat-total" class="stat-value">0</span>
+            </div>
         </div>
-        <div class="stat-item">
-            <span class="stat-label">Included Songs</span>
-            <span id="stat-included" class="stat-value">0</span>
-        </div>
-        <div class="stat-item">
-            <span class="stat-label">Excluded Songs</span>
-            <span id="stat-excluded" class="stat-value">0</span>
-        </div>
-        <div class="stat-item">
-            <span class="stat-label">Suggested Songs</span>
-            <span id="stat-suggested" class="stat-value">0</span>
+        <div id="playlist-creator" class="save-playlist-inline hidden">
+            <h3>Save Playlist:</h3>
+            <form id="save-playlist-form" style="display: flex; align-items: center; gap: 0.75rem; flex: 1;">
+                <input type="text" id="new_playlist_name" name="new_playlist_name" required
+                    placeholder="Playlist name">
+                <button type="submit">
+                    Save to Media Server
+                </button>
+            </form>
+            <div id="playlist-status"></div>
         </div>
     </div>
 </section>
@@ -460,24 +660,7 @@
 <section id="results-container" class="hidden">
     <h2>Similar Songs</h2>
     <div id="status"></div>
-    <div id="results-table-wrapper"></div>
-</section>
-
-<section id="playlist-creator" class="hidden">
-    <h3>Save Extended Playlist</h3>
-    <form id="save-playlist-form">
-        <div class="param-group">
-            <div>
-                <label for="new_playlist_name">New Playlist Name:</label>
-                <input type="text" id="new_playlist_name" name="new_playlist_name" required
-                    placeholder="e.g., My Extended Playlist">
-            </div>
-        </div>
-        <button type="submit" style="background-color: #16A34A;">
-            Save Playlist to Media Server
-        </button>
-    </form>
-    <div id="playlist-status"></div>
+    <div id="results-table-wrapper" class="results-table-container"></div>
 </section>
 
 <!-- Sticky Web Player -->
@@ -514,20 +697,36 @@
 <script>
     // --- Global Variables ---
     let activeTab = 'smart';
-    let includedIds = [];
+    let includedIds = [];  // For extend mode - tracks explicitly included
     let excludedIds = [];
-    let playlistStats = { original: 0, included: 0, excluded: 0, suggested: 0 };
+    let currentResults = [];  // Store current results for saving
+    let playlistStats = { selected: 0, total: 0 };
+    let smartFilterSourceIds = [];  // Store Smart Filter results for extend
 
-    // Fields config
+    // Separate state for each tab
+    let smartFilterResults = [];      // Results from Smart Filter search
+    let extendPlaylistResults = [];   // Recommended songs from extend operation
+    let includedSongsData = [];       // Full track objects for included songs
+
+    // Filter options (loaded from API)
+    let filterOptions = {
+        keys: [],
+        scales: [],
+        moods: [],
+        bpm_ranges: [],
+        energy_ranges: []
+    };
+
+    // Fields config with types
     const filterFields = [
-        { value: 'album', label: 'Album Title' },
-        { value: 'artist', label: 'Artist' },
-        { value: 'title', label: 'Track Title' },
-        { value: 'bpm', label: 'BPM' },
-        { value: 'energy', label: 'Energy' },
-        { value: 'key', label: 'Key' },
-        { value: 'scale', label: 'Scale' },
-        { value: 'mood', label: 'Mood' }
+        { value: 'album', label: 'Album Title', type: 'text' },
+        { value: 'artist', label: 'Artist', type: 'text' },
+        { value: 'title', label: 'Track Title', type: 'text' },
+        { value: 'bpm', label: 'BPM', type: 'dropdown', optionsKey: 'bpm_ranges' },
+        { value: 'energy', label: 'Energy', type: 'dropdown', optionsKey: 'energy_ranges' },
+        { value: 'key', label: 'Key', type: 'dropdown', optionsKey: 'keys' },
+        { value: 'scale', label: 'Scale', type: 'dropdown', optionsKey: 'scales' },
+        { value: 'mood', label: 'Mood', type: 'dropdown', optionsKey: 'moods' }
     ];
 
     const operators = {
@@ -545,31 +744,71 @@
     };
 
     // --- Tab Switching ---
-    window.switchTab = function (event, tab) {
+    window.switchTab = function (event, tab, keepState = true) {
         activeTab = tab;
         document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
         if (event && event.currentTarget) {
             event.currentTarget.classList.add('active');
+        } else {
+            // Programmatic switch - activate the correct tab button
+            const tabBtns = document.querySelectorAll('.tab-btn');
+            if (tab === 'smart') tabBtns[0].classList.add('active');
+            else if (tab === 'playlist') tabBtns[1].classList.add('active');
+            else if (tab === 'extend') tabBtns[1].classList.add('active'); // Extend uses playlist tab
         }
 
         if (tab === 'smart') {
             document.getElementById('smart-filters-section').classList.remove('hidden');
             document.getElementById('playlist-section').classList.add('hidden');
-            document.getElementById('extend-params').classList.add('hidden'); // Hide extend params in search mode
+            document.getElementById('extend-params').classList.add('hidden');
+            // Don't clear smartFilterSourceIds - keep them synchronized
+        } else if (tab === 'extend') {
+            // Extend mode - show extend params but hide both source sections
+            document.getElementById('smart-filters-section').classList.add('hidden');
+            document.getElementById('playlist-section').classList.add('hidden');
+            document.getElementById('extend-params').classList.remove('hidden');
         } else {
             document.getElementById('smart-filters-section').classList.add('hidden');
             document.getElementById('playlist-section').classList.remove('hidden');
-            document.getElementById('extend-params').classList.remove('hidden'); // Show extend params in playlist mode
+            document.getElementById('extend-params').classList.remove('hidden');
+            // Update Smart Filter dropdown option
+            updateSmartFilterDropdownOption();
         }
 
-        // Reset lists and clear results on tab switch
-        includedIds = [];
-        excludedIds = [];
-        document.getElementById('results-container').classList.add('hidden');
-        document.getElementById('stats-container').classList.add('hidden');
-        document.getElementById('playlist-creator').classList.add('hidden');
-        document.getElementById('results-table-wrapper').innerHTML = '';
-        document.getElementById('status').textContent = '';
+        // Reset lists and clear results on tab switch (unless keepState)
+        if (!keepState) {
+            excludedIds = [];
+            includedIds = [];
+            includedSongsData = [];
+            currentResults = [];
+            smartFilterResults = [];
+            extendPlaylistResults = [];
+            document.getElementById('results-container').classList.add('hidden');
+            document.getElementById('stats-container').classList.add('hidden');
+            document.getElementById('playlist-creator').classList.add('hidden');
+            document.getElementById('results-table-wrapper').innerHTML = '';
+            document.getElementById('status').textContent = '';
+        } else {
+            // Re-render results with appropriate data for the active tab
+            if (tab === 'smart') {
+                // Smart Filter tab: show smartFilterResults with included songs at top
+                if (smartFilterResults.length > 0 || includedSongsData.length > 0) {
+                    displayResultsForSmartFilter();
+                    document.getElementById('results-container').classList.remove('hidden');
+                    document.getElementById('stats-container').classList.remove('hidden');
+                    document.getElementById('playlist-creator').classList.remove('hidden');
+                }
+            } else {
+                // Extend/Playlist tab: show extendPlaylistResults
+                if (extendPlaylistResults.length > 0) {
+                    displayResults(extendPlaylistResults);
+                    document.getElementById('results-container').classList.remove('hidden');
+                    document.getElementById('stats-container').classList.remove('hidden');
+                    document.getElementById('playlist-creator').classList.remove('hidden');
+                }
+            }
+            updateStatsDisplay();
+        }
     };
 
     // --- Filter Builder Logic ---
@@ -584,6 +823,8 @@
             const opt = document.createElement('option');
             opt.value = f.value;
             opt.textContent = f.label;
+            opt.dataset.type = f.type;
+            opt.dataset.optionsKey = f.optionsKey || '';
             fieldSelect.appendChild(opt);
         });
 
@@ -591,10 +832,11 @@
         const opSelect = document.createElement('select');
         opSelect.className = 'filter-operator';
 
-        // Value Input
-        const valInput = document.createElement('input');
-        valInput.type = 'text';
-        valInput.className = 'filter-value';
+        // Value Container (will hold input or select)
+        const valueContainer = document.createElement('div');
+        valueContainer.className = 'filter-value-container';
+        valueContainer.style.flex = '1';
+        valueContainer.style.minWidth = '150px';
 
         // Remove Button
         const removeBtn = document.createElement('button');
@@ -603,22 +845,33 @@
         removeBtn.innerHTML = '&times;';
         removeBtn.onclick = () => row.remove();
 
-        // Update operators when field changes
-        fieldSelect.onchange = () => updateOperators(fieldSelect, opSelect, valInput);
+        // Update operators and value input when field changes
+        fieldSelect.onchange = () => updateFilterRowUI(fieldSelect, opSelect, valueContainer);
 
         row.appendChild(fieldSelect);
         row.appendChild(opSelect);
-        row.appendChild(valInput);
+        row.appendChild(valueContainer);
         row.appendChild(removeBtn);
 
         document.getElementById('filter-rows').appendChild(row);
-        updateOperators(fieldSelect, opSelect, valInput); // Initialize
+        updateFilterRowUI(fieldSelect, opSelect, valueContainer); // Initialize
     };
 
-    function updateOperators(fieldSelect, opSelect, valInput) {
+    function updateFilterRowUI(fieldSelect, opSelect, valueContainer) {
+        const selectedOption = fieldSelect.options[fieldSelect.selectedIndex];
+        const fieldType = selectedOption.dataset.type;
+        const optionsKey = selectedOption.dataset.optionsKey;
         const field = fieldSelect.value;
+
+        // Update operators
         opSelect.innerHTML = '';
-        const ops = (['bpm', 'energy'].includes(field)) ? operators.number : operators.text;
+        let ops;
+        if (fieldType === 'dropdown') {
+            // For dropdown fields, use "is" operator for exact match
+            ops = [{ value: 'is', label: 'is' }];
+        } else {
+            ops = operators.text;
+        }
 
         ops.forEach(op => {
             const opt = document.createElement('option');
@@ -627,7 +880,54 @@
             opSelect.appendChild(opt);
         });
 
-        valInput.type = (['bpm', 'energy'].includes(field)) ? 'number' : 'text';
+        // Update value input
+        valueContainer.innerHTML = '';
+
+        if (fieldType === 'dropdown' && optionsKey) {
+            const select = document.createElement('select');
+            select.className = 'filter-value filter-value-dropdown';
+
+            // Add empty option
+            const emptyOpt = document.createElement('option');
+            emptyOpt.value = '';
+            emptyOpt.textContent = '-- Select --';
+            select.appendChild(emptyOpt);
+
+            // Get options from filterOptions
+            const options = filterOptions[optionsKey] || [];
+            options.forEach(opt => {
+                const option = document.createElement('option');
+                if (typeof opt === 'object') {
+                    option.value = opt.value;
+                    option.textContent = opt.label;
+                } else {
+                    option.value = opt;
+                    option.textContent = opt;
+                }
+                select.appendChild(option);
+            });
+
+            // Enter key triggers search
+            select.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    findSimilarSongs(true);
+                }
+            });
+            valueContainer.appendChild(select);
+        } else {
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'filter-value';
+            // Enter key triggers search
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    findSimilarSongs(true);
+                }
+            });
+            valueContainer.appendChild(input);
+        }
     }
 
     function getFilters() {
@@ -636,7 +936,8 @@
         rows.forEach(row => {
             const field = row.querySelector('.filter-field').value;
             const operator = row.querySelector('.filter-operator').value;
-            const value = row.querySelector('.filter-value').value;
+            const valueElement = row.querySelector('.filter-value');
+            const value = valueElement ? valueElement.value : '';
             if (value) {
                 filters.push({ field, operator, value });
             }
@@ -644,8 +945,41 @@
         return filters;
     }
 
+    // --- Load Filter Options from API ---
+    async function loadFilterOptions() {
+        try {
+            const response = await fetch("{{ url_for('extend_playlist_bp.get_filter_options') }}");
+            const data = await response.json();
+            filterOptions = data;
+        } catch (error) {
+            console.error('Failed to load filter options:', error);
+            // Use fallback hardcoded values
+            filterOptions = {
+                keys: ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'],
+                scales: ['major', 'minor'],
+                moods: ['rock', 'pop', 'alternative', 'indie', 'electronic'],
+                bpm_ranges: [
+                    { value: '0-80', label: 'Slow (< 80 BPM)' },
+                    { value: '80-100', label: 'Moderate (80-100 BPM)' },
+                    { value: '100-120', label: 'Medium (100-120 BPM)' },
+                    { value: '120-140', label: 'Fast (120-140 BPM)' },
+                    { value: '140-160', label: 'Very Fast (140-160 BPM)' },
+                    { value: '160-999', label: 'Extremely Fast (160+ BPM)' }
+                ],
+                energy_ranges: [
+                    { value: '0-0.33', label: 'Low Energy' },
+                    { value: '0.33-0.66', label: 'Medium Energy' },
+                    { value: '0.66-1', label: 'High Energy' }
+                ]
+            };
+        }
+    }
+
     // --- Initialization ---
-    (() => {
+    (async () => {
+        // Load filter options first
+        await loadFilterOptions();
+
         // Load playlists for the select dropdown
         loadPlaylists();
 
@@ -663,6 +997,12 @@
         audio.addEventListener('ended', () => {
             document.getElementById('play-pause-btn').innerHTML = '&#9658;';
         });
+
+        // Handle URL parameter for ?tab=extend (from redirect)
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('tab') === 'extend') {
+            switchTab(null, 'playlist');
+        }
     })();
 
     // --- API Interaction ---
@@ -678,21 +1018,121 @@
                 option.textContent = `${name} (${tracks.length} songs)`;
                 select.appendChild(option);
             }
+            // Add Smart Filter option if available
+            updateSmartFilterDropdownOption();
         } catch (error) {
             console.error('Failed to load playlists:', error);
         }
     }
 
+    // --- Update Smart Filter Option in Dropdown ---
+    function updateSmartFilterDropdownOption() {
+        const select = document.getElementById('playlist_select');
+        let smartOption = select.querySelector('option[value="__smart_filter__"]');
+
+        if (smartFilterSourceIds.length > 0) {
+            if (!smartOption) {
+                smartOption = document.createElement('option');
+                smartOption.value = '__smart_filter__';
+                // Insert after the "-- Select --" option
+                if (select.options.length > 1) {
+                    select.insertBefore(smartOption, select.options[1]);
+                } else {
+                    select.appendChild(smartOption);
+                }
+            }
+            smartOption.textContent = `Smart Filter Results (${smartFilterSourceIds.length} songs)`;
+        } else if (smartOption) {
+            smartOption.remove();
+        }
+    }
+
+    // --- Fetch Playlists from Media Server ---
+    window.fetchPlaylists = async function() {
+        const btn = document.getElementById('btn-fetch-playlists');
+        const statusSpan = document.getElementById('fetch-status');
+
+        btn.disabled = true;
+        statusSpan.className = 'fetch-status loading';
+        statusSpan.textContent = 'Fetching...';
+
+        try {
+            // Start the fetch task
+            const response = await fetch("{{ url_for('analysis_bp.start_fetch_playlists_endpoint') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Failed to start fetch');
+
+            const taskId = data.task_id;
+
+            // Poll for task completion
+            const pollInterval = setInterval(async () => {
+                try {
+                    const statusResponse = await fetch(`/api/task/${taskId}`);
+                    const statusData = await statusResponse.json();
+
+                    const state = (statusData.state || '').toUpperCase();
+
+                    if (state === 'SUCCESS' || state === 'FINISHED') {
+                        clearInterval(pollInterval);
+                        statusSpan.className = 'fetch-status success';
+                        statusSpan.textContent = 'Done!';
+                        btn.disabled = false;
+
+                        // Reload playlists
+                        await loadPlaylists();
+
+                        // Clear status after 3 seconds
+                        setTimeout(() => {
+                            statusSpan.textContent = '';
+                        }, 3000);
+
+                    } else if (state === 'FAILURE' || state === 'REVOKED') {
+                        clearInterval(pollInterval);
+                        statusSpan.className = 'fetch-status error';
+                        statusSpan.textContent = 'Failed';
+                        btn.disabled = false;
+
+                    } else {
+                        // Still running
+                        statusSpan.textContent = 'Fetching...';
+                    }
+
+                } catch (pollError) {
+                    console.error('Poll error:', pollError);
+                }
+            }, 1000);
+
+        } catch (error) {
+            console.error('Fetch playlists error:', error);
+            statusSpan.className = 'fetch-status error';
+            statusSpan.textContent = error.message;
+            btn.disabled = false;
+        }
+    };
+
     window.findSimilarSongs = async function (searchOnly = false) {
-        console.log('findSimilarSongs called', { searchOnly, activeTab });
+        console.log('findSimilarSongs called', { searchOnly, activeTab, smartFilterSourceIds: smartFilterSourceIds.length });
         const statusDiv = document.getElementById('status');
         const maxSongs = parseInt(document.getElementById('max_songs').value);
         const threshold = parseFloat(document.getElementById('similarity_threshold').value);
 
+        // Fix search bug: Clear state at start of Smart Filter search
+        if (searchOnly && activeTab === 'smart') {
+            currentResults = [];
+            smartFilterResults = [];
+            smartFilterSourceIds = [];
+            excludedIds = [];
+        }
+
         let payload = {
             max_songs: maxSongs,
             similarity_threshold: threshold,
-            included_ids: includedIds,
+            included_ids: [],
             excluded_ids: excludedIds,
             search_only: searchOnly
         };
@@ -707,6 +1147,9 @@
             }
             payload.filters = filters;
             payload.match_mode = document.getElementById('match-mode').value;
+        } else if (activeTab === 'extend' && smartFilterSourceIds.length > 0) {
+            // Using Smart Filter results as source
+            payload.source_ids = smartFilterSourceIds;
         } else {
             const playlistName = document.getElementById('playlist_select').value;
             if (!playlistName) {
@@ -714,7 +1157,17 @@
                 statusDiv.style.color = 'red';
                 return;
             }
-            payload.playlist_name = playlistName;
+            // Handle Smart Filter option in dropdown
+            if (playlistName === '__smart_filter__') {
+                if (smartFilterSourceIds.length === 0) {
+                    statusDiv.textContent = 'No Smart Filter results available. Run a Smart Filter search first.';
+                    statusDiv.style.color = 'red';
+                    return;
+                }
+                payload.source_ids = smartFilterSourceIds;
+            } else {
+                payload.playlist_name = playlistName;
+            }
         }
 
         statusDiv.textContent = searchOnly ? 'Searching...' : 'Finding similar songs...';
@@ -730,23 +1183,38 @@
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'Search failed');
 
+            // Store results in appropriate state variable based on mode
+            currentResults = data.results;
+            if (activeTab === 'smart' && searchOnly) {
+                // Smart Filter search - store in smartFilterResults
+                smartFilterResults = data.results;
+                smartFilterSourceIds = data.results.map(r => r.item_id);
+                updateSmartFilterDropdownOption();
+            } else {
+                // Extend mode - store in extendPlaylistResults
+                extendPlaylistResults = data.results;
+            }
+
             // Update Stats
             playlistStats = {
-                original: data.playlist_song_count,
-                included: data.included_count,
-                excluded: data.excluded_count,
-                suggested: data.results.length
+                selected: smartFilterResults.length,
+                total: smartFilterResults.length + includedIds.length
             };
             updateStatsDisplay();
 
-            displayResults(data.results);
+            // Display results based on current tab
+            if (activeTab === 'smart') {
+                displayResultsForSmartFilter();
+            } else {
+                displayResults(data.results);
+            }
 
-            statusDiv.textContent = searchOnly ? `Found ${data.results.length} matching songs.` : `Found ${data.results.length} similar songs.`;
-            statusDiv.style.color = 'green';
+            statusDiv.textContent = '';
 
             document.getElementById('results-container').classList.remove('hidden');
             document.getElementById('stats-container').classList.remove('hidden');
-            if (includedIds.length > 0) {
+            // Show playlist creator when there are results (songs are included by default)
+            if (data.results.length > 0) {
                 document.getElementById('playlist-creator').classList.remove('hidden');
             }
 
@@ -758,11 +1226,77 @@
     };
 
     function updateStatsDisplay() {
-        document.getElementById('stat-original').textContent = playlistStats.original;
-        document.getElementById('stat-included').textContent = playlistStats.included;
-        document.getElementById('stat-excluded').textContent = playlistStats.excluded;
-        document.getElementById('stat-suggested').textContent = playlistStats.suggested;
+        // Selected Songs = songs from Smart Filter search
+        const selectedCount = smartFilterResults.length;
+        // Total Songs = Selected Songs + Included songs from Extend tab
+        const totalCount = selectedCount + includedIds.length;
+
+        document.getElementById('stat-selected').textContent = selectedCount;
+        document.getElementById('stat-total').textContent = totalCount;
     }
+
+    // --- Send to Extend Playlist ---
+    window.sendToExtendPlaylist = async function () {
+        const statusDiv = document.getElementById('status');
+        const filters = getFilters();
+
+        if (filters.length === 0) {
+            statusDiv.textContent = 'Please add at least one filter.';
+            statusDiv.style.color = 'red';
+            return;
+        }
+
+        // First, perform the search to get results
+        statusDiv.textContent = 'Searching...';
+        statusDiv.style.color = 'blue';
+
+        try {
+            const matchMode = document.getElementById('match-mode').value;
+            const payload = {
+                filters: filters,
+                match_mode: matchMode,
+                max_songs: 1000, // Get all matching songs
+                similarity_threshold: 1.0,
+                included_ids: [],
+                excluded_ids: [],
+                search_only: true
+            };
+
+            const response = await fetch("{{ url_for('extend_playlist_bp.extend_playlist_api') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Search failed');
+
+            // Store the Smart Filter results for switching back
+            smartFilterResults = data.results;
+            smartFilterSourceIds = data.results.map(r => r.item_id);
+
+            if (smartFilterSourceIds.length === 0) {
+                statusDiv.textContent = 'No songs found matching the filters. Cannot extend.';
+                statusDiv.style.color = 'red';
+                return;
+            }
+
+            // Switch to Extend tab (keep state)
+            switchTab(null, 'extend', true);
+
+            // Show status message
+            statusDiv.textContent = `Using ${smartFilterSourceIds.length} Smart Filter results as source. Finding similar songs...`;
+            statusDiv.style.color = 'blue';
+
+            // Automatically run the extend operation (it will update stats and display)
+            await findSimilarSongs(false);
+
+        } catch (error) {
+            console.error('Send to extend error:', error);
+            statusDiv.textContent = error.message;
+            statusDiv.style.color = 'red';
+        }
+    };
 
     function displayResults(results) {
         const wrapper = document.getElementById('results-table-wrapper');
@@ -771,26 +1305,30 @@
             return;
         }
 
+        // Check if we're in extend mode (playlist or extend tab) - show both Include/Exclude
+        // In smart filter mode, only show Exclude
+        const isExtendMode = (activeTab === 'playlist' || activeTab === 'extend');
+        const actionsHeader = isExtendMode ? 'Actions' : 'Exclude';
+        const actionsWidth = isExtendMode ? '180px' : '100px';
+
         let html = `
             <table class="results-table">
                 <thead>
                     <tr>
                         <th style="width: 50px;">Play</th>
-                        <th>Title</th>
-                        <th>Artist</th>
+                        <th>Title / Artist</th>
                         <th>Album</th>
-                        <th>Album Artist</th>
                         <th>Distance</th>
-                        <th>Actions</th>
+                        <th style="width: ${actionsWidth};">${actionsHeader}</th>
                     </tr>
                 </thead>
                 <tbody>
         `;
 
         results.forEach(track => {
-            const isIncluded = includedIds.includes(track.item_id);
             const isExcluded = excludedIds.includes(track.item_id);
-            let rowClass = isIncluded ? 'included-row' : (isExcluded ? 'excluded-row' : '');
+            const isIncluded = includedIds.includes(track.item_id);
+            let rowClass = isExcluded ? 'excluded-row' : (isIncluded ? 'included-row' : '');
 
             // Escape strings for safe usage in onclick
             const safeTitle = (track.title || 'Unknown').replace(/'/g, "\\'");
@@ -799,6 +1337,29 @@
             const safeArtist = displayArtist.replace(/'/g, "\\'");
             const safeUrl = (track.stream_url || '').replace(/'/g, "\\'");
 
+            // Build actions cell based on mode
+            let actionsHtml;
+            if (isExtendMode) {
+                // Extend mode: Show both Include and Exclude buttons
+                if (isIncluded) {
+                    actionsHtml = '<span class="status-badge status-included">INCLUDED</span>';
+                } else if (isExcluded) {
+                    actionsHtml = '<span class="status-badge status-excluded">EXCLUDED</span>';
+                } else {
+                    actionsHtml = `
+                        <button class="btn-include" onclick="includeSong('${track.item_id}')">Include</button>
+                        <button class="btn-exclude" onclick="excludeSong('${track.item_id}')">Exclude</button>
+                    `;
+                }
+            } else {
+                // Smart Filter mode: Only Exclude button
+                if (isExcluded) {
+                    actionsHtml = '<span class="status-badge status-excluded">EXCLUDED</span>';
+                } else {
+                    actionsHtml = `<button class="btn-exclude" onclick="excludeSong('${track.item_id}')">Exclude</button>`;
+                }
+            }
+
             html += `
                 <tr class="${rowClass}">
                     <td>
@@ -806,19 +1367,16 @@
                     `<button class="btn-play" onclick="playSong('${safeUrl}', '${safeTitle}', '${safeArtist}')">&#9658;</button>`
                     : '-'}
                     </td>
-                    <td>${track.title || 'Unknown'}</td>
-                    <td>${displayArtist}</td>
-                    <td>${track.album || '-'}</td>
-                    <td>${track.album_artist || '-'}</td>
-                    <td>${track.distance ? track.distance.toFixed(4) : 'N/A'}</td>
                     <td>
-                        ${isIncluded ? '<span class="status-badge status-included">INCLUDED</span>' :
-                    isExcluded ? '<span class="status-badge status-excluded">EXCLUDED</span>' :
-                        `<div class="action-buttons">
-                               <button class="btn-include" onclick="includeSong('${track.item_id}')">Include</button>
-                               <button class="btn-exclude" onclick="excludeSong('${track.item_id}')">Exclude</button>
-                           </div>`
-                }
+                        <div class="track-info">
+                            <span class="track-title">${track.title || 'Unknown'}</span>
+                            <span class="track-artist">${displayArtist}</span>
+                        </div>
+                    </td>
+                    <td>${track.album || '-'}</td>
+                    <td>${track.distance ? track.distance.toFixed(4) : 'N/A'}</td>
+                    <td class="action-buttons">
+                        ${actionsHtml}
                     </td>
                 </tr>
             `;
@@ -828,20 +1386,122 @@
         wrapper.innerHTML = html;
     }
 
-    // --- Actions ---
-    window.includeSong = function (id) {
-        if (!includedIds.includes(id)) {
-            includedIds.push(id);
-            excludedIds = excludedIds.filter(x => x !== id);
-            findSimilarSongs();
-        }
-    };
+    // Display results for Smart Filter tab - shows included songs at top, then filter results
+    function displayResultsForSmartFilter() {
+        const wrapper = document.getElementById('results-table-wrapper');
 
+        // Combine included songs (at top) with smart filter results
+        // Filter out songs that are in includedSongsData from smartFilterResults to avoid duplicates
+        const includedIdsSet = new Set(includedIds);
+        const filteredSmartResults = smartFilterResults.filter(r => !includedIdsSet.has(r.item_id));
+        const combinedResults = [...includedSongsData, ...filteredSmartResults];
+
+        if (combinedResults.length === 0) {
+            wrapper.innerHTML = '<p>No songs found.</p>';
+            return;
+        }
+
+        let html = `
+            <table class="results-table">
+                <thead>
+                    <tr>
+                        <th style="width: 50px;">Play</th>
+                        <th>Title / Artist</th>
+                        <th>Album</th>
+                        <th style="width: 100px;">Exclude</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        combinedResults.forEach(track => {
+            const isExcluded = excludedIds.includes(track.item_id);
+            const isIncluded = includedIds.includes(track.item_id);
+            let rowClass = isExcluded ? 'excluded-row' : (isIncluded ? 'included-row' : '');
+
+            // Escape strings for safe usage in onclick
+            const safeTitle = (track.title || 'Unknown').replace(/'/g, "\\'");
+            const displayArtist = track.song_artist || track.author || 'Unknown';
+            const safeArtist = displayArtist.replace(/'/g, "\\'");
+            const safeUrl = (track.stream_url || '').replace(/'/g, "\\'");
+
+            // Smart Filter mode: Only Exclude button, show INCLUDED badge for included songs
+            let actionsHtml;
+            if (isIncluded) {
+                actionsHtml = '<span class="status-badge status-included">INCLUDED</span>';
+            } else if (isExcluded) {
+                actionsHtml = '<span class="status-badge status-excluded">EXCLUDED</span>';
+            } else {
+                actionsHtml = `<button class="btn-exclude" onclick="excludeSong('${track.item_id}')">Exclude</button>`;
+            }
+
+            html += `
+                <tr class="${rowClass}">
+                    <td>
+                        ${safeUrl ?
+                    `<button class="btn-play" onclick="playSong('${safeUrl}', '${safeTitle}', '${safeArtist}')">&#9658;</button>`
+                    : '-'}
+                    </td>
+                    <td>
+                        <div class="track-info">
+                            <span class="track-title">${track.title || 'Unknown'}</span>
+                            <span class="track-artist">${displayArtist}</span>
+                        </div>
+                    </td>
+                    <td>${track.album || '-'}</td>
+                    <td class="action-buttons">
+                        ${actionsHtml}
+                    </td>
+                </tr>
+            `;
+        });
+
+        html += '</tbody></table>';
+        wrapper.innerHTML = html;
+
+        // Update currentResults for saving purposes
+        currentResults = combinedResults;
+    }
+
+    // --- Actions ---
     window.excludeSong = function (id) {
         if (!excludedIds.includes(id)) {
             excludedIds.push(id);
-            includedIds = includedIds.filter(x => x !== id);
-            findSimilarSongs();
+            // Remove from included if it was there
+            const inclIdx = includedIds.indexOf(id);
+            if (inclIdx > -1) {
+                includedIds.splice(inclIdx, 1);
+                // Also remove from includedSongsData
+                includedSongsData = includedSongsData.filter(t => t.item_id !== id);
+            }
+            // Re-render the results based on active tab
+            if (activeTab === 'smart') {
+                displayResultsForSmartFilter();
+            } else {
+                displayResults(extendPlaylistResults);
+            }
+            updateStatsDisplay();
+        }
+    };
+
+    window.includeSong = function (id) {
+        if (!includedIds.includes(id)) {
+            includedIds.push(id);
+            // Store full track data for display on Smart Filter tab
+            const track = extendPlaylistResults.find(t => t.item_id === id);
+            if (track && !includedSongsData.find(t => t.item_id === id)) {
+                includedSongsData.push(track);
+            }
+            // Remove from excluded if it was there
+            const exclIdx = excludedIds.indexOf(id);
+            if (exclIdx > -1) excludedIds.splice(exclIdx, 1);
+            // Re-render the results based on active tab
+            if (activeTab === 'smart') {
+                displayResultsForSmartFilter();
+            } else {
+                displayResults(extendPlaylistResults);
+            }
+            updateStatsDisplay();
         }
     };
 
@@ -856,8 +1516,28 @@
         const name = document.getElementById('new_playlist_name').value;
         const statusDiv = document.getElementById('playlist-status');
 
-        if (!name || includedIds.length === 0) {
-            statusDiv.textContent = 'Please provide a name and include at least one song.';
+        // Determine which IDs to save based on mode
+        const isExtendMode = (activeTab === 'playlist' || activeTab === 'extend');
+        let idsToSave;
+
+        if (isExtendMode) {
+            // In extend mode: only save explicitly included songs
+            idsToSave = includedIds.slice();
+        } else {
+            // In smart filter mode: save all results except excluded
+            idsToSave = currentResults
+                .map(r => r.item_id)
+                .filter(id => !excludedIds.includes(id));
+        }
+
+        if (!name) {
+            statusDiv.textContent = 'Please provide a playlist name.';
+            return;
+        }
+        if (idsToSave.length === 0) {
+            statusDiv.textContent = isExtendMode
+                ? 'No songs included. Use the Include button to add songs to save.'
+                : 'No songs to save (all excluded or no results).';
             return;
         }
 
@@ -865,11 +1545,13 @@
         try {
             let payload = {
                 new_playlist_name: name,
-                included_ids: includedIds
+                included_ids: idsToSave
             };
 
             if (activeTab === 'playlist') {
                 payload.original_playlist_name = document.getElementById('playlist_select').value;
+            } else if (activeTab === 'extend' && smartFilterSourceIds.length > 0) {
+                payload.source_ids = smartFilterSourceIds;
             } else {
                 payload.filters = getFilters();
                 payload.match_mode = document.getElementById('match-mode').value;

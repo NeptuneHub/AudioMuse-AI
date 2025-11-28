@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, request, render_template
+from flask import Blueprint, jsonify, request, render_template, redirect, url_for
 import logging
 import numpy as np
 from collections import defaultdict
@@ -13,10 +13,16 @@ logger = logging.getLogger(__name__)
 extend_playlist_bp = Blueprint('extend_playlist_bp', __name__, template_folder='../templates')
 
 
+@extend_playlist_bp.route('/playlist_builder', methods=['GET'])
+def playlist_builder_page():
+    """Render the Playlist Builder page."""
+    return render_template('extend_playlist.html', title='AudioMuse-AI - Playlist Builder', active='playlist_builder')
+
+
 @extend_playlist_bp.route('/extend_playlist', methods=['GET'])
-def extend_playlist_page():
-    """Render the Extend Playlist page."""
-    return render_template('extend_playlist.html', title='AudioMuse-AI - Extend Playlist', active='extend_playlist')
+def extend_playlist_redirect():
+    """Redirect old URL to Playlist Builder with Extend tab active."""
+    return redirect(url_for('extend_playlist_bp.playlist_builder_page') + '?tab=extend')
 
 
 def _compute_centroid_from_ids(ids: list) -> np.ndarray:
@@ -43,6 +49,48 @@ def _get_stream_url(item_id):
         return f"{config.NAVIDROME_URL}/rest/stream?id={item_id}&u={config.NAVIDROME_USER}&p={config.NAVIDROME_PASSWORD}&v=1.16.1&c=AudioMuse"
     # Fallback or other servers might need different logic
     return ""
+
+
+@extend_playlist_bp.route('/api/filter_options', methods=['GET'])
+def get_filter_options():
+    """Returns available filter options for Smart Filter dropdowns."""
+    # Query unique moods from database
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute("""
+            SELECT DISTINCT TRIM(SPLIT_PART(mood, ':', 1)) as mood_label
+            FROM (
+                SELECT UNNEST(STRING_TO_ARRAY(mood_vector, ',')) as mood
+                FROM score WHERE mood_vector IS NOT NULL AND mood_vector != ''
+            ) t
+            ORDER BY mood_label
+        """)
+        unique_moods = [row[0] for row in cur.fetchall() if row[0]]
+    except Exception as e:
+        logger.warning(f"Failed to query unique moods: {e}")
+        unique_moods = []
+    finally:
+        cur.close()
+
+    return jsonify({
+        "keys": ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'],
+        "scales": ['major', 'minor'],
+        "moods": unique_moods,
+        "bpm_ranges": [
+            {"value": "0-80", "label": "Slow (< 80 BPM)"},
+            {"value": "80-100", "label": "Moderate (80-100 BPM)"},
+            {"value": "100-120", "label": "Medium (100-120 BPM)"},
+            {"value": "120-140", "label": "Fast (120-140 BPM)"},
+            {"value": "140-160", "label": "Very Fast (140-160 BPM)"},
+            {"value": "160-999", "label": "Extremely Fast (160+ BPM)"}
+        ],
+        "energy_ranges": [
+            {"value": "0-0.33", "label": "Low Energy"},
+            {"value": "0.33-0.66", "label": "Medium Energy"},
+            {"value": "0.66-1", "label": "High Energy"}
+        ]
+    })
 
 
 def _build_filter_query(filters, match_mode='all'):
@@ -77,6 +125,17 @@ def _build_filter_query(filters, match_mode='all'):
         db_col = field_map.get(field)
         if not db_col:
             continue
+
+        # Handle range-based values for BPM and Energy (e.g., "80-100", "0.33-0.66")
+        if field in ['bpm', 'energy'] and '-' in str(value):
+            try:
+                parts = value.split('-')
+                min_val, max_val = float(parts[0]), float(parts[1])
+                clauses.append(f"({db_col} >= %s AND {db_col} <= %s)")
+                params.extend([min_val, max_val])
+                continue
+            except (ValueError, IndexError):
+                pass  # Fall through to standard handling
 
         if operator == 'contains':
             clauses.append(f"{db_col} ILIKE %s")
@@ -146,9 +205,10 @@ def extend_playlist_api():
     excluded_ids = payload.get('excluded_ids', [])
 
     search_only = payload.get('search_only', False)
+    source_ids = payload.get('source_ids', [])  # Direct source IDs from Smart Filter
 
-    if not playlist_name and not filters:
-        return jsonify({"error": "Missing 'playlist_name' or 'filters'"}), 400
+    if not playlist_name and not filters and not source_ids:
+        return jsonify({"error": "Missing 'playlist_name', 'filters', or 'source_ids'"}), 400
 
     try:
         conn = get_db()
@@ -167,13 +227,17 @@ def extend_playlist_api():
         elif filters:
             # Build query from filters
             where_clause, params = _build_filter_query(filters, match_mode)
-            query = f"SELECT item_id FROM score WHERE {where_clause} LIMIT 1000" # Limit seed size
+            query = f"SELECT item_id FROM score WHERE {where_clause}"
             cur.execute(query, tuple(params))
             rows = cur.fetchall()
             playlist_ids = [row['item_id'] for row in rows]
 
             if not playlist_ids:
                  return jsonify({"error": "No songs found matching the filters"}), 404
+
+        elif source_ids:
+            # Use provided source IDs directly (from Smart Filter results)
+            playlist_ids = source_ids
 
         cur.close()
 
@@ -337,12 +401,13 @@ def save_extended_playlist():
 
     original_playlist_name = payload.get('original_playlist_name')
     filters = payload.get('filters')
+    source_ids = payload.get('source_ids')  # Direct source IDs from Smart Filter → Extend flow
     match_mode = payload.get('match_mode', 'all')
     new_playlist_name = payload.get('new_playlist_name')
     included_ids = payload.get('included_ids', [])
 
-    if not original_playlist_name and not filters:
-        return jsonify({"error": "Missing source (original_playlist_name or filters)"}), 400
+    if not original_playlist_name and not filters and not source_ids:
+        return jsonify({"error": "Missing source (original_playlist_name, filters, or source_ids)"}), 400
 
     if not new_playlist_name:
         return jsonify({"error": "Missing 'new_playlist_name'"}), 400
@@ -365,7 +430,7 @@ def save_extended_playlist():
         elif filters:
             # Get songs matching filters
             where_clause, params = _build_filter_query(filters, match_mode)
-            query = f"SELECT item_id FROM score WHERE {where_clause} LIMIT 1000"
+            query = f"SELECT item_id FROM score WHERE {where_clause}"
             cur.execute(query, tuple(params))
             rows = cur.fetchall()
             original_ids = [row['item_id'] for row in rows]
@@ -373,6 +438,10 @@ def save_extended_playlist():
             if not original_ids:
                 cur.close()
                 return jsonify({"error": "No songs found matching the filters to save"}), 404
+
+        elif source_ids:
+            # Use provided source IDs directly (from Smart Filter → Extend flow)
+            original_ids = source_ids
 
         cur.close()
 
