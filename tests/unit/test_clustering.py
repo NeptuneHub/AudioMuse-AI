@@ -207,6 +207,7 @@ class TestFeatureCentroidCalculation:
 class TestTrackPrimaryGenre:
     """Tests for track genre classification"""
 
+    @patch('tasks.clustering_helper.STRATIFIED_GENRES', ['rock', 'pop', 'jazz', 'metal'])
     def test_get_track_primary_genre_with_mood_vector(self):
         """Test genre extraction from mood vector"""
         from tasks.clustering_helper import _get_track_primary_genre
@@ -259,6 +260,7 @@ class TestTrackPrimaryGenre:
 class TestGenreMapPreparation:
     """Tests for genre map creation from database rows"""
 
+    @patch('tasks.clustering.STRATIFIED_GENRES', ['rock', 'pop', 'jazz', 'metal'])
     def test_prepare_genre_map_basic(self):
         """Test creating genre map from rows"""
         from tasks.clustering import _prepare_genre_map
@@ -308,6 +310,7 @@ class TestGenreMapPreparation:
 class TestTargetSongsCalculation:
     """Tests for calculating target songs per genre"""
 
+    @patch('tasks.clustering.STRATIFIED_GENRES', ['rock', 'pop', 'jazz', 'metal'])
     def test_calculate_target_songs_per_genre_basic(self):
         """Test target calculation with normal distribution"""
         from tasks.clustering import _calculate_target_songs_per_genre
@@ -339,6 +342,7 @@ class TestTargetSongsCalculation:
         # Should use min_songs when calculated value is lower
         assert target == 100
 
+    @patch('tasks.clustering.STRATIFIED_GENRES', ['rock', 'pop', 'jazz', 'metal'])
     def test_calculate_target_songs_high_percentile(self):
         """Test calculation with high percentile"""
         from tasks.clustering import _calculate_target_songs_per_genre
