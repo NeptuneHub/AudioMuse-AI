@@ -80,6 +80,8 @@ jobs:
           load: true # Load image into Docker daemon for immediate use
           build-args: |
             BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+          cache-from: type=gha,scope=nvidia
+          cache-to: type=gha,scope=nvidia,mode=max
 
       - name: Run Flask App Container Health Check
         run: |
@@ -230,3 +232,5 @@ jobs:
           tags: ${{ steps.docker_tags.outputs.docker_tags }}
           build-args: |
             BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+          cache-from: type=gha,scope=nvidia
+          cache-to: type=gha,scope=nvidia,mode=max

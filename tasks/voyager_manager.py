@@ -3,10 +3,20 @@ import json
 import logging
 import tempfile
 import numpy as np
-import voyager # type: ignore
 import psycopg2 # type: ignore
 from psycopg2.extras import DictCursor
 import io 
+
+# Attempt to import Voyager (may be missing on non-AVX systems)
+try:
+    import voyager  # type: ignore
+    VOYAGER_AVAILABLE = True
+except ImportError:
+    logging.getLogger(__name__).warning("Voyager library not found. HNSW-based features will be disabled (non-AVX CPU detected).")
+    VOYAGER_AVAILABLE = False
+except Exception as e:
+    logging.getLogger(__name__).error(f"Error importing Voyager: {e}")
+    VOYAGER_AVAILABLE = False
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
@@ -183,6 +193,10 @@ def build_and_store_voyager_index(db_conn=None):
     Accepts an optional db_conn (psycopg2 connection). If None, the function
     will acquire a connection via app_helper.get_db().
     """
+    if not VOYAGER_AVAILABLE:
+        logger.warning("Voyager not available - skipping index build")
+        return
+
     # Acquire DB connection if not provided
     if db_conn is None:
         try:
@@ -1551,17 +1565,35 @@ def get_max_distance_for_id(target_item_id: str):
 
 def get_item_id_by_title_and_artist(title: str, artist: str):
     """
-    Finds the item_id for an exact title and artist match.
+    Finds the item_id for a title and artist match.
+    Uses fuzzy matching (case-insensitive partial match) to handle variations.
     """
     from app_helper import get_db
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
     try:
-        query = "SELECT item_id FROM score WHERE title = %s AND author = %s LIMIT 1"
+        # First try exact match (case-insensitive)
+        query = "SELECT item_id FROM score WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s) LIMIT 1"
         cur.execute(query, (title, artist))
         result = cur.fetchone()
         if result:
             return result['item_id']
+        
+        # If no exact match, try fuzzy match (partial match on both title and artist)
+        query = """
+            SELECT item_id, title, author, 
+                   similarity(LOWER(title), LOWER(%s)) + similarity(LOWER(author), LOWER(%s)) AS score
+            FROM score 
+            WHERE LOWER(title) ILIKE LOWER(%s) AND LOWER(author) ILIKE LOWER(%s)
+            ORDER BY score DESC
+            LIMIT 1
+        """
+        cur.execute(query, (title, artist, f"%{title}%", f"%{artist}%"))
+        result = cur.fetchone()
+        if result:
+            logger.info(f"Fuzzy matched '{title}' by '{artist}' to '{result['title']}' by '{result['author']}'")
+            return result['item_id']
+        
         return None
     except Exception as e:
         logger.error(f"Error fetching item_id for '{title}' by '{artist}': {e}", exc_info=True)
