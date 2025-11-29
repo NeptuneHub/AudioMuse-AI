@@ -33,6 +33,7 @@ services:
       TEMP_DIR: "/app/temp_audio"
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+      USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
     volumes:
       - temp-audio-worker:/app/temp_audio
     restart: unless-stopped
