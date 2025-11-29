@@ -23,14 +23,14 @@ services:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
 
-  # AudioMuse-AI Flask application service (GPU-enabled)
+  # AudioMuse-AI Flask application service (CPU-only)
   audiomuse-ai-flask:
-    image: audiomuse-ai:pr195-gpu
+    image: audiomuse-ai:pr195-cpu
     build:
       context: ../       # Build from project root (one level up from deployment/)
       dockerfile: Dockerfile
-      args:  # GPU build args
-        BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+      # No args needed - defaults to ubuntu:22.04 (CPU-only)
+    pull_policy: never  # Always use locally built image, never pull from registry
     container_name: audiomuse-ai-flask-app
     ports:
       - "8000:8000"
@@ -53,25 +53,19 @@ services:
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       TEMP_DIR: "/app/temp_audio"
-      USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-false}"
+      USE_GPU_CLUSTERING: "false"
     volumes:
       - temp-audio-flask:/app/temp_audio
     depends_on:
       - redis
       - postgres
     restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
 
-  # AudioMuse-AI RQ Worker service (GPU-enabled)
+  # AudioMuse-AI RQ Worker service (CPU-only)
   # NOTE: This service uses the SAME image as flask, built only once
   audiomuse-ai-worker:
-    image: audiomuse-ai:pr195-gpu  # Reuses the image built above
+    image: audiomuse-ai:pr195-cpu  # Reuses the image built above
+    pull_policy: never  # Always use locally built image, never pull from registry
     environment:
       SERVICE_TYPE: "worker"
       MEDIASERVER_TYPE: "navidrome"
@@ -91,7 +85,7 @@ services:
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       TEMP_DIR: "/app/temp_audio"
-      USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-false}"
+      USE_GPU_CLUSTERING: "false"
     volumes:
       - temp-audio-worker:/app/temp_audio
     depends_on:
@@ -100,12 +94,6 @@ services:
     restart: unless-stopped
     deploy:
       replicas: 1  # Run 1 worker instance
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
 
 # Define volumes for persistent data and temporary files
 volumes:
