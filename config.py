@@ -51,7 +51,7 @@ MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music"
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v0.7.11-beta"
+APP_VERSION = "v0.7.12-beta"
 MAX_DISTANCE = 0.5
 MAX_SONGS_PER_CLUSTER = 0
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -67,6 +67,9 @@ MIN_PLAYLIST_SIZE_FOR_TOP_N = int(os.environ.get("MIN_PLAYLIST_SIZE_FOR_TOP_N", 
 CLUSTER_ALGORITHM = os.environ.get("CLUSTER_ALGORITHM", "kmeans") # accepted dbscan, kmeans, gmm, or spectral
 AI_MODEL_PROVIDER = os.environ.get("AI_MODEL_PROVIDER", "NONE").upper() # Accepted: OLLAMA, OPENAI, GEMINI, MISTRAL, NONE
 ENABLE_CLUSTERING_EMBEDDINGS = os.environ.get("ENABLE_CLUSTERING_EMBEDDINGS", "True").lower() == "true"
+
+# --- GPU Acceleration for Clustering (Optional, requires NVIDIA GPU and RAPIDS cuML) ---
+USE_GPU_CLUSTERING = os.environ.get("USE_GPU_CLUSTERING", "False").lower() == "true"
 
 # --- DBSCAN Only Constants (Ranges for Evolutionary Approach) ---
 # Default ranges for DBSCAN parameters
@@ -194,12 +197,12 @@ OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY = float(os.environ.get("OTHER_FE
 
 # --- AI Playlist Naming ---
 # USE_AI_PLAYLIST_NAMING is replaced by AI_MODEL_PROVIDER
-OLLAMA_SERVER_URL = os.environ.get("OLLAMA_SERVER_URL", "http://192.168.3.15:11434/api/generate") # URL for your Ollama instance
-OLLAMA_MODEL_NAME = os.environ.get("OLLAMA_MODEL_NAME", "mistral:7b") # Ollama model to use
+OLLAMA_SERVER_URL = os.environ.get("OLLAMA_SERVER_URL", "http://192.168.3.211:11434/api/generate") # URL for your Ollama instance
+OLLAMA_MODEL_NAME = os.environ.get("OLLAMA_MODEL_NAME", "llama3.1:8b") # Ollama model to use
 
 # OpenAI API (also used for OpenRouter) - uses same API standard as Ollama
-OPENAI_SERVER_URL = os.environ.get("OPENAI_SERVER_URL", os.environ.get("OLLAMA_SERVER_URL", "http://192.168.3.15:11434/api/generate"))
-OPENAI_MODEL_NAME = os.environ.get("OPENAI_MODEL_NAME", os.environ.get("OLLAMA_MODEL_NAME", "mistral:7b"))
+OPENAI_SERVER_URL = os.environ.get("OPENAI_SERVER_URL", os.environ.get("OLLAMA_SERVER_URL", "http://192.168.3.211:11434/api/generate"))
+OPENAI_MODEL_NAME = os.environ.get("OPENAI_MODEL_NAME", os.environ.get("OLLAMA_MODEL_NAME", "llama3.1:8b"))
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "no-key-needed") # Set to "no-key-needed" for Ollama, or your actual API key for OpenAI/OpenRouter
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR-GEMINI-API-KEY-HERE") # Default API key

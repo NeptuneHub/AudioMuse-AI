@@ -1,6 +1,58 @@
 {% extends "includes/layout.html" %}
 
 {% block content %}
+<style>
+    .suggestion-btn {
+        padding: 0.15rem 0.25rem !important;
+        font-size: 0.88rem !important;
+        border: 1px solid #E5E7EB !important;
+        border-radius: 0.2rem !important;
+        background-color: white !important;
+        cursor: pointer !important;
+        transition: all 0.15s ease !important;
+        color: #6B7280 !important;
+        font-weight: 400 !important;
+        white-space: nowrap !important;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05) !important;
+        line-height: 1 !important;
+        display: inline-block !important;
+        margin: 0 !important;
+    }
+    
+    .suggestion-btn:hover {
+        background-color: #F3F4F6 !important;
+        border-color: #9CA3AF !important;
+        color: #374151 !important;
+    }
+    
+    .suggestion-btn:active {
+        transform: scale(0.98) !important;
+    }
+    
+    .suggestions-container {
+        margin-top: 0.5rem !important;
+        padding: 0.25rem !important;
+        background-color: #F9FAFB !important;
+        border-radius: 0.375rem !important;
+        border: 1px dashed #D1D5DB !important;
+        display: grid !important;
+        grid-template-columns: repeat(5, 1fr) !important;
+        gap: 0.2rem !important;
+    }
+    
+    @media (max-width: 768px) {
+        .suggestions-container {
+            grid-template-columns: repeat(3, 1fr) !important;
+        }
+    }
+    
+    @media (max-width: 480px) {
+        .suggestions-container {
+            grid-template-columns: repeat(2, 1fr) !important;
+        }
+    }
+</style>
+
 <section>
     <header class="page-header">
         <h1>AudioMuse-AI - Instant Playlist</h1>
@@ -92,6 +144,15 @@
                     </span>
                 </label>
                 <textarea id="userInput" placeholder="e.g., Upbeat indie rock for a summer road trip" rows="4" required></textarea>
+                
+                <!-- Quick Suggestions - Compact single line -->
+                <div class="suggestions-container">
+                    <button type="button" class="suggestion-btn" data-text="Similar song to Red Hot Chili Peppers - By The Way">🎵 Similar Song</button>
+                    <button type="button" class="suggestion-btn" data-text="Songs from Blink-182 and Green Day">🎸 From Artists</button>
+                    <button type="button" class="suggestion-btn" data-text="Songs that sound like Iron Maiden, Metallica and Deep Purple">🤘 Sounds Like</button>
+                    <button type="button" class="suggestion-btn" data-text="Give me the top songs of Madonna">👑 Artist's Own Hits</button>
+                    <button type="button" class="suggestion-btn" data-text="Danceable happy songs with 120 BPM">💃 Genre/Mood/Tempo</button>
+                </div>
             </div>
         </div>
 
@@ -307,49 +368,203 @@
                 createPlaylistSection.classList.add('hidden'); // Hide by default
                 mediaServerResponseArea.textContent = ''; // Clear previous responses
 
-                // --- 1. AI Interaction Log (Collapsible) ---
-                const detailsElement = document.createElement('details');
-                detailsElement.style.marginBottom = '1rem';
-
-                const summaryElement = document.createElement('summary');
-                summaryElement.style.cursor = 'pointer';
-                summaryElement.style.fontWeight = '500';
-                summaryElement.textContent = 'Show/Hide AI Interaction Log';
-                detailsElement.appendChild(summaryElement);
-
-                const logContentDiv = document.createElement('div');
-                logContentDiv.style.padding = '1rem';
-                logContentDiv.style.marginTop = '0.5rem';
-                logContentDiv.style.border = '1px solid #E5E7EB';
-                logContentDiv.style.borderRadius = '0.5rem';
-                logContentDiv.style.backgroundColor = '#F9FAFB';
+                // --- Parse the log messages for better formatting ---
+                const logText = responseData.message || "No message from AI.";
+                const logLines = logText.split('\n');
                 
-                const messageParagraph = document.createElement('p');
-                messageParagraph.textContent = responseData.message || "No message from AI.";
-                logContentDiv.appendChild(messageParagraph);
+                // Create structured sections
+                const sections = {
+                    main: [],
+                    attempts: []
+                };
+                
+                let currentSection = 'main';
+                let currentAttempt = null;
+                
+                for (const line of logLines) {
+                    if (line.includes('========== ATTEMPT')) {
+                        // Save previous attempt
+                        if (currentAttempt) {
+                            sections.attempts.push(currentAttempt);
+                        }
+                        // Start new attempt
+                        currentAttempt = {
+                            title: line.replace(/=/g, '').trim(),
+                            content: []
+                        };
+                        currentSection = 'attempt';
+                    } else if (line.trim()) {
+                        if (currentSection === 'main') {
+                            sections.main.push(line);
+                        } else if (currentSection === 'attempt' && currentAttempt) {
+                            currentAttempt.content.push(line);
+                        }
+                    }
+                }
+                
+                // Add last attempt
+                if (currentAttempt) {
+                    sections.attempts.push(currentAttempt);
+                }
 
-                detailsElement.appendChild(logContentDiv);
-                responseArea.appendChild(detailsElement);
+                // --- 1. Main Summary (Collapsed by default) ---
+                const mainSummaryDetails = document.createElement('details');
+                mainSummaryDetails.style.marginBottom = '1rem';
+                mainSummaryDetails.open = false; // Explicitly collapsed
+                
+                const mainSummarySummary = document.createElement('summary');
+                mainSummarySummary.style.cursor = 'pointer';
+                mainSummarySummary.style.fontWeight = '600';
+                mainSummarySummary.style.padding = '0.75rem';
+                mainSummarySummary.style.backgroundColor = '#F3F4F6';
+                mainSummarySummary.style.borderRadius = '0.375rem';
+                mainSummarySummary.style.borderLeft = '4px solid #3B82F6';
+                mainSummarySummary.textContent = 'Request Summary';
+                mainSummaryDetails.appendChild(mainSummarySummary);
+                
+                const mainSummaryContent = document.createElement('div');
+                mainSummaryContent.style.padding = '1rem';
+                mainSummaryContent.style.marginTop = '0.5rem';
+                mainSummaryContent.style.border = '1px solid #E5E7EB';
+                mainSummaryContent.style.borderRadius = '0.375rem';
+                mainSummaryContent.style.backgroundColor = '#F9FAFB';
+                
+                sections.main.forEach(line => {
+                    const p = document.createElement('p');
+                    p.textContent = line;
+                    p.style.marginBottom = '0.25rem';
+                    mainSummaryContent.appendChild(p);
+                });
+                
+                mainSummaryDetails.appendChild(mainSummaryContent);
+                responseArea.appendChild(mainSummaryDetails);
 
-                // --- 2. Executed Query (Collapsible) ---
+                // --- 2. Processing Details (Collapsible per Attempt) ---
+                if (sections.attempts.length > 0) {
+                const processingDetails = document.createElement('details');
+                processingDetails.style.marginTop = '1.5rem';
+                processingDetails.style.marginBottom = '1rem';
+                processingDetails.open = false; // Collapsed by default
+                
+                const processingSummary = document.createElement('summary');
+                processingSummary.style.cursor = 'pointer';
+                processingSummary.style.fontWeight = '600';
+                processingSummary.style.padding = '0.75rem';
+                processingSummary.style.backgroundColor = '#E0E7FF';
+                processingSummary.style.borderRadius = '0.375rem';
+                processingSummary.style.borderLeft = '4px solid #6366F1';
+                processingSummary.textContent = `AI Processing Details (${sections.attempts.length} iterations)`;
+                processingDetails.appendChild(processingSummary);
+                
+                const processingContent = document.createElement('div');
+                processingContent.style.padding = '1rem';
+                
+                sections.attempts.forEach((attempt, attemptIdx) => {
+                    const attemptDetails = document.createElement('details');
+                    attemptDetails.style.marginBottom = '1rem';
+                    attemptDetails.open = false; // All collapsed                        const attemptSummary = document.createElement('summary');
+                        attemptSummary.style.cursor = 'pointer';
+                        attemptSummary.style.fontWeight = '600';
+                        attemptSummary.style.padding = '0.75rem';
+                        attemptSummary.style.backgroundColor = attemptIdx === sections.attempts.length - 1 ? '#D1FAE5' : '#FEE2E2';
+                        attemptSummary.style.borderRadius = '0.375rem';
+                        attemptSummary.style.borderLeft = attemptIdx === sections.attempts.length - 1 ? '4px solid #10B981' : '4px solid #EF4444';
+                        attemptSummary.textContent = attempt.title;
+                        attemptDetails.appendChild(attemptSummary);
+                        
+                        const attemptContent = document.createElement('div');
+                        attemptContent.style.padding = '1rem';
+                        attemptContent.style.marginTop = '0.5rem';
+                        attemptContent.style.border = '1px solid ' + (attemptIdx === sections.attempts.length - 1 ? '#A7F3D0' : '#FECACA');
+                        attemptContent.style.borderRadius = '0.375rem';
+                        attemptContent.style.backgroundColor = '#F9FAFB';
+                        attemptContent.style.maxHeight = '500px';
+                        attemptContent.style.overflowY = 'auto';
+                        
+                        // Add all content with intelligent formatting
+                        attempt.content.forEach(line => {
+                            const p = document.createElement('p');
+                            p.style.fontSize = '0.9rem';
+                            p.style.marginBottom = '0.5rem';
+                            p.style.lineHeight = '1.5';
+                            
+                            // Highlight important lines
+                            if (line.includes('📋 AI EXECUTION PLAN') || line.includes('🤖 EXECUTING')) {
+                                p.style.fontWeight = '700';
+                                p.style.color = '#1F2937';
+                                p.style.backgroundColor = '#F3F4F6';
+                                p.style.padding = '0.5rem';
+                                p.style.borderRadius = '0.25rem';
+                                p.style.marginTop = '0.75rem';
+                            } else if (line.includes('✓') || line.includes('✅ SUCCESS')) {
+                                p.style.color = '#059669';
+                                if (line.includes('✅ SUCCESS')) {
+                                    p.style.fontWeight = '700';
+                                    p.style.fontSize = '1rem';
+                                }
+                            } else if (line.includes('⚠️') || line.includes('Failed') || line.includes('Error')) {
+                                p.style.color = '#D97706';
+                            } else if (line.includes('❌') || line.includes('failed')) {
+                                p.style.color = '#DC2626';
+                                p.style.fontWeight = '600';
+                            } else if (line.includes('🔄 PROGRESSIVE REFINEMENT')) {
+                                p.style.fontWeight = '700';
+                                p.style.color = '#2563EB';
+                                p.style.backgroundColor = '#EFF6FF';
+                                p.style.padding = '0.5rem';
+                                p.style.borderRadius = '0.25rem';
+                                p.style.marginTop = '0.75rem';
+                            } else if (line.includes('Parameters:') || line.includes('Intent:') || line.includes('Strategy:')) {
+                                p.style.fontWeight = '600';
+                                p.style.color = '#4B5563';
+                            } else if (line.includes('📝 SQL:')) {
+                                p.style.fontFamily = 'monospace';
+                                p.style.fontSize = '0.85rem';
+                                p.style.backgroundColor = '#FFFBEB';
+                                p.style.padding = '0.5rem';
+                                p.style.borderRadius = '0.25rem';
+                                p.style.borderLeft = '3px solid #F59E0B';
+                                p.style.overflowX = 'auto';
+                            }
+                            
+                            p.textContent = line;
+                            attemptContent.appendChild(p);
+                        });
+                        
+                        attemptDetails.appendChild(attemptContent);
+                        processingContent.appendChild(attemptDetails);
+                    });
+                    
+                    processingDetails.appendChild(processingContent);
+                    responseArea.appendChild(processingDetails);
+                }
+
+                // --- 3. Executed Query (Collapsed by default) ---
                 if (responseData.executed_query) {
                     const queryDetailsElement = document.createElement('details');
+                    queryDetailsElement.style.marginTop = '1.5rem';
                     queryDetailsElement.style.marginBottom = '1rem';
+                    queryDetailsElement.open = false; // Explicitly collapsed
 
                     const querySummaryElement = document.createElement('summary');
                     querySummaryElement.style.cursor = 'pointer';
-                    querySummaryElement.style.fontWeight = '500';
+                    querySummaryElement.style.fontWeight = '600';
+                    querySummaryElement.style.padding = '0.75rem';
+                    querySummaryElement.style.backgroundColor = '#FEF3C7';
+                    querySummaryElement.style.borderRadius = '0.375rem';
                     querySummaryElement.textContent = 'Show/Hide Executed SQL Query';
                     queryDetailsElement.appendChild(querySummaryElement);
 
                     const queryContentDiv = document.createElement('div');
                     queryContentDiv.style.padding = '1rem';
                     queryContentDiv.style.marginTop = '0.5rem';
-                    queryContentDiv.style.border = '1px solid #E5E7EB';
-                    queryContentDiv.style.borderRadius = '0.5rem';
-                    queryContentDiv.style.backgroundColor = '#F9FAFB';
+                    queryContentDiv.style.border = '1px solid #FDE68A';
+                    queryContentDiv.style.borderRadius = '0.375rem';
+                    queryContentDiv.style.backgroundColor = '#FFFBEB';
                     queryContentDiv.style.whiteSpace = 'pre-wrap';
                     queryContentDiv.style.wordBreak = 'break-all';
+                    queryContentDiv.style.fontFamily = 'monospace';
+                    queryContentDiv.style.fontSize = '0.875rem';
                     
                     const queryCodeElement = document.createElement('code');
                     queryCodeElement.textContent = responseData.executed_query;
@@ -359,14 +574,26 @@
                     responseArea.appendChild(queryDetailsElement);
                 }
 
-                // --- 3. Playlist Results ---
+                // --- 4. Playlist Results (Always Expanded) ---
                 if (responseData.query_results && responseData.query_results.length > 0) {
+                    const resultsDiv = document.createElement('div');
+                    resultsDiv.style.marginTop = '2rem';
+                    resultsDiv.style.padding = '1.5rem';
+                    resultsDiv.style.backgroundColor = '#ECFDF5';
+                    resultsDiv.style.borderRadius = '0.5rem';
+                    resultsDiv.style.border = '2px solid #10B981';
+                    
                     const title = document.createElement('h3');
-                    title.textContent = 'Generated Playlist';
-                    responseArea.appendChild(title);
+                    title.style.color = '#059669';
+                    title.style.marginBottom = '1rem';
+                    title.style.fontWeight = '700';
+                    title.textContent = `Generated Playlist (${responseData.query_results.length} songs)`;
+                    resultsDiv.appendChild(title);
 
                     const songList = document.createElement('ol');
                     songList.className = 'song-list';
+                    songList.style.maxHeight = '400px';
+                    songList.style.overflowY = 'auto';
                     
                     document.getElementById('playlistItemIds').value = ''; // Clear previous item IDs
 
@@ -377,11 +604,14 @@
                         const currentItemIds = document.getElementById('playlistItemIds').value;
                         document.getElementById('playlistItemIds').value = currentItemIds ? `${currentItemIds},${song.item_id}` : song.item_id;
                     });
-                    responseArea.appendChild(songList);
+                    resultsDiv.appendChild(songList);
+                    responseArea.appendChild(resultsDiv);
                     createPlaylistSection.classList.remove('hidden'); // Show the create playlist form
                 } else if (responseData.executed_query) {
                      const noResultsMessage = document.createElement('p');
                     noResultsMessage.className = 'italic';
+                    noResultsMessage.style.marginTop = '1rem';
+                    noResultsMessage.style.color = '#6B7280';
                     noResultsMessage.textContent = "The query returned no songs.";
                     responseArea.appendChild(noResultsMessage);
                 }
@@ -450,6 +680,14 @@
             aiProviderSelect.addEventListener('change', updateAIProviderVisibility);
             playlistForm.addEventListener('submit', handleChatSubmit);
             createPlaylistForm.addEventListener('submit', handleCreateMediaServerPlaylist);
+            
+            // --- Suggestion Button Handlers ---
+            document.querySelectorAll('.suggestion-btn').forEach(button => {
+                button.addEventListener('click', function() {
+                    userInput.value = this.getAttribute('data-text');
+                    userInput.focus();
+                });
+            });
         })();
     </script>
     <script src="{{ url_for('static', filename='menu.js') }}"></script>

@@ -442,7 +442,9 @@ def get_tracks_from_album(album_id, user_creds=None):
         # Apply artist field prioritization to each track
         for item in items:
             title = item.get('Name', 'Unknown')
-            item['AlbumArtist'] = _select_best_artist(item, title)
+            artist_name, artist_id = _select_best_artist(item, title)
+            item['AlbumArtist'] = artist_name
+            item['ArtistId'] = artist_id
         
         return items
     except Exception as e:
