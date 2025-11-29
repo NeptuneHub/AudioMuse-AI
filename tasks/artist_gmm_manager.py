@@ -24,15 +24,8 @@ from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
-# GPU Acceleration: Try to import cuML for GMM; fallback to CPU sklearn
-try:
-    from cuml.mixture import GaussianMixture
-    GPU_ACCELERATION_AVAILABLE = True
-    logger.info("GPU acceleration enabled for Artist GMM (using cuML).")
-except ImportError:
-    from sklearn.mixture import GaussianMixture
-    GPU_ACCELERATION_AVAILABLE = False
-    logger.info("GPU acceleration not available for Artist GMM. Using CPU (sklearn).")
+# Import sklearn GMM (CPU-only)
+from sklearn.mixture import GaussianMixture
 
 # Attempt to import Voyager (may be missing on non-AVX systems)
 try:
@@ -53,6 +46,7 @@ GMM_COVARIANCE_TYPE = 'diag'  # 'diag' is faster than 'full' and works well for 
 GMM_MAX_ITER = 100
 GMM_N_INIT = 3
 MIN_TRACKS_PER_ARTIST = 1  # Minimum tracks needed to build a GMM for an artist (lowered to include all artists)
+
 
 # Voyager index parameters (similar to song index)
 VOYAGER_M = 32  # Number of bi-directional links created for every new element
@@ -108,48 +102,26 @@ def select_optimal_gmm_components(embeddings: np.ndarray, min_components: int = 
     
     best_bic = float('inf')
     best_n_components = min(min_components, max_feasible)
-    
+
     # Try different numbers of components
     for n_components in range(1, max_feasible + 1):
         try:
-            gmm_kwargs = {
-                'n_components': n_components,
-                'covariance_type': GMM_COVARIANCE_TYPE,
-                'max_iter': GMM_MAX_ITER,
-                'n_init': GMM_N_INIT,
-                'random_state': 42
-            }
-
-            gmm = GaussianMixture(**gmm_kwargs)
+            gmm = GaussianMixture(
+                n_components=n_components,
+                covariance_type=GMM_COVARIANCE_TYPE,
+                max_iter=GMM_MAX_ITER,
+                n_init=GMM_N_INIT,
+                random_state=42
+            )
             gmm.fit(embeddings)
-            
-            # Compute BIC (lower is better)
-            # Check if bic method exists (cuml GMM has bic?)
-            # If not available in cuML (it might not be), we might have to skip BIC or fallback to AIC/score
-            if hasattr(gmm, 'bic'):
-                bic = gmm.bic(embeddings)
-            else:
-                # Fallback calculation if cuML doesn't provide bic directly
-                # BIC = k * ln(n) - 2 * ln(L)
-                # k = number of free parameters
-                # L = likelihood
-                # n_features * n_components + n_components * n_features (diag cov) + n_components - 1 (weights)
-                n_features = embeddings.shape[1]
-                n_samples = len(embeddings)
-                # n_params for diag cov:
-                # means: n_components * n_features
-                # covars: n_components * n_features
-                # weights: n_components - 1
-                n_params = n_components * n_features * 2 + n_components - 1
 
-                score = gmm.score(embeddings) # Average log likelihood per sample
-                log_likelihood = score * n_samples
-                bic = n_params * np.log(n_samples) - 2 * log_likelihood
+            # Compute BIC (sklearn has built-in method)
+            bic = gmm.bic(embeddings)
 
             if bic < best_bic:
                 best_bic = bic
                 best_n_components = n_components
-                
+
         except Exception as e:
             logger.debug(f"Failed to fit GMM with {n_components} components: {e}")
             continue
@@ -162,16 +134,16 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
     """
     Fit a Gaussian Mixture Model to represent an artist's sound profile.
     Uses the existing embedding vectors (same as used for song similarity).
-    
+
     For artists with < 5 songs: Uses each song as a GMM component with equal weights.
     This is more honest than inventing artificial clusters - it represents the actual songs.
-    
-    For artists with >= 5 songs: Fits a proper GMM using sklearn's GaussianMixture.
-    
+
+    For artists with >= 5 songs: Fits a proper GMM using sklearn.
+
     Args:
         artist_name: Name of the artist
         track_embeddings: List of embedding vectors from the artist's tracks
-        
+
     Returns: Dictionary containing GMM parameters or None if fitting fails
     """
     if len(track_embeddings) < MIN_TRACKS_PER_ARTIST:
@@ -212,55 +184,36 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
             logger.info(f"Created {n_components}-component GMM for artist '{artist_name}' (1 component per song, equal weights)")
             return gmm_params
         
-        # Multi-song artist (>= 5 songs): fit GMM normally using sklearn
+        # Multi-song artist (>= 5 songs): fit GMM using sklearn
         # Automatically select optimal number of components for this artist
         optimal_n_components = select_optimal_gmm_components(all_embeddings)
-        
-        # Fit GMM to the embedding vectors
-        # Build kwargs dynamically to handle API differences (random_state vs seed) or GPU requirements
-        gmm_kwargs = {
-            'n_components': optimal_n_components,
-            'covariance_type': GMM_COVARIANCE_TYPE,
-            'max_iter': GMM_MAX_ITER,
-            'n_init': GMM_N_INIT,
-        }
-        
-        # cuML and sklearn handle random state differently
-        if GPU_ACCELERATION_AVAILABLE:
-            gmm_kwargs['random_state'] = 42
-        else:
-            gmm_kwargs['random_state'] = 42
 
-        gmm = GaussianMixture(**gmm_kwargs)
+        # Create and fit GMM using sklearn
+        gmm = GaussianMixture(
+            n_components=optimal_n_components,
+            covariance_type=GMM_COVARIANCE_TYPE,
+            max_iter=GMM_MAX_ITER,
+            n_init=GMM_N_INIT,
+            random_state=42
+        )
         gmm.fit(all_embeddings)
-        
-        # Extract GMM parameters
-        # Note: cuML attributes might be slightly different or return cupy arrays which need to be converted
-        weights = gmm.weights_
-        means = gmm.means_
-        covariances = gmm.covariances_
 
-        # Convert from cupy if needed (cuml returns cupy arrays)
-        if hasattr(weights, 'get'): weights = weights.get() # cupy -> numpy
-        if hasattr(means, 'get'): means = means.get()
-        if hasattr(covariances, 'get'): covariances = covariances.get()
-
-        # Also ensure they are lists for JSON serialization
-        if hasattr(weights, 'tolist'): weights = weights.tolist()
-        if hasattr(means, 'tolist'): means = means.tolist()
-        if hasattr(covariances, 'tolist'): covariances = covariances.tolist()
+        # Extract GMM parameters from sklearn model
+        weights = gmm.weights_.tolist()
+        means = gmm.means_.tolist()
+        covariances = gmm.covariances_.tolist()
 
         gmm_params = {
             'weights': weights,
             'means': means,
             'covariances': covariances,
-            'n_components': optimal_n_components,  # Store the actual number used
+            'n_components': optimal_n_components,
             'covariance_type': GMM_COVARIANCE_TYPE,
             'n_features': all_embeddings.shape[1],
             'n_tracks': len(track_embeddings),
             'is_few_songs': False
         }
-        
+
         logger.info(f"Fitted GMM for artist '{artist_name}' with {len(track_embeddings)} tracks, {optimal_n_components} components, {all_embeddings.shape[1]}-dim embeddings")
         
         return gmm_params

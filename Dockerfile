@@ -122,10 +122,11 @@ COPY requirements/ /app/requirements/
 # Install Python packages with uv (combined in single layer for efficiency)
 # GPU builds: cupy, cuml, onnxruntime-gpu, voyager
 # CPU builds: onnxruntime (CPU only)
+# Note: --index-strategy unsafe-best-match resolves conflicts between pypi.nvidia.com and pypi.org
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
         echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager)"; \
-        uv pip install --system -r /app/requirements/gpu.txt -r /app/requirements/common.txt; \
+        uv pip install --system --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt; \
     else \
         echo "CPU base image: installing onnxruntime (CPU only)"; \
         uv pip install --system -r /app/requirements/cpu.txt -r /app/requirements/common.txt; \
