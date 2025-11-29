@@ -869,6 +869,14 @@ This section details the "Music Map" feature, which provides an interactive 2D v
 
 The Music Map offers users a visual way to explore their music library based on sonic similarity. Songs that sound similar are plotted closer together in a 2D space. Users can interact with the map to discover relationships, select songs, and create playlists or song paths.
 
+#### How the map works
+
+The analysis begins by processing a raw audio sample and passing it through a neural network. The neural network does not output human-readable attributes like tempo or energy (although these are stored separately for other purposes). Instead, it generates a vector of 200 floating-point numbers. While this vector is not interpretable by a human, it is highly meaningful to the algorithm, as it represents patterns that empower our similarity search. Consequently, we store this 200-feature vector in our Audiomuse-AI database instead of just 3-4 human-readable values.
+
+To visualize this 200-dimensional vector on a two-dimensional map (with X and Y coordinates), we use another machine learning algorithm called UMAP. UMAP transforms the 200-dimensional data into a 2-dimensional space, inevitably involving some rescaling and approximation.
+
+This is why a musical path on the map may not appear perfectly strict; the visualization is an approximation of the more complex, high-dimensional data. The final two numbers plotted on the map are thus the result of two distinct rounds of machine learning processing.
+
 #### **Key User Interactions & Workflow**
 
 1. **Prerequisite:** The "Start Analysis" task must have been run, which generates the embeddings and potentially a precomputed 2D projection.  

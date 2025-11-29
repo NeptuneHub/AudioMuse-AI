@@ -74,15 +74,36 @@ docker-compose up --build -d
 ```
 
 ## **PR**
+### Before You Start
+1. **Check existing PRs and issues** to avoid duplicate work
+2. **Open a Draft PR early** for significant changes to discuss your approach and get feedback before investing too much time
+   - When creating a PR on GitHub, click the dropdown next to "Create Pull Request" and select **"Create Draft Pull Request"**
+   - This gives visibility to other contributors and maintainers can provide early guidance
+3. **Discuss breaking changes** or major architectural decisions in an issue or draft PR first
 
-When you find something on which you would like to work you can fork the repository and start working on. When then you open a PR to be merged is important that:
+### PR Requirements
+When submitting a pull request, ensure:
 
-* You describe clearly what do you want to achive with thi;
-* The code is tested on the main feature to avoid regression on at least one architecture and one mediaserver, where main feature in this moment are:
-  * Analysis and Clustering,  Instant Playlist, Playlist from Similar Song, Song Path and Sonic Fingerprint (basicaly reach the integrated front-end and do at least 1 test for each function in the meny)
-* The code that you bring is alligned with the actual license of AudioMuse-AI
+* **Clear description:** Explain what the PR achieves and why the change is needed. Also cleary explain how to test it.
+* **Testing:** Verify core features work on at least one architecture (Intel/ARM) and one media server:
+  * Analysis and Clustering
+  * Instant Playlist
+  * Playlist from Similar Song
+  * Song Path
+  * Sonic Fingerprint
+  * *(Basically, test each function in the integrated front-end menu at least once)*
+* **License compliance:** Your code must align with AudioMuse-AI's license
+* **CPU Compatibility:** AudioMuse-AI supports both Intel and ARM CPUs, including older Intel processors. PRs that introduce dependencies breaking compatibility with older CPUs will not be merged
 
-It's also useful if you check for other open PR to look if there is someoneelse working on the same feature. For long implementation is useful if you create the PR as a Draft from the beginning to give visibility from other user.
+### How to Open a Draft PR
+1. Push your branch to your fork
+2. Go to the main repository and click **"New Pull Request"**
+3. Select your fork and branch
+4. Click the dropdown arrow next to **"Create Pull Request"**
+5. Select **"Create Draft Pull Request"**
+6. Once ready for review, click **"Ready for review"** in the PR
+
+This workflow helps avoid spending time on PRs that may not align with project goals.
 
 ##  **Related Repositories** 
   > * [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI): the core application, it run Flask and Worker containers to actually run all the feature;
