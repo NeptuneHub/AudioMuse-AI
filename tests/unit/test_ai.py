@@ -501,9 +501,9 @@ class TestGetAIPlaylistName:
     @patch('ai.get_ollama_playlist_name')
     def test_applies_length_constraints(self, mock_ollama, mock_clean):
         """Test that length constraints are enforced"""
-        # Name too short
-        mock_ollama.return_value = "Short"
-        mock_clean.return_value = "Short"
+        # Name too short (MIN_LENGTH is 5, so use 4 chars)
+        mock_ollama.return_value = "Test"
+        mock_clean.return_value = "Test"
 
         result = get_ai_playlist_name(
             provider="OLLAMA",
