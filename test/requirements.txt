@@ -20,6 +20,21 @@ ftfy
 pytest>=7.0.0
 requests
 
+# Additional runtime dependencies needed for imports
+redis
+rq
+Flask
+pyyaml
+voyager
+rapidfuzz
+sqlglot
+six
+flasgger
+umap-learn
+python-mpd2
+google-generativeai
+mistralai
+
 # Notes:
 # - ffmpeg (system binary) is NOT included here — keep pydub/ffmpeg calls stubbed or
 #   install ffmpeg separately on your machine if you want full fallback behavior.

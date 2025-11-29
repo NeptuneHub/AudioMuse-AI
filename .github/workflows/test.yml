@@ -26,10 +26,7 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        # Install test requirements from test/requirements.txt
         pip install -r test/requirements.txt
-        # Install additional dependencies needed for importing tasks.analysis
-        pip install redis rq Flask pyyaml python-mpd2 rapidfuzz sqlglot umap-learn flasgger six
 
     - name: Verify test files exist
       run: |
