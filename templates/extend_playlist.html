@@ -28,7 +28,7 @@
 
     .slider-value {
         font-weight: 600;
-        color: var(--primary-color, #3B82F6);
+        color: var(--color-primary);
     }
 
     input[type="range"] {
@@ -47,16 +47,17 @@
     .results-table td {
         padding: 0.75rem;
         text-align: left;
-        border-bottom: 1px solid #e5e7eb;
+        border-bottom: 1px solid var(--border-color);
     }
 
     .results-table th {
-        background-color: #f3f4f6;
+        background-color: var(--bg-table-header);
         font-weight: 600;
+        color: var(--text-sub);
     }
 
     .results-table tr:hover {
-        background-color: #f9fafb;
+        background-color: var(--bg-table-hover);
     }
 
     .action-buttons {
@@ -65,7 +66,7 @@
     }
 
     .btn-include {
-        background-color: #16A34A;
+        background-color: var(--color-success);
         color: white;
         border: none;
         padding: 0.5rem 1rem;
@@ -75,11 +76,11 @@
     }
 
     .btn-include:hover {
-        background-color: #15803D;
+        background-color: var(--color-success-hover);
     }
 
     .btn-exclude {
-        background-color: #DC2626;
+        background-color: var(--color-danger);
         color: white;
         border: none;
         padding: 0.5rem 1rem;
@@ -89,11 +90,11 @@
     }
 
     .btn-exclude:hover {
-        background-color: #B91C1C;
+        background-color: var(--color-danger-hover);
     }
 
     .btn-play {
-        background-color: #3B82F6;
+        background-color: var(--color-primary);
         color: white;
         border: none;
         padding: 0.5rem 1rem;
@@ -108,15 +109,15 @@
     }
 
     .btn-play:hover {
-        background-color: #2563EB;
+        background-color: var(--color-primary-hover);
     }
 
     .included-row {
-        background-color: #D1FAE5 !important;
+        background-color: var(--status-success-bg) !important;
     }
 
     .excluded-row {
-        background-color: #FEE2E2 !important;
+        background-color: var(--status-failure-bg) !important;
         opacity: 0.6;
     }
 
@@ -129,12 +130,12 @@
     }
 
     .status-included {
-        background-color: #16A34A;
+        background-color: var(--color-success);
         color: white;
     }
 
     .status-excluded {
-        background-color: #DC2626;
+        background-color: var(--color-danger);
         color: white;
     }
 
@@ -151,8 +152,8 @@
         display: flex;
         gap: 2rem;
         padding: 0.75rem 1.5rem;
-        background-color: #F9FAFB;
-        border: 1px solid #E5E7EB;
+        background-color: var(--bg-code);
+        border: 1px solid var(--border-color);
         border-radius: 0.5rem;
         flex: 1;
         align-items: center;
@@ -211,23 +212,23 @@
 
     .stat-label {
         font-size: 0.875rem;
-        color: #6B7280;
+        color: var(--text-muted);
     }
 
     .stat-value {
         font-size: 1.25rem;
         font-weight: 700;
-        color: #1F2937;
+        color: var(--text-title);
     }
 
-    /* Filter Builder Styles - Light Theme */
+    /* Filter Builder Styles - Variable Aware */
     .filter-builder {
-        background-color: #f9fafb;
+        background-color: var(--bg-code);
         padding: 1.5rem;
         border-radius: 0.5rem;
-        color: #1f2937;
+        color: var(--text-main);
         margin-bottom: 1.5rem;
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--border-color);
     }
 
     .filter-header {
@@ -238,9 +239,9 @@
     }
 
     .filter-header select {
-        background-color: white;
-        color: #1f2937;
-        border: 1px solid #d1d5db;
+        background-color: var(--bg-input);
+        color: var(--text-main);
+        border: 1px solid var(--border-color-darker);
         padding: 0.5rem;
         border-radius: 0.375rem;
     }
@@ -255,9 +256,9 @@
 
     .filter-row select,
     .filter-row input {
-        background-color: white;
-        color: #1f2937;
-        border: 1px solid #d1d5db;
+        background-color: var(--bg-input);
+        color: var(--text-main);
+        border: 1px solid var(--border-color-darker);
         padding: 0.5rem;
         border-radius: 0.375rem;
         flex: 1;
@@ -267,7 +268,7 @@
     .btn-add-filter {
         background: none;
         border: none;
-        color: #3B82F6;
+        color: var(--color-primary);
         font-size: 1.5rem;
         cursor: pointer;
         line-height: 1;
@@ -277,25 +278,25 @@
     .btn-remove-filter {
         background: none;
         border: none;
-        color: #9ca3af;
+        color: var(--text-muted);
         font-size: 1.5rem;
         cursor: pointer;
         line-height: 1;
     }
 
     .btn-add-filter:hover {
-        color: #2563EB;
+        color: var(--color-primary-hover);
     }
 
     .btn-remove-filter:hover {
-        color: #EF4444;
+        color: var(--color-danger);
     }
 
     .tab-container {
         display: flex;
         gap: 1rem;
         margin-bottom: 1rem;
-        border-bottom: 2px solid #e5e7eb;
+        border-bottom: 2px solid var(--border-color);
     }
 
     .tab-btn {
@@ -310,8 +311,8 @@
     }
 
     .tab-btn.active {
-        color: var(--primary-color, #3B82F6);
-        border-bottom-color: var(--primary-color, #3B82F6);
+        color: var(--color-primary);
+        border-bottom-color: var(--color-primary);
     }
 
     /* Sticky Player Styles */
@@ -407,7 +408,7 @@
         align-items: center;
         gap: 0.75rem;
         padding: 0.75rem 1rem;
-        background-color: #f3f4f6;
+        background-color: var(--bg-code);
         border-radius: 0.5rem;
         flex: 0 1 50%;
         max-width: 50%;
@@ -416,7 +417,7 @@
     .save-playlist-inline h3 {
         margin: 0;
         font-size: 0.875rem;
-        color: #6B7280;
+        color: var(--text-muted);
         white-space: nowrap;
     }
 
@@ -424,7 +425,7 @@
         flex: 1;
         min-width: 150px;
         padding: 0.5rem;
-        border: 1px solid #d1d5db;
+        border: 1px solid var(--border-color-darker);
         border-radius: 0.375rem;
     }
 
@@ -455,19 +456,19 @@
 
     .track-title {
         font-weight: 600;
-        color: #1f2937;
+        color: var(--text-main);
     }
 
     .track-artist {
         font-size: 0.875rem;
-        color: #6b7280;
+        color: var(--text-muted);
     }
 
     /* Dropdown styling for filter values */
     .filter-value-dropdown {
-        background-color: white;
-        color: #1f2937;
-        border: 1px solid #d1d5db;
+        background-color: var(--bg-input);
+        color: var(--text-main);
+        border: 1px solid var(--border-color-darker);
         padding: 0.5rem;
         border-radius: 0.375rem;
         flex: 1;
