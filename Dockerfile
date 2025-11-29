@@ -76,6 +76,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       mistralai umap-learn pydub python-mpd2 \
       onnx==1.14.1 resampy librosa==0.11.0 \
       flatbuffers packaging protobuf sympy \
+      mcp httpx \
     && find /usr/local/lib/python3.10/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.10/dist-packages -type f -name "*.pyc" -delete \
     && find /usr/local/lib/python3.10/dist-packages -type f -name "*.pyo" -delete
