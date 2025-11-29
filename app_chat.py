@@ -127,9 +127,18 @@ def clean_and_validate_sql(raw_sql):
 
     # 3. Fix unescaped single quotes *within* words that might remain after normalization
     #    and the \'-to-'' conversion.
-    #    Example: "Player's" (from "Player’s" or direct output) becomes "Player''s".
+    #    Example: "Player's" (from "Player's" or direct output) becomes "Player''s".
     #    This regex looks for a word character, a single quote, and another word character.
     cleaned_sql = re.sub(r"(\w)'(\w)", r"\1''\2", cleaned_sql)
+
+    # 4. Check for truncated SQL (unbalanced quotes or parentheses)
+    single_quotes = cleaned_sql.count("'")
+    open_parens = cleaned_sql.count("(")
+    close_parens = cleaned_sql.count(")")
+    if single_quotes % 2 != 0:
+        return None, "SQL appears truncated (unbalanced quotes)"
+    if open_parens != close_parens:
+        return None, "SQL appears truncated (unbalanced parentheses)"
 
     try:
         # Parse the query using sqlglot, specifying PostgreSQL dialect
@@ -142,10 +151,10 @@ def clean_and_validate_sql(raw_sql):
 
         # Re-generate the SQL from the potentially modified structure.
         cleaned_sql = expression.sql(dialect='postgres', pretty=False).strip().rstrip(';')
-    except sqlglot.errors.ParseError as e:
+    except (sqlglot.errors.ParseError, sqlglot.errors.TokenError) as e:
         # Log full parse exception server-side for diagnostics, but do not expose
         # parser internals to API clients.
-        logger.exception("SQLglot parsing error while validating AI SQL")
+        logger.exception("SQLglot parsing/tokenizing error while validating AI SQL")
         return None, "SQL parsing error"
     return cleaned_sql, None
 
