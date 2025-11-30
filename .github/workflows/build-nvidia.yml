@@ -1,4 +1,4 @@
-name: Build, Test, and Push AudioMuse AI Docker Image with NVIDIA support
+name: Build and Push AudioMuse AI Docker Image with NVIDIA support
 
 on:
   push:
@@ -14,7 +14,7 @@ on:
         type: string
 
 jobs:
-  build-and-test:
+  build-and-push:
     runs-on: ubuntu-latest
 
     permissions:
@@ -26,19 +26,15 @@ jobs:
         uses: jlumbroso/free-disk-space@main
         with:
           swap-storage: false
-          large-packages: true  # Changed: Remove large packages (saves ~8-10 GB)
+          large-packages: true  # Remove large packages (saves ~8-10 GB)
           tool-cache: true
           android: true
           dotnet: true
           haskell: true
           docker-images: true
 
-
       - name: Checkout code
         uses: actions/checkout@v4
-        # Removed lfs: true as models are now downloaded directly in Dockerfile
-        # with:
-        #   lfs: true # <-- Removed this line
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -56,190 +52,31 @@ jobs:
           REPO_NAME_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           ALL_TAGS=""
 
-              if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-                # When compiling from a version tag, create both the versioned tag and latest-nvidia
-                VERSION_TAG=$(echo "${GITHUB_REF}" | sed -e 's|refs/tags/v||g')
-                VERSIONED_TAG="ghcr.io/$REPO_NAME_LOWER:${VERSION_TAG}-nvidia"
-                LATEST_TAG="ghcr.io/$REPO_NAME_LOWER:latest-nvidia"
-                ALL_TAGS="${VERSIONED_TAG},${LATEST_TAG}"
-                echo "Building versioned tag: $VERSIONED_TAG"
-                echo "Also tagging as latest: $LATEST_TAG"
-              elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-                # Manual run with version input
-                VERSION_TAG=$(echo "${{ inputs.version_tag }}" | sed -e 's|^v||g')
-                VERSIONED_TAG="ghcr.io/$REPO_NAME_LOWER:${VERSION_TAG}-nvidia"
-                LATEST_TAG="ghcr.io/$REPO_NAME_LOWER:latest-nvidia"
-                ALL_TAGS="${VERSIONED_TAG},${LATEST_TAG}"
-                echo "Building manual version tag: $VERSIONED_TAG"
-                echo "Also tagging as latest: $LATEST_TAG"
-              else
-                echo "This workflow is intended to run on tag pushes (refs/tags/v*) or manual dispatch. Exiting."
-                exit 1
-              fi
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            # When compiling from a version tag, create both the versioned tag and latest-nvidia
+            VERSION_TAG=$(echo "${GITHUB_REF}" | sed -e 's|refs/tags/v||g')
+            VERSIONED_TAG="ghcr.io/$REPO_NAME_LOWER:${VERSION_TAG}-nvidia"
+            LATEST_TAG="ghcr.io/$REPO_NAME_LOWER:latest-nvidia"
+            ALL_TAGS="${VERSIONED_TAG},${LATEST_TAG}"
+            echo "Building versioned tag: $VERSIONED_TAG"
+            echo "Also tagging as latest: $LATEST_TAG"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual run with version input
+            VERSION_TAG=$(echo "${{ inputs.version_tag }}" | sed -e 's|^v||g')
+            VERSIONED_TAG="ghcr.io/$REPO_NAME_LOWER:${VERSION_TAG}-nvidia"
+            LATEST_TAG="ghcr.io/$REPO_NAME_LOWER:latest-nvidia"
+            ALL_TAGS="${VERSIONED_TAG},${LATEST_TAG}"
+            echo "Building manual version tag: $VERSIONED_TAG"
+            echo "Also tagging as latest: $LATEST_TAG"
+          else
+            echo "This workflow is intended to run on tag pushes (refs/tags/v*) or manual dispatch. Exiting."
+            exit 1
+          fi
 
-              # Export the tags for subsequent steps (comma-separated)
-              echo "docker_tags=$ALL_TAGS" >> "$GITHUB_OUTPUT"
-              # Also export a simplified tag for internal testing purposes
-              echo "test_tag=audiomuse-ai-temp:latest" >> "$GITHUB_OUTPUT"
+          # Export the tags for subsequent steps (comma-separated)
+          echo "docker_tags=$ALL_TAGS" >> "$GITHUB_OUTPUT"
 
-      - name: Build Docker image (for testing)
-        id: docker_build_test
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: false # Do not push yet, just build
-          tags: ${{ steps.docker_tags.outputs.test_tag }}
-          load: false # Changed: Don't load into Docker daemon to save space
-          outputs: type=cacheonly # Only keep in BuildKit cache
-          build-args: |
-            BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
-          cache-from: type=gha,scope=nvidia
-          cache-to: type=gha,scope=nvidia,mode=max
-
-      - name: Run Flask App Container Health Check
-        if: false # Disabled: Cannot test without loading image (would need 20GB+ disk space)
-        run: |
-          echo "Starting temporary PostgreSQL container for Flask test..."
-          docker run -d --name postgres-flask-test \
-            -e POSTGRES_USER=testuser \
-            -e POSTGRES_PASSWORD=testpass \
-            -e POSTGRES_DB=testdb \
-            postgres:15-alpine
-
-          echo "Waiting for PostgreSQL (Flask test) to start..."
-          for i in $(seq 1 30); do
-            if docker exec postgres-flask-test pg_isready -U testuser -d testdb -q; then
-              echo "PostgreSQL (Flask test) is ready."
-              break
-            fi
-            echo "Waiting for PostgreSQL (Flask test)... ($i/30)"
-            sleep 2
-            if [ $i -eq 30 ]; then
-              echo "PostgreSQL (Flask test) did not become ready in time."
-              docker logs postgres-flask-test
-              exit 1
-            fi
-          done
-
-          echo "Starting Flask app container for health check..."
-          # Run the container in detached mode (-d) and map port 8000
-          docker run -d --name flask-test-app -p 8000:8000 \
-            --link postgres-flask-test:postgres \
-            -e SERVICE_TYPE=flask \
-            -e POSTGRES_USER=testuser \
-            -e POSTGRES_PASSWORD=testpass \
-            -e POSTGRES_DB=testdb \
-            -e POSTGRES_HOST=postgres \
-            -e POSTGRES_PORT=5432 \
-            ${{ steps.docker_tags.outputs.test_tag }}
-
-          echo "Waiting for Flask app to start (max 60 seconds)..."
-          # Health check loop: Try to connect to the Flask app's /api/last_task endpoint
-          for i in $(seq 1 60); do
-            # Using -I to fetch only headers, less data transfer, and checking for 2xx or 3xx status
-            if curl -sf -I http://localhost:8000/api/last_task | grep -qE "HTTP/[12](.[01])? (2|3)[0-9]{2}"; then
-              echo "Flask app is up and responsive!"
-              exit 0
-            fi
-            echo "Waiting... ($i/60)"
-            sleep 1
-          done
-          echo "Flask app did not start or respond with a successful status on /api/last_task within the expected time."
-          docker logs flask-test-app # Print logs for debugging
-          exit 1 # Fail the job if app doesn't start
-      - name: Run RQ Worker Container Health Check
-        if: false # Disabled: Cannot test without loading image (would need 20GB+ disk space)
-        run: |Run RQ Worker Container Health Check
-        run: |
-          echo "Starting temporary Redis container for RQ worker..."
-          docker run -d --name redis-test redis:latest
-
-          echo "Waiting for Redis to start..."
-          # Instead of a fixed sleep, check if Redis is ready
-          for i in $(seq 1 30); do
-            if docker exec redis-test redis-cli ping | grep -q PONG; then
-              echo "Redis is ready."
-              break
-            fi
-            echo "Waiting for Redis... ($i/30)"
-            sleep 1
-            if [ $i -eq 30 ]; then
-              echo "Redis did not become ready in time."
-              docker logs redis-test
-              exit 1
-            fi
-          done
-
-          echo "Starting temporary PostgreSQL container for RQ worker test..."
-          docker run -d --name postgres-rq-test \
-            -e POSTGRES_USER=testuser \
-            -e POSTGRES_PASSWORD=testpass \
-            -e POSTGRES_DB=testdb \
-            postgres:15-alpine
-
-          echo "Waiting for PostgreSQL (RQ worker test) to start..."
-          for i in $(seq 1 30); do
-            if docker exec postgres-rq-test pg_isready -U testuser -d testdb -q; then
-              echo "PostgreSQL (RQ worker test) is ready."
-              break
-            fi
-            echo "Waiting for PostgreSQL (RQ worker test)... ($i/30)"
-            sleep 2
-            if [ $i -eq 30 ]; then
-              echo "PostgreSQL (RQ worker test) did not become ready in time."
-              docker logs postgres-rq-test
-              exit 1
-            fi
-          done
-
-          echo "Starting RQ worker container for health check..."
-          # Run the RQ worker container in detached mode, linking to redis and postgres
-          docker run -d --name rq-test-worker \
-            --link redis-test:redis --link postgres-rq-test:postgres \
-            -e SERVICE_TYPE=worker \
-            -e REDIS_URL=redis://redis:6379/0 \
-            -e POSTGRES_USER=testuser \
-            -e POSTGRES_PASSWORD=testpass \
-            -e POSTGRES_DB=testdb \
-            -e POSTGRES_HOST=postgres \
-            -e POSTGRES_PORT=5432 \
-            ${{ steps.docker_tags.outputs.test_tag }}
-
-          echo "Waiting for RQ worker to start (max 90 seconds)..."
-          # Check if the RQ worker container is running and if its logs indicate it's "Listening"
-          for i in $(seq 1 30); do # 30 iterations * 3 seconds = 90 seconds
-            if docker ps -f name=rq-test-worker --format '{{.Status}}' | grep -q 'Up'; then
-              # Look for the "Listening on" log message which indicates RQ worker startup
-              # RQ worker logs typically include "Listening on <queue_name>..."
-              # Giving a bit more time for logs to appear
-              sleep 2
-              if docker logs rq-test-worker 2>&1 | grep -E "Listening on|RQ Worker [^ ]+ started"; then # Added alternative RQ startup message
-                  echo "RQ worker container is running and listening."
-                  exit 0
-              fi
-            fi
-            echo "Waiting... ($i/30)"
-            sleep 3 # Increased sleep duration between checks
-          done
-          echo "RQ worker container did not start or become ready within the expected time."
-          docker logs rq-test-worker # Print logs for debugging
-      - name: Clean up Docker containers and temporary image
-        if: false # Disabled: No containers to clean up when not testing
-        run: |Clean up Docker containers and temporary image
-        if: always() # Run this step even if previous steps fail
-        run: |
-          echo "Cleaning up temporary Docker containers and image..."
-          docker rm -f flask-test-app || true
-          docker rm -f rq-test-worker || true
-          docker rm -f redis-test || true
-          docker rm -f postgres-flask-test || true
-          docker rm -f postgres-rq-test || true
-          docker rmi ${{ steps.docker_tags.outputs.test_tag }} || true # Remove the temporary image
-
-      - name: Build and Push AudioMuse AI Image (Final Push)
-        # This step only runs if all previous test steps passed
-        if: success() # Only run this step if all previous steps in the job were successful
+      - name: Build and Push AudioMuse AI Image
         uses: docker/build-push-action@v5
         with:
           context: .
