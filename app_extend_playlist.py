@@ -25,16 +25,44 @@ def extend_playlist_redirect():
     return redirect(url_for('extend_playlist_bp.playlist_builder_page') + '?tab=extend')
 
 
-def _compute_centroid_from_ids(ids: list) -> np.ndarray:
-    """Fetch vectors by id and compute their centroid (mean)."""
+def _compute_centroid_from_ids(ids: list, weights: dict = None) -> np.ndarray:
+    """
+    Fetch vectors by id and compute their weighted centroid.
+
+    Args:
+        ids: List of track item_ids (strings)
+        weights: Optional dict mapping item_id (str) -> weight (int, 1-1024)
+                 If None or missing key, defaults to weight=1
+
+    Returns:
+        Weighted mean vector: sum(w_i * v_i) / sum(w_i)
+        Returns None if no valid vectors found
+    """
+    if weights is None:
+        weights = {}
+
     vectors = []
+    weight_values = []
+
     for item_id in ids:
         vec = get_vector_by_id(item_id)
         if vec is not None:
             vectors.append(np.array(vec, dtype=float))
+            # Get weight, default to 1, ensure positive (min 1)
+            w = weights.get(str(item_id), 1)
+            weight_values.append(max(1, w))
+
     if not vectors:
         return None
-    return np.mean(vectors, axis=0)
+
+    vectors_array = np.array(vectors)
+    weights_array = np.array(weight_values, dtype=float)
+
+    weights_sum = np.sum(weights_array)
+    # weights_sum guaranteed > 0 since all weights >= 1
+
+    # Weighted mean: sum(w_i * v_i) / sum(w_i)
+    return np.sum(vectors_array * weights_array[:, np.newaxis], axis=0) / weights_sum
 
 
 def _get_stream_url(item_id):
@@ -207,6 +235,27 @@ def extend_playlist_api():
     search_only = payload.get('search_only', False)
     source_ids = payload.get('source_ids', [])  # Direct source IDs from Smart Filter
 
+    # Track weights for centroid calculation
+    source_weights = payload.get('source_weights', {})
+    included_weights = payload.get('included_weights', {})
+
+    # Validate weights - ensure valid integers from allowed set
+    VALID_WEIGHTS = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024}
+
+    def sanitize_weights(weights_dict):
+        """Ensure weights are valid integers from allowed set."""
+        sanitized = {}
+        for k, v in weights_dict.items():
+            try:
+                w = int(v)
+                sanitized[str(k)] = w if w in VALID_WEIGHTS else 1
+            except (ValueError, TypeError):
+                sanitized[str(k)] = 1
+        return sanitized
+
+    source_weights = sanitize_weights(source_weights)
+    included_weights = sanitize_weights(included_weights)
+
     if not playlist_name and not filters and not source_ids:
         return jsonify({"error": "Missing 'playlist_name', 'filters', or 'source_ids'"}), 400
 
@@ -273,13 +322,20 @@ def extend_playlist_api():
         # Combine original playlist songs with included songs for positive centroid calculation
         all_ids_for_centroid = list(set(playlist_ids + included_ids))
 
-        # Compute positive centroid
-        positive_centroid = _compute_centroid_from_ids(all_ids_for_centroid)
+        # Build combined weights: source_weights for playlist tracks, included_weights for included tracks
+        combined_weights = {}
+        for pid in playlist_ids:
+            combined_weights[str(pid)] = source_weights.get(str(pid), 1)
+        for inc_id in included_ids:
+            combined_weights[str(inc_id)] = included_weights.get(str(inc_id), 1)
+
+        # Compute positive centroid with weights
+        positive_centroid = _compute_centroid_from_ids(all_ids_for_centroid, combined_weights)
 
         if positive_centroid is None:
             return jsonify({"error": "Failed to compute playlist centroid"}), 500
 
-        # Compute excluded centroid if there are excluded songs
+        # Compute excluded centroid if there are excluded songs (unweighted - intentional)
         excluded_centroid = None
         if excluded_ids:
             excluded_centroid = _compute_centroid_from_ids(excluded_ids)
@@ -370,11 +426,21 @@ def extend_playlist_api():
             if len(filtered_results) >= max_songs:
                 break
 
+        # Return source tracks metadata for drawer display (only in extend mode)
+        source_tracks_meta = []
+        if playlist_ids:
+            source_meta_list = get_score_data_by_ids(playlist_ids)
+            for meta in source_meta_list:
+                meta['stream_url'] = _get_stream_url(meta['item_id'])
+                meta['song_artist'] = meta.get('song_artist') or meta.get('author')
+                source_tracks_meta.append(meta)
+
         return jsonify({
             "results": filtered_results,
             "playlist_song_count": len(playlist_ids),
             "included_count": len(included_ids),
-            "excluded_count": len(excluded_ids)
+            "excluded_count": len(excluded_ids),
+            "source_tracks": source_tracks_meta
         })
 
     except Exception as e:

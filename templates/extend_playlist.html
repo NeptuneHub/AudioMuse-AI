@@ -443,6 +443,104 @@
         display: none !important;
     }
 
+    /* Collapsible Drawer Styles */
+    .drawer-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem 1rem;
+        background-color: var(--bg-code);
+        border: 1px solid var(--border-color);
+        border-radius: 0.5rem;
+        cursor: pointer;
+        margin-bottom: 0;
+    }
+
+    .drawer-header:hover {
+        background-color: var(--bg-table-hover);
+    }
+
+    .drawer-header h3 {
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 1rem;
+    }
+
+    .drawer-toggle-icon {
+        transition: transform 0.2s ease;
+    }
+
+    .drawer-header.expanded .drawer-toggle-icon {
+        transform: rotate(180deg);
+    }
+
+    .drawer-hint {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+    }
+
+    .drawer-content {
+        border: 1px solid var(--border-color);
+        border-top: none;
+        border-radius: 0 0 0.5rem 0.5rem;
+        max-height: 300px;
+        overflow-y: auto;
+    }
+
+    .drawer-content.collapsed {
+        max-height: 0;
+        overflow: hidden;
+        border: none;
+    }
+
+    .badge {
+        background-color: var(--color-primary);
+        color: white;
+        padding: 0.125rem 0.5rem;
+        border-radius: 9999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+
+    /* Weight Button */
+    .btn-weight {
+        background-color: var(--bg-input);
+        color: var(--text-main);
+        border: 1px solid var(--border-color-darker);
+        padding: 0.375rem 0.625rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+        font-weight: 600;
+        min-width: 45px;
+    }
+
+    .btn-weight:hover {
+        border-color: var(--color-primary);
+    }
+
+    .btn-weight.weight-high {
+        background-color: var(--color-primary);
+        color: white;
+    }
+
+    /* Remove Button */
+    .btn-remove {
+        background-color: var(--color-danger);
+        color: white;
+        border: none;
+        padding: 0.5rem 0.75rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+    }
+
+    .btn-remove:hover {
+        background-color: var(--color-danger-hover);
+    }
+
     /* Results table container - part of normal page flow */
     .results-table-container {
         margin-bottom: 60px;
@@ -658,6 +756,21 @@
     </div>
 </section>
 
+<!-- Source Tracks Drawer (Collapsible) -->
+<section id="source-drawer-container" class="hidden" style="margin-bottom: 1rem;">
+    <div class="drawer-header" onclick="toggleDrawer()">
+        <h3>
+            <span class="drawer-toggle-icon">&#9660;</span>
+            Source Playlist
+            <span id="source-track-count" class="badge">0</span>
+        </h3>
+        <span class="drawer-hint">Click to expand</span>
+    </div>
+    <div id="source-drawer-content" class="drawer-content collapsed">
+        <div id="source-tracks-table-wrapper"></div>
+    </div>
+</section>
+
 <section id="results-container" class="hidden">
     <h2>Similar Songs</h2>
     <div id="status"></div>
@@ -708,6 +821,13 @@
     let smartFilterResults = [];      // Results from Smart Filter search
     let extendPlaylistResults = [];   // Recommended songs from extend operation
     let includedSongsData = [];       // Full track objects for included songs
+    let sourcePlaylistCount = 0;      // Track the number of songs in the source playlist/filter
+
+    // Track weights state
+    let sourceWeights = {};           // {item_id: weight} for source playlist tracks
+    let includedWeights = {};         // {item_id: weight} for included recommendations
+    let sourceTracksData = [];        // Full track objects for drawer display
+    const VALID_WEIGHTS = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
 
     // Filter options (loaded from API)
     let filterOptions = {
@@ -1128,14 +1248,38 @@
             smartFilterResults = [];
             smartFilterSourceIds = [];
             excludedIds = [];
+            // Clear source drawer data for new search
+            sourceTracksData = [];
+            sourceWeights = {};
+            document.getElementById('source-drawer-container').classList.add('hidden');
+        }
+
+        // Reset state for new extend operation (not search-only)
+        // Only reset if this is a fresh operation, not a recalculation after weight change
+        if (!searchOnly && (activeTab === 'playlist' || activeTab === 'extend')) {
+            // Fresh operation = no existing results AND no source tracks loaded
+            // If either has data, we're recalculating (preserve state)
+            const isFreshExtendOperation = extendPlaylistResults.length === 0 && sourceTracksData.length === 0;
+
+            if (isFreshExtendOperation) {
+                includedIds = [];
+                includedSongsData = [];
+                excludedIds = [];
+                sourcePlaylistCount = 0;
+                includedWeights = {};
+            }
+            // Always clear results to get fresh recommendations
+            extendPlaylistResults = [];
         }
 
         let payload = {
             max_songs: maxSongs,
             similarity_threshold: threshold,
-            included_ids: [],
+            included_ids: includedIds,
             excluded_ids: excludedIds,
-            search_only: searchOnly
+            search_only: searchOnly,
+            source_weights: sourceWeights,
+            included_weights: includedWeights
         };
 
         if (activeTab === 'smart') {
@@ -1190,17 +1334,31 @@
                 // Smart Filter search - store in smartFilterResults
                 smartFilterResults = data.results;
                 smartFilterSourceIds = data.results.map(r => r.item_id);
+                sourcePlaylistCount = data.results.length;  // For smart filter, source = results
                 updateSmartFilterDropdownOption();
             } else {
                 // Extend mode - store in extendPlaylistResults
                 extendPlaylistResults = data.results;
+                // Use playlist_song_count from API response for source count
+                sourcePlaylistCount = data.playlist_song_count || smartFilterSourceIds.length || 0;
+
+                // Initialize source drawer from API response (for existing playlists)
+                // Only initialize if source_tracks are returned and we don't have data yet
+                if (data.source_tracks && data.source_tracks.length > 0) {
+                    // Only initialize source data and weights if we don't have any yet
+                    // This preserves weights during recalculation after weight changes
+                    if (sourceTracksData.length === 0) {
+                        sourceTracksData = data.source_tracks;
+                        sourceWeights = {};
+                        sourceTracksData.forEach(t => sourceWeights[t.item_id] = 1);
+                        smartFilterSourceIds = sourceTracksData.map(t => t.item_id);
+                    }
+                    // Always display the drawer (preserves existing weights on recalculation)
+                    displaySourceTracksDrawer();
+                }
             }
 
-            // Update Stats
-            playlistStats = {
-                selected: smartFilterResults.length,
-                total: smartFilterResults.length + includedIds.length
-            };
+            // Update Stats (playlistStats is now derived in updateStatsDisplay)
             updateStatsDisplay();
 
             // Display results based on current tab
@@ -1227,10 +1385,24 @@
     };
 
     function updateStatsDisplay() {
-        // Selected Songs = songs from Smart Filter search
-        const selectedCount = smartFilterResults.length;
-        // Total Songs = Selected Songs + Included songs from Extend tab
-        const totalCount = selectedCount + includedIds.length;
+        let selectedCount, totalCount;
+
+        if (activeTab === 'smart') {
+            // Smart Filter mode:
+            // Selected = songs matching filter
+            // Total = songs that will be saved (selected minus excluded)
+            selectedCount = smartFilterResults.length;
+            const excludedFromSmartFilter = excludedIds.filter(id =>
+                smartFilterResults.some(r => r.item_id === id)
+            ).length;
+            totalCount = selectedCount - excludedFromSmartFilter;
+        } else {
+            // Extend/Playlist mode:
+            // Selected = initial playlist/source count
+            // Total = source songs + newly included songs
+            selectedCount = sourcePlaylistCount;
+            totalCount = sourcePlaylistCount + includedIds.length;
+        }
 
         document.getElementById('stat-selected').textContent = selectedCount;
         document.getElementById('stat-total').textContent = totalCount;
@@ -1282,6 +1454,15 @@
                 return;
             }
 
+            // Initialize source tracks data and weights for the drawer
+            sourceTracksData = data.results.slice();
+            sourceWeights = {};
+            includedWeights = {};
+            sourceTracksData.forEach(t => sourceWeights[t.item_id] = 1);
+
+            // Display the source tracks drawer
+            displaySourceTracksDrawer();
+
             // Switch to Extend tab (keep state)
             switchTab(null, 'extend', true);
 
@@ -1301,7 +1482,14 @@
 
     function displayResults(results) {
         const wrapper = document.getElementById('results-table-wrapper');
-        if (results.length === 0) {
+
+        // Combine included songs (at top) with extend results
+        // Filter out songs already in includedSongsData to avoid duplicates
+        const includedIdsSet = new Set(includedIds);
+        const filteredResults = results.filter(r => !includedIdsSet.has(r.item_id));
+        const combinedResults = [...includedSongsData, ...filteredResults];
+
+        if (combinedResults.length === 0) {
             wrapper.innerHTML = '<p>No similar songs found.</p>';
             return;
         }
@@ -1312,6 +1500,9 @@
         const actionsHeader = isExtendMode ? 'Actions' : 'Exclude';
         const actionsWidth = isExtendMode ? '180px' : '100px';
 
+        // Add Weight column header for extend mode
+        const weightHeader = isExtendMode ? '<th style="width: 70px;">Weight</th>' : '';
+
         let html = `
             <table class="results-table">
                 <thead>
@@ -1320,13 +1511,14 @@
                         <th>Title / Artist</th>
                         <th>Album</th>
                         <th>Distance</th>
+                        ${weightHeader}
                         <th style="width: ${actionsWidth};">${actionsHeader}</th>
                     </tr>
                 </thead>
                 <tbody>
         `;
 
-        results.forEach(track => {
+        combinedResults.forEach(track => {
             const isExcluded = excludedIds.includes(track.item_id);
             const isIncluded = includedIds.includes(track.item_id);
             let rowClass = isExcluded ? 'excluded-row' : (isIncluded ? 'included-row' : '');
@@ -1337,6 +1529,13 @@
             const displayArtist = track.song_artist || track.author || 'Unknown';
             const safeArtist = displayArtist.replace(/'/g, "\\'");
             const safeUrl = (track.stream_url || '').replace(/'/g, "\\'");
+
+            // Build weight cell for extend mode
+            let weightCell = '';
+            if (isExtendMode) {
+                const weight = includedWeights[track.item_id] || 1;
+                weightCell = `<td><button class="btn-weight ${weight > 1 ? 'weight-high' : ''}" data-weight-id="${track.item_id}" onclick="cycleWeight('${track.item_id}',false)">x${weight}</button></td>`;
+            }
 
             // Build actions cell based on mode
             let actionsHtml;
@@ -1376,6 +1575,7 @@
                     </td>
                     <td>${track.album || '-'}</td>
                     <td>${track.distance ? track.distance.toFixed(4) : 'N/A'}</td>
+                    ${weightCell}
                     <td class="action-buttons">
                         ${actionsHtml}
                     </td>
@@ -1644,6 +1844,98 @@
         const m = Math.floor(s / 60);
         const sec = Math.floor(s % 60);
         return `${m}:${sec.toString().padStart(2, '0')}`;
+    }
+
+    // --- Track Weights Functions ---
+
+    // Drawer toggle
+    window.toggleDrawer = function() {
+        const header = document.querySelector('.drawer-header');
+        const content = document.getElementById('source-drawer-content');
+        content.classList.toggle('collapsed');
+        header.classList.toggle('expanded');
+    };
+
+    // Weight cycling (click to cycle through values)
+    window.cycleWeight = function(itemId, isSource) {
+        const weights = isSource ? sourceWeights : includedWeights;
+        const current = weights[itemId] || 1;
+        const idx = VALID_WEIGHTS.indexOf(current);
+        const next = VALID_WEIGHTS[(idx + 1) % VALID_WEIGHTS.length];
+        weights[itemId] = next;
+
+        // Update button UI
+        const btn = document.querySelector(`[data-weight-id="${itemId}"]`);
+        if (btn) {
+            btn.textContent = `x${next}`;
+            btn.classList.toggle('weight-high', next > 1);
+        }
+
+        debouncedRecalculate();
+    };
+
+    // Remove source track (different from exclude - just removes from source set)
+    window.removeSourceTrack = function(itemId) {
+        sourceTracksData = sourceTracksData.filter(t => t.item_id !== itemId);
+        smartFilterSourceIds = smartFilterSourceIds.filter(id => id !== itemId);
+        delete sourceWeights[itemId];
+        displaySourceTracksDrawer();
+        updateStatsDisplay();
+        debouncedRecalculate();
+    };
+
+    // Debounced recalculation (500ms delay)
+    let recalculateTimeout = null;
+    function debouncedRecalculate() {
+        clearTimeout(recalculateTimeout);
+        recalculateTimeout = setTimeout(() => {
+            if (activeTab === 'extend' || activeTab === 'playlist') {
+                findSimilarSongs(false);
+            }
+        }, 500);
+    }
+
+    // Display source tracks drawer
+    function displaySourceTracksDrawer() {
+        const wrapper = document.getElementById('source-tracks-table-wrapper');
+        const countBadge = document.getElementById('source-track-count');
+        const container = document.getElementById('source-drawer-container');
+
+        if (sourceTracksData.length === 0) {
+            container.classList.add('hidden');
+            return;
+        }
+
+        container.classList.remove('hidden');
+        countBadge.textContent = sourceTracksData.length;
+
+        // Build table with Play, Title/Artist, Album, Weight, Remove columns
+        let html = `<table class="results-table"><thead><tr>
+            <th style="width:50px;">Play</th>
+            <th>Title / Artist</th>
+            <th>Album</th>
+            <th style="width:70px;">Weight</th>
+            <th style="width:90px;">Remove</th>
+        </tr></thead><tbody>`;
+
+        sourceTracksData.forEach(track => {
+            const weight = sourceWeights[track.item_id] || 1;
+            const artist = track.song_artist || track.author || 'Unknown';
+            const safeTitle = (track.title || '').replace(/'/g, "\\'");
+            const safeArtist = artist.replace(/'/g, "\\'");
+            const safeUrl = (track.stream_url || '').replace(/'/g, "\\'");
+
+            html += `<tr>
+                <td>${safeUrl ? `<button class="btn-play" onclick="playSong('${safeUrl}','${safeTitle}','${safeArtist}')">&#9658;</button>` : '-'}</td>
+                <td><div class="track-info"><span class="track-title">${track.title || 'Unknown'}</span><span class="track-artist">${artist}</span></div></td>
+                <td>${track.album || '-'}</td>
+                <td><button class="btn-weight ${weight > 1 ? 'weight-high' : ''}" data-weight-id="${track.item_id}" onclick="cycleWeight('${track.item_id}',true)">x${weight}</button></td>
+                <td><button class="btn-remove" onclick="removeSourceTrack('${track.item_id}')">Remove</button></td>
+            </tr>`;
+        });
+
+        html += '</tbody></table>';
+        wrapper.innerHTML = html;
     }
 
 </script>
