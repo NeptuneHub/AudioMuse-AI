@@ -11,6 +11,11 @@ import os # Import os to potentially read GEMINI_API_CALL_DELAY_SECONDS
 
 logger = logging.getLogger(__name__)
 
+# Pre-compiled regex patterns for performance (used in clean_playlist_name)
+_REGEX_INVALID_CHARS = re.compile(r'[^a-zA-Z0-9\s\-\&\'!\.\,\?\(\)\[\]]')
+_REGEX_TRAILING_NUMBER = re.compile(r'\s\(\d+\)$')
+_REGEX_MULTIPLE_SPACES = re.compile(r'\s+')
+
 # creative_prompt_template is imported in tasks.py, so it should be defined here
 creative_prompt_template = (
     "You're an expert of music and you need to give a title to this playlist.\n"
@@ -385,10 +390,11 @@ def clean_playlist_name(name):
 
     name = unicodedata.normalize('NFKC', name)
     # Stricter regex: only allows characters explicitly mentioned in the prompt.
-    cleaned_name = re.sub(r'[^a-zA-Z0-9\s\-\&\'!\.\,\?\(\)\[\]]', '', name)
+    # Uses pre-compiled patterns for performance
+    cleaned_name = _REGEX_INVALID_CHARS.sub('', name)
     # Also remove trailing number in parentheses, e.g., "My Playlist (2)" -> "My Playlist", to prevent AI from interfering with disambiguation logic.
-    cleaned_name = re.sub(r'\s\(\d+\)$', '', cleaned_name)
-    cleaned_name = re.sub(r'\s+', ' ', cleaned_name).strip()
+    cleaned_name = _REGEX_TRAILING_NUMBER.sub('', cleaned_name)
+    cleaned_name = _REGEX_MULTIPLE_SPACES.sub(' ', cleaned_name).strip()
     return cleaned_name
 
 

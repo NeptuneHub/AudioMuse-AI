@@ -28,15 +28,20 @@ def score_vector(row, mood_labels_list, other_feature_labels_list): # other_feat
     tempo_val = tempo_norm
     energy_val = energy_norm
 
+    # Build label-to-index lookup dictionaries for O(1) access instead of O(n) list.index() calls
+    mood_label_to_index = {label: idx for idx, label in enumerate(mood_labels_list)}
+    other_label_to_index = {label: idx for idx, label in enumerate(other_feature_labels_list)}
+
     mood_scores_for_vector = np.zeros(len(mood_labels_list)) # Initialize vector for all moods
     if mood_str:
         for pair in mood_str.split(","):
             if ":" not in pair:
                 continue
             label, score_str = pair.split(":")
-            if label in mood_labels_list:
+            idx = mood_label_to_index.get(label)
+            if idx is not None:
                 try:
-                    mood_scores_for_vector[mood_labels_list.index(label)] = float(score_str) # Populate all mood scores
+                    mood_scores_for_vector[idx] = float(score_str) # Populate all mood scores
                 except ValueError:
                     continue
 
@@ -46,8 +51,9 @@ def score_vector(row, mood_labels_list, other_feature_labels_list): # other_feat
         for pair in other_features_str.split(","):
             if ":" not in pair: continue
             label, score_str = pair.split(":")
-            if label in other_feature_labels_list:
-                try: other_feature_scores_for_vector[other_feature_labels_list.index(label)] = float(score_str)
+            idx = other_label_to_index.get(label)
+            if idx is not None:
+                try: other_feature_scores_for_vector[idx] = float(score_str)
                 except ValueError: continue
     full_vector = [tempo_val, energy_val] + list(mood_scores_for_vector) + list(other_feature_scores_for_vector)
     return full_vector

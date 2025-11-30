@@ -33,14 +33,17 @@ def get_euclidean_distance(v1, v2):
 
 def get_angular_distance(v1, v2):
     """Calculates the angular distance (derived from cosine similarity) between two vectors."""
-    if v1 is not None and v2 is not None and np.linalg.norm(v1) > 0 and np.linalg.norm(v2) > 0:
-        # Normalize vectors to unit length
-        v1_u = v1 / np.linalg.norm(v1)
-        v2_u = v2 / np.linalg.norm(v2)
-        # Calculate cosine similarity, clipping to handle potential floating point inaccuracies
-        cosine_similarity = np.clip(np.dot(v1_u, v2_u), -1.0, 1.0)
-        # Angular distance is derived from the angle: arccos(similarity) / pi
-        return np.arccos(cosine_similarity) / np.pi
+    if v1 is not None and v2 is not None:
+        norm_v1 = np.linalg.norm(v1)
+        norm_v2 = np.linalg.norm(v2)
+        if norm_v1 > 0 and norm_v2 > 0:
+            # Normalize vectors to unit length
+            v1_u = v1 / norm_v1
+            v2_u = v2 / norm_v2
+            # Calculate cosine similarity, clipping to handle potential floating point inaccuracies
+            cosine_similarity = np.clip(np.dot(v1_u, v2_u), -1.0, 1.0)
+            # Angular distance is derived from the angle: arccos(similarity) / pi
+            return np.arccos(cosine_similarity) / np.pi
     return float('inf')
 
 
