@@ -47,4 +47,38 @@ document.addEventListener('DOMContentLoaded', function() {
         versionElement.textContent = `AudioMuse-AI - Version ${appVersion}`;
         sidebar.appendChild(versionElement);
     }
+
+    /* --- Dark Mode Logic --- */
+    const darkModeToggle = document.getElementById('dark-mode-toggle');
+    const body = document.body;
+    
+    // Function to update toggle UI
+    const updateToggleUI = (isDark) => {
+        if (darkModeToggle) {
+            darkModeToggle.innerHTML = isDark ? '☀️ Light Mode' : '🌙 Dark Mode';
+        }
+    };
+
+    // Check preference on load
+    const savedTheme = localStorage.getItem('theme');
+    // Check system preference if no saved theme
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+    if (savedTheme === 'dark' || (!savedTheme && prefersDark)) {
+        body.classList.add('dark-mode');
+        updateToggleUI(true);
+    } else {
+        updateToggleUI(false);
+    }
+
+    // Toggle handler
+    if (darkModeToggle) {
+        darkModeToggle.addEventListener('click', (e) => {
+            e.preventDefault();
+            body.classList.toggle('dark-mode');
+            const isDark = body.classList.contains('dark-mode');
+            localStorage.setItem('theme', isDark ? 'dark' : 'light');
+            updateToggleUI(isDark);
+        });
+    }
 });

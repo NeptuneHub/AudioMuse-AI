@@ -475,7 +475,7 @@ def get_last_played_time(item_id, user_creds):
     if response and "song" in response: return response["song"].get("lastPlayed")
     return None
 
-def create_instant_playlist(playlist_name, item_ids, user_creds):
+def create_instant_playlist(playlist_name, item_ids, user_creds, add_instant_suffix=True):
     """Creates a new instant playlist on Navidrome for a specific user, with batching."""
-    final_playlist_name = f"{playlist_name.strip()}_instant"
+    final_playlist_name = f"{playlist_name.strip()}_instant" if add_instant_suffix else playlist_name.strip()
     return _create_playlist_batched(final_playlist_name, item_ids, user_creds)

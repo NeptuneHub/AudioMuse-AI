@@ -4,7 +4,7 @@ import logging
 
 from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
 from tasks.mediaserver import resolve_emby_jellyfin_user # Import the new resolver function
-from config import MEDIASERVER_TYPE, JELLYFIN_USER_ID, JELLYFIN_TOKEN, NAVIDROME_USER, NAVIDROME_PASSWORD # Import configs
+from config import MEDIASERVER_TYPE, JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, NAVIDROME_USER, NAVIDROME_PASSWORD # Import configs
 
 logger = logging.getLogger(__name__)
 
@@ -189,12 +189,32 @@ def generate_sonic_fingerprint_endpoint():
         for res_id in result_ids:
             if res_id in details_map:
                 track_info = details_map[res_id]
-                final_results.append({
+
+                # Construct result object
+                result_obj = {
                     "item_id": track_info['item_id'],
                     "title": track_info['title'],
-                    "author": track_info['author'],
+                    "author": track_info['author'], # Legacy/Best Artist
+                    "song_artist": track_info.get('song_artist') or track_info['author'], # Prefer explicit Song Artist, fallback to author
+                    "album_artist": track_info.get('album_artist'),
+                    "album": track_info.get('album'),
                     "distance": distance_map[res_id]
-                })
+                }
+
+                # Construct direct play URL if using Jellyfin
+                if MEDIASERVER_TYPE == 'jellyfin':
+                     # The token used for the request (either passed or default)
+                    current_token = user_creds.get('token')
+                    if current_token:
+                         # Universal audio stream URL
+                         # Note: using 'universal' endpoint is often safer for direct play across devices,
+                         # or /Audio/{Id}/stream. We'll use the stream endpoint with static=true
+                         # which often redirects to the file or transcode if needed.
+                         # Adding api_key is standard for Jellyfin API auth in URL.
+                         stream_url = f"{JELLYFIN_URL}/Audio/{track_info['item_id']}/stream?api_key={current_token}&static=true"
+                         result_obj['stream_url'] = stream_url
+
+                final_results.append(result_obj)
 
         return jsonify(final_results)
     except Exception as e:

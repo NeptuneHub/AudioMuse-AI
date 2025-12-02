@@ -92,6 +92,72 @@ def teardown_db(e=None):
 with app.app_context():
     init_db()
 
+    # Clean up any stale main tasks from previous runs (e.g., after container restarts)
+    # This ensures tasks stuck in PENDING/STARTED states are cleaned up on startup
+    # IMPORTANT: Only clean up tasks that are truly stale (older than 60 seconds)
+    # to avoid revoking recently created tasks during development reloads
+    try:
+        db = get_db()
+        cur = db.cursor()
+        current_time = time.time()
+
+        # Minimum age in seconds before a task is considered stale
+        MIN_STALE_AGE_SECONDS = 60
+
+        # Find main tasks (main_analysis, main_clustering) stuck in non-terminal states
+        # Only clean up tasks that start with 'main_' to avoid affecting other tasks like fetch_playlists
+        pending_status = TASK_STATUS_PENDING
+        started_status = TASK_STATUS_STARTED
+
+        cur.execute("""
+            SELECT task_id, task_type, status, start_time
+            FROM task_status
+            WHERE parent_task_id IS NULL
+              AND task_type LIKE %s
+              AND status IN (%s, %s)
+        """, ('main_%', pending_status, started_status))
+
+        potential_stale_tasks = cur.fetchall()
+        stale_tasks = []
+
+        if potential_stale_tasks:
+            for task_id, task_type, status, start_time in potential_stale_tasks:
+                age_seconds = int(current_time - start_time) if start_time else 0
+
+                # Only revoke tasks that are older than MIN_STALE_AGE_SECONDS
+                if age_seconds >= MIN_STALE_AGE_SECONDS:
+                    stale_tasks.append((task_id, task_type, status, start_time, age_seconds))
+                else:
+                    app.logger.info(f"Startup cleanup: skipping recent task {task_id} (age: {age_seconds}s < {MIN_STALE_AGE_SECONDS}s)")
+
+            for task_id, task_type, status, start_time, age_seconds in stale_tasks:
+                revoked_details = {
+                    "message": f"Task revoked on startup: was stuck in {status} state (age: {age_seconds}s)",
+                    "original_status": status,
+                    "revoked_by": "startup_cleanup",
+                    "log": [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Startup cleanup detected stale task in {status} state. Marking as REVOKED."]
+                }
+
+                cur.execute("""
+                    UPDATE task_status
+                    SET status = %s, details = %s, progress = 100, timestamp = NOW(), end_time = %s
+                    WHERE task_id = %s
+                """, (TASK_STATUS_REVOKED, json.dumps(revoked_details), current_time, task_id))
+
+                app.logger.info(f"Startup cleanup: revoked stale task {task_id} (type: {task_type}, was in {status}, age: {age_seconds}s)")
+
+            if stale_tasks:
+                db.commit()
+                app.logger.info(f"Startup cleanup completed: {len(stale_tasks)} stale task(s) revoked")
+            else:
+                app.logger.info("Startup cleanup: no truly stale tasks found (some tasks were too recent)")
+        else:
+            app.logger.info("Startup cleanup: no pending/started tasks found")
+
+        cur.close()
+    except Exception as e:
+        app.logger.error(f"Error during startup cleanup: {e}", exc_info=True)
+
 
 # --- API Endpoints ---
 
@@ -218,19 +284,20 @@ def get_task_status_endpoint(task_id):
     elif response['state'] == 'UNKNOWN': # Not in RQ and not in DB
         return jsonify(response), 404
 
-    # Prune 'checked_album_ids' from details if the task is analysis-related
-    if response.get('task_type_from_db') and 'analysis' in response['task_type_from_db']:
-        if isinstance(response.get('details'), dict):
-            response['details'].pop('checked_album_ids', None)
-    
-    # Truncate log entries to last 10 entries for all task types
-    if isinstance(response.get('details'), dict) and 'log' in response['details']:
-        log_entries = response['details']['log']
-        if isinstance(log_entries, list) and len(log_entries) > 10:
-            response['details']['log'] = [
-                f"... ({len(log_entries) - 10} earlier log entries truncated)",
-                *log_entries[-10:]
-            ]
+    # Prune large fields from details for all task types
+    if isinstance(response.get('details'), dict):
+        # Remove internal tracking arrays
+        response['details'].pop('checked_album_ids', None)
+        response['details'].pop('clustering_run_job_ids', None)
+
+        # Truncate log entries to last 20 entries (consistent with other endpoints)
+        if 'log' in response['details']:
+            log_entries = response['details']['log']
+            if isinstance(log_entries, list) and len(log_entries) > 20:
+                response['details']['log'] = [
+                    f"... ({len(log_entries) - 20} earlier log entries truncated)",
+                    *log_entries[-20:]
+                ]
     
     # Clean up the final response to remove confusing raw time columns
     response.pop('timestamp', None)
@@ -358,8 +425,10 @@ def get_last_overall_task_status_endpoint():
     if last_task_row:
         last_task_data = dict(last_task_row)
         if last_task_data.get('details'):
-            try: last_task_data['details'] = json.loads(last_task_data['details'])
-            except json.JSONDecodeError: pass
+            try:
+                last_task_data['details'] = json.loads(last_task_data['details'])
+            except json.JSONDecodeError:
+                pass
 
         # Calculate running time in Python
         start_time = last_task_data.get('start_time')
@@ -369,15 +438,21 @@ def get_last_overall_task_status_endpoint():
             last_task_data['running_time_seconds'] = max(0, effective_end_time - start_time)
         else:
             last_task_data['running_time_seconds'] = 0.0
-        
-        # Truncate log entries to last 10 entries
-        if isinstance(last_task_data.get('details'), dict) and 'log' in last_task_data['details']:
-            log_entries = last_task_data['details']['log']
-            if isinstance(log_entries, list) and len(log_entries) > 10:
-                last_task_data['details']['log'] = [
-                    f"... ({len(log_entries) - 10} earlier log entries truncated)",
-                    *log_entries[-10:]
-                ]
+
+        # Prune large fields and truncate log to match frontend expectations
+        if isinstance(last_task_data.get('details'), dict):
+            # Remove internal tracking arrays
+            last_task_data['details'].pop('clustering_run_job_ids', None)
+            last_task_data['details'].pop('checked_album_ids', None)
+
+            # Truncate log entries to last 20 entries (consistent with active_tasks)
+            if 'log' in last_task_data['details']:
+                log_entries = last_task_data['details']['log']
+                if isinstance(log_entries, list) and len(log_entries) > 20:
+                    last_task_data['details']['log'] = [
+                        f"... ({len(log_entries) - 20} earlier log entries truncated)",
+                        *log_entries[-20:]
+                    ]
         
         # Clean up raw time columns before sending response
         last_task_data.pop('start_time', None)
@@ -423,11 +498,22 @@ def get_active_tasks_endpoint():
                 if isinstance(task_item['details'], dict):
                     task_item['details'].pop('clustering_run_job_ids', None)
                     task_item['details'].pop('checked_album_ids', None)
+
+                    # Truncate log to last 20 entries to match frontend expectations
+                    if 'log' in task_item['details'] and isinstance(task_item['details']['log'], list):
+                        log_entries = task_item['details']['log']
+                        if len(log_entries) > 20:
+                            task_item['details']['log'] = [
+                                f"... ({len(log_entries) - 20} earlier log entries truncated)",
+                                *log_entries[-20:]
+                            ]
+
+                    # Remove initial_centroids if present (can be huge)
                     if 'best_params' in task_item['details'] and \
                        isinstance(task_item['details']['best_params'], dict) and \
                        'clustering_method_config' in task_item['details']['best_params'] and \
                        isinstance(task_item['details']['best_params']['clustering_method_config'], dict) and \
-                       'params' in task_item['details']['best_params']['clustering_method_config']['params'] and \
+                       'params' in task_item['details']['best_params']['clustering_method_config'] and \
                        isinstance(task_item['details']['best_params']['clustering_method_config']['params'], dict):
                         task_item['details']['best_params']['clustering_method_config']['params'].pop('initial_centroids', None)
 
@@ -574,6 +660,7 @@ from app_alchemy import alchemy_bp
 from app_map import map_bp
 from app_waveform import waveform_bp
 from app_artist_similarity import artist_similarity_bp
+from app_extend_playlist import extend_playlist_bp
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -588,6 +675,7 @@ app.register_blueprint(alchemy_bp)
 app.register_blueprint(map_bp)
 app.register_blueprint(waveform_bp)
 app.register_blueprint(artist_similarity_bp)
+app.register_blueprint(extend_playlist_bp)
 
 if __name__ == '__main__':
   os.makedirs(TEMP_DIR, exist_ok=True)

@@ -297,9 +297,9 @@ def get_last_played_time(item_id, user_creds=None):
     logger.warning("get_last_played_time is not supported by the MPD backend.")
     return None
 
-def create_instant_playlist(playlist_name, item_ids, user_creds=None):
+def create_instant_playlist(playlist_name, item_ids, user_creds=None, add_instant_suffix=True):
     """Creates a new instant playlist on MPD."""
-    final_playlist_name = f"{playlist_name.strip()}_instant"
+    final_playlist_name = f"{playlist_name.strip()}_instant" if add_instant_suffix else playlist_name.strip()
     # For MPD, this is the same as a regular playlist. user_creds are ignored.
     create_playlist(final_playlist_name, item_ids)
     # The return value for this function in other implementations is a dict.

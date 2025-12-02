@@ -155,3 +155,28 @@ def start_cleaning_endpoint():
         job_timeout=-1 # No timeout
     )
     return jsonify({"task_id": job.id, "task_type": "cleaning", "status": job.get_status()}), 202
+
+@analysis_bp.route('/api/analysis/fetch_playlists', methods=['POST'])
+def start_fetch_playlists_endpoint():
+    """
+    Start the task to fetch playlists from the media server.
+    """
+    from app_helper import rq_queue_high, save_task_status, TASK_STATUS_PENDING
+    
+    job_id = str(uuid.uuid4())
+    save_task_status(job_id, "fetch_playlists", TASK_STATUS_PENDING, details={"message": "Playlist fetch task enqueued."})
+    
+    # Enqueue the task
+    job = rq_queue_high.enqueue(
+        'tasks.playlist_manager.fetch_playlists_from_mediaserver_task',
+        job_id=job_id,
+        description="Fetch Playlists from Media Server",
+        retry=Retry(max=3),
+        job_timeout=-1
+    )
+    
+    return jsonify({
+        "message": "Playlist fetch task started.",
+        "task_id": job.id,
+        "status_url": f"/api/task_status/{job.id}"
+    }), 202

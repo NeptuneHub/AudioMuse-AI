@@ -58,7 +58,7 @@ function formatRunningTime(totalSeconds) {
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     const seconds = Math.floor(totalSeconds % 60);
-    
+
     const pad = (num) => String(num).padStart(2, '0');
 
     return `${pad(hours)} : ${pad(minutes)} : ${pad(seconds)}`;
@@ -96,7 +96,7 @@ function switchView(viewToShow) {
         if (basicAlgorithmDisplay) basicAlgorithmDisplay.classList.add('hidden');
         if (clusterAlgorithmSelect) clusterAlgorithmSelect.classList.remove('hidden'); // Show algorithm dropdown in advanced
     }
-     // This function handles showing/hiding algorithm-specific params
+    // This function handles showing/hiding algorithm-specific params
     toggleClusteringParams();
 }
 
@@ -106,7 +106,7 @@ async function fetchConfig() {
         const config = await response.json();
         renderConfig(config);
         // Call switchView here to ensure the view is set correctly *before* showing the content
-        switchView('basic'); 
+        switchView('basic');
         toggleAiConfig();
     } catch (error) {
         console.error('Error fetching config:', error);
@@ -184,7 +184,7 @@ function toggleClusteringParams() {
             gmmParamsDiv.classList.remove('hidden');
         } else if (selectedAlgorithm === 'spectral') {
             spectralParamsDiv.classList.remove('hidden');
-        } else if (selectedAlgorithm === 'kmeans' && kmeansParamsBasic) { 
+        } else if (selectedAlgorithm === 'kmeans' && kmeansParamsBasic) {
             kmeansParamsBasic.classList.remove('hidden'); // Show K-Means params if K-Means is selected
         }
     }
@@ -215,15 +215,15 @@ function updateCancelButtonState(isDisabled) {
 async function checkActiveTasks() {
     try {
         const response = await fetch(getActiveTasksEndpointUrl);
-        const mainActiveTask = await response.json(); 
+        const mainActiveTask = await response.json();
 
         if (mainActiveTask && mainActiveTask.task_id) {
             currentTaskId = mainActiveTask.task_id;
             const currentStatusUpper = (mainActiveTask.status || mainActiveTask.state || 'UNKNOWN').toUpperCase();
             const terminalStates = ['SUCCESS', 'FINISHED', 'FAILURE', 'FAILED', 'REVOKED', 'CANCELED'];
 
-            displayTaskStatus(mainActiveTask); 
-            
+            displayTaskStatus(mainActiveTask);
+
             const previousStateWasTerminal = lastPolledTaskDetails[currentTaskId]?.state && terminalStates.includes(lastPolledTaskDetails[currentTaskId].state.toUpperCase());
 
             if (terminalStates.includes(currentStatusUpper) && !previousStateWasTerminal) {
@@ -232,13 +232,13 @@ async function checkActiveTasks() {
                 if (['SUCCESS', 'FINISHED'].includes(currentStatusUpper)) alertTitle = 'Task Completed';
                 else if (['FAILURE', 'FAILED'].includes(currentStatusUpper)) alertTitle = 'Task Failed';
                 else if (['REVOKED', 'CANCELED'].includes(currentStatusUpper)) alertTitle = 'Task Canceled';
-                
+
                 showMessageBox(alertTitle, alertMessage);
             }
             lastPolledTaskDetails[currentTaskId] = { state: currentStatusUpper, ...mainActiveTask };
             disableTaskButtons(true);
             updateCancelButtonState(false);
-            return true; 
+            return true;
         } else if (currentTaskId) {
             const finishedTaskId = currentTaskId;
             const previousDetails = lastPolledTaskDetails[finishedTaskId];
@@ -250,7 +250,7 @@ async function checkActiveTasks() {
                     const finalStatusData = await finalStatusResponse.json();
                     const upperFinalStatus = (finalStatusData.state || 'UNKNOWN').toUpperCase();
                     const terminalStates = ['SUCCESS', 'FINISHED', 'FAILURE', 'FAILED', 'REVOKED', 'CANCELED'];
-                    
+
                     const finalStatusIsTerminal = terminalStates.includes(upperFinalStatus);
                     const previousStateWasTerminal = previousDetails && previousDetails.state && terminalStates.includes(previousDetails.state.toUpperCase());
 
@@ -260,7 +260,7 @@ async function checkActiveTasks() {
                         if (['SUCCESS', 'FINISHED'].includes(upperFinalStatus)) alertTitle = 'Task Completed';
                         else if (['FAILURE', 'FAILED'].includes(upperFinalStatus)) alertTitle = 'Task Failed';
                         else if (['REVOKED', 'CANCELED'].includes(upperFinalStatus)) alertTitle = 'Task Canceled';
-                        
+
                         showMessageBox(alertTitle, alertMessage);
                     }
                     displayTaskStatus(finalStatusData);
@@ -269,7 +269,7 @@ async function checkActiveTasks() {
                     displayTaskStatus({ task_id: finishedTaskId, state: 'FINISHED', progress: 100 });
                 }
             } catch (e) {
-                 console.error(`Error fetching final status for ${finishedTaskId}:`, e);
+                console.error(`Error fetching final status for ${finishedTaskId}:`, e);
             } finally {
                 delete lastPolledTaskDetails[finishedTaskId];
                 disableTaskButtons(false);
@@ -284,7 +284,7 @@ async function checkActiveTasks() {
         console.error('Error checking active tasks:', error);
         displayTaskStatus({ task_id: 'Error', task_type: 'Error', state: 'ERROR', progress: 0, details: `Polling error: ${error.message}` });
         currentTaskId = null;
-        disableTaskButtons(false); 
+        disableTaskButtons(false);
         updateCancelButtonState(true);
     }
     return false;
@@ -326,11 +326,14 @@ function displayTaskStatus(task) {
 
 
     if (['SUCCESS', 'FINISHED'].includes(stateUpper) && (task.task_type_from_db || task.task_type || '').toLowerCase().includes('clustering')) {
-        fetchPlaylists(); 
+        fetchPlaylists();
+    }
+    if (['SUCCESS', 'FINISHED'].includes(stateUpper) && (task.task_type_from_db || task.task_type || '').toLowerCase().includes('fetch_playlists')) {
+        fetchPlaylists();
     }
 
     let statusMessage = 'N/A';
-    if (task.details) {
+    if (task.details && typeof task.details === 'object') {
         if (task.details.status_message) {
             statusMessage = task.details.status_message;
         } else if (Array.isArray(task.details.log) && task.details.log.length > 0) {
@@ -341,9 +344,72 @@ function displayTaskStatus(task) {
     }
     statusLog.textContent = statusMessage;
 
+    // FIX: Sanitize and limit details display to prevent memory crashes
+    try {
+        let detailsToShow = task.details;
 
-    statusDetails.textContent = typeof task.details === 'object' ? JSON.stringify(task.details, null, 2) : task.details;
-    statusDetails.scrollTop = statusDetails.scrollHeight;
+        // Remove large arrays that don't need to be displayed
+        if (detailsToShow && typeof detailsToShow === 'object') {
+            detailsToShow = { ...detailsToShow };
+
+            // Remove internal tracking arrays
+            delete detailsToShow.checked_album_ids;
+            delete detailsToShow.clustering_run_job_ids;
+
+            // Limit log to last 20 entries to prevent DOM bloat
+            if (Array.isArray(detailsToShow.log)) {
+                const logLength = detailsToShow.log.length;
+                if (logLength > 20) {
+                    detailsToShow.log = [
+                        `... (${logLength - 20} earlier entries hidden)`,
+                        ...detailsToShow.log.slice(-20)
+                    ];
+                }
+            }
+
+            // Remove initial_centroids from best_params if present (can be huge)
+            if (detailsToShow.best_params?.clustering_method_config?.params?.initial_centroids) {
+                detailsToShow.best_params.clustering_method_config.params.initial_centroids = '[hidden - too large]';
+            }
+        }
+
+        const jsonString = typeof detailsToShow === 'object'
+            ? JSON.stringify(detailsToShow, null, 2)
+            : String(detailsToShow || '');
+
+        // Limit total JSON size to 50KB to prevent browser slowdown
+        if (jsonString.length > 50000) {
+            statusDetails.textContent = jsonString.substring(0, 50000) + '\n\n... [Output truncated - too large]';
+        } else {
+            statusDetails.textContent = jsonString;
+        }
+    } catch (e) {
+        console.error('Error displaying task details:', e);
+        statusDetails.textContent = `[Error displaying details: ${e.message}]\n\nTask ID: ${task.task_id || 'N/A'}\nStatus: ${stateUpper}`;
+    }
+
+    // FIX: Only auto-scroll if user is already near the bottom (prevents jarring UX)
+    const isNearBottom = statusDetails.scrollHeight - statusDetails.scrollTop <= statusDetails.clientHeight + 100;
+    if (isNearBottom) {
+        statusDetails.scrollTop = statusDetails.scrollHeight;
+    }
+}
+
+/**
+ * Cleans up old task details from memory to prevent unbounded growth.
+ * Keeps only the 5 most recent tasks in lastPolledTaskDetails.
+ */
+function cleanupOldTaskDetails() {
+    const MAX_STORED_TASKS = 5;
+    const taskIds = Object.keys(lastPolledTaskDetails);
+    if (taskIds.length > MAX_STORED_TASKS) {
+        // Remove oldest tasks (keep only the last 5)
+        const tasksToRemove = taskIds.slice(0, taskIds.length - MAX_STORED_TASKS);
+        tasksToRemove.forEach(id => {
+            delete lastPolledTaskDetails[id];
+        });
+        console.log(`Cleaned up ${tasksToRemove.length} old task entries from memory`);
+    }
 }
 
 async function startTask(taskType) {
@@ -360,7 +426,7 @@ async function startTask(taskType) {
     } else if (taskType === 'clustering') {
         playlistsSection.style.display = 'none';
         playlistsContainer.innerHTML = '';
-        
+
         Object.assign(payload, {
             clustering_method: clusterAlgorithmSelect.value,
             top_n_playlists: parseInt(document.getElementById('config-top_n_playlists').value),
@@ -401,7 +467,12 @@ async function startTask(taskType) {
     }
 
     try {
-        const response = await fetch(startAnalysisEndpointUrl.replace('/analysis/', `/${encodeURIComponent(taskType)}/`), {
+        let url = startAnalysisEndpointUrl.replace('/analysis/', `/${encodeURIComponent(taskType)}/`);
+        if (taskType === 'fetch_playlists') {
+            url = startFetchPlaylistsEndpointUrl;
+        }
+
+        const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -491,7 +562,7 @@ function showMessageBox(title, message) {
     messageBox.id = boxId;
     messageBox.style.cssText = 'position: fixed; top: 20px; right: 20px; background-color: #fff; color: #1F2937; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; border: 1px solid #E5E7EB; max-width: 400px; text-align: left;';
     messageBox.innerHTML = `<h3 style="font-weight: 600; margin-top:0; margin-bottom: 10px; color: #111827;">${title}</h3><p style="margin:0;">${message}</p><button style="position: absolute; top: 10px; right: 10px; background: none; border: none; font-size: 1.5rem; color: #9CA3AF; cursor: pointer;" onclick="this.parentNode.remove()">&times;</button>`;
-    
+
     setTimeout(() => {
         messageBox.remove();
     }, 5000);
@@ -525,6 +596,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.assert(getLastOverallTaskStatusEndpointUrl, "Missing getLastOverallTaskStatusEndpointUrl url variable");
     console.assert(getPlaylistsEndpointUrl, "Missing getPlaylistsEndpointUrl url variable");
     console.assert(cancelTaskEndpointUrl, "Missing cancelTaskEndpointUrl url variable");
+    console.assert(startFetchPlaylistsEndpointUrl, "Missing startFetchPlaylistsEndpointUrl url variable");
+
+    // Attach event listeners to buttons
+    startAnalysisBtn.addEventListener('click', () => startTask('analysis'));
+    startClusteringBtn.addEventListener('click', () => startTask('clustering'));
+    fetchPlaylistsBtn.addEventListener('click', () => startTask('fetch_playlists'));
+    cancelTaskBtn.addEventListener('click', cancelTask);
+
+    // View switcher buttons
+    basicViewBtn.addEventListener('click', () => switchView('basic'));
+    advancedViewBtn.addEventListener('click', () => switchView('advanced'));
+
+    // Algorithm and AI provider change listeners
+    clusterAlgorithmSelect.addEventListener('change', toggleClusteringParams);
+    aiModelProviderSelect.addEventListener('change', toggleAiConfig);
 
     await fetchConfig();
     if (!await checkActiveTasks()) {
@@ -532,13 +618,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateCancelButtonState(true);
     }
     setInterval(checkActiveTasks, 3000);
+
+    // Clean up old task details periodically to prevent memory leaks
+    setInterval(cleanupOldTaskDetails, 30000); // Every 30 seconds
 });
 
-basicViewBtn.addEventListener('click', () => switchView('basic'));
-advancedViewBtn.addEventListener('click', () => switchView('advanced'));
-clusterAlgorithmSelect.addEventListener('change', toggleClusteringParams);
-aiModelProviderSelect.addEventListener('change', toggleAiConfig);
-startAnalysisBtn.addEventListener('click', () => startTask('analysis'));
-startClusteringBtn.addEventListener('click', () => startTask('clustering'));
-fetchPlaylistsBtn.addEventListener('click', fetchPlaylists);
-cancelTaskBtn.addEventListener('click', cancelTask);
+

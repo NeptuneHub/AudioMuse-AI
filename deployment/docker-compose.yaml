@@ -81,6 +81,7 @@ services:
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       TEMP_DIR: "/app/temp_audio"
+      USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-false}"
     volumes:
       - temp-audio-worker:/app/temp_audio # Volume for temporary audio files
     depends_on:

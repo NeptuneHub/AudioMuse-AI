@@ -198,9 +198,20 @@ def get_tracks_from_album(album_id):
         # Apply artist field prioritization to each track
         for item in items:
             title = item.get('Name', 'Unknown')
+            # Store original AlbumArtist before it might get overwritten or if needed explicitly
+            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
+
             artist_name, artist_id = _select_best_artist(item, title)
-            item['AlbumArtist'] = artist_name
+            item['AlbumArtist'] = artist_name # This is the "Best Artist" (often Song Artist)
             item['ArtistId'] = artist_id
+
+            # Extract explicit Song Artist for metadata
+            if item.get('ArtistItems') and len(item['ArtistItems']) > 0:
+                item['SongArtist'] = item['ArtistItems'][0].get('Name')
+            elif item.get('Artists') and len(item['Artists']) > 0:
+                item['SongArtist'] = item['Artists'][0]
+            else:
+                item['SongArtist'] = item.get('OriginalAlbumArtist') # Fallback
         
         return items
     except Exception as e:
@@ -263,10 +274,21 @@ def get_all_songs():
         # Apply artist field prioritization to each item
         for item in items:
             title = item.get('Name', 'Unknown')
+            # Store original AlbumArtist
+            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
+
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
-        
+
+            # Extract explicit Song Artist for metadata
+            if item.get('ArtistItems') and len(item['ArtistItems']) > 0:
+                item['SongArtist'] = item['ArtistItems'][0].get('Name')
+            elif item.get('Artists') and len(item['Artists']) > 0:
+                item['SongArtist'] = item['Artists'][0]
+            else:
+                item['SongArtist'] = item.get('OriginalAlbumArtist')
+
         return items
     except Exception as e:
         logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)
@@ -336,10 +358,21 @@ def get_top_played_songs(limit, user_creds=None):
         # Apply artist field prioritization to each item
         for item in items:
             title = item.get('Name', 'Unknown')
+            # Store original AlbumArtist
+            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
+
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
-        
+
+            # Extract explicit Song Artist for metadata
+            if item.get('ArtistItems') and len(item['ArtistItems']) > 0:
+                item['SongArtist'] = item['ArtistItems'][0].get('Name')
+            elif item.get('Artists') and len(item['Artists']) > 0:
+                item['SongArtist'] = item['Artists'][0]
+            else:
+                item['SongArtist'] = item.get('OriginalAlbumArtist')
+
         return items
     except Exception as e:
         logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)
@@ -362,7 +395,7 @@ def get_last_played_time(item_id, user_creds=None):
         logger.error(f"Jellyfin get_last_played_time failed for item {item_id}, user {user_id}: {e}", exc_info=True)
         return None
 
-def create_instant_playlist(playlist_name, item_ids, user_creds=None):
+def create_instant_playlist(playlist_name, item_ids, user_creds=None, add_instant_suffix=True):
     """Creates a new instant playlist on Jellyfin for a specific user."""
     # Treat empty token ("") as not provided and fall back to admin token from config
     token = config.JELLYFIN_TOKEN
@@ -380,8 +413,8 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         raise ValueError("Jellyfin User Identifier is required.")
 
     user_id = resolve_user(identifier, token)
-    
-    final_playlist_name = f"{playlist_name.strip()}_instant"
+
+    final_playlist_name = f"{playlist_name.strip()}_instant" if add_instant_suffix else playlist_name.strip()
     url = f"{config.JELLYFIN_URL}/Playlists"
     headers = {"X-Emby-Token": token}
     body = {"Name": final_playlist_name, "Ids": item_ids, "UserId": user_id}
