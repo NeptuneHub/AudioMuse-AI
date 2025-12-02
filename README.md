@@ -231,11 +231,7 @@ You can check the [Tested Hardware and Configuration](docs/HARDWARE.md) notes to
 
 ### (Optional) Experimental Nvidia Support
 
-NVidia GPU support is available for the worker process. This can significantly speed up processing of tracks.
-
-This has been tested with an NVidia RX 3060 running CUDA 12.9 and Driver V575.64.05. During testing, the worker used up to 10GiB of VRAM but your mileage may vary.
-
-#### GPU Acceleration for Clustering
+NVidia GPU support is available for analysis task in the worker process. This can significantly speed up processing of tracks.
 
 **NEW:** GPU-accelerated clustering is now available using RAPIDS cuML. This can provide **10-30x speedup** for clustering tasks.
 
@@ -243,7 +239,7 @@ This has been tested with an NVidia RX 3060 running CUDA 12.9 and Driver V575.64
 - GPU-accelerated KMeans, DBSCAN, and PCA using RAPIDS cuML
 - Automatic fallback to CPU if GPU is unavailable or encounters errors
 - Supports all existing clustering configurations and parameters
-- Compatible with NVIDIA GPUs with CUDA 12.2+
+- Compatible with NVIDIA GPUs with CUDA 12.8.1+
 
 **To enable GPU clustering:**
 
