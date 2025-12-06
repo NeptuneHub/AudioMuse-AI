@@ -60,11 +60,17 @@ if __name__ == '__main__':
         job_monitoring_interval=10 # Check for dead workers every 10 seconds.
     )
 
+    # Memory leak prevention: restart after N jobs
+    # RQ will automatically respawn via supervisord
+    # Balance: High enough to avoid frequent CLAP reloads, low enough to prevent memory leaks
+    max_jobs_before_restart = int(os.getenv('RQ_MAX_JOBS', '50'))
+
     # Start the worker.
     # You can set logging_level for more verbose output.
     # Common levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
     logging_level = os.getenv("RQ_LOGGING_LEVEL", "INFO").upper()
     print(f"RQ Worker logging level set to: {logging_level}")
+    print(f"Worker will restart after {max_jobs_before_restart} jobs to prevent memory leaks")
 
     try:
         # The `with app.app_context():` here is generally NOT how RQ workers are run.
@@ -81,7 +87,7 @@ if __name__ == '__main__':
         #         db = get_db()
         #         # ... do work ...
 
-        worker.work(logging_level=logging_level)
+        worker.work(logging_level=logging_level, max_jobs=max_jobs_before_restart)
     except Exception as e:
         print(f"RQ Worker failed to start or encountered an error: {e}")
         sys.exit(1)

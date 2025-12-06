@@ -64,6 +64,22 @@
         border-color: var(--primary-color, #007bff);
     }
     
+    #search-form button {
+        background-color: #2563EB;
+    }
+    
+    #search-form button:hover {
+        background-color: #1D4ED8;
+    }
+    
+    #playlist-form button {
+        background-color: #16A34A !important;
+    }
+    
+    #playlist-form button:hover {
+        background-color: #15803D !important;
+    }
+    
     .result-item {
         padding: 1rem;
         border-bottom: 1px solid var(--border-color, #eee);
@@ -211,8 +227,9 @@
             <label for="playlist_name">Playlist Name:</label>
             <input type="text" id="playlist_name" name="playlist_name" placeholder="My CLAP Search Playlist" required>
         </div>
-        <button type="submit">Create Playlist</button>
+        <button type="submit">Create Playlist on Media Server</button>
     </form>
+    <div id="playlist-status"></div>
 </section>
 
 <script>
@@ -254,7 +271,7 @@ document.addEventListener('DOMContentLoaded', function() {
         playlistCreator.classList.add('hidden');
         
         try {
-            const response = await fetch('/api/clap/search', {
+            const response = await fetch("{{ url_for('clap_search_bp.clap_search_api') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ query, limit })
@@ -313,39 +330,44 @@ document.addEventListener('DOMContentLoaded', function() {
     playlistForm.addEventListener('submit', async function(e) {
         e.preventDefault();
         
+        const playlistStatusDiv = document.getElementById('playlist-status');
+        playlistStatusDiv.className = '';
+        
         if (currentResults.length === 0) {
-            alert('No results to create playlist from');
+            playlistStatusDiv.textContent = 'No results to create playlist from';
+            playlistStatusDiv.className = 'status-error';
             return;
         }
         
         const playlistName = document.getElementById('playlist_name').value.trim();
         if (!playlistName) {
-            alert('Please enter a playlist name');
+            playlistStatusDiv.textContent = 'Please enter a playlist name';
+            playlistStatusDiv.className = 'status-error';
             return;
         }
         
-        const itemIds = currentResults.map(r => r.item_id);
+        const trackIds = currentResults.map(r => r.item_id);
+        playlistStatusDiv.textContent = 'Creating playlist...';
         
         try {
-            const response = await fetch('/api/playlist/create', {
+            const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     playlist_name: playlistName,
-                    item_ids: itemIds
+                    track_ids: trackIds
                 })
             });
             
             const data = await response.json();
             
-            if (response.ok) {
-                alert(`✓ Playlist "${playlistName}" created with ${itemIds.length} songs!`);
-                document.getElementById('playlist_name').value = '';
-            } else {
-                throw new Error(data.error || 'Failed to create playlist');
-            }
+            if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
+            playlistStatusDiv.textContent = data.message;
+            playlistStatusDiv.className = 'status-success';
         } catch (error) {
-            alert(`❌ ${error.message}`);
+            playlistStatusDiv.textContent = `Error: ${error.message}`;
+            playlistStatusDiv.className = 'status-error';
+            console.error('Playlist creation error:', error);
         }
     });
     

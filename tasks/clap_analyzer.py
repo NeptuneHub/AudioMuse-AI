@@ -196,6 +196,8 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         # Process batches in parallel
         def process_batch(batch_segments):
             """Process one batch of segments through the model."""
+            # CRITICAL: Set num_threads=1 inside each thread to prevent OpenMP conflicts
+            torch.set_num_threads(1)
             batch_array = np.stack(batch_segments, axis=0)
             with torch.no_grad():
                 embeddings = model.get_audio_embedding_from_data(
