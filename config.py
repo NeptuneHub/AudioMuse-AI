@@ -251,6 +251,11 @@ EMBEDDING_MODEL_PATH = "/app/model/msd-musicnn-1.onnx"
 PREDICTION_MODEL_PATH = "/app/model/msd-msd-musicnn-1.onnx"
 EMBEDDING_DIMENSION = 200
 
+# --- CLAP Model Constants (for text search) ---
+CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
+CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", "/app/model/music_audioset_epoch_15_esc_90.14.pt")
+CLAP_EMBEDDING_DIMENSION = 512
+
 # --- Voyager Index Constants ---
 INDEX_NAME = os.environ.get("VOYAGER_INDEX_NAME", "music_library") # The primary key for our index in the DB
 VOYAGER_METRIC = os.environ.get("VOYAGER_METRIC", "angular") # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)

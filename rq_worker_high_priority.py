@@ -22,6 +22,9 @@ if __name__ == '__main__':
     print(f"🚀 DEDICATED HIGH PRIORITY RQ Worker starting. Version: {APP_VERSION}. Listening ONLY on queues: {queues_to_listen}")
     print(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
 
+    # High priority worker doesn't analyze songs, so no CLAP preload needed
+    # Only rq_worker.py (default queue) handles song analysis tasks
+
     worker = Worker(
         queues_to_listen,
         connection=redis_conn,

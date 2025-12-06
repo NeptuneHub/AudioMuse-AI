@@ -65,6 +65,30 @@ RUN set -eux; \
         fi; \
     done
 
+# Download CLAP model (optional, only if CLAP_ENABLED=true at runtime)
+# This is cached in the models stage layer, so it only downloads once
+RUN set -eux; \
+    clap_url="https://huggingface.co/lukewys/laion_clap/resolve/main/music_audioset_epoch_15_esc_90.14.pt"; \
+    clap_fname="/app/model/music_audioset_epoch_15_esc_90.14.pt"; \
+    echo "Downloading CLAP model (optional, ~500MB)..."; \
+    n=0; \
+    wget --server-response --spider --timeout=15 "$clap_url" || true; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 -O "$clap_fname" "$clap_url"; then \
+            echo "CLAP model downloaded successfully -> $clap_fname"; \
+            ls -lh "$clap_fname"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "CLAP download attempt $n failed — retrying in $((n*n*2))s"; \
+        sleep $((n*n*2)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "WARNING: CLAP model download failed after 5 attempts. CLAP text search will be disabled."; \
+        echo "You can manually download from: $clap_url"; \
+        rm -f "$clap_fname"; \
+    fi
+
 # ============================================================================
 # Stage 2: Base - System dependencies and build tools
 # ============================================================================
@@ -123,16 +147,40 @@ COPY requirements/ /app/requirements/
 # GPU builds: cupy, cuml, onnxruntime-gpu, voyager
 # CPU builds: onnxruntime (CPU only)
 # Note: --index-strategy unsafe-best-match resolves conflicts between pypi.nvidia.com and pypi.org
-RUN --mount=type=cache,target=/root/.cache/uv \
-    if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
+RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
         echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager)"; \
-        uv pip install --system --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt; \
+        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
     else \
-        echo "CPU base image: installing onnxruntime (CPU only)"; \
-        uv pip install --system -r /app/requirements/cpu.txt -r /app/requirements/common.txt; \
+        echo "CPU base image: installing all packages together for dependency resolution"; \
+        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/cpu.txt -r /app/requirements/common.txt || exit 1; \
     fi \
+    && echo "Verifying psycopg2 installation..." \
+    && python3 -c "import psycopg2; print('psycopg2 OK')" \
+    && echo "Verifying torch installation..." \
+    && python3 -c "import torch; print('torch OK')" \
     && find /usr/local/lib/python3.10/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.10/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+
+# Download ALL text encoders needed by laion-clap library (prevents runtime downloads)
+# laion_clap/training/data.py imports: BertTokenizer, RobertaTokenizer, BartTokenizer
+# and initializes bart_tokenizer at module import time (line 46)
+RUN export HF_HOME=/app/.cache/huggingface && \
+    python3 -c "\
+import os; \
+os.environ['HF_HOME'] = '/app/.cache/huggingface'; \
+from transformers import BertTokenizer, BertModel, RobertaTokenizer, RobertaModel, BartTokenizer, BartModel; \
+print('Downloading BERT model...'); \
+BertTokenizer.from_pretrained('bert-base-uncased'); \
+BertModel.from_pretrained('bert-base-uncased'); \
+print('Downloading RoBERTa model...'); \
+RobertaTokenizer.from_pretrained('roberta-base'); \
+RobertaModel.from_pretrained('roberta-base'); \
+print('Downloading BART model...'); \
+BartTokenizer.from_pretrained('facebook/bart-base'); \
+BartModel.from_pretrained('facebook/bart-base'); \
+print('✓ All text encoder models cached'); \
+import subprocess; \
+subprocess.run(['du', '-sh', '/app/.cache/huggingface'])"
 
 # ============================================================================
 # Stage 4: Runner - Final production image
@@ -141,12 +189,23 @@ FROM base AS runner
 
 ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
-    DEBIAN_FRONTEND=noninteractive
+    DEBIAN_FRONTEND=noninteractive \
+    HF_HOME=/app/.cache/huggingface \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 WORKDIR /app
 
 # Copy Python packages from libraries stage
 COPY --from=libraries /usr/local/lib/python3.10/dist-packages/ /usr/local/lib/python3.10/dist-packages/
+
+# Copy HuggingFace cache (RoBERTa model) from libraries stage
+COPY --from=libraries /app/.cache/huggingface/ /app/.cache/huggingface/
+
+# Verify cache was copied correctly
+RUN ls -lah /app/.cache/huggingface/ && \
+    echo "HuggingFace cache contents:" && \
+    du -sh /app/.cache/huggingface/* || echo "Cache directory empty!"
 
 # Copy models from models stage
 COPY --from=models /app/model/ /app/model/

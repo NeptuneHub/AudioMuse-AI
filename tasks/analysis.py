@@ -422,8 +422,9 @@ def analyze_track(file_path, mood_labels_list, model_paths):
 def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
     from app import (app, JobStatus)
     from app_helper import (redis_conn, get_db, save_task_status, get_task_info_from_db,
-                     save_track_analysis_and_embedding,
+                     save_track_analysis_and_embedding, save_clap_embedding,
                      TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+    from .clap_analyzer import analyze_audio_file as clap_analyze, is_clap_available
     
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -480,7 +481,18 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL", (tuple(track_ids_as_strings),))
                     return {row[0] for row in cur.fetchall()}
 
+            def get_missing_clap_track_ids(track_ids):
+                """Returns set of track IDs that need CLAP analysis (missing from clap_embedding table)."""
+                if not track_ids: return set()
+                with get_db() as conn, conn.cursor() as cur:
+                    track_ids_as_strings = [str(id) for id in track_ids]
+                    cur.execute("SELECT item_id FROM clap_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
+                    existing_clap_ids = {row[0] for row in cur.fetchall()}
+                    # Return tracks that DON'T have CLAP embeddings yet
+                    return set(track_ids_as_strings) - existing_clap_ids
+
             existing_track_ids_set = get_existing_track_ids( [str(t['Id']) for t in tracks])
+            missing_clap_ids_set = get_missing_clap_track_ids([str(t['Id']) for t in tracks]) if is_clap_available() else set()
             total_tracks_in_album = len(tracks)
 
             for idx, item in enumerate(tracks, 1):
@@ -510,7 +522,12 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 except Exception as mapping_error:
                     logger.error(f"Failed to store artist mapping for '{artist_name}': {mapping_error}", exc_info=True)
 
-                if str(item['Id']) in existing_track_ids_set:
+                track_id_str = str(item['Id'])
+                needs_musicnn = track_id_str not in existing_track_ids_set
+                needs_clap = track_id_str in missing_clap_ids_set
+                
+                # Skip if both MusiCNN and CLAP are already done
+                if not needs_musicnn and not needs_clap:
                     tracks_skipped_count += 1
                     continue
                 
@@ -520,23 +537,39 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     continue
 
                 try:
-                    analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths)
-                    if analysis is None:
-                        logger.warning(f"Skipping track {track_name_full} as analysis returned None.")
-                        tracks_skipped_count += 1
-                        continue
+                    # MusiCNN analysis (only if needed)
+                    if needs_musicnn:
+                        analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths)
+                        if analysis is None:
+                            logger.warning(f"Skipping track {track_name_full} as analysis returned None.")
+                            tracks_skipped_count += 1
+                            continue
+                        
+                        top_moods = dict(sorted(analysis['moods'].items(), key=lambda i: i[1], reverse=True)[:top_n_moods])
+                        other_features = ",".join([f"{k}:{analysis.get(k, 0.0):.2f}" for k in OTHER_FEATURE_LABELS])
+                        
+                        logger.info(f"SUCCESSFULLY ANALYZED '{track_name_full}' (ID: {item['Id']}):")
+                        logger.info(f"  - Tempo: {analysis['tempo']:.2f}, Energy: {analysis['energy']:.4f}, Key: {analysis['key']} {analysis['scale']}")
+                        logger.info(f"  - Top Moods: {top_moods}")
+                        logger.info(f"  - Other Features: {other_features}")
+                        
+                        save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding, energy=analysis['energy'], other_features=other_features)
+                        tracks_analyzed_count += 1
+                    else:
+                        logger.info(f"SKIPPED MusiCNN for '{track_name_full}' (already analyzed)")
                     
-                    top_moods = dict(sorted(analysis['moods'].items(), key=lambda i: i[1], reverse=True)[:top_n_moods])
-                    other_features = ",".join([f"{k}:{analysis.get(k, 0.0):.2f}" for k in OTHER_FEATURE_LABELS])
+                    # CLAP analysis (only if enabled AND needed)
+                    if needs_clap and is_clap_available():
+                        try:
+                            clap_embedding, _, _ = clap_analyze(path)
+                            if clap_embedding is not None:
+                                save_clap_embedding(item['Id'], clap_embedding)
+                                logger.info(f"  - CLAP embedding saved (512-dim)")
+                        except Exception as e:
+                            logger.warning(f"  - CLAP analysis failed: {e}")
+                    elif not needs_clap and is_clap_available():
+                        logger.info(f"  - CLAP embedding already exists, skipping")
                     
-                    logger.info(f"SUCCESSFULLY ANALYZED '{track_name_full}' (ID: {item['Id']}):")
-                    logger.info(f"  - Tempo: {analysis['tempo']:.2f}, Energy: {analysis['energy']:.4f}, Key: {analysis['key']} {analysis['scale']}")
-                    logger.info(f"  - Top Moods: {top_moods}")
-                    logger.info(f"  - Other Features: {other_features}")
-                    
-                    save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding, energy=analysis['energy'], other_features=other_features)
-                    
-                    tracks_analyzed_count += 1
                 finally:
                     if path and os.path.exists(path):
                         os.remove(path)
@@ -558,6 +591,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
 def run_analysis_task(num_recent_albums, top_n_moods):
     from app import app
     from app_helper import (redis_conn, get_db, rq_queue_default, save_task_status, get_task_info_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+    from .clap_analyzer import is_clap_available
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())    
@@ -747,9 +781,20 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 except Exception as e:
                     logger.error(f"Failed to store artist mappings for album '{album.get('Name')}': {e}", exc_info=True)
 
-                # If all tracks already exist in DB, skip and log how many.
+                # Check if album needs any analysis (MusiCNN OR CLAP)
                 try:
-                    existing_count = len(get_existing_track_ids([t['Id'] for t in tracks]))
+                    track_ids = [t['Id'] for t in tracks]
+                    existing_count = len(get_existing_track_ids(track_ids))
+                    
+                    # Also check CLAP if enabled
+                    needs_clap_analysis = False
+                    if is_clap_available():
+                        with get_db() as conn, conn.cursor() as cur:
+                            track_ids_as_strings = [str(id) for id in track_ids]
+                            cur.execute("SELECT item_id FROM clap_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
+                            existing_clap_ids = {row[0] for row in cur.fetchall()}
+                            needs_clap_analysis = len(existing_clap_ids) < len(tracks)
+                    
                 except Exception as e:
                     # Defensive: if DB check fails, log and continue to next album to avoid blocking the main loop.
                     logger.warning(f"Failed to verify existing tracks for album '{album.get('Name')}' (ID: {album.get('Id')}): {e}")
@@ -757,10 +802,11 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     albums_skipped += 1
                     continue
 
-                if existing_count >= len(tracks):
+                # Skip ONLY if all tracks have both MusiCNN AND CLAP (if enabled)
+                if existing_count >= len(tracks) and not needs_clap_analysis:
                     albums_skipped += 1
                     checked_album_ids.add(album['Id'])
-                    logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {existing_count}/{len(tracks)} tracks already analyzed.")
+                    logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {existing_count}/{len(tracks)} tracks already analyzed (MusiCNN + CLAP).")
                     continue
                 
                 # MODIFIED: Enqueue call for analyze_album_task now passes fewer arguments.
