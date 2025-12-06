@@ -33,14 +33,14 @@ RUN set -ux; \
 # Download ONNX models with diagnostics and retry logic
 RUN set -eux; \
     urls=( \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/danceability-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/mood_aggressive-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/mood_happy-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/mood_party-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/mood_relaxed-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/mood_sad-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/msd-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/danceability-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_aggressive-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_happy-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_party-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_relaxed-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_sad-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/msd-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/msd-musicnn-1.onnx" \
     ); \
     mkdir -p /app/model; \
     for u in "${urls[@]}"; do \
@@ -65,29 +65,74 @@ RUN set -eux; \
         fi; \
     done
 
-# Download CLAP model (optional, only if CLAP_ENABLED=true at runtime)
-# This is cached in the models stage layer, so it only downloads once
+# Download CLAP model from GitHub releases (split into 2 parts due to size limit)
+# Model: music_audioset_epoch_15_esc_90.14.pt (2.2GB) split as clap_model_part.aa + clap_model_part.ab
 RUN set -eux; \
-    clap_url="https://huggingface.co/lukewys/laion_clap/resolve/main/music_audioset_epoch_15_esc_90.14.pt"; \
-    clap_fname="/app/model/music_audioset_epoch_15_esc_90.14.pt"; \
-    echo "Downloading CLAP model (optional, ~500MB)..."; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+    part_aa="clap_model_part.aa"; \
+    part_ab="clap_model_part.ab"; \
+    merged_file="/app/model/music_audioset_epoch_15_esc_90.14.pt"; \
+    echo "Downloading CLAP model parts (~2.2GB total)..."; \
+    \
+    # Download part aa with retry logic \
     n=0; \
-    wget --server-response --spider --timeout=15 "$clap_url" || true; \
     until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 -O "$clap_fname" "$clap_url"; then \
-            echo "CLAP model downloaded successfully -> $clap_fname"; \
-            ls -lh "$clap_fname"; \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/tmp/$part_aa" "$base_url/$part_aa"; then \
+            echo "Downloaded part aa"; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "CLAP download attempt $n failed — retrying in $((n*n*2))s"; \
-        sleep $((n*n*2)); \
+        echo "Download attempt $n for part aa failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
-        echo "WARNING: CLAP model download failed after 5 attempts. CLAP text search will be disabled."; \
-        echo "You can manually download from: $clap_url"; \
-        rm -f "$clap_fname"; \
-    fi
+        echo "ERROR: Failed to download CLAP model part aa after 5 attempts"; \
+        exit 1; \
+    fi; \
+    \
+    # Download part ab with retry logic \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/tmp/$part_ab" "$base_url/$part_ab"; then \
+            echo "Downloaded part ab"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "Download attempt $n for part ab failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download CLAP model part ab after 5 attempts"; \
+        rm -f "/tmp/$part_aa"; \
+        exit 1; \
+    fi; \
+    \
+    # Merge the parts \
+    echo "Merging CLAP model parts..."; \
+    cat "/tmp/$part_aa" "/tmp/$part_ab" > "$merged_file"; \
+    \
+    # Verify merged file exists and has reasonable size \
+    if [ ! -f "$merged_file" ]; then \
+        echo "ERROR: Merged CLAP model file not created"; \
+        exit 1; \
+    fi; \
+    \
+    file_size=$(stat -c%s "$merged_file" 2>/dev/null || stat -f%z "$merged_file" 2>/dev/null || echo "0"); \
+    if [ "$file_size" -lt 2000000000 ]; then \
+        echo "ERROR: Merged CLAP model file is too small (expected ~2.2GB, got $file_size bytes)"; \
+        exit 1; \
+    fi; \
+    \
+    # Clean up split parts to save space \
+    echo "Cleaning up split parts..."; \
+    rm -f "/tmp/$part_aa" "/tmp/$part_ab"; \
+    \
+    echo "CLAP model merged successfully -> $merged_file"; \
+    ls -lh "$merged_file"
 
 # ============================================================================
 # Stage 2: Base - System dependencies and build tools
