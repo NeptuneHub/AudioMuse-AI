@@ -206,26 +206,48 @@ RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
     && find /usr/local/lib/python3.10/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.10/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
-# Download ALL text encoders needed by laion-clap library (prevents runtime downloads)
-# laion_clap/training/data.py imports: BertTokenizer, RobertaTokenizer, BartTokenizer
-# and initializes bart_tokenizer at module import time (line 46)
-RUN export HF_HOME=/app/.cache/huggingface && \
-    python3 -c "\
-import os; \
-os.environ['HF_HOME'] = '/app/.cache/huggingface'; \
-from transformers import BertTokenizer, BertModel, RobertaTokenizer, RobertaModel, BartTokenizer, BartModel; \
-print('Downloading BERT model...'); \
-BertTokenizer.from_pretrained('bert-base-uncased'); \
-BertModel.from_pretrained('bert-base-uncased'); \
-print('Downloading RoBERTa model...'); \
-RobertaTokenizer.from_pretrained('roberta-base'); \
-RobertaModel.from_pretrained('roberta-base'); \
-print('Downloading BART model...'); \
-BartTokenizer.from_pretrained('facebook/bart-base'); \
-BartModel.from_pretrained('facebook/bart-base'); \
-print('✓ All text encoder models cached'); \
-import subprocess; \
-subprocess.run(['du', '-sh', '/app/.cache/huggingface'])"
+# Download HuggingFace models (BERT, RoBERTa, BART) from GitHub release
+# These are the text encoders needed by laion-clap library for text embeddings
+RUN set -eux; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+    hf_models="huggingface_models.tar.gz"; \
+    cache_dir="/app/.cache/huggingface"; \
+    echo "Downloading HuggingFace models (~985MB)..."; \
+    \
+    # Download with retry logic \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/tmp/$hf_models" "$base_url/$hf_models"; then \
+            echo "✓ HuggingFace models downloaded"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "Download attempt $n failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download HuggingFace models after 5 attempts"; \
+        exit 1; \
+    fi; \
+    \
+    # Extract to cache directory \
+    mkdir -p "$cache_dir"; \
+    echo "Extracting HuggingFace models..."; \
+    tar -xzf "/tmp/$hf_models" -C "$cache_dir"; \
+    \
+    # Verify extraction \
+    if [ ! -d "$cache_dir/hub" ]; then \
+        echo "ERROR: HuggingFace models extraction failed"; \
+        exit 1; \
+    fi; \
+    \
+    # Clean up tarball \
+    rm -f "/tmp/$hf_models"; \
+    \
+    echo "✓ HuggingFace models extracted to $cache_dir"; \
+    du -sh "$cache_dir"
 
 # ============================================================================
 # Stage 4: Runner - Final production image
