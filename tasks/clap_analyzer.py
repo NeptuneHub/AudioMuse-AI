@@ -12,6 +12,7 @@ from typing import Tuple, Optional
 
 # CRITICAL: Set thread limits BEFORE importing torch/transformers
 # Prevents CPU oversubscription when multiple workers load model simultaneously
+# REQUIRED: OpenMP/MKL threading causes deadlocks in forked worker processes
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['MKL_NUM_THREADS'] = '1'
 os.environ['NUMEXPR_NUM_THREADS'] = '1'
@@ -146,7 +147,8 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
     try:
         import librosa
         import torch
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        # DISABLED: Testing PyTorch internal threading instead
+        # from concurrent.futures import ThreadPoolExecutor, as_completed
         import os
         
         model = get_clap_model()
@@ -181,11 +183,13 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         
         num_segments = len(segments)
         
-        # Process batches in PARALLEL using threads (like reference implementation)
-        # BATCH_SIZE=4: each batch has 4 segments processed together
-        # NUM_THREADS: dynamic based on CPU cores (reference project uses max(1, cpu_count - 2))
-        BATCH_SIZE = 4
-        NUM_THREADS = max(1, os.cpu_count() - 2)  # Leave 2 cores for system, minimum 1 thread
+        # ENABLED: Python-level threading with PyTorch single-threaded (fork-safe)
+        # Process batches in PARALLEL using threads
+        # Use max CPU cores - all threads stay active and grab batches as they finish
+        NUM_THREADS = max(1, os.cpu_count() - 2)
+        BATCH_SIZE = 1  # Each batch = 1 segment, threads grab next segment when done
+        
+        logger.info(f"CLAP: Processing {num_segments} segments with {NUM_THREADS} threads, batch_size={BATCH_SIZE}")
         
         # Create batches
         segment_batches = []
@@ -209,6 +213,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         all_embeddings = []
         
         # Use ThreadPoolExecutor to process batches in parallel
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
             # Submit all batches
             future_to_batch = {executor.submit(process_batch, batch): i 
@@ -223,8 +228,10 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
                     logger.error(f"Batch processing failed: {e}")
                     raise
         
-        # Combine and average all embeddings
+        # Combine all batch embeddings
         all_embeddings = np.vstack(all_embeddings)
+        
+        # all_embeddings is already the right shape from model
         avg_embedding = np.mean(all_embeddings, axis=0)
         
         # Normalize

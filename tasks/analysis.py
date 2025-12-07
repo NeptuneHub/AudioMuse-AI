@@ -560,6 +560,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     
                     # CLAP analysis (only if enabled AND needed)
                     if needs_clap and is_clap_available():
+                        logger.info(f"  - Starting CLAP analysis for {track_name_full}...")
                         try:
                             clap_embedding, _, _ = clap_analyze(path)
                             if clap_embedding is not None:
@@ -569,6 +570,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             logger.warning(f"  - CLAP analysis failed: {e}")
                     elif not needs_clap and is_clap_available():
                         logger.info(f"  - CLAP embedding already exists, skipping")
+                    else:
+                        logger.info(f"  - CLAP skipped: needs_clap={needs_clap}, available={is_clap_available()}")
                     
                 finally:
                     if path and os.path.exists(path):
