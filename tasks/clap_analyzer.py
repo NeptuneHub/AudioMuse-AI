@@ -185,8 +185,10 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         
         # ENABLED: Python-level threading with PyTorch single-threaded (fork-safe)
         # Process batches in PARALLEL using threads
-        # Use max CPU cores - all threads stay active and grab batches as they finish
-        NUM_THREADS = max(1, os.cpu_count() - 2)
+        # Use physical CPU cores only (excluding hyperthreading) for optimal performance
+        import psutil
+        physical_cores = psutil.cpu_count(logical=False)
+        NUM_THREADS = max(1, physical_cores - 1)
         BATCH_SIZE = 1  # Each batch = 1 segment, threads grab next segment when done
         
         logger.info(f"CLAP: Processing {num_segments} segments with {NUM_THREADS} threads, batch_size={BATCH_SIZE}")
@@ -214,7 +216,12 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         
         # Use ThreadPoolExecutor to process batches in parallel
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
+        
+        # CRITICAL: Explicit thread cleanup to prevent leaks in long-running workers
+        executor = None
+        try:
+            executor = ThreadPoolExecutor(max_workers=NUM_THREADS)
+            
             # Submit all batches
             future_to_batch = {executor.submit(process_batch, batch): i 
                              for i, batch in enumerate(segment_batches)}
@@ -227,6 +234,25 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
                 except Exception as e:
                     logger.error(f"Batch processing failed: {e}")
                     raise
+        finally:
+            # CRITICAL: Force immediate shutdown of all threads
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
+                # Give threads time to actually terminate
+                import time
+                time.sleep(0.1)
+            
+            # Force cleanup of any lingering thread-local storage
+            import threading
+            thread_count_before = threading.active_count()
+            
+            # Aggressive thread cleanup
+            import gc
+            gc.collect()
+            
+            thread_count_after = threading.active_count()
+            if thread_count_after > thread_count_before:
+                logger.warning(f"Thread leak detected: {thread_count_before} -> {thread_count_after} active threads")
         
         # Combine all batch embeddings
         all_embeddings = np.vstack(all_embeddings)
