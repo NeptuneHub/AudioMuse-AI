@@ -7,13 +7,21 @@
         margin: 0 auto;
     }
     
+    .search-container .param-group {
+        margin-bottom: 1.5rem;
+    }
+    
+    .search-container label {
+        display: block;
+        margin-bottom: 0.5rem;
+    }
+    
     .search-box {
         width: 100%;
-        padding: 1rem;
-        font-size: 1.1rem;
+        padding: 0.5rem;
+        font-size: 1rem;
         border: 2px solid var(--border-color, #ddd);
         border-radius: 8px;
-        margin-bottom: 1rem;
     }
     
     .search-box:focus {
@@ -65,11 +73,25 @@
     }
     
     #search-form button {
+        width: 100%;
+        padding: 0.75rem 1.5rem;
+        font-size: 1rem;
+        font-weight: 600;
         background-color: #2563EB;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background-color 0.2s;
     }
     
     #search-form button:hover {
         background-color: #1D4ED8;
+    }
+    
+    #search-form button:disabled {
+        background-color: #9CA3AF;
+        cursor: not-allowed;
     }
     
     #playlist-form button {
@@ -137,7 +159,7 @@
 <section>
     <header class="page-header">
         <h1>AudioMuse-AI - Text Search</h1>
-        <p>Find music using natural language descriptions powered by CLAP AI.</p>
+        <p>Find music using natural language descriptions - use music terms for better results.</p>
     </header>
 
     {% if not clap_enabled %}
@@ -167,7 +189,7 @@
                     Search Query:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Describe the music you want to find using natural language. CLAP understands mood, genre, instruments, tempo, and more.</span>
+                        <span class="tooltip-text">Describe the music you want to find using music terms. This functionality accept mood, genre, instruments, tempo, and more.</span>
                     </span>
                 </label>
                 <input 
