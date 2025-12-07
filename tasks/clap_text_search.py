@@ -132,11 +132,10 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
     if not CLAP_ENABLED:
         return []
     
-    # Ensure cache is loaded
+    # Cache must be loaded at startup - no lazy loading
     if not _CLAP_CACHE['loaded']:
-        if not load_clap_cache_from_db():
-            logger.error("Cannot search: CLAP cache failed to load")
-            return []
+        logger.error("Cannot search: CLAP cache not loaded. Ensure Flask started successfully.")
+        return []
     
     try:
         # Get text embedding
