@@ -45,15 +45,22 @@ def _suppress_output(func):
 
 
 def _load_clap_model():
-    """Load CLAP model with aggressive memory optimization."""
+    """Load CLAP model with GPU support and automatic CPU fallback."""
     import laion_clap
     import torch
     import gc
     
-    # Force CPU-only mode and clear cache
-    torch.set_num_threads(1)
-    if torch.cuda.is_available():
+    # Check GPU availability
+    use_gpu = torch.cuda.is_available()
+    device = torch.device('cuda' if use_gpu else 'cpu')
+    
+    if use_gpu:
+        logger.info("GPU detected - loading CLAP model on CUDA")
         torch.cuda.empty_cache()
+    else:
+        logger.info("No GPU detected - loading CLAP model on CPU")
+        torch.set_num_threads(1)
+    
     gc.collect()
     
     model = laion_clap.CLAP_Module(enable_fusion=False, amodel='HTSAT-base')
@@ -69,26 +76,22 @@ def _load_clap_model():
     
     model.eval()
     
-    # CRITICAL: Aggressive memory optimization
+    # CRITICAL: Memory optimization
     # 1. Disable all gradients (saves ~50% memory)
     for param in model.parameters():
         param.requires_grad = False
     
-    # 2. Convert to half precision (FP16) - saves 50% memory on model weights
-    # Only if not using CPU (CPU doesn't support FP16 well)
-    # model = model.half()  # Skip on CPU, causes issues
+    # 2. Move model to appropriate device (GPU or CPU)
+    model = model.to(device)
     
-    # 3. Force model to CPU and clear any GPU memory
-    model = model.cpu()
-    
-    # 4. Delete optimizer states and unnecessary buffers
+    # 3. Delete optimizer states and unnecessary buffers
     if hasattr(model, 'optimizer'):
         del model.optimizer
     
-    # 5. Run garbage collection
+    # 4. Run garbage collection
     gc.collect()
     
-    logger.info(f"✓ CLAP model loaded with memory optimization")
+    logger.info(f"✓ CLAP model loaded on {device} with memory optimization")
     
     return model
 
@@ -183,79 +186,106 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         
         num_segments = len(segments)
         
-        # ENABLED: Python-level threading with PyTorch single-threaded (fork-safe)
-        # Process batches in PARALLEL using threads
-        # Use physical CPU cores only (excluding hyperthreading) for optimal performance
-        import psutil
-        physical_cores = psutil.cpu_count(logical=False)
-        NUM_THREADS = max(1, physical_cores - 1)
-        BATCH_SIZE = 1  # Each batch = 1 segment, threads grab next segment when done
+        # Check if using GPU
+        use_gpu = torch.cuda.is_available()
         
-        logger.info(f"CLAP: Processing {num_segments} segments with {NUM_THREADS} threads, batch_size={BATCH_SIZE}")
-        
-        # Create batches
-        segment_batches = []
-        for i in range(0, num_segments, BATCH_SIZE):
-            batch = segments[i:i + BATCH_SIZE]
-            segment_batches.append(batch)
-        
-        # Process batches in parallel
-        def process_batch(batch_segments):
-            """Process one batch of segments through the model."""
-            # CRITICAL: Set num_threads=1 inside each thread to prevent OpenMP conflicts
-            torch.set_num_threads(1)
-            batch_array = np.stack(batch_segments, axis=0)
-            with torch.no_grad():
-                embeddings = model.get_audio_embedding_from_data(
-                    x=batch_array,
-                    use_tensor=False
-                )
-            return embeddings
-        
-        all_embeddings = []
-        
-        # Use ThreadPoolExecutor to process batches in parallel
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        
-        # CRITICAL: Explicit thread cleanup to prevent leaks in long-running workers
-        executor = None
-        try:
-            executor = ThreadPoolExecutor(max_workers=NUM_THREADS)
+        if use_gpu:
+            # GPU: Process in batches sequentially (GPU operations are not thread-safe)
+            logger.info(f"CLAP: Processing {num_segments} segments on GPU in batches")
             
-            # Submit all batches
-            future_to_batch = {executor.submit(process_batch, batch): i 
-                             for i, batch in enumerate(segment_batches)}
+            # Process segments in batches for efficiency
+            BATCH_SIZE = 8  # Process multiple segments at once on GPU
+            all_embeddings = []
             
-            # Collect results as they complete
-            for future in as_completed(future_to_batch):
-                try:
-                    embeddings = future.result()
-                    all_embeddings.append(embeddings)
-                except Exception as e:
-                    logger.error(f"Batch processing failed: {e}")
-                    raise
-        finally:
-            # CRITICAL: Force immediate shutdown of all threads
-            if executor is not None:
-                executor.shutdown(wait=True, cancel_futures=True)
-                # Give threads time to actually terminate
-                import time
-                time.sleep(0.1)
+            for i in range(0, num_segments, BATCH_SIZE):
+                batch = segments[i:i + BATCH_SIZE]
+                batch_array = np.stack(batch, axis=0)
+                
+                with torch.no_grad():
+                    embeddings = model.get_audio_embedding_from_data(
+                        x=batch_array,
+                        use_tensor=False
+                    )
+                all_embeddings.append(embeddings)
             
-            # Force cleanup of any lingering thread-local storage
-            import threading
-            thread_count_before = threading.active_count()
+            # Combine all batch embeddings
+            all_embeddings = np.vstack(all_embeddings)
             
-            # Aggressive thread cleanup
-            import gc
-            gc.collect()
+        else:
+            # CPU: Use multi-threading for parallel processing
+            # Use physical CPU cores only (excluding hyperthreading) for optimal performance
+            import psutil
+            physical_cores = psutil.cpu_count(logical=False)
+            NUM_THREADS = max(1, physical_cores - 1)
+            BATCH_SIZE = 1  # Each batch = 1 segment, threads grab next segment when done
             
-            thread_count_after = threading.active_count()
-            if thread_count_after > thread_count_before:
-                logger.warning(f"Thread leak detected: {thread_count_before} -> {thread_count_after} active threads")
-        
-        # Combine all batch embeddings
-        all_embeddings = np.vstack(all_embeddings)
+            logger.info(f"CLAP: Processing {num_segments} segments with {NUM_THREADS} CPU threads, batch_size={BATCH_SIZE}")
+            
+            # Create batches
+            segment_batches = []
+            for i in range(0, num_segments, BATCH_SIZE):
+                batch = segments[i:i + BATCH_SIZE]
+                segment_batches.append(batch)
+            
+            # Process batches in parallel
+            def process_batch(batch_segments):
+                """Process one batch of segments through the model."""
+                import torch
+                # CRITICAL: Set num_threads=1 inside each thread to prevent OpenMP conflicts
+                torch.set_num_threads(1)
+                
+                batch_array = np.stack(batch_segments, axis=0)
+                with torch.no_grad():
+                    embeddings = model.get_audio_embedding_from_data(
+                        x=batch_array,
+                        use_tensor=False
+                    )
+                return embeddings
+            
+            all_embeddings = []
+            
+            # Use ThreadPoolExecutor to process batches in parallel
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            
+            # CRITICAL: Explicit thread cleanup to prevent leaks in long-running workers
+            executor = None
+            try:
+                executor = ThreadPoolExecutor(max_workers=NUM_THREADS)
+                
+                # Submit all batches
+                future_to_batch = {executor.submit(process_batch, batch): i 
+                                 for i, batch in enumerate(segment_batches)}
+                
+                # Collect results as they complete
+                for future in as_completed(future_to_batch):
+                    try:
+                        embeddings = future.result()
+                        all_embeddings.append(embeddings)
+                    except Exception as e:
+                        logger.error(f"Batch processing failed: {e}")
+                        raise
+            finally:
+                # CRITICAL: Force immediate shutdown of all threads
+                if executor is not None:
+                    executor.shutdown(wait=True, cancel_futures=True)
+                    # Give threads time to actually terminate
+                    import time
+                    time.sleep(0.1)
+                
+                # Force cleanup of any lingering thread-local storage
+                import threading
+                thread_count_before = threading.active_count()
+                
+                # Aggressive thread cleanup
+                import gc
+                gc.collect()
+                
+                thread_count_after = threading.active_count()
+                if thread_count_after > thread_count_before:
+                    logger.warning(f"Thread leak detected: {thread_count_before} -> {thread_count_after} active threads")
+            
+            # Combine all batch embeddings
+            all_embeddings = np.vstack(all_embeddings)
         
         # all_embeddings is already the right shape from model
         avg_embedding = np.mean(all_embeddings, axis=0)
@@ -299,6 +329,7 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
         import transformers.models.roberta.modeling_roberta as roberta_module
         
         model = get_clap_model()
+        device = next(model.parameters()).device  # Get device from model
         
         # Patch RoBERTa forward to handle dimension issues
         if not hasattr(roberta_module, '_original_roberta_forward'):
@@ -334,6 +365,10 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
         
         with torch.no_grad():
             text_embedding = model.get_text_embedding([query_text], use_tensor=False)
+        
+        # If on GPU, ensure result is moved back to CPU
+        if isinstance(text_embedding, torch.Tensor):
+            text_embedding = text_embedding.cpu().numpy()
         
         # Ensure 1D numpy array
         if isinstance(text_embedding, np.ndarray):
