@@ -213,13 +213,16 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
             
         else:
             # CPU: Use multi-threading for parallel processing
-            # Use physical CPU cores only (excluding hyperthreading) for optimal performance
+            # Use physical cores + half of hyperthreading for optimal performance
+            # Formula: (physical_cores - 1) + (hyperthreading_cores / 2)
             import psutil
             physical_cores = psutil.cpu_count(logical=False)
-            NUM_THREADS = max(1, physical_cores - 1)
+            logical_cores = psutil.cpu_count(logical=True)
+            hyperthreading_cores = logical_cores - physical_cores
+            NUM_THREADS = max(1, (physical_cores - 1)) #+ (hyperthreading_cores // 2))
             BATCH_SIZE = 1  # Each batch = 1 segment, threads grab next segment when done
             
-            logger.info(f"CLAP: Processing {num_segments} segments with {NUM_THREADS} CPU threads, batch_size={BATCH_SIZE}")
+            logger.info(f"CLAP: Processing {num_segments} segments with {NUM_THREADS} CPU threads (physical: {physical_cores}, logical: {logical_cores}), batch_size={BATCH_SIZE}")
             
             # Create batches
             segment_batches = []
@@ -242,7 +245,8 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
                     )
                 return embeddings
             
-            all_embeddings = []
+            # Pre-allocate result array for better performance
+            all_embeddings = [None] * len(segment_batches)
             
             # Use ThreadPoolExecutor to process batches in parallel
             from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -256,11 +260,12 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
                 future_to_batch = {executor.submit(process_batch, batch): i 
                                  for i, batch in enumerate(segment_batches)}
                 
-                # Collect results as they complete
+                # Collect results as they complete (maintain order via batch index)
                 for future in as_completed(future_to_batch):
                     try:
+                        batch_idx = future_to_batch[future]
                         embeddings = future.result()
-                        all_embeddings.append(embeddings)
+                        all_embeddings[batch_idx] = embeddings
                     except Exception as e:
                         logger.error(f"Batch processing failed: {e}")
                         raise
