@@ -194,7 +194,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
             logger.info(f"CLAP: Processing {num_segments} segments on GPU in batches")
             
             # Process segments in batches for efficiency
-            BATCH_SIZE = 8  # Process multiple segments at once on GPU
+            BATCH_SIZE = 4  # Process multiple segments at once on GPU
             all_embeddings = []
             
             for i in range(0, num_segments, BATCH_SIZE):
