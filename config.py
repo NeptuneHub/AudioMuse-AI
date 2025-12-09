@@ -255,6 +255,9 @@ EMBEDDING_DIMENSION = 200
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", "/app/model/music_audioset_epoch_15_esc_90.14.pt")
 CLAP_EMBEDDING_DIMENSION = 512
+# CPU threading for CLAP analysis. 0 = auto-calculate: (physical_cores - 1) + (hyperthreading_cores // 2)
+# Set to >= 1 to manually override thread count
+CLAP_NUM_THREADS = int(os.environ.get("CLAP_NUM_THREADS", "0"))
 
 # --- Voyager Index Constants ---
 INDEX_NAME = os.environ.get("VOYAGER_INDEX_NAME", "music_library") # The primary key for our index in the DB

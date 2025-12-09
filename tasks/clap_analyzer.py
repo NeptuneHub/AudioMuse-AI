@@ -213,16 +213,21 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
             
         else:
             # CPU: Use multi-threading for parallel processing
-            # Use physical cores + half of hyperthreading for optimal performance
-            # Formula: (physical_cores - 1) + (hyperthreading_cores / 2)
-            import psutil
-            physical_cores = psutil.cpu_count(logical=False)
-            logical_cores = psutil.cpu_count(logical=True)
-            hyperthreading_cores = logical_cores - physical_cores
-            NUM_THREADS = max(1, (physical_cores - 1) + (hyperthreading_cores // 2))
+            # Use config override or auto-calculate: (physical_cores - 1) + (hyperthreading_cores / 2)
+            if config.CLAP_NUM_THREADS >= 1:
+                NUM_THREADS = config.CLAP_NUM_THREADS
+                logger.info(f"CLAP: Using user-configured thread count: {NUM_THREADS}")
+            else:
+                import psutil
+                physical_cores = psutil.cpu_count(logical=False)
+                logical_cores = psutil.cpu_count(logical=True)
+                hyperthreading_cores = logical_cores - physical_cores
+                NUM_THREADS = max(1, (physical_cores - 1) + (hyperthreading_cores // 2))
+                logger.info(f"CLAP: Auto-calculated thread count: {NUM_THREADS} (physical: {physical_cores}, logical: {logical_cores})")
+            
             BATCH_SIZE = 1  # Each batch = 1 segment, threads grab next segment when done
             
-            logger.info(f"CLAP: Processing {num_segments} segments with {NUM_THREADS} CPU threads (physical: {physical_cores}, logical: {logical_cores}), batch_size={BATCH_SIZE}")
+            logger.info(f"CLAP: Processing {num_segments} segments with {NUM_THREADS} CPU threads, batch_size={BATCH_SIZE}")
             
             # Create batches
             segment_batches = []
