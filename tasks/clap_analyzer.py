@@ -219,7 +219,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
             physical_cores = psutil.cpu_count(logical=False)
             logical_cores = psutil.cpu_count(logical=True)
             hyperthreading_cores = logical_cores - physical_cores
-            NUM_THREADS = max(1, (physical_cores - 1)) #+ (hyperthreading_cores // 2))
+            NUM_THREADS = max(1, (physical_cores - 1) + (hyperthreading_cores // 2))
             BATCH_SIZE = 1  # Each batch = 1 segment, threads grab next segment when done
             
             logger.info(f"CLAP: Processing {num_segments} segments with {NUM_THREADS} CPU threads (physical: {physical_cores}, logical: {logical_cores}), batch_size={BATCH_SIZE}")

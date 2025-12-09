@@ -40,8 +40,9 @@ MAX_LOG_ENTRIES_STORED = 10 # Max number of recent log entries to store in the d
 
 # --- RQ Setup ---
 redis_conn = Redis.from_url(REDIS_URL, socket_connect_timeout=15, socket_timeout=15)
-rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1) # High priority for main tasks
-rq_queue_default = Queue('default', connection=redis_conn, default_timeout=-1) # Default queue for sub-tasks
+# CRITICAL: result_ttl=600 (10 min) ensures finished jobs are auto-cleaned to prevent thread/memory leaks
+rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1, result_ttl=600) # High priority for main tasks
+rq_queue_default = Queue('default', connection=redis_conn, default_timeout=-1, result_ttl=600) # Default queue for sub-tasks
 
 # --- Database Setup (PostgreSQL) ---
 def get_db():
