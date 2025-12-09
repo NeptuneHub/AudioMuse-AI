@@ -211,70 +211,67 @@ RUN ls -lah /app/.cache/huggingface/ && \
 COPY --from=models /app/model/*.onnx /app/model/
 
 # Download CLAP model directly in runner stage (avoids EOF error with large file transfer in multi-arch builds)
-# Only for AMD64 - ARM64 devices typically lack RAM for CLAP inference
+# CLAP model works on both AMD64 and ARM64 (requires sufficient RAM: 4-8GB+ recommended)
 RUN set -eux; \
-    if [ "$(uname -m)" = "x86_64" ]; then \
-        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
-        part_aa="clap_model_part.aa"; \
-        part_ab="clap_model_part.ab"; \
-        merged_file="/app/model/music_audioset_epoch_15_esc_90.14.pt"; \
-        echo "AMD64 detected: Downloading CLAP model parts (~2.2GB total)..."; \
-        \
-        n=0; \
-        until [ "$n" -ge 5 ]; do \
-            if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-                --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-                -O "/tmp/$part_aa" "$base_url/$part_aa"; then \
-                echo "Downloaded part aa"; \
-                break; \
-            fi; \
-            n=$((n+1)); \
-            echo "Download attempt $n for part aa failed — retrying in $((n*n))s"; \
-            sleep $((n*n)); \
-        done; \
-        if [ "$n" -ge 5 ]; then \
-            echo "ERROR: Failed to download CLAP model part aa after 5 attempts"; \
-            exit 1; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+    part_aa="clap_model_part.aa"; \
+    part_ab="clap_model_part.ab"; \
+    merged_file="/app/model/music_audioset_epoch_15_esc_90.14.pt"; \
+    arch=$(uname -m); \
+    echo "Architecture detected: $arch - Downloading CLAP model parts (~2.2GB total)..."; \
+    \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/tmp/$part_aa" "$base_url/$part_aa"; then \
+            echo "Downloaded part aa"; \
+            break; \
         fi; \
-        \
-        n=0; \
-        until [ "$n" -ge 5 ]; do \
-            if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-                --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-                -O "/tmp/$part_ab" "$base_url/$part_ab"; then \
-                echo "Downloaded part ab"; \
-                break; \
-            fi; \
-            n=$((n+1)); \
-            echo "Download attempt $n for part ab failed — retrying in $((n*n))s"; \
-            sleep $((n*n)); \
-        done; \
-        if [ "$n" -ge 5 ]; then \
-            echo "ERROR: Failed to download CLAP model part ab after 5 attempts"; \
-            rm -f "/tmp/$part_aa"; \
-            exit 1; \
+        n=$((n+1)); \
+        echo "Download attempt $n for part aa failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download CLAP model part aa after 5 attempts"; \
+        exit 1; \
+    fi; \
+    \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/tmp/$part_ab" "$base_url/$part_ab"; then \
+            echo "Downloaded part ab"; \
+            break; \
         fi; \
-        \
-        echo "Merging CLAP model parts..."; \
-        cat "/tmp/$part_aa" "/tmp/$part_ab" > "$merged_file"; \
-        \
-        if [ ! -f "$merged_file" ]; then \
-            echo "ERROR: Merged CLAP model file not created"; \
-            exit 1; \
-        fi; \
-        \
-        file_size=$(stat -c%s "$merged_file" 2>/dev/null || stat -f%z "$merged_file" 2>/dev/null || echo "0"); \
-        if [ "$file_size" -lt 2000000000 ]; then \
-            echo "ERROR: Merged CLAP model file is too small (expected ~2.2GB, got $file_size bytes)"; \
-            exit 1; \
-        fi; \
-        \
-        rm -f "/tmp/$part_aa" "/tmp/$part_ab"; \
-        echo "CLAP model merged successfully -> $merged_file"; \
-        ls -lh "$merged_file"; \
-    else \
-        echo "ARM64 detected: Skipping CLAP model (insufficient RAM for inference on most ARM devices)"; \
-    fi
+        n=$((n+1)); \
+        echo "Download attempt $n for part ab failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download CLAP model part ab after 5 attempts"; \
+        rm -f "/tmp/$part_aa"; \
+        exit 1; \
+    fi; \
+    \
+    echo "Merging CLAP model parts..."; \
+    cat "/tmp/$part_aa" "/tmp/$part_ab" > "$merged_file"; \
+    \
+    if [ ! -f "$merged_file" ]; then \
+        echo "ERROR: Merged CLAP model file not created"; \
+        exit 1; \
+    fi; \
+    \
+    file_size=$(stat -c%s "$merged_file" 2>/dev/null || stat -f%z "$merged_file" 2>/dev/null || echo "0"); \
+    if [ "$file_size" -lt 2000000000 ]; then \
+        echo "ERROR: Merged CLAP model file is too small (expected ~2.2GB, got $file_size bytes)"; \
+        exit 1; \
+    fi; \
+    \
+    rm -f "/tmp/$part_aa" "/tmp/$part_ab"; \
+    echo "CLAP model merged successfully -> $merged_file (arch: $arch)"; \
+    ls -lh "$merged_file"
 
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app
