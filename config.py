@@ -253,7 +253,7 @@ EMBEDDING_DIMENSION = 200
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
-CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", "/app/model/music_audioset_epoch_15_esc_90.14.pt")
+CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", "/app/model/clap_model.onnx")
 CLAP_EMBEDDING_DIMENSION = 512
 # CPU threading for CLAP analysis. 0 = auto-calculate: (physical_cores - 1) + (hyperthreading_cores // 2)
 # Set to >= 1 to manually override thread count

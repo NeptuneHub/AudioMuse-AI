@@ -210,68 +210,45 @@ RUN ls -lah /app/.cache/huggingface/ && \
 # Copy ONNX models from models stage (small files, no issues)
 COPY --from=models /app/model/*.onnx /app/model/
 
-# Download CLAP model directly in runner stage (avoids EOF error with large file transfer in multi-arch builds)
-# CLAP model works on both AMD64 and ARM64 (requires sufficient RAM: 4-8GB+ recommended)
+# Download CLAP ONNX model directly in runner stage
+# CLAP ONNX model (~782MB) - much smaller than PyTorch model (2.2GB)
+# Provides identical embeddings with ~2-3GB less RAM usage during inference
 RUN set -eux; \
     base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
-    part_aa="clap_model_part.aa"; \
-    part_ab="clap_model_part.ab"; \
-    merged_file="/app/model/music_audioset_epoch_15_esc_90.14.pt"; \
+    clap_model="clap_model.onnx"; \
     arch=$(uname -m); \
-    echo "Architecture detected: $arch - Downloading CLAP model parts (~2.2GB total)..."; \
+    echo "Architecture detected: $arch - Downloading CLAP ONNX model (~782MB)..."; \
     \
     n=0; \
     until [ "$n" -ge 5 ]; do \
         if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
             --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "/tmp/$part_aa" "$base_url/$part_aa"; then \
-            echo "Downloaded part aa"; \
+            -O "/app/model/$clap_model" "$base_url/$clap_model"; then \
+            echo "✓ CLAP ONNX model downloaded"; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "Download attempt $n for part aa failed — retrying in $((n*n))s"; \
+        echo "Download attempt $n for CLAP model failed — retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
-        echo "ERROR: Failed to download CLAP model part aa after 5 attempts"; \
+        echo "ERROR: Failed to download CLAP ONNX model after 5 attempts"; \
         exit 1; \
     fi; \
     \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "/tmp/$part_ab" "$base_url/$part_ab"; then \
-            echo "Downloaded part ab"; \
-            break; \
-        fi; \
-        n=$((n+1)); \
-        echo "Download attempt $n for part ab failed — retrying in $((n*n))s"; \
-        sleep $((n*n)); \
-    done; \
-    if [ "$n" -ge 5 ]; then \
-        echo "ERROR: Failed to download CLAP model part ab after 5 attempts"; \
-        rm -f "/tmp/$part_aa"; \
+    if [ ! -f "/app/model/$clap_model" ]; then \
+        echo "ERROR: CLAP ONNX model file not created"; \
         exit 1; \
     fi; \
     \
-    echo "Merging CLAP model parts..."; \
-    cat "/tmp/$part_aa" "/tmp/$part_ab" > "$merged_file"; \
-    \
-    if [ ! -f "$merged_file" ]; then \
-        echo "ERROR: Merged CLAP model file not created"; \
+    file_size=$(stat -c%s "/app/model/$clap_model" 2>/dev/null || stat -f%z "/app/model/$clap_model" 2>/dev/null || echo "0"); \
+    if [ "$file_size" -lt 700000000 ]; then \
+        echo "ERROR: CLAP ONNX model file is too small (expected ~782MB, got $file_size bytes)"; \
         exit 1; \
     fi; \
     \
-    file_size=$(stat -c%s "$merged_file" 2>/dev/null || stat -f%z "$merged_file" 2>/dev/null || echo "0"); \
-    if [ "$file_size" -lt 2000000000 ]; then \
-        echo "ERROR: Merged CLAP model file is too small (expected ~2.2GB, got $file_size bytes)"; \
-        exit 1; \
-    fi; \
-    \
-    rm -f "/tmp/$part_aa" "/tmp/$part_ab"; \
-    echo "CLAP model merged successfully -> $merged_file (arch: $arch)"; \
-    ls -lh "$merged_file"
+    echo "✓ CLAP ONNX model downloaded successfully (arch: $arch)"; \
+    ls -lh "/app/model/$clap_model"
 
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app
