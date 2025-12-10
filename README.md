@@ -443,6 +443,7 @@ AudioMuse AI is built upon a robust stack of open-source technologies:
 * [**Essentia-tensorflow**](https://essentia.upf.edu/) An open-source library for audio analysis, feature extraction, and music information retrieval. (used only until version v0.5.0-beta)
 * [**MusicNN Tensorflow Audio Models from Essentia**](https://essentia.upf.edu/models.html) Leverages pre-trained MusicNN models for feature extraction and prediction. More details and models.
 * [**Librosa**](https://github.com/librosa/librosa) Library for audio analysis, feature extraction, and music information retrieval. (used from version v0.6.0-beta)
+* [**CLAP (Contrastive Language-Audio Pretraining)**](https://github.com/LAION-AI/CLAP) Neural network for audio-text matching, enabling natural language music search and text-based playlist generation.
 * [**ONNX**](https://onnx.ai/) Open Neural Network Exchange format and [ONNX Runtime](https://onnxruntime.ai/) for fast, portable, cross-platform model inference. **(Used from v0.7.0-beta, replaces TensorFlow)**
 * [**Tensorflow**](https://www.tensorflow.org/) Platform developed by Google for building, training, and deploying machine learning and deep learning models. **(Used only in versions before v0.7.0-beta)**
 * [**scikit-learn**](https://scikit-learn.org/) Utilized for machine learning algorithms:
