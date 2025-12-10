@@ -134,8 +134,6 @@ RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
     fi \
     && echo "Verifying psycopg2 installation..." \
     && python3 -c "import psycopg2; print('psycopg2 OK')" \
-    && echo "Verifying torch installation..." \
-    && python3 -c "import torch; print('torch OK')" \
     && find /usr/local/lib/python3.10/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.10/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
