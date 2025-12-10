@@ -38,15 +38,25 @@ def _load_onnx_model():
     # Configure ONNX Runtime session options
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    # Use all available CPU cores for parallel inference
-    # intra_op: parallelism within a single operation (e.g., matrix multiply)
-    # inter_op: parallelism between independent operations
-    sess_options.intra_op_num_threads = 0  # 0 = use all available cores
-    sess_options.inter_op_num_threads = 0  # 0 = use all available cores
     sess_options.log_severity_level = 3  # 0=Verbose, 1=Info, 2=Warning, 3=Error, 4=Fatal
     
-    # Create session with CPU provider (GPU provider can be added if needed)
-    providers = ['CPUExecutionProvider']
+    # Threading configuration based on CLAP_PYTHON_MULTITHREADS:
+    # - False (default): Use ONNX internal threading (auto-detects all CPU cores)
+    # - True: Disable ONNX threading (set to 1), use Python ThreadPoolExecutor instead
+    if not config.CLAP_PYTHON_MULTITHREADS:
+        # ONNX handles threading internally - use all available cores
+        sess_options.intra_op_num_threads = 0  # 0 = use all available cores
+        sess_options.inter_op_num_threads = 0  # 0 = use all available cores
+        logger.info("CLAP: Using ONNX internal threading (auto-detect all cores)")
+    else:
+        # Python ThreadPoolExecutor will handle threading - disable ONNX threading
+        sess_options.intra_op_num_threads = 1  # Single-threaded ONNX operations
+        sess_options.inter_op_num_threads = 1  # Single-threaded ONNX operations
+        logger.info("CLAP: Using Python threading (auto-calculated threads), ONNX single-threaded")
+    
+    # GPU support: Try CUDA first, fallback to CPU
+    # This matches the approach used in analysis.py for MusicNN models
+    providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
     
     try:
         session = ort.InferenceSession(
@@ -55,7 +65,10 @@ def _load_onnx_model():
             providers=providers
         )
         
+        # Log which provider is actually being used
+        active_providers = session.get_providers()
         logger.info(f"✓ CLAP ONNX model loaded successfully")
+        logger.info(f"  Active execution provider: {active_providers[0]}")
         logger.info(f"  Inputs: {[i.name for i in session.get_inputs()]}")
         logger.info(f"  Outputs: {[o.name for o in session.get_outputs()]}")
         
@@ -231,8 +244,6 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         
         num_segments = len(segments)
         
-        logger.info(f"CLAP: Processing {num_segments} segments sequentially (ONNX uses all CPU cores internally)")
-        
         def process_segment(audio_segment):
             """Compute mel-spectrogram and get embedding for one segment."""
             # Compute mel-spectrogram
@@ -257,15 +268,59 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
             
             return audio_embedding[0]  # Remove batch dimension
         
-        # Process segments sequentially - ONNX Runtime parallelizes internally
-        all_embeddings = []
-        for seg in segments:
+        # Choose processing mode based on CLAP_PYTHON_MULTITHREADS
+        if not config.CLAP_PYTHON_MULTITHREADS:
+            # ONNX internal threading - process segments sequentially
+            logger.info(f"CLAP: Processing {num_segments} segments sequentially (ONNX internal threading)")
+            all_embeddings = []
+            for seg in segments:
+                try:
+                    embedding = process_segment(seg)
+                    all_embeddings.append(embedding)
+                except Exception as e:
+                    logger.error(f"Segment processing failed: {e}")
+                    raise
+        else:
+            # Python ThreadPoolExecutor - parallel processing with ONNX single-threaded
+            # Auto-calculate thread count: (physical_cores - 1) + (logical_cores // 2)
+            import psutil
+            physical_cores = psutil.cpu_count(logical=False)
+            logical_cores = psutil.cpu_count(logical=True)
+            num_threads = max(1, (physical_cores - 1) + ((logical_cores - physical_cores) // 2))
+            logger.info(f"CLAP: Processing {num_segments} segments with {num_threads} Python threads (physical: {physical_cores}, logical: {logical_cores})")
+            
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            
+            # Pre-allocate result array
+            all_embeddings = [None] * num_segments
+            
+            executor = None
             try:
-                embedding = process_segment(seg)
-                all_embeddings.append(embedding)
-            except Exception as e:
-                logger.error(f"Segment processing failed: {e}")
-                raise
+                executor = ThreadPoolExecutor(max_workers=num_threads)
+                
+                # Submit all segments
+                future_to_idx = {executor.submit(process_segment, seg): i 
+                                for i, seg in enumerate(segments)}
+                
+                # Collect results as they complete (maintain order)
+                for future in as_completed(future_to_idx):
+                    try:
+                        idx = future_to_idx[future]
+                        embedding = future.result()
+                        all_embeddings[idx] = embedding
+                    except Exception as e:
+                        logger.error(f"Segment processing failed: {e}")
+                        raise
+            finally:
+                # Force immediate shutdown of all threads
+                if executor is not None:
+                    executor.shutdown(wait=True, cancel_futures=True)
+                    import time
+                    time.sleep(0.1)
+                
+                # Cleanup thread-local storage
+                import gc
+                gc.collect()
         
         # Combine all embeddings
         all_embeddings = np.vstack(all_embeddings)

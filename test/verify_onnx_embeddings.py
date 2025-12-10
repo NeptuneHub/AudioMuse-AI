@@ -5,6 +5,7 @@ Ensures the ONNX model produces identical embeddings to the original PyTorch mod
 
 import os
 import sys
+import time
 import numpy as np
 import librosa
 import librosa.feature
@@ -149,10 +150,13 @@ def compare_pytorch_vs_onnx():
         print(f"\nQuery: '{query}'")
         
         # PyTorch embedding
+        pt_start = time.perf_counter()
         with torch.no_grad():
             pt_embedding = pt_model.get_text_embedding([query], use_tensor=False)[0]
+        pt_time = time.perf_counter() - pt_start
         
         # ONNX embedding
+        onnx_start = time.perf_counter()
         tokens = tokenizer(
             query,
             padding='max_length',
@@ -171,6 +175,7 @@ def compare_pytorch_vs_onnx():
         
         outputs = onnx_session.run(None, onnx_inputs)
         onnx_embedding = outputs[1][0]  # Second output is text_embedding
+        onnx_time = time.perf_counter() - onnx_start
         
         # Normalize both
         pt_embedding = pt_embedding / np.linalg.norm(pt_embedding)
@@ -185,6 +190,10 @@ def compare_pytorch_vs_onnx():
         print(f"  Max difference:  {max_diff:.2e}")
         print(f"  Mean difference: {mean_diff:.2e}")
         print(f"  Cosine similarity: {cosine_sim:.10f}")
+        print(f"  PyTorch time: {pt_time*1000:.2f}ms")
+        print(f"  ONNX time:    {onnx_time*1000:.2f}ms")
+        speedup = pt_time / onnx_time if onnx_time > 0 else 0
+        print(f"  Speedup:      {speedup:.2f}x {'(ONNX faster)' if speedup > 1 else '(PyTorch faster)'}")
         
         # Pass criteria: max diff < 1e-5 and cosine similarity > 0.9999
         passed = max_diff < 1e-5 and cosine_sim > 0.9999
@@ -195,6 +204,9 @@ def compare_pytorch_vs_onnx():
             'max_diff': max_diff,
             'mean_diff': mean_diff,
             'cosine_sim': cosine_sim,
+            'pt_time': pt_time,
+            'onnx_time': onnx_time,
+            'speedup': speedup,
             'passed': passed
         })
     
@@ -265,6 +277,7 @@ def compare_pytorch_vs_onnx():
                 # =========================================================
                 # PyTorch: Process all segments
                 # =========================================================
+                pt_start = time.perf_counter()
                 pt_embeddings = []
                 for seg in segments:
                     seg_batched = seg.reshape(1, -1)  # Shape: (1, T)
@@ -287,10 +300,12 @@ def compare_pytorch_vs_onnx():
                 
                 # Average PyTorch embeddings
                 pt_audio_embedding = np.mean(pt_embeddings, axis=0)
+                pt_time = time.perf_counter() - pt_start
                 
                 # =========================================================
                 # ONNX: Process all segments
                 # =========================================================
+                onnx_start = time.perf_counter()
                 onnx_embeddings = []
                 for seg in segments:
                     # Compute mel-spectrogram (matching CLAP HTSAT config exactly!)
@@ -334,6 +349,7 @@ def compare_pytorch_vs_onnx():
                 
                 # Average ONNX embeddings
                 onnx_audio_embedding = np.mean(onnx_embeddings, axis=0)
+                onnx_time = time.perf_counter() - onnx_start
                 
                 # Normalize both
                 pt_audio_embedding = pt_audio_embedding / np.linalg.norm(pt_audio_embedding)
@@ -348,6 +364,10 @@ def compare_pytorch_vs_onnx():
                 print(f"  Max difference:  {max_diff:.2e}")
                 print(f"  Mean difference: {mean_diff:.2e}")
                 print(f"  Cosine similarity: {cosine_sim:.10f}")
+                print(f"  PyTorch time: {pt_time:.3f}s ({len(segments)} segments)")
+                print(f"  ONNX time:    {onnx_time:.3f}s ({len(segments)} segments)")
+                speedup = pt_time / onnx_time if onnx_time > 0 else 0
+                print(f"  Speedup:      {speedup:.2f}x {'(ONNX faster)' if speedup > 1 else '(PyTorch faster)'}")
                 
                 # Pass criteria: cosine similarity ≥ 0.97
                 # Note: Small differences (0.97-0.99) are expected due to librosa vs torchlibrosa
@@ -360,6 +380,9 @@ def compare_pytorch_vs_onnx():
                     'max_diff': max_diff,
                     'mean_diff': mean_diff,
                     'cosine_sim': cosine_sim,
+                    'pt_time': pt_time,
+                    'onnx_time': onnx_time,
+                    'speedup': speedup,
                     'passed': audio_passed
                 })
                 
@@ -387,7 +410,7 @@ def compare_pytorch_vs_onnx():
     print(f"\nText embeddings: {'✓ ALL PASS' if all_text_passed else '✗ SOME FAILED'} ({len(text_results)} queries)")
     for r in text_results:
         status = "✓" if r['passed'] else "✗"
-        print(f"  {status} '{r['query']}' - max_diff={r['max_diff']:.2e}, cos_sim={r['cosine_sim']:.6f}")
+        print(f"  {status} '{r['query']}' - cos_sim={r['cosine_sim']:.6f}, speedup={r['speedup']:.2f}x")
     
     if audio_results:
         all_audio_passed = all(r['passed'] for r in audio_results)
@@ -397,7 +420,7 @@ def compare_pytorch_vs_onnx():
                 print(f"  ✗ {r['file']} - ERROR: {r['error']}")
             else:
                 status = "✓" if r['passed'] else "✗"
-                print(f"  {status} {r['file']} - max_diff={r['max_diff']:.2e}, cos_sim={r['cosine_sim']:.6f}")
+                print(f"  {status} {r['file']} - cos_sim={r['cosine_sim']:.6f}, speedup={r['speedup']:.2f}x")
     else:
         all_audio_passed = True
         print(f"\nAudio embeddings: SKIPPED (no test files)")

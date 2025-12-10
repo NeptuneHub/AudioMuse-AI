@@ -255,9 +255,10 @@ EMBEDDING_DIMENSION = 200
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", "/app/model/clap_model.onnx")
 CLAP_EMBEDDING_DIMENSION = 512
-# CPU threading for CLAP analysis. 0 = auto-calculate: (physical_cores - 1) + (hyperthreading_cores // 2)
-# Set to >= 1 to manually override thread count
-CLAP_NUM_THREADS = int(os.environ.get("CLAP_NUM_THREADS", "0"))
+# CPU threading for CLAP analysis:
+# - False (default): Use ONNX internal threading (auto-detects all CPU cores, recommended)
+# - True: Use Python ThreadPoolExecutor with auto-calculated threads: (physical_cores - 1) + (logical_cores // 2)
+CLAP_PYTHON_MULTITHREADS = os.environ.get("CLAP_PYTHON_MULTITHREADS", "False").lower() == "true"
 
 # --- Voyager Index Constants ---
 INDEX_NAME = os.environ.get("VOYAGER_INDEX_NAME", "music_library") # The primary key for our index in the DB

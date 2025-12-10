@@ -318,7 +318,7 @@ These are the default parameters used when launching analysis or clustering task
 | **Analysis General**                        |                                                                                                                            |                 |
 | `NUM_RECENT_ALBUMS`                         | Number of recent albums to scan (0 for all).                                                                              | `0`             |
 | `TOP_N_MOODS`                               | Number of top moods per track for feature vector.                                                                         | `5`             |
-| `CLAP_NUM_THREADS`                          | CPU threads for CLAP analysis. 0 = auto-calculate: (physical_cores - 1) + (hyperthreading_cores / 2). Set >= 1 to manually override. | `0`             |
+| `CLAP_PYTHON_MULTITHREADS`                  | CPU threading for CLAP analysis. False (default) = Use ONNX internal threading (recommended). True = Use Python ThreadPoolExecutor  | `false`         |
 | **Clustering General**                      |                                                                                                                            |                 |
 | `ENABLE_CLUSTERING_EMBEDDINGS`              | Whether to use audio embeddings (True) or score-based features (False) for clustering.                                    | `true`          |
 | `CLUSTER_ALGORITHM`                         | Default clustering: `kmeans`, `dbscan`, `gmm`, `spectral`.                                                                | `kmeans`        |
