@@ -69,6 +69,41 @@ def _load_onnx_model():
         active_providers = session.get_providers()
         logger.info(f"✓ CLAP ONNX model loaded successfully")
         logger.info(f"  Active execution provider: {active_providers[0]}")
+        
+        # If CUDA provider is available but fails during initialization,
+        # recreate session with CPU-only to avoid runtime CUDA errors
+        if active_providers[0] == 'CUDAExecutionProvider':
+            try:
+                # Test CUDA initialization by running a dummy inference on audio input
+                # CLAP model has 3 inputs: mel_spectrogram (audio), input_ids & attention_mask (text)
+                input_names = [i.name for i in session.get_inputs()]
+                test_inputs = {}
+                for input_name in input_names:
+                    if input_name == 'mel_spectrogram':
+                        # Audio input: (batch, channels, time_frames, mel_bins) = (1, 1, 1000, 64)
+                        test_inputs[input_name] = np.zeros((1, 1, 1000, 64), dtype=np.float32)
+                    elif input_name == 'input_ids':
+                        # Text token IDs: (batch, seq_len)
+                        test_inputs[input_name] = np.zeros((1, 77), dtype=np.int64)
+                    elif input_name == 'attention_mask':
+                        # Text attention mask: (batch, seq_len)
+                        test_inputs[input_name] = np.ones((1, 77), dtype=np.int64)
+                
+                # Run inference to test CUDA
+                _ = session.run(None, test_inputs)
+                logger.info("  ✓ CUDA initialized successfully")
+            except Exception as cuda_error:
+                logger.warning(f"  CUDA initialization failed: {cuda_error}")
+                logger.warning("  Falling back to CPU-only execution")
+                # Recreate session with CPU-only
+                session = ort.InferenceSession(
+                    config.CLAP_MODEL_PATH,
+                    sess_options=sess_options,
+                    providers=['CPUExecutionProvider']
+                )
+                active_providers = session.get_providers()
+                logger.info(f"  Active execution provider: {active_providers[0]}")
+        
         logger.info(f"  Inputs: {[i.name for i in session.get_inputs()]}")
         logger.info(f"  Outputs: {[o.name for o in session.get_outputs()]}")
         

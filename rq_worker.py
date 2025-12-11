@@ -39,13 +39,15 @@ if __name__ == '__main__':
     print(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
 
     # Preload CLAP model to avoid loading delays on first text search
-    try:
-        print("Preloading CLAP model for this worker...")
-        from tasks.clap_analyzer import initialize_clap_model
-        initialize_clap_model()
-        print("✓ CLAP model preloaded successfully")
-    except Exception as e:
-        print(f"⚠ CLAP model preload failed, will retry on first use: {e}")
+    # NOTE: Disabled for GPU workers - CUDA context doesn't survive process fork()
+    # Model will lazy-load on first use in the forked worker process
+    # try:
+    #     print("Preloading CLAP model for this worker...")
+    #     from tasks.clap_analyzer import initialize_clap_model
+    #     initialize_clap_model()
+    #     print("✓ CLAP model preloaded successfully")
+    # except Exception as e:
+    #     print(f"⚠ CLAP model preload failed, will retry on first use: {e}")
 
     # Create a worker instance, explicitly passing the connection.
     # The 'app' object is passed to `with app.app_context():` within the tasks themselves
