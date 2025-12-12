@@ -268,7 +268,6 @@ CLAP_CATEGORY_WEIGHTS_DEFAULT = {
     "Genre_Style": 5.0,           # CLAP excels at genre detection
     "Instrumentation_Vocal": 5.0, # CLAP excels at instrument detection
     "Emotion_Mood": 1.0,
-    "Function_Setting": 0.5,
     "Voice_Type": 1.0
 }
 import json

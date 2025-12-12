@@ -242,64 +242,37 @@ def generate_top_queries(num_queries=None, top_n=50, return_scores=False):
     # Get category weights from config (optimized for CLAP's strengths)
     category_weights = config.CLAP_CATEGORY_WEIGHTS
     
-    # Mutually exclusive categories (can't appear together)
-    conflicting_categories = [
-        {'Instrumentation_Vocal', 'Voice_Type'}
-    ]
-    
-    def categories_conflict(selected_categories):
-        """Check if selected categories have conflicts."""
-        selected_set = set(selected_categories)
-        for conflict_set in conflicting_categories:
-            if conflict_set.issubset(selected_set):
-                return True
-        return False
-    
     # Generate random queries with smart category selection
     def generate_random_query():
         """Generate a query with exactly 3 terms from different categories using weighted sampling."""
-        attempts = 0
-        max_attempts = 20
+        # Weighted random sampling of 3 different categories
+        categories = list(query_data.keys())
+        weights = [category_weights.get(cat, 1.0) for cat in categories]
         
-        while attempts < max_attempts:
-            # Weighted random sampling of 3 different categories
-            categories = list(query_data.keys())
-            weights = [category_weights[cat] for cat in categories]
-            
-            # Sample 3 unique categories
-            selected_categories = []
-            available_categories = list(categories)
-            available_weights = list(weights)
-            
-            for _ in range(3):
-                if not available_categories:
-                    break
-                    
-                # Normalize weights
-                total_weight = sum(available_weights)
-                normalized_weights = [w / total_weight for w in available_weights]
-                
-                # Choose category
-                chosen_idx = random.choices(range(len(available_categories)), weights=normalized_weights)[0]
-                selected_categories.append(available_categories[chosen_idx])
-                
-                # Remove selected category from pool
-                available_categories.pop(chosen_idx)
-                available_weights.pop(chosen_idx)
-            
-            # Check for conflicts
-            if not categories_conflict(selected_categories):
-                # Sample one term from each selected category
-                terms = [random.choice(query_data[cat]) for cat in selected_categories]
-                # Shuffle terms so category order varies
-                random.shuffle(terms)
-                return ' '.join(terms).lower()
-            
-            attempts += 1
+        # Sample 3 unique categories
+        selected_categories = []
+        available_categories = list(categories)
+        available_weights = list(weights)
         
-        # Fallback: simple safe selection
-        safe_categories = ['Rhythm_Tempo', 'Genre_Style', 'Emotion_Mood']
-        terms = [random.choice(query_data[cat]) for cat in safe_categories]
+        for _ in range(3):
+            if not available_categories:
+                break
+                
+            # Normalize weights
+            total_weight = sum(available_weights)
+            normalized_weights = [w / total_weight for w in available_weights]
+            
+            # Choose category
+            chosen_idx = random.choices(range(len(available_categories)), weights=normalized_weights)[0]
+            selected_categories.append(available_categories[chosen_idx])
+            
+            # Remove selected category from pool
+            available_categories.pop(chosen_idx)
+            available_weights.pop(chosen_idx)
+        
+        # Sample one term from each selected category
+        terms = [random.choice(query_data[cat]) for cat in selected_categories]
+        # Shuffle terms so category order varies
         random.shuffle(terms)
         return ' '.join(terms).lower()
     
@@ -363,9 +336,13 @@ def generate_top_queries(num_queries=None, top_n=50, return_scores=False):
         """Track which terms are used in a query."""
         query = queries[idx]
         terms_used = defaultdict(set)
+        # Split query into words for exact matching
+        query_words = set(query.lower().split())
         for category, terms_list in query_data.items():
             for term in terms_list:
-                if term.lower() in query.lower():
+                # Check if term appears as complete words in query
+                term_words = set(term.lower().split())
+                if term_words.issubset(query_words):
                     terms_used[category].add(term)
         return (query, float(total_scores[idx]), dict(terms_used))
     

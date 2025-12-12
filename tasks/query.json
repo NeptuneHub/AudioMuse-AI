@@ -1,29 +1,14 @@
 {
   "Rhythm_Tempo": [
-    "Slow", "Mid-Tempo", "Moderate", "Upbeat", "Fast", "Steady",
-    "Pulsating", "Flowing", "Bouncy", "Syncopated",
-    "Polyrhythmic", "Staccato", "Legato", "Fluid",
-    "Sparse", "Dense", "Layered", "Repetitive", "Hypnotic",
-    "Laid-Back", "Driving", "Pumping", "Hard-Hitting", "Punchy",
-    "Chaotic", "Energetic", "Urgent",
-    "Swinging", "Shuffling", "Groovy", "Off-Beat",
-    "Tight", "Loose", "Organic", "Mechanical",
-    "Behind the Beat", "In the Pocket", "Dotted Rhythm",
-    "Halftime", "Double-Time", "Four-on-the-Floor",
-    "Breakbeat", "Quantized", "Humanized",
-    "Rigid", "Rolling", "Choppy"
+
+    "Laid-back", "Groovy", "Heavy", "Mellow", "Mid-Tempo", 
+    "Driving", "Light", "Upbeat", "Energetic"
   ],
   "Genre_Style": [
-    "Rock", "Pop", "Hip-Hop", "Electronic", "Jazz", "Blues", "Country", "Metal", "R&B", "Soul",
+    "Rock", "Pop", "Hip-Hop", "Electronica", "Jazz", "Blues", "Country", "Metal", "R&B", "Soul",
     "Reggae", "Punk", "Folk", "Classical", "Latin", "Funk", "Disco", "Gospel", "Indie",
-    "Alternative Rock", "Hard Rock", "Soft Rock", "Progressive Rock", "Punk Rock",
-    "Heavy Metal", "Death Metal", "Black Metal", "Thrash Metal",
-    "House", "Techno", "Trance", "Dubstep", "Drum and Bass",
-    "Trap", "Grime", "Drill",
-    "Bebop", "Swing", "Bossa Nova", "Smooth Jazz",
-    "Reggaeton", "Dancehall", "Ska", "Dub",
-    "Grunge", "Emo", "Shoegaze", "Post-Punk",
-    "K-Pop", "J-Pop", "Afrobeat"
+    "Alternative", "Hard Rock", "Progressive Rock","House", "Trap", "K-Pop", "Afrobeat", 
+    "Classic Rock", "Ambient", "Acoustic", "Experimental", "Indie pop"
   ],
   "Instrumentation_Vocal": [
     "Acoustic Guitar", "Electric Guitar", "Guitar", "Bass", "Bass Guitar",
@@ -36,33 +21,15 @@
     "Harmonica", "Accordion", "Harp",
     "Ukulele", "Banjo", "Mandolin",
     "Sitar", "Tabla", "Djembe", "Bongos", "Congas",
-    "Marimba", "Xylophone", "Vibraphone", "Steelpan",
-    "Vocals", "Vocal", "Singer", "Voice", "Choir", "A Cappella",
-    "Rap", "Spoken Word", "Harmonies", "Backing Vocals"
+    "Marimba", "Xylophone", "Vibraphone", "Steelpan"
   ],
   "Emotion_Mood": [
-    "Happy", "Uplifting", "Cheerful", "Playful", "Optimistic",
-    "Calm", "Peaceful", "Relaxed", "Dreamy", "Soothing",
-    "Romantic", "Passionate", "Intimate", "Tender",
-    "Melancholic", "Sad", "Nostalgic", "Bittersweet",
-    "Dark", "Mysterious", "Haunting", "Moody",
-    "Aggressive", "Intense", "Angry", "Powerful",
-    "Dramatic", "Epic", "Cinematic",
-    "Reflective", "Contemplative", "Meditative",
-    "Quirky", "Surreal", "Psychedelic"
-  ],
-  "Function_Setting": [
-    "Working", "Studying", "Relaxing", "Sleeping", "Meditation",
-    "Morning", "Evening", "Night",
-    "Driving", "Workout", "Running", "Dance",
-    "Party", "Club", "Festival",
-    "Dinner", "Romantic",
-    "Café", "Bar"
+    "Happy", "Sad", "Angry", "Relaxed", "Excited",
+    "Romantic", "Dark", "Dreamy"
   ],
   "Voice_Type": [
-    "Female Vocal", "Male Vocal", "Whispered", "Breathy",
-    "Raspy", "Smooth", "Deep Voice", "High-Pitched",
-    "Falsetto", "Belting", "Soft Vocal",
-    "Rap Vocal", "Chant", "Harmonized Vocals", "Autotuned"
+    "Female Vocal", "Male Vocal", "Whispered", "Breathy", "Raspy", 
+    "Smooth", "Deep Voice", "High-Pitched", "Falsetto", "Belting", 
+    "Chant", "Harmonized Vocals", "Autotuned", "Choir"
   ]
 }
