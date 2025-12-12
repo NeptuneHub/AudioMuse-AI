@@ -105,7 +105,7 @@ def clap_search_api():
         logger.error(f"CLAP search API error: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({'error': f'Search failed: {str(e)}'}), 500
+        return jsonify({'error': 'An internal server error occurred during CLAP search.'}), 500
 
 
 @clap_search_bp.route('/api/clap/cache/refresh', methods=['POST'])
