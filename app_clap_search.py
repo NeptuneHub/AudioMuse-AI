@@ -173,6 +173,6 @@ def top_queries_api():
             'ready': len(queries) > 0
         }), 200
     except Exception as e:
-        logger.error(f"Failed to get top queries: {e}")
-        return jsonify({'error': str(e), 'queries': [], 'ready': False}), 500
+        logger.exception("Failed to get top queries")
+        return jsonify({'error': 'An internal error occurred. Please try again later.', 'queries': [], 'ready': False}), 500
 
