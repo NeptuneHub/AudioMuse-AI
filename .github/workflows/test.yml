@@ -28,6 +28,16 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r test/requirements.txt
 
+    - name: Download CLAP model
+      run: |
+        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"
+        clap_model="clap_model.onnx"
+        mkdir -p test/models
+        echo "Downloading CLAP model..."
+        curl -L "${base_url}/${clap_model}" -o "test/models/${clap_model}"
+        echo "CLAP model downloaded successfully"
+        ls -lh test/models/${clap_model}
+
     - name: Verify test files exist
       run: |
         echo "Checking for config.py..."
@@ -41,8 +51,11 @@ jobs:
 
     - name: Run integration tests
       run: |
-        # Run the integration test with verbose output
+        # Run the MusiCNN integration test
         pytest test/test_analysis_integration.py -s -v --tb=short
+        
+        # Run the CLAP integration test
+        pytest test/test_clap_analysis_integration.py -s -v --tb=short
 
     - name: Upload test results
       if: always()
