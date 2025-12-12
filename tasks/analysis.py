@@ -881,6 +881,18 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             except Exception as e:
                 logger.warning(f'Could not publish reload message to redis: {e}')
 
+            # Trigger regeneration of top CLAP queries after analysis completes
+            try:
+                from config import CLAP_ENABLED
+                if CLAP_ENABLED:
+                    from .clap_text_search import precompute_top_queries_background
+                    import threading
+                    query_thread = threading.Thread(target=precompute_top_queries_background, daemon=True)
+                    query_thread.start()
+                    logger.info('Triggered regeneration of top CLAP queries after analysis completion.')
+            except Exception as e:
+                logger.warning(f'Could not trigger CLAP query regeneration: {e}')
+
             final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
             log_and_update_main(final_message, 100, task_state=TASK_STATUS_SUCCESS)
             clean_temp(TEMP_DIR)

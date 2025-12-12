@@ -151,3 +151,27 @@ def cache_stats_api():
     stats['clap_enabled'] = CLAP_ENABLED
     
     return jsonify(stats)
+
+
+@clap_search_bp.route('/api/clap/top_queries', methods=['GET'])
+def top_queries_api():
+    """
+    Return precomputed top 50 diverse queries.
+    Returns empty array if not ready yet (still computing in background).
+    """
+    from config import CLAP_ENABLED
+    from tasks.clap_text_search import get_cached_top_queries
+    
+    if not CLAP_ENABLED:
+        return jsonify({'queries': [], 'ready': False, 'message': 'CLAP disabled'}), 200
+    
+    try:
+        queries = get_cached_top_queries()
+        return jsonify({
+            'queries': queries,
+            'ready': len(queries) > 0
+        }), 200
+    except Exception as e:
+        logger.error(f"Failed to get top queries: {e}")
+        return jsonify({'error': str(e), 'queries': [], 'ready': False}), 500
+

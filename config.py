@@ -260,6 +260,25 @@ CLAP_EMBEDDING_DIMENSION = 512
 # - True: Use Python ThreadPoolExecutor with auto-calculated threads: (physical_cores - 1) + (logical_cores // 2)
 CLAP_PYTHON_MULTITHREADS = os.environ.get("CLAP_PYTHON_MULTITHREADS", "True").lower() == "true"
 
+# Category weights for CLAP query generation (affects random query sampling probabilities)
+# Higher weights favor categories where CLAP excels (Genre, Instrumentation)
+# Format: JSON string with category names as keys and float weights as values
+CLAP_CATEGORY_WEIGHTS_DEFAULT = {
+    "Rhythm_Tempo": 1.0,
+    "Genre_Style": 5.0,           # CLAP excels at genre detection
+    "Instrumentation_Vocal": 5.0, # CLAP excels at instrument detection
+    "Emotion_Mood": 1.0,
+    "Function_Setting": 0.5,
+    "Voice_Type": 1.0
+}
+import json
+CLAP_CATEGORY_WEIGHTS = json.loads(
+    os.environ.get("CLAP_CATEGORY_WEIGHTS", json.dumps(CLAP_CATEGORY_WEIGHTS_DEFAULT))
+)
+
+# Number of random queries to generate for top query recommendations
+CLAP_TOP_QUERIES_COUNT = int(os.environ.get("CLAP_TOP_QUERIES_COUNT", "1000"))
+
 # --- Voyager Index Constants ---
 INDEX_NAME = os.environ.get("VOYAGER_INDEX_NAME", "music_library") # The primary key for our index in the DB
 VOYAGER_METRIC = os.environ.get("VOYAGER_METRIC", "angular") # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)

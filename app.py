@@ -631,9 +631,21 @@ if __name__ == '__main__':
         if initialize_clap_model():
           logger.info("CLAP model preloaded at Flask startup.")
         # Load CLAP embeddings cache (15MB)
-        from tasks.clap_text_search import load_clap_cache_from_db
+        from tasks.clap_text_search import load_clap_cache_from_db, load_top_queries_from_db, precompute_top_queries_background
         if load_clap_cache_from_db():
           logger.info("CLAP text search cache loaded at startup.")
+          # Try to load existing top queries from database first
+          has_existing = load_top_queries_from_db()
+          if has_existing:
+            logger.info("Loaded existing top queries from database.")
+          else:
+            logger.info("No existing queries found (first startup). Will generate them now.")
+          # Start background computation/recomputation of top queries
+          # On first startup: generates new queries (users see empty until ready)
+          # On subsequent startups: users see old queries while new ones generate
+          query_thread = threading.Thread(target=precompute_top_queries_background, daemon=True)
+          query_thread.start()
+          logger.info("Started background computation of top CLAP queries.")
     except Exception as e:
       logger.debug(f"CLAP not loaded at startup (may be disabled or failed): {e}")
     # Initialize map JSON cache once at startup (reads DB one time)

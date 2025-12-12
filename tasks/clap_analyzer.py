@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 # Global ONNX session (lazy loaded)
 _onnx_session = None
 _tokenizer = None
+_cached_dummy_mel = None  # Reusable dummy mel-spectrogram tensor
 
 
 def _load_onnx_model():
@@ -385,6 +386,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
 def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
     """
     Get CLAP embedding for a text query using ONNX Runtime.
+    Uses cached dummy mel-spectrogram for efficiency.
     
     Args:
         query_text: Natural language query
@@ -392,6 +394,8 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
     Returns:
         512-dim normalized embedding vector or None if failed
     """
+    global _cached_dummy_mel
+    
     if not config.CLAP_ENABLED:
         return None
     
@@ -411,12 +415,13 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
         input_ids = encoded['input_ids'].astype(np.int64)
         attention_mask = encoded['attention_mask'].astype(np.int64)
         
-        # Create dummy mel-spectrogram input (not used in text mode)
-        dummy_mel = np.zeros((1, 1, 1000, 64), dtype=np.float32)
+        # Reuse cached dummy mel-spectrogram (not used in text mode, but required by model)
+        if _cached_dummy_mel is None or _cached_dummy_mel.shape[0] != 1:
+            _cached_dummy_mel = np.zeros((1, 1, 1000, 64), dtype=np.float32)
         
         # Run ONNX inference
         onnx_inputs = {
-            'mel_spectrogram': dummy_mel,
+            'mel_spectrogram': _cached_dummy_mel,
             'input_ids': input_ids,
             'attention_mask': attention_mask
         }
@@ -434,6 +439,71 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
         
     except Exception as e:
         logger.error(f"Failed to get text embedding for '{query_text}': {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
+    """
+    Get CLAP embeddings for multiple text queries in a single batch.
+    More efficient than calling get_text_embedding() repeatedly.
+    
+    Args:
+        query_texts: List of natural language queries
+        
+    Returns:
+        (N, 512) array of normalized embeddings or None if failed
+    """
+    global _cached_dummy_mel
+    
+    if not config.CLAP_ENABLED:
+        return None
+    
+    if not query_texts:
+        return None
+    
+    try:
+        session = get_clap_model()
+        tokenizer = get_tokenizer()
+        
+        batch_size = len(query_texts)
+        
+        # Tokenize all texts at once (max_length=77 for CLAP)
+        encoded = tokenizer(
+            query_texts,
+            max_length=77,
+            padding='max_length',
+            truncation=True,
+            return_tensors='np'
+        )
+        
+        input_ids = encoded['input_ids'].astype(np.int64)
+        attention_mask = encoded['attention_mask'].astype(np.int64)
+        
+        # Create or reuse dummy mel-spectrogram (not used in text mode)
+        # Reuse same dummy for efficiency
+        if _cached_dummy_mel is None or _cached_dummy_mel.shape[0] != batch_size:
+            _cached_dummy_mel = np.zeros((batch_size, 1, 1000, 64), dtype=np.float32)
+        
+        # Run ONNX inference for batch
+        onnx_inputs = {
+            'mel_spectrogram': _cached_dummy_mel,
+            'input_ids': input_ids,
+            'attention_mask': attention_mask
+        }
+        
+        outputs = session.run(None, onnx_inputs)
+        text_embeddings = outputs[1]  # Second output is text_embedding (batch_size, 512)
+        
+        # Normalize each embedding
+        norms = np.linalg.norm(text_embeddings, axis=1, keepdims=True)
+        text_embeddings = text_embeddings / norms
+        
+        return text_embeddings
+        
+    except Exception as e:
+        logger.error(f"Failed to get batch text embeddings: {e}")
         import traceback
         traceback.print_exc()
         return None

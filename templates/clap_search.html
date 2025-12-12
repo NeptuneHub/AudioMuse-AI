@@ -221,15 +221,10 @@
         </form>
         
         <div class="example-queries">
-            <h3>💡 Example Searches:</h3>
-            <span class="example-tag" data-query="upbeat summer songs">upbeat summer songs</span>
-            <span class="example-tag" data-query="relaxing piano music">relaxing piano music</span>
-            <span class="example-tag" data-query="energetic rock guitar">energetic rock guitar</span>
-            <span class="example-tag" data-query="melancholic acoustic">melancholic acoustic</span>
-            <span class="example-tag" data-query="electronic dance music">electronic dance music</span>
-            <span class="example-tag" data-query="calm jazz instrumental">calm jazz instrumental</span>
-            <span class="example-tag" data-query="powerful vocals">powerful vocals</span>
-            <span class="example-tag" data-query="vintage 80s synth">vintage 80s synth</span>
+            <h3>💡 Top Recommended Searches:</h3>
+            <div id="top-queries-container">
+                <span style="color: #666;">Loading recommendations...</span>
+            </div>
         </div>
     </div>
     
@@ -263,10 +258,47 @@ document.addEventListener('DOMContentLoaded', function() {
     const resultCount = document.getElementById('result-count');
     const playlistCreator = document.getElementById('playlist-creator');
     const playlistForm = document.getElementById('playlist-form');
+    const topQueriesContainer = document.getElementById('top-queries-container');
     
     let currentResults = [];
     
-    // Example query tags
+    // Load top queries on page load
+    loadTopQueries();
+    
+    async function loadTopQueries() {
+        try {
+            const response = await fetch("{{ url_for('clap_search_bp.top_queries_api') }}");
+            const data = await response.json();
+            
+            if (response.ok && data.ready && data.queries && data.queries.length > 0) {
+                // Queries are ready - display them
+                topQueriesContainer.innerHTML = '';
+                data.queries.forEach(query => {
+                    const tag = document.createElement('span');
+                    tag.className = 'example-tag';
+                    tag.setAttribute('data-query', query);
+                    tag.textContent = query;
+                    tag.addEventListener('click', function() {
+                        searchQuery.value = query;
+                        searchForm.dispatchEvent(new Event('submit'));
+                    });
+                    topQueriesContainer.appendChild(tag);
+                });
+            } else if (response.ok && !data.ready) {
+                // Still computing in background
+                topQueriesContainer.innerHTML = '<span style="color: #999;">Loading recommendations...</span>';
+                // Retry after 5 seconds
+                setTimeout(loadTopQueries, 5000);
+            } else {
+                topQueriesContainer.innerHTML = '<span style="color: #999;">No recommendations available</span>';
+            }
+        } catch (error) {
+            console.error('Failed to load top queries:', error);
+            topQueriesContainer.innerHTML = '<span style="color: #999;">Failed to load recommendations</span>';
+        }
+    }
+    
+    // Example query tags (kept for backwards compatibility, but replaced by loadTopQueries)
     document.querySelectorAll('.example-tag').forEach(tag => {
         tag.addEventListener('click', function() {
             const query = this.getAttribute('data-query');
