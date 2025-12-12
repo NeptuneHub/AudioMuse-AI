@@ -138,7 +138,7 @@ def refresh_cache_api():
         logger.error(f"Cache refresh failed: {e}")
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'An internal error occurred. Please try again later.'
         }), 500
 
 
