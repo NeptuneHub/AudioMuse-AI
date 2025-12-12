@@ -99,7 +99,8 @@ def clap_search_api():
         })
         
     except ValueError as e:
-        return jsonify({'error': f'Invalid parameter: {str(e)}'}), 400
+        logger.warning(f"ValueError in CLAP search API: {e}")
+        return jsonify({'error': 'Invalid or missing request parameter.'}), 400
     except Exception as e:
         logger.error(f"CLAP search API error: {e}")
         import traceback
