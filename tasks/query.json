@@ -25,7 +25,7 @@
   ],
   "Emotion_Mood": [
     "Happy", "Sad", "Angry", "Relaxed", "Excited",
-    "Romantic", "Dark", "Dreamy", "Agrresive"
+    "Romantic", "Dark", "Dreamy", "Aggressive"
   ],
   "Voice_Type": [
     "Female Vocal", "Male Vocal", "Whispered", "Breathy", "Raspy", 
