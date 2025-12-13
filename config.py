@@ -264,9 +264,8 @@ CLAP_PYTHON_MULTITHREADS = os.environ.get("CLAP_PYTHON_MULTITHREADS", "True").lo
 # Higher weights favor categories where CLAP excels (Genre, Instrumentation)
 # Format: JSON string with category names as keys and float weights as values
 CLAP_CATEGORY_WEIGHTS_DEFAULT = {
-    "Rhythm_Tempo": 1.0,
-    "Genre_Style": 5.0,           # CLAP excels at genre detection
-    "Instrumentation_Vocal": 5.0, # CLAP excels at instrument detection
+    "Genre_Style": 1.0,           # CLAP excels at genre detection
+    "Instrumentation_Vocal": 1.0, # CLAP excels at instrument detection
     "Emotion_Mood": 1.0,
     "Voice_Type": 1.0
 }
