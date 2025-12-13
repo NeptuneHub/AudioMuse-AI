@@ -33,11 +33,7 @@ More information, like **Frequently Asked Question (FAQ)** can be found in the [
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * Version 0.7.4-beta add the support of Cron Job to schedule Analysis and Clustering task. 
-> * Version 0.7.2-beta ad the new Song Map functionality to visualize your music. Also introduce the **experimental** support of Emby.
-> * Version 0.7.1-beta add the Song Alchemy functionality, create your playlist by blending together different song.
-> * Version 0.7.0-beta remove Tensorflow and use instead ONXX. This new version should have better result on different CPU and be also more stable between update. **IMPORTANT:** this new version will require a new analysis of the entire library to work correctly.
-> * Version 0.6.9-beta introduce the support to Lyrion Music Server.
+> * Version 0.8.0 finaly out of BETA and with new CLAP model that enable the search of song by text that contains genre, instruments and moods. 
 
 ## Disclaimer
 
@@ -455,7 +451,6 @@ AudioMuse AI is built upon a robust stack of open-source technologies:
 ## **How To Contribute**
 
 Contributions, issues, and feature requests are welcome\!  
-This is a BETA early release, so expect bugs or functions that are still not implemented.
 
 For more details on how to contribute please follow the [Contributing Guidelines](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/CONTRIBUTING.md)
 
