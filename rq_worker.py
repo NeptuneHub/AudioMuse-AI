@@ -38,6 +38,17 @@ if __name__ == '__main__':
     print(f"DEFAULT RQ Worker starting. Version: {APP_VERSION}. Listening on queues: {queues_to_listen}")
     print(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
 
+    # Preload CLAP model to avoid loading delays on first text search
+    # NOTE: Disabled for GPU workers - CUDA context doesn't survive process fork()
+    # Model will lazy-load on first use in the forked worker process
+    # try:
+    #     print("Preloading CLAP model for this worker...")
+    #     from tasks.clap_analyzer import initialize_clap_model
+    #     initialize_clap_model()
+    #     print("✓ CLAP model preloaded successfully")
+    # except Exception as e:
+    #     print(f"⚠ CLAP model preload failed, will retry on first use: {e}")
+
     # Create a worker instance, explicitly passing the connection.
     # The 'app' object is passed to `with app.app_context():` within the tasks themselves
     # if they need it. RQ's default job execution doesn't automatically push an app context.
@@ -51,11 +62,17 @@ if __name__ == '__main__':
         job_monitoring_interval=10 # Check for dead workers every 10 seconds.
     )
 
+    # Memory leak prevention: restart after N jobs
+    # RQ will automatically respawn via supervisord
+    # Balance: High enough to avoid frequent CLAP reloads, low enough to prevent memory leaks
+    max_jobs_before_restart = int(os.getenv('RQ_MAX_JOBS', '50'))
+
     # Start the worker.
     # You can set logging_level for more verbose output.
     # Common levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
     logging_level = os.getenv("RQ_LOGGING_LEVEL", "INFO").upper()
     print(f"RQ Worker logging level set to: {logging_level}")
+    print(f"Worker will restart after {max_jobs_before_restart} jobs to prevent memory leaks")
 
     try:
         # The `with app.app_context():` here is generally NOT how RQ workers are run.
@@ -72,7 +89,7 @@ if __name__ == '__main__':
         #         db = get_db()
         #         # ... do work ...
 
-        worker.work(logging_level=logging_level)
+        worker.work(logging_level=logging_level, max_jobs=max_jobs_before_restart)
     except Exception as e:
         print(f"RQ Worker failed to start or encountered an error: {e}")
         sys.exit(1)

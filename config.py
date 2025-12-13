@@ -51,7 +51,7 @@ MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music"
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v0.7.12-beta"
+APP_VERSION = "v0.8.0-beta"
 MAX_DISTANCE = 0.5
 MAX_SONGS_PER_CLUSTER = 0
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -250,6 +250,32 @@ TOP_N_OTHER_FEATURES = int(os.environ.get("TOP_N_OTHER_FEATURES", "2")) # Number
 EMBEDDING_MODEL_PATH = "/app/model/msd-musicnn-1.onnx"
 PREDICTION_MODEL_PATH = "/app/model/msd-msd-musicnn-1.onnx"
 EMBEDDING_DIMENSION = 200
+
+# --- CLAP Model Constants (for text search) ---
+CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
+CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", "/app/model/clap_model.onnx")
+CLAP_EMBEDDING_DIMENSION = 512
+# CPU threading for CLAP analysis:
+# - False (default): Use ONNX internal threading (auto-detects all CPU cores, recommended)
+# - True: Use Python ThreadPoolExecutor with auto-calculated threads: (physical_cores - 1) + (logical_cores // 2)
+CLAP_PYTHON_MULTITHREADS = os.environ.get("CLAP_PYTHON_MULTITHREADS", "True").lower() == "true"
+
+# Category weights for CLAP query generation (affects random query sampling probabilities)
+# Higher weights favor categories where CLAP excels (Genre, Instrumentation)
+# Format: JSON string with category names as keys and float weights as values
+CLAP_CATEGORY_WEIGHTS_DEFAULT = {
+    "Genre_Style": 1.0,           # CLAP excels at genre detection
+    "Instrumentation_Vocal": 1.0, # CLAP excels at instrument detection
+    "Emotion_Mood": 1.0,
+    "Voice_Type": 1.0
+}
+import json
+CLAP_CATEGORY_WEIGHTS = json.loads(
+    os.environ.get("CLAP_CATEGORY_WEIGHTS", json.dumps(CLAP_CATEGORY_WEIGHTS_DEFAULT))
+)
+
+# Number of random queries to generate for top query recommendations
+CLAP_TOP_QUERIES_COUNT = int(os.environ.get("CLAP_TOP_QUERIES_COUNT", "1000"))
 
 # --- Voyager Index Constants ---
 INDEX_NAME = os.environ.get("VOYAGER_INDEX_NAME", "music_library") # The primary key for our index in the DB

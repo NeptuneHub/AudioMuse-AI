@@ -534,7 +534,10 @@ def listen_for_index_reloads():
             # Rebuild the map JSON cache used by the /api/map endpoint
             from app_map import build_map_cache
             build_map_cache()
-            logger.info("In-memory Voyager index, artist index, map projections reloaded successfully by background listener.")
+            # Reload CLAP cache
+            from tasks.clap_text_search import refresh_clap_cache
+            refresh_clap_cache()
+            logger.info("In-memory Voyager index, artist index, map projections, and CLAP cache reloaded successfully by background listener.")
           except Exception as e:
             logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
       elif message_data == 'reload-artist':
@@ -574,6 +577,7 @@ from app_alchemy import alchemy_bp
 from app_map import map_bp
 from app_waveform import waveform_bp
 from app_artist_similarity import artist_similarity_bp
+from app_clap_search import clap_search_bp
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -588,6 +592,7 @@ app.register_blueprint(alchemy_bp)
 app.register_blueprint(map_bp)
 app.register_blueprint(waveform_bp)
 app.register_blueprint(artist_similarity_bp)
+app.register_blueprint(clap_search_bp)
 
 if __name__ == '__main__':
   os.makedirs(TEMP_DIR, exist_ok=True)
@@ -617,6 +622,32 @@ if __name__ == '__main__':
       logger.info("In-memory artist component projection loaded at startup.")
     except Exception as e:
       logger.debug(f"No precomputed artist projection to load at startup or load failed: {e}")
+    # Load CLAP model and text search cache
+    try:
+      from config import CLAP_ENABLED
+      if CLAP_ENABLED:
+        # Preload CLAP model (3GB) to avoid delay on first text search
+        from tasks.clap_analyzer import initialize_clap_model
+        if initialize_clap_model():
+          logger.info("CLAP model preloaded at Flask startup.")
+        # Load CLAP embeddings cache (15MB)
+        from tasks.clap_text_search import load_clap_cache_from_db, load_top_queries_from_db, precompute_top_queries_background
+        if load_clap_cache_from_db():
+          logger.info("CLAP text search cache loaded at startup.")
+          # Try to load existing top queries from database first
+          has_existing = load_top_queries_from_db()
+          if has_existing:
+            logger.info("Loaded existing top queries from database.")
+          else:
+            logger.info("No existing queries found (first startup). Will generate them now.")
+          # Start background computation/recomputation of top queries
+          # On first startup: generates new queries (users see empty until ready)
+          # On subsequent startups: users see old queries while new ones generate
+          query_thread = threading.Thread(target=precompute_top_queries_background, daemon=True)
+          query_thread.start()
+          logger.info("Started background computation of top CLAP queries.")
+    except Exception as e:
+      logger.debug(f"CLAP not loaded at startup (may be disabled or failed): {e}")
     # Initialize map JSON cache once at startup (reads DB one time)
     # Run this in a background daemon thread so the Flask process doesn't block on the heavy DB read.
     def _start_map_init_background():

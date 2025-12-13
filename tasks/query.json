@@ -1,0 +1,31 @@
+{
+  "Genre_Style": [
+    "Rock", "Pop", "Hip-Hop", "Electronica", "Jazz", "Blues", "Country", "Metal", "R&B", "Soul",
+    "Reggae", "Punk", "Folk", "Classical", "Latin", "Funk", "Disco", "Gospel", "Indie",
+    "Alternative", "Hard Rock", "Progressive Rock","House", "Trap", "K-Pop", "Afrobeat", 
+    "Classic Rock", "Ambient", "Acoustic", "Experimental", "Indie pop"
+  ],
+  "Instrumentation_Vocal": [
+    "Acoustic Guitar", "Electric Guitar", "Guitar", "Bass", "Bass Guitar",
+    "Piano", "Electric Piano", "Rhodes", "Organ", "Hammond Organ",
+    "Synthesizer", "Synth", "Analog Synth", "Keys", "Keyboard",
+    "Drums", "Drum Kit", "Drum Machine", "Percussion",
+    "Strings", "Violin", "Cello", "Viola", "Orchestra",
+    "Brass", "Trumpet", "Saxophone", "Sax", "Trombone", "Horn",
+    "Flute", "Clarinet", "Oboe",
+    "Harmonica", "Accordion", "Harp",
+    "Ukulele", "Banjo", "Mandolin",
+    "Sitar", "Tabla", "Djembe", "Bongos", "Congas",
+    "Marimba", "Xylophone", "Vibraphone", "Steelpan"
+  ],
+  "Emotion_Mood": [
+    "Happy", "Sad", "Angry", "Relaxed", "Excited",
+    "Romantic", "Dark", "Dreamy", "Aggressive", "Fast-paced", "Slow-paced", "Energetic", "Groovy", 
+    "Mid-Tempo" 
+  ],
+  "Voice_Type": [
+    "Female Vocal", "Male Vocal", "Whispered", "Breathy", "Raspy", 
+    "Smooth", "Deep Voice", "High-Pitched", "Falsetto", "Belting", 
+    "Chant", "Harmonized Vocals", "Autotuned", "Choir"
+  ]
+}

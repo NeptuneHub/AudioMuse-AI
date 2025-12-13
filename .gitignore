@@ -30,3 +30,7 @@ env/
 # Test artifacts
 .pytest_cache/
 htmlcov/
+
+# Large model files in query folder
+/query/*.pt
+/query/*.onnx

@@ -40,8 +40,9 @@ MAX_LOG_ENTRIES_STORED = 10 # Max number of recent log entries to store in the d
 
 # --- RQ Setup ---
 redis_conn = Redis.from_url(REDIS_URL, socket_connect_timeout=15, socket_timeout=15)
-rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1) # High priority for main tasks
-rq_queue_default = Queue('default', connection=redis_conn, default_timeout=-1) # Default queue for sub-tasks
+# CRITICAL: result_ttl=600 (10 min) ensures finished jobs are auto-cleaned to prevent thread/memory leaks
+rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1, result_ttl=600) # High priority for main tasks
+rq_queue_default = Queue('default', connection=redis_conn, default_timeout=-1, result_ttl=600) # Default queue for sub-tasks
 
 # --- Database Setup (PostgreSQL) ---
 def get_db():
@@ -92,6 +93,10 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
         cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')")
         if not cur.fetchone()[0]: cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
+        # Create 'clap_embedding' table for CLAP text search embeddings
+        cur.execute("CREATE TABLE IF NOT EXISTS clap_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')")
+        if not cur.fetchone()[0]: cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
         # Create 'voyager_index_data' table
         cur.execute("CREATE TABLE IF NOT EXISTS voyager_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'artist_index_data' table for artist GMM-based HNSW index
@@ -344,6 +349,27 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     except Exception as e:
         conn.rollback()
         logger.error("Error saving track analysis and embedding for %s: %s", item_id, e)
+        raise
+    finally:
+        cur.close()
+
+def save_clap_embedding(item_id, clap_embedding_vector):
+    """Saves CLAP embedding for a track."""
+    if clap_embedding_vector is None or (isinstance(clap_embedding_vector, np.ndarray) and clap_embedding_vector.size == 0):
+        return
+    
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        embedding_blob = clap_embedding_vector.astype(np.float32).tobytes()
+        cur.execute("""
+            INSERT INTO clap_embedding (item_id, embedding) VALUES (%s, %s)
+            ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
+        """, (item_id, psycopg2.Binary(embedding_blob)))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error saving CLAP embedding for {item_id}: {e}")
         raise
     finally:
         cur.close()

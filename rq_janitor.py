@@ -22,23 +22,33 @@ if __name__ == '__main__':
     while True:
         try:
             for queue in queues_to_clean:
-                # The StartedJobRegistry is where orphaned jobs from dead workers live.
-                # Cleaning this registry finds workers that have not sent a heartbeat
-                # within their TTL and moves their jobs back to the queue or to failed.
-                # This is the primary mechanism for recovering from unclean shutdowns.
-
-                # The .cleanup() method in many RQ versions does not return a count.
-                # To log the count, we check the size before and after.
-                registry = queue.started_job_registry
-                count_before = registry.count
-
-                registry.cleanup() # This is the important part
-
-                count_after = registry.count
-                cleaned_count = count_before - count_after
-
-                if cleaned_count > 0:
-                    logging.info("Janitor cleaned %d orphaned jobs from the '%s' queue's started_job_registry.", cleaned_count, queue.name)
+                # 1. Clean StartedJobRegistry - orphaned jobs from dead workers
+                started_registry = queue.started_job_registry
+                started_before = started_registry.count
+                started_registry.cleanup()
+                started_after = started_registry.count
+                started_cleaned = started_before - started_after
+                if started_cleaned > 0:
+                    logging.info("Janitor cleaned %d orphaned jobs from '%s' started_job_registry.", started_cleaned, queue.name)
+                
+                # 2. Clean FinishedJobRegistry - completed jobs older than TTL (default 500s)
+                # CRITICAL: This prevents memory/thread leaks from accumulated finished jobs
+                finished_registry = queue.finished_job_registry
+                finished_before = finished_registry.count
+                finished_registry.cleanup()
+                finished_after = finished_registry.count
+                finished_cleaned = finished_before - finished_after
+                if finished_cleaned > 0:
+                    logging.info("Janitor cleaned %d expired finished jobs from '%s' finished_job_registry.", finished_cleaned, queue.name)
+                
+                # 3. Clean FailedJobRegistry - failed jobs older than TTL
+                failed_registry = queue.failed_job_registry
+                failed_before = failed_registry.count
+                failed_registry.cleanup()
+                failed_after = failed_registry.count
+                failed_cleaned = failed_before - failed_after
+                if failed_cleaned > 0:
+                    logging.info("Janitor cleaned %d expired failed jobs from '%s' failed_job_registry.", failed_cleaned, queue.name)
         except Exception as e:
             logging.error("Error in RQ Janitor loop: %s", e, exc_info=True)
         

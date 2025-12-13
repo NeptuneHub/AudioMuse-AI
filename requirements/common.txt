@@ -1,4 +1,4 @@
-numpy==1.26.4
+numpy==1.23.5
 scipy==1.15.3
 numba==0.60.0
 soundfile==0.13.1
@@ -20,9 +20,11 @@ mistralai
 umap-learn
 pydub
 python-mpd2
+psutil
 onnx==1.14.1
 resampy
 librosa==0.11.0
+mutagen==1.47.0
 flatbuffers
 packaging
 protobuf
@@ -30,3 +32,4 @@ sympy
 mcp
 httpx
 voyager==2.1.0
+transformers==4.35.2

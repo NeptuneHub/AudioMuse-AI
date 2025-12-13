@@ -22,6 +22,9 @@ if __name__ == '__main__':
     print(f"🚀 DEDICATED HIGH PRIORITY RQ Worker starting. Version: {APP_VERSION}. Listening ONLY on queues: {queues_to_listen}")
     print(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
 
+    # High priority worker doesn't analyze songs, so no CLAP preload needed
+    # Only rq_worker.py (default queue) handles song analysis tasks
+
     worker = Worker(
         queues_to_listen,
         connection=redis_conn,
@@ -30,12 +33,17 @@ if __name__ == '__main__':
         job_monitoring_interval=10 # Check for dead workers every 10 seconds.
     )
 
+    # Memory leak prevention: restart after N jobs
+    # Higher than default worker since this doesn't load CLAP model
+    max_jobs_before_restart = int(os.getenv('RQ_MAX_JOBS_HIGH', '100'))
+
     logging_level = os.getenv("RQ_LOGGING_LEVEL", "INFO").upper()
     print(f"RQ Worker logging level set to: {logging_level}")
+    print(f"Worker will restart after {max_jobs_before_restart} jobs to prevent memory leaks")
 
     try:
         # The job function itself is responsible for creating an app context if needed.
-        worker.work(logging_level=logging_level)
+        worker.work(logging_level=logging_level, max_jobs=max_jobs_before_restart)
     except Exception as e:
         print(f"High Priority RQ Worker failed to start or encountered an error: {e}")
         sys.exit(1)

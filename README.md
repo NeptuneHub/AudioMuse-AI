@@ -33,11 +33,7 @@ More information, like **Frequently Asked Question (FAQ)** can be found in the [
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * Version 0.7.4-beta add the support of Cron Job to schedule Analysis and Clustering task. 
-> * Version 0.7.2-beta ad the new Song Map functionality to visualize your music. Also introduce the **experimental** support of Emby.
-> * Version 0.7.1-beta add the Song Alchemy functionality, create your playlist by blending together different song.
-> * Version 0.7.0-beta remove Tensorflow and use instead ONXX. This new version should have better result on different CPU and be also more stable between update. **IMPORTANT:** this new version will require a new analysis of the entire library to work correctly.
-> * Version 0.6.9-beta introduce the support to Lyrion Music Server.
+> * Version 0.8.0 finaly out of BETA and with new CLAP model that enable the search of song by text that contains genre, instruments and moods. 
 
 ## Disclaimer
 
@@ -318,6 +314,7 @@ These are the default parameters used when launching analysis or clustering task
 | **Analysis General**                        |                                                                                                                            |                 |
 | `NUM_RECENT_ALBUMS`                         | Number of recent albums to scan (0 for all).                                                                              | `0`             |
 | `TOP_N_MOODS`                               | Number of top moods per track for feature vector.                                                                         | `5`             |
+| `CLAP_PYTHON_MULTITHREADS`                  | CPU threading for CLAP analysis. False (default) = Use ONNX internal threading (recommended). True = Use Python ThreadPoolExecutor  | `false`         |
 | **Clustering General**                      |                                                                                                                            |                 |
 | `ENABLE_CLUSTERING_EMBEDDINGS`              | Whether to use audio embeddings (True) or score-based features (False) for clustering.                                    | `true`          |
 | `CLUSTER_ALGORITHM`                         | Default clustering: `kmeans`, `dbscan`, `gmm`, `spectral`.                                                                | `kmeans`        |
@@ -442,6 +439,7 @@ AudioMuse AI is built upon a robust stack of open-source technologies:
 * [**Essentia-tensorflow**](https://essentia.upf.edu/) An open-source library for audio analysis, feature extraction, and music information retrieval. (used only until version v0.5.0-beta)
 * [**MusicNN Tensorflow Audio Models from Essentia**](https://essentia.upf.edu/models.html) Leverages pre-trained MusicNN models for feature extraction and prediction. More details and models.
 * [**Librosa**](https://github.com/librosa/librosa) Library for audio analysis, feature extraction, and music information retrieval. (used from version v0.6.0-beta)
+* [**CLAP (Contrastive Language-Audio Pretraining)**](https://github.com/LAION-AI/CLAP) Neural network for audio-text matching, enabling natural language music search and text-based playlist generation.
 * [**ONNX**](https://onnx.ai/) Open Neural Network Exchange format and [ONNX Runtime](https://onnxruntime.ai/) for fast, portable, cross-platform model inference. **(Used from v0.7.0-beta, replaces TensorFlow)**
 * [**Tensorflow**](https://www.tensorflow.org/) Platform developed by Google for building, training, and deploying machine learning and deep learning models. **(Used only in versions before v0.7.0-beta)**
 * [**scikit-learn**](https://scikit-learn.org/) Utilized for machine learning algorithms:
@@ -453,7 +451,6 @@ AudioMuse AI is built upon a robust stack of open-source technologies:
 ## **How To Contribute**
 
 Contributions, issues, and feature requests are welcome\!  
-This is a BETA early release, so expect bugs or functions that are still not implemented.
 
 For more details on how to contribute please follow the [Contributing Guidelines](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/CONTRIBUTING.md)
 

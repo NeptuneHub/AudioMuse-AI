@@ -33,14 +33,14 @@ RUN set -ux; \
 # Download ONNX models with diagnostics and retry logic
 RUN set -eux; \
     urls=( \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/danceability-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/mood_aggressive-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/mood_happy-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/mood_party-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/mood_relaxed-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/mood_sad-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/msd-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v2.0.0-model/msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/danceability-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_aggressive-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_happy-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_party-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_relaxed-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_sad-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/msd-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/msd-musicnn-1.onnx" \
     ); \
     mkdir -p /app/model; \
     for u in "${urls[@]}"; do \
@@ -64,6 +64,8 @@ RUN set -eux; \
             exit 1; \
         fi; \
     done
+
+# NOTE: CLAP model download moved to runner stage to avoid EOF errors with large file transfers in multi-arch builds
 
 # ============================================================================
 # Stage 2: Base - System dependencies and build tools
@@ -123,16 +125,60 @@ COPY requirements/ /app/requirements/
 # GPU builds: cupy, cuml, onnxruntime-gpu, voyager
 # CPU builds: onnxruntime (CPU only)
 # Note: --index-strategy unsafe-best-match resolves conflicts between pypi.nvidia.com and pypi.org
-RUN --mount=type=cache,target=/root/.cache/uv \
-    if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
+RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
         echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager)"; \
-        uv pip install --system --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt; \
+        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
     else \
-        echo "CPU base image: installing onnxruntime (CPU only)"; \
-        uv pip install --system -r /app/requirements/cpu.txt -r /app/requirements/common.txt; \
+        echo "CPU base image: installing all packages together for dependency resolution"; \
+        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/cpu.txt -r /app/requirements/common.txt || exit 1; \
     fi \
+    && echo "Verifying psycopg2 installation..." \
+    && python3 -c "import psycopg2; print('psycopg2 OK')" \
     && find /usr/local/lib/python3.10/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.10/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+
+# Download HuggingFace models (BERT, RoBERTa, BART) from GitHub release
+# These are the text encoders needed by laion-clap library for text embeddings
+RUN set -eux; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+    hf_models="huggingface_models.tar.gz"; \
+    cache_dir="/app/.cache/huggingface"; \
+    echo "Downloading HuggingFace models (~985MB)..."; \
+    \
+    # Download with retry logic \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/tmp/$hf_models" "$base_url/$hf_models"; then \
+            echo "✓ HuggingFace models downloaded"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "Download attempt $n failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download HuggingFace models after 5 attempts"; \
+        exit 1; \
+    fi; \
+    \
+    # Extract to cache directory \
+    mkdir -p "$cache_dir"; \
+    echo "Extracting HuggingFace models..."; \
+    tar -xzf "/tmp/$hf_models" -C "$cache_dir"; \
+    \
+    # Verify extraction \
+    if [ ! -d "$cache_dir/hub" ]; then \
+        echo "ERROR: HuggingFace models extraction failed"; \
+        exit 1; \
+    fi; \
+    \
+    # Clean up tarball \
+    rm -f "/tmp/$hf_models"; \
+    \
+    echo "✓ HuggingFace models extracted to $cache_dir"; \
+    du -sh "$cache_dir"
 
 # ============================================================================
 # Stage 4: Runner - Final production image
@@ -141,15 +187,66 @@ FROM base AS runner
 
 ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
-    DEBIAN_FRONTEND=noninteractive
+    DEBIAN_FRONTEND=noninteractive \
+    HF_HOME=/app/.cache/huggingface \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 WORKDIR /app
 
 # Copy Python packages from libraries stage
 COPY --from=libraries /usr/local/lib/python3.10/dist-packages/ /usr/local/lib/python3.10/dist-packages/
 
-# Copy models from models stage
-COPY --from=models /app/model/ /app/model/
+# Copy HuggingFace cache (RoBERTa model) from libraries stage
+COPY --from=libraries /app/.cache/huggingface/ /app/.cache/huggingface/
+
+# Verify cache was copied correctly
+RUN ls -lah /app/.cache/huggingface/ && \
+    echo "HuggingFace cache contents:" && \
+    du -sh /app/.cache/huggingface/* || echo "Cache directory empty!"
+
+# Copy ONNX models from models stage (small files, no issues)
+COPY --from=models /app/model/*.onnx /app/model/
+
+# Download CLAP ONNX model directly in runner stage
+# CLAP ONNX model (~782MB) - much smaller than PyTorch model (2.2GB)
+# Provides identical embeddings with ~2-3GB less RAM usage during inference
+RUN set -eux; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+    clap_model="clap_model.onnx"; \
+    arch=$(uname -m); \
+    echo "Architecture detected: $arch - Downloading CLAP ONNX model (~782MB)..."; \
+    \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/app/model/$clap_model" "$base_url/$clap_model"; then \
+            echo "✓ CLAP ONNX model downloaded"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "Download attempt $n for CLAP model failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download CLAP ONNX model after 5 attempts"; \
+        exit 1; \
+    fi; \
+    \
+    if [ ! -f "/app/model/$clap_model" ]; then \
+        echo "ERROR: CLAP ONNX model file not created"; \
+        exit 1; \
+    fi; \
+    \
+    file_size=$(stat -c%s "/app/model/$clap_model" 2>/dev/null || stat -f%z "/app/model/$clap_model" 2>/dev/null || echo "0"); \
+    if [ "$file_size" -lt 700000000 ]; then \
+        echo "ERROR: CLAP ONNX model file is too small (expected ~782MB, got $file_size bytes)"; \
+        exit 1; \
+    fi; \
+    \
+    echo "✓ CLAP ONNX model downloaded successfully (arch: $arch)"; \
+    ls -lh "/app/model/$clap_model"
 
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app

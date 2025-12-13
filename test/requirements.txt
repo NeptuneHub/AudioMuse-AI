@@ -19,6 +19,8 @@ psycopg2-binary
 ftfy
 pytest>=7.0.0
 requests
+psutil
+transformers
 
 # Additional runtime dependencies needed for imports
 redis
