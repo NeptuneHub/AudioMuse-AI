@@ -1,9 +1,4 @@
 {
-  "Rhythm_Tempo": [
-
-    "Laid-back", "Groovy", "Heavy", "Mellow", "Mid-Tempo", 
-    "Driving", "Light", "Upbeat", "Energetic"
-  ],
   "Genre_Style": [
     "Rock", "Pop", "Hip-Hop", "Electronica", "Jazz", "Blues", "Country", "Metal", "R&B", "Soul",
     "Reggae", "Punk", "Folk", "Classical", "Latin", "Funk", "Disco", "Gospel", "Indie",
@@ -25,7 +20,8 @@
   ],
   "Emotion_Mood": [
     "Happy", "Sad", "Angry", "Relaxed", "Excited",
-    "Romantic", "Dark", "Dreamy", "Aggressive", "Fast-paced", "Energetic"
+    "Romantic", "Dark", "Dreamy", "Aggressive", "Fast-paced", "Slow-paced", "Energetic", "Groovy", 
+    "Mid-Tempo" 
   ],
   "Voice_Type": [
     "Female Vocal", "Male Vocal", "Whispered", "Breathy", "Raspy", 
