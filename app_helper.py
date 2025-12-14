@@ -40,9 +40,10 @@ MAX_LOG_ENTRIES_STORED = 10 # Max number of recent log entries to store in the d
 
 # --- RQ Setup ---
 redis_conn = Redis.from_url(REDIS_URL, socket_connect_timeout=15, socket_timeout=15)
-# CRITICAL: result_ttl=600 (10 min) ensures finished jobs are auto-cleaned to prevent thread/memory leaks
-rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1, result_ttl=600) # High priority for main tasks
-rq_queue_default = Queue('default', connection=redis_conn, default_timeout=-1, result_ttl=600) # Default queue for sub-tasks
+# FIX: result_ttl removed - caused jobs to disappear from Redis before monitor_and_clear_jobs could track them
+# This was breaking the throttle mechanism causing all jobs to launch at once
+rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1) # High priority for main tasks
+rq_queue_default = Queue('default', connection=redis_conn, default_timeout=-1) # Default queue for sub-tasks
 
 # --- Database Setup (PostgreSQL) ---
 def get_db():
@@ -109,6 +110,18 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'artist_mapping' table to map artist names to media server artist IDs
         cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
+        # Create 'text_search_queries' table for precomputed CLAP text search queries
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS text_search_queries (
+                id SERIAL PRIMARY KEY,
+                query_text TEXT NOT NULL,
+                score REAL NOT NULL,
+                rank INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(rank)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank ON text_search_queries(rank)")
         db.commit()
 
 # --- Status Constants ---

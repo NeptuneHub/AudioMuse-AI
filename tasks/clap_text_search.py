@@ -27,6 +27,14 @@ _TOP_QUERIES_CACHE = {
 }
 
 
+def get_clap_cache_size() -> int:
+    """Return the number of embeddings in the CLAP cache."""
+    global _CLAP_CACHE
+    if _CLAP_CACHE['loaded'] and _CLAP_CACHE['embeddings'] is not None:
+        return len(_CLAP_CACHE['embeddings'])
+    return 0
+
+
 def load_clap_cache_from_db():
     """
     Load all CLAP embeddings and metadata into memory for fast searching.
@@ -532,6 +540,11 @@ def save_top_queries_to_db(queries: List[str], scores: List[float]):
     """
     from app_helper import get_db
     
+    # Safety check: don't delete existing queries if new list is empty
+    if not queries:
+        logger.warning("Refusing to save empty query list to database")
+        return False
+    
     conn = None
     try:
         conn = get_db()
@@ -574,6 +587,12 @@ def precompute_top_queries_background():
     try:
         # Generate queries with scores (uses config.CLAP_TOP_QUERIES_COUNT)
         scored_queries = generate_top_queries(top_n=50, return_scores=True)
+        
+        # Safety check: don't save empty query lists
+        if not scored_queries:
+            logger.warning("Query generation returned empty list - skipping save")
+            return
+        
         queries = [q['query'] for q in scored_queries]
         scores = [q['score'] for q in scored_queries]
         

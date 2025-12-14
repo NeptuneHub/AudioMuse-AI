@@ -537,6 +537,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     continue
 
                 try:
+                    # Track if we processed anything (MusiCNN or CLAP)
+                    track_processed = False
+                    
                     # MusiCNN analysis (only if needed)
                     if needs_musicnn:
                         analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths)
@@ -554,7 +557,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         logger.info(f"  - Other Features: {other_features}")
                         
                         save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding, energy=analysis['energy'], other_features=other_features)
-                        tracks_analyzed_count += 1
+                        track_processed = True
                     else:
                         logger.info(f"SKIPPED MusiCNN for '{track_name_full}' (already analyzed)")
                     
@@ -566,12 +569,17 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             if clap_embedding is not None:
                                 save_clap_embedding(item['Id'], clap_embedding)
                                 logger.info(f"  - CLAP embedding saved (512-dim)")
+                                track_processed = True
                         except Exception as e:
                             logger.warning(f"  - CLAP analysis failed: {e}")
                     elif not needs_clap and is_clap_available():
                         logger.info(f"  - CLAP embedding already exists, skipping")
                     else:
                         logger.info(f"  - CLAP skipped: needs_clap={needs_clap}, available={is_clap_available()}")
+                    
+                    # Count track as analyzed if we processed either MusiCNN or CLAP
+                    if track_processed:
+                        tracks_analyzed_count += 1
                     
                 finally:
                     if path and os.path.exists(path):
@@ -885,11 +893,16 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             try:
                 from config import CLAP_ENABLED
                 if CLAP_ENABLED:
-                    from .clap_text_search import precompute_top_queries_background
+                    from .clap_text_search import precompute_top_queries_background, get_clap_cache_size
                     import threading
-                    query_thread = threading.Thread(target=precompute_top_queries_background, daemon=True)
-                    query_thread.start()
-                    logger.info('Triggered regeneration of top CLAP queries after analysis completion.')
+                    # Only regenerate if we have sufficient embeddings
+                    cache_size = get_clap_cache_size()
+                    if cache_size >= 1000:
+                        query_thread = threading.Thread(target=precompute_top_queries_background, daemon=True)
+                        query_thread.start()
+                        logger.info(f'Triggered regeneration of top CLAP queries after analysis completion ({cache_size} embeddings).')
+                    else:
+                        logger.info(f'Skipping CLAP query regeneration: only {cache_size} embeddings (need at least 1000)')
             except Exception as e:
                 logger.warning(f'Could not trigger CLAP query regeneration: {e}')
 
