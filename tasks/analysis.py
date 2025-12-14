@@ -347,23 +347,44 @@ def analyze_track(file_path, mood_labels_list, model_paths):
 
 # --- 3. Run Main Models (Embedding and Prediction) ---
     try:
-        # Load and run embedding model (ONNX)
-        # embedding_sess = ort.InferenceSession(model_paths['embedding'])
-        # ORIGINAL!!!: embedding_sess = ort.InferenceSession(model_paths['embedding'])
-        embedding_sess = ort.InferenceSession(
-            model_paths['embedding'],
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
-        )
+        # Load and run embedding model (ONNX) with safe CUDA detection
+        available_providers = ort.get_available_providers()
+        if 'CUDAExecutionProvider' in available_providers:
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        else:
+            providers = ['CPUExecutionProvider']
+        
+        try:
+            embedding_sess = ort.InferenceSession(
+                model_paths['embedding'],
+                providers=providers
+            )
+        except Exception:
+            # Fallback to CPU if preferred providers fail
+            embedding_sess = ort.InferenceSession(
+                model_paths['embedding'],
+                providers=['CPUExecutionProvider']
+            )
         embedding_feed_dict = {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches}
         embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
 
-        # Load and run prediction model (ONNX)
-        # prediction_sess = ort.InferenceSession(model_paths['prediction'])
-        # ALSO CHANGED!!!
-        prediction_sess = ort.InferenceSession(
-            model_paths['prediction'],
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
-        )
+        # Load and run prediction model (ONNX) with safe CUDA detection
+        if 'CUDAExecutionProvider' in available_providers:
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        else:
+            providers = ['CPUExecutionProvider']
+        
+        try:
+            prediction_sess = ort.InferenceSession(
+                model_paths['prediction'],
+                providers=providers
+            )
+        except Exception:
+            # Fallback to CPU if preferred providers fail
+            prediction_sess = ort.InferenceSession(
+                model_paths['prediction'],
+                providers=['CPUExecutionProvider']
+            )
         prediction_feed_dict = {DEFINED_TENSOR_NAMES['prediction']['input']: embeddings_per_patch}
         mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
 
@@ -384,12 +405,23 @@ def analyze_track(file_path, mood_labels_list, model_paths):
     for key in ["danceable", "aggressive", "happy", "party", "relaxed", "sad"]:
         try:
             model_path = model_paths[key]
-            # other_sess = ort.InferenceSession(model_path)
-            # ALSO CHANGED !!!
-            other_sess = ort.InferenceSession(
-                model_path,
-                providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
-            )
+            # Load model with safe CUDA detection
+            if 'CUDAExecutionProvider' in available_providers:
+                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+            else:
+                providers = ['CPUExecutionProvider']
+            
+            try:
+                other_sess = ort.InferenceSession(
+                    model_path,
+                    providers=providers
+                )
+            except Exception:
+                # Fallback to CPU if preferred providers fail
+                other_sess = ort.InferenceSession(
+                    model_path,
+                    providers=['CPUExecutionProvider']
+                )
             feed_dict = {DEFINED_TENSOR_NAMES[key]['input']: embeddings_per_patch}
             probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
 
@@ -889,22 +921,8 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             except Exception as e:
                 logger.warning(f'Could not publish reload message to redis: {e}')
 
-            # Trigger regeneration of top CLAP queries after analysis completes
-            try:
-                from config import CLAP_ENABLED
-                if CLAP_ENABLED:
-                    from .clap_text_search import precompute_top_queries_background, get_clap_cache_size
-                    import threading
-                    # Only regenerate if we have sufficient embeddings
-                    cache_size = get_clap_cache_size()
-                    if cache_size >= 1000:
-                        query_thread = threading.Thread(target=precompute_top_queries_background, daemon=True)
-                        query_thread.start()
-                        logger.info(f'Triggered regeneration of top CLAP queries after analysis completion ({cache_size} embeddings).')
-                    else:
-                        logger.info(f'Skipping CLAP query regeneration: only {cache_size} embeddings (need at least 1000)')
-            except Exception as e:
-                logger.warning(f'Could not trigger CLAP query regeneration: {e}')
+            # Top query computation disabled - using default queries from database only
+            logger.info('Analysis complete. CLAP text search uses default queries (no auto-regeneration).')
 
             final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
             log_and_update_main(final_message, 100, task_state=TASK_STATUS_SUCCESS)

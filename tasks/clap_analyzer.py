@@ -55,10 +55,23 @@ def _load_onnx_model():
         sess_options.inter_op_num_threads = 1  # Single-threaded ONNX operations
         logger.info("CLAP: Using Python threading (auto-calculated threads), ONNX single-threaded")
     
-    # GPU support: Try CUDA first, fallback to CPU
-    # This matches the approach used in analysis.py for MusicNN models
-    providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+    # GPU support: Check CUDA availability BEFORE attempting to use it
+    # This prevents segfaults on systems with CUDA images but no GPU drivers
+    session = None
+    providers = ['CPUExecutionProvider']  # Default to CPU-only
     
+    # Only attempt CUDA if explicitly available
+    try:
+        available_providers = ort.get_available_providers()
+        if 'CUDAExecutionProvider' in available_providers:
+            logger.info("CUDA provider detected in ONNX Runtime - testing availability...")
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        else:
+            logger.info("CUDA provider not available - using CPU only")
+    except Exception as e:
+        logger.info(f"Could not query available providers: {e} - defaulting to CPU")
+    
+    # Create session with determined providers
     try:
         session = ort.InferenceSession(
             config.CLAP_MODEL_PATH,
@@ -66,54 +79,34 @@ def _load_onnx_model():
             providers=providers
         )
         
-        # Log which provider is actually being used
-        active_providers = session.get_providers()
+        active_provider = session.get_providers()[0]
         logger.info(f"✓ CLAP ONNX model loaded successfully")
-        logger.info(f"  Active execution provider: {active_providers[0]}")
-        
-        # If CUDA provider is available but fails during initialization,
-        # recreate session with CPU-only to avoid runtime CUDA errors
-        if active_providers[0] == 'CUDAExecutionProvider':
-            try:
-                # Test CUDA initialization by running a dummy inference on audio input
-                # CLAP model has 3 inputs: mel_spectrogram (audio), input_ids & attention_mask (text)
-                input_names = [i.name for i in session.get_inputs()]
-                test_inputs = {}
-                for input_name in input_names:
-                    if input_name == 'mel_spectrogram':
-                        # Audio input: (batch, channels, time_frames, mel_bins) = (1, 1, 1000, 64)
-                        test_inputs[input_name] = np.zeros((1, 1, 1000, 64), dtype=np.float32)
-                    elif input_name == 'input_ids':
-                        # Text token IDs: (batch, seq_len)
-                        test_inputs[input_name] = np.zeros((1, 77), dtype=np.int64)
-                    elif input_name == 'attention_mask':
-                        # Text attention mask: (batch, seq_len)
-                        test_inputs[input_name] = np.ones((1, 77), dtype=np.int64)
-                
-                # Run inference to test CUDA
-                _ = session.run(None, test_inputs)
-                logger.info("  ✓ CUDA initialized successfully")
-            except Exception as cuda_error:
-                logger.warning(f"  CUDA initialization failed: {cuda_error}")
-                logger.warning("  Falling back to CPU-only execution")
-                # Recreate session with CPU-only
-                session = ort.InferenceSession(
-                    config.CLAP_MODEL_PATH,
-                    sess_options=sess_options,
-                    providers=['CPUExecutionProvider']
-                )
-                active_providers = session.get_providers()
-                logger.info(f"  Active execution provider: {active_providers[0]}")
-        
-        logger.info(f"  Inputs: {[i.name for i in session.get_inputs()]}")
-        logger.info(f"  Outputs: {[o.name for o in session.get_outputs()]}")
-        
-        gc.collect()
-        return session
-        
+        logger.info(f"  Active execution provider: {active_provider}")
+            
     except Exception as e:
-        logger.error(f"Failed to load ONNX model: {e}")
-        raise
+        # Final fallback: force CPU-only
+        logger.warning(f"Failed to load with preferred providers: {e}")
+        logger.info("Attempting final CPU-only fallback...")
+        try:
+            session = ort.InferenceSession(
+                config.CLAP_MODEL_PATH,
+                sess_options=sess_options,
+                providers=['CPUExecutionProvider']
+            )
+            logger.info(f"✓ CLAP ONNX model loaded successfully (CPU fallback)")
+            logger.info(f"  Active execution provider: CPUExecutionProvider")
+        except Exception as cpu_error:
+            logger.error(f"Failed to load ONNX model even with CPU: {cpu_error}")
+            raise
+    
+    if session is None:
+        raise RuntimeError("Failed to create ONNX session")
+    
+    logger.info(f"  Inputs: {[i.name for i in session.get_inputs()]}")
+    logger.info(f"  Outputs: {[o.name for o in session.get_outputs()]}")
+    
+    gc.collect()
+    return session
 
 
 def _load_tokenizer():
