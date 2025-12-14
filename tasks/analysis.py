@@ -347,23 +347,33 @@ def analyze_track(file_path, mood_labels_list, model_paths):
 
 # --- 3. Run Main Models (Embedding and Prediction) ---
     try:
-        # Load and run embedding model (ONNX)
-        # embedding_sess = ort.InferenceSession(model_paths['embedding'])
-        # ORIGINAL!!!: embedding_sess = ort.InferenceSession(model_paths['embedding'])
-        embedding_sess = ort.InferenceSession(
-            model_paths['embedding'],
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
-        )
+        # Load and run embedding model (ONNX) with GPU fallback
+        try:
+            embedding_sess = ort.InferenceSession(
+                model_paths['embedding'],
+                providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+            )
+        except Exception:
+            # GPU failed, fallback to CPU silently
+            embedding_sess = ort.InferenceSession(
+                model_paths['embedding'],
+                providers=['CPUExecutionProvider']
+            )
         embedding_feed_dict = {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches}
         embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
 
-        # Load and run prediction model (ONNX)
-        # prediction_sess = ort.InferenceSession(model_paths['prediction'])
-        # ALSO CHANGED!!!
-        prediction_sess = ort.InferenceSession(
-            model_paths['prediction'],
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
-        )
+        # Load and run prediction model (ONNX) with GPU fallback
+        try:
+            prediction_sess = ort.InferenceSession(
+                model_paths['prediction'],
+                providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+            )
+        except Exception:
+            # GPU failed, fallback to CPU silently
+            prediction_sess = ort.InferenceSession(
+                model_paths['prediction'],
+                providers=['CPUExecutionProvider']
+            )
         prediction_feed_dict = {DEFINED_TENSOR_NAMES['prediction']['input']: embeddings_per_patch}
         mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
 
@@ -384,12 +394,18 @@ def analyze_track(file_path, mood_labels_list, model_paths):
     for key in ["danceable", "aggressive", "happy", "party", "relaxed", "sad"]:
         try:
             model_path = model_paths[key]
-            # other_sess = ort.InferenceSession(model_path)
-            # ALSO CHANGED !!!
-            other_sess = ort.InferenceSession(
-                model_path,
-                providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
-            )
+            # Load model with GPU fallback
+            try:
+                other_sess = ort.InferenceSession(
+                    model_path,
+                    providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+                )
+            except Exception:
+                # GPU failed, fallback to CPU silently
+                other_sess = ort.InferenceSession(
+                    model_path,
+                    providers=['CPUExecutionProvider']
+                )
             feed_dict = {DEFINED_TENSOR_NAMES[key]['input']: embeddings_per_patch}
             probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
 
