@@ -347,14 +347,20 @@ def analyze_track(file_path, mood_labels_list, model_paths):
 
 # --- 3. Run Main Models (Embedding and Prediction) ---
     try:
-        # Load and run embedding model (ONNX) with GPU fallback
+        # Load and run embedding model (ONNX) with safe CUDA detection
+        available_providers = ort.get_available_providers()
+        if 'CUDAExecutionProvider' in available_providers:
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        else:
+            providers = ['CPUExecutionProvider']
+        
         try:
             embedding_sess = ort.InferenceSession(
                 model_paths['embedding'],
-                providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+                providers=providers
             )
         except Exception:
-            # GPU failed, fallback to CPU silently
+            # Fallback to CPU if preferred providers fail
             embedding_sess = ort.InferenceSession(
                 model_paths['embedding'],
                 providers=['CPUExecutionProvider']
@@ -362,14 +368,19 @@ def analyze_track(file_path, mood_labels_list, model_paths):
         embedding_feed_dict = {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches}
         embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
 
-        # Load and run prediction model (ONNX) with GPU fallback
+        # Load and run prediction model (ONNX) with safe CUDA detection
+        if 'CUDAExecutionProvider' in available_providers:
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        else:
+            providers = ['CPUExecutionProvider']
+        
         try:
             prediction_sess = ort.InferenceSession(
                 model_paths['prediction'],
-                providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+                providers=providers
             )
         except Exception:
-            # GPU failed, fallback to CPU silently
+            # Fallback to CPU if preferred providers fail
             prediction_sess = ort.InferenceSession(
                 model_paths['prediction'],
                 providers=['CPUExecutionProvider']
@@ -394,14 +405,19 @@ def analyze_track(file_path, mood_labels_list, model_paths):
     for key in ["danceable", "aggressive", "happy", "party", "relaxed", "sad"]:
         try:
             model_path = model_paths[key]
-            # Load model with GPU fallback
+            # Load model with safe CUDA detection
+            if 'CUDAExecutionProvider' in available_providers:
+                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+            else:
+                providers = ['CPUExecutionProvider']
+            
             try:
                 other_sess = ort.InferenceSession(
                     model_path,
-                    providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+                    providers=providers
                 )
             except Exception:
-                # GPU failed, fallback to CPU silently
+                # Fallback to CPU if preferred providers fail
                 other_sess = ort.InferenceSession(
                     model_path,
                     providers=['CPUExecutionProvider']

@@ -55,60 +55,48 @@ def _load_onnx_model():
         sess_options.inter_op_num_threads = 1  # Single-threaded ONNX operations
         logger.info("CLAP: Using Python threading (auto-calculated threads), ONNX single-threaded")
     
-    # GPU support: Try CUDA first, fallback to CPU silently
-    # Wrapped in comprehensive try/catch to handle all GPU-related failures
+    # GPU support: Check CUDA availability BEFORE attempting to use it
+    # This prevents segfaults on systems with CUDA images but no GPU drivers
     session = None
+    providers = ['CPUExecutionProvider']  # Default to CPU-only
     
+    # Only attempt CUDA if explicitly available
     try:
-        # Attempt GPU initialization
+        available_providers = ort.get_available_providers()
+        if 'CUDAExecutionProvider' in available_providers:
+            logger.info("CUDA provider detected in ONNX Runtime - testing availability...")
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        else:
+            logger.info("CUDA provider not available - using CPU only")
+    except Exception as e:
+        logger.info(f"Could not query available providers: {e} - defaulting to CPU")
+    
+    # Create session with determined providers
+    try:
         session = ort.InferenceSession(
             config.CLAP_MODEL_PATH,
             sess_options=sess_options,
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+            providers=providers
         )
         
-        active_providers = session.get_providers()
-        
-        # If CUDA is active, test it works properly
-        if active_providers[0] == 'CUDAExecutionProvider':
-            try:
-                # Quick CUDA test with dummy inputs
-                input_names = [i.name for i in session.get_inputs()]
-                test_inputs = {
-                    'mel_spectrogram': np.zeros((1, 1, 1000, 64), dtype=np.float32),
-                    'input_ids': np.zeros((1, 77), dtype=np.int64),
-                    'attention_mask': np.ones((1, 77), dtype=np.int64)
-                }
-                _ = session.run(None, test_inputs)
-                logger.info(f"✓ CLAP ONNX model loaded successfully")
-                logger.info(f"  Active execution provider: CUDAExecutionProvider")
-            except Exception:
-                # CUDA test failed, recreate with CPU
-                session = ort.InferenceSession(
-                    config.CLAP_MODEL_PATH,
-                    sess_options=sess_options,
-                    providers=['CPUExecutionProvider']
-                )
-                logger.info(f"✓ CLAP ONNX model loaded successfully")
-                logger.info(f"  Active execution provider: CPUExecutionProvider")
-        else:
-            # CPU was selected automatically
-            logger.info(f"✓ CLAP ONNX model loaded successfully")
-            logger.info(f"  Active execution provider: CPUExecutionProvider")
+        active_provider = session.get_providers()[0]
+        logger.info(f"✓ CLAP ONNX model loaded successfully")
+        logger.info(f"  Active execution provider: {active_provider}")
             
-    except Exception as gpu_error:
-        # GPU initialization completely failed (driver issues, segfaults, etc.)
-        # Fallback to CPU-only without any GPU attempt
+    except Exception as e:
+        # Final fallback: force CPU-only
+        logger.warning(f"Failed to load with preferred providers: {e}")
+        logger.info("Attempting final CPU-only fallback...")
         try:
             session = ort.InferenceSession(
                 config.CLAP_MODEL_PATH,
                 sess_options=sess_options,
                 providers=['CPUExecutionProvider']
             )
-            logger.info(f"✓ CLAP ONNX model loaded successfully")
+            logger.info(f"✓ CLAP ONNX model loaded successfully (CPU fallback)")
             logger.info(f"  Active execution provider: CPUExecutionProvider")
-        except Exception as e:
-            logger.error(f"Failed to load ONNX model even with CPU: {e}")
+        except Exception as cpu_error:
+            logger.error(f"Failed to load ONNX model even with CPU: {cpu_error}")
             raise
     
     if session is None:
