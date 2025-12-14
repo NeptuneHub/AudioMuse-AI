@@ -631,28 +631,16 @@ if __name__ == '__main__':
         if initialize_clap_model():
           logger.info("CLAP model preloaded at Flask startup.")
         # Load CLAP embeddings cache (15MB)
-        from tasks.clap_text_search import load_clap_cache_from_db, load_top_queries_from_db, precompute_top_queries_background, get_clap_cache_size
+        from tasks.clap_text_search import load_clap_cache_from_db, load_top_queries_from_db
         if load_clap_cache_from_db():
           logger.info("CLAP text search cache loaded at startup.")
-          cache_size = get_clap_cache_size()
-          logger.info(f"CLAP cache contains {cache_size} embeddings")
           
-          # Only compute top queries if we have sufficient data (at least 1000 embeddings)
-          if cache_size >= 1000:
-            # Try to load existing top queries from database first
-            has_existing = load_top_queries_from_db()
-            if has_existing:
-              logger.info("Loaded existing top queries from database.")
-            else:
-              logger.info("No existing queries found (first startup). Will generate them now.")
-            # Start background computation/recomputation of top queries
-            # On first startup: generates new queries (users see empty until ready)
-            # On subsequent startups: users see old queries while new ones generate
-            query_thread = threading.Thread(target=precompute_top_queries_background, daemon=True)
-            query_thread.start()
-            logger.info("Started background computation of top CLAP queries.")
+          # Load top queries from database (default queries only, no computation)
+          has_existing = load_top_queries_from_db()
+          if has_existing:
+            logger.info("Loaded top queries from database (defaults).")
           else:
-            logger.info(f"Skipping top queries computation: only {cache_size} embeddings (need at least 1000)")
+            logger.info("No queries found in database (should not happen - check DB)")
     except Exception as e:
       logger.debug(f"CLAP not loaded at startup (may be disabled or failed): {e}")
     # Initialize map JSON cache once at startup (reads DB one time)

@@ -122,6 +122,73 @@ def init_db():
             )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank ON text_search_queries(rank)")
+        
+        # Insert default queries if table is empty
+        cur.execute("SELECT COUNT(*) FROM text_search_queries")
+        count = cur.fetchone()[0]
+        
+        if count == 0:
+            default_queries = [
+                "female vocal romantic trap",
+                "synth indie pop raspy",
+                "sad hard rock male vocal",
+                "funk falsetto energetic",
+                "groovy sax blues",
+                "classical relaxed piano",
+                "belting jazz happy",
+                "tabla afrobeat fast-paced",
+                "harmonized vocals slow-paced electronica",
+                "autotuned gospel excited",
+                "breathy aggressive house",
+                "smooth folk mid-tempo",
+                "deep voice r&b dark",
+                "punk guitar angry",
+                "metal choir dreamy",
+                "chant reggae trumpet",
+                "high-pitched brass hip-hop",
+                "disco whispered drum machine",
+                "happy whispered indie pop",
+                "synth energetic raspy",
+                "rock slow-paced cello",
+                "falsetto jazz excited",
+                "r&b male vocal romantic",
+                "harmonized vocals dark trap",
+                "smooth blues sax",
+                "high-pitched fast-paced soul",
+                "female vocal sad hip-hop",
+                "congas aggressive soul",
+                "mid-tempo afrobeat autotuned",
+                "belting funk groovy",
+                "angry alternative breathy",
+                "gospel choir steelpan",
+                "viola relaxed folk",
+                "dreamy rhodes metal",
+                "acoustic guitar country chant",
+                "deep voice orchestra reggae",
+                "fast-paced synth progressive rock",
+                "hard rock raspy romantic",
+                "fast-paced electric guitar progressive rock",
+                "hard rock aggressive breathy",
+                "rock high-pitched energetic",
+                "autotuned energetic hip-hop",
+                "raspy fast-paced blues",
+                "belting electronica energetic",
+                "whispered indie pop aggressive",
+                "harmonized vocals aggressive synth",
+                "orchestra whispered romantic",
+                "belting mid-tempo progressive rock",
+                "autotuned pop mid-tempo",
+                "pop energetic synthesizer"
+            ]
+            
+            for rank, query in enumerate(default_queries, start=1):
+                cur.execute("""
+                    INSERT INTO text_search_queries (query_text, score, rank, created_at)
+                    VALUES (%s, %s, %s, NOW())
+                """, (query, 1.0, rank))
+            
+            logger.info(f"Inserted {len(default_queries)} default CLAP search queries")
+        
         db.commit()
 
 # --- Status Constants ---
