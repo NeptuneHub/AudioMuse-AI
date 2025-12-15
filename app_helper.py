@@ -10,7 +10,7 @@ from flask import g
 
 # RQ imports
 from redis import Redis
-from rq import Queue, Retry
+from rq import Queue
 from rq.job import Job, JobStatus
 from rq.exceptions import NoSuchJobError
 
