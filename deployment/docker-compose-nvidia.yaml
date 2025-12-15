@@ -56,6 +56,13 @@ services:
       - redis
       - postgres
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
 
   # AudioMuse-AI RQ Worker service
   audiomuse-ai-worker:
