@@ -248,9 +248,8 @@ class TestSampleItems:
         """Test that negative fraction is handled (returns at least 1)"""
         items = [1, 2, 3, 4, 5]
         result = _sample_items(items, -0.5)
-        # Depending on implementation, this might return 1 or empty
-        # Based on max(1, int(math.floor(n * fraction)))
-        assert len(result) >= 1
+        # Implementation uses max(1, int(math.floor(n * fraction)))
+        assert len(result) == 1
 
     def test_does_not_modify_original(self):
         """Test that original list is not modified"""
