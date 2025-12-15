@@ -1,11 +1,10 @@
 import os
 import psycopg2
 from psycopg2.extras import DictCursor
-from flask import Flask, jsonify, request, render_template, g, current_app, url_for
+from flask import Flask, jsonify, request, render_template, g
 import json
 import logging
 import threading
-import uuid # For generating job IDs if needed directly in API, though tasks handle their own
 import time
 
 # RQ imports
