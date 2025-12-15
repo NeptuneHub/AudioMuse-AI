@@ -621,18 +621,15 @@ if __name__ == '__main__':
       logger.info("In-memory artist component projection loaded at startup.")
     except Exception as e:
       logger.debug(f"No precomputed artist projection to load at startup or load failed: {e}")
-    # Load CLAP model and text search cache
+    # Load CLAP embeddings cache (model will lazy-load on first use)
     try:
       from config import CLAP_ENABLED
       if CLAP_ENABLED:
-        # Preload CLAP model (3GB) to avoid delay on first text search
-        from tasks.clap_analyzer import initialize_clap_model
-        if initialize_clap_model():
-          logger.info("CLAP model preloaded at Flask startup.")
-        # Load CLAP embeddings cache (15MB)
+        # Load CLAP embeddings cache (15MB) - model lazy-loads on first search to save 3GB RAM
         from tasks.clap_text_search import load_clap_cache_from_db, load_top_queries_from_db
         if load_clap_cache_from_db():
-          logger.info("CLAP text search cache loaded at startup.")
+          logger.info("CLAP text search cache loaded at startup (embeddings only).")
+          logger.info("CLAP model will lazy-load on first text search (~1-2s delay, saves 3GB RAM).")
           
           # Load top queries from database (default queries only, no computation)
           has_existing = load_top_queries_from_db()
@@ -641,7 +638,7 @@ if __name__ == '__main__':
           else:
             logger.info("No queries found in database (should not happen - check DB)")
     except Exception as e:
-      logger.debug(f"CLAP not loaded at startup (may be disabled or failed): {e}")
+      logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
     # Initialize map JSON cache once at startup (reads DB one time)
     # Run this in a background daemon thread so the Flask process doesn't block on the heavy DB read.
     def _start_map_init_background():

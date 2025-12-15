@@ -142,7 +142,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
     Returns:
         List of dicts with item_id, title, author, similarity
     """
-    from .clap_analyzer import get_text_embedding
+    from .clap_analyzer import get_text_embedding, unload_clap_model
     from config import CLAP_ENABLED
     
     if not CLAP_ENABLED:
@@ -154,7 +154,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         return []
     
     try:
-        # Get text embedding
+        # Get text embedding (lazy-loads CLAP model)
         text_embedding = get_text_embedding(query_text)
         if text_embedding is None:
             logger.error(f"Failed to generate text embedding for: {query_text}")
@@ -188,6 +188,9 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         import traceback
         traceback.print_exc()
         return []
+    finally:
+        # Always unload CLAP model after search to free ~3GB RAM
+        unload_clap_model()
 
 
 def get_cache_stats() -> Dict:

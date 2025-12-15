@@ -150,16 +150,47 @@ def initialize_clap_model():
         return False
 
 
-def get_clap_model():
-    """Get the global CLAP ONNX session, initializing if needed."""
+def unload_clap_model():
+    """Unload CLAP model from memory to free ~3GB RAM."""
+    global _onnx_session, _tokenizer, _cached_dummy_mel
+    
     if _onnx_session is None:
+        return False
+    
+    try:
+        # Clear ONNX session
+        _onnx_session = None
+        _tokenizer = None
+        _cached_dummy_mel = None
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
+        
+        logger.info("✓ CLAP model unloaded from memory (~3GB freed)")
+        return True
+    except Exception as e:
+        logger.error(f"Error unloading CLAP model: {e}")
+        return False
+
+
+def is_clap_model_loaded():
+    """Check if CLAP model is currently loaded in memory."""
+    return _onnx_session is not None
+
+
+def get_clap_model():
+    """Get the global CLAP ONNX session, initializing if needed (lazy loading)."""
+    if _onnx_session is None:
+        logger.info("Lazy-loading CLAP model on first use (saves 3GB RAM at startup)...")
         if not initialize_clap_model():
             raise RuntimeError("CLAP ONNX model could not be initialized")
+    
     return _onnx_session
 
 
 def get_tokenizer():
-    """Get the global tokenizer, initializing if needed."""
+    """Get the global tokenizer, initializing if needed (lazy loading)."""
     if _tokenizer is None:
         if not initialize_clap_model():
             raise RuntimeError("CLAP tokenizer could not be initialized")
