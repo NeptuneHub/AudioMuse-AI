@@ -262,8 +262,27 @@ document.addEventListener('DOMContentLoaded', function() {
     
     let currentResults = [];
     
+    // Warmup model on page load for instant searches
+    warmupModel();
+    
     // Load top queries on page load
     loadTopQueries();
+    
+    async function warmupModel() {
+        try {
+            console.log('Warming up CLAP model...');
+            const response = await fetch("{{ url_for('clap_search_bp.warmup_model_api') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await response.json();
+            if (data.loaded) {
+                console.log(`✓ Model warmed up (expires in ${data.expiry_seconds}s)`);
+            }
+        } catch (error) {
+            console.error('Failed to warmup model:', error);
+        }
+    }
     
     async function loadTopQueries() {
         try {

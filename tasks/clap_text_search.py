@@ -8,6 +8,8 @@ import numpy as np
 from typing import List, Dict, Optional
 from psycopg2.extras import DictCursor
 import config
+import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,14 @@ _TOP_QUERIES_CACHE = {
     'computing': False
 }
 
+# Warm cache timer for text search (keeps model loaded)
+_WARM_CACHE_TIMER = {
+    'expiry_time': None,  # Unix timestamp when model should unload
+    'timer_thread': None,  # Background thread for unloading
+    'lock': threading.Lock(),
+    'duration_seconds': None  # Loaded from config on first use
+}
+
 
 def get_clap_cache_size() -> int:
     """Return the number of embeddings in the CLAP cache."""
@@ -33,6 +43,95 @@ def get_clap_cache_size() -> int:
     if _CLAP_CACHE['loaded'] and _CLAP_CACHE['embeddings'] is not None:
         return len(_CLAP_CACHE['embeddings'])
     return 0
+
+
+def _unload_timer_worker():
+    """Background thread that unloads CLAP model after timer expires."""
+    global _WARM_CACHE_TIMER
+    
+    while True:
+        with _WARM_CACHE_TIMER['lock']:
+            expiry = _WARM_CACHE_TIMER['expiry_time']
+        
+        if expiry is None:
+            # Timer cancelled, exit thread
+            break
+        
+        time_remaining = expiry - time.time()
+        
+        if time_remaining <= 0:
+            # Timer expired - unload model
+            from .clap_analyzer import unload_clap_model, is_clap_model_loaded
+            
+            if is_clap_model_loaded():
+                logger.info("Warm cache timer expired - unloading CLAP model")
+                unload_clap_model()
+            
+            with _WARM_CACHE_TIMER['lock']:
+                _WARM_CACHE_TIMER['expiry_time'] = None
+                _WARM_CACHE_TIMER['timer_thread'] = None
+            break
+        
+        # Sleep in 1-second chunks to check for cancellation
+        time.sleep(min(1.0, time_remaining))
+
+
+def warmup_text_search_model():
+    """Preload CLAP model and reset warmup timer.
+    
+    Returns:
+        dict: Status with 'loaded' (bool) and 'expiry_seconds' (int)
+    """
+    global _WARM_CACHE_TIMER
+    from .clap_analyzer import initialize_clap_model, is_clap_model_loaded
+    
+    # Load duration from config on first use
+    if _WARM_CACHE_TIMER['duration_seconds'] is None:
+        _WARM_CACHE_TIMER['duration_seconds'] = config.CLAP_TEXT_SEARCH_WARMUP_DURATION
+    
+    # Load model if not already loaded
+    if not is_clap_model_loaded():
+        logger.info("Warming up CLAP model for text search...")
+        success = initialize_clap_model()
+        if not success:
+            return {'loaded': False, 'expiry_seconds': 0}
+    
+    # Reset timer
+    with _WARM_CACHE_TIMER['lock']:
+        _WARM_CACHE_TIMER['expiry_time'] = time.time() + _WARM_CACHE_TIMER['duration_seconds']
+        
+        # Start timer thread if not already running
+        if _WARM_CACHE_TIMER['timer_thread'] is None or not _WARM_CACHE_TIMER['timer_thread'].is_alive():
+            thread = threading.Thread(target=_unload_timer_worker, daemon=True)
+            thread.start()
+            _WARM_CACHE_TIMER['timer_thread'] = thread
+            logger.info(f"Started warm cache timer ({_WARM_CACHE_TIMER['duration_seconds']}s)")
+        else:
+            logger.debug(f"Reset warm cache timer ({_WARM_CACHE_TIMER['duration_seconds']}s)")
+    
+    return {
+        'loaded': True,
+        'expiry_seconds': _WARM_CACHE_TIMER['duration_seconds']
+    }
+
+
+def get_warm_cache_status() -> Dict:
+    """Get current warm cache status.
+    
+    Returns:
+        dict: Status with 'active' (bool), 'seconds_remaining' (int)
+    """
+    global _WARM_CACHE_TIMER
+    from .clap_analyzer import is_clap_model_loaded
+    
+    with _WARM_CACHE_TIMER['lock']:
+        expiry = _WARM_CACHE_TIMER['expiry_time']
+    
+    if expiry is None or not is_clap_model_loaded():
+        return {'active': False, 'seconds_remaining': 0}
+    
+    remaining = max(0, int(expiry - time.time()))
+    return {'active': True, 'seconds_remaining': remaining}
 
 
 def load_clap_cache_from_db():
@@ -142,7 +241,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
     Returns:
         List of dicts with item_id, title, author, similarity
     """
-    from .clap_analyzer import get_text_embedding, unload_clap_model
+    from .clap_analyzer import get_text_embedding
     from config import CLAP_ENABLED
     
     if not CLAP_ENABLED:
@@ -154,7 +253,10 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         return []
     
     try:
-        # Get text embedding (lazy-loads CLAP model)
+        # Auto-warmup: ensures model is loaded and resets timer
+        warmup_text_search_model()
+        
+        # Get text embedding (model is now guaranteed loaded)
         text_embedding = get_text_embedding(query_text)
         if text_embedding is None:
             logger.error(f"Failed to generate text embedding for: {query_text}")
@@ -188,9 +290,6 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         import traceback
         traceback.print_exc()
         return []
-    finally:
-        # Always unload CLAP model after search to free ~3GB RAM
-        unload_clap_model()
 
 
 def get_cache_stats() -> Dict:

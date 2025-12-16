@@ -277,6 +277,10 @@ CLAP_CATEGORY_WEIGHTS = json.loads(
 # Number of random queries to generate for top query recommendations
 CLAP_TOP_QUERIES_COUNT = int(os.environ.get("CLAP_TOP_QUERIES_COUNT", "1000"))
 
+# Duration (in seconds) to keep CLAP model loaded for text search after last use
+# Model auto-unloads after this period of inactivity to free ~500MB RAM
+CLAP_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("CLAP_TEXT_SEARCH_WARMUP_DURATION", "300"))
+
 # --- Voyager Index Constants ---
 INDEX_NAME = os.environ.get("VOYAGER_INDEX_NAME", "music_library") # The primary key for our index in the DB
 VOYAGER_METRIC = os.environ.get("VOYAGER_METRIC", "angular") # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)

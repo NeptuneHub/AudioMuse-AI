@@ -108,6 +108,63 @@ def clap_search_api():
         return jsonify({'error': 'An internal server error occurred during CLAP search.'}), 500
 
 
+@clap_search_bp.route('/api/clap/warmup', methods=['POST'])
+def warmup_model_api():
+    """
+    API endpoint to preload CLAP model and start/reset 10-minute timer.
+    Call this when the search page loads to ensure fast searches.
+    
+    Returns:
+    {
+        "loaded": true,
+        "expiry_seconds": 600
+    }
+    """
+    from config import CLAP_ENABLED
+    from tasks.clap_text_search import warmup_text_search_model
+    
+    if not CLAP_ENABLED:
+        return jsonify({
+            'error': 'CLAP text search is disabled',
+            'loaded': False
+        }), 400
+    
+    try:
+        status = warmup_text_search_model()
+        return jsonify(status)
+    except Exception as e:
+        logger.error(f"Model warmup failed: {e}")
+        return jsonify({
+            'error': str(e),
+            'loaded': False
+        }), 500
+
+
+@clap_search_bp.route('/api/clap/warmup/status', methods=['GET'])
+def warmup_status_api():
+    """
+    Get current warm cache status.
+    
+    Returns:
+    {
+        "active": true,
+        "seconds_remaining": 423
+    }
+    """
+    from config import CLAP_ENABLED
+    from tasks.clap_text_search import get_warm_cache_status
+    
+    if not CLAP_ENABLED:
+        return jsonify({'active': False, 'seconds_remaining': 0})
+    
+    try:
+        status = get_warm_cache_status()
+        return jsonify(status)
+    except Exception as e:
+        logger.error(f"Failed to get warmup status: {e}")
+        return jsonify({'active': False, 'seconds_remaining': 0})
+
+
 @clap_search_bp.route('/api/clap/cache/refresh', methods=['POST'])
 def refresh_cache_api():
     """Refresh CLAP cache from database."""

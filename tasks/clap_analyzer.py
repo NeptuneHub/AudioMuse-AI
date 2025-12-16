@@ -27,12 +27,13 @@ logger = logging.getLogger(__name__)
 _onnx_session = None
 _tokenizer = None
 _cached_dummy_mel = None  # Reusable dummy mel-spectrogram tensor
+_cached_providers = None  # Cache provider detection result
 
 
 def _load_onnx_model():
     """Load CLAP ONNX model with optimized settings."""
     import onnxruntime as ort
-    import gc
+    global _cached_providers
     
     logger.info(f"Loading CLAP ONNX model from {config.CLAP_MODEL_PATH}...")
     
@@ -60,16 +61,21 @@ def _load_onnx_model():
     session = None
     providers = ['CPUExecutionProvider']  # Default to CPU-only
     
-    # Only attempt CUDA if explicitly available
-    try:
-        available_providers = ort.get_available_providers()
-        if 'CUDAExecutionProvider' in available_providers:
-            logger.info("CUDA provider detected in ONNX Runtime - testing availability...")
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        else:
-            logger.info("CUDA provider not available - using CPU only")
-    except Exception as e:
-        logger.info(f"Could not query available providers: {e} - defaulting to CPU")
+    # Use cached provider detection if available
+    if _cached_providers is not None:
+        providers = _cached_providers
+    else:
+        # Only attempt CUDA if explicitly available
+        try:
+            available_providers = ort.get_available_providers()
+            if 'CUDAExecutionProvider' in available_providers:
+                logger.info("CUDA provider detected in ONNX Runtime - testing availability...")
+                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+            else:
+                logger.info("CUDA provider not available - using CPU only")
+        except Exception as e:
+            logger.info(f"Could not query available providers: {e} - defaulting to CPU")
+        _cached_providers = providers
     
     # Create session with determined providers
     try:
@@ -102,10 +108,6 @@ def _load_onnx_model():
     if session is None:
         raise RuntimeError("Failed to create ONNX session")
     
-    logger.info(f"  Inputs: {[i.name for i in session.get_inputs()]}")
-    logger.info(f"  Outputs: {[o.name for o in session.get_outputs()]}")
-    
-    gc.collect()
     return session
 
 
@@ -139,8 +141,13 @@ def initialize_clap_model():
         return False
     
     try:
-        _onnx_session = _load_onnx_model()
-        _tokenizer = _load_tokenizer()
+        # Load model and tokenizer in parallel for faster initialization
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            model_future = executor.submit(_load_onnx_model)
+            tokenizer_future = executor.submit(_load_tokenizer)
+            _onnx_session = model_future.result()
+            _tokenizer = tokenizer_future.result()
         logger.info("CLAP ONNX model initialized successfully.")
         return True
     except Exception as e:
@@ -152,13 +159,13 @@ def initialize_clap_model():
 
 def unload_clap_model():
     """Unload CLAP model from memory to free ~3GB RAM."""
-    global _onnx_session, _tokenizer, _cached_dummy_mel
+    global _onnx_session, _tokenizer, _cached_dummy_mel, _cached_providers
     
     if _onnx_session is None:
         return False
     
     try:
-        # Clear ONNX session
+        # Clear ONNX session (keep _cached_providers for faster reload)
         _onnx_session = None
         _tokenizer = None
         _cached_dummy_mel = None
