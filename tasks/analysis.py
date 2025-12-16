@@ -347,46 +347,73 @@ def analyze_track(file_path, mood_labels_list, model_paths):
 
 # --- 3. Run Main Models (Embedding and Prediction) ---
     try:
-        # Load and run embedding model (ONNX) with safe CUDA detection
+        # Load and run embedding model (ONNX) with GPU memory management
+        # ONNX Runtime handles CUDA availability and fallback internally
         available_providers = ort.get_available_providers()
+        
+        # Configure provider options for GPU memory management
         if 'CUDAExecutionProvider' in available_providers:
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+            # Get GPU device ID from environment or default to 0
+            # Docker sets NVIDIA_VISIBLE_DEVICES, CUDA runtime uses CUDA_VISIBLE_DEVICES
+            gpu_device_id = 0
+            cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+            if cuda_visible and cuda_visible != '-1':
+                # If CUDA_VISIBLE_DEVICES is set, use first device (already mapped to 0)
+                gpu_device_id = 0
+            
+            # GPU mode with memory management to prevent fragmentation
+            cuda_options = {
+                'device_id': gpu_device_id,
+                'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
+                'cudnn_conv_algo_search': 'DEFAULT',
+            }
+            provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
+            logger.info(f"CUDA provider available - attempting to use GPU for analysis (device_id={gpu_device_id})")
         else:
-            providers = ['CPUExecutionProvider']
+            provider_options = [('CPUExecutionProvider', {})]
+            logger.info("CUDA provider not available - using CPU only")
         
         try:
             embedding_sess = ort.InferenceSession(
                 model_paths['embedding'],
-                providers=providers
+                providers=[p[0] for p in provider_options],
+                provider_options=[p[1] for p in provider_options]
             )
         except Exception:
             # Fallback to CPU if preferred providers fail
+            logger.warning(f"Failed to load embedding model with GPU - falling back to CPU")
             embedding_sess = ort.InferenceSession(
                 model_paths['embedding'],
                 providers=['CPUExecutionProvider']
             )
         embedding_feed_dict = {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches}
         embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
-
-        # Load and run prediction model (ONNX) with safe CUDA detection
-        if 'CUDAExecutionProvider' in available_providers:
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        else:
-            providers = ['CPUExecutionProvider']
         
+        # Explicitly delete session and force garbage collection to free GPU memory immediately
+        del embedding_sess
+        import gc
+        gc.collect()
+
+        # Load and run prediction model (ONNX) with same provider configuration
         try:
             prediction_sess = ort.InferenceSession(
                 model_paths['prediction'],
-                providers=providers
+                providers=[p[0] for p in provider_options],
+                provider_options=[p[1] for p in provider_options]
             )
         except Exception:
             # Fallback to CPU if preferred providers fail
+            logger.warning(f"Failed to load prediction model with GPU - falling back to CPU")
             prediction_sess = ort.InferenceSession(
                 model_paths['prediction'],
                 providers=['CPUExecutionProvider']
             )
         prediction_feed_dict = {DEFINED_TENSOR_NAMES['prediction']['input']: embeddings_per_patch}
         mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
+        
+        # Explicitly delete session and force garbage collection to free GPU memory immediately
+        del prediction_sess
+        gc.collect()
 
         averaged_logits = np.mean(mood_logits, axis=0)
         # Apply sigmoid to convert raw model outputs (logits) into probabilities
@@ -405,25 +432,26 @@ def analyze_track(file_path, mood_labels_list, model_paths):
     for key in ["danceable", "aggressive", "happy", "party", "relaxed", "sad"]:
         try:
             model_path = model_paths[key]
-            # Load model with safe CUDA detection
-            if 'CUDAExecutionProvider' in available_providers:
-                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            else:
-                providers = ['CPUExecutionProvider']
-            
+            # Load model with same provider configuration as main models
             try:
                 other_sess = ort.InferenceSession(
                     model_path,
-                    providers=providers
+                    providers=[p[0] for p in provider_options],
+                    provider_options=[p[1] for p in provider_options]
                 )
             except Exception:
                 # Fallback to CPU if preferred providers fail
+                logger.warning(f"Failed to load {key} model with GPU - falling back to CPU")
                 other_sess = ort.InferenceSession(
                     model_path,
                     providers=['CPUExecutionProvider']
                 )
             feed_dict = {DEFINED_TENSOR_NAMES[key]['input']: embeddings_per_patch}
             probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
+            
+            # Explicitly delete session and force garbage collection to free GPU memory immediately
+            del other_sess
+            gc.collect()
 
             if probabilities_per_patch is None:
                 other_predictions[key] = 0.0

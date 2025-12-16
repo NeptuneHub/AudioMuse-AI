@@ -55,28 +55,39 @@ def _load_onnx_model():
         sess_options.inter_op_num_threads = 1  # Single-threaded ONNX operations
         logger.info("CLAP: Using Python threading (auto-calculated threads), ONNX single-threaded")
     
-    # GPU support: Check CUDA availability BEFORE attempting to use it
-    # This prevents segfaults on systems with CUDA images but no GPU drivers
+    # GPU support: ONNX Runtime handles CUDA availability internally
+    # If CUDA fails, it automatically falls back to CPU
     session = None
-    providers = ['CPUExecutionProvider']  # Default to CPU-only
     
-    # Only attempt CUDA if explicitly available
-    try:
-        available_providers = ort.get_available_providers()
-        if 'CUDAExecutionProvider' in available_providers:
-            logger.info("CUDA provider detected in ONNX Runtime - testing availability...")
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        else:
-            logger.info("CUDA provider not available - using CPU only")
-    except Exception as e:
-        logger.info(f"Could not query available providers: {e} - defaulting to CPU")
+    # Configure provider options with GPU memory management
+    available_providers = ort.get_available_providers()
+    if 'CUDAExecutionProvider' in available_providers:
+        # Get GPU device ID from environment or default to 0
+        # Docker sets NVIDIA_VISIBLE_DEVICES, CUDA runtime uses CUDA_VISIBLE_DEVICES
+        gpu_device_id = 0
+        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+        if cuda_visible and cuda_visible != '-1':
+            # If CUDA_VISIBLE_DEVICES is set, use first device (already mapped to 0)
+            gpu_device_id = 0
+        
+        cuda_options = {
+            'device_id': gpu_device_id,
+            'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
+            'cudnn_conv_algo_search': 'DEFAULT',
+        }
+        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
+        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
+    else:
+        provider_options = [('CPUExecutionProvider', {})]
+        logger.info("CUDA provider not available - using CPU only")
     
     # Create session with determined providers
     try:
         session = ort.InferenceSession(
             config.CLAP_MODEL_PATH,
             sess_options=sess_options,
-            providers=providers
+            providers=[p[0] for p in provider_options],
+            provider_options=[p[1] for p in provider_options]
         )
         
         active_provider = session.get_providers()[0]
