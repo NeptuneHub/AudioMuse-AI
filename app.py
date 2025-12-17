@@ -577,6 +577,7 @@ from app_map import map_bp
 from app_waveform import waveform_bp
 from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
+from app_mulan_search import mulan_search_bp
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -592,6 +593,7 @@ app.register_blueprint(map_bp)
 app.register_blueprint(waveform_bp)
 app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
+app.register_blueprint(mulan_search_bp)
 
 if __name__ == '__main__':
   os.makedirs(TEMP_DIR, exist_ok=True)
@@ -639,6 +641,24 @@ if __name__ == '__main__':
             logger.info("No queries found in database (should not happen - check DB)")
     except Exception as e:
       logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
+    # Load MuLan embeddings cache (model will lazy-load on first use)
+    try:
+      from config import MULAN_ENABLED
+      if MULAN_ENABLED:
+        # Load MuLan embeddings cache - models lazy-load on first search to save RAM
+        from tasks.mulan_text_search import load_mulan_cache_from_db, load_top_queries_from_db as load_mulan_top_queries_from_db
+        if load_mulan_cache_from_db():
+          logger.info("MuLan text search cache loaded at startup (embeddings only).")
+          logger.info("MuLan models will lazy-load on first text search.")
+          
+          # Load top queries from database
+          has_existing = load_mulan_top_queries_from_db()
+          if has_existing:
+            logger.info("Loaded MuLan top queries from database (defaults).")
+          else:
+            logger.info("No MuLan queries found in database (defaults inserted)")
+    except Exception as e:
+      logger.debug(f"MuLan cache not loaded at startup (may be disabled or failed): {e}")
     # Initialize map JSON cache once at startup (reads DB one time)
     # Run this in a background daemon thread so the Flask process doesn't block on the heavy DB read.
     def _start_map_init_background():

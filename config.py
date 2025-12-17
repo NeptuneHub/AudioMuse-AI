@@ -281,6 +281,29 @@ CLAP_TOP_QUERIES_COUNT = int(os.environ.get("CLAP_TOP_QUERIES_COUNT", "1000"))
 # Model auto-unloads after this period of inactivity to free ~500MB RAM
 CLAP_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("CLAP_TEXT_SEARCH_WARMUP_DURATION", "300"))
 
+# --- MuLan (MuQ) Model Constants (for text search with PyTorch) ---
+MULAN_ENABLED = os.environ.get("MULAN_ENABLED", "true").lower() == "true"
+# MuQ model name from HuggingFace (automatically downloaded on first use)
+MULAN_MODEL_NAME = os.environ.get("MULAN_MODEL_NAME", "OpenMuQ/MuQ-MuLan-large")
+MULAN_EMBEDDING_DIMENSION = int(os.environ.get("MULAN_EMBEDDING_DIMENSION", "512"))
+
+# Category weights for MuLan query generation (affects random query sampling probabilities)
+MULAN_CATEGORY_WEIGHTS_DEFAULT = {
+    "Genre_Style": 1.0,
+    "Instrumentation_Vocal": 1.0,
+    "Emotion_Mood": 1.0,
+    "Voice_Type": 1.0
+}
+MULAN_CATEGORY_WEIGHTS = json.loads(
+    os.environ.get("MULAN_CATEGORY_WEIGHTS", json.dumps(MULAN_CATEGORY_WEIGHTS_DEFAULT))
+)
+
+# Number of random queries to generate for top query recommendations
+MULAN_TOP_QUERIES_COUNT = int(os.environ.get("MULAN_TOP_QUERIES_COUNT", "1000"))
+
+# Duration (in seconds) to keep MuLan models loaded for text search after last use
+MULAN_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("MULAN_TEXT_SEARCH_WARMUP_DURATION", "300"))
+
 # --- Voyager Index Constants ---
 INDEX_NAME = os.environ.get("VOYAGER_INDEX_NAME", "music_library") # The primary key for our index in the DB
 VOYAGER_METRIC = os.environ.get("VOYAGER_METRIC", "angular") # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)

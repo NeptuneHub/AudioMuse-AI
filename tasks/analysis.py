@@ -485,6 +485,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                      save_track_analysis_and_embedding, save_clap_embedding,
                      TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import analyze_audio_file as clap_analyze, is_clap_available
+    from .mulan_analyzer import analyze_audio_file as mulan_analyze
+    from config import MULAN_ENABLED
     
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -551,8 +553,19 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     # Return tracks that DON'T have CLAP embeddings yet
                     return set(track_ids_as_strings) - existing_clap_ids
 
+            def get_missing_mulan_track_ids(track_ids):
+                """Returns set of track IDs that need MuLan analysis (missing from mulan_embedding table)."""
+                if not track_ids: return set()
+                with get_db() as conn, conn.cursor() as cur:
+                    track_ids_as_strings = [str(id) for id in track_ids]
+                    cur.execute("SELECT item_id FROM mulan_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
+                    existing_mulan_ids = {row[0] for row in cur.fetchall()}
+                    # Return tracks that DON'T have MuLan embeddings yet
+                    return set(track_ids_as_strings) - existing_mulan_ids
+
             existing_track_ids_set = get_existing_track_ids( [str(t['Id']) for t in tracks])
             missing_clap_ids_set = get_missing_clap_track_ids([str(t['Id']) for t in tracks]) if is_clap_available() else set()
+            missing_mulan_ids_set = get_missing_mulan_track_ids([str(t['Id']) for t in tracks]) if MULAN_ENABLED else set()
             total_tracks_in_album = len(tracks)
 
             for idx, item in enumerate(tracks, 1):
@@ -637,7 +650,23 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     else:
                         logger.info(f"  - CLAP skipped: needs_clap={needs_clap}, available={is_clap_available()}")
                     
-                    # Count track as analyzed if we processed either MusiCNN or CLAP
+                    # MuLan analysis (only if enabled AND needed)
+                    needs_mulan = str(item['Id']) in missing_mulan_ids_set
+                    if needs_mulan and MULAN_ENABLED:
+                        logger.info(f"  - Starting MuLan analysis for {track_name_full}...")
+                        try:
+                            mulan_embedding, duration, num_segments = mulan_analyze(path)
+                            if mulan_embedding is not None:
+                                from app_helper import save_mulan_embedding
+                                save_mulan_embedding(item['Id'], mulan_embedding)
+                                logger.info(f"  - MuLan embedding saved (128-dim, duration: {duration:.1f}s)")
+                                track_processed = True
+                        except Exception as e:
+                            logger.warning(f"  - MuLan analysis failed: {e}")
+                    elif not needs_mulan and MULAN_ENABLED:
+                        logger.info(f"  - MuLan embedding already exists, skipping")
+                    
+                    # Count track as analyzed if we processed MusiCNN, CLAP, or MuLan
                     if track_processed:
                         tracks_analyzed_count += 1
                     

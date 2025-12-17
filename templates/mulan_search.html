@@ -1,0 +1,446 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    .search-container {
+        max-width: 800px;
+        margin: 0 auto;
+    }
+    
+    .search-container .param-group {
+        margin-bottom: 1.5rem;
+    }
+    
+    .search-container label {
+        display: block;
+        margin-bottom: 0.5rem;
+    }
+    
+    .search-box {
+        width: 100%;
+        padding: 0.5rem;
+        font-size: 1rem;
+        border: 2px solid var(--border-color, #ddd);
+        border-radius: 8px;
+    }
+    
+    .search-box:focus {
+        outline: none;
+        border-color: var(--primary-color, #007bff);
+    }
+    
+    .cache-stats {
+        background: var(--info-bg, #e7f3ff);
+        padding: 1rem;
+        border-radius: 8px;
+        margin-bottom: 1.5rem;
+        font-size: 0.9rem;
+    }
+    
+    .cache-stats strong {
+        color: var(--primary-color, #007bff);
+    }
+    
+    .example-queries {
+        background: var(--light-bg, #f8f9fa);
+        padding: 1rem;
+        border-radius: 8px;
+        margin-bottom: 1.5rem;
+    }
+    
+    .example-queries h3 {
+        margin-top: 0;
+        font-size: 1rem;
+        color: var(--text-secondary, #666);
+    }
+    
+    .example-tag {
+        display: inline-block;
+        padding: 0.4rem 0.8rem;
+        margin: 0.3rem;
+        background: white;
+        border: 1px solid var(--border-color, #ddd);
+        border-radius: 20px;
+        cursor: pointer;
+        transition: all 0.2s;
+        font-size: 0.9rem;
+    }
+    
+    .example-tag:hover {
+        background: var(--primary-color, #007bff);
+        color: white;
+        border-color: var(--primary-color, #007bff);
+    }
+    
+    #search-form button {
+        width: 100%;
+        padding: 0.75rem 1.5rem;
+        font-size: 1rem;
+        font-weight: 600;
+        background-color: #2563EB;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background-color 0.2s;
+    }
+    
+    #search-form button:hover {
+        background-color: #1D4ED8;
+    }
+    
+    #search-form button:disabled {
+        background-color: #9CA3AF;
+        cursor: not-allowed;
+    }
+    
+    #playlist-form button {
+        background-color: #16A34A !important;
+    }
+    
+    #playlist-form button:hover {
+        background-color: #15803D !important;
+    }
+    
+    .result-item {
+        padding: 1rem;
+        border-bottom: 1px solid var(--border-color, #eee);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    
+    .result-item:hover {
+        background: var(--hover-bg, #f8f9fa);
+    }
+    
+    .result-info {
+        flex: 1;
+    }
+    
+    .result-title {
+        font-weight: 600;
+        font-size: 1.1rem;
+        margin-bottom: 0.3rem;
+    }
+    
+    .result-artist {
+        color: var(--text-secondary, #666);
+        font-size: 0.9rem;
+    }
+    
+    .similarity-badge {
+        background: var(--success-bg, #28a745);
+        color: white;
+        padding: 0.4rem 0.8rem;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.9rem;
+    }
+    
+    .loading-spinner {
+        text-align: center;
+        padding: 2rem;
+        font-size: 1.2rem;
+        color: var(--text-secondary, #666);
+    }
+    
+    .error-message {
+        background: var(--error-bg, #f8d7da);
+        color: var(--error-text, #721c24);
+        padding: 1rem;
+        border-radius: 8px;
+        margin-top: 1rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - MuLan Text Search</h1>
+        <p>Find music using natural language descriptions powered by MuQ (Music-and-Language model).</p>
+    </header>
+
+    {% if not mulan_enabled %}
+    <div class="error-message">
+        <strong>⚠️ MuLan Text Search is disabled.</strong>
+        <p>To enable, set <code>MULAN_ENABLED=true</code> in your environment and ensure the MuLan models are available.</p>
+    </div>
+    {% else %}
+    
+    {% if cache_stats.loaded %}
+    <div class="cache-stats">
+        <strong>✓ MuLan Search Ready</strong> | 
+        <strong>{{ cache_stats.song_count }}</strong> songs indexed | 
+        {{ cache_stats.memory_mb }} MB in memory
+    </div>
+    {% else %}
+    <div class="error-message">
+        <strong>⚠️ No MuLan embeddings found.</strong>
+        <p>Please run song analysis first to generate MuLan embeddings for text search.</p>
+    </div>
+    {% endif %}
+    
+    <div class="search-container">
+        <form id="search-form">
+            <div class="param-group">
+                <label for="search-query" class="label-with-tooltip">
+                    Search Query:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Describe the music you want to find using natural language. MuLan understands genre, mood, instrumentation, and style descriptions.</span>
+                    </span>
+                </label>
+                <input 
+                    type="text" 
+                    id="search-query" 
+                    name="query" 
+                    class="search-box"
+                    placeholder="e.g., energetic electronic dance, relaxing acoustic guitar"
+                    autocomplete="off"
+                    required
+                    {% if not cache_stats.loaded %}disabled{% endif %}
+                >
+            </div>
+            
+            <div class="param-group">
+                <label for="limit" class="label-with-tooltip">
+                    Number of results:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Maximum number of matching songs to return (1-500).</span>
+                    </span>
+                </label>
+                <input type="number" id="limit" name="limit" value="50" min="1" max="500">
+            </div>
+            
+            <button type="submit" {% if not cache_stats.loaded %}disabled{% endif %}>
+                🔍 Search with MuLan
+            </button>
+        </form>
+        
+        <div class="example-queries">
+            <h3>💡 Top Recommended Searches:</h3>
+            <div id="top-queries-container">
+                <span style="color: #666;">Loading recommendations...</span>
+            </div>
+        </div>
+    </div>
+    
+    {% endif %}
+</section>
+
+<section id="results-container" class="hidden">
+    <h2>Search Results</h2>
+    <div id="result-count" style="margin-bottom: 1rem; font-weight: 600;"></div>
+    <div id="results-list"></div>
+</section>
+
+<section id="playlist-creator" class="hidden">
+    <h3>Create a Playlist from Results</h3>
+    <form id="playlist-form">
+        <div class="param-group">
+            <label for="playlist_name">Playlist Name:</label>
+            <input type="text" id="playlist_name" name="playlist_name" placeholder="My MuLan Search Playlist" required>
+        </div>
+        <button type="submit">Create Playlist on Media Server</button>
+    </form>
+    <div id="playlist-status"></div>
+</section>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const searchForm = document.getElementById('search-form');
+    const searchQuery = document.getElementById('search-query');
+    const resultsContainer = document.getElementById('results-container');
+    const resultsList = document.getElementById('results-list');
+    const resultCount = document.getElementById('result-count');
+    const playlistCreator = document.getElementById('playlist-creator');
+    const playlistForm = document.getElementById('playlist-form');
+    const topQueriesContainer = document.getElementById('top-queries-container');
+    
+    let currentResults = [];
+    
+    // Warmup model on page load for instant searches
+    warmupModel();
+    
+    // Load top queries on page load
+    loadTopQueries();
+    
+    async function warmupModel() {
+        try {
+            console.log('Warming up MuLan models...');
+            const response = await fetch("{{ url_for('mulan_search_bp.warmup_model_api') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await response.json();
+            if (data.loaded) {
+                console.log(`✓ MuLan models warmed up (expires in ${data.expiry_seconds}s)`);
+            }
+        } catch (error) {
+            console.error('Failed to warmup MuLan models:', error);
+        }
+    }
+    
+    async function loadTopQueries() {
+        try {
+            const response = await fetch("{{ url_for('mulan_search_bp.top_queries_api') }}");
+            const data = await response.json();
+            
+            if (response.ok && data.ready && data.queries && data.queries.length > 0) {
+                // Queries are ready - display them
+                topQueriesContainer.innerHTML = '';
+                data.queries.forEach(query => {
+                    const tag = document.createElement('span');
+                    tag.className = 'example-tag';
+                    tag.setAttribute('data-query', query);
+                    tag.textContent = query;
+                    tag.addEventListener('click', function() {
+                        searchQuery.value = query;
+                        searchForm.dispatchEvent(new Event('submit'));
+                    });
+                    topQueriesContainer.appendChild(tag);
+                });
+            } else if (response.ok && !data.ready) {
+                // Still computing in background
+                topQueriesContainer.innerHTML = '<span style="color: #999;">Loading recommendations...</span>';
+                // Retry after 5 seconds
+                setTimeout(loadTopQueries, 5000);
+            } else {
+                topQueriesContainer.innerHTML = '<span style="color: #999;">No recommendations available</span>';
+            }
+        } catch (error) {
+            console.error('Failed to load top queries:', error);
+            topQueriesContainer.innerHTML = '<span style="color: #999;">Failed to load recommendations</span>';
+        }
+    }
+    
+    // Search form submission
+    searchForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const query = searchQuery.value.trim();
+        const limit = parseInt(document.getElementById('limit').value);
+        
+        if (!query || query.length < 3) {
+            alert('Please enter at least 3 characters');
+            return;
+        }
+        
+        // Show loading
+        resultsContainer.classList.remove('hidden');
+        resultsList.innerHTML = '<div class="loading-spinner">🔍 Searching with MuLan...</div>';
+        playlistCreator.classList.add('hidden');
+        
+        try {
+            const response = await fetch("{{ url_for('mulan_search_bp.mulan_search_api') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query, limit })
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.error || 'Search failed');
+            }
+            
+            currentResults = data.results || [];
+            displayResults(currentResults, query);
+            
+        } catch (error) {
+            resultsList.innerHTML = `<div class="error-message">❌ ${error.message}</div>`;
+        }
+    });
+    
+    function displayResults(results, query) {
+        if (results.length === 0) {
+            resultsList.innerHTML = '<p>No results found. Try a different query.</p>';
+            resultCount.textContent = '';
+            return;
+        }
+        
+        resultCount.textContent = `Found ${results.length} matches for "${query}"`;
+        
+        let html = '<div style="border: 1px solid var(--border-color, #ddd); border-radius: 8px; overflow: hidden;">';
+        
+        results.forEach((result, index) => {
+            const similarityPercent = Math.round(result.similarity * 100);
+            const badgeColor = similarityPercent > 70 ? '#28a745' : similarityPercent > 50 ? '#ffc107' : '#6c757d';
+            
+            html += `
+                <div class="result-item">
+                    <div class="result-info">
+                        <div class="result-title">${index + 1}. ${escapeHtml(result.title)}</div>
+                        <div class="result-artist">${escapeHtml(result.author)}</div>
+                    </div>
+                    <div class="similarity-badge" style="background: ${badgeColor};">
+                        ${similarityPercent}%
+                    </div>
+                </div>
+            `;
+        });
+        
+        html += '</div>';
+        resultsList.innerHTML = html;
+        
+        // Show playlist creator
+        playlistCreator.classList.remove('hidden');
+    }
+    
+    // Playlist creation
+    playlistForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const playlistStatusDiv = document.getElementById('playlist-status');
+        playlistStatusDiv.className = '';
+        
+        if (currentResults.length === 0) {
+            playlistStatusDiv.textContent = 'No results to create playlist from';
+            playlistStatusDiv.className = 'status-error';
+            return;
+        }
+        
+        const playlistName = document.getElementById('playlist_name').value.trim();
+        if (!playlistName) {
+            playlistStatusDiv.textContent = 'Please enter a playlist name';
+            playlistStatusDiv.className = 'status-error';
+            return;
+        }
+        
+        const trackIds = currentResults.map(r => r.item_id);
+        playlistStatusDiv.textContent = 'Creating playlist...';
+        
+        try {
+            const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    playlist_name: playlistName,
+                    track_ids: trackIds
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
+            playlistStatusDiv.textContent = data.message;
+            playlistStatusDiv.className = 'status-success';
+        } catch (error) {
+            playlistStatusDiv.textContent = `Error: ${error.message}`;
+            playlistStatusDiv.className = 'status-error';
+            console.error('Playlist creation error:', error);
+        }
+    });
+    
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+});
+</script>
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}

@@ -98,6 +98,10 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS clap_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
         cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')")
         if not cur.fetchone()[0]: cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
+        # Create 'mulan_embedding' table for MuLan text search embeddings
+        cur.execute("CREATE TABLE IF NOT EXISTS mulan_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'mulan_embedding' AND column_name = 'embedding')")
+        if not cur.fetchone()[0]: cur.execute("ALTER TABLE mulan_embedding ADD COLUMN embedding BYTEA")
         # Create 'voyager_index_data' table
         cur.execute("CREATE TABLE IF NOT EXISTS voyager_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'artist_index_data' table for artist GMM-based HNSW index
@@ -450,6 +454,28 @@ def save_clap_embedding(item_id, clap_embedding_vector):
     except Exception as e:
         conn.rollback()
         logger.error(f"Error saving CLAP embedding for {item_id}: {e}")
+        raise
+    finally:
+        cur.close()
+
+
+def save_mulan_embedding(item_id, mulan_embedding_vector):
+    """Saves MuLan embedding for a track."""
+    if mulan_embedding_vector is None or (isinstance(mulan_embedding_vector, np.ndarray) and mulan_embedding_vector.size == 0):
+        return
+    
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        embedding_blob = mulan_embedding_vector.astype(np.float32).tobytes()
+        cur.execute("""
+            INSERT INTO mulan_embedding (item_id, embedding) VALUES (%s, %s)
+            ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
+        """, (item_id, psycopg2.Binary(embedding_blob)))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error saving MuLan embedding for {item_id}: {e}")
         raise
     finally:
         cur.close()

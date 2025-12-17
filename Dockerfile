@@ -122,11 +122,11 @@ WORKDIR /app
 COPY requirements/ /app/requirements/
 
 # Install Python packages with uv (combined in single layer for efficiency)
-# GPU builds: cupy, cuml, onnxruntime-gpu, voyager
-# CPU builds: onnxruntime (CPU only)
+# GPU builds: cupy, cuml, onnxruntime-gpu, voyager, torch (CUDA)
+# CPU builds: onnxruntime (CPU only), torch (CPU)
 # Note: --index-strategy unsafe-best-match resolves conflicts between pypi.nvidia.com and pypi.org
 RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
-        echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager)"; \
+        echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager, torch+cuda)"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
     else \
         echo "CPU base image: installing all packages together for dependency resolution"; \
@@ -137,8 +137,9 @@ RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
     && find /usr/local/lib/python3.10/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.10/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
-# Download HuggingFace models (BERT, RoBERTa, BART) from GitHub release
+# Download HuggingFace models (BERT, RoBERTa, BART, T5) from GitHub release
 # These are the text encoders needed by laion-clap library for text embeddings
+# and T5 for MuLan text encoding
 RUN set -eux; \
     base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
     hf_models="huggingface_models.tar.gz"; \
@@ -179,6 +180,50 @@ RUN set -eux; \
     \
     echo "✓ HuggingFace models extracted to $cache_dir"; \
     du -sh "$cache_dir"
+
+# Pre-download MuQ-MuLan model with ALL dependencies during build
+# Download using the muq library and perform actual inference to cache everything
+RUN set -eux; \
+    echo "Pre-downloading MuQ-MuLan model (this may take several minutes)..."; \
+    export HF_HOME=/app/.cache/huggingface; \
+    python3 << 'EOF'
+import os
+import torch
+import numpy as np
+os.environ['HF_HOME'] = '/app/.cache/huggingface'
+
+# Configure PyTorch threading before any imports
+torch.set_num_threads(4)
+torch.set_num_interop_threads(4)
+
+from muq import MuQMuLan
+
+try:
+    print('Downloading and testing MuQ-MuLan-large...')
+    model = MuQMuLan.from_pretrained('OpenMuQ/MuQ-MuLan-large')
+    model = model.eval()
+    
+    print('Testing text encoding (this will cache tokenizer)...')
+    # Force text encoding - this will download and cache xlm-roberta-base tokenizer
+    with torch.no_grad():
+        text_embeds = model(texts=["test music"])
+    print(f'✓ Text encoding works: {text_embeds.shape}')
+    
+    print('Testing audio encoding...')
+    # Test audio encoding
+    dummy_audio = torch.randn(1, 24000 * 5)  # 5 seconds at 24kHz
+    with torch.no_grad():
+        audio_embeds = model(wavs=dummy_audio)
+    print(f'✓ Audio encoding works: {audio_embeds.shape}')
+    
+    print(f'✓ All models cached successfully in: {os.environ["HF_HOME"]}')
+    del model
+except Exception as e:
+    print(f'ERROR: {e}')
+    import traceback
+    traceback.print_exc()
+    raise
+EOF
 
 # ============================================================================
 # Stage 4: Runner - Final production image
