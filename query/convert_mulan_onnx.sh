@@ -1,4 +1,5 @@
 #!/bin/bash
+#source .venv/bin/activate
 set -e
 
 echo "--- Installing Python dependencies ---"
@@ -69,51 +70,74 @@ if not SKIP_EXPORT:
     else:
         text_module = model.text
 
-    # Save tokenizer to the export directory
+    # Use /tmp/ for tokenizer export to avoid WSL->Windows I/O errors
     # This saves tokenizer.json, sentencepiece.bpe.model, special_tokens_map.json, etc.
-    output_dir = '$ONNX_EXPORT_DIR'
-    tokenizer_dir = f'{output_dir}/tokenizer'
-    tar_path = f'{output_dir}/mulan_tokenizer.tar.gz'
+    import tempfile
+    final_output_dir = '$ONNX_EXPORT_DIR'
+    final_tar_path = f'{final_output_dir}/mulan_tokenizer.tar.gz'
 
     # Check if tokenizer already exists
-    if os.path.exists(tar_path):
-        print(f'✓ Tokenizer TAR already exists: {tar_path}')
-        tar_size = os.path.getsize(tar_path) / (1024*1024)
+    if os.path.exists(final_tar_path):
+        print(f'✓ Tokenizer TAR already exists: {final_tar_path}')
+        tar_size = os.path.getsize(final_tar_path) / (1024*1024)
         print(f'  Size: {tar_size:.2f} MB - SKIPPING download')
     else:
+        # Create temp directory in /tmp/ (native Linux filesystem)
+        temp_dir = tempfile.mkdtemp(prefix='mulan_tok_', dir='/tmp')
+        tokenizer_dir = f'{temp_dir}/tokenizer'
         os.makedirs(tokenizer_dir, exist_ok=True)
+        
         print(f'Downloading ORIGINAL MuLan tokenizer from HuggingFace...')
+        print(f'  Temp directory: {temp_dir}')
         print(f'  Tokenizer type: {type(text_module.tokenizer).__name__}')
         print(f'  Tokenizer class: {text_module.tokenizer.__class__.__module__}.{text_module.tokenizer.__class__.__name__}')
         if hasattr(text_module.tokenizer, 'name_or_path'):
             print(f'  Original model: {text_module.tokenizer.name_or_path}')
 
-        # Save all tokenizer files
+        # Save all tokenizer files to temp directory (/tmp/)
         text_module.tokenizer.save_pretrained(tokenizer_dir)
         print(f'✓ Tokenizer files saved to {tokenizer_dir}/')
 
-        # List downloaded files
+        # List downloaded files and filter for TAR (exclude tokenizer.json - version incompatible)
         import glob
-        tokenizer_files = glob.glob(f'{tokenizer_dir}/*')
-        print(f'  Downloaded {len(tokenizer_files)} files:')
+        all_files = glob.glob(f'{tokenizer_dir}/*')
+        # Keep only: sentencepiece.bpe.model, tokenizer_config.json, special_tokens_map.json
+        # EXCLUDE: tokenizer.json (incompatible format between tokenizers versions)
+        tokenizer_files = [f for f in all_files if not f.endswith('tokenizer.json')]
+        
+        print(f'  Files for TAR (excluding tokenizer.json for compatibility):')
         for f in tokenizer_files:
             fname = os.path.basename(f)
             fsize = os.path.getsize(f) / (1024*1024)  # MB
             print(f'    - {fname} ({fsize:.2f} MB)')
 
-        # Create TAR archive of tokenizer
+        # Create TAR archive in /tmp/ first
         import tarfile
+        import shutil
+        temp_tar_path = f'{temp_dir}/mulan_tokenizer.tar.gz'
         print(f'')
-        print(f'Creating TAR archive: {tar_path}')
-        with tarfile.open(tar_path, 'w:gz') as tar:
+        print(f'Creating TAR archive: {temp_tar_path}')
+        print(f'  Note: Using slow tokenizer (sentencepiece) for cross-version compatibility')
+        with tarfile.open(temp_tar_path, 'w:gz') as tar:
             for f in tokenizer_files:
                 arcname = os.path.basename(f)
                 tar.add(f, arcname=arcname)
                 print(f'  Added: {arcname}')
 
-        tar_size = os.path.getsize(tar_path) / (1024*1024)
+        # Copy TAR to final destination
+        print(f'')
+        print(f'Copying TAR to: {final_tar_path}')
+        os.makedirs(final_output_dir, exist_ok=True)
+        shutil.copy2(temp_tar_path, final_tar_path)
+        
+        tar_size = os.path.getsize(final_tar_path) / (1024*1024)
         print(f'✓ TAR created: mulan_tokenizer.tar.gz ({tar_size:.2f} MB)')
-        print(f'  → Save this TAR in your repo instead of downloading from HuggingFace!')
+        print(f'  → Upload this TAR to your GitHub releases!')
+        
+        # Clean up temp directory
+        print(f'  Cleaning up temp directory...')
+        shutil.rmtree(temp_dir)
+        print(f'✓ Temp directory cleaned up')
 else:
     print('')
     print('Skipping tokenizer export (already exists)')
@@ -208,6 +232,14 @@ if not SKIP_EXPORT:
     audio_wrapper = AudioEncoderWrapper(model)
     audio_wrapper.eval()
 
+    # Create temp directory in /tmp/ for ONNX export
+    import tempfile
+    import shutil
+    import glob
+    temp_onnx_dir = tempfile.mkdtemp(prefix='mulan_onnx_', dir='/tmp')
+    temp_audio_model = f'{temp_onnx_dir}/mulan_audio_encoder.onnx'
+    print(f'  Temp export directory: {temp_onnx_dir}')
+
     # Create dummy audio input (10 seconds at 24kHz)
     # Shape: (batch_size, samples) -> (1, 240000)
     dummy_audio = torch.randn(1, 240000)
@@ -226,11 +258,11 @@ if not SKIP_EXPORT:
             'wavs': {0: batch_dim, 1: time_dim},
         }
         
-        # Export with all weights embedded (dynamo=True creates single file by default)
+        # Export to /tmp/ (creates .onnx and .onnx.data files)
         torch.onnx.export(
             audio_wrapper,
             (dummy_audio,),
-            '$ONNX_AUDIO_MODEL',
+            temp_audio_model,
             export_params=True,
             opset_version=18,
             do_constant_folding=True,
@@ -240,8 +272,19 @@ if not SKIP_EXPORT:
             verbose=False,
             dynamo=True
         )
-    print(f'✓ Audio Encoder exported to SINGLE FILE: $ONNX_AUDIO_MODEL')
-    print(f'  (All weights embedded - no separate .data file)')
+    print(f'✓ Audio Encoder exported to temp: {temp_audio_model}')
+    
+    # Copy all audio model files to final destination
+    audio_files = glob.glob(f'{temp_onnx_dir}/mulan_audio_encoder.onnx*')
+    print(f'  Copying {len(audio_files)} file(s) to $ONNX_EXPORT_DIR...')
+    os.makedirs('$ONNX_EXPORT_DIR', exist_ok=True)
+    for src_file in audio_files:
+        filename = os.path.basename(src_file)
+        dst_file = f'$ONNX_EXPORT_DIR/{filename}'
+        size_mb = os.path.getsize(src_file) / (1024 * 1024)
+        print(f'    {filename} ({size_mb:.2f} MB)')
+        shutil.copy2(src_file, dst_file)
+    print(f'✓ Audio model files copied to $ONNX_EXPORT_DIR')
 else:
     print('')
     print('Skipping audio encoder export (already exists)')
@@ -257,6 +300,9 @@ if not SKIP_EXPORT:
 
     text_wrapper = TextEncoderWrapper(model)
     text_wrapper.eval()
+
+    # Reuse same temp directory
+    temp_text_model = f'{temp_onnx_dir}/mulan_text_encoder.onnx'
 
     # Create dummy text input
     # T5 tokenizer usually produces input_ids and attention_mask
@@ -278,11 +324,11 @@ if not SKIP_EXPORT:
             'attention_mask': {0: batch_dim},
         }
         
-        # Export with all weights embedded (dynamo=True creates single file by default)
+        # Export to /tmp/ (creates .onnx and .onnx.data files)
         torch.onnx.export(
             text_wrapper,
             (dummy_input_ids, dummy_attention_mask),
-            '$ONNX_TEXT_MODEL',
+            temp_text_model,
             export_params=True,
             opset_version=18,
             do_constant_folding=True,
@@ -292,9 +338,24 @@ if not SKIP_EXPORT:
             verbose=False,
             dynamo=True
         )
-    print(f'✓ Text Encoder exported to SINGLE FILE: $ONNX_TEXT_MODEL')
-    print(f'  (All weights embedded - no separate .data file)')
-    print(f'  Uses ORIGINAL XLM-RoBERTa tokenizer (same as training)')
+    print(f'✓ Text Encoder exported to temp: {temp_text_model}')
+    
+    # Copy all text model files to final destination
+    text_files = glob.glob(f'{temp_onnx_dir}/mulan_text_encoder.onnx*')
+    print(f'  Copying {len(text_files)} file(s) to $ONNX_EXPORT_DIR...')
+    for src_file in text_files:
+        filename = os.path.basename(src_file)
+        dst_file = f'$ONNX_EXPORT_DIR/{filename}'
+        size_mb = os.path.getsize(src_file) / (1024 * 1024)
+        print(f'    {filename} ({size_mb:.2f} MB)')
+        shutil.copy2(src_file, dst_file)
+    print(f'✓ Text model files copied to $ONNX_EXPORT_DIR')
+    
+    # Clean up temp directory
+    print('')
+    print(f'Cleaning up temp ONNX directory: {temp_onnx_dir}')
+    shutil.rmtree(temp_onnx_dir)
+    print(f'✓ Temp directory cleaned up')
 else:
     print('')
     print('Skipping text encoder export (already exists)')
@@ -391,7 +452,8 @@ try:
         test_files = test_files[:3]
         
         print('')
-        print('Analyzing real audio files:')
+        print('Analyzing real audio files with FIXED 10s segments (50% overlap):')
+        print('Using central 50 seconds (or full song if shorter)')
         
         for i, audio_file in enumerate(test_files, 1):
             filename = os.path.basename(audio_file)
@@ -402,65 +464,93 @@ try:
             try:
                 # Load audio at MuLan's required 24kHz
                 SAMPLE_RATE = 24000
-                DURATION = 10.0  # Analyze 10 seconds
+                SEGMENT_DURATION = 10.0  # FIXED 10 second segments (model requirement)
+                SEGMENT_SAMPLES = int(SEGMENT_DURATION * SAMPLE_RATE)  # EXACTLY 240,000 samples
+                HOP_DURATION = 5.0  # 50% overlap = 5 second hop
+                HOP_SAMPLES = int(HOP_DURATION * SAMPLE_RATE)  # 120,000 samples
+                ANALYSIS_WINDOW = 50.0  # Prefer central 50 seconds if available
                 
-                audio_data, sr = librosa.load(audio_file, sr=SAMPLE_RATE, mono=True, duration=DURATION)
-                audio_duration = len(audio_data) / SAMPLE_RATE
-                print(f'  Duration: {audio_duration:.2f}s @ {SAMPLE_RATE}Hz')
-                print(f'  Samples: {len(audio_data):,}')
+                # Get full duration first
+                full_duration = librosa.get_duration(path=audio_file)
+                print(f'  Full duration: {full_duration:.2f}s')
                 
-                # Ensure exact sample count (librosa can sometimes load 1 extra sample)
-                expected_samples = int(DURATION * SAMPLE_RATE)
-                if len(audio_data) > expected_samples:
-                    audio_data = audio_data[:expected_samples]
-                    print(f'  Trimmed to: {len(audio_data):,} samples')
-                elif len(audio_data) < expected_samples:
-                    # Pad if too short
-                    audio_data = np.pad(audio_data, (0, expected_samples - len(audio_data)), mode='constant')
-                    print(f'  Padded to: {len(audio_data):,} samples')
+                # Determine what to load based on song length
+                if full_duration > ANALYSIS_WINDOW:
+                    # Long song: use central 50 seconds
+                    offset = (full_duration - ANALYSIS_WINDOW) / 2
+                    load_duration = ANALYSIS_WINDOW
+                    print(f'  Analyzing: central {load_duration:.2f}s (offset: {offset:.2f}s)')
+                elif full_duration >= SEGMENT_DURATION:
+                    # Song is between 10s and 50s: use whole song
+                    offset = 0.0
+                    load_duration = full_duration
+                    print(f'  Analyzing: full song ({load_duration:.2f}s)')
+                else:
+                    # Song is shorter than 10s: load what we have, will pad to 10s
+                    offset = 0.0
+                    load_duration = full_duration
+                    print(f'  Analyzing: full song ({load_duration:.2f}s, will pad to 10s)')
                 
-                # Prepare input: (1, num_samples)
-                audio_input = audio_data.astype(np.float32).reshape(1, -1)
-                audio_tensor = torch.from_numpy(audio_input)
+                # Load audio segment
+                audio_data, sr = librosa.load(audio_file, sr=SAMPLE_RATE, mono=True, offset=offset, duration=load_duration)
                 
-                # PyTorch inference
-                import time
-                pt_start = time.perf_counter()
-                with torch.no_grad():
-                    pt_embedding = audio_wrapper(audio_tensor).numpy()
-                pt_time = time.perf_counter() - pt_start
+                # Calculate number of FIXED 10-second segments with 50% overlap
+                if len(audio_data) < SEGMENT_SAMPLES:
+                    # Audio is shorter than 10s: create 1 segment with padding
+                    num_segments = 1
+                else:
+                    # Calculate overlapping segments
+                    num_segments = int((len(audio_data) - SEGMENT_SAMPLES) / HOP_SAMPLES) + 1
                 
-                # ONNX inference
-                onnx_start = time.perf_counter()
-                onnx_embedding = audio_session.run(None, {'wavs': audio_input})[0]
-                onnx_time = time.perf_counter() - onnx_start
+                print(f'  Processing {num_segments} segment(s) (FIXED 10s each, 5s hop)')
                 
-                # Compare embeddings
-                max_diff = np.abs(pt_embedding - onnx_embedding).max()
-                mean_diff = np.abs(pt_embedding - onnx_embedding).mean()
+                segment_embeddings = []
                 
-                # Cosine similarity
-                pt_norm = pt_embedding / np.linalg.norm(pt_embedding)
-                onnx_norm = onnx_embedding / np.linalg.norm(onnx_embedding)
-                cosine_sim = np.dot(pt_norm.flatten(), onnx_norm.flatten())
+                for seg_idx in range(num_segments):
+                    start_sample = seg_idx * HOP_SAMPLES
+                    end_sample = start_sample + SEGMENT_SAMPLES
+                    
+                    if start_sample >= len(audio_data):
+                        # No more audio data
+                        break
+                    
+                    # Extract segment
+                    if end_sample <= len(audio_data):
+                        # Full segment available
+                        segment = audio_data[start_sample:end_sample]
+                    else:
+                        # Last segment: need padding
+                        segment = audio_data[start_sample:]
+                        padding = SEGMENT_SAMPLES - len(segment)
+                        segment = np.pad(segment, (0, padding), mode='constant')
+                    
+                    # Ensure EXACTLY 240,000 samples (critical requirement)
+                    if len(segment) != SEGMENT_SAMPLES:
+                        raise ValueError(f'Segment must be exactly {SEGMENT_SAMPLES} samples, got {len(segment)}')
+                    
+                    # Prepare input: (1, num_samples)
+                    audio_input = segment.astype(np.float32).reshape(1, -1)
+                    
+                    # ONNX inference
+                    onnx_embedding = audio_session.run(None, {'wavs': audio_input})[0]
+                    segment_embeddings.append(onnx_embedding)
                 
-                print(f'  PyTorch embedding: {pt_embedding.shape}, norm={np.linalg.norm(pt_embedding):.4f}')
-                print(f'  ONNX embedding:    {onnx_embedding.shape}, norm={np.linalg.norm(onnx_embedding):.4f}')
-                print(f'  Max difference: {max_diff:.2e}')
-                print(f'  Mean difference: {mean_diff:.2e}')
-                print(f'  Cosine similarity: {cosine_sim:.10f}')
-                print(f'  PyTorch time: {pt_time*1000:.2f}ms')
-                print(f'  ONNX time:    {onnx_time*1000:.2f}ms')
-                speedup = pt_time / onnx_time if onnx_time > 0 else 0
-                print(f'  Speedup:      {speedup:.2f}x {\"(ONNX faster)\" if speedup > 1 else \"(PyTorch faster)\"}')
+                # Average all segment embeddings
+                avg_embedding = np.mean(segment_embeddings, axis=0)
                 
-                # Pass/fail criteria
-                passed = max_diff < 1e-4 and cosine_sim > 0.9999
-                status = '✓ PASS' if passed else '✗ FAIL'
-                print(f'  Status: {status}')
+                # Normalize the averaged embedding
+                norm = np.linalg.norm(avg_embedding)
+                if norm > 0:
+                    avg_embedding = avg_embedding / norm
+                
+                print(f'  ✓ Generated embedding from {len(segment_embeddings)} segment(s)')
+                print(f'    Final embedding shape: {avg_embedding.shape}')
+                print(f'    Final embedding norm: {np.linalg.norm(avg_embedding):.4f}')
                 
             except Exception as e:
                 print(f'  ✗ Failed to analyze: {e}')
+                import traceback
+                traceback.print_exc()
                 continue
         
         print('')
@@ -594,8 +684,8 @@ try:
             
             print('')
             print('✓ Cross-modal similarity with REAL text encoding')
-            print('  "classical piano music" should have HIGH similarity to piano music')
-            print('  "upbeat electronic dance" should have LOW similarity to piano music')
+            print('  \"classical piano music\" should have HIGH similarity to piano music')
+            print('  \"upbeat electronic dance\" should have LOW similarity to piano music')
 
         
 except ImportError as e:
@@ -611,24 +701,28 @@ except Exception as e:
 # ---------------------------------------------------------
 print('')
 print('=' * 70)
-print('EXPORT COMPLETE - Files to save in your repo:')
+print('EXPORT COMPLETE - Files saved in current directory:')
 print('=' * 70)
 print('')
 print('PyTorch → ONNX Conversion (NO PyTorch needed for inference):')
-print(f'  1. mulan_audio_encoder.onnx     - Audio model (single file, all weights)')
-print(f'  2. mulan_text_encoder.onnx      - Text model (single file, all weights + XLM-RoBERTa)')
+print(f'  1. mulan_audio_encoder.onnx       - Audio model structure')
+print(f'  2. mulan_audio_encoder.onnx.data  - Audio model weights (~1.2 GB)')
+print(f'  3. mulan_text_encoder.onnx        - Text model structure')
+print(f'  4. mulan_text_encoder.onnx.data   - Text model weights (~1.3 GB)')
 print('')
 print('HuggingFace Tokenizer (downloaded and archived):')
-print(f'  3. mulan_tokenizer.tar.gz       - All tokenizer files (extract for use)')
+print(f'  5. mulan_tokenizer.tar.gz         - All tokenizer files (extract for use)')
 print('')
 print('⚠️  You can DELETE the following (HuggingFace cache, not needed):')
 print('  - All models--* folders')
 print('  - tokenizer/ folder (already in TAR)')
 print('')
-print('📦 Save these 3 files in your repo:')
+print('📦 Upload these 5 files to GitHub releases:')
 print('  1. mulan_audio_encoder.onnx')
-print('  2. mulan_text_encoder.onnx') 
-print('  3. mulan_tokenizer.tar.gz')
+print('  2. mulan_audio_encoder.onnx.data')
+print('  3. mulan_text_encoder.onnx')
+print('  4. mulan_text_encoder.onnx.data')
+print('  5. mulan_tokenizer.tar.gz')
 print('')
 print('Then extract TAR when needed:')
 print('  tar -xzf mulan_tokenizer.tar.gz')

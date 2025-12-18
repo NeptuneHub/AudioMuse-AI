@@ -19,7 +19,7 @@ import librosa
 import onnxruntime as ort
 import config
 from typing import Tuple, Optional
-from tokenizers import Tokenizer
+from transformers import AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +41,8 @@ def _load_mulan_models():
             raise FileNotFoundError(f"Audio model not found: {config.AUDIO_MODEL_PATH}")
         if not os.path.exists(config.TEXT_MODEL_PATH):
             raise FileNotFoundError(f"Text model not found: {config.TEXT_MODEL_PATH}")
-        if not os.path.exists(config.TOKENIZER_PATH):
-            raise FileNotFoundError(f"Tokenizer not found: {config.TOKENIZER_PATH}")
+        if not os.path.exists(config.MULAN_MODEL_DIR):
+            raise FileNotFoundError(f"Tokenizer directory not found: {config.MULAN_MODEL_DIR}")
         
         # Configure ONNX Runtime session options
         sess_options = ort.SessionOptions()
@@ -74,13 +74,9 @@ def _load_mulan_models():
             providers=providers
         )
         
-        # Load tokenizer (XLM-RoBERTa from MuLan training)
-        logger.info(f"Loading tokenizer: {config.TOKENIZER_PATH}")
-        _tokenizer = Tokenizer.from_file(config.TOKENIZER_PATH)
-        
-        # Set padding/truncation for tokenizer
-        _tokenizer.enable_padding(pad_id=1, pad_token="<pad>", length=128)
-        _tokenizer.enable_truncation(max_length=128)
+        # Load tokenizer from extracted directory (uses transformers for compatibility)
+        logger.info(f"Loading tokenizer from: {config.MULAN_MODEL_DIR}")
+        _tokenizer = AutoTokenizer.from_pretrained(config.MULAN_MODEL_DIR)
         
         logger.info("✓ MuQ-MuLan ONNX models loaded successfully")
         return True
@@ -171,49 +167,90 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         
         # Load audio at MuQ's required sample rate (24kHz)
         SAMPLE_RATE = 24000
-        ANALYSIS_DURATION = 30.0  # Analyze 30 seconds for speed
+        SEGMENT_DURATION = 10.0  # FIXED 10 second segments (model requirement)
+        SEGMENT_SAMPLES = int(SEGMENT_DURATION * SAMPLE_RATE)  # EXACTLY 240,000 samples
+        HOP_DURATION = 5.0  # 50% overlap = 5 second hop
+        HOP_SAMPLES = int(HOP_DURATION * SAMPLE_RATE)  # 120,000 samples
+        ANALYSIS_WINDOW = 50.0  # Prefer central 50 seconds if available
         
-        # Optimization: Load only a chunk (e.g. 30s) instead of full file
-        # We try to load from the middle if possible to get representative audio
-        try:
-            # Fast duration check
-            full_duration = librosa.get_duration(path=audio_path)
+        # Get full duration first
+        full_duration = librosa.get_duration(path=audio_path)
+        
+        # Determine what to load based on song length
+        if full_duration > ANALYSIS_WINDOW:
+            # Long song: use central 50 seconds
+            offset = (full_duration - ANALYSIS_WINDOW) / 2
+            load_duration = ANALYSIS_WINDOW
+        elif full_duration >= SEGMENT_DURATION:
+            # Song is between 10s and 50s: use whole song
+            offset = 0.0
+            load_duration = full_duration
+        else:
+            # Song is shorter than 10s: load what we have, will pad to 10s
+            offset = 0.0
+            load_duration = full_duration
+        
+        # Load audio from the selected portion
+        audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True, offset=offset, duration=load_duration)
+        
+        # Calculate number of 10-second segments with 50% overlap
+        if len(audio_data) < SEGMENT_SAMPLES:
+            # Audio is shorter than 10s: create 1 segment with padding
+            num_segments = 1
+        else:
+            # Calculate overlapping segments: floor((length - segment_size) / hop_size) + 1
+            num_segments = int((len(audio_data) - SEGMENT_SAMPLES) / HOP_SAMPLES) + 1
+        
+        segment_embeddings = []
+        
+        # Process each FIXED 10-second segment
+        for seg_idx in range(num_segments):
+            start_sample = seg_idx * HOP_SAMPLES
+            end_sample = start_sample + SEGMENT_SAMPLES
             
-            if full_duration > ANALYSIS_DURATION:
-                # Start from 20% into the track to skip intro, but ensure we have enough audio
-                offset = min(full_duration * 0.2, full_duration - ANALYSIS_DURATION)
-                load_duration = ANALYSIS_DURATION
+            if start_sample >= len(audio_data):
+                # No more audio data
+                break
+            
+            # Extract segment
+            if end_sample <= len(audio_data):
+                # Full segment available
+                segment = audio_data[start_sample:end_sample]
             else:
-                offset = 0.0
-                load_duration = None # Load all
-                
-            audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True, offset=offset, duration=load_duration)
-        except Exception:
-            # Fallback: just load the first 30s
-            audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True, duration=ANALYSIS_DURATION)
+                # Last segment: need padding
+                segment = audio_data[start_sample:]
+                padding = SEGMENT_SAMPLES - len(segment)
+                segment = np.pad(segment, (0, padding), mode='constant')
+            
+            # Ensure EXACTLY 240,000 samples (critical requirement)
+            assert len(segment) == SEGMENT_SAMPLES, f"Segment must be exactly {SEGMENT_SAMPLES} samples, got {len(segment)}"
+            
+            # Prepare input: (batch_size, samples) -> (1, 240000)
+            audio_input = segment.astype(np.float32).reshape(1, -1)
+            
+            # Run ONNX inference
+            audio_embedding = audio_session.run(
+                ['audio_embedding'],
+                {'wavs': audio_input}
+            )[0]
+            
+            # Flatten to 1D if needed
+            if audio_embedding.ndim > 1:
+                audio_embedding = audio_embedding.flatten()
+            
+            segment_embeddings.append(audio_embedding)
         
-        duration_sec = len(audio_data) / SAMPLE_RATE
+        # Average all segment embeddings
+        final_embedding = np.mean(segment_embeddings, axis=0)
         
-        # Prepare input: (batch_size, samples) -> (1, num_samples)
-        # Note: MuLan audio encoder expects variable length input, but we ensure reasonable length
-        audio_input = audio_data.astype(np.float32).reshape(1, -1)
-        
-        # Run ONNX inference
-        audio_embedding = audio_session.run(
-            ['audio_embedding'],
-            {'wavs': audio_input}
-        )[0]
-        
-        # Flatten to 1D if needed
-        if audio_embedding.ndim > 1:
-            audio_embedding = audio_embedding.flatten()
-        
-        # Normalize embedding (should already be normalized by model, but ensure it)
-        norm = np.linalg.norm(audio_embedding)
+        # Normalize embedding
+        norm = np.linalg.norm(final_embedding)
         if norm > 0:
-            audio_embedding = audio_embedding / norm
+            final_embedding = final_embedding / norm
         
-        return audio_embedding, duration_sec, 1  # Single pass, no segments
+        duration_sec = load_duration
+        
+        return final_embedding, duration_sec, len(segment_embeddings)
         
     except Exception as e:
         logger.error(f"MuLan analysis failed for {audio_path}: {e}")
@@ -241,9 +278,16 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
         _, text_session, tokenizer = get_mulan_sessions()
         
         # Tokenize input text (XLM-RoBERTa tokenizer from MuLan training)
-        encoding = tokenizer.encode(query_text)
-        input_ids = np.array([encoding.ids], dtype=np.int64)
-        attention_mask = np.array([encoding.attention_mask], dtype=np.int64)
+        # AutoTokenizer returns dict with input_ids and attention_mask
+        encoding = tokenizer(
+            query_text,
+            padding='max_length',
+            truncation=True,
+            max_length=128,
+            return_tensors='np'
+        )
+        input_ids = encoding['input_ids'].astype(np.int64)
+        attention_mask = encoding['attention_mask'].astype(np.int64)
         
         # Run ONNX inference
         text_embedding = text_session.run(
@@ -287,22 +331,16 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
     try:
         _, text_session, tokenizer = get_mulan_sessions()
         
-        # Tokenize all texts
-        encodings = [tokenizer.encode(text) for text in query_texts]
-        
-        # Prepare batch inputs (pad to same length)
-        max_len = max(len(enc.ids) for enc in encodings)
-        input_ids_batch = []
-        attention_mask_batch = []
-        
-        for enc in encodings:
-            ids = enc.ids + [1] * (max_len - len(enc.ids))  # Pad with pad_token_id=1
-            mask = enc.attention_mask + [0] * (max_len - len(enc.attention_mask))
-            input_ids_batch.append(ids)
-            attention_mask_batch.append(mask)
-        
-        input_ids = np.array(input_ids_batch, dtype=np.int64)
-        attention_mask = np.array(attention_mask_batch, dtype=np.int64)
+        # Tokenize all texts (AutoTokenizer handles batching automatically)
+        encoding = tokenizer(
+            query_texts,
+            padding='max_length',
+            truncation=True,
+            max_length=128,
+            return_tensors='np'
+        )
+        input_ids = encoding['input_ids'].astype(np.int64)
+        attention_mask = encoding['attention_mask'].astype(np.int64)
         
         # Run ONNX inference
         text_embeddings = text_session.run(
