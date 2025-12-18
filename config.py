@@ -252,7 +252,7 @@ PREDICTION_MODEL_PATH = "/app/model/msd-msd-musicnn-1.onnx"
 EMBEDDING_DIMENSION = 200
 
 # --- CLAP Model Constants (for text search) ---
-CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
+CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "false").lower() == "true"
 CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", "/app/model/clap_model.onnx")
 CLAP_EMBEDDING_DIMENSION = 512
 # CPU threading for CLAP analysis:

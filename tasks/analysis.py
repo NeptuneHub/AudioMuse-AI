@@ -659,7 +659,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             if mulan_embedding is not None:
                                 from app_helper import save_mulan_embedding
                                 save_mulan_embedding(item['Id'], mulan_embedding)
-                                logger.info(f"  - MuLan embedding saved (128-dim, duration: {duration:.1f}s)")
+                                logger.info(f"  - MuLan embedding saved (512-dim, duration: {duration:.1f}s)")
                                 track_processed = True
                         except Exception as e:
                             logger.warning(f"  - MuLan analysis failed: {e}")

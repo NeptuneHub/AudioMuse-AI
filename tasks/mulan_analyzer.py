@@ -54,16 +54,47 @@ def _get_device():
 
 def _load_mulan_model():
     """Load MuQ-MuLan PyTorch model from local HuggingFace cache."""
-    from muq import MuQMuLan
+    import warnings
+    
+    # Suppress warnings during import
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=FutureWarning)
+        from muq import MuQMuLan
     
     logger.info(f"Loading MuQ-MuLan model from local cache ({config.MULAN_MODEL_NAME})...")
     
     try:
         device = _get_device()
         
-        # Load from cached model (offline mode enabled in Docker)
-        # MuQMuLan.from_pretrained will use local cache when HF_HUB_OFFLINE=1
-        model = MuQMuLan.from_pretrained(config.MULAN_MODEL_NAME)
+        # Force offline mode to prevent re-downloading/checking
+        # We save the previous state to restore it later
+        prev_offline = os.environ.get('HF_HUB_OFFLINE')
+        os.environ['HF_HUB_OFFLINE'] = '1'
+        
+        try:
+            # Load from cached model
+            # Suppress warnings that look like downloads or errors
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=FutureWarning)
+                warnings.filterwarnings("ignore", message=".*resume_download.*")
+                warnings.filterwarnings("ignore", message=".*weight_norm.*")
+                warnings.filterwarnings("ignore", message=".*register_pytree_node.*")
+                warnings.filterwarnings("ignore", message=".*trust_remote_code.*")
+                
+                model = MuQMuLan.from_pretrained(config.MULAN_MODEL_NAME)
+                logger.info("✓ Model loaded purely from local cache (Offline mode verified)")
+        except Exception as e:
+            # If offline load fails, try online (first run)
+            logger.info(f"Model not found in cache ({e}), attempting download...")
+            os.environ['HF_HUB_OFFLINE'] = '0'
+            model = MuQMuLan.from_pretrained(config.MULAN_MODEL_NAME)
+        finally:
+            # Restore environment variable
+            if prev_offline is None:
+                del os.environ['HF_HUB_OFFLINE']
+            else:
+                os.environ['HF_HUB_OFFLINE'] = prev_offline
+            
         model = model.to(device).eval()
         
         logger.info(f"✓ MuQ-MuLan model loaded successfully on {device}")
@@ -166,9 +197,26 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         
         # Load audio at MuQ's required sample rate (24kHz)
         SAMPLE_RATE = 24000
+        ANALYSIS_DURATION = 30.0  # Analyze 30 seconds for speed
         
-        # Load and preprocess audio
-        audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True)
+        # Optimization: Load only a chunk (e.g. 30s) instead of full file
+        # We try to load from the middle if possible to get representative audio
+        try:
+            # Fast duration check
+            full_duration = librosa.get_duration(path=audio_path)
+            
+            if full_duration > ANALYSIS_DURATION:
+                # Start from 20% into the track to skip intro, but ensure we have enough audio
+                offset = min(full_duration * 0.2, full_duration - ANALYSIS_DURATION)
+                load_duration = ANALYSIS_DURATION
+            else:
+                offset = 0.0
+                load_duration = None # Load all
+                
+            audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True, offset=offset, duration=load_duration)
+        except Exception:
+            # Fallback: just load the first 30s
+            audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True, duration=ANALYSIS_DURATION)
         
         duration_sec = len(audio_data) / SAMPLE_RATE
         
