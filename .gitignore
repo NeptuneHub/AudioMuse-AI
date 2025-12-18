@@ -34,3 +34,6 @@ htmlcov/
 # Large model files in query folder
 /query/*.pt
 /query/*.onnx
+
+# Exported MuLan models
+mulan_model_export/
