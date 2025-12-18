@@ -1,13 +1,13 @@
 """
 MuLan (MuQ) Audio Analyzer for Text-Based Music Search
-Uses MuQ-MuLan model to generate embeddings for audio files
+Uses MuQ-MuLan ONNX models to generate embeddings for audio files
 and text queries for natural language music search.
 
 MuQ uses:
-- MERT for audio encoding (music understanding transformer)
-- T5 for text encoding (text-to-text transfer transformer)
+- Audio encoder: Processes raw audio at 24kHz
+- Text encoder: XLM-RoBERTa based text understanding
 
-Model automatically downloaded from HuggingFace on first use.
+Models loaded from pre-converted ONNX files (no PyTorch dependency).
 """
 
 import os
@@ -16,168 +16,143 @@ import logging
 import traceback
 import numpy as np
 import librosa
-import torch
+import onnxruntime as ort
 import config
 from typing import Tuple, Optional
-
-# Silence transformers warning
-os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
-
-# Configure PyTorch threading BEFORE any operations (must be at module import time)
-num_threads = os.cpu_count() or 4
-torch.set_num_threads(num_threads)
-torch.set_num_interop_threads(num_threads)
+from tokenizers import Tokenizer
 
 logger = logging.getLogger(__name__)
 
-# Global MuQ model (lazy loaded)
-_mulan_model = None
-_device = None
+# Global MuLan ONNX sessions (lazy loaded)
+_audio_session = None
+_text_session = None
+_tokenizer = None
 
 
-def _get_device():
-    """Determine device (GPU/CPU) for PyTorch inference."""
-    global _device
+def _load_mulan_models():
+    """Load MuQ-MuLan ONNX models and tokenizer from local files."""
+    global _audio_session, _text_session, _tokenizer
     
-    if _device is not None:
-        return _device
-    
-    if torch.cuda.is_available():
-        _device = torch.device('cuda')
-        logger.info(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
-    else:
-        _device = torch.device('cpu')
-        logger.info("Using CPU device")
-    
-    return _device
-
-
-def _load_mulan_model():
-    """Load MuQ-MuLan PyTorch model from local HuggingFace cache."""
-    import warnings
-    
-    # Suppress warnings during import
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=FutureWarning)
-        from muq import MuQMuLan
-    
-    logger.info(f"Loading MuQ-MuLan model from local cache ({config.MULAN_MODEL_NAME})...")
+    logger.info("Loading MuQ-MuLan ONNX models...")
     
     try:
-        device = _get_device()
+        # Check if model files exist
+        if not os.path.exists(config.AUDIO_MODEL_PATH):
+            raise FileNotFoundError(f"Audio model not found: {config.AUDIO_MODEL_PATH}")
+        if not os.path.exists(config.TEXT_MODEL_PATH):
+            raise FileNotFoundError(f"Text model not found: {config.TEXT_MODEL_PATH}")
+        if not os.path.exists(config.TOKENIZER_PATH):
+            raise FileNotFoundError(f"Tokenizer not found: {config.TOKENIZER_PATH}")
         
-        # Force offline mode to prevent re-downloading/checking
-        # We save the previous state to restore it later
-        prev_offline = os.environ.get('HF_HUB_OFFLINE')
-        os.environ['HF_HUB_OFFLINE'] = '1'
+        # Configure ONNX Runtime session options
+        sess_options = ort.SessionOptions()
+        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess_options.intra_op_num_threads = os.cpu_count() or 4
+        sess_options.inter_op_num_threads = os.cpu_count() or 4
         
-        try:
-            # Load from cached model
-            # Suppress warnings that look like downloads or errors
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=FutureWarning)
-                warnings.filterwarnings("ignore", message=".*resume_download.*")
-                warnings.filterwarnings("ignore", message=".*weight_norm.*")
-                warnings.filterwarnings("ignore", message=".*register_pytree_node.*")
-                warnings.filterwarnings("ignore", message=".*trust_remote_code.*")
-                
-                model = MuQMuLan.from_pretrained(config.MULAN_MODEL_NAME)
-                logger.info("✓ Model loaded purely from local cache (Offline mode verified)")
-        except Exception as e:
-            # If offline load fails, try online (first run)
-            logger.info(f"Model not found in cache ({e}), attempting download...")
-            os.environ['HF_HUB_OFFLINE'] = '0'
-            model = MuQMuLan.from_pretrained(config.MULAN_MODEL_NAME)
-        finally:
-            # Restore environment variable
-            if prev_offline is None:
-                del os.environ['HF_HUB_OFFLINE']
-            else:
-                os.environ['HF_HUB_OFFLINE'] = prev_offline
-            
-        model = model.to(device).eval()
+        # Select execution provider (CPU or CUDA)
+        providers = ['CPUExecutionProvider']
+        if ort.get_available_providers() and 'CUDAExecutionProvider' in ort.get_available_providers():
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+            logger.info("CUDA available - using GPU acceleration")
+        else:
+            logger.info("Using CPU execution")
         
-        logger.info(f"✓ MuQ-MuLan model loaded successfully on {device}")
+        # Load audio encoder (with external data file)
+        logger.info(f"Loading audio encoder: {config.AUDIO_MODEL_PATH}")
+        _audio_session = ort.InferenceSession(
+            config.AUDIO_MODEL_PATH,
+            sess_options=sess_options,
+            providers=providers
+        )
         
-        gc.collect()
-        if device.type == 'cuda':
-            torch.cuda.empty_cache()
+        # Load text encoder (with external data file)  
+        logger.info(f"Loading text encoder: {config.TEXT_MODEL_PATH}")
+        _text_session = ort.InferenceSession(
+            config.TEXT_MODEL_PATH,
+            sess_options=sess_options,
+            providers=providers
+        )
         
-        return model
+        # Load tokenizer (XLM-RoBERTa from MuLan training)
+        logger.info(f"Loading tokenizer: {config.TOKENIZER_PATH}")
+        _tokenizer = Tokenizer.from_file(config.TOKENIZER_PATH)
+        
+        # Set padding/truncation for tokenizer
+        _tokenizer.enable_padding(pad_id=1, pad_token="<pad>", length=128)
+        _tokenizer.enable_truncation(max_length=128)
+        
+        logger.info("✓ MuQ-MuLan ONNX models loaded successfully")
+        return True
         
     except Exception as e:
-        logger.error(f"Failed to load MuQ-MuLan model: {e}")
-        import traceback
+        logger.error(f"Failed to load MuQ-MuLan ONNX models: {e}")
         traceback.print_exc()
         raise
 
 
 def initialize_mulan_model():
-    """Initialize MuLan PyTorch model if enabled and not already loaded."""
-    global _mulan_model
+    """Initialize MuLan ONNX models if enabled and not already loaded."""
+    global _audio_session, _text_session, _tokenizer
     
     if not config.MULAN_ENABLED:
         logger.info("MuLan is disabled in config. Skipping model initialization.")
         return False
     
-    if _mulan_model is not None:
-        logger.debug("MuLan model already initialized.")
+    if _audio_session is not None and _text_session is not None and _tokenizer is not None:
+        logger.debug("MuLan models already initialized.")
         return True
     
     try:
-        _mulan_model = _load_mulan_model()
-        logger.info("MuLan model initialized successfully.")
+        _load_mulan_models()
+        logger.info("MuLan ONNX models initialized successfully.")
         return True
     except Exception as e:
-        logger.error(f"Failed to initialize MuLan model: {e}")
-        import traceback
+        logger.error(f"Failed to initialize MuLan models: {e}")
         traceback.print_exc()
         return False
 
 
 def unload_mulan_model():
-    """Unload MuLan model from memory to free RAM."""
-    global _mulan_model, _device
+    """Unload MuLan models from memory to free RAM."""
+    global _audio_session, _text_session, _tokenizer
     
-    if _mulan_model is None:
+    if _audio_session is None and _text_session is None and _tokenizer is None:
         return False
     
     try:
-        # Clear model
-        _mulan_model = None
+        # Clear sessions
+        _audio_session = None
+        _text_session = None
+        _tokenizer = None
         
         # Force garbage collection
-        import gc
         gc.collect()
         
-        # Clear CUDA cache if using GPU
-        if _device is not None and _device.type == 'cuda':
-            torch.cuda.empty_cache()
-        
-        logger.info("✓ MuLan model unloaded from memory")
+        logger.info("✓ MuLan models unloaded from memory")
         return True
     except Exception as e:
-        logger.error(f"Error unloading MuLan model: {e}")
+        logger.error(f"Error unloading MuLan models: {e}")
         return False
 
 
 def is_mulan_model_loaded():
-    """Check if MuLan model is currently loaded in memory."""
-    return _mulan_model is not None
+    """Check if MuLan models are currently loaded in memory."""
+    return _audio_session is not None and _text_session is not None and _tokenizer is not None
 
 
-def get_mulan_model():
-    """Get the global MuLan model, initializing if needed (lazy loading)."""
-    if _mulan_model is None:
-        logger.info("Lazy-loading MuLan model on first use...")
+def get_mulan_sessions():
+    """Get the global MuLan sessions, initializing if needed (lazy loading)."""
+    if _audio_session is None or _text_session is None or _tokenizer is None:
+        logger.info("Lazy-loading MuLan models on first use...")
         if not initialize_mulan_model():
-            raise RuntimeError("MuLan model could not be initialized")
-    return _mulan_model
+            raise RuntimeError("MuLan models could not be initialized")
+    return _audio_session, _text_session, _tokenizer
 
 
 def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, int]:
     """
-    Analyze an audio file and return MuLan embedding using MuQ PyTorch model.
+    Analyze an audio file and return MuLan embedding using ONNX model.
     
     Args:
         audio_path: Path to audio file
@@ -192,8 +167,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         return None, 0, 0
     
     try:
-        model = get_mulan_model()
-        device = _get_device()
+        audio_session, _, _ = get_mulan_sessions()
         
         # Load audio at MuQ's required sample rate (24kHz)
         SAMPLE_RATE = 24000
@@ -220,46 +194,39 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         
         duration_sec = len(audio_data) / SAMPLE_RATE
         
-        # Convert to tensor (fp32 recommended by MuQ to avoid NaN issues)
-        wavs = torch.tensor(audio_data).unsqueeze(0).to(device)
+        # Prepare input: (batch_size, samples) -> (1, num_samples)
+        # Note: MuLan audio encoder expects variable length input, but we ensure reasonable length
+        audio_input = audio_data.astype(np.float32).reshape(1, -1)
         
-        # Extract music embedding using MuQ-MuLan
-        with torch.no_grad():
-            audio_embeds = model(wavs=wavs)
-        
-        # Convert to numpy array
-        audio_embedding = audio_embeds.cpu().numpy()
+        # Run ONNX inference
+        audio_embedding = audio_session.run(
+            ['audio_embedding'],
+            {'wavs': audio_input}
+        )[0]
         
         # Flatten to 1D if needed
         if audio_embedding.ndim > 1:
             audio_embedding = audio_embedding.flatten()
         
-        # Normalize embedding
-        audio_embedding = audio_embedding / np.linalg.norm(audio_embedding)
-        
-        # Cleanup
-        del wavs
-        gc.collect()
-        if device.type == 'cuda':
-            torch.cuda.empty_cache()
+        # Normalize embedding (should already be normalized by model, but ensure it)
+        norm = np.linalg.norm(audio_embedding)
+        if norm > 0:
+            audio_embedding = audio_embedding / norm
         
         return audio_embedding, duration_sec, 1  # Single pass, no segments
         
     except Exception as e:
         logger.error(f"MuLan analysis failed for {audio_path}: {e}")
-        import traceback
         traceback.print_exc()
         return None, 0, 0
     finally:
         # Force cleanup
         gc.collect()
-        if _device is not None and _device.type == 'cuda':
-            torch.cuda.empty_cache()
 
 
 def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
     """
-    Generate MuLan text embedding from natural language query using MuQ PyTorch model.
+    Generate MuLan text embedding from natural language query using ONNX model.
     
     Args:
         query_text: Natural language query (English or Chinese supported)
@@ -271,33 +238,42 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
         return None
     
     try:
-        model = get_mulan_model()
-        device = _get_device()
+        _, text_session, tokenizer = get_mulan_sessions()
         
-        # Extract text embeddings using MuQ-MuLan
-        with torch.no_grad():
-            text_embeds = model(texts=[query_text])
+        # Tokenize input text (XLM-RoBERTa tokenizer from MuLan training)
+        encoding = tokenizer.encode(query_text)
+        input_ids = np.array([encoding.ids], dtype=np.int64)
+        attention_mask = np.array([encoding.attention_mask], dtype=np.int64)
         
-        # Convert to numpy and flatten
-        text_embedding = text_embeds.cpu().numpy()
+        # Run ONNX inference
+        text_embedding = text_session.run(
+            ['text_embedding'],
+            {
+                'input_ids': input_ids,
+                'attention_mask': attention_mask
+            }
+        )[0]
+        
+        # Flatten to 1D
         if text_embedding.ndim > 1:
             text_embedding = text_embedding.flatten()
         
-        # Normalize embedding
-        text_embedding = text_embedding / np.linalg.norm(text_embedding)
+        # Normalize embedding (should already be normalized by model, but ensure it)
+        norm = np.linalg.norm(text_embedding)
+        if norm > 0:
+            text_embedding = text_embedding / norm
         
         return text_embedding
         
     except Exception as e:
         logger.error(f"MuLan text embedding generation failed: {e}")
-        import traceback
         traceback.print_exc()
         return None
 
 
 def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
     """
-    Generate MuLan text embeddings for a batch of queries using MuQ PyTorch model.
+    Generate MuLan text embeddings for a batch of queries using ONNX model.
     
     Args:
         query_texts: List of natural language queries (English or Chinese supported)
@@ -309,24 +285,42 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
         return None
     
     try:
-        model = get_mulan_model()
-        device = _get_device()
+        _, text_session, tokenizer = get_mulan_sessions()
         
-        # Extract text embeddings using MuQ-MuLan (handles batch processing internally)
-        with torch.no_grad():
-            text_embeds = model(texts=query_texts)
-            
-            # Move to CPU and convert to numpy
-            text_embeddings = text_embeds.cpu().numpy()
+        # Tokenize all texts
+        encodings = [tokenizer.encode(text) for text in query_texts]
+        
+        # Prepare batch inputs (pad to same length)
+        max_len = max(len(enc.ids) for enc in encodings)
+        input_ids_batch = []
+        attention_mask_batch = []
+        
+        for enc in encodings:
+            ids = enc.ids + [1] * (max_len - len(enc.ids))  # Pad with pad_token_id=1
+            mask = enc.attention_mask + [0] * (max_len - len(enc.attention_mask))
+            input_ids_batch.append(ids)
+            attention_mask_batch.append(mask)
+        
+        input_ids = np.array(input_ids_batch, dtype=np.int64)
+        attention_mask = np.array(attention_mask_batch, dtype=np.int64)
+        
+        # Run ONNX inference
+        text_embeddings = text_session.run(
+            ['text_embedding'],
+            {
+                'input_ids': input_ids,
+                'attention_mask': attention_mask
+            }
+        )[0]
         
         # Normalize each embedding
         norms = np.linalg.norm(text_embeddings, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-12)  # Avoid division by zero
         text_embeddings = text_embeddings / norms
         
         return text_embeddings
         
     except Exception as e:
         logger.error(f"Failed to get batch text embeddings: {e}")
-        import traceback
         traceback.print_exc()
         return None

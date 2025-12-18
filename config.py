@@ -281,10 +281,14 @@ CLAP_TOP_QUERIES_COUNT = int(os.environ.get("CLAP_TOP_QUERIES_COUNT", "1000"))
 # Model auto-unloads after this period of inactivity to free ~500MB RAM
 CLAP_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("CLAP_TEXT_SEARCH_WARMUP_DURATION", "300"))
 
-# --- MuLan (MuQ) Model Constants (for text search with PyTorch) ---
+# --- MuLan (MuQ) Model Constants (for text search with ONNX Runtime) ---
 MULAN_ENABLED = os.environ.get("MULAN_ENABLED", "true").lower() == "true"
-# MuQ model name from HuggingFace (automatically downloaded on first use)
-MULAN_MODEL_NAME = os.environ.get("MULAN_MODEL_NAME", "OpenMuQ/MuQ-MuLan-large")
+# MuLan ONNX model directory and file paths
+MULAN_MODEL_DIR = os.environ.get("MULAN_MODEL_DIR", "/app/model/mulan")
+AUDIO_MODEL_PATH = os.path.join(MULAN_MODEL_DIR, "mulan_audio_encoder.onnx")
+TEXT_MODEL_PATH = os.path.join(MULAN_MODEL_DIR, "mulan_text_encoder.onnx")
+TOKENIZER_PATH = os.path.join(MULAN_MODEL_DIR, "tokenizer.json")
+# Note: .onnx.data files (external weights) are auto-loaded by ONNX Runtime from same directory
 MULAN_EMBEDDING_DIMENSION = int(os.environ.get("MULAN_EMBEDDING_DIMENSION", "512"))
 
 # Category weights for MuLan query generation (affects random query sampling probabilities)

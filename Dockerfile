@@ -181,49 +181,60 @@ RUN set -eux; \
     echo "✓ HuggingFace models extracted to $cache_dir"; \
     du -sh "$cache_dir"
 
-# Pre-download MuQ-MuLan model with ALL dependencies during build
-# Download using the muq library and perform actual inference to cache everything
+# Download MuQ-MuLan ONNX models from GitHub releases
+# These are pre-converted ONNX models (no PyTorch dependency)
+# Files: mulan_audio_encoder.onnx + .data, mulan_text_encoder.onnx + .data, mulan_tokenizer.tar.gz
 RUN set -eux; \
-    echo "Pre-downloading MuQ-MuLan model (this may take several minutes)..."; \
-    export HF_HOME=/app/.cache/huggingface; \
-    python3 << 'EOF'
-import os
-import torch
-import numpy as np
-os.environ['HF_HOME'] = '/app/.cache/huggingface'
-
-# Configure PyTorch threading before any imports
-torch.set_num_threads(4)
-torch.set_num_interop_threads(4)
-
-from muq import MuQMuLan
-
-try:
-    print('Downloading and testing MuQ-MuLan-large...')
-    model = MuQMuLan.from_pretrained('OpenMuQ/MuQ-MuLan-large')
-    model = model.eval()
-    
-    print('Testing text encoding (this will cache tokenizer)...')
-    # Force text encoding - this will download and cache xlm-roberta-base tokenizer
-    with torch.no_grad():
-        text_embeds = model(texts=["test music"])
-    print(f'✓ Text encoding works: {text_embeds.shape}')
-    
-    print('Testing audio encoding...')
-    # Test audio encoding
-    dummy_audio = torch.randn(1, 24000 * 5)  # 5 seconds at 24kHz
-    with torch.no_grad():
-        audio_embeds = model(wavs=dummy_audio)
-    print(f'✓ Audio encoding works: {audio_embeds.shape}')
-    
-    print(f'✓ All models cached successfully in: {os.environ["HF_HOME"]}')
-    del model
-except Exception as e:
-    print(f'ERROR: {e}')
-    import traceback
-    traceback.print_exc()
-    raise
-EOF
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+    mulan_dir="/app/model/mulan"; \
+    mkdir -p "$mulan_dir"; \
+    \
+    # List of files to download (onnx models + data files + tokenizer)
+    files=( \
+        "mulan_audio_encoder.onnx" \
+        "mulan_audio_encoder.onnx.data" \
+        "mulan_text_encoder.onnx" \
+        "mulan_text_encoder.onnx.data" \
+        "mulan_tokenizer.tar.gz" \
+    ); \
+    \
+    echo "Downloading MuQ-MuLan ONNX models (~2.5GB total)..."; \
+    for f in "${files[@]}"; do \
+        n=0; \
+        until [ "$n" -ge 5 ]; do \
+            if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+                --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+                -O "$mulan_dir/$f" "$base_url/$f"; then \
+                echo "✓ Downloaded: $f"; \
+                break; \
+            fi; \
+            n=$((n+1)); \
+            echo "Download attempt $n for $f failed — retrying in $((n*n))s"; \
+            sleep $((n*n)); \
+        done; \
+        if [ "$n" -ge 5 ]; then \
+            echo "ERROR: Failed to download $f after 5 attempts"; \
+            exit 1; \
+        fi; \
+    done; \
+    \
+    # Extract tokenizer files
+    echo "Extracting MuLan tokenizer..."; \
+    tar -xzf "$mulan_dir/mulan_tokenizer.tar.gz" -C "$mulan_dir"; \
+    rm "$mulan_dir/mulan_tokenizer.tar.gz"; \
+    \
+    # Verify all files exist
+    for f in mulan_audio_encoder.onnx mulan_audio_encoder.onnx.data \
+             mulan_text_encoder.onnx mulan_text_encoder.onnx.data \
+             tokenizer.json sentencepiece.bpe.model; do \
+        if [ ! -f "$mulan_dir/$f" ]; then \
+            echo "ERROR: Missing file: $f"; \
+            exit 1; \
+        fi; \
+    done; \
+    \
+    echo "✓ MuQ-MuLan ONNX models ready"; \
+    ls -lh "$mulan_dir"
 
 # ============================================================================
 # Stage 4: Runner - Final production image
