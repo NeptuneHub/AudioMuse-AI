@@ -35,5 +35,9 @@ htmlcov/
 /query/*.pt
 /query/*.onnx
 
+# CLAMP3 weight files (large model files)
+/CLAMP3/weights_*.pth
+/CLAMP3/*.pth
+
 # Exported MuLan models
 mulan_model_export/
