@@ -47,14 +47,15 @@ def _load_mulan_models():
         # Configure ONNX Runtime session options
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        # Use physical CPU cores (no hyperthreading) minus 1 to prevent resource exhaustion
-        # This leaves headroom for system processes and allows multiple workers to run concurrently
-        import psutil
-        physical_cores = psutil.cpu_count(logical=False) or 4
-        num_threads = max(1, physical_cores - 1)
-        sess_options.intra_op_num_threads = num_threads
-        sess_options.inter_op_num_threads = num_threads
-        logger.info(f"MuLan: Using {num_threads} threads (physical cores: {physical_cores})")
+        # Let ONNX Runtime auto-detect optimal threading settings
+        # Commenting out manual thread configuration to let ONNX decide based on system resources
+        # import psutil
+        # physical_cores = psutil.cpu_count(logical=False) or 4
+        # num_threads = max(1, physical_cores - 1)
+        # sess_options.intra_op_num_threads = num_threads
+        # sess_options.inter_op_num_threads = num_threads
+        # logger.info(f"MuLan: Using {num_threads} threads (physical cores: {physical_cores})")
+        logger.info("MuLan: Using ONNX auto-detected threading (optimal for current system)")
         
         # Select execution provider (CPU or CUDA)
         providers = ['CPUExecutionProvider']

@@ -42,17 +42,17 @@ def _load_onnx_model():
     sess_options.log_severity_level = 3  # 0=Verbose, 1=Info, 2=Warning, 3=Error, 4=Fatal
     
     # Threading configuration based on CLAP_PYTHON_MULTITHREADS:
-    # - False (default): Use ONNX internal threading (physical cores minus 1)
+    # - False (default): Let ONNX auto-detect optimal threading (recommended)
     # - True: Disable ONNX threading (set to 1), use Python ThreadPoolExecutor instead
     if not config.CLAP_PYTHON_MULTITHREADS:
-        # ONNX handles threading internally - use physical CPU cores (no hyperthreading) minus 1
-        # This leaves headroom for system processes and allows multiple workers to run concurrently
-        import psutil
-        physical_cores = psutil.cpu_count(logical=False) or 4
-        num_threads = max(1, physical_cores - 1)
-        sess_options.intra_op_num_threads = num_threads
-        sess_options.inter_op_num_threads = num_threads
-        logger.info(f"CLAP: Using ONNX internal threading ({num_threads} threads, physical cores: {physical_cores})")
+        # ONNX handles threading internally - let it auto-detect optimal settings
+        # Commenting out manual thread configuration to let ONNX Runtime decide
+        # import psutil
+        # physical_cores = psutil.cpu_count(logical=False) or 4
+        # num_threads = max(1, physical_cores - 1)
+        # sess_options.intra_op_num_threads = num_threads
+        # sess_options.inter_op_num_threads = num_threads
+        logger.info("CLAP: Using ONNX internal threading (auto-detect optimal settings)")
     else:
         # Python ThreadPoolExecutor will handle threading - disable ONNX threading
         sess_options.intra_op_num_threads = 1  # Single-threaded ONNX operations
