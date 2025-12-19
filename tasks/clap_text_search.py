@@ -222,7 +222,16 @@ def load_clap_cache_from_db():
 
 def refresh_clap_cache():
     """Force refresh of CLAP cache from database."""
-    return load_clap_cache_from_db()
+    global _CLAP_CACHE
+    old_count = get_clap_cache_size()
+    logger.info(f"Refreshing CLAP cache... (current: {old_count} songs)")
+    result = load_clap_cache_from_db()
+    new_count = get_clap_cache_size()
+    if result:
+        logger.info(f"✓ CLAP cache refreshed: {old_count} → {new_count} songs ({new_count - old_count:+d})")
+    else:
+        logger.error(f"✗ CLAP cache refresh failed! Still at {new_count} songs")
+    return result
 
 
 def is_clap_cache_loaded() -> bool:

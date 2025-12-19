@@ -222,7 +222,16 @@ def load_mulan_cache_from_db():
 
 def refresh_mulan_cache():
     """Force refresh of MuLan cache from database."""
-    return load_mulan_cache_from_db()
+    global _MULAN_CACHE
+    old_count = get_mulan_cache_size()
+    logger.info(f"Refreshing MuLan cache... (current: {old_count} songs)")
+    result = load_mulan_cache_from_db()
+    new_count = get_mulan_cache_size()
+    if result:
+        logger.info(f"✓ MuLan cache refreshed: {old_count} → {new_count} songs ({new_count - old_count:+d})")
+    else:
+        logger.error(f"✗ MuLan cache refresh failed! Still at {new_count} songs")
+    return result
 
 
 def is_mulan_cache_loaded() -> bool:

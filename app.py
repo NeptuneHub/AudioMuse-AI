@@ -533,13 +533,18 @@ def listen_for_index_reloads():
             # Rebuild the map JSON cache used by the /api/map endpoint
             from app_map import build_map_cache
             build_map_cache()
-            # Reload CLAP cache
+            
+            # Reload CLAP cache (with logging)
+            logger.info("Reloading CLAP embedding cache...")
             from tasks.clap_text_search import refresh_clap_cache
-            refresh_clap_cache()
-            # Reload MuLan cache
+            clap_success = refresh_clap_cache()
+            
+            # Reload MuLan cache (with logging)
+            logger.info("Reloading MuLan embedding cache...")
             from tasks.mulan_text_search import refresh_mulan_cache
-            refresh_mulan_cache()
-            logger.info("In-memory Voyager index, artist index, map projections, CLAP cache, and MuLan cache reloaded successfully by background listener.")
+            mulan_success = refresh_mulan_cache()
+            
+            logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, MuLan {'✓' if mulan_success else '✗'}")
           except Exception as e:
             logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
       elif message_data == 'reload-artist':
