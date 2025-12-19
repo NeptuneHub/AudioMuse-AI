@@ -536,7 +536,10 @@ def listen_for_index_reloads():
             # Reload CLAP cache
             from tasks.clap_text_search import refresh_clap_cache
             refresh_clap_cache()
-            logger.info("In-memory Voyager index, artist index, map projections, and CLAP cache reloaded successfully by background listener.")
+            # Reload MuLan cache
+            from tasks.mulan_text_search import refresh_mulan_cache
+            refresh_mulan_cache()
+            logger.info("In-memory Voyager index, artist index, map projections, CLAP cache, and MuLan cache reloaded successfully by background listener.")
           except Exception as e:
             logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
       elif message_data == 'reload-artist':
