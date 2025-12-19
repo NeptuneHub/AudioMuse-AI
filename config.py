@@ -105,12 +105,15 @@ PCA_COMPONENTS_MAX = int(os.getenv("PCA_COMPONENTS_MAX", "199")) # Max component
 
 # --- Clustering Runs for Diversity (New Constant) ---
 CLUSTERING_RUNS = int(os.environ.get("CLUSTERING_RUNS", "5000")) # Default to 100 runs for evolutionary search
-MAX_QUEUED_ANALYSIS_JOBS = int(os.environ.get("MAX_QUEUED_ANALYSIS_JOBS", "100")) # Max album analysis jobs to keep in RQ queue
+MAX_QUEUED_ANALYSIS_JOBS = int(os.environ.get("MAX_QUEUED_ANALYSIS_JOBS", "25")) # Max album analysis jobs to keep in RQ queue (reduced from 100 to prevent resource exhaustion)
 
 # --- Batching Constants for Clustering Runs ---
 ITERATIONS_PER_BATCH_JOB = int(os.environ.get("ITERATIONS_PER_BATCH_JOB", "20")) # Number of clustering iterations per RQ batch job
 MAX_CONCURRENT_BATCH_JOBS = int(os.environ.get("MAX_CONCURRENT_BATCH_JOBS", "10")) # Max number of batch jobs to run concurrently
 DB_FETCH_CHUNK_SIZE = int(os.environ.get("DB_FETCH_CHUNK_SIZE", "1000")) # Chunk size for fetching full track data from DB in batch jobs
+
+# IMPORTANT: Lower MAX_QUEUED_ANALYSIS_JOBS if experiencing resource exhaustion or server crashes
+# Recommended values: 10-25 for servers with limited resources, 50-100 for powerful servers
 
 # --- Clustering Batch Timeout and Failure Recovery ---
 CLUSTERING_BATCH_TIMEOUT_MINUTES = int(os.environ.get("CLUSTERING_BATCH_TIMEOUT_MINUTES", "60")) # Max time a batch can run before being considered failed
