@@ -693,6 +693,9 @@ def run_analysis_task(num_recent_albums, top_n_moods):
     from app import app
     from app_helper import (redis_conn, get_db, rq_queue_default, save_task_status, get_task_info_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import is_clap_available
+    import config  # Import config to access MULAN_ENABLED
+
+    MULAN_ENABLED = getattr(config, 'MULAN_ENABLED', False)  # Get MULAN_ENABLED from config
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())    
@@ -882,12 +885,12 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 except Exception as e:
                     logger.error(f"Failed to store artist mappings for album '{album.get('Name')}': {e}", exc_info=True)
 
-                # Check if album needs any analysis (MusiCNN OR CLAP)
+                # Check if album needs any analysis (MusiCNN OR CLAP OR MuLan)
                 try:
                     track_ids = [t['Id'] for t in tracks]
                     existing_count = len(get_existing_track_ids(track_ids))
                     
-                    # Also check CLAP if enabled
+                    # Check CLAP if enabled
                     needs_clap_analysis = False
                     if is_clap_available():
                         with get_db() as conn, conn.cursor() as cur:
@@ -896,6 +899,15 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                             existing_clap_ids = {row[0] for row in cur.fetchall()}
                             needs_clap_analysis = len(existing_clap_ids) < len(tracks)
                     
+                    # Check MuLan if enabled
+                    needs_mulan_analysis = False
+                    if MULAN_ENABLED:
+                        with get_db() as conn, conn.cursor() as cur:
+                            track_ids_as_strings = [str(id) for id in track_ids]
+                            cur.execute("SELECT item_id FROM mulan_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
+                            existing_mulan_ids = {row[0] for row in cur.fetchall()}
+                            needs_mulan_analysis = len(existing_mulan_ids) < len(tracks)
+                    
                 except Exception as e:
                     # Defensive: if DB check fails, log and continue to next album to avoid blocking the main loop.
                     logger.warning(f"Failed to verify existing tracks for album '{album.get('Name')}' (ID: {album.get('Id')}): {e}")
@@ -903,11 +915,11 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     albums_skipped += 1
                     continue
 
-                # Skip ONLY if all tracks have both MusiCNN AND CLAP (if enabled)
-                if existing_count >= len(tracks) and not needs_clap_analysis:
+                # Skip ONLY if all tracks have MusiCNN AND CLAP (if enabled) AND MuLan (if enabled)
+                if existing_count >= len(tracks) and not needs_clap_analysis and not needs_mulan_analysis:
                     albums_skipped += 1
                     checked_album_ids.add(album['Id'])
-                    logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {existing_count}/{len(tracks)} tracks already analyzed (MusiCNN + CLAP).")
+                    logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {existing_count}/{len(tracks)} tracks already analyzed (MusiCNN + CLAP + MuLan).")
                     continue
                 
                 # MODIFIED: Enqueue call for analyze_album_task now passes fewer arguments.
