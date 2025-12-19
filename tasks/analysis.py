@@ -598,10 +598,12 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 track_id_str = str(item['Id'])
                 needs_musicnn = track_id_str not in existing_track_ids_set
                 needs_clap = track_id_str in missing_clap_ids_set
+                needs_mulan = track_id_str in missing_mulan_ids_set
                 
-                # Skip if both MusiCNN and CLAP are already done
-                if not needs_musicnn and not needs_clap:
+                # Skip if ALL enabled analyses are already done (MusiCNN + CLAP + MuLan)
+                if not needs_musicnn and not needs_clap and not needs_mulan:
                     tracks_skipped_count += 1
+                    logger.info(f"Skipping '{track_name_full}' - all analyses complete (MusiCNN: ✓, CLAP: ✓, MuLan: ✓)")
                     continue
                 
                 # MODIFIED: Call to download_track simplified. Assumes it gets server details from config.
@@ -651,7 +653,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         logger.info(f"  - CLAP skipped: needs_clap={needs_clap}, available={is_clap_available()}")
                     
                     # MuLan analysis (only if enabled AND needed)
-                    needs_mulan = str(item['Id']) in missing_mulan_ids_set
                     if needs_mulan and MULAN_ENABLED:
                         logger.info(f"  - Starting MuLan analysis for {track_name_full}...")
                         try:
