@@ -271,10 +271,68 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
         if temp_wav_path and os.path.exists(temp_wav_path):
             os.remove(temp_wav_path)
 
-def analyze_track(file_path, mood_labels_list, model_paths):
+def rebuild_all_indexes_task():
+    """
+    Rebuild all indexes (Voyager, Artist GMM, Map, Artist projection) as a standalone RQ task.
+    This is enqueued on the default queue to run serially with album analysis tasks,
+    preventing CPU overlap between song analysis and index rebuilds.
+    """
+    from app_helper import get_db, redis_conn
+    
+    logger.info("🔨 Starting index rebuild task (enqueued as subtask)...")
+    
+    try:
+        # Build Voyager index
+        build_and_store_voyager_index(get_db())
+        logger.info('✓ Voyager index rebuilt')
+        
+        # Build artist similarity index
+        try:
+            build_and_store_artist_index(get_db())
+            logger.info('✓ Artist similarity index rebuilt')
+        except Exception as e:
+            logger.warning(f"Failed to build/store artist similarity index: {e}")
+        
+        # Build song map projection
+        try:
+            from app_helper import build_and_store_map_projection
+            build_and_store_map_projection('main_map')
+            logger.info('✓ Song map projection rebuilt')
+        except Exception as e:
+            logger.warning(f"Failed to build/store map projection: {e}")
+        
+        # Build artist component projection
+        try:
+            from app_helper import build_and_store_artist_projection
+            build_and_store_artist_projection('artist_map')
+            logger.info('✓ Artist component projection rebuilt')
+        except Exception as e:
+            logger.warning(f"Failed to build/store artist projection: {e}")
+        
+        # Publish reload message to Flask container
+        try:
+            redis_conn.publish('index-updates', 'reload')
+            logger.info('✓ Published reload message to Flask container')
+        except Exception as e:
+            logger.warning(f'Could not publish reload message: {e}')
+        
+        logger.info("✅ Index rebuild task completed successfully")
+        return {"status": "SUCCESS", "message": "All indexes rebuilt"}
+        
+    except Exception as e:
+        logger.error(f"❌ Index rebuild task failed: {e}", exc_info=True)
+        return {"status": "FAILURE", "message": str(e)}
+
+def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     """
     Analyzes a single track. This function is now completely self-contained to ensure
     that no TensorFlow state bleeds over between different track analyses.
+    
+    Args:
+        file_path: Path to audio file
+        mood_labels_list: List of mood labels
+        model_paths: Dict of model paths
+        onnx_sessions: Optional dict of pre-loaded ONNX sessions (for album-level reuse)
     """
     # Clear Keras session if available (no-op when using ONNX runtime)
     try:
@@ -347,73 +405,78 @@ def analyze_track(file_path, mood_labels_list, model_paths):
 
 # --- 3. Run Main Models (Embedding and Prediction) ---
     try:
-        # Load and run embedding model (ONNX) with GPU memory management
-        # ONNX Runtime handles CUDA availability and fallback internally
-        available_providers = ort.get_available_providers()
-        
-        # Configure provider options for GPU memory management
-        if 'CUDAExecutionProvider' in available_providers:
-            # Get GPU device ID from environment or default to 0
-            # Docker sets NVIDIA_VISIBLE_DEVICES, CUDA runtime uses CUDA_VISIBLE_DEVICES
-            gpu_device_id = 0
-            cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-            if cuda_visible and cuda_visible != '-1':
-                # If CUDA_VISIBLE_DEVICES is set, use first device (already mapped to 0)
-                gpu_device_id = 0
-            
-            # GPU mode with memory management to prevent fragmentation
-            cuda_options = {
-                'device_id': gpu_device_id,
-                'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-                'cudnn_conv_algo_search': 'DEFAULT',
-            }
-            provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-            logger.info(f"CUDA provider available - attempting to use GPU for analysis (device_id={gpu_device_id})")
+        # Use pre-loaded sessions if provided, otherwise load per-song
+        if onnx_sessions is not None:
+            embedding_sess = onnx_sessions['embedding']
+            prediction_sess = onnx_sessions['prediction']
+            should_cleanup_sessions = False
         else:
-            provider_options = [('CPUExecutionProvider', {})]
-            logger.info("CUDA provider not available - using CPU only")
+            # Load and run embedding model (ONNX) with GPU memory management
+            # ONNX Runtime handles CUDA availability and fallback internally
+            available_providers = ort.get_available_providers()
+            
+            # Configure provider options for GPU memory management
+            if 'CUDAExecutionProvider' in available_providers:
+                # Get GPU device ID from environment or default to 0
+                # Docker sets NVIDIA_VISIBLE_DEVICES, CUDA runtime uses CUDA_VISIBLE_DEVICES
+                gpu_device_id = 0
+                cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+                if cuda_visible and cuda_visible != '-1':
+                    # If CUDA_VISIBLE_DEVICES is set, use first device (already mapped to 0)
+                    gpu_device_id = 0
+                
+                # GPU mode with memory management to prevent fragmentation
+                cuda_options = {
+                    'device_id': gpu_device_id,
+                    'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
+                    'cudnn_conv_algo_search': 'DEFAULT',
+                }
+                provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
+                logger.info(f"CUDA provider available - attempting to use GPU for analysis (device_id={gpu_device_id})")
+            else:
+                provider_options = [('CPUExecutionProvider', {})]
+                logger.info("CUDA provider not available - using CPU only")
+            
+            try:
+                embedding_sess = ort.InferenceSession(
+                    model_paths['embedding'],
+                    providers=[p[0] for p in provider_options],
+                    provider_options=[p[1] for p in provider_options]
+                )
+            except Exception:
+                # Fallback to CPU if preferred providers fail
+                logger.warning(f"Failed to load embedding model with GPU - falling back to CPU")
+                embedding_sess = ort.InferenceSession(
+                    model_paths['embedding'],
+                    providers=['CPUExecutionProvider']
+                )
+            
+            try:
+                prediction_sess = ort.InferenceSession(
+                    model_paths['prediction'],
+                    providers=[p[0] for p in provider_options],
+                    provider_options=[p[1] for p in provider_options]
+                )
+            except Exception:
+                # Fallback to CPU if preferred providers fail
+                logger.warning(f"Failed to load prediction model with GPU - falling back to CPU")
+                prediction_sess = ort.InferenceSession(
+                    model_paths['prediction'],
+                    providers=['CPUExecutionProvider']
+                )
+            should_cleanup_sessions = True
         
-        try:
-            embedding_sess = ort.InferenceSession(
-                model_paths['embedding'],
-                providers=[p[0] for p in provider_options],
-                provider_options=[p[1] for p in provider_options]
-            )
-        except Exception:
-            # Fallback to CPU if preferred providers fail
-            logger.warning(f"Failed to load embedding model with GPU - falling back to CPU")
-            embedding_sess = ort.InferenceSession(
-                model_paths['embedding'],
-                providers=['CPUExecutionProvider']
-            )
         embedding_feed_dict = {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches}
         embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
         
-        # Explicitly delete session and force garbage collection to free GPU memory immediately
-        del embedding_sess
-        import gc
-        gc.collect()
-
-        # Load and run prediction model (ONNX) with same provider configuration
-        try:
-            prediction_sess = ort.InferenceSession(
-                model_paths['prediction'],
-                providers=[p[0] for p in provider_options],
-                provider_options=[p[1] for p in provider_options]
-            )
-        except Exception:
-            # Fallback to CPU if preferred providers fail
-            logger.warning(f"Failed to load prediction model with GPU - falling back to CPU")
-            prediction_sess = ort.InferenceSession(
-                model_paths['prediction'],
-                providers=['CPUExecutionProvider']
-            )
         prediction_feed_dict = {DEFINED_TENSOR_NAMES['prediction']['input']: embeddings_per_patch}
         mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
         
-        # Explicitly delete session and force garbage collection to free GPU memory immediately
-        del prediction_sess
-        gc.collect()
+        # Only cleanup if we loaded models in this function (not reusing album-level sessions)
+        if should_cleanup_sessions:
+            del embedding_sess, prediction_sess
+            import gc
+            gc.collect()
 
         averaged_logits = np.mean(mood_logits, axis=0)
         # Apply sigmoid to convert raw model outputs (logits) into probabilities
@@ -431,27 +494,36 @@ def analyze_track(file_path, mood_labels_list, model_paths):
 
     for key in ["danceable", "aggressive", "happy", "party", "relaxed", "sad"]:
         try:
-            model_path = model_paths[key]
-            # Load model with same provider configuration as main models
-            try:
-                other_sess = ort.InferenceSession(
-                    model_path,
-                    providers=[p[0] for p in provider_options],
-                    provider_options=[p[1] for p in provider_options]
-                )
-            except Exception:
-                # Fallback to CPU if preferred providers fail
-                logger.warning(f"Failed to load {key} model with GPU - falling back to CPU")
-                other_sess = ort.InferenceSession(
-                    model_path,
-                    providers=['CPUExecutionProvider']
-                )
+            # Use pre-loaded sessions if provided, otherwise load per-song
+            if onnx_sessions is not None:
+                other_sess = onnx_sessions[key]
+                should_cleanup_other = False
+            else:
+                model_path = model_paths[key]
+                # Load model with same provider configuration as main models
+                try:
+                    other_sess = ort.InferenceSession(
+                        model_path,
+                        providers=[p[0] for p in provider_options],
+                        provider_options=[p[1] for p in provider_options]
+                    )
+                except Exception:
+                    # Fallback to CPU if preferred providers fail
+                    logger.warning(f"Failed to load {key} model with GPU - falling back to CPU")
+                    other_sess = ort.InferenceSession(
+                        model_path,
+                        providers=['CPUExecutionProvider']
+                    )
+                should_cleanup_other = True
+            
             feed_dict = {DEFINED_TENSOR_NAMES[key]['input']: embeddings_per_patch}
             probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
             
-            # Explicitly delete session and force garbage collection to free GPU memory immediately
-            del other_sess
-            gc.collect()
+            # Only cleanup if we loaded model in this function
+            if should_cleanup_other:
+                del other_sess
+                import gc
+                gc.collect()
 
             if probabilities_per_patch is None:
                 other_predictions[key] = 0.0
@@ -507,6 +579,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             'relaxed': RELAXED_MODEL_PATH,
             'sad': SAD_MODEL_PATH
         }
+        
+        # Essentia models will be lazy-loaded on first song that needs MusiCNN analysis
+        onnx_sessions = None
 
         def log_and_update_album_task(message, progress, **kwargs):
             nonlocal current_progress_val, current_task_logs
@@ -617,7 +692,45 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     
                     # MusiCNN analysis (only if needed)
                     if needs_musicnn:
-                        analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths)
+                        # Lazy-load Essentia models on first song that needs analysis
+                        if onnx_sessions is None:
+                            logger.info(f"Lazy-loading Essentia models for album: {album_name}")
+                            onnx_sessions = {}
+                            available_providers = ort.get_available_providers()
+                            
+                            if 'CUDAExecutionProvider' in available_providers:
+                                gpu_device_id = 0
+                                cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+                                if cuda_visible and cuda_visible != '-1':
+                                    gpu_device_id = 0
+                                cuda_options = {
+                                    'device_id': gpu_device_id,
+                                    'arena_extend_strategy': 'kSameAsRequested',
+                                    'cudnn_conv_algo_search': 'DEFAULT',
+                                }
+                                provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
+                            else:
+                                provider_options = [('CPUExecutionProvider', {})]
+                            
+                            try:
+                                for model_name, model_path in model_paths.items():
+                                    try:
+                                        onnx_sessions[model_name] = ort.InferenceSession(
+                                            model_path,
+                                            providers=[p[0] for p in provider_options],
+                                            provider_options=[p[1] for p in provider_options]
+                                        )
+                                    except Exception:
+                                        onnx_sessions[model_name] = ort.InferenceSession(
+                                            model_path,
+                                            providers=['CPUExecutionProvider']
+                                        )
+                                logger.info(f"✓ Loaded {len(onnx_sessions)} Essentia models for album reuse")
+                            except Exception as e:
+                                logger.error(f"Failed to load Essentia models: {e}")
+                                onnx_sessions = None
+                        
+                        analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions)
                         if analysis is None:
                             logger.warning(f"Skipping track {track_name_full} as analysis returned None.")
                             tracks_skipped_count += 1
@@ -674,6 +787,25 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 finally:
                     if path and os.path.exists(path):
                         os.remove(path)
+            
+            # Cleanup all models after album analysis to free memory
+            if onnx_sessions:
+                logger.info(f"Cleaning up {len(onnx_sessions)} Essentia model sessions")
+                del onnx_sessions
+                import gc
+                gc.collect()
+            
+            # Cleanup CLAP model if it was loaded during this album
+            from .clap_analyzer import unload_clap_model, is_clap_model_loaded
+            if is_clap_model_loaded():
+                logger.info("Cleaning up CLAP model after album analysis")
+                unload_clap_model()
+            
+            # Cleanup MuLan model if it was loaded during this album
+            from .mulan_analyzer import unload_mulan_model, is_mulan_model_loaded
+            if is_mulan_model_loaded():
+                logger.info("Cleaning up MuLan model after album analysis")
+                unload_mulan_model()
 
             summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album}
             log_and_update_album_task(f"Album '{album_name}' analysis complete.", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
@@ -811,42 +943,17 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 except Exception as e:
                     logger.error(f"Failed to reconcile child tasks from DB: {e}", exc_info=True)
 
-                # Rebuild index in batches as before
+                # Enqueue index rebuild as subtask on default queue (runs serially with song analysis)
                 if albums_completed > last_rebuild_count and (albums_completed - last_rebuild_count) >= REBUILD_INDEX_BATCH_SIZE:
-                    log_and_update_main(f"Batch of {albums_completed - last_rebuild_count} albums complete. Rebuilding index and map...", current_progress)
+                    log_and_update_main(f"Batch of {albums_completed - last_rebuild_count} albums complete. Enqueueing index rebuild...", current_progress)
                     
-                    # Build Voyager index
-                    build_and_store_voyager_index(get_db())
-                    
-                    # Build artist similarity index
-                    try:
-                        build_and_store_artist_index(get_db())
-                        logger.info('Artist similarity index rebuilt during batch.')
-                    except Exception as e:
-                        logger.warning(f"Failed to build/store artist similarity index during batch rebuild: {e}")
-                    
-                    # Build song map projection
-                    try:
-                        from app_helper import build_and_store_map_projection
-                        build_and_store_map_projection('main_map')
-                        logger.info('Song map projection rebuilt during batch.')
-                    except Exception as e:
-                        logger.warning(f"Failed to build/store map projection during batch rebuild: {e}")
-                    
-                    # Build artist component projection
-                    try:
-                        from app_helper import build_and_store_artist_projection
-                        build_and_store_artist_projection('artist_map')
-                        logger.info('Artist component projection rebuilt during batch.')
-                    except Exception as e:
-                        logger.warning(f"Failed to build/store artist projection during batch rebuild: {e}")
-                    
-                    # Publish single reload message to trigger Flask container to reload ALL indexes and maps
-                    try:
-                        redis_conn.publish('index-updates', 'reload')
-                        logger.info('Published reload message to Flask container after batch rebuild.')
-                    except Exception as e:
-                        logger.warning(f'Could not publish reload message to redis during batch rebuild: {e}')
+                    rebuild_job = rq_queue_default.enqueue(
+                        'tasks.analysis.rebuild_all_indexes_task',
+                        job_id=str(uuid.uuid4()),
+                        job_timeout=-1,
+                        retry=Retry(max=3)
+                    )
+                    logger.info(f"⏰ Enqueued index rebuild job {rebuild_job.id} on default queue (will run serially with album tasks)")
                     
                     last_rebuild_count = albums_completed
 

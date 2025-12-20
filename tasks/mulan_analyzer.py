@@ -29,11 +29,19 @@ _text_session = None
 _tokenizer = None
 
 
-def _load_mulan_models():
-    """Load MuQ-MuLan ONNX models and tokenizer from local files."""
+def _load_mulan_models(load_text_models=False):
+    """Load MuQ-MuLan ONNX models from local files.
+    
+    Args:
+        load_text_models: If False (default), only load audio encoder (for worker analysis).
+                         If True, load both audio and text encoders (for Flask search).
+    """
     global _audio_session, _text_session, _tokenizer
     
-    logger.info("Loading MuQ-MuLan ONNX models...")
+    if load_text_models:
+        logger.info("Loading MuQ-MuLan ONNX models (audio + text encoders)...")
+    else:
+        logger.info("Loading MuQ-MuLan audio encoder only (worker mode)...")
     
     try:
         # Check if model files exist
@@ -72,19 +80,27 @@ def _load_mulan_models():
             providers=providers
         )
         
-        # Load text encoder (with external data file)  
-        logger.info(f"Loading text encoder: {config.TEXT_MODEL_PATH}")
-        _text_session = ort.InferenceSession(
-            config.TEXT_MODEL_PATH,
-            sess_options=sess_options,
-            providers=providers
-        )
-        
-        # Load tokenizer from extracted directory (uses transformers for compatibility)
-        logger.info(f"Loading tokenizer from: {config.MULAN_MODEL_DIR}")
-        _tokenizer = AutoTokenizer.from_pretrained(config.MULAN_MODEL_DIR)
-        
-        logger.info("✓ MuQ-MuLan ONNX models loaded successfully")
+        # Load text encoder and tokenizer only if requested (Flask search mode)
+        if load_text_models:
+            # Check if text model files exist
+            if not os.path.exists(config.TEXT_MODEL_PATH):
+                raise FileNotFoundError(f"Text model not found: {config.TEXT_MODEL_PATH}")
+            
+            # Load text encoder (with external data file)  
+            logger.info(f"Loading text encoder: {config.TEXT_MODEL_PATH}")
+            _text_session = ort.InferenceSession(
+                config.TEXT_MODEL_PATH,
+                sess_options=sess_options,
+                providers=providers
+            )
+            
+            # Load tokenizer from extracted directory (uses transformers for compatibility)
+            logger.info(f"Loading tokenizer from: {config.MULAN_MODEL_DIR}")
+            _tokenizer = AutoTokenizer.from_pretrained(config.MULAN_MODEL_DIR)
+            
+            logger.info("✓ MuQ-MuLan ONNX models loaded successfully (audio + text)")
+        else:
+            logger.info("✓ MuQ-MuLan audio encoder loaded successfully (text encoder skipped for worker)")
         return True
         
     except Exception as e:
@@ -93,26 +109,89 @@ def _load_mulan_models():
         raise
 
 
-def initialize_mulan_model():
-    """Initialize MuLan ONNX models if enabled and not already loaded."""
+def initialize_mulan_model(load_text_models=False):
+    """Initialize MuLan ONNX models if enabled and not already loaded.
+    
+    Args:
+        load_text_models: If False (default), only load audio encoder (worker mode).
+                         If True, load audio + text encoders (Flask search mode).
+    """
     global _audio_session, _text_session, _tokenizer
     
     if not config.MULAN_ENABLED:
-        logger.info("MuLan is disabled in config. Skipping model initialization.")
         return False
     
-    if _audio_session is not None and _text_session is not None and _tokenizer is not None:
-        logger.debug("MuLan models already initialized.")
-        return True
+    # Check what's already loaded and what needs loading
+    if load_text_models:
+        # Need both audio and text - check if all loaded
+        if _audio_session is not None and _text_session is not None and _tokenizer is not None:
+            return True
+    else:
+        # Only need audio - check if loaded
+        if _audio_session is not None:
+            return True
     
     try:
-        _load_mulan_models()
-        logger.info("MuLan ONNX models initialized successfully.")
+        _load_mulan_models(load_text_models=load_text_models)
         return True
     except Exception as e:
         logger.error(f"Failed to initialize MuLan models: {e}")
-        traceback.print_exc()
         return False
+
+
+def initialize_mulan_text_models():
+    """Initialize MuLan text encoder and tokenizer for Flask search operations.
+    Call this from Flask startup or before text search.
+    """
+    global _text_session, _tokenizer
+    
+    if not config.MULAN_ENABLED:
+        return False
+    
+    # If text models already loaded, return success
+    if _text_session is not None and _tokenizer is not None:
+        return True
+    
+    # If audio not loaded yet, load everything
+    if _audio_session is None:
+        return initialize_mulan_model(load_text_models=True)
+    
+    # Audio loaded but text not - load text models only
+    logger.info("Loading MuLan text encoder and tokenizer for search operations...")
+    try:
+        import onnxruntime as ort
+        
+        # Configure ONNX Runtime session options (same as audio)
+        sess_options = ort.SessionOptions()
+        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        import psutil
+        physical_cores = psutil.cpu_count(logical=False) or 4
+        num_threads = max(1, physical_cores // 2)
+        sess_options.intra_op_num_threads = num_threads
+        sess_options.inter_op_num_threads = num_threads
+        
+        providers = ['CPUExecutionProvider']
+        if ort.get_available_providers() and 'CUDAExecutionProvider' in ort.get_available_providers():
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        
+        # Load text encoder
+        _text_session = ort.InferenceSession(
+            config.TEXT_MODEL_PATH,
+            sess_options=sess_options,
+            providers=providers
+        )
+        
+        # Load tokenizer
+        _tokenizer = AutoTokenizer.from_pretrained(config.MULAN_MODEL_DIR)
+        
+        logger.info("✓ MuLan text encoder and tokenizer loaded for search")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to load MuLan text models: {e}")
+        return False
+
+
 
 
 def unload_mulan_model():
@@ -143,12 +222,26 @@ def is_mulan_model_loaded():
     return _audio_session is not None and _text_session is not None and _tokenizer is not None
 
 
-def get_mulan_sessions():
-    """Get the global MuLan sessions, initializing if needed (lazy loading)."""
-    if _audio_session is None or _text_session is None or _tokenizer is None:
-        logger.info("Lazy-loading MuLan models on first use...")
-        if not initialize_mulan_model():
-            raise RuntimeError("MuLan models could not be initialized")
+def get_mulan_sessions(need_text_models=False):
+    """Get the global MuLan sessions, initializing if needed (lazy loading).
+    
+    Args:
+        need_text_models: If True, ensure text encoder and tokenizer are loaded (Flask search).
+                         If False, only ensure audio encoder is loaded (worker analysis).
+    """
+    if need_text_models:
+        # Flask search mode - need all models
+        if _audio_session is None or _text_session is None or _tokenizer is None:
+            logger.info("Lazy-loading MuLan models (audio + text) for search...")
+            if not initialize_mulan_model(load_text_models=True):
+                raise RuntimeError("MuLan models could not be initialized")
+    else:
+        # Worker analysis mode - only need audio
+        if _audio_session is None:
+            logger.info("Lazy-loading MuLan audio encoder for analysis...")
+            if not initialize_mulan_model(load_text_models=False):
+                raise RuntimeError("MuLan audio encoder could not be initialized")
+    
     return _audio_session, _text_session, _tokenizer
 
 
@@ -169,7 +262,8 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         return None, 0, 0
     
     try:
-        audio_session, _, _ = get_mulan_sessions()
+        # Only load audio encoder for analysis (text encoder not needed)
+        audio_session, _, _ = get_mulan_sessions(need_text_models=False)
         
         # Load audio at MuQ's required sample rate (24kHz)
         SAMPLE_RATE = 24000
@@ -281,7 +375,8 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
         return None
     
     try:
-        _, text_session, tokenizer = get_mulan_sessions()
+        # Ensure text encoder and tokenizer are loaded for search
+        _, text_session, tokenizer = get_mulan_sessions(need_text_models=True)
         
         # Tokenize input text (XLM-RoBERTa tokenizer from MuLan training)
         # AutoTokenizer returns dict with input_ids and attention_mask
@@ -335,7 +430,8 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
         return None
     
     try:
-        _, text_session, tokenizer = get_mulan_sessions()
+        # Ensure text encoder and tokenizer are loaded for batch search
+        _, text_session, tokenizer = get_mulan_sessions(need_text_models=True)
         
         # Tokenize all texts (AutoTokenizer handles batching automatically)
         encoding = tokenizer(

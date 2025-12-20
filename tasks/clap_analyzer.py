@@ -549,11 +549,12 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
 
 
 def is_clap_available() -> bool:
-    """Check if CLAP is enabled and ONNX model can be loaded."""
+    """
+    Check if CLAP is enabled and model file exists.
+    Does NOT load the model - use get_clap_model() for lazy loading.
+    """
     if not config.CLAP_ENABLED:
         return False
     
-    if _onnx_session is not None:
-        return True
-    
-    return initialize_clap_model()
+    # Check if model file exists
+    return os.path.exists(config.CLAP_MODEL_PATH)
