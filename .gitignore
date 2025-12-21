@@ -7,6 +7,7 @@ __pycache__/
 *.pyd
 venv/
 .venv/
+.venv-macos/
 env/
 
 # Local environment variables
@@ -41,3 +42,6 @@ htmlcov/
 
 # Exported MuLan models
 mulan_model_export/
+
+# Downloaded ONNX models (from run_worker_macos.sh or similar)
+/model/
