@@ -277,51 +277,53 @@ def rebuild_all_indexes_task():
     This is enqueued on the default queue to run serially with album analysis tasks,
     preventing CPU overlap between song analysis and index rebuilds.
     """
+    from app import app
     from app_helper import get_db, redis_conn
     
     logger.info("🔨 Starting index rebuild task (enqueued as subtask)...")
     
-    try:
-        # Build Voyager index
-        build_and_store_voyager_index(get_db())
-        logger.info('✓ Voyager index rebuilt')
-        
-        # Build artist similarity index
+    with app.app_context():
         try:
-            build_and_store_artist_index(get_db())
-            logger.info('✓ Artist similarity index rebuilt')
+            # Build Voyager index
+            build_and_store_voyager_index(get_db())
+            logger.info('✓ Voyager index rebuilt')
+            
+            # Build artist similarity index
+            try:
+                build_and_store_artist_index(get_db())
+                logger.info('✓ Artist similarity index rebuilt')
+            except Exception as e:
+                logger.warning(f"Failed to build/store artist similarity index: {e}")
+            
+            # Build song map projection
+            try:
+                from app_helper import build_and_store_map_projection
+                build_and_store_map_projection('main_map')
+                logger.info('✓ Song map projection rebuilt')
+            except Exception as e:
+                logger.warning(f"Failed to build/store map projection: {e}")
+            
+            # Build artist component projection
+            try:
+                from app_helper import build_and_store_artist_projection
+                build_and_store_artist_projection('artist_map')
+                logger.info('✓ Artist component projection rebuilt')
+            except Exception as e:
+                logger.warning(f"Failed to build/store artist projection: {e}")
+            
+            # Publish reload message to Flask container
+            try:
+                redis_conn.publish('index-updates', 'reload')
+                logger.info('✓ Published reload message to Flask container')
+            except Exception as e:
+                logger.warning(f'Could not publish reload message: {e}')
+            
+            logger.info("✅ Index rebuild task completed successfully")
+            return {"status": "SUCCESS", "message": "All indexes rebuilt"}
+            
         except Exception as e:
-            logger.warning(f"Failed to build/store artist similarity index: {e}")
-        
-        # Build song map projection
-        try:
-            from app_helper import build_and_store_map_projection
-            build_and_store_map_projection('main_map')
-            logger.info('✓ Song map projection rebuilt')
-        except Exception as e:
-            logger.warning(f"Failed to build/store map projection: {e}")
-        
-        # Build artist component projection
-        try:
-            from app_helper import build_and_store_artist_projection
-            build_and_store_artist_projection('artist_map')
-            logger.info('✓ Artist component projection rebuilt')
-        except Exception as e:
-            logger.warning(f"Failed to build/store artist projection: {e}")
-        
-        # Publish reload message to Flask container
-        try:
-            redis_conn.publish('index-updates', 'reload')
-            logger.info('✓ Published reload message to Flask container')
-        except Exception as e:
-            logger.warning(f'Could not publish reload message: {e}')
-        
-        logger.info("✅ Index rebuild task completed successfully")
-        return {"status": "SUCCESS", "message": "All indexes rebuilt"}
-        
-    except Exception as e:
-        logger.error(f"❌ Index rebuild task failed: {e}", exc_info=True)
-        return {"status": "FAILURE", "message": str(e)}
+            logger.error(f"❌ Index rebuild task failed: {e}", exc_info=True)
+            return {"status": "FAILURE", "message": str(e)}
 
 def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     """
