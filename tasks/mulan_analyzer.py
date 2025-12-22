@@ -55,14 +55,14 @@ def _load_mulan_models(load_text_models=False):
         # Configure ONNX Runtime session options
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        # Use half of physical CPU cores (no hyperthreading) to prevent resource exhaustion
-        # This prevents system crashes while allowing reasonable parallelism
-        import psutil
-        physical_cores = psutil.cpu_count(logical=False) or 4
-        num_threads = max(1, physical_cores // 2)  # Integer division, minimum 1
-        sess_options.intra_op_num_threads = num_threads
-        sess_options.inter_op_num_threads = num_threads
-        logger.info(f"MuLan: Using {num_threads} threads (half of {physical_cores} physical cores)")
+        # Let ONNX Runtime handle threading automatically (optimal for most cases)
+        # import psutil
+        # logical_cores = psutil.cpu_count(logical=True) or 4
+        # num_threads = max(1, logical_cores - 2)  # All cores minus 2, minimum 1
+        # sess_options.intra_op_num_threads = num_threads
+        # sess_options.inter_op_num_threads = num_threads
+        # logger.info(f"MuLan: Using {num_threads} threads ({logical_cores} logical cores - 2)")
+        logger.info("MuLan: Using ONNX Runtime automatic thread management")
         
         # Select execution provider (CPU or CUDA)
         providers = ['CPUExecutionProvider']
@@ -164,11 +164,12 @@ def initialize_mulan_text_models():
         # Configure ONNX Runtime session options (same as audio)
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        import psutil
-        physical_cores = psutil.cpu_count(logical=False) or 4
-        num_threads = max(1, physical_cores // 2)
-        sess_options.intra_op_num_threads = num_threads
-        sess_options.inter_op_num_threads = num_threads
+        # Let ONNX Runtime handle threading automatically (optimal for most cases)
+        # import psutil
+        # logical_cores = psutil.cpu_count(logical=True) or 4
+        # num_threads = max(1, logical_cores - 2)  # All cores minus 2, minimum 1
+        # sess_options.intra_op_num_threads = num_threads
+        # sess_options.inter_op_num_threads = num_threads
         
         providers = ['CPUExecutionProvider']
         if ort.get_available_providers() and 'CUDAExecutionProvider' in ort.get_available_providers():
@@ -271,35 +272,26 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         SEGMENT_SAMPLES = int(SEGMENT_DURATION * SAMPLE_RATE)  # EXACTLY 240,000 samples
         HOP_DURATION = 5.0  # 50% overlap = 5 second hop
         HOP_SAMPLES = int(HOP_DURATION * SAMPLE_RATE)  # 120,000 samples
-        ANALYSIS_WINDOW = 50.0  # Prefer central 50 seconds if available
         
         # Get full duration first
         full_duration = librosa.get_duration(path=audio_path)
         
-        # Determine what to load based on song length
-        if full_duration > ANALYSIS_WINDOW:
-            # Long song: use central 50 seconds
-            offset = (full_duration - ANALYSIS_WINDOW) / 2
-            load_duration = ANALYSIS_WINDOW
-        elif full_duration >= SEGMENT_DURATION:
-            # Song is between 10s and 50s: use whole song
-            offset = 0.0
-            load_duration = full_duration
-        else:
-            # Song is shorter than 10s: load what we have, will pad to 10s
-            offset = 0.0
-            load_duration = full_duration
+        # FULL SONG ANALYSIS: Load the entire audio file
+        offset = 0.0
+        load_duration = full_duration
         
         # Load audio from the selected portion
         audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True, offset=offset, duration=load_duration)
         
         # Calculate number of 10-second segments with 50% overlap
-        if len(audio_data) < SEGMENT_SAMPLES:
-            # Audio is shorter than 10s: create 1 segment with padding
+        # Using ceiling to ensure we cover ALL audio including the end
+        if len(audio_data) <= SEGMENT_SAMPLES:
+            # Audio is 10s or shorter: create 1 segment (will pad if needed)
             num_segments = 1
         else:
-            # Calculate overlapping segments: floor((length - segment_size) / hop_size) + 1
-            num_segments = int((len(audio_data) - SEGMENT_SAMPLES) / HOP_SAMPLES) + 1
+            # Calculate overlapping segments to cover the entire song
+            # ceiling ensures we don't miss any audio at the end
+            num_segments = int(np.ceil((len(audio_data) - SEGMENT_SAMPLES) / HOP_SAMPLES)) + 1
         
         segment_embeddings = []
         

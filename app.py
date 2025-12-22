@@ -68,11 +68,16 @@ if ENABLE_PROXY_FIX:
 # Log the application version on startup
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
 
-# --- Context Processor to Inject Version ---
+# --- Context Processor to Inject Version and Feature Flags ---
 @app.context_processor
-def inject_version():
-    """Injects the app version into all templates."""
-    return dict(app_version=APP_VERSION)
+def inject_globals():
+    """Injects global variables into all templates."""
+    from config import CLAP_ENABLED, MULAN_ENABLED
+    return dict(
+        app_version=APP_VERSION,
+        clap_enabled=CLAP_ENABLED,
+        mulan_enabled=MULAN_ENABLED
+    )
 
 # --- Swagger Setup ---
 app.config['SWAGGER'] = {

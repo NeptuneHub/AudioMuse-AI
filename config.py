@@ -285,7 +285,7 @@ CLAP_TOP_QUERIES_COUNT = int(os.environ.get("CLAP_TOP_QUERIES_COUNT", "1000"))
 CLAP_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("CLAP_TEXT_SEARCH_WARMUP_DURATION", "300"))
 
 # --- MuLan (MuQ) Model Constants (for text search with ONNX Runtime) ---
-MULAN_ENABLED = os.environ.get("MULAN_ENABLED", "true").lower() == "true"
+MULAN_ENABLED = os.environ.get("MULAN_ENABLED", "false").lower() == "true"
 # MuLan ONNX model directory and file paths
 MULAN_MODEL_DIR = os.environ.get("MULAN_MODEL_DIR", "/app/model/mulan")
 AUDIO_MODEL_PATH = os.path.join(MULAN_MODEL_DIR, "mulan_audio_encoder.onnx")
