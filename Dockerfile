@@ -251,60 +251,62 @@ RUN set -eux; \
     echo "✓ CLAP ONNX model downloaded successfully (arch: $arch)"; \
     ls -lh "/app/model/$clap_model"
 
-# Download MuQ-MuLan ONNX models directly in runner stage
+# Download MuQ-MuLan ONNX models directly in runner stage (DISABLED: change 'false' to 'true' to enable)
 # MuLan models (~2.5GB total) - pre-converted ONNX (no PyTorch dependency)
 # Files: mulan_audio_encoder.onnx + .data, mulan_text_encoder.onnx + .data, mulan_tokenizer.tar.gz
 RUN set -eux; \
-    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
-    mulan_dir="/app/model/mulan"; \
-    mkdir -p "$mulan_dir"; \
-    \
-    # List of files to download (onnx models + data files + tokenizer)
-    files=( \
-        "mulan_audio_encoder.onnx" \
-        "mulan_audio_encoder.onnx.data" \
-        "mulan_text_encoder.onnx" \
-        "mulan_text_encoder.onnx.data" \
-        "mulan_tokenizer.tar.gz" \
-    ); \
-    \
-    echo "Downloading MuQ-MuLan ONNX models (~2.5GB total)..."; \
-    for f in "${files[@]}"; do \
-        n=0; \
-        until [ "$n" -ge 5 ]; do \
-            if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-                --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-                -O "$mulan_dir/$f" "$base_url/$f"; then \
-                echo "✓ Downloaded: $f"; \
-                break; \
+    if false; then \
+        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+        mulan_dir="/app/model/mulan"; \
+        mkdir -p "$mulan_dir"; \
+        \
+        # List of files to download (onnx models + data files + tokenizer)
+        files=( \
+            "mulan_audio_encoder.onnx" \
+            "mulan_audio_encoder.onnx.data" \
+            "mulan_text_encoder.onnx" \
+            "mulan_text_encoder.onnx.data" \
+            "mulan_tokenizer.tar.gz" \
+        ); \
+        \
+        echo "Downloading MuQ-MuLan ONNX models (~2.5GB total)..."; \
+        for f in "${files[@]}"; do \
+            n=0; \
+            until [ "$n" -ge 5 ]; do \
+                if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+                    --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+                    -O "$mulan_dir/$f" "$base_url/$f"; then \
+                    echo "✓ Downloaded: $f"; \
+                    break; \
+                fi; \
+                n=$((n+1)); \
+                echo "Download attempt $n for $f failed — retrying in $((n*n))s"; \
+                sleep $((n*n)); \
+            done; \
+            if [ "$n" -ge 5 ]; then \
+                echo "ERROR: Failed to download $f after 5 attempts"; \
+                exit 1; \
             fi; \
-            n=$((n+1)); \
-            echo "Download attempt $n for $f failed — retrying in $((n*n))s"; \
-            sleep $((n*n)); \
         done; \
-        if [ "$n" -ge 5 ]; then \
-            echo "ERROR: Failed to download $f after 5 attempts"; \
-            exit 1; \
-        fi; \
-    done; \
-    \
-    # Extract tokenizer files
-    echo "Extracting MuLan tokenizer..."; \
-    tar -xzf "$mulan_dir/mulan_tokenizer.tar.gz" -C "$mulan_dir"; \
-    rm "$mulan_dir/mulan_tokenizer.tar.gz"; \
-    \
-    # Verify all files exist (tokenizer.json excluded - using slow tokenizer for compatibility)
-    for f in mulan_audio_encoder.onnx mulan_audio_encoder.onnx.data \
-             mulan_text_encoder.onnx mulan_text_encoder.onnx.data \
-             sentencepiece.bpe.model tokenizer_config.json special_tokens_map.json; do \
-        if [ ! -f "$mulan_dir/$f" ]; then \
-            echo "ERROR: Missing file: $f"; \
-            exit 1; \
-        fi; \
-    done; \
-    \
-    echo "✓ MuQ-MuLan ONNX models ready"; \
-    ls -lh "$mulan_dir"
+        \
+        # Extract tokenizer files
+        echo "Extracting MuLan tokenizer..."; \
+        tar -xzf "$mulan_dir/mulan_tokenizer.tar.gz" -C "$mulan_dir"; \
+        rm "$mulan_dir/mulan_tokenizer.tar.gz"; \
+        \
+        # Verify all files exist (tokenizer.json excluded - using slow tokenizer for compatibility)
+        for f in mulan_audio_encoder.onnx mulan_audio_encoder.onnx.data \
+                 mulan_text_encoder.onnx mulan_text_encoder.onnx.data \
+                 sentencepiece.bpe.model tokenizer_config.json special_tokens_map.json; do \
+            if [ ! -f "$mulan_dir/$f" ]; then \
+                echo "ERROR: Missing file: $f"; \
+                exit 1; \
+            fi; \
+        done; \
+        \
+        echo "✓ MuQ-MuLan ONNX models ready"; \
+        ls -lh "$mulan_dir"; \
+    fi
 
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app

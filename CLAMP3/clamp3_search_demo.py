@@ -385,8 +385,6 @@ class CLAMP3Searcher:
         if not self.audio_embeddings:
             print("No audio files analyzed yet!")
             return []
-
-
         
         print(f"\n{'=' * 70}")
         print(f"Query: \"{query_text}\"")
@@ -399,6 +397,10 @@ class CLAMP3Searcher:
         embeddings_matrix = np.vstack(self.audio_embeddings)
         similarities = embeddings_matrix @ text_embedding
         
+        # Show score statistics for better understanding
+        print(f"Score stats: min={similarities.min():.4f}, max={similarities.max():.4f}, "
+              f"mean={similarities.mean():.4f}, std={similarities.std():.4f}")
+        
         # Get top-k results
         top_indices = np.argsort(similarities)[::-1][:top_k]
         
@@ -408,16 +410,21 @@ class CLAMP3Searcher:
             similarity = similarities[idx]
             audio_file = self.audio_files[idx]
             
+            # Calculate normalized score (0-100 scale for easier interpretation)
+            score_range = similarities.max() - similarities.min()
+            normalized_score = ((similarity - similarities.min()) / score_range * 100) if score_range > 0 else 50
+            
             result = {
                 'rank': rank,
                 'file': audio_file.name,
                 'path': str(audio_file),
-                'similarity': float(similarity)
+                'similarity': float(similarity),
+                'normalized_score': float(normalized_score)
             }
             results.append(result)
             
-            print(f"{rank}. {audio_file.stem}")  # Show name without .npy extension
-            print(f"   Similarity: {similarity:.4f}")
+            print(f"{rank}. {audio_file.stem}")
+            print(f"   Similarity: {similarity:.4f} | Normalized: {normalized_score:.1f}/100")
         
         return results
 
