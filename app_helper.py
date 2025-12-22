@@ -39,7 +39,20 @@ ARTIST_PROJECTION_CACHE = None
 MAX_LOG_ENTRIES_STORED = 10 # Max number of recent log entries to store in the database per task
 
 # --- RQ Setup ---
-redis_conn = Redis.from_url(REDIS_URL, socket_connect_timeout=15, socket_timeout=15)
+# Enhanced Redis connection settings for remote server stability:
+# - socket_connect_timeout: max time to establish connection
+# - socket_timeout: max time for socket operations (read/write)
+# - socket_keepalive: enables TCP keepalive to prevent idle connection drops
+# - health_check_interval: seconds between health checks on idle connections
+# - retry_on_timeout: automatically retry on timeout errors
+redis_conn = Redis.from_url(
+    REDIS_URL, 
+    socket_connect_timeout=30,
+    socket_timeout=60,
+    socket_keepalive=True,
+    health_check_interval=30,
+    retry_on_timeout=True
+)
 # FIX: result_ttl removed - caused jobs to disappear from Redis before monitor_and_clear_jobs could track them
 # This was breaking the throttle mechanism causing all jobs to launch at once
 rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1) # High priority for main tasks

@@ -327,8 +327,7 @@ def rebuild_all_indexes_task():
 
 def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     """
-    Analyzes a single track. This function is now completely self-contained to ensure
-    that no TensorFlow state bleeds over between different track analyses.
+    Analyzes a single track using ONNX Runtime for inference.
     
     Args:
         file_path: Path to audio file
@@ -336,12 +335,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         model_paths: Dict of model paths
         onnx_sessions: Optional dict of pre-loaded ONNX sessions (for album-level reuse)
     """
-    # Clear Keras session if available (no-op when using ONNX runtime)
-    try:
-        from tensorflow.keras import backend as K
-        K.clear_session()
-    except Exception:
-        pass
     logger.info(f"Starting analysis for: {os.path.basename(file_path)}")
 
     # --- 1. Load Audio and Compute Basic Features ---
