@@ -5,6 +5,7 @@ Handles MCP tool calling for different AI providers (Gemini, OpenAI, Mistral, Ol
 import json
 import logging
 from typing import List, Dict, Any, Optional
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +236,9 @@ Call the tools needed to fulfill the request."""
             "tool_choice": "auto"
         }
         
-        with httpx.Client(timeout=60.0) as client:
+        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
+        log_messages.append(f"Using timeout: {timeout} seconds for OpenAI/Mistral request")
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(api_url, headers=headers, json=payload)
             response.raise_for_status()
             result = response.json()
@@ -476,7 +479,9 @@ Return ONLY the JSON object with tool_calls array:"""
             "format": "json"
         }
         
-        with httpx.Client(timeout=120.0) as client:
+        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
+        log_messages.append(f"Using timeout: {timeout} seconds for Ollama request")
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(ollama_url, json=payload)
             response.raise_for_status()
             result = response.json()

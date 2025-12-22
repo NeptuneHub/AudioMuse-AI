@@ -213,6 +213,12 @@ GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro") # Defa
 
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "YOUR-GEMINI-API-KEY-HERE")
 MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
+
+# AI Request Timeout Configuration
+# Timeout in seconds for AI API requests. Increase this value if using slower hardware or larger models.
+# For CPU-only Ollama instances or large models that take longer to generate responses, consider setting to 300-600 seconds.
+# Default: 120 seconds for Ollama (tool calling/instant playlist), 60 seconds for OpenAI/Mistral
+AI_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "300"))
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 
 # Construct DATABASE_URL from individual components for better security in K8s
