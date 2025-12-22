@@ -8,6 +8,7 @@ import unicodedata
 import google.generativeai as genai # Import Gemini library
 from mistralai import Mistral
 import os # Import os to potentially read GEMINI_API_CALL_DELAY_SECONDS
+from config import MAX_SONGS_IN_AI_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -550,7 +551,13 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                     logger.info("Retrying in %s seconds...", sleep_time)
                     time.sleep(sleep_time)
                     continue
-            logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
+            # Log the response body for better debugging
+            error_detail = ""
+            try:
+                error_detail = e.response.text
+                logger.error("Error calling OpenAI-compatible API: %s. Response body: %s", e, error_detail, exc_info=True)
+            except:
+                logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
             return "Error: AI service is currently unavailable."
             
         except requests.exceptions.RequestException as e:
@@ -751,8 +758,14 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
         # (like danceable, aggressive, etc.) in the prompt, you'd add logic here to create
         # a description for them and a corresponding placeholder in the prompt_template.
 
-    # Format the full song list for the prompt
-    formatted_song_list = "\n".join([f"- {song.get('title', 'Unknown Title')} by {song.get('author', 'Unknown Artist')}" for song in song_list]) # Send all songs
+    # Format the song list for the prompt
+    # Truncate to MAX_SONGS_IN_AI_PROMPT to avoid token limit issues with large playlists
+    songs_for_prompt = song_list[:MAX_SONGS_IN_AI_PROMPT]
+    formatted_song_list = "\n".join([f"- {song.get('title', 'Unknown Title')} by {song.get('author', 'Unknown Artist')}" for song in songs_for_prompt])
+    
+    # Log if we truncated the list
+    if len(song_list) > MAX_SONGS_IN_AI_PROMPT:
+        logger.info("Truncated song list from %d to %d songs for AI prompt to avoid token limits", len(song_list), MAX_SONGS_IN_AI_PROMPT)
 
     # Construct the full prompt using the template and all features
     # The new prompt only requires the song list sample # type: ignore

@@ -100,24 +100,43 @@ def compare_pytorch_vs_onnx():
         import onnxruntime as ort
         from transformers import AutoTokenizer
         
-        # Try common paths
-        onnx_model_paths = [
-            "/app/model/clap_model.onnx",
-            "../query/clap_model.onnx",
-            "query/clap_model.onnx",
-            os.path.expanduser("~/Music/AudioMuse-AI/query/clap_model.onnx")
+        # Try common paths for split models (preferred)
+        onnx_audio_model_paths = [
+            "/app/model/clap_audio_model.onnx",
+            "../test/models/clap_audio_model.onnx",
+            "test/models/clap_audio_model.onnx",
+            os.path.expanduser("~/Music/AudioMuse-AI/test/models/clap_audio_model.onnx")
         ]
         
-        onnx_model_path = None
-        for path in onnx_model_paths:
+        onnx_text_model_paths = [
+            "/app/model/clap_text_model.onnx",
+            "../test/models/clap_text_model.onnx",
+            "test/models/clap_text_model.onnx",
+            os.path.expanduser("~/Music/AudioMuse-AI/test/models/clap_text_model.onnx")
+        ]
+        
+        onnx_audio_model_path = None
+        for path in onnx_audio_model_paths:
             if os.path.exists(path):
-                onnx_model_path = path
+                onnx_audio_model_path = path
                 break
         
-        if not onnx_model_path:
-            print(f"✗ ONNX model not found in any of these paths:")
-            for path in onnx_model_paths:
-                print(f"  - {path}")
+        onnx_text_model_path = None
+        for path in onnx_text_model_paths:
+            if os.path.exists(path):
+                onnx_text_model_path = path
+                break
+        
+        if not onnx_audio_model_path or not onnx_text_model_path:
+            print(f"✗ ONNX models not found:")
+            if not onnx_audio_model_path:
+                print(f"  Audio model - tried:")
+                for path in onnx_audio_model_paths:
+                    print(f"    - {path}")
+            if not onnx_text_model_path:
+                print(f"  Text model - tried:")
+                for path in onnx_text_model_paths:
+                    print(f"    - {path}")
             print("\nPlease generate the ONNX model first using pythorch.sh")
             return False
         

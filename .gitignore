@@ -7,6 +7,7 @@ __pycache__/
 *.pyd
 venv/
 .venv/
+.venv-macos/
 env/
 
 # Local environment variables
@@ -34,3 +35,15 @@ htmlcov/
 # Large model files in query folder
 /query/*.pt
 /query/*.onnx
+
+
+# CLAMP3 weight files (large model files)
+/CLAMP3/weights_*.pth
+/CLAMP3/*.pth
+
+
+# Downloaded ONNX models (from run_worker_macos.sh or similar)
+/model/
+
+# Exported MuLan models
+mulan_model_export/

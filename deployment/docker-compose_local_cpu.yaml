@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   # Redis service for RQ (task queue)
   redis:
@@ -24,24 +23,30 @@ services:
       - postgres-data:/var/lib/postgresql/data # Persistent storage for PostgreSQL data
     restart: unless-stopped
 
-  # AudioMuse-AI Flask application service
+  # AudioMuse-AI Flask application service (CPU-only, locally built)
   audiomuse-ai-flask:
-    image: ghcr.io/neptunehub/audiomuse-ai:latest
+    image: audiomuse-ai:local-cpu
+    build:
+      context: ../       # Build from project root (one level up from deployment/)
+      dockerfile: Dockerfile
+      # No args needed - defaults to ubuntu:22.04 (CPU-only)
+    pull_policy: never  # Always use locally built image, never pull from registry
     container_name: audiomuse-ai-flask-app
     ports:
-      - "8000:8000"
+      - "8000:8000" # Map host port 8000 to container port 8000
     environment:
-      SERVICE_TYPE: "flask"
-      MEDIASERVER_TYPE: "navidrome"
-      NAVIDROME_URL: "${NAVIDROME_URL}"
-      NAVIDROME_USER: "${NAVIDROME_USER}"
-      NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD}"
+      SERVICE_TYPE: "flask" # Tells the container to run the Flask app
+      MEDIASERVER_TYPE: "jellyfin" # Specify the media server type
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
+      JELLYFIN_URL: "${JELLYFIN_URL}"
+      # DATABASE_URL is now constructed by config.py from the following:
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
       POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
-      POSTGRES_HOST: "postgres"
+      POSTGRES_HOST: "postgres" # Service name of the postgres container
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
-      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
       AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER}"
       OPENAI_API_KEY: "${OPENAI_API_KEY}"
       OPENAI_SERVER_URL: "${OPENAI_SERVER_URL}"
@@ -50,29 +55,33 @@ services:
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
       TEMP_DIR: "/app/temp_audio"
+      USE_GPU_CLUSTERING: "false"
     volumes:
-      - temp-audio-flask:/app/temp_audio
+      - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
     depends_on:
       - redis
       - postgres
     restart: unless-stopped
 
-  # AudioMuse-AI RQ Worker service
+  # AudioMuse-AI RQ Worker service (CPU-only, locally built)
+  # NOTE: This service uses the SAME image as flask, built only once
   audiomuse-ai-worker:
-    image: ghcr.io/neptunehub/audiomuse-ai:latest
+    image: audiomuse-ai:local-cpu  # Reuses the image built above
+    pull_policy: never  # Always use locally built image, never pull from registry
     container_name: audiomuse-ai-worker-instance
     environment:
-      SERVICE_TYPE: "worker"
-      MEDIASERVER_TYPE: "navidrome"
-      NAVIDROME_URL: "${NAVIDROME_URL}"
-      NAVIDROME_USER: "${NAVIDROME_USER}"
-      NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD}"
+      SERVICE_TYPE: "worker" # Tells the container to run the RQ worker
+      MEDIASERVER_TYPE: "jellyfin" # Specify the media server type
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
+      JELLYFIN_URL: "${JELLYFIN_URL}"
+      # DATABASE_URL is now constructed by config.py from the following:
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
       POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
-      POSTGRES_HOST: "postgres"
+      POSTGRES_HOST: "postgres" # Service name of the postgres container
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
-      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
       AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER}"
       OPENAI_API_KEY: "${OPENAI_API_KEY}"
       OPENAI_SERVER_URL: "${OPENAI_SERVER_URL}"
@@ -81,16 +90,19 @@ services:
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
       TEMP_DIR: "/app/temp_audio"
+      USE_GPU_CLUSTERING: "false"
     volumes:
-      - temp-audio-worker:/app/temp_audio
+      - temp-audio-worker:/app/temp_audio # Volume for temporary audio files
     depends_on:
       - redis
       - postgres
     restart: unless-stopped
+    deploy:
+      replicas: 1  # Run 1 worker instance
 
 # Define volumes for persistent data and temporary files
 volumes:
   redis-data:
   postgres-data:
-  temp-audio-flask:
-  temp-audio-worker:
+  temp-audio-flask: # Volume for Flask app's temporary audio
+  temp-audio-worker: # Volume for Worker's temporary audio

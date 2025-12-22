@@ -1,19 +1,18 @@
 # AudioMuse-AI Deployment Configuration
 #
-# WORKER LOCAL GPU TEMPLATE - Build and run a GPU-enabled worker for heavy tasks like analysis and clustering.
+# WORKER LOCAL CPU TEMPLATE - Build and run a CPU-only worker for heavy tasks like analysis and clustering.
 # This worker connects to a remote server running AudioMuse-AI Flask application and databases.
-# Builds the image locally with GPU support.
+# Builds the image locally with CPU-only support (suitable for macOS or systems without NVIDIA GPU).
 
 services:
-  # AudioMuse-AI Worker service (GPU-enabled, locally built)
+  # AudioMuse-AI Worker service (CPU-only, locally built)
   audiomuse-ai-worker:
-    image: audiomuse-ai:worker-gpu
+    image: audiomuse-ai:worker-cpu
     build:
       context: ../       # Build from project root (one level up from deployment/)
       dockerfile: Dockerfile
-      args:  # GPU build args
-        BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
-    container_name: audiomuse-ai-worker-instance
+      # No args needed - defaults to ubuntu:22.04 (CPU-only)
+    container_name: audiomuse-ai-worker-cpu-instance
     ports:
       - "8029:8000"  # Expose worker API
     environment:
@@ -43,18 +42,11 @@ services:
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
       TEMP_DIR: "/app/temp_audio"
-      USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
+      USE_GPU_CLUSTERING: "false"  # CPU-only mode
       CLAP_PYTHON_MULTITHREADS: "${CLAP_PYTHON_MULTITHREADS:-false}"
     volumes:
       - temp-audio-worker:/app/temp_audio
     restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
 
 volumes:
   temp-audio-worker:

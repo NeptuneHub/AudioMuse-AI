@@ -4,7 +4,8 @@
 <li><a href="{{ url_for('artist_similarity_bp.artist_similarity_page') }}" {% if active == 'artist_similarity' %}class="active"{% endif %}>Artist Similarity</a></li>
 <li><a href="{{ url_for('path_bp.path_page') }}" {% if active == 'path' %}class="active"{% endif %}>Song Path</a></li>
 <li><a href="{{ url_for('alchemy_bp.alchemy_page') }}" {% if active == 'alchemy' %}class="active"{% endif %}>Song Alchemy</a></li>
-<li><a href="{{ url_for('clap_search_bp.clap_search_page') }}" {% if active == 'clap_search' %}class="active"{% endif %}>Text Search</a></li>
+{% if clap_enabled %}<li><a href="{{ url_for('clap_search_bp.clap_search_page') }}" {% if active == 'clap_search' %}class="active"{% endif %}>Text Search (CLAP)</a></li>{% endif %}
+{% if mulan_enabled %}<li><a href="{{ url_for('mulan_search_bp.mulan_search_page') }}" {% if active == 'mulan_search' %}class="active"{% endif %}>Text Search (MuLan)</a></li>{% endif %}
 <li><a href="{{ url_for('map_bp.map_ui') }}" {% if active == 'map' %}class="active"{% endif %}>Music Map</a></li>
 <li><a href="{{ url_for('sonic_fingerprint_bp.sonic_fingerprint_page') }}" {% if active == 'sonic_fingerprint' %}class="active"{% endif %}>Sonic Fingerprint</a></li>
 <li><a href="{{ url_for('waveform_bp.waveform_page') }}" {% if active == 'waveform' %}class="active"{% endif %}>Waveform</a></li>

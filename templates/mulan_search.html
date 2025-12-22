@@ -158,27 +158,27 @@
 {% block content %}
 <section>
     <header class="page-header">
-        <h1>AudioMuse-AI - Text Search</h1>
-        <p>Find music using natural language descriptions - use music terms for better results.</p>
+        <h1>AudioMuse-AI - MuLan Text Search</h1>
+        <p>Find music using natural language descriptions powered by MuQ (Music-and-Language model).</p>
     </header>
 
-    {% if not clap_enabled %}
+    {% if not mulan_enabled %}
     <div class="error-message">
-        <strong>⚠️ CLAP Text Search is disabled.</strong>
-        <p>To enable, set <code>CLAP_ENABLED=true</code> in your environment and ensure the CLAP model is available.</p>
+        <strong>⚠️ MuLan Text Search is disabled.</strong>
+        <p>To enable, set <code>MULAN_ENABLED=true</code> in your environment and ensure the MuLan models are available.</p>
     </div>
     {% else %}
     
     {% if cache_stats.loaded %}
     <div class="cache-stats">
-        <strong>✓ CLAP Search Ready</strong> | 
+        <strong>✓ MuLan Search Ready</strong> | 
         <strong>{{ cache_stats.song_count }}</strong> songs indexed | 
         {{ cache_stats.memory_mb }} MB in memory
     </div>
     {% else %}
     <div class="error-message">
-        <strong>⚠️ No CLAP embeddings found.</strong>
-        <p>Please run song analysis first to generate CLAP embeddings for text search.</p>
+        <strong>⚠️ No MuLan embeddings found.</strong>
+        <p>Please run song analysis first to generate MuLan embeddings for text search.</p>
     </div>
     {% endif %}
     
@@ -189,7 +189,7 @@
                     Search Query:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Describe the music you want to find using music terms. This functionality perform well with mood, genre and instrument.</span>
+                        <span class="tooltip-text">Describe the music you want to find using natural language. MuLan understands genre, mood, instrumentation, and style descriptions.</span>
                     </span>
                 </label>
                 <input 
@@ -197,7 +197,7 @@
                     id="search-query" 
                     name="query" 
                     class="search-box"
-                    placeholder="e.g., Energertic POP song with femlace voice, Sax Jazz"
+                    placeholder="e.g., energetic electronic dance, relaxing acoustic guitar"
                     autocomplete="off"
                     required
                     {% if not cache_stats.loaded %}disabled{% endif %}
@@ -216,7 +216,7 @@
             </div>
             
             <button type="submit" {% if not cache_stats.loaded %}disabled{% endif %}>
-                🔍 Search
+                🔍 Search with MuLan
             </button>
         </form>
         
@@ -242,7 +242,7 @@
     <form id="playlist-form">
         <div class="param-group">
             <label for="playlist_name">Playlist Name:</label>
-            <input type="text" id="playlist_name" name="playlist_name" placeholder="My CLAP Search Playlist" required>
+            <input type="text" id="playlist_name" name="playlist_name" placeholder="My MuLan Search Playlist" required>
         </div>
         <button type="submit">Create Playlist on Media Server</button>
     </form>
@@ -270,23 +270,23 @@ document.addEventListener('DOMContentLoaded', function() {
     
     async function warmupModel() {
         try {
-            console.log('Warming up CLAP model...');
-            const response = await fetch("{{ url_for('clap_search_bp.warmup_model_api') }}", {
+            console.log('Warming up MuLan models...');
+            const response = await fetch("{{ url_for('mulan_search_bp.warmup_model_api') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
             });
             const data = await response.json();
             if (data.loaded) {
-                console.log(`✓ Model warmed up (expires in ${data.expiry_seconds}s)`);
+                console.log(`✓ MuLan models warmed up (expires in ${data.expiry_seconds}s)`);
             }
         } catch (error) {
-            console.error('Failed to warmup model:', error);
+            console.error('Failed to warmup MuLan models:', error);
         }
     }
     
     async function loadTopQueries() {
         try {
-            const response = await fetch("{{ url_for('clap_search_bp.top_queries_api') }}");
+            const response = await fetch("{{ url_for('mulan_search_bp.top_queries_api') }}");
             const data = await response.json();
             
             if (response.ok && data.ready && data.queries && data.queries.length > 0) {
@@ -317,15 +317,6 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
     
-    // Example query tags (kept for backwards compatibility, but replaced by loadTopQueries)
-    document.querySelectorAll('.example-tag').forEach(tag => {
-        tag.addEventListener('click', function() {
-            const query = this.getAttribute('data-query');
-            searchQuery.value = query;
-            searchForm.dispatchEvent(new Event('submit'));
-        });
-    });
-    
     // Search form submission
     searchForm.addEventListener('submit', async function(e) {
         e.preventDefault();
@@ -340,11 +331,11 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Show loading
         resultsContainer.classList.remove('hidden');
-        resultsList.innerHTML = '<div class="loading-spinner">🔍 Searching...</div>';
+        resultsList.innerHTML = '<div class="loading-spinner">🔍 Searching with MuLan...</div>';
         playlistCreator.classList.add('hidden');
         
         try {
-            const response = await fetch("{{ url_for('clap_search_bp.clap_search_api') }}", {
+            const response = await fetch("{{ url_for('mulan_search_bp.mulan_search_api') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ query, limit })

@@ -5,6 +5,7 @@ Handles MCP tool calling for different AI providers (Gemini, OpenAI, Mistral, Ol
 import json
 import logging
 from typing import List, Dict, Any, Optional
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +236,9 @@ Call the tools needed to fulfill the request."""
             "tool_choice": "auto"
         }
         
-        with httpx.Client(timeout=60.0) as client:
+        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
+        log_messages.append(f"Using timeout: {timeout} seconds for OpenAI/Mistral request")
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(api_url, headers=headers, json=payload)
             response.raise_for_status()
             result = response.json()
@@ -261,6 +264,16 @@ Call the tools needed to fulfill the request."""
         log_messages.append(f"OpenAI called {len(tool_calls)} tools")
         return {"tool_calls": tool_calls}
     
+    except httpx.ReadTimeout:
+        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
+        logger.warning(f"OpenAI/Mistral request timed out after {timeout} seconds")
+        log_messages.append(f"⏱️ Request timed out after {timeout} seconds. Consider increasing AI_REQUEST_TIMEOUT_SECONDS environment variable.")
+        return {"error": f"Request timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."}
+    except httpx.TimeoutException as e:
+        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
+        logger.warning(f"OpenAI/Mistral request timed out: {str(e)}")
+        log_messages.append(f"⏱️ Request timed out after {timeout} seconds: {str(e)}")
+        return {"error": f"Request timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."}
     except Exception as e:
         logger.exception("Error calling OpenAI with tools")
         return {"error": f"OpenAI error: {str(e)}"}
@@ -476,7 +489,9 @@ Return ONLY the JSON object with tool_calls array:"""
             "format": "json"
         }
         
-        with httpx.Client(timeout=120.0) as client:
+        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
+        log_messages.append(f"Using timeout: {timeout} seconds for Ollama request")
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(ollama_url, json=payload)
             response.raise_for_status()
             result = response.json()
@@ -555,6 +570,18 @@ Return ONLY the JSON object with tool_calls array:"""
             log_messages.append(f"Response was: {response_text[:200]}")
             return {"error": "Failed to parse Ollama tool calls", "raw_response": response_text}
     
+    except httpx.ReadTimeout:
+        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
+        logger.warning(f"Ollama request timed out after {timeout} seconds")
+        log_messages.append(f"⏱️ Ollama request timed out after {timeout} seconds. Your model or hardware may be too slow.")
+        log_messages.append(f"💡 Solution: Set AI_REQUEST_TIMEOUT_SECONDS environment variable to a higher value (e.g., 600 for 10 minutes)")
+        return {"error": f"Ollama timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."}
+    except httpx.TimeoutException as e:
+        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
+        logger.warning(f"Ollama request timed out: {str(e)}")
+        log_messages.append(f"⏱️ Ollama request timed out after {timeout} seconds: {str(e)}")
+        log_messages.append(f"💡 Solution: Set AI_REQUEST_TIMEOUT_SECONDS environment variable to a higher value")
+        return {"error": f"Ollama timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."}
     except Exception as e:
         logger.exception("Error calling Ollama with tools")
         return {"error": f"Ollama error: {str(e)}"}

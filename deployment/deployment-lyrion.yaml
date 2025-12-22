@@ -34,6 +34,7 @@ data:
   POSTGRES_HOST: "postgres-service.test"
   POSTGRES_PORT: "5432"
   REDIS_URL: "redis://redis-service.test:6379/0"
+  CLAP_ENABLED: "true" # Enable CLAP text search (set to "false" for slower systems)
   TEMP_DIR: "/app/temp_audio"
 ---
 apiVersion: apps/v1

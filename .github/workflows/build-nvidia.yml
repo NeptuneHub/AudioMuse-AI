@@ -2,9 +2,12 @@ name: Build and Push AudioMuse AI Docker Image with NVIDIA support
 
 on:
   push:
-    # Only trigger on version tags to avoid automatic runs on direct pushes to main.
+    # Trigger on version tags for stable releases
     tags:
       - 'v*.*.*'  # Trigger for version tags like v1.0.0
+    # Trigger on pushes to devel branch for development releases
+    branches:
+      - devel
   # Allow manual runs from the Actions UI
   workflow_dispatch:
     inputs:
@@ -60,6 +63,11 @@ jobs:
             ALL_TAGS="${VERSIONED_TAG},${LATEST_TAG}"
             echo "Building versioned tag: $VERSIONED_TAG"
             echo "Also tagging as latest: $LATEST_TAG"
+          elif [[ "${GITHUB_REF}" == refs/heads/devel ]]; then
+            # When compiling from devel branch, create devel-nvidia tag
+            DEVEL_TAG="ghcr.io/$REPO_NAME_LOWER:devel-nvidia"
+            ALL_TAGS="${DEVEL_TAG}"
+            echo "Building devel tag: $DEVEL_TAG"
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             # Manual run with version input
             VERSION_TAG=$(echo "${{ inputs.version_tag }}" | sed -e 's|^v||g')
@@ -69,7 +77,7 @@ jobs:
             echo "Building manual version tag: $VERSIONED_TAG"
             echo "Also tagging as latest: $LATEST_TAG"
           else
-            echo "This workflow is intended to run on tag pushes (refs/tags/v*) or manual dispatch. Exiting."
+            echo "This workflow is intended to run on tag pushes (refs/tags/v*), devel branch, or manual dispatch. Exiting."
             exit 1
           fi
 

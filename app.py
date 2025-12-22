@@ -1,11 +1,10 @@
 import os
 import psycopg2
 from psycopg2.extras import DictCursor
-from flask import Flask, jsonify, request, render_template, g, current_app, url_for
+from flask import Flask, jsonify, request, render_template, g
 import json
 import logging
 import threading
-import uuid # For generating job IDs if needed directly in API, though tasks handle their own
 import time
 
 # RQ imports
@@ -69,11 +68,16 @@ if ENABLE_PROXY_FIX:
 # Log the application version on startup
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
 
-# --- Context Processor to Inject Version ---
+# --- Context Processor to Inject Version and Feature Flags ---
 @app.context_processor
-def inject_version():
-    """Injects the app version into all templates."""
-    return dict(app_version=APP_VERSION)
+def inject_globals():
+    """Injects global variables into all templates."""
+    from config import CLAP_ENABLED, MULAN_ENABLED
+    return dict(
+        app_version=APP_VERSION,
+        clap_enabled=CLAP_ENABLED,
+        mulan_enabled=MULAN_ENABLED
+    )
 
 # --- Swagger Setup ---
 app.config['SWAGGER'] = {
@@ -509,7 +513,14 @@ def listen_for_index_reloads():
   # Create a new Redis connection for this thread.
   # Sharing the main redis_conn object across threads is not recommended.
   from redis import Redis
-  thread_redis_conn = Redis.from_url(REDIS_URL)
+  thread_redis_conn = Redis.from_url(
+    REDIS_URL,
+    socket_connect_timeout=30,
+    socket_timeout=60,
+    socket_keepalive=True,
+    health_check_interval=30,
+    retry_on_timeout=True
+  )
   pubsub = thread_redis_conn.pubsub()
   pubsub.subscribe('index-updates')
   logger.info("Background thread started. Listening for Voyager index reloads on Redis channel 'index-updates'.")
@@ -534,10 +545,18 @@ def listen_for_index_reloads():
             # Rebuild the map JSON cache used by the /api/map endpoint
             from app_map import build_map_cache
             build_map_cache()
-            # Reload CLAP cache
+            
+            # Reload CLAP cache (with logging)
+            logger.info("Reloading CLAP embedding cache...")
             from tasks.clap_text_search import refresh_clap_cache
-            refresh_clap_cache()
-            logger.info("In-memory Voyager index, artist index, map projections, and CLAP cache reloaded successfully by background listener.")
+            clap_success = refresh_clap_cache()
+            
+            # Reload MuLan cache (with logging)
+            logger.info("Reloading MuLan embedding cache...")
+            from tasks.mulan_text_search import refresh_mulan_cache
+            mulan_success = refresh_mulan_cache()
+            
+            logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, MuLan {'✓' if mulan_success else '✗'}")
           except Exception as e:
             logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
       elif message_data == 'reload-artist':
@@ -578,6 +597,7 @@ from app_map import map_bp
 from app_waveform import waveform_bp
 from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
+from app_mulan_search import mulan_search_bp
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -593,6 +613,7 @@ app.register_blueprint(map_bp)
 app.register_blueprint(waveform_bp)
 app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
+app.register_blueprint(mulan_search_bp)
 
 if __name__ == '__main__':
   os.makedirs(TEMP_DIR, exist_ok=True)
@@ -622,18 +643,15 @@ if __name__ == '__main__':
       logger.info("In-memory artist component projection loaded at startup.")
     except Exception as e:
       logger.debug(f"No precomputed artist projection to load at startup or load failed: {e}")
-    # Load CLAP model and text search cache
+    # Load CLAP embeddings cache (model will lazy-load on first use)
     try:
       from config import CLAP_ENABLED
       if CLAP_ENABLED:
-        # Preload CLAP model (3GB) to avoid delay on first text search
-        from tasks.clap_analyzer import initialize_clap_model
-        if initialize_clap_model():
-          logger.info("CLAP model preloaded at Flask startup.")
-        # Load CLAP embeddings cache (15MB)
+        # Load CLAP embeddings cache (15MB) - model lazy-loads on first search to save 3GB RAM
         from tasks.clap_text_search import load_clap_cache_from_db, load_top_queries_from_db
         if load_clap_cache_from_db():
-          logger.info("CLAP text search cache loaded at startup.")
+          logger.info("CLAP text search cache loaded at startup (embeddings only).")
+          logger.info("CLAP model will lazy-load on first text search (~1-2s delay, saves 3GB RAM).")
           
           # Load top queries from database (default queries only, no computation)
           has_existing = load_top_queries_from_db()
@@ -642,7 +660,25 @@ if __name__ == '__main__':
           else:
             logger.info("No queries found in database (should not happen - check DB)")
     except Exception as e:
-      logger.debug(f"CLAP not loaded at startup (may be disabled or failed): {e}")
+      logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
+    # Load MuLan embeddings cache (model will lazy-load on first use)
+    try:
+      from config import MULAN_ENABLED
+      if MULAN_ENABLED:
+        # Load MuLan embeddings cache - models lazy-load on first search to save RAM
+        from tasks.mulan_text_search import load_mulan_cache_from_db, load_top_queries_from_db as load_mulan_top_queries_from_db
+        if load_mulan_cache_from_db():
+          logger.info("MuLan text search cache loaded at startup (embeddings only).")
+          logger.info("MuLan models will lazy-load on first text search.")
+          
+          # Load top queries from database
+          has_existing = load_mulan_top_queries_from_db()
+          if has_existing:
+            logger.info("Loaded MuLan top queries from database (defaults).")
+          else:
+            logger.info("No MuLan queries found in database (defaults inserted)")
+    except Exception as e:
+      logger.debug(f"MuLan cache not loaded at startup (may be disabled or failed): {e}")
     # Initialize map JSON cache once at startup (reads DB one time)
     # Run this in a background daemon thread so the Flask process doesn't block on the heavy DB read.
     def _start_map_init_background():
