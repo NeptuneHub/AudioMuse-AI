@@ -11,7 +11,7 @@
 #      pytest test/test_clap_analysis_integration.py -s -q
 #
 # Note: Test audio files should be in test/songs/
-#       CLAP ONNX model should be in test/models/
+#       CLAP ONNX models (clap_audio_model.onnx and clap_text_model.onnx) should be in test/models/
 import sys
 import types
 from pathlib import Path
@@ -62,10 +62,14 @@ def test_clap_analysis_runs_and_shows_output():
     }
     project_root = Path(__file__).resolve().parents[1]
     models_dir = project_root / 'test' / 'models'
-    clap_model = models_dir / 'clap_model.onnx'
+    clap_audio_model = models_dir / 'clap_audio_model.onnx'
+    clap_text_model = models_dir / 'clap_text_model.onnx'
     
-    if not clap_model.exists():
-        pytest.skip(f"CLAP model not present in test/models: {clap_model}")
+    if not clap_audio_model.exists():
+        pytest.skip(f"CLAP audio model not present in test/models: {clap_audio_model}")
+    
+    if not clap_text_model.exists():
+        pytest.skip(f"CLAP text model not present in test/models: {clap_text_model}")
 
     # Ensure onnxruntime is available
     try:
@@ -86,7 +90,8 @@ def test_clap_analysis_runs_and_shows_output():
 
     # Override config before importing CLAP analyzer
     import config
-    config.CLAP_MODEL_PATH = str(clap_model)
+    config.CLAP_AUDIO_MODEL_PATH = str(clap_audio_model)
+    config.CLAP_TEXT_MODEL_PATH = str(clap_text_model)
     config.CLAP_ENABLED = True
 
     # Import CLAP analyzer
