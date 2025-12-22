@@ -49,6 +49,7 @@ services:
       OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
       GEMINI_API_KEY: "${GEMINI_API_KEY}" # From gemini-api-credentials secret
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}" # From mistral-api-credentials secret
+      CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
@@ -80,6 +81,7 @@ services:
       OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
       GEMINI_API_KEY: "${GEMINI_API_KEY}" # From gemini-api-credentials secret
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
+      CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-worker:/app/temp_audio # Volume for temporary audio files

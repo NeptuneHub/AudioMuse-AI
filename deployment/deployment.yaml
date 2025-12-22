@@ -47,6 +47,7 @@ data:
   POSTGRES_HOST: "postgres-service.playlist" # Database host
   POSTGRES_PORT: "5432" # Database port
   REDIS_URL: "redis://redis-service.playlist:6379/0"
+  CLAP_ENABLED: "true" # Enable CLAP text search (set to "false" for slower systems)
   TEMP_DIR: "/app/temp_audio" # Updated to match code changes
 ---
 apiVersion: apps/v1
