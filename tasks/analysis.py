@@ -670,10 +670,16 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 needs_clap = track_id_str in missing_clap_ids_set
                 needs_mulan = track_id_str in missing_mulan_ids_set
                 
-                # Skip if ALL enabled analyses are already done (MusiCNN + CLAP + MuLan)
+                # Skip if ALL enabled analyses are already done
                 if not needs_musicnn and not needs_clap and not needs_mulan:
                     tracks_skipped_count += 1
-                    logger.info(f"Skipping '{track_name_full}' - all analyses complete (MusiCNN: ✓, CLAP: ✓, MuLan: ✓)")
+                    # Build dynamic status message based on enabled features
+                    status_parts = ["MusiCNN: ✓"]
+                    if is_clap_available():
+                        status_parts.append("CLAP: ✓")
+                    if MULAN_ENABLED:
+                        status_parts.append("MuLan: ✓")
+                    logger.info(f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)})")
                     continue
                 
                 # MODIFIED: Call to download_track simplified. Assumes it gets server details from config.
@@ -1001,7 +1007,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                             existing_clap_ids = {row[0] for row in cur.fetchall()}
                             needs_clap_analysis = len(existing_clap_ids) < len(tracks)
                     
-                    # Check MuLan if enabled
+                    # Check MuLan only if enabled
                     needs_mulan_analysis = False
                     if MULAN_ENABLED:
                         with get_db() as conn, conn.cursor() as cur:
@@ -1021,7 +1027,13 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 if existing_count >= len(tracks) and not needs_clap_analysis and not needs_mulan_analysis:
                     albums_skipped += 1
                     checked_album_ids.add(album['Id'])
-                    logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {existing_count}/{len(tracks)} tracks already analyzed (MusiCNN + CLAP + MuLan).")
+                    # Build dynamic status message based on enabled features
+                    status_parts = ["MusiCNN"]
+                    if is_clap_available():
+                        status_parts.append("CLAP")
+                    if MULAN_ENABLED:
+                        status_parts.append("MuLan")
+                    logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {existing_count}/{len(tracks)} tracks already analyzed ({' + '.join(status_parts)}).")
                     continue
                 
                 # MODIFIED: Enqueue call for analyze_album_task now passes fewer arguments.

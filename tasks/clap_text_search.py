@@ -46,7 +46,7 @@ def get_clap_cache_size() -> int:
 
 
 def _unload_timer_worker():
-    """Background thread that unloads CLAP model after timer expires."""
+    """Background thread that unloads CLAP text model after timer expires."""
     global _WARM_CACHE_TIMER
     
     while True:
@@ -60,11 +60,11 @@ def _unload_timer_worker():
         time_remaining = expiry - time.time()
         
         if time_remaining <= 0:
-            # Timer expired - unload model
-            from .clap_analyzer import unload_clap_model, is_clap_model_loaded
+            # Timer expired - unload text model only
+            from .clap_analyzer import unload_clap_model, is_clap_text_loaded
             
-            if is_clap_model_loaded():
-                logger.info("Warm cache timer expired - unloading CLAP model")
+            if is_clap_text_loaded():
+                logger.info("Warm cache timer expired - unloading CLAP text model")
                 unload_clap_model()
             
             with _WARM_CACHE_TIMER['lock']:
@@ -77,22 +77,22 @@ def _unload_timer_worker():
 
 
 def warmup_text_search_model():
-    """Preload CLAP model and reset warmup timer.
+    """Preload CLAP text model (not audio model) and reset warmup timer.
     
     Returns:
         dict: Status with 'loaded' (bool) and 'expiry_seconds' (int)
     """
     global _WARM_CACHE_TIMER
-    from .clap_analyzer import initialize_clap_model, is_clap_model_loaded
+    from .clap_analyzer import initialize_clap_text_model, is_clap_text_loaded
     
     # Load duration from config on first use
     if _WARM_CACHE_TIMER['duration_seconds'] is None:
         _WARM_CACHE_TIMER['duration_seconds'] = config.CLAP_TEXT_SEARCH_WARMUP_DURATION
     
-    # Load model if not already loaded
-    if not is_clap_model_loaded():
-        logger.info("Warming up CLAP model for text search...")
-        success = initialize_clap_model()
+    # Load text model only (not audio model - saves 268MB)
+    if not is_clap_text_loaded():
+        logger.info("Warming up CLAP text model for text search (not loading audio model)...")
+        success = initialize_clap_text_model()
         if not success:
             return {'loaded': False, 'expiry_seconds': 0}
     

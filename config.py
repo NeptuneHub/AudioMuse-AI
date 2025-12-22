@@ -266,6 +266,10 @@ EMBEDDING_DIMENSION = 200
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
+# Split CLAP models: audio model for analysis, text model for search
+CLAP_AUDIO_MODEL_PATH = os.environ.get("CLAP_AUDIO_MODEL_PATH", "/app/model/clap_audio_model.onnx")
+CLAP_TEXT_MODEL_PATH = os.environ.get("CLAP_TEXT_MODEL_PATH", "/app/model/clap_text_model.onnx")
+# Legacy path for backward compatibility (unused with split models)
 CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", "/app/model/clap_model.onnx")
 CLAP_EMBEDDING_DIMENSION = 512
 # CPU threading for CLAP analysis:

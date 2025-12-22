@@ -1,7 +1,13 @@
 """
 CLAP Audio Analyzer for Text-Based Music Search
-Uses ONNX CLAP model to generate 512-dim embeddings for audio files
-and text queries for natural language music search.
+Uses split ONNX CLAP models:
+- Audio model: For analyzing music files (worker containers)
+- Text model: For text search queries (Flask containers)
+
+Split models allow loading only what's needed, saving memory:
+- Audio analysis: ~268MB (audio model only)
+- Text search: ~478MB (text model only)
+- Combined (old): ~746MB (both models)
 
 ONNX Runtime provides:
 - ~2-3GB less RAM usage compared to PyTorch
@@ -23,17 +29,180 @@ import config
 
 logger = logging.getLogger(__name__)
 
-# Global ONNX session (lazy loaded)
-_onnx_session = None
+# Global ONNX sessions (lazy loaded)
+_audio_session = None  # For audio analysis (worker containers)
+_text_session = None   # For text search (Flask containers)
 _tokenizer = None
-_cached_dummy_mel = None  # Reusable dummy mel-spectrogram tensor
+_cached_dummy_input_ids = None  # Reusable dummy input for audio-only inference
 
 
-def _load_onnx_model():
-    """Load CLAP ONNX model with optimized settings."""
+def _load_audio_model():
+    """Load CLAP audio-only ONNX model for music analysis (worker containers)."""
     import onnxruntime as ort
     import gc
     
+    model_path = config.CLAP_AUDIO_MODEL_PATH
+    logger.info(f"Loading CLAP audio model from {model_path}...")
+    
+    # Configure ONNX Runtime session options
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    sess_options.log_severity_level = 3  # 0=Verbose, 1=Info, 2=Warning, 3=Error, 4=Fatal
+    
+    # Threading configuration based on CLAP_PYTHON_MULTITHREADS:
+    # - False (default): Let ONNX Runtime decide optimal thread count automatically
+    # - True: Disable ONNX threading (set to 1), use Python ThreadPoolExecutor instead
+    if not config.CLAP_PYTHON_MULTITHREADS:
+        logger.info("CLAP Audio: Using ONNX Runtime automatic thread management")
+    else:
+        # Python ThreadPoolExecutor will handle threading - disable ONNX threading
+        sess_options.intra_op_num_threads = 1  # Single-threaded ONNX operations
+        sess_options.inter_op_num_threads = 1  # Single-threaded ONNX operations
+        logger.info("CLAP Audio: Using Python threading (auto-calculated threads), ONNX single-threaded")
+    
+    # GPU support: ONNX Runtime handles CUDA availability internally
+    session = None
+    
+    # Configure provider options with GPU memory management
+    available_providers = ort.get_available_providers()
+    if 'CUDAExecutionProvider' in available_providers:
+        gpu_device_id = 0
+        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+        if cuda_visible and cuda_visible != '-1':
+            gpu_device_id = 0
+        
+        cuda_options = {
+            'device_id': gpu_device_id,
+            'arena_extend_strategy': 'kSameAsRequested',
+            'cudnn_conv_algo_search': 'DEFAULT',
+        }
+        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
+        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
+    else:
+        provider_options = [('CPUExecutionProvider', {})]
+        logger.info("CUDA provider not available - using CPU only")
+    
+    # Create session
+    try:
+        session = ort.InferenceSession(
+            model_path,
+            sess_options=sess_options,
+            providers=[p[0] for p in provider_options],
+            provider_options=[p[1] for p in provider_options]
+        )
+        
+        active_provider = session.get_providers()[0]
+        logger.info(f"✓ CLAP audio model loaded successfully (~268MB)")
+        logger.info(f"  Active execution provider: {active_provider}")
+            
+    except Exception as e:
+        logger.warning(f"Failed to load with preferred providers: {e}")
+        logger.info("Attempting final CPU-only fallback...")
+        try:
+            session = ort.InferenceSession(
+                model_path,
+                sess_options=sess_options,
+                providers=['CPUExecutionProvider']
+            )
+            logger.info(f"✓ CLAP audio model loaded successfully (CPU fallback)")
+        except Exception as cpu_error:
+            logger.error(f"Failed to load ONNX audio model even with CPU: {cpu_error}")
+            raise
+    
+    if session is None:
+        raise RuntimeError("Failed to create audio ONNX session")
+    
+    logger.info(f"  Inputs: {[i.name for i in session.get_inputs()]}")
+    logger.info(f"  Outputs: {[o.name for o in session.get_outputs()]}")
+    
+    gc.collect()
+    return session
+
+
+def _load_text_model():
+    """Load CLAP text-only ONNX model for text search (Flask containers)."""
+    import onnxruntime as ort
+    import gc
+    
+    model_path = config.CLAP_TEXT_MODEL_PATH
+    logger.info(f"Loading CLAP text model from {model_path}...")
+    
+    # Configure ONNX Runtime session options
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    sess_options.log_severity_level = 3
+    
+    if not config.CLAP_PYTHON_MULTITHREADS:
+        logger.info("CLAP Text: Using ONNX Runtime automatic thread management")
+    else:
+        sess_options.intra_op_num_threads = 1
+        sess_options.inter_op_num_threads = 1
+        logger.info("CLAP Text: Using Python threading, ONNX single-threaded")
+    
+    # Text model typically runs on CPU in Flask containers
+    session = None
+    available_providers = ort.get_available_providers()
+    
+    if 'CUDAExecutionProvider' in available_providers:
+        gpu_device_id = 0
+        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+        if cuda_visible and cuda_visible != '-1':
+            gpu_device_id = 0
+        
+        cuda_options = {
+            'device_id': gpu_device_id,
+            'arena_extend_strategy': 'kSameAsRequested',
+            'cudnn_conv_algo_search': 'DEFAULT',
+        }
+        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
+        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
+    else:
+        provider_options = [('CPUExecutionProvider', {})]
+        logger.info("CUDA provider not available - using CPU only")
+    
+    # Create session
+    try:
+        session = ort.InferenceSession(
+            model_path,
+            sess_options=sess_options,
+            providers=[p[0] for p in provider_options],
+            provider_options=[p[1] for p in provider_options]
+        )
+        
+        active_provider = session.get_providers()[0]
+        logger.info(f"✓ CLAP text model loaded successfully (~478MB)")
+        logger.info(f"  Active execution provider: {active_provider}")
+            
+    except Exception as e:
+        logger.warning(f"Failed to load with preferred providers: {e}")
+        logger.info("Attempting final CPU-only fallback...")
+        try:
+            session = ort.InferenceSession(
+                model_path,
+                sess_options=sess_options,
+                providers=['CPUExecutionProvider']
+            )
+            logger.info(f"✓ CLAP text model loaded successfully (CPU fallback)")
+        except Exception as cpu_error:
+            logger.error(f"Failed to load ONNX text model even with CPU: {cpu_error}")
+            raise
+    
+    if session is None:
+        raise RuntimeError("Failed to create text ONNX session")
+    
+    logger.info(f"  Inputs: {[i.name for i in session.get_inputs()]}")
+    logger.info(f"  Outputs: {[o.name for o in session.get_outputs()]}")
+    
+    gc.collect()
+    return session
+
+
+def _load_onnx_model():
+    """DEPRECATED: Load combined CLAP ONNX model (for backward compatibility)."""
+    import onnxruntime as ort
+    import gc
+    
+    logger.warning("DEPRECATED: Using legacy combined CLAP model. Consider updating to split models.")
     logger.info(f"Loading CLAP ONNX model from {config.CLAP_MODEL_PATH}...")
     
     # Configure ONNX Runtime session options
@@ -137,26 +306,99 @@ def _load_tokenizer():
     return tokenizer
 
 
+def initialize_clap_audio_model():
+    """Initialize CLAP audio model for music analysis (worker containers only)."""
+    global _audio_session
+    
+    if not config.CLAP_ENABLED:
+        logger.info("CLAP is disabled in config. Skipping audio model initialization.")
+        return False
+    
+    if _audio_session is not None:
+        logger.debug("CLAP audio model already initialized.")
+        return True
+    
+    if not os.path.exists(config.CLAP_AUDIO_MODEL_PATH):
+        logger.error(f"CLAP audio model not found at {config.CLAP_AUDIO_MODEL_PATH}")
+        return False
+    
+    try:
+        _audio_session = _load_audio_model()
+        logger.info("✓ CLAP audio model initialized successfully (for music analysis)")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to initialize CLAP audio model: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def initialize_clap_text_model():
+    """Initialize CLAP text model for text search (Flask containers only)."""
+    global _text_session, _tokenizer
+    
+    if not config.CLAP_ENABLED:
+        logger.info("CLAP is disabled in config. Skipping text model initialization.")
+        return False
+    
+    if _text_session is not None:
+        logger.debug("CLAP text model already initialized.")
+        return True
+    
+    if not os.path.exists(config.CLAP_TEXT_MODEL_PATH):
+        logger.error(f"CLAP text model not found at {config.CLAP_TEXT_MODEL_PATH}")
+        return False
+    
+    try:
+        _text_session = _load_text_model()
+        _tokenizer = _load_tokenizer()
+        logger.info("✓ CLAP text model initialized successfully (for text search)")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to initialize CLAP text model: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def initialize_clap_model():
-    """Initialize CLAP ONNX model if enabled and not already loaded."""
-    global _onnx_session, _tokenizer
+    """Initialize CLAP ONNX model if enabled and not already loaded.
+    
+    DEPRECATED: For backward compatibility. Use initialize_clap_audio_model() or
+    initialize_clap_text_model() instead to load only what you need.
+    """
+    global _audio_session, _text_session, _tokenizer
     
     if not config.CLAP_ENABLED:
         logger.info("CLAP is disabled in config. Skipping model initialization.")
         return False
     
-    if _onnx_session is not None:
-        logger.debug("CLAP ONNX model already initialized.")
+    # Try split models first
+    if os.path.exists(config.CLAP_AUDIO_MODEL_PATH) and os.path.exists(config.CLAP_TEXT_MODEL_PATH):
+        logger.warning("DEPRECATED: initialize_clap_model() called but split models available.")
+        logger.warning("Consider using initialize_clap_audio_model() or initialize_clap_text_model() instead.")
+        
+        # Load both for backward compatibility
+        audio_ok = initialize_clap_audio_model()
+        text_ok = initialize_clap_text_model()
+        return audio_ok and text_ok
+    
+    # Fall back to legacy combined model
+    if _audio_session is not None or _text_session is not None:
+        logger.debug("CLAP model already initialized.")
         return True
     
     if not os.path.exists(config.CLAP_MODEL_PATH):
-        logger.error(f"CLAP ONNX model not found at {config.CLAP_MODEL_PATH}")
+        logger.error(f"CLAP model not found at {config.CLAP_MODEL_PATH}")
         return False
     
     try:
-        _onnx_session = _load_onnx_model()
+        # Load legacy combined model into both slots
+        combined_session = _load_onnx_model()
+        _audio_session = combined_session
+        _text_session = combined_session
         _tokenizer = _load_tokenizer()
-        logger.info("CLAP ONNX model initialized successfully.")
+        logger.info("CLAP ONNX model initialized successfully (legacy combined model).")
         return True
     except Exception as e:
         logger.error(f"Failed to initialize CLAP ONNX model: {e}")
@@ -166,23 +408,30 @@ def initialize_clap_model():
 
 
 def unload_clap_model():
-    """Unload CLAP model from memory to free ~3GB RAM."""
-    global _onnx_session, _tokenizer, _cached_dummy_mel
+    """Unload CLAP model from memory to free RAM."""
+    global _audio_session, _text_session, _tokenizer, _cached_dummy_input_ids
     
-    if _onnx_session is None:
+    if _audio_session is None and _text_session is None:
         return False
     
     try:
-        # Clear ONNX session
-        _onnx_session = None
+        # Clear ONNX sessions
+        freed_mb = 0
+        if _audio_session is not None:
+            _audio_session = None
+            freed_mb += 268
+        if _text_session is not None:
+            _text_session = None
+            freed_mb += 478
+        
         _tokenizer = None
-        _cached_dummy_mel = None
+        _cached_dummy_input_ids = None
         
         # Force garbage collection
         import gc
         gc.collect()
         
-        logger.info("✓ CLAP model unloaded from memory (~3GB freed)")
+        logger.info(f"✓ CLAP model(s) unloaded from memory (~{freed_mb}MB freed)")
         return True
     except Exception as e:
         logger.error(f"Error unloading CLAP model: {e}")
@@ -190,26 +439,63 @@ def unload_clap_model():
 
 
 def is_clap_model_loaded():
-    """Check if CLAP model is currently loaded in memory."""
-    return _onnx_session is not None
+    """Check if any CLAP model is currently loaded in memory."""
+    return _audio_session is not None or _text_session is not None
+
+
+def is_clap_audio_loaded():
+    """Check if CLAP audio model is currently loaded."""
+    return _audio_session is not None
+
+
+def is_clap_text_loaded():
+    """Check if CLAP text model is currently loaded."""
+    return _text_session is not None
+
+
+def get_clap_audio_model():
+    """Get the CLAP audio session, initializing if needed (lazy loading)."""
+    if _audio_session is None:
+        logger.info("Lazy-loading CLAP audio model on first use...")
+        if not initialize_clap_audio_model():
+            raise RuntimeError("Failed to initialize CLAP audio model")
+    return _audio_session
+
+
+def get_clap_text_model():
+    """Get the CLAP text session, initializing if needed (lazy loading)."""
+    if _text_session is None:
+        logger.info("Lazy-loading CLAP text model on first use...")
+        if not initialize_clap_text_model():
+            raise RuntimeError("Failed to initialize CLAP text model")
+    return _text_session
 
 
 def get_clap_model():
-    """Get the global CLAP ONNX session, initializing if needed (lazy loading)."""
-    if _onnx_session is None:
-        logger.info("Lazy-loading CLAP model on first use (saves 3GB RAM at startup)...")
-        if not initialize_clap_model():
-            raise RuntimeError("CLAP ONNX model could not be initialized")
+    """DEPRECATED: Get the global CLAP ONNX session. Use get_clap_audio_model() or get_clap_text_model() instead."""
+    # For backward compatibility, return audio model if available
+    if _audio_session is not None:
+        return _audio_session
+    if _text_session is not None:
+        return _text_session
     
-    return _onnx_session
+    logger.warning("DEPRECATED: get_clap_model() called. Use get_clap_audio_model() or get_clap_text_model()")
+    logger.info("Lazy-loading CLAP model on first use (saves RAM at startup)...")
+    if not initialize_clap_model():
+        raise RuntimeError("Failed to initialize CLAP model")
+    return _audio_session or _text_session
 
 
 def get_tokenizer():
     """Get the global tokenizer, initializing if needed (lazy loading)."""
+    global _tokenizer
+    
     if _tokenizer is None:
-        if not initialize_clap_model():
+        # Initialize tokenizer with text model
+        if not initialize_clap_text_model():
             raise RuntimeError("CLAP tokenizer could not be initialized")
     return _tokenizer
+
 
 
 def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarray:
@@ -280,7 +566,8 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
     try:
         import librosa
         
-        session = get_clap_model()
+        # Get audio-only model for music analysis
+        session = get_clap_audio_model()
         
         # Load audio at CLAP's expected sample rate (48kHz)
         SAMPLE_RATE = 48000
@@ -327,19 +614,13 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
             # Add batch and channel dimensions: (1, 1, time_frames, 64)
             mel_input = mel_spec[:, np.newaxis, :, :]
             
-            # Create dummy inputs for text encoder (not used in audio mode)
-            dummy_input_ids = np.zeros((1, 77), dtype=np.int64)
-            dummy_attention_mask = np.zeros((1, 77), dtype=np.int64)
-            
-            # Run ONNX inference
+            # Run ONNX inference (audio model only needs mel_spectrogram)
             onnx_inputs = {
-                'mel_spectrogram': mel_input,
-                'input_ids': dummy_input_ids,
-                'attention_mask': dummy_attention_mask
+                'mel_spectrogram': mel_input
             }
             
             outputs = session.run(None, onnx_inputs)
-            audio_embedding = outputs[0]  # First output is audio_embedding
+            audio_embedding = outputs[0]  # Output is audio_embedding
             
             return audio_embedding[0]  # Remove batch dimension
         
@@ -424,8 +705,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
 
 def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
     """
-    Get CLAP embedding for a text query using ONNX Runtime.
-    Uses cached dummy mel-spectrogram for efficiency.
+    Get CLAP embedding for a text query using ONNX Runtime (text model only).
     
     Args:
         query_text: Natural language query
@@ -433,13 +713,12 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
     Returns:
         512-dim normalized embedding vector or None if failed
     """
-    global _cached_dummy_mel
-    
     if not config.CLAP_ENABLED:
         return None
     
     try:
-        session = get_clap_model()
+        # Get text-only model for text search
+        session = get_clap_text_model()
         tokenizer = get_tokenizer()
         
         # Tokenize text (max_length=77 for CLAP)
@@ -454,19 +733,14 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
         input_ids = encoded['input_ids'].astype(np.int64)
         attention_mask = encoded['attention_mask'].astype(np.int64)
         
-        # Reuse cached dummy mel-spectrogram (not used in text mode, but required by model)
-        if _cached_dummy_mel is None or _cached_dummy_mel.shape[0] != 1:
-            _cached_dummy_mel = np.zeros((1, 1, 1000, 64), dtype=np.float32)
-        
-        # Run ONNX inference
+        # Run ONNX inference (text model only needs input_ids and attention_mask)
         onnx_inputs = {
-            'mel_spectrogram': _cached_dummy_mel,
             'input_ids': input_ids,
             'attention_mask': attention_mask
         }
         
         outputs = session.run(None, onnx_inputs)
-        text_embedding = outputs[1]  # Second output is text_embedding
+        text_embedding = outputs[0]  # Output is text_embedding
         
         # Extract embedding (remove batch dimension)
         text_embedding = text_embedding[0]
@@ -494,7 +768,6 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
     Returns:
         (N, 512) array of normalized embeddings or None if failed
     """
-    global _cached_dummy_mel
     
     if not config.CLAP_ENABLED:
         return None
@@ -503,7 +776,8 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
         return None
     
     try:
-        session = get_clap_model()
+        # Get text-only model for text search
+        session = get_clap_text_model()
         tokenizer = get_tokenizer()
         
         batch_size = len(query_texts)
@@ -520,20 +794,14 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
         input_ids = encoded['input_ids'].astype(np.int64)
         attention_mask = encoded['attention_mask'].astype(np.int64)
         
-        # Create or reuse dummy mel-spectrogram (not used in text mode)
-        # Reuse same dummy for efficiency
-        if _cached_dummy_mel is None or _cached_dummy_mel.shape[0] != batch_size:
-            _cached_dummy_mel = np.zeros((batch_size, 1, 1000, 64), dtype=np.float32)
-        
-        # Run ONNX inference for batch
+        # Run ONNX inference for batch (text model only needs input_ids and attention_mask)
         onnx_inputs = {
-            'mel_spectrogram': _cached_dummy_mel,
             'input_ids': input_ids,
             'attention_mask': attention_mask
         }
         
         outputs = session.run(None, onnx_inputs)
-        text_embeddings = outputs[1]  # Second output is text_embedding (batch_size, 512)
+        text_embeddings = outputs[0]  # Output is text_embedding (batch_size, 512)
         
         # Normalize each embedding
         norms = np.linalg.norm(text_embeddings, axis=1, keepdims=True)
@@ -550,11 +818,15 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
 
 def is_clap_available() -> bool:
     """
-    Check if CLAP is enabled and model file exists.
-    Does NOT load the model - use get_clap_model() for lazy loading.
+    Check if CLAP is enabled and model files exist.
+    Does NOT load the model - use get_clap_audio_model() or get_clap_text_model() for lazy loading.
     """
     if not config.CLAP_ENABLED:
         return False
     
-    # Check if model file exists
+    # Check if split models exist (preferred)
+    if os.path.exists(config.CLAP_AUDIO_MODEL_PATH) and os.path.exists(config.CLAP_TEXT_MODEL_PATH):
+        return True
+    
+    # Fall back to legacy combined model
     return os.path.exists(config.CLAP_MODEL_PATH)

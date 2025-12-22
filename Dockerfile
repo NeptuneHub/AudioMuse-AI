@@ -211,45 +211,78 @@ RUN ls -lah /app/.cache/huggingface/ && \
 # Copy ONNX models from models stage (small files, no issues)
 COPY --from=models /app/model/*.onnx /app/model/
 
-# Download CLAP ONNX model directly in runner stage
-# CLAP ONNX model (~782MB) - much smaller than PyTorch model (2.2GB)
-# Provides identical embeddings with ~2-3GB less RAM usage during inference
+# Download CLAP split ONNX models directly in runner stage
+# Split models allow loading only what's needed:
+# - Audio model (~268MB): For music analysis in worker containers
+# - Text model (~478MB): For text search in Flask containers
+# - Combined: ~746MB (vs old combined model ~746MB)
 RUN set -eux; \
     base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
-    clap_model="clap_model.onnx"; \
     arch=$(uname -m); \
-    echo "Architecture detected: $arch - Downloading CLAP ONNX model (~782MB)..."; \
+    echo "Architecture detected: $arch - Downloading CLAP split ONNX models..."; \
     \
+    # Download audio model (~268MB) \
+    audio_model="clap_audio_model.onnx"; \
     n=0; \
     until [ "$n" -ge 5 ]; do \
         if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
             --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "/app/model/$clap_model" "$base_url/$clap_model"; then \
-            echo "✓ CLAP ONNX model downloaded"; \
+            -O "/app/model/$audio_model" "$base_url/$audio_model"; then \
+            echo "✓ CLAP audio model downloaded"; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "Download attempt $n for CLAP model failed — retrying in $((n*n))s"; \
+        echo "Download attempt $n for audio model failed — retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
-        echo "ERROR: Failed to download CLAP ONNX model after 5 attempts"; \
+        echo "ERROR: Failed to download CLAP audio model after 5 attempts"; \
         exit 1; \
     fi; \
     \
-    if [ ! -f "/app/model/$clap_model" ]; then \
-        echo "ERROR: CLAP ONNX model file not created"; \
+    # Download text model (~478MB) \
+    text_model="clap_text_model.onnx"; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/app/model/$text_model" "$base_url/$text_model"; then \
+            echo "✓ CLAP text model downloaded"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "Download attempt $n for text model failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download CLAP text model after 5 attempts"; \
         exit 1; \
     fi; \
     \
-    file_size=$(stat -c%s "/app/model/$clap_model" 2>/dev/null || stat -f%z "/app/model/$clap_model" 2>/dev/null || echo "0"); \
-    if [ "$file_size" -lt 700000000 ]; then \
-        echo "ERROR: CLAP ONNX model file is too small (expected ~782MB, got $file_size bytes)"; \
+    # Verify audio model \
+    if [ ! -f "/app/model/$audio_model" ]; then \
+        echo "ERROR: CLAP audio model file not created"; \
+        exit 1; \
+    fi; \
+    file_size=$(stat -c%s "/app/model/$audio_model" 2>/dev/null || stat -f%z "/app/model/$audio_model" 2>/dev/null || echo "0"); \
+    if [ "$file_size" -lt 250000000 ]; then \
+        echo "ERROR: CLAP audio model file is too small (expected ~268MB, got $file_size bytes)"; \
         exit 1; \
     fi; \
     \
-    echo "✓ CLAP ONNX model downloaded successfully (arch: $arch)"; \
-    ls -lh "/app/model/$clap_model"
+    # Verify text model \
+    if [ ! -f "/app/model/$text_model" ]; then \
+        echo "ERROR: CLAP text model file not created"; \
+        exit 1; \
+    fi; \
+    file_size=$(stat -c%s "/app/model/$text_model" 2>/dev/null || stat -f%z "/app/model/$text_model" 2>/dev/null || echo "0"); \
+    if [ "$file_size" -lt 450000000 ]; then \
+        echo "ERROR: CLAP text model file is too small (expected ~478MB, got $file_size bytes)"; \
+        exit 1; \
+    fi; \
+    \
+    echo "✓ CLAP split models downloaded successfully (arch: $arch)"; \
+    ls -lh "/app/model/$audio_model" "/app/model/$text_model"
 
 # Download MuQ-MuLan ONNX models directly in runner stage (DISABLED: change 'false' to 'true' to enable)
 # MuLan models (~2.5GB total) - pre-converted ONNX (no PyTorch dependency)
