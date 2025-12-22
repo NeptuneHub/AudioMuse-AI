@@ -1,9 +1,9 @@
 # This workflow builds and tests a multi-architecture Docker image for both AMD64 and ARM64.
-# It triggers on pushes to the main, devel, and onnx branches, as well as on version tags.
+# It triggers on pushes to the main, devel, and mulan branches, as well as on version tags.
 # Tags are automatically generated based on the triggering event:
 # - main branch -> 'latest'
 # - devel branch -> 'devel'
-# - onnx branch -> 'onnx'
+# - mulan branch -> 'mulan'
 # - version tags (e.g., v1.2.3) -> version number (e.g., '1.2.3')
 
 name: Build, Test, and Push AudioMuse AI Docker Image INTEL and ARM
@@ -11,10 +11,10 @@ name: Build, Test, and Push AudioMuse AI Docker Image INTEL and ARM
 on:
   push:
     # We avoid triggering this workflow on direct pushes to `main` to prevent
-    # accidental builds from routine commits. Keep `devel` and `onnx` as before.
+    # accidental builds from routine commits. Keep `devel` and `mulan` as before.
     branches:
       - devel         # Trigger for 'devel' tag
-      - onnx          # New branch also triggers for 'onnx' tag
+      - mulan         # New branch also triggers for 'mulan' tag
     tags:
       - 'v*.*.*'      # Trigger for version tags like v1.0.0
   # Allow manual runs for debugging or manual pushes
@@ -88,8 +88,8 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             # Set 'devel' tag only for the devel branch
             type=raw,value=devel,enable=${{ github.ref == 'refs/heads/devel' }}
-            # Set 'onnx' tag only for the onnx branch
-            type=raw,value=onnx,enable=${{ github.ref == 'refs/heads/onnx' }}
+            # Set 'mulan' tag only for the mulan branch
+            type=raw,value=mulan,enable=${{ github.ref == 'refs/heads/mulan' }}
             # Use the version number for Git tags (e.g., v1.2.3 -> 1.2.3)
             type=semver,pattern={{version}}
 

@@ -39,3 +39,17 @@ screenshot/
 htmlcov/
 .coverage
 *.log
+
+# Large model files and caches (these are downloaded inside the container)
+model/
+*.onnx
+*.pt
+*.pth
+*.bin
+*.h5
+*.pb
+CLAMP3/weights_*.pth
+CLAMP3/*.npy
+mulan_model_export/
+.cache/
+*.tar.gz

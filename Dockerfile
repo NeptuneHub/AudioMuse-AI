@@ -122,11 +122,11 @@ WORKDIR /app
 COPY requirements/ /app/requirements/
 
 # Install Python packages with uv (combined in single layer for efficiency)
-# GPU builds: cupy, cuml, onnxruntime-gpu, voyager
-# CPU builds: onnxruntime (CPU only)
+# GPU builds: cupy, cuml, onnxruntime-gpu, voyager, torch (CUDA)
+# CPU builds: onnxruntime (CPU only), torch (CPU)
 # Note: --index-strategy unsafe-best-match resolves conflicts between pypi.nvidia.com and pypi.org
 RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
-        echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager)"; \
+        echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager, torch+cuda)"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
     else \
         echo "CPU base image: installing all packages together for dependency resolution"; \
@@ -137,8 +137,9 @@ RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
     && find /usr/local/lib/python3.10/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.10/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
-# Download HuggingFace models (BERT, RoBERTa, BART) from GitHub release
+# Download HuggingFace models (BERT, RoBERTa, BART, T5) from GitHub release
 # These are the text encoders needed by laion-clap library for text embeddings
+# and T5 for MuLan text encoding
 RUN set -eux; \
     base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
     hf_models="huggingface_models.tar.gz"; \
@@ -179,6 +180,8 @@ RUN set -eux; \
     \
     echo "✓ HuggingFace models extracted to $cache_dir"; \
     du -sh "$cache_dir"
+
+# NOTE: MuLan model download moved to runner stage (like CLAP) to avoid EOF errors with large file transfers
 
 # ============================================================================
 # Stage 4: Runner - Final production image
@@ -247,6 +250,61 @@ RUN set -eux; \
     \
     echo "✓ CLAP ONNX model downloaded successfully (arch: $arch)"; \
     ls -lh "/app/model/$clap_model"
+
+# Download MuQ-MuLan ONNX models directly in runner stage
+# MuLan models (~2.5GB total) - pre-converted ONNX (no PyTorch dependency)
+# Files: mulan_audio_encoder.onnx + .data, mulan_text_encoder.onnx + .data, mulan_tokenizer.tar.gz
+RUN set -eux; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+    mulan_dir="/app/model/mulan"; \
+    mkdir -p "$mulan_dir"; \
+    \
+    # List of files to download (onnx models + data files + tokenizer)
+    files=( \
+        "mulan_audio_encoder.onnx" \
+        "mulan_audio_encoder.onnx.data" \
+        "mulan_text_encoder.onnx" \
+        "mulan_text_encoder.onnx.data" \
+        "mulan_tokenizer.tar.gz" \
+    ); \
+    \
+    echo "Downloading MuQ-MuLan ONNX models (~2.5GB total)..."; \
+    for f in "${files[@]}"; do \
+        n=0; \
+        until [ "$n" -ge 5 ]; do \
+            if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+                --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+                -O "$mulan_dir/$f" "$base_url/$f"; then \
+                echo "✓ Downloaded: $f"; \
+                break; \
+            fi; \
+            n=$((n+1)); \
+            echo "Download attempt $n for $f failed — retrying in $((n*n))s"; \
+            sleep $((n*n)); \
+        done; \
+        if [ "$n" -ge 5 ]; then \
+            echo "ERROR: Failed to download $f after 5 attempts"; \
+            exit 1; \
+        fi; \
+    done; \
+    \
+    # Extract tokenizer files
+    echo "Extracting MuLan tokenizer..."; \
+    tar -xzf "$mulan_dir/mulan_tokenizer.tar.gz" -C "$mulan_dir"; \
+    rm "$mulan_dir/mulan_tokenizer.tar.gz"; \
+    \
+    # Verify all files exist (tokenizer.json excluded - using slow tokenizer for compatibility)
+    for f in mulan_audio_encoder.onnx mulan_audio_encoder.onnx.data \
+             mulan_text_encoder.onnx mulan_text_encoder.onnx.data \
+             sentencepiece.bpe.model tokenizer_config.json special_tokens_map.json; do \
+        if [ ! -f "$mulan_dir/$f" ]; then \
+            echo "ERROR: Missing file: $f"; \
+            exit 1; \
+        fi; \
+    done; \
+    \
+    echo "✓ MuQ-MuLan ONNX models ready"; \
+    ls -lh "$mulan_dir"
 
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app
