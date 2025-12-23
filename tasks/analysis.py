@@ -945,12 +945,21 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 job when it finishes) and uses that as the source of truth. This
                 helps in cases where RQ job state is not available or the worker
                 uses a different Redis namespace.
+                
+                CRITICAL: Also removes jobs from active_jobs if they're not in launched_job_ids
+                (zombie jobs from previous failed runs) to prevent blocking forever.
                 """
                 nonlocal albums_completed, last_rebuild_count
                 removed = 0
 
                 # First: try to detect terminal jobs via RQ
                 for job_id in list(active_jobs.keys()):
+                    # CRITICAL: Remove jobs that aren't in launched_job_ids (zombie jobs from previous runs)
+                    if job_id not in launched_job_ids:
+                        logger.warning(f"Removing zombie job {job_id} from active_jobs (not in current run's launched_job_ids)")
+                        del active_jobs[job_id]
+                        continue
+                    
                     try:
                         job = Job.fetch(job_id, connection=redis_conn)
                         if job.is_finished or job.is_failed or job.is_canceled:
