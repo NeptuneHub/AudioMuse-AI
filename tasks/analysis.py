@@ -423,8 +423,9 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                 # GPU mode with memory management to prevent fragmentation
                 cuda_options = {
                     'device_id': gpu_device_id,
-                    'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-                    'cudnn_conv_algo_search': 'DEFAULT',
+                    'arena_extend_strategy': 'kNextPowerOfTwo',  # Better memory allocation
+                    'cudnn_conv_algo_search': 'EXHAUSTIVE',      # Find memory-efficient algorithms
+                    'do_copy_in_default_stream': True,           # Better memory sync
                 }
                 provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
                 logger.info(f"CUDA provider available - attempting to use GPU for analysis (device_id={gpu_device_id})")
@@ -462,10 +463,42 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             should_cleanup_sessions = True
         
         embedding_feed_dict = {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches}
-        embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+        try:
+            embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+        except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
+            if "Failed to allocate memory" in str(e):
+                logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during embedding inference, retrying on CPU...")
+                # Create temporary CPU session
+                embedding_sess_cpu = ort.InferenceSession(
+                    model_paths['embedding'],
+                    providers=['CPUExecutionProvider']
+                )
+                embeddings_per_patch = run_inference(embedding_sess_cpu, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+                del embedding_sess_cpu
+                import gc
+                gc.collect()
+                logger.info(f"Successfully completed embedding inference on CPU after GPU OOM")
+            else:
+                raise
         
         prediction_feed_dict = {DEFINED_TENSOR_NAMES['prediction']['input']: embeddings_per_patch}
-        mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
+        try:
+            mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
+        except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
+            if "Failed to allocate memory" in str(e):
+                logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during prediction inference, retrying on CPU...")
+                # Create temporary CPU session
+                prediction_sess_cpu = ort.InferenceSession(
+                    model_paths['prediction'],
+                    providers=['CPUExecutionProvider']
+                )
+                mood_logits = run_inference(prediction_sess_cpu, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
+                del prediction_sess_cpu
+                import gc
+                gc.collect()
+                logger.info(f"Successfully completed prediction inference on CPU after GPU OOM")
+            else:
+                raise
         
         # Only cleanup if we loaded models in this function (not reusing album-level sessions)
         if should_cleanup_sessions:
@@ -512,7 +545,23 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                 should_cleanup_other = True
             
             feed_dict = {DEFINED_TENSOR_NAMES[key]['input']: embeddings_per_patch}
-            probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
+            try:
+                probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
+            except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
+                if "Failed to allocate memory" in str(e):
+                    logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during {key} inference, retrying on CPU...")
+                    # Create temporary CPU session
+                    other_sess_cpu = ort.InferenceSession(
+                        model_paths[key],
+                        providers=['CPUExecutionProvider']
+                    )
+                    probabilities_per_patch = run_inference(other_sess_cpu, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
+                    del other_sess_cpu
+                    import gc
+                    gc.collect()
+                    logger.info(f"Successfully completed {key} inference on CPU after GPU OOM")
+                else:
+                    raise
             
             # Only cleanup if we loaded model in this function
             if should_cleanup_other:
@@ -706,8 +755,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                     gpu_device_id = 0
                                 cuda_options = {
                                     'device_id': gpu_device_id,
-                                    'arena_extend_strategy': 'kSameAsRequested',
-                                    'cudnn_conv_algo_search': 'DEFAULT',
+                                    'arena_extend_strategy': 'kNextPowerOfTwo',  # Better memory allocation
+                                    'cudnn_conv_algo_search': 'EXHAUSTIVE',      # Find memory-efficient algorithms
+                                    'do_copy_in_default_stream': True,           # Better memory sync
                                 }
                                 provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
                             else:
