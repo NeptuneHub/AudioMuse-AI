@@ -1,13 +1,8 @@
 # app_chat.py
 from flask import Blueprint, render_template, request, jsonify
 from flasgger import swag_from # Import swag_from
-from psycopg2.extras import DictCursor # To get results as dictionaries
-import unicodedata # For ASCII normalization
-import sqlglot # Import sqlglot
-import json # For potential future use with more complex AI responses
-import html # For unescaping HTML entities
+import json # For JSON serialization of tool arguments
 import logging
-import re # For regex-based quote escaping
 
 
 logger = logging.getLogger(__name__)
@@ -19,143 +14,14 @@ from config import (
     GEMINI_MODEL_NAME, GEMINI_API_KEY, # Import GEMINI_API_KEY from config
     MISTRAL_MODEL_NAME, MISTRAL_API_KEY,
     AI_MODEL_PROVIDER, # Default AI provider
-    AI_CHAT_DB_USER_NAME, AI_CHAT_DB_USER_PASSWORD, # Import new config
 )
-from ai import (
-    get_gemini_playlist_name, get_ollama_playlist_name, get_mistral_playlist_name, 
-    get_openai_compatible_playlist_name, call_ai_for_chat
-) # Import functions to call AI
-from tasks.chat_manager import call_ai_step, explore_database_for_matches, execute_action
 
 # Create a Blueprint for chat-related routes
 chat_bp = Blueprint('chat_bp', __name__,
                     template_folder='templates', # Specifies where to look for templates like chat.html
                     static_folder='static')
 
-ai_user_setup_done = False # Module-level flag to run setup once
 
-def _ensure_ai_user_configured(db_conn):
-    """
-    Ensures the AI_USER exists and has SELECT ONLY privileges on public.score.
-    This function should be called with a connection that has privileges to create users/roles and grant permissions.
-    """
-    global ai_user_setup_done
-    if ai_user_setup_done:
-        return
-
-    try:
-        with db_conn.cursor() as cur:
-            # Check if role exists
-            cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (AI_CHAT_DB_USER_NAME,))
-            user_exists = cur.fetchone()
-
-            if not user_exists:
-                logger.info("Creating database user: %s", AI_CHAT_DB_USER_NAME)
-                cur.execute(f"CREATE USER {AI_CHAT_DB_USER_NAME} WITH PASSWORD %s;", (AI_CHAT_DB_USER_PASSWORD,))
-                logger.info("User %s created.", AI_CHAT_DB_USER_NAME)
-            else:
-                logger.info("User %s already exists.", AI_CHAT_DB_USER_NAME)
-
-            # Grant necessary permissions
-            cur.execute("SELECT current_database();")
-            current_db_name = cur.fetchone()[0]
-
-            logger.info("Granting CONNECT ON DATABASE %s TO %s", current_db_name, AI_CHAT_DB_USER_NAME)
-            cur.execute(f"GRANT CONNECT ON DATABASE {current_db_name} TO {AI_CHAT_DB_USER_NAME};")
-
-            logger.info("Granting USAGE ON SCHEMA public TO %s", AI_CHAT_DB_USER_NAME)
-            cur.execute(f"GRANT USAGE ON SCHEMA public TO {AI_CHAT_DB_USER_NAME};")
-            
-            logger.info("Granting SELECT ON public.score TO %s", AI_CHAT_DB_USER_NAME)
-            cur.execute(f"GRANT SELECT ON TABLE public.score TO {AI_CHAT_DB_USER_NAME};")
-            
-            # Revoke all other default privileges on public schema if necessary (more secure)
-            # This is an advanced step and might be too restrictive if other public tables are needed by this user.
-            # For now, we rely on explicit grants.
-            # logger.info(f"Revoking ALL ON SCHEMA public FROM {AI_CHAT_DB_USER_NAME} (except USAGE already granted)")
-            # cur.execute(f"REVOKE ALL ON SCHEMA public FROM {AI_CHAT_DB_USER_NAME};") # This revokes USAGE too
-            # cur.execute(f"GRANT USAGE ON SCHEMA public TO {AI_CHAT_DB_USER_NAME};") # Re-grant USAGE
-
-            db_conn.commit()
-            logger.info("Permissions configured for user %s.", AI_CHAT_DB_USER_NAME)
-            ai_user_setup_done = True
-    except Exception as e:
-        logger.error("Error during AI user setup. AI user might not be correctly configured.", exc_info=True)
-        db_conn.rollback()
-        # ai_user_setup_done remains False, so it might try again on next request.
-
-def clean_and_validate_sql(raw_sql):
-    """Cleans and performs basic validation on the SQL query."""
-    if not raw_sql or not isinstance(raw_sql, str):
-        return None, "Received empty or invalid SQL from AI."
-
-    cleaned_sql = raw_sql.strip()
-    if cleaned_sql.startswith("```sql"):
-        cleaned_sql = cleaned_sql[len("```sql"):]
-    if cleaned_sql.endswith("```"):
-        cleaned_sql = cleaned_sql[:-len("```")]
-    
-    # Unescape HTML entities early (e.g., &gt; becomes >)
-    cleaned_sql = html.unescape(cleaned_sql)
-
-    # Further cleaning: find the first occurrence of SELECT (case-insensitive)
-    # and take everything from there. This helps if there's leading text.
-    select_pos = cleaned_sql.upper().find("SELECT")
-    if select_pos == -1:
-        return None, "Query does not contain SELECT."
-    cleaned_sql = cleaned_sql[select_pos:] # Start the string from "SELECT"
-
-    cleaned_sql = cleaned_sql.strip() # Strip again after taking the substring
-
-    if not cleaned_sql.upper().startswith("SELECT"):
-        # This case should ideally not be hit if the above find("SELECT") logic works,
-        # but it's a good fallback.
-        return None, "Cleaned query does not start with SELECT."
-
-    # 1. Normalize Unicode characters (e.g., ’ -> ', è -> e) to standard ASCII representations.
-    #    This helps standardize different types of quote characters to a simple apostrophe.
-    try:
-        cleaned_sql = unicodedata.normalize('NFKD', cleaned_sql).encode('ascii', 'ignore').decode('utf-8')
-    except Exception as e_norm:
-        logger.warning("Could not fully normalize SQL string to ASCII: %s", e_norm)
-
-    # 2. Convert C-style escaped single quotes (e.g., \') to SQL standard double single quotes ('').
-    #    This should be done after normalization, in case normalization affects the backslash,
-    #    and before the regex, to correctly handle cases like "Player\'s".
-    cleaned_sql = cleaned_sql.replace("\\'", "''")
-
-    # 3. Fix unescaped single quotes *within* words that might remain after normalization
-    #    and the \'-to-'' conversion.
-    #    Example: "Player's" (from "Player's" or direct output) becomes "Player''s".
-    #    This regex looks for a word character, a single quote, and another word character.
-    cleaned_sql = re.sub(r"(\w)'(\w)", r"\1''\2", cleaned_sql)
-
-    # 4. Check for truncated SQL (unbalanced quotes or parentheses)
-    single_quotes = cleaned_sql.count("'")
-    open_parens = cleaned_sql.count("(")
-    close_parens = cleaned_sql.count(")")
-    if single_quotes % 2 != 0:
-        return None, "SQL appears truncated (unbalanced quotes)"
-    if open_parens != close_parens:
-        return None, "SQL appears truncated (unbalanced parentheses)"
-
-    try:
-        # Parse the query using sqlglot, specifying PostgreSQL dialect
-        parsed_expressions = sqlglot.parse(cleaned_sql, read='postgres')
-        if not parsed_expressions: # Should not happen if it starts with SELECT but good check
-            return None, "SQLglot could not parse the query."
-        
-        # Get the first (and should be only) expression
-        expression = parsed_expressions[0]
-
-        # Re-generate the SQL from the potentially modified structure.
-        cleaned_sql = expression.sql(dialect='postgres', pretty=False).strip().rstrip(';')
-    except (sqlglot.errors.ParseError, sqlglot.errors.TokenError) as e:
-        # Log full parse exception server-side for diagnostics, but do not expose
-        # parser internals to API clients.
-        logger.exception("SQLglot parsing/tokenizing error while validating AI SQL")
-        return None, "SQL parsing error"
-    return cleaned_sql, None
 
 @chat_bp.route('/')
 @swag_from({
@@ -821,70 +687,6 @@ Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs.
             "query_results": final_query_results_list
         }
     }), 200
-    
-    # Check if AI provider is NONE
-    if ai_provider == "NONE":
-        return jsonify({
-            "response": {
-                "message": "No AI provider selected. Please configure an AI provider to use this feature.",
-                "original_request": original_user_input,
-                "ai_provider_used": ai_provider,
-                "ai_model_selected": None,
-                "executed_query": None,
-                "query_results": None
-            }
-        }), 200
-    
-    # Build AI configuration object
-    ai_config = {
-        'provider': ai_provider,
-        'ollama_url': data.get('ollama_server_url', OLLAMA_SERVER_URL),
-        'ollama_model': ai_model_from_request or OLLAMA_MODEL_NAME,
-        'openai_url': data.get('openai_server_url', OPENAI_SERVER_URL),
-        'openai_model': ai_model_from_request or OPENAI_MODEL_NAME,
-        'openai_key': data.get('openai_api_key') or OPENAI_API_KEY,
-        'gemini_key': data.get('gemini_api_key') or GEMINI_API_KEY,
-        'gemini_model': ai_model_from_request or GEMINI_MODEL_NAME,
-        'mistral_key': data.get('mistral_api_key') or MISTRAL_API_KEY,
-        'mistral_model': ai_model_from_request or MISTRAL_MODEL_NAME
-    }
-    
-    # Validate API keys for cloud providers
-    if ai_provider == "OPENAI" and not ai_config['openai_key']:
-        error_msg = "Error: OpenAI API key is missing. Please provide a valid API key or set it in the server configuration."
-        log_messages.append(error_msg)
-        return jsonify({"response": {
-            "message": "\n".join(log_messages),
-            "original_request": original_user_input,
-            "ai_provider_used": ai_provider,
-            "ai_model_selected": ai_config.get('openai_model'),
-            "executed_query": None,
-            "query_results": None
-        }}), 400
-    
-    if ai_provider == "GEMINI" and (not ai_config['gemini_key'] or ai_config['gemini_key'] == "YOUR-GEMINI-API-KEY-HERE"):
-        error_msg = "Error: Gemini API key is missing. Please provide a valid API key or set it in the server configuration."
-        log_messages.append(error_msg)
-        return jsonify({"response": {
-            "message": "\n".join(log_messages),
-            "original_request": original_user_input,
-            "ai_provider_used": ai_provider,
-            "ai_model_selected": ai_config.get('gemini_model'),
-            "executed_query": None,
-            "query_results": None
-        }}), 400
-    
-    if ai_provider == "MISTRAL" and (not ai_config['mistral_key'] or ai_config['mistral_key'] == "YOUR-MISTRAL-API-KEY-HERE"):
-        error_msg = "Error: Mistral API key is missing. Please provide a valid API key or set it in the server configuration."
-        log_messages.append(error_msg)
-        return jsonify({"response": {
-            "message": "\n".join(log_messages),
-            "original_request": original_user_input,
-            "ai_provider_used": ai_provider,
-            "ai_model_selected": ai_config.get('mistral_model'),
-            "executed_query": None,
-            "query_results": None
-        }}), 400
 
 
 @chat_bp.route('/api/create_playlist', methods=['POST'])
