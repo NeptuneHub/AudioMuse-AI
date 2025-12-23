@@ -396,6 +396,104 @@ def execute_action(action, db_conn, log_messages, ai_config=None):
             log_messages.append(f"   ✓ Retrieved {len(songs)} songs")
             return songs
         
+        elif action_type == "text_search":
+            """
+            Text-based search using CLAP embeddings.
+            Searches by natural language description (instruments, genres, moods).
+            Supports hybrid filtering: fetch from CLAP API, then filter by tempo/energy.
+            """
+            from tasks.clap_text_search import search_by_text
+            from config import CLAP_ENABLED
+            
+            description = params.get('description')
+            tempo_filter = params.get('tempo')  # Optional: slow, medium, fast
+            energy_filter = params.get('energy')  # Optional: low, medium, high
+            
+            if not CLAP_ENABLED:
+                log_messages.append(f"   ❌ CLAP text search is disabled. Enable CLAP_ENABLED in config.")
+                return []
+            
+            if not description:
+                log_messages.append(f"   ❌ No description provided for text_search")
+                return []
+            
+            log_messages.append(f"   🔍 CLAP text search: '{description}'")
+            
+            # Get up to 100 songs from CLAP API
+            clap_results = search_by_text(description, limit=100)
+            
+            if not clap_results:
+                log_messages.append(f"   ❌ No results from CLAP text search")
+                return []
+            
+            log_messages.append(f"   ✓ CLAP returned {len(clap_results)} songs")
+            
+            # If tempo/energy filters specified, apply hybrid filtering
+            if tempo_filter or energy_filter:
+                log_messages.append(f"   🔧 Applying hybrid filters (tempo: {tempo_filter}, energy: {energy_filter})")
+                
+                # Get item_ids from CLAP results
+                item_ids = [r['item_id'] for r in clap_results]
+                
+                # Define tempo ranges (BPM)
+                tempo_ranges = {
+                    'slow': (0, 90),
+                    'medium': (90, 140),
+                    'fast': (140, 300)
+                }
+                
+                # Define energy ranges (normalized)
+                energy_ranges = {
+                    'low': (0, 0.05),
+                    'medium': (0.05, 0.10),
+                    'high': (0.10, 1.0)
+                }
+                
+                # Build SQL filter conditions
+                filter_conditions = []
+                query_params = []
+                
+                if tempo_filter and tempo_filter in tempo_ranges:
+                    tempo_min, tempo_max = tempo_ranges[tempo_filter]
+                    filter_conditions.append("tempo >= %s AND tempo < %s")
+                    query_params.extend([tempo_min, tempo_max])
+                
+                if energy_filter and energy_filter in energy_ranges:
+                    energy_min, energy_max = energy_ranges[energy_filter]
+                    filter_conditions.append("energy_normalized >= %s AND energy_normalized < %s")
+                    query_params.extend([energy_min, energy_max])
+                
+                # Query database to filter by tempo/energy
+                with db_conn.cursor(cursor_factory=DictCursor) as cur:
+                    placeholders = ','.join(['%s'] * len(item_ids))
+                    where_clause = ' AND '.join(filter_conditions)
+                    
+                    sql = f"""
+                        SELECT item_id, title, author, tempo, energy_normalized
+                        FROM public.score
+                        WHERE item_id IN ({placeholders})
+                        AND {where_clause}
+                    """
+                    
+                    cur.execute(sql, item_ids + query_params)
+                    filtered_results = cur.fetchall()
+                
+                # Preserve CLAP similarity order for filtered results
+                filtered_item_ids = {r['item_id'] for r in filtered_results}
+                songs = [
+                    {"item_id": r['item_id'], "title": r['title'], "artist": r['author']}
+                    for r in clap_results
+                    if r['item_id'] in filtered_item_ids
+                ]
+                
+                log_messages.append(f"   ✓ Filtered to {len(songs)} songs matching tempo/energy criteria")
+                return songs
+            else:
+                # No filters - return CLAP results as-is
+                songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in clap_results]
+                log_messages.append(f"   ✓ Retrieved {len(songs)} songs from CLAP")
+                return songs
+        
         elif action_type == "artist_hits_query":
             """
             Get the artist's OWN famous songs.

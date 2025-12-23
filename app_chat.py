@@ -23,8 +23,7 @@ from config import (
 )
 from ai import (
     get_gemini_playlist_name, get_ollama_playlist_name, get_mistral_playlist_name, 
-    get_openai_compatible_playlist_name, call_ai_for_chat,
-    chat_step1_understand_prompt, chat_step2_expand_prompt, chat_step3_explore_prompt
+    get_openai_compatible_playlist_name, call_ai_for_chat
 ) # Import functions to call AI
 from tasks.chat_manager import call_ai_step, explore_database_for_matches, execute_action
 
