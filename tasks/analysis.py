@@ -10,6 +10,7 @@ import random
 import logging
 import uuid
 import traceback
+import gc
 from pydub import AudioSegment
 from tempfile import NamedTemporaryFile
 
@@ -475,7 +476,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                 )
                 embeddings_per_patch = run_inference(embedding_sess_cpu, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
                 del embedding_sess_cpu
-                import gc
                 gc.collect()
                 logger.info(f"Successfully completed embedding inference on CPU after GPU OOM")
             else:
@@ -494,7 +494,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                 )
                 mood_logits = run_inference(prediction_sess_cpu, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
                 del prediction_sess_cpu
-                import gc
                 gc.collect()
                 logger.info(f"Successfully completed prediction inference on CPU after GPU OOM")
             else:
@@ -503,7 +502,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         # Only cleanup if we loaded models in this function (not reusing album-level sessions)
         if should_cleanup_sessions:
             del embedding_sess, prediction_sess
-            import gc
             gc.collect()
 
         averaged_logits = np.mean(mood_logits, axis=0)
@@ -557,7 +555,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                     )
                     probabilities_per_patch = run_inference(other_sess_cpu, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
                     del other_sess_cpu
-                    import gc
                     gc.collect()
                     logger.info(f"Successfully completed {key} inference on CPU after GPU OOM")
                 else:
@@ -566,7 +563,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             # Only cleanup if we loaded model in this function
             if should_cleanup_other:
                 del other_sess
-                import gc
                 gc.collect()
 
             if probabilities_per_patch is None:
@@ -843,7 +839,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             if onnx_sessions:
                 logger.info(f"Cleaning up {len(onnx_sessions)} Essentia model sessions")
                 del onnx_sessions
-                import gc
                 gc.collect()
             
             # Cleanup CLAP model if it was loaded during this album
