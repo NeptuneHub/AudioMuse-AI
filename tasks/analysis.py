@@ -925,6 +925,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
             total_albums_to_check = len(all_albums)
             active_jobs, launched_jobs = {}, []
+            launched_job_ids = set()  # Track job IDs launched in THIS run only
             albums_skipped, albums_launched, albums_completed, last_rebuild_count = 0, 0, 0, 0
 
             def get_existing_track_ids(track_ids):
@@ -969,17 +970,21 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     albums_completed += removed
 
                 # Second: reconcile with DB child task statuses (authoritative)
+                # BUT only count child tasks that were launched in THIS run (in launched_job_ids)
                 try:
                     from app_helper import get_child_tasks_from_db
                     child_tasks = get_child_tasks_from_db(current_task_id)
                     terminal_statuses = {TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED}
-                    db_completed = sum(1 for t in child_tasks if t.get('status') in terminal_statuses)
+                    # Filter to only count tasks launched in this run
+                    db_completed = sum(1 for t in child_tasks 
+                                      if t.get('status') in terminal_statuses 
+                                      and t.get('task_id') in launched_job_ids)
 
                     if db_completed != albums_completed:
-                        logger.info(f"Reconciling albums_completed: RQ_count={albums_completed} DB_count={db_completed}")
+                        logger.info(f"Reconciling albums_completed: RQ_count={albums_completed} DB_count={db_completed} (from {len(launched_job_ids)} launched jobs)")
                         albums_completed = db_completed
                         # Remove any active_jobs whose IDs are in DB terminal list
-                        terminal_ids = {t['task_id'] for t in child_tasks if t.get('status') in terminal_statuses}
+                        terminal_ids = {t['task_id'] for t in child_tasks if t.get('status') in terminal_statuses and t.get('task_id') in launched_job_ids}
                         for job_id in list(active_jobs.keys()):
                             if job_id in terminal_ids:
                                 try:
@@ -1085,6 +1090,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 job = rq_queue_default.enqueue('tasks.analysis.analyze_album_task', args=(album['Id'], album['Name'], top_n_moods, current_task_id), job_id=str(uuid.uuid4()), job_timeout=-1, retry=Retry(max=3))
                 active_jobs[job.id] = job
                 launched_jobs.append(job)
+                launched_job_ids.add(job.id)  # Track this job ID for reconciliation
                 albums_launched += 1
                 checked_album_ids.add(album['Id'])
                 

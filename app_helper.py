@@ -224,6 +224,7 @@ def clean_up_previous_main_tasks():
     Cleans up all previous main tasks before a new one starts.
     - Archives tasks in SUCCESS state.
     - Archives stale tasks stuck in PENDING, STARTED, or PROGRESS states.
+    - DELETES all child tasks associated with archived parent tasks to prevent DB bloat.
     A main task is identified by having a NULL parent_task_id.
     """
     db = get_db() # This now calls the function within this file
@@ -237,6 +238,8 @@ def clean_up_previous_main_tasks():
         tasks_to_archive = cur.fetchall()
 
         archived_count = 0
+        deleted_children_count = 0
+        
         for task_row in tasks_to_archive:
             task_id = task_row['task_id']
             original_status = task_row['status']
@@ -264,6 +267,18 @@ def clean_up_previous_main_tasks():
             archived_details_json = json.dumps(archived_details)
 
             with db.cursor() as update_cur:
+                # First, delete all child tasks to prevent DB bloat and avoid counting old tasks
+                update_cur.execute(
+                    "DELETE FROM task_status WHERE parent_task_id = %s",
+                    (task_id,)
+                )
+                children_deleted = update_cur.rowcount
+                deleted_children_count += children_deleted
+                
+                if children_deleted > 0:
+                    logger.info(f"Deleted {children_deleted} child tasks for parent task {task_id}")
+                
+                # Then archive the parent task
                 update_cur.execute(
                     "UPDATE task_status SET status = %s, details = %s, progress = 100, timestamp = NOW() WHERE task_id = %s AND status = %s",
                     (TASK_STATUS_REVOKED, archived_details_json, task_id, original_status)
@@ -272,7 +287,7 @@ def clean_up_previous_main_tasks():
 
         if archived_count > 0:
             db.commit()
-            logger.info(f"Archived {archived_count} previous main tasks.")
+            logger.info(f"Archived {archived_count} previous main tasks and deleted {deleted_children_count} child tasks.")
         else:
             logger.info("No previous main tasks found to clean up.")
     except Exception as e_main_clean:
