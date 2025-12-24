@@ -481,34 +481,17 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                 if should_cleanup_sessions:
                     cleanup_onnx_session(embedding_sess, "embedding")
                 
-                def cleanup_fn():
-                    cleanup_cuda_memory(force=True)
+                cleanup_cuda_memory(force=True)
                 
-                def session_creator():
-                    cpu_sess = ort.InferenceSession(
-                        model_paths['embedding'],
-                        providers=['CPUExecutionProvider']
-                    )
-                    return cpu_sess, 'CPU'
-                
-                def retry_fn():
-                    return run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
-                
-                result = handle_onnx_memory_error(
-                    e,
-                    f"embedding inference for {os.path.basename(file_path)}",
-                    cleanup_func=cleanup_fn,
-                    retry_func=retry_fn,
-                    fallback_to_cpu=True,
-                    session_creator=session_creator
+                # Create CPU session
+                embedding_sess = ort.InferenceSession(
+                    model_paths['embedding'],
+                    providers=['CPUExecutionProvider']
                 )
                 
-                if isinstance(result, tuple) and len(result) == 3:
-                    embeddings_per_patch, embedding_sess, provider = result
-                    logger.info(f"Successfully completed embedding inference on {provider} after OOM")
-                else:
-                    embeddings_per_patch = result
-                    logger.info(f"Successfully completed embedding inference after cleanup")
+                # Retry with CPU session
+                embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+                logger.info(f"Successfully completed embedding inference on CPU after OOM")
             else:
                 raise
         
@@ -523,34 +506,17 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                 if should_cleanup_sessions:
                     cleanup_onnx_session(prediction_sess, "prediction")
                 
-                def cleanup_fn():
-                    cleanup_cuda_memory(force=True)
+                cleanup_cuda_memory(force=True)
                 
-                def session_creator():
-                    cpu_sess = ort.InferenceSession(
-                        model_paths['prediction'],
-                        providers=['CPUExecutionProvider']
-                    )
-                    return cpu_sess, 'CPU'
-                
-                def retry_fn():
-                    return run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
-                
-                result = handle_onnx_memory_error(
-                    e,
-                    f"prediction inference for {os.path.basename(file_path)}",
-                    cleanup_func=cleanup_fn,
-                    retry_func=retry_fn,
-                    fallback_to_cpu=True,
-                    session_creator=session_creator
+                # Create CPU session
+                prediction_sess = ort.InferenceSession(
+                    model_paths['prediction'],
+                    providers=['CPUExecutionProvider']
                 )
                 
-                if isinstance(result, tuple) and len(result) == 3:
-                    mood_logits, prediction_sess, provider = result
-                    logger.info(f"Successfully completed prediction inference on {provider} after OOM")
-                else:
-                    mood_logits = result
-                    logger.info(f"Successfully completed prediction inference after cleanup")
+                # Retry with CPU session
+                mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
+                logger.info(f"Successfully completed prediction inference on CPU after OOM")
             else:
                 raise
         
@@ -620,34 +586,17 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                     if should_cleanup_other:
                         cleanup_onnx_session(other_sess, key)
                     
-                    def cleanup_fn():
-                        cleanup_cuda_memory(force=True)
+                    cleanup_cuda_memory(force=True)
                     
-                    def session_creator():
-                        cpu_sess = ort.InferenceSession(
-                            model_paths[key],
-                            providers=['CPUExecutionProvider']
-                        )
-                        return cpu_sess, 'CPU'
-                    
-                    def retry_fn():
-                        return run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
-                    
-                    result = handle_onnx_memory_error(
-                        e,
-                        f"{key} inference for {os.path.basename(file_path)}",
-                        cleanup_func=cleanup_fn,
-                        retry_func=retry_fn,
-                        fallback_to_cpu=True,
-                        session_creator=session_creator
+                    # Create CPU session
+                    other_sess = ort.InferenceSession(
+                        model_paths[key],
+                        providers=['CPUExecutionProvider']
                     )
                     
-                    if isinstance(result, tuple) and len(result) == 3:
-                        probabilities_per_patch, other_sess, provider = result
-                        logger.info(f"Successfully completed {key} inference on {provider} after OOM")
-                    else:
-                        probabilities_per_patch = result
-                        logger.info(f"Successfully completed {key} inference after cleanup")
+                    # Retry with CPU session
+                    probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
+                    logger.info(f"Successfully completed {key} inference on CPU after OOM")
                 else:
                     raise
 
