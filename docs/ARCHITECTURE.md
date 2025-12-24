@@ -6,13 +6,13 @@ AudioMuse-AI follows a distributed architecture with separate containers for web
 
 ```mermaid
 graph TB
-    User[Browser/User<br/>Port :8000] -->|HTTP Requests| Flask[Flask Container<br/>Front-end + API]
+    User[Browser/User<br/>Port :8000] ---|HTTP Requests| Flask[Flask Container<br/>Front-end + API]
     
-    Flask -->|Enqueue Tasks| Redis[Redis Queue<br/>:6379]
-    Flask -->|Read/Write| PostgreSQL[(PostgreSQL DB<br/>:5432)]
+    Flask ---|Enqueue Tasks| Redis[Redis Queue<br/>:6379]
+    Flask ---|Read/Write| PostgreSQL[(PostgreSQL DB<br/>:5432)]
     
-    Redis -->|Dequeue Tasks| Worker[Worker Container<br/>Analysis + Clustering]
-    PostgreSQL -->|Read/Write| Worker
+    Redis ---|Dequeue Tasks| Worker[Worker Container<br/>Analysis + Clustering]
+    PostgreSQL ---|Read/Write| Worker
     
     MediaServer[Media Server<br/>Jellyfin/Navidrome<br/>Lyrion/Emby] -.-|Fetch Music| Flask
     MediaServer -.-|Fetch Audio Files| Worker
