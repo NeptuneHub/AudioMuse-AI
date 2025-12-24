@@ -14,8 +14,8 @@ graph TB
     Redis -->|Dequeue Tasks| Worker[Worker Container<br/>Analysis + Clustering]
     PostgreSQL -->|Read/Write| Worker
     
-    MediaServer[Media Server<br/>Jellyfin/Navidrome<br/>Lyrion/Emby] -.->|Fetch Music| Flask
-    MediaServer -.->|Fetch Audio Files| Worker
+    MediaServer[Media Server<br/>Jellyfin/Navidrome<br/>Lyrion/Emby] -.-|Fetch Music| Flask
+    MediaServer -.-|Fetch Audio Files| Worker
     
     style User fill:#607D8B
     style Flask fill:#4CAF50
