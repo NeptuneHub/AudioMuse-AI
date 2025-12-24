@@ -2,6 +2,8 @@
 
 AudioMuse-AI follows a distributed architecture with separate containers for web interface, task processing, and data storage.
 
+An easy choice is to deploy everything on a single machine. Anyway, for performance reason, deploy multiple worker on multiple machine is also possible to speedup batch task like analysis and clustering. Worker can be then shutdown when not needed for this tasks.
+
 ## System Architecture
 
 ```mermaid
@@ -32,7 +34,7 @@ graph TB
 - **REST API**: Provides endpoints for all AudioMuse-AI features
 - **Task Orchestration**: Enqueues analysis and clustering jobs to Redis
 - **Data Access**: Reads track information, playlists, and results from PostgreSQL
-- **Media Server Integration**: Fetches music library metadata
+- **Media Server Integration**: Create playlist on mediaserver
 
 ### Worker Container
 - **Job Processing**: Dequeues tasks from Redis queue
@@ -93,10 +95,10 @@ graph TB
 
 ## Deployment Modes
 
-### Single Machine (Docker Compose)
-All containers run on one host, communicating via Docker network.
+### Docker Compose
+All containers run on one host, communicating via Docker network. With docker is also be possible to do deployment on multiple machine.
 
-### Distributed (Kubernetes)
+### Kubernetes
 - Flask, Worker, Redis, PostgreSQL deployed as separate pods
 - Services expose internal endpoints
 - Persistent volumes for database storage
