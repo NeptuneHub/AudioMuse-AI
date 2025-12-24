@@ -538,7 +538,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         # ✅ Always cleanup, even on error
         if should_cleanup_sessions:
             try:
-                from tasks.memory_utils import cleanup_onnx_session, cleanup_cuda_memory
                 cleanup_onnx_session(embedding_sess, "embedding")
                 cleanup_onnx_session(prediction_sess, "prediction")
                 cleanup_cuda_memory(force=True)
@@ -971,7 +970,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             # ✅ Always cleanup, even on error or early return
             if onnx_sessions:
                 logger.info(f"Cleaning up {len(onnx_sessions)} Essentia model sessions (finally block)")
-                from tasks.memory_utils import cleanup_onnx_session, cleanup_cuda_memory
                 for model_name, session in onnx_sessions.items():
                     try:
                         cleanup_onnx_session(session, model_name)
@@ -982,7 +980,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             
             # Cleanup CUDA memory
             try:
-                from tasks.memory_utils import cleanup_cuda_memory
                 cleanup_cuda_memory(force=True)
                 logger.debug("Final CUDA cleanup completed (finally block)")
             except Exception as e:
