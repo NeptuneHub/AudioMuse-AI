@@ -407,7 +407,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         return None, None
 
 # --- 3. Run Main Models (Embedding and Prediction) ---
-    # Initialize variables for cleanup in finally block
+    # Initialize variables for cleanup in finally block - MUST be before try block
     embedding_sess = None
     prediction_sess = None
     should_cleanup_sessions = False
@@ -475,23 +475,23 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
         except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
             if "Failed to allocate memory" in str(e):
-                logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during embedding inference, attempting cleanup and retry...")
+                logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during embedding inference, attempting CPU fallback...")
                 
-                # Cleanup and retry using memory_utils
-                def cleanup_fn():
-                    cleanup_cuda_memory(force=True)
+                # Cleanup old session and recreate with CPU
+                if should_cleanup_sessions:
+                    cleanup_onnx_session(embedding_sess, "embedding")
                 
-                def retry_fn():
-                    return run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+                cleanup_cuda_memory(force=True)
                 
-                embeddings_per_patch = handle_onnx_memory_error(
-                    e,
-                    f"embedding inference for {os.path.basename(file_path)}",
-                    cleanup_func=cleanup_fn,
-                    retry_func=retry_fn
+                # Create CPU session
+                embedding_sess = ort.InferenceSession(
+                    model_paths['embedding'],
+                    providers=['CPUExecutionProvider']
                 )
                 
-                logger.info(f"Successfully completed embedding inference after cleanup")
+                # Retry with CPU session
+                embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+                logger.info(f"Successfully completed embedding inference on CPU after OOM")
             else:
                 raise
         
@@ -500,23 +500,23 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
         except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
             if "Failed to allocate memory" in str(e):
-                logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during prediction inference, attempting cleanup and retry...")
+                logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during prediction inference, attempting CPU fallback...")
                 
-                # Cleanup and retry using memory_utils
-                def cleanup_fn():
-                    cleanup_cuda_memory(force=True)
+                # Cleanup old session and recreate with CPU
+                if should_cleanup_sessions:
+                    cleanup_onnx_session(prediction_sess, "prediction")
                 
-                def retry_fn():
-                    return run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
+                cleanup_cuda_memory(force=True)
                 
-                mood_logits = handle_onnx_memory_error(
-                    e,
-                    f"prediction inference for {os.path.basename(file_path)}",
-                    cleanup_func=cleanup_fn,
-                    retry_func=retry_fn
+                # Create CPU session
+                prediction_sess = ort.InferenceSession(
+                    model_paths['prediction'],
+                    providers=['CPUExecutionProvider']
                 )
                 
-                logger.info(f"Successfully completed prediction inference after cleanup")
+                # Retry with CPU session
+                mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
+                logger.info(f"Successfully completed prediction inference on CPU after OOM")
             else:
                 raise
         
@@ -580,23 +580,23 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                 probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
             except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
                 if "Failed to allocate memory" in str(e):
-                    logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during {key} inference, attempting cleanup and retry...")
+                    logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during {key} inference, attempting CPU fallback...")
                     
-                    # Cleanup and retry using memory_utils
-                    def cleanup_fn():
-                        cleanup_cuda_memory(force=True)
+                    # Cleanup old session and recreate with CPU
+                    if should_cleanup_other:
+                        cleanup_onnx_session(other_sess, key)
                     
-                    def retry_fn():
-                        return run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
+                    cleanup_cuda_memory(force=True)
                     
-                    probabilities_per_patch = handle_onnx_memory_error(
-                        e,
-                        f"{key} inference for {os.path.basename(file_path)}",
-                        cleanup_func=cleanup_fn,
-                        retry_func=retry_fn
+                    # Create CPU session
+                    other_sess = ort.InferenceSession(
+                        model_paths[key],
+                        providers=['CPUExecutionProvider']
                     )
                     
-                    logger.info(f"Successfully completed {key} inference after cleanup")
+                    # Retry with CPU session
+                    probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
+                    logger.info(f"Successfully completed {key} inference on CPU after OOM")
                 else:
                     raise
 
