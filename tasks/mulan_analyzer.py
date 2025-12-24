@@ -203,13 +203,20 @@ def unload_mulan_model():
         return False
     
     try:
-        # Clear sessions
+        from .memory_utils import cleanup_onnx_session, cleanup_cuda_memory
+        
+        # Clear sessions properly
+        if _audio_session is not None:
+            cleanup_onnx_session(_audio_session, 'mulan_audio_session')
+        if _text_session is not None:
+            cleanup_onnx_session(_text_session, 'mulan_text_session')
+        
         _audio_session = None
         _text_session = None
         _tokenizer = None
         
-        # Force garbage collection
-        gc.collect()
+        # Force aggressive cleanup
+        cleanup_cuda_memory(force=True)
         
         logger.info("✓ MuLan models unloaded from memory")
         return True
@@ -321,10 +328,24 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
             audio_input = segment.astype(np.float32).reshape(1, -1)
             
             # Run ONNX inference
-            audio_embedding = audio_session.run(
-                ['audio_embedding'],
-                {'wavs': audio_input}
-            )[0]
+            try:
+                audio_embedding = audio_session.run(
+                    ['audio_embedding'],
+                    {'wavs': audio_input}
+                )[0]
+            except Exception as e:
+                from .memory_utils import handle_onnx_memory_error
+                if handle_onnx_memory_error(e, "MuLan segment processing"):
+                    # Retry once after cleanup
+                    audio_embedding = audio_session.run(
+                        ['audio_embedding'],
+                        {'wavs': audio_input}
+                    )[0]
+                else:
+                    raise
+            
+            # Cleanup intermediate data
+            del audio_input
             
             # Flatten to 1D if needed
             if audio_embedding.ndim > 1:
@@ -341,16 +362,27 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
             final_embedding = final_embedding / norm
         
         duration_sec = load_duration
+        num_segments_processed = len(segment_embeddings)
         
-        return final_embedding, duration_sec, len(segment_embeddings)
+        # Cleanup intermediate data
+        del segment_embeddings, audio_data
+        
+        return final_embedding, duration_sec, num_segments_processed
         
     except Exception as e:
         logger.error(f"MuLan analysis failed for {audio_path}: {e}")
         traceback.print_exc()
+        
+        # Cleanup on error
+        from .memory_utils import cleanup_cuda_memory
+        cleanup_cuda_memory(force=True)
+        
         return None, 0, 0
     finally:
         # Force cleanup
+        from .memory_utils import cleanup_cuda_memory
         gc.collect()
+        cleanup_cuda_memory()
 
 
 def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
