@@ -79,7 +79,7 @@ Choose the appropriate file based on your media server setup.
 **Prerequisites:**
 *   Docker and Docker Compose installed.
 *   `Jellyfin` or `Navidrome` or `Lyrion` or `Emby` installed.
-*   Respect the [hardware requirements](#hardware-requirements)
+*   Respect the [hardware requirements](../README.md#hardware-requirements)
 *   Optionally, you can install the `docker-model-plugin` to enable the use of the [Docker Model Runner](https://docs.docker.com/ai/model-runner/get-started/#docker-engine) for running AI models locally. If you choose this setup, use `deployment/docker-compose-dmr.yaml` to configure AudioMuse-AI to communicate with DMR through an OpenAI-compatible API interface.
 
 **Steps:**
@@ -115,12 +115,12 @@ If you deploy a worker on different hardware (using `docker-compose-worker.yaml`
 
 For an alternative local setup, [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files are provided in the `deployment/podman-quadlets` directory for interacting with **Navidrome**. The unit files can  be edited for use with **Jellyfin**. 
 
-These files are configured to automatically update AudioMuse-AI using the [latest](#docker-image-tagging-strategy) stable release and should perform an automatic rollback if the updated image fails to start.
+These files are configured to automatically update AudioMuse-AI using the [latest](../README.md#docker-image-tagging-strategy) stable release and should perform an automatic rollback if the updated image fails to start.
 
 **Prerequisites:**
 *   Podman and systemd.
 *   `Jellyfin` or `Navidrome` installed.
-*   Respect the [hardware requirements](#hardware-requirements)
+*   Respect the [hardware requirements](../README.md#hardware-requirements)
 
 **Steps:**
 1.  **Navigate to the `deployment/podman-quadlets` directory:**
