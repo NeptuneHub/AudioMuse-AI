@@ -608,21 +608,45 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         
         def process_segment(audio_segment):
             """Compute mel-spectrogram and get embedding for one segment."""
-            # Compute mel-spectrogram
-            mel_spec = compute_mel_spectrogram(audio_segment, SAMPLE_RATE)
+            from .memory_utils import handle_onnx_memory_error, cleanup_cuda_memory
             
-            # Add batch and channel dimensions: (1, 1, time_frames, 64)
-            mel_input = mel_spec[:, np.newaxis, :, :]
-            
-            # Run ONNX inference (audio model only needs mel_spectrogram)
-            onnx_inputs = {
-                'mel_spectrogram': mel_input
-            }
-            
-            outputs = session.run(None, onnx_inputs)
-            audio_embedding = outputs[0]  # Output is audio_embedding
-            
-            return audio_embedding[0]  # Remove batch dimension
+            try:
+                # Compute mel-spectrogram
+                mel_spec = compute_mel_spectrogram(audio_segment, SAMPLE_RATE)
+                
+                # Add batch and channel dimensions: (1, 1, time_frames, 64)
+                mel_input = mel_spec[:, np.newaxis, :, :]
+                
+                # Run ONNX inference (audio model only needs mel_spectrogram)
+                onnx_inputs = {
+                    'mel_spectrogram': mel_input
+                }
+                
+                outputs = session.run(None, onnx_inputs)
+                audio_embedding = outputs[0]  # Output is audio_embedding
+                
+                # Cleanup input tensors immediately
+                del mel_spec, mel_input, onnx_inputs
+                
+                return audio_embedding[0]  # Remove batch dimension
+                
+            except Exception as e:
+                # Handle memory allocation errors gracefully
+                if handle_onnx_memory_error(e, "CLAP segment processing"):
+                    # Retry once after cleanup
+                    try:
+                        mel_spec = compute_mel_spectrogram(audio_segment, SAMPLE_RATE)
+                        mel_input = mel_spec[:, np.newaxis, :, :]
+                        onnx_inputs = {'mel_spectrogram': mel_input}
+                        outputs = session.run(None, onnx_inputs)
+                        audio_embedding = outputs[0]
+                        del mel_spec, mel_input, onnx_inputs
+                        return audio_embedding[0]
+                    except Exception as retry_error:
+                        logger.error(f"Retry after cleanup also failed: {retry_error}")
+                        raise
+                else:
+                    raise
         
         # Choose processing mode based on CLAP_PYTHON_MULTITHREADS
         if not config.CLAP_PYTHON_MULTITHREADS:
@@ -690,12 +714,21 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         import gc
         gc.collect()
         
+        # Also cleanup CUDA memory if available
+        from .memory_utils import cleanup_cuda_memory
+        cleanup_cuda_memory()
+        
         return avg_embedding, duration_sec, num_segments
         
     except Exception as e:
         logger.error(f"CLAP analysis failed for {audio_path}: {e}")
         import traceback
         traceback.print_exc()
+        
+        # Cleanup on error too
+        from .memory_utils import cleanup_cuda_memory
+        cleanup_cuda_memory(force=True)
+        
         return None, 0, 0
     finally:
         # Force cleanup even on error

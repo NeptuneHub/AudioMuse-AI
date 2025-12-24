@@ -469,9 +469,9 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         
         # Only cleanup if we loaded models in this function (not reusing album-level sessions)
         if should_cleanup_sessions:
-            del embedding_sess, prediction_sess
-            import gc
-            gc.collect()
+            from tasks.memory_utils import cleanup_onnx_session
+            cleanup_onnx_session(embedding_sess, 'embedding_sess')
+            cleanup_onnx_session(prediction_sess, 'prediction_sess')
 
         averaged_logits = np.mean(mood_logits, axis=0)
         # Apply sigmoid to convert raw model outputs (logits) into probabilities
@@ -480,7 +480,23 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         moods = {label: float(score) for label, score in zip(mood_labels_list, final_mood_predictions)}
 
     except Exception as e:
+        from tasks.memory_utils import handle_onnx_memory_error, cleanup_cuda_memory
+        
+        # Check if this is a memory error and handle accordingly
+        if handle_onnx_memory_error(e, f"main model inference for {os.path.basename(file_path)}"):
+            # Continue analysis - error was logged and cleanup performed
+            pass
+        
         logger.error(f"Main model inference failed for {os.path.basename(file_path)}: {e}", exc_info=True)
+        
+        # Cleanup sessions on error if we loaded them
+        if should_cleanup_sessions and 'embedding_sess' in locals():
+            from tasks.memory_utils import cleanup_onnx_session
+            if 'embedding_sess' in locals():
+                cleanup_onnx_session(embedding_sess, 'embedding_sess')
+            if 'prediction_sess' in locals():
+                cleanup_onnx_session(prediction_sess, 'prediction_sess')
+        
         return None, None
 
         
@@ -516,9 +532,8 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             
             # Only cleanup if we loaded model in this function
             if should_cleanup_other:
-                del other_sess
-                import gc
-                gc.collect()
+                from tasks.memory_utils import cleanup_onnx_session
+                cleanup_onnx_session(other_sess, f'{key}_sess')
 
             if probabilities_per_patch is None:
                 other_predictions[key] = 0.0
@@ -532,8 +547,19 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                     other_predictions[key] = 0.0
 
         except Exception as e:
+            from tasks.memory_utils import handle_onnx_memory_error
+            
+            # Handle memory errors gracefully
+            if handle_onnx_memory_error(e, f"'{key}' prediction for {os.path.basename(file_path)}"):
+                pass  # Error logged and cleanup performed
+            
             logger.error(f"Error predicting '{key}' for {os.path.basename(file_path)}: {e}", exc_info=True)
             other_predictions[key] = 0.0
+            
+            # Cleanup session on error if we loaded it
+            if should_cleanup_other and 'other_sess' in locals():
+                from tasks.memory_utils import cleanup_onnx_session
+                cleanup_onnx_session(other_sess, f'{key}_sess')
 
     # --- 5. Final Aggregation for Storage ---
     processed_embeddings = np.mean(embeddings_per_patch, axis=0)
@@ -637,6 +663,10 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             missing_clap_ids_set = get_missing_clap_track_ids([str(t['Id']) for t in tracks]) if is_clap_available() else set()
             missing_mulan_ids_set = get_missing_mulan_track_ids([str(t['Id']) for t in tracks]) if MULAN_ENABLED else set()
             total_tracks_in_album = len(tracks)
+            
+            # Session recycler to prevent memory accumulation
+            from tasks.memory_utils import SessionRecycler
+            session_recycler = SessionRecycler(max_uses=20)  # Recycle sessions every 20 tracks
 
             for idx, item in enumerate(tracks, 1):
                 if current_job:
@@ -690,6 +720,30 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 try:
                     # Track if we processed anything (MusiCNN or CLAP)
                     track_processed = False
+                    
+                    # Check if we should recycle sessions to prevent memory accumulation
+                    if onnx_sessions and session_recycler.should_recycle():
+                        logger.info(f"♻️ Recycling Essentia sessions after {session_recycler.use_count} tracks")
+                        
+                        # Define loader function for session recycling
+                        def reload_essentia_sessions():
+                            new_sessions = {}
+                            for model_name, model_path in model_paths.items():
+                                try:
+                                    new_sessions[model_name] = ort.InferenceSession(
+                                        model_path,
+                                        providers=[p[0] for p in provider_options],
+                                        provider_options=[p[1] for p in provider_options]
+                                    )
+                                except Exception:
+                                    new_sessions[model_name] = ort.InferenceSession(
+                                        model_path,
+                                        providers=['CPUExecutionProvider']
+                                    )
+                            return new_sessions
+                        
+                        # Recycle sessions
+                        onnx_sessions = session_recycler.recycle_sessions(onnx_sessions, reload_essentia_sessions)
                     
                     # MusiCNN analysis (only if needed)
                     if needs_musicnn:
@@ -747,6 +801,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         
                         save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding, energy=analysis['energy'], other_features=other_features)
                         track_processed = True
+                        
+                        # Increment session usage counter
+                        session_recycler.increment()
                     else:
                         logger.info(f"SKIPPED MusiCNN for '{track_name_full}' (already analyzed)")
                     
@@ -792,21 +849,28 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             # Cleanup all models after album analysis to free memory
             if onnx_sessions:
                 logger.info(f"Cleaning up {len(onnx_sessions)} Essentia model sessions")
+                from .memory_utils import cleanup_onnx_session, cleanup_cuda_memory
+                for session_name, session in onnx_sessions.items():
+                    cleanup_onnx_session(session, session_name)
                 del onnx_sessions
-                import gc
-                gc.collect()
+                # Force aggressive CUDA cleanup after album
+                cleanup_cuda_memory(force=True)
             
             # Cleanup CLAP model if it was loaded during this album
             from .clap_analyzer import unload_clap_model, is_clap_model_loaded
             if is_clap_model_loaded():
                 logger.info("Cleaning up CLAP model after album analysis")
                 unload_clap_model()
+                from .memory_utils import cleanup_cuda_memory
+                cleanup_cuda_memory(force=True)
             
             # Cleanup MuLan model if it was loaded during this album
             from .mulan_analyzer import unload_mulan_model, is_mulan_model_loaded
             if is_mulan_model_loaded():
                 logger.info("Cleaning up MuLan model after album analysis")
                 unload_mulan_model()
+                from .memory_utils import cleanup_cuda_memory
+                cleanup_cuda_memory(force=True)
 
             summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album}
             log_and_update_album_task(f"Album '{album_name}' analysis complete.", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
