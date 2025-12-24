@@ -26,6 +26,7 @@ from typing import Tuple, Optional
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
 
 import config
+from tasks.memory_utils import cleanup_cuda_memory, handle_onnx_memory_error
 
 logger = logging.getLogger(__name__)
 
@@ -625,8 +626,28 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
                 'mel_spectrogram': mel_input
             }
             
-            outputs = session.run(None, onnx_inputs)
-            audio_embedding = outputs[0]  # Output is audio_embedding
+            try:
+                outputs = session.run(None, onnx_inputs)
+                audio_embedding = outputs[0]  # Output is audio_embedding
+            except Exception as e:
+                # Handle memory allocation errors with cleanup and retry
+                def cleanup_fn():
+                    cleanup_cuda_memory(force=True)
+                
+                def retry_fn():
+                    return session.run(None, onnx_inputs)
+                
+                result = handle_onnx_memory_error(
+                    e,
+                    f"CLAP segment inference",
+                    cleanup_func=cleanup_fn,
+                    retry_func=retry_fn
+                )
+                
+                if result is not None:
+                    audio_embedding = result[0]
+                else:
+                    raise
             
             return audio_embedding[0]  # Remove batch dimension
         
@@ -696,12 +717,19 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         import gc
         gc.collect()
         
+        # Cleanup CUDA memory after analysis
+        cleanup_cuda_memory(force=False)
+        
         return avg_embedding, duration_sec, num_segments
         
     except Exception as e:
         logger.error(f"CLAP analysis failed for {audio_path}: {e}")
         import traceback
         traceback.print_exc()
+        
+        # Cleanup CUDA memory on error
+        cleanup_cuda_memory(force=True)
+        
         return None, 0, 0
     finally:
         # Force cleanup even on error

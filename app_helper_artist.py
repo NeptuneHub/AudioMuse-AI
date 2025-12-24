@@ -6,6 +6,7 @@ Separated to avoid circular imports.
 
 import logging
 from app_helper import get_db
+from tasks.memory_utils import sanitize_string_for_db
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,12 @@ def upsert_artist_mapping(artist_name, artist_id):
     if not artist_name or not artist_id:
         return
     
+    # Sanitize artist name to remove NULL bytes and control characters
+    sanitized_name = sanitize_string_for_db(artist_name)
+    if not sanitized_name:
+        logger.warning(f"Artist name became empty after sanitization: {repr(artist_name)}")
+        return
+    
     try:
         conn = get_db()
         with conn.cursor() as cur:
@@ -25,10 +32,10 @@ def upsert_artist_mapping(artist_name, artist_id):
                 VALUES (%s, %s)
                 ON CONFLICT (artist_name)
                 DO UPDATE SET artist_id = EXCLUDED.artist_id
-            """, (artist_name, artist_id))
+            """, (sanitized_name, artist_id))
             conn.commit()
     except Exception as e:
-        logger.error(f"Failed to upsert artist mapping for '{artist_name}': {e}")
+        logger.error(f"Failed to upsert artist mapping for '{sanitized_name}': {e}")
         try:
             conn.rollback()
         except:
@@ -42,14 +49,20 @@ def get_artist_id_by_name(artist_name):
     if not artist_name:
         return None
     
+    # Sanitize artist name for query
+    sanitized_name = sanitize_string_for_db(artist_name)
+    if not sanitized_name:
+        logger.warning(f"Artist name became empty after sanitization: {repr(artist_name)}")
+        return None
+    
     try:
         conn = get_db()
         with conn.cursor() as cur:
-            cur.execute("SELECT artist_id FROM artist_mapping WHERE artist_name = %s", (artist_name,))
+            cur.execute("SELECT artist_id FROM artist_mapping WHERE artist_name = %s", (sanitized_name,))
             row = cur.fetchone()
             return row[0] if row else None
     except Exception as e:
-        logger.error(f"Failed to get artist_id for '{artist_name}': {e}")
+        logger.error(f"Failed to get artist_id for '{sanitized_name}': {e}")
         return None
 
 def get_artist_name_by_id(artist_id):
