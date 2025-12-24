@@ -407,6 +407,11 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         return None, None
 
 # --- 3. Run Main Models (Embedding and Prediction) ---
+    # Initialize variables for cleanup in finally block
+    embedding_sess = None
+    prediction_sess = None
+    should_cleanup_sessions = False
+    
     try:
         # Use pre-loaded sessions if provided, otherwise load per-song
         if onnx_sessions is not None:
@@ -534,6 +539,17 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     except Exception as e:
         logger.error(f"Main model inference failed for {os.path.basename(file_path)}: {e}", exc_info=True)
         return None, None
+    finally:
+        # ✅ Always cleanup, even on error
+        if should_cleanup_sessions:
+            try:
+                from tasks.memory_utils import cleanup_onnx_session, cleanup_cuda_memory
+                cleanup_onnx_session(embedding_sess, "embedding")
+                cleanup_onnx_session(prediction_sess, "prediction")
+                cleanup_cuda_memory(force=True)
+                logger.debug(f"Cleaned up sessions for {os.path.basename(file_path)} (error path)")
+            except Exception as cleanup_error:
+                logger.warning(f"Error during cleanup: {cleanup_error}")
 
         
     # --- 4. Run Secondary Models ---
@@ -956,6 +972,44 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             logger.critical(f"Album analysis {album_id} failed: {e}", exc_info=True)
             log_and_update_album_task(f"Failed to analyze album '{album_name}': {e}", current_progress_val, task_state=TASK_STATUS_FAILURE, final_summary_details={"error": str(e), "traceback": traceback.format_exc()})
             raise
+        finally:
+            # ✅ Always cleanup, even on error or early return
+            if onnx_sessions:
+                logger.info(f"Cleaning up {len(onnx_sessions)} Essentia model sessions (finally block)")
+                from tasks.memory_utils import cleanup_onnx_session, cleanup_cuda_memory
+                for model_name, session in onnx_sessions.items():
+                    try:
+                        cleanup_onnx_session(session, model_name)
+                    except Exception as e:
+                        logger.warning(f"Error cleaning up {model_name} session: {e}")
+                del onnx_sessions
+                gc.collect()
+            
+            # Cleanup CUDA memory
+            try:
+                from tasks.memory_utils import cleanup_cuda_memory
+                cleanup_cuda_memory(force=True)
+                logger.debug("Final CUDA cleanup completed (finally block)")
+            except Exception as e:
+                logger.warning(f"Error during final CUDA cleanup: {e}")
+            
+            # Cleanup CLAP model if loaded
+            try:
+                from .clap_analyzer import unload_clap_model, is_clap_model_loaded
+                if is_clap_model_loaded():
+                    unload_clap_model()
+                    logger.debug("CLAP model cleanup completed (finally block)")
+            except Exception as e:
+                logger.warning(f"Error cleaning up CLAP model: {e}")
+            
+            # Cleanup MuLan model if loaded
+            try:
+                from .mulan_analyzer import unload_mulan_model, is_mulan_model_loaded
+                if is_mulan_model_loaded():
+                    unload_mulan_model()
+                    logger.debug("MuLan model cleanup completed (finally block)")
+            except Exception as e:
+                logger.warning(f"Error cleaning up MuLan model: {e}")
 
 # MODIFIED: Removed jellyfin_url, jellyfin_user_id, jellyfin_token from signature.
 def run_analysis_task(num_recent_albums, top_n_moods):
