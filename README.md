@@ -24,7 +24,7 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 * **Song Alchemy**: Mix your ideal vibe, mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and a 2D preview. Export the final selection directly to your media server.
 * **Text Search**: search your song with simple text that can contains mood, instruments and genre like calm piano songs.
 
-More information, like **Frequently Asked Question (FAQ)** can be found in the [docs folder](docs).
+More information like [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [FAQ](docs/FAQ.md), [GPU DEPLOYMENT](docs/GPU.md), [HARDWARE REQUIREMENTS](docs/HARDWARE.md) and [CONFIGURATION PARAMETERS](docs/PARAMETERS.md) can be found in the [docs folder](docs).
 
 **The full list or AudioMuse-AI related repository are:** 
   > * [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI): the core application, it run Flask and Worker containers to actually run all the feature;

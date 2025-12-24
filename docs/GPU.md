@@ -1,6 +1,6 @@
-# Experimental Nvidia Support
+# GPU deployment
 
-NVidia GPU support is available for analysis task in the worker process. This can significantly speed up processing of tracks.
+NVidia GPU **EXPERIMENTAL** support is available for analysis task in the worker process. This can significantly speed up processing of tracks.
 
 **NEW:** GPU-accelerated clustering is now available using RAPIDS cuML. This can provide **10-30x speedup** for clustering tasks.
 

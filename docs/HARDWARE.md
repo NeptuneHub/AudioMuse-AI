@@ -1,4 +1,4 @@
-# CPU Architecture Requirements
+# HARDWARE Requirements
 
 AudioMuse-AI requires specific CPU instruction sets due to the pre-compiled Python packages (NumPy, SciPy, ONNX Runtime) used for audio analysis.
 

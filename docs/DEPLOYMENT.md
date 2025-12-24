@@ -1,4 +1,5 @@
-# **Quick Start Deployment on K3S WITH HELM**
+# Deploymnet strategy
+## **Quick Start Deployment on K3S WITH HELM**
 
 The best way to install AudioMuse-AI on K3S (kubernetes) is by [AudioMuse-AI Helm Chart repository](https://github.com/NeptuneHub/AudioMuse-AI-helm)
 
@@ -11,7 +12,7 @@ The best way to install AudioMuse-AI on K3S (kubernetes) is by [AudioMuse-AI Hel
 
 You can directly check the Helm Chart repo for more details and deployments examples.
 
-# **Quick Start Deployment on K3S**
+## **Quick Start Deployment on K3S**
 
 This section provides a minimal guide to deploy AudioMuse-AI on a K3S (Kubernetes) cluster by directly using the `deployment` manifests.
 
@@ -64,7 +65,7 @@ This section provides a minimal guide to deploy AudioMuse-AI on a K3S (Kubernete
     *   **Main UI:** Access at `http://<EXTERNAL-IP>:8000`
     *   **API Docs (Swagger UI):** Explore the API at `http://<EXTERNAL-IP>:8000/apidocs`
  
-# **Local Deployment with Docker Compose**
+## **Local Deployment with Docker Compose**
 
 AudioMuse-AI provides Docker Compose files for different media server backends:
 
@@ -110,7 +111,7 @@ Choose the appropriate file based on your media server setup.
 **Remote worker tip:**
 If you deploy a worker on different hardware (using `docker-compose-worker.yaml` or `docker-compose-worker-nvidia.yaml`), copy your `.env` to that machine and update `WORKER_POSTGRES_HOST` and `WORKER_REDIS_URL` so the worker can reach the main server.
 
-# **Local Deployment with Podman Quadlets**
+## **Local Deployment with Podman Quadlets**
 
 For an alternative local setup, [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files are provided in the `deployment/podman-quadlets` directory for interacting with **Navidrome**. The unit files can  be edited for use with **Jellyfin**. 
 

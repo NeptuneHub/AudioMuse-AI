@@ -1,4 +1,4 @@
-# **Application Feature Analysis**
+# **Algorithm description**
 
 This document provides a detailed functional (high-level) and technical (algorithm-level) breakdown of the core features of the AudioMuse-AI application. It covers the data ingestion and analysis process, the playlist generation and clustering process, the similarity-based playlist creation process, the song pathfinding process, the vector-based song manipulation (alchemy) process, the interactive music map visualization, the personalized sonic fingerprint generation, and the AI-driven instant playlist creation via chat.
 
