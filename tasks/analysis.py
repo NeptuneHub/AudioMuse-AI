@@ -550,6 +550,8 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     other_predictions = {}
 
     for key in ["danceable", "aggressive", "happy", "party", "relaxed", "sad"]:
+        other_sess = None
+        should_cleanup_other = False
         try:
             # Use pre-loaded sessions if provided, otherwise load per-song
             if onnx_sessions is not None:
@@ -597,11 +599,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                     logger.info(f"Successfully completed {key} inference after cleanup")
                 else:
                     raise
-            
-            # Only cleanup if we loaded model in this function
-            if should_cleanup_other:
-                del other_sess
-                gc.collect()
 
             if probabilities_per_patch is None:
                 other_predictions[key] = 0.0
@@ -617,6 +614,15 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         except Exception as e:
             logger.error(f"Error predicting '{key}' for {os.path.basename(file_path)}: {e}", exc_info=True)
             other_predictions[key] = 0.0
+        finally:
+            # Cleanup secondary model session if we loaded it
+            if should_cleanup_other and other_sess is not None:
+                try:
+                    cleanup_onnx_session(other_sess, key)
+                    del other_sess
+                    gc.collect()
+                except Exception as cleanup_error:
+                    logger.warning(f"Error cleaning up {key} session: {cleanup_error}")
 
     # --- 5. Final Aggregation for Storage ---
     processed_embeddings = np.mean(embeddings_per_patch, axis=0)
