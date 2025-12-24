@@ -1,4 +1,4 @@
-## **Configuration Parameters**
+# **Configuration Parameters**
 
 These are the parameters accepted for this script. You can pass them as environment variables using, for example, /deployment/deployment.yaml in this repository.
 

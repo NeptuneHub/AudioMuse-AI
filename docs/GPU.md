@@ -1,4 +1,4 @@
-### Experimental Nvidia Support
+# Experimental Nvidia Support
 
 NVidia GPU support is available for analysis task in the worker process. This can significantly speed up processing of tracks.
 
