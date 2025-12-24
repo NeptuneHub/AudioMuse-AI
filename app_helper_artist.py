@@ -6,7 +6,6 @@ Separated to avoid circular imports.
 
 import logging
 from app_helper import get_db
-from tasks.memory_utils import sanitize_string_for_db
 
 logger = logging.getLogger(__name__)
 
@@ -15,13 +14,19 @@ def upsert_artist_mapping(artist_name, artist_id):
     Stores or updates the mapping between artist name and artist ID.
     If artist_name or artist_id is None/empty, does nothing.
     """
-    if not artist_name or not artist_id:
-        return
+    # Sanitize inputs
+    if artist_name:
+        artist_name = artist_name.replace('\x00', '').strip()
+        artist_name = ''.join(char for char in artist_name if char.isprintable() or char in '\n\t ')
+        if len(artist_name) > 500:
+            artist_name = artist_name[:500]
     
-    # Sanitize artist name to remove NULL bytes and control characters
-    sanitized_name = sanitize_string_for_db(artist_name)
-    if not sanitized_name:
-        logger.warning(f"Artist name became empty after sanitization: {repr(artist_name)}")
+    if artist_id:
+        artist_id = str(artist_id).replace('\x00', '').strip()
+        if len(artist_id) > 200:
+            artist_id = artist_id[:200]
+    
+    if not artist_name or not artist_id:
         return
     
     try:
@@ -32,10 +37,10 @@ def upsert_artist_mapping(artist_name, artist_id):
                 VALUES (%s, %s)
                 ON CONFLICT (artist_name)
                 DO UPDATE SET artist_id = EXCLUDED.artist_id
-            """, (sanitized_name, artist_id))
+            """, (artist_name, artist_id))
             conn.commit()
     except Exception as e:
-        logger.error(f"Failed to upsert artist mapping for '{sanitized_name}': {e}")
+        logger.error(f"Failed to upsert artist mapping for '{artist_name}': {e}")
         try:
             conn.rollback()
         except:

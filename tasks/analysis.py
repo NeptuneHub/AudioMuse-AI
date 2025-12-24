@@ -407,6 +407,32 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         return None, None
 
 # --- 3. Run Main Models (Embedding and Prediction) ---
+    # Initialize variables for cleanup in finally block
+    embedding_sess = None
+    prediction_sess = None
+    should_cleanup_sessions = False
+    
+    # Configure provider options for GPU memory management (used for main and secondary models)
+    available_providers = ort.get_available_providers()
+    if 'CUDAExecutionProvider' in available_providers:
+        # Get GPU device ID from environment or default to 0
+        gpu_device_id = 0
+        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+        if cuda_visible and cuda_visible != '-1':
+            gpu_device_id = 0
+        
+        cuda_options = {
+            'device_id': gpu_device_id,
+            'arena_extend_strategy': 'kNextPowerOfTwo',
+            'cudnn_conv_algo_search': 'EXHAUSTIVE',
+            'do_copy_in_default_stream': True,
+        }
+        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
+        logger.info(f"CUDA provider available - attempting to use GPU for analysis (device_id={gpu_device_id})")
+    else:
+        provider_options = [('CPUExecutionProvider', {})]
+        logger.info("CUDA provider not available - using CPU only")
+    
     try:
         # Use pre-loaded sessions if provided, otherwise load per-song
         if onnx_sessions is not None:
@@ -414,33 +440,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             prediction_sess = onnx_sessions['prediction']
             should_cleanup_sessions = False
         else:
-            # Load and run embedding model (ONNX) with GPU memory management
-            # ONNX Runtime handles CUDA availability and fallback internally
-            available_providers = ort.get_available_providers()
-            
-            # Configure provider options for GPU memory management
-            if 'CUDAExecutionProvider' in available_providers:
-                # Get GPU device ID from environment or default to 0
-                # Docker sets NVIDIA_VISIBLE_DEVICES, CUDA runtime uses CUDA_VISIBLE_DEVICES
-                gpu_device_id = 0
-                cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-                if cuda_visible and cuda_visible != '-1':
-                    # If CUDA_VISIBLE_DEVICES is set, use first device (already mapped to 0)
-                    gpu_device_id = 0
-                
-                # GPU mode with memory management to prevent fragmentation
-                cuda_options = {
-                    'device_id': gpu_device_id,
-                    'arena_extend_strategy': 'kNextPowerOfTwo',  # Better memory allocation
-                    'cudnn_conv_algo_search': 'EXHAUSTIVE',      # Find memory-efficient algorithms
-                    'do_copy_in_default_stream': True,           # Better memory sync
-                }
-                provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-                logger.info(f"CUDA provider available - attempting to use GPU for analysis (device_id={gpu_device_id})")
-            else:
-                provider_options = [('CPUExecutionProvider', {})]
-                logger.info("CUDA provider not available - using CPU only")
-            
+            # Load embedding and prediction models with configured providers
             try:
                 embedding_sess = ort.InferenceSession(
                     model_paths['embedding'],
@@ -534,12 +534,24 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     except Exception as e:
         logger.error(f"Main model inference failed for {os.path.basename(file_path)}: {e}", exc_info=True)
         return None, None
+    finally:
+        # ✅ Always cleanup, even on error
+        if should_cleanup_sessions:
+            try:
+                cleanup_onnx_session(embedding_sess, "embedding")
+                cleanup_onnx_session(prediction_sess, "prediction")
+                cleanup_cuda_memory(force=True)
+                logger.debug(f"Cleaned up sessions for {os.path.basename(file_path)} (error path)")
+            except Exception as cleanup_error:
+                logger.warning(f"Error during cleanup: {cleanup_error}")
 
         
     # --- 4. Run Secondary Models ---
     other_predictions = {}
 
     for key in ["danceable", "aggressive", "happy", "party", "relaxed", "sad"]:
+        other_sess = None
+        should_cleanup_other = False
         try:
             # Use pre-loaded sessions if provided, otherwise load per-song
             if onnx_sessions is not None:
@@ -587,11 +599,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                     logger.info(f"Successfully completed {key} inference after cleanup")
                 else:
                     raise
-            
-            # Only cleanup if we loaded model in this function
-            if should_cleanup_other:
-                del other_sess
-                gc.collect()
 
             if probabilities_per_patch is None:
                 other_predictions[key] = 0.0
@@ -607,6 +614,15 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         except Exception as e:
             logger.error(f"Error predicting '{key}' for {os.path.basename(file_path)}: {e}", exc_info=True)
             other_predictions[key] = 0.0
+        finally:
+            # Cleanup secondary model session if we loaded it
+            if should_cleanup_other and other_sess is not None:
+                try:
+                    cleanup_onnx_session(other_sess, key)
+                    del other_sess
+                    gc.collect()
+                except Exception as cleanup_error:
+                    logger.warning(f"Error cleaning up {key} session: {cleanup_error}")
 
     # --- 5. Final Aggregation for Storage ---
     processed_embeddings = np.mean(embeddings_per_patch, axis=0)
@@ -956,6 +972,42 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             logger.critical(f"Album analysis {album_id} failed: {e}", exc_info=True)
             log_and_update_album_task(f"Failed to analyze album '{album_name}': {e}", current_progress_val, task_state=TASK_STATUS_FAILURE, final_summary_details={"error": str(e), "traceback": traceback.format_exc()})
             raise
+        finally:
+            # ✅ Always cleanup, even on error or early return
+            if onnx_sessions:
+                logger.info(f"Cleaning up {len(onnx_sessions)} Essentia model sessions (finally block)")
+                for model_name, session in onnx_sessions.items():
+                    try:
+                        cleanup_onnx_session(session, model_name)
+                    except Exception as e:
+                        logger.warning(f"Error cleaning up {model_name} session: {e}")
+                del onnx_sessions
+                gc.collect()
+            
+            # Cleanup CUDA memory
+            try:
+                cleanup_cuda_memory(force=True)
+                logger.debug("Final CUDA cleanup completed (finally block)")
+            except Exception as e:
+                logger.warning(f"Error during final CUDA cleanup: {e}")
+            
+            # Cleanup CLAP model if loaded
+            try:
+                from .clap_analyzer import unload_clap_model, is_clap_model_loaded
+                if is_clap_model_loaded():
+                    unload_clap_model()
+                    logger.debug("CLAP model cleanup completed (finally block)")
+            except Exception as e:
+                logger.warning(f"Error cleaning up CLAP model: {e}")
+            
+            # Cleanup MuLan model if loaded
+            try:
+                from .mulan_analyzer import unload_mulan_model, is_mulan_model_loaded
+                if is_mulan_model_loaded():
+                    unload_mulan_model()
+                    logger.debug("MuLan model cleanup completed (finally block)")
+            except Exception as e:
+                logger.warning(f"Error cleaning up MuLan model: {e}")
 
 # MODIFIED: Removed jellyfin_url, jellyfin_user_id, jellyfin_token from signature.
 def run_analysis_task(num_recent_albums, top_n_moods):
