@@ -56,6 +56,13 @@ from .voyager_manager import build_and_store_voyager_index
 from .artist_gmm_manager import build_and_store_artist_index
 # MODIFIED: The functions from mediaserver no longer need server-specific parameters.
 from .mediaserver import get_recent_albums, get_tracks_from_album, download_track
+# Import memory management utilities
+from .memory_utils import (
+    cleanup_cuda_memory, 
+    cleanup_onnx_session, 
+    handle_onnx_memory_error,
+    SessionRecycler
+)
 
 
 from psycopg2 import OperationalError
@@ -468,16 +475,23 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
         except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
             if "Failed to allocate memory" in str(e):
-                logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during embedding inference, retrying on CPU...")
-                # Create temporary CPU session
-                embedding_sess_cpu = ort.InferenceSession(
-                    model_paths['embedding'],
-                    providers=['CPUExecutionProvider']
+                logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during embedding inference, attempting cleanup and retry...")
+                
+                # Cleanup and retry using memory_utils
+                def cleanup_fn():
+                    cleanup_cuda_memory(force=True)
+                
+                def retry_fn():
+                    return run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+                
+                embeddings_per_patch = handle_onnx_memory_error(
+                    e,
+                    f"embedding inference for {os.path.basename(file_path)}",
+                    cleanup_func=cleanup_fn,
+                    retry_func=retry_fn
                 )
-                embeddings_per_patch = run_inference(embedding_sess_cpu, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
-                del embedding_sess_cpu
-                gc.collect()
-                logger.info(f"Successfully completed embedding inference on CPU after GPU OOM")
+                
+                logger.info(f"Successfully completed embedding inference after cleanup")
             else:
                 raise
         
@@ -486,16 +500,23 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
         except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
             if "Failed to allocate memory" in str(e):
-                logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during prediction inference, retrying on CPU...")
-                # Create temporary CPU session
-                prediction_sess_cpu = ort.InferenceSession(
-                    model_paths['prediction'],
-                    providers=['CPUExecutionProvider']
+                logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during prediction inference, attempting cleanup and retry...")
+                
+                # Cleanup and retry using memory_utils
+                def cleanup_fn():
+                    cleanup_cuda_memory(force=True)
+                
+                def retry_fn():
+                    return run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
+                
+                mood_logits = handle_onnx_memory_error(
+                    e,
+                    f"prediction inference for {os.path.basename(file_path)}",
+                    cleanup_func=cleanup_fn,
+                    retry_func=retry_fn
                 )
-                mood_logits = run_inference(prediction_sess_cpu, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
-                del prediction_sess_cpu
-                gc.collect()
-                logger.info(f"Successfully completed prediction inference on CPU after GPU OOM")
+                
+                logger.info(f"Successfully completed prediction inference after cleanup")
             else:
                 raise
         
@@ -547,16 +568,23 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                 probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
             except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
                 if "Failed to allocate memory" in str(e):
-                    logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during {key} inference, retrying on CPU...")
-                    # Create temporary CPU session
-                    other_sess_cpu = ort.InferenceSession(
-                        model_paths[key],
-                        providers=['CPUExecutionProvider']
+                    logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during {key} inference, attempting cleanup and retry...")
+                    
+                    # Cleanup and retry using memory_utils
+                    def cleanup_fn():
+                        cleanup_cuda_memory(force=True)
+                    
+                    def retry_fn():
+                        return run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
+                    
+                    probabilities_per_patch = handle_onnx_memory_error(
+                        e,
+                        f"{key} inference for {os.path.basename(file_path)}",
+                        cleanup_func=cleanup_fn,
+                        retry_func=retry_fn
                     )
-                    probabilities_per_patch = run_inference(other_sess_cpu, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
-                    del other_sess_cpu
-                    gc.collect()
-                    logger.info(f"Successfully completed {key} inference on CPU after GPU OOM")
+                    
+                    logger.info(f"Successfully completed {key} inference after cleanup")
                 else:
                     raise
             
@@ -622,6 +650,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         
         # Essentia models will be lazy-loaded on first song that needs MusiCNN analysis
         onnx_sessions = None
+        
+        # Initialize SessionRecycler to prevent cumulative memory leaks
+        session_recycler = SessionRecycler(recycle_interval=20)
 
         def log_and_update_album_task(message, progress, **kwargs):
             nonlocal current_progress_val, current_task_logs
@@ -777,6 +808,57 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                 logger.error(f"Failed to load Essentia models: {e}")
                                 onnx_sessions = None
                         
+                        # Check if sessions should be recycled to prevent cumulative memory leaks
+                        if onnx_sessions and session_recycler.should_recycle():
+                            logger.info(f"Recycling ONNX sessions after {session_recycler.get_use_count()} tracks")
+                            
+                            # Cleanup old sessions
+                            for model_name, session in onnx_sessions.items():
+                                cleanup_onnx_session(session, model_name)
+                            
+                            # Force CUDA cleanup
+                            cleanup_cuda_memory(force=True)
+                            
+                            # Recreate sessions
+                            onnx_sessions = {}
+                            available_providers = ort.get_available_providers()
+                            
+                            if 'CUDAExecutionProvider' in available_providers:
+                                gpu_device_id = 0
+                                cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+                                if cuda_visible and cuda_visible != '-1':
+                                    gpu_device_id = 0
+                                cuda_options = {
+                                    'device_id': gpu_device_id,
+                                    'arena_extend_strategy': 'kNextPowerOfTwo',
+                                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
+                                    'do_copy_in_default_stream': True,
+                                }
+                                provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
+                            else:
+                                provider_options = [('CPUExecutionProvider', {})]
+                            
+                            try:
+                                for model_name, model_path in model_paths.items():
+                                    try:
+                                        onnx_sessions[model_name] = ort.InferenceSession(
+                                            model_path,
+                                            providers=[p[0] for p in provider_options],
+                                            provider_options=[p[1] for p in provider_options]
+                                        )
+                                    except Exception:
+                                        onnx_sessions[model_name] = ort.InferenceSession(
+                                            model_path,
+                                            providers=['CPUExecutionProvider']
+                                        )
+                                logger.info(f"✓ Recycled {len(onnx_sessions)} Essentia model sessions")
+                            except Exception as e:
+                                logger.error(f"Failed to recycle Essentia models: {e}")
+                                onnx_sessions = None
+                            
+                            # Mark as recycled
+                            session_recycler.mark_recycled()
+                        
                         analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions)
                         if analysis is None:
                             logger.warning(f"Skipping track {track_name_full} as analysis returned None.")
@@ -793,6 +875,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         
                         save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding, energy=analysis['energy'], other_features=other_features)
                         track_processed = True
+                        
+                        # Increment session recycler counter after successful analysis
+                        session_recycler.increment()
                     else:
                         logger.info(f"SKIPPED MusiCNN for '{track_name_full}' (already analyzed)")
                     
@@ -838,6 +923,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             # Cleanup all models after album analysis to free memory
             if onnx_sessions:
                 logger.info(f"Cleaning up {len(onnx_sessions)} Essentia model sessions")
+                for model_name, session in onnx_sessions.items():
+                    cleanup_onnx_session(session, model_name)
                 del onnx_sessions
                 gc.collect()
             
@@ -852,6 +939,10 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             if is_mulan_model_loaded():
                 logger.info("Cleaning up MuLan model after album analysis")
                 unload_mulan_model()
+            
+            # Final CUDA cleanup after album completion
+            logger.info("Performing final CUDA cleanup after album analysis")
+            cleanup_cuda_memory(force=True)
 
             summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album}
             log_and_update_album_task(f"Album '{album_name}' analysis complete.", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
