@@ -45,7 +45,6 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 
 - [Quick Start Deployment](#quick-start-deployment)
 - [Hardware Requirements](#hardware-requirements)
-- [Configuration Parameters](#configuration-parameters)
 - [Docker Image Tagging Strategy](#docker-image-tagging-strategy)
 - [Key Technologies](#key-technologies)
 - [How To Contribute](#how-to-contribute)
@@ -53,7 +52,10 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 
 ## Quick Start Deployment
 
-Get AudioMuse-AI running in minutes with Docker Compose. If you need more deployment example take a look at [DEPLOYMENT](docs/DEPLOYMENT.md) page.
+Get AudioMuse-AI running in minutes with Docker Compose. 
+
+If you need more deployment example take a look at [DEPLOYMENT](docs/DEPLOYMENT.md) page.
+For a full list of configuration parameter take a look at [PARAMETERS](docs/PARAMETERS.md) page.
 
 **Prerequisites:**
 * Docker and Docker Compose installed
@@ -131,42 +133,6 @@ Suggested requirements:
 You can check the [Tested Hardware and Configuration](docs/HARDWARE.md) notes to see which hardware has already been validated.
 
 For more information about the GPU deployment requirements have a look to the [GPU](docs/GPU.md) page.
-
-## **Configuration Parameters**
-
-These are the parameters accepted for this script. You can pass them as environment variables using, for example, /deployment/deployment.yaml in this repository. For the full list of configuration parameter have a look to the [PARAMETERS](docs/PARAMETERS.md)
-
-How to find jellyfin **userid**:
-* Log into Jellyfin from your browser as an admin
-* Go to Dashboard > “admin panel” > Users.
-* Click on the user’s name that you are interested
-* The User ID is visible in the URL (is the part just after = ):
-  * http://your-jellyfin-server/web/index.html#!/useredit.html?userId=xxxxx
-
-How to create an the **jellyfin's API token**:
-* The API Token, still as admin you can go to Dashboard > “Admin panel” > API Key and create a new one.
-
-The **mandatory** parameter that you need to change from the example are this:
-
-| Parameter            | Description                                                             | Default Value                     |
-|----------------------|-------------------------------------------------------------------------|-----------------------------------|
-| `JELLYFIN_URL`       | (Required) Your Jellyfin server's full URL                              | `http://YOUR_JELLYFIN_IP:8096`    |
-| `JELLYFIN_USER_ID`   | (Required) Jellyfin User ID.                                            | *(N/A - from Secret)* |
-| `JELLYFIN_TOKEN`     | (Required) Jellyfin API Token.                                          | *(N/A - from Secret)* |
-| `NAVIDROME_URL`      | (Required) Your Navidrome server's full URL                             | `http://YOUR_JELLYFIN_IP:4553`    |
-| `NAVIDROME_USER`     | (Required) Navidrome User ID.                                           | *(N/A - from Secret)* |
-| `NAVIDROME_PASSWORD` | (Required) Navidrome user Password.                                     | *(N/A - from Secret)* |
-| `LYRION_URL`         | (Required) Your Lyrion server's full URL                                | `http://YOUR_LYRION_IP:9000`      |
-| `POSTGRES_USER`      | (Required) PostgreSQL username.                                         | *(N/A - from Secret)* |
-| `POSTGRES_PASSWORD`  | (Required) PostgreSQL password.                                         | *(N/A - from Secret)* |
-| `POSTGRES_DB`        | (Required) PostgreSQL database name.                                    | *(N/A - from Secret)* |
-| `POSTGRES_HOST`      | (Required) PostgreSQL host.                                             | `postgres-service.playlist`       |
-| `POSTGRES_PORT`      | (Required) PostgreSQL port.                                             | `5432`                            |
-| `REDIS_URL`          | (Required) URL for Redis.                                               | `redis://localhost:6379/0`        |
-| `GEMINI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is GEMINI) Your Google Gemini API Key. | *(N/A - from Secret)* |
-| `MISTRAL_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MISTRAL) Your Mistral API Key.      | *(N/A - from Secret)* |
-| `OPENAI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is OPENAI) Your OpenAI / OpenRouter API Key. | *(N/A - from Secret)* |
-
 
 ## **Docker Image Tagging Strategy**
 
