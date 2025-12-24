@@ -136,7 +136,7 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.cleanup_cuda_memory')
     @patch('tasks.analysis.save_task_status')
     @patch('tasks.analysis.get_task_info_from_db')
-    @patch('tasks.analysis.redis_conn')
+    @patch('app_helper.redis_conn')
     @patch('tasks.analysis.get_current_job')
     def test_cleanup_on_database_error(
         self, mock_get_job, mock_redis, mock_get_task_info, mock_save_task,
@@ -178,10 +178,10 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.get_task_info_from_db')
     @patch('tasks.analysis.get_current_job')
     @patch('tasks.analysis.get_db')
-    @patch('tasks.analysis.unload_clap_model')
-    @patch('tasks.analysis.is_clap_model_loaded')
-    @patch('tasks.analysis.unload_mulan_model')
-    @patch('tasks.analysis.is_mulan_model_loaded')
+    @patch('tasks.clap_analyzer.unload_clap_model')
+    @patch('tasks.clap_analyzer.is_clap_model_loaded')
+    @patch('tasks.mulan_analyzer.unload_mulan_model')
+    @patch('tasks.mulan_analyzer.is_mulan_model_loaded')
     def test_cleanup_all_models_in_finally(
         self, mock_mulan_loaded, mock_mulan_unload, mock_clap_loaded, 
         mock_clap_unload, mock_get_db, mock_get_job, mock_get_task_info,
@@ -217,7 +217,7 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.save_task_status')
     @patch('tasks.analysis.get_task_info_from_db')
     @patch('tasks.analysis.get_current_job')
-    @patch('tasks.analysis.save_track_analysis_and_embedding')
+    @patch('app_helper.save_track_analysis_and_embedding')
     @patch('tasks.analysis.os.remove')
     def test_cleanup_onnx_sessions_on_success(
         self, mock_remove, mock_save_track, mock_get_job, mock_get_task_info,

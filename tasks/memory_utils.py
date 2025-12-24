@@ -137,25 +137,32 @@ def handle_onnx_memory_error(
     error: Exception,
     context: str,
     cleanup_func: Optional[Callable] = None,
-    retry_func: Optional[Callable] = None
+    retry_func: Optional[Callable] = None,
+    fallback_to_cpu: bool = False,
+    session_creator: Optional[Callable] = None
 ) -> Optional[Any]:
     """
-    Detect ONNX memory allocation errors, trigger cleanup, and optionally retry.
+    Detect ONNX memory allocation errors, trigger cleanup, and optionally retry or fallback to CPU.
     
     ONNX Runtime GPU memory allocation failures manifest as:
     - "Failed to allocate memory for requested buffer"
     - BFCArena allocation errors
     
     This function detects these errors, performs cleanup, and can retry the operation.
+    If fallback_to_cpu is True and session_creator is provided, it will recreate the
+    session with CPUExecutionProvider instead of retrying with the same session.
     
     Args:
         error: The exception that was raised
         context: Human-readable context (e.g., "embedding inference for track X")
         cleanup_func: Optional function to call for cleanup before retry
         retry_func: Optional function to call for retry (should return result)
+        fallback_to_cpu: If True, recreate session with CPU provider on OOM
+        session_creator: Callable that returns (new_session, provider) for CPU fallback
         
     Returns:
-        Result from retry_func if retry successful, None if no retry or retry failed
+        Result from retry_func if retry successful, or tuple (result, provider) if fallback_to_cpu
+        None if no retry or retry failed
         
     Raises:
         Original exception if it's not a memory error or retry is not configured
@@ -195,7 +202,25 @@ def handle_onnx_memory_error(
         except Exception as cleanup_error:
             logger.error(f"Cleanup failed for {context}: {cleanup_error}")
     
-    # Retry if retry function provided
+    # Fallback to CPU if requested
+    if fallback_to_cpu and session_creator:
+        try:
+            logger.info(f"Falling back to CPU for {context}...")
+            new_session, provider = session_creator()
+            logger.info(f"Successfully created CPU session for {context}")
+            
+            # Retry with new CPU session if retry_func provided
+            if retry_func:
+                result = retry_func()
+                logger.info(f"CPU fallback successful for {context}")
+                return result, new_session, provider
+            else:
+                return None, new_session, provider
+        except Exception as fallback_error:
+            logger.error(f"CPU fallback failed for {context}: {fallback_error}")
+            raise fallback_error
+    
+    # Retry if retry function provided (without CPU fallback)
     if retry_func:
         try:
             logger.info(f"Retrying {context} after cleanup...")
