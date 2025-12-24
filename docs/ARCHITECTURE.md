@@ -6,22 +6,23 @@ AudioMuse-AI follows a distributed architecture with separate containers for web
 
 ```mermaid
 graph TB
-    User[Browser/User :8000] -->|HTTP Requests| Flask[Flask Container<br/>Front-end + API]
+    User[Browser/User<br/>Port :8000] -->|HTTP Requests| Flask[Flask Container<br/>Front-end + API]
     
     Flask -->|Enqueue Tasks| Redis[Redis Queue<br/>:6379]
     Flask -->|Read/Write| PostgreSQL[(PostgreSQL DB<br/>:5432)]
-    Flask -->|Fetch Music| MediaServer[Media Server<br/>Jellyfin/Navidrome/Lyrion/Emby]
     
-    Worker[Worker Container<br/>Analysis + Clustering] -->|Dequeue Tasks| Redis
-    Worker -->|Read/Write| PostgreSQL
-    Worker -->|Fetch Audio Files| MediaServer
+    Redis -->|Dequeue Tasks| Worker[Worker Container<br/>Analysis + Clustering]
+    PostgreSQL -->|Read/Write| Worker
     
+    MediaServer[Media Server<br/>Jellyfin/Navidrome<br/>Lyrion/Emby] -.->|Fetch Music| Flask
+    MediaServer -.->|Fetch Audio Files| Worker
+    
+    style User fill:#607D8B
     style Flask fill:#4CAF50
-    style Worker fill:#2196F3
     style Redis fill:#FF5722
     style PostgreSQL fill:#9C27B0
+    style Worker fill:#2196F3
     style MediaServer fill:#FF9800
-    style User fill:#607D8B
 ```
 
 ## Component Responsibilities
@@ -103,7 +104,8 @@ All containers run on one host, communicating via Docker network.
 ### Remote Worker
 - Flask + Redis + PostgreSQL on main server
 - Worker on remote machine (closer to media server or with GPU)
-- Worker connects to main server via `WORKER_POSTGRES_HOST` and `WORKER_REDIS_URL`
+- Worker connects using `POSTGRES_HOST` and `REDIS_URL` pointing to main server
+- Copy `.env` to remote worker and update these values to reach main server
 
 ## Scalability
 
