@@ -55,7 +55,10 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 Get AudioMuse-AI running in minutes with Docker Compose. 
 
 If you need more deployment example take a look at [DEPLOYMENT](docs/DEPLOYMENT.md) page.
+
 For a full list of configuration parameter take a look at [PARAMETERS](docs/PARAMETERS.md) page.
+
+For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](docs/ARCHITECTURE.md) page.
 
 **Prerequisites:**
 * Docker and Docker Compose installed
