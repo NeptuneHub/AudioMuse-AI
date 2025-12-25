@@ -520,11 +520,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             else:
                 raise
         
-        # Only cleanup if we loaded models in this function (not reusing album-level sessions)
-        if should_cleanup_sessions:
-            del embedding_sess, prediction_sess
-            gc.collect()
-
         averaged_logits = np.mean(mood_logits, axis=0)
         # Apply sigmoid to convert raw model outputs (logits) into probabilities
         final_mood_predictions = sigmoid(averaged_logits)
@@ -941,7 +936,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 logger.info(f"Cleaning up {len(onnx_sessions)} Essentia model sessions")
                 for model_name, session in onnx_sessions.items():
                     cleanup_onnx_session(session, model_name)
-                del onnx_sessions
+                onnx_sessions = None  # Clear reference but don't delete the variable
                 gc.collect()
             
             # Cleanup CLAP model if it was loaded during this album
@@ -981,7 +976,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         cleanup_onnx_session(session, model_name)
                     except Exception as e:
                         logger.warning(f"Error cleaning up {model_name} session: {e}")
-                del onnx_sessions
+                onnx_sessions = None  # Clear reference but don't delete the variable
                 gc.collect()
             
             # Cleanup CUDA memory
