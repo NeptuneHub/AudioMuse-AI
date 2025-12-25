@@ -1,0 +1,121 @@
+# Student Training System Configuration
+
+# Database Configuration
+database:
+  host: "localhost"  # Or use environment variable POSTGRES_HOST
+  port: 5432
+  user: "audiomuse"  # Or use environment variable POSTGRES_USER
+  password: "audiomusepassword"  # Or use environment variable POSTGRES_PASSWORD
+  dbname: "audiomusedb"  # Or use environment variable POSTGRES_DB
+
+# Jellyfin Configuration
+jellyfin:
+  url: "http://your_jellyfin_url:8096"  # Or use environment variable JELLYFIN_URL
+  user_id: "your_user_id"  # Or use environment variable JELLYFIN_USER_ID
+  token: "your_token"  # Or use environment variable JELLYFIN_TOKEN
+
+# OpenAI Configuration
+openai:
+  api_key: "your-openai-api-key"  # Or use environment variable OPENAI_API_KEY
+  model: "gpt-4"  # Options: gpt-4, gpt-3.5-turbo
+  temperature: 0.7
+  max_tokens: 200
+
+# Text Generation Configuration
+text_generation:
+  descriptions_per_song: 5
+  # Prompt template for generating descriptions
+  system_prompt: |
+    You are a music expert who creates concise, diverse descriptions of songs.
+    Focus on different aspects: mood, genre, instrumentation, tempo, energy, and style.
+
+# CLAP Anchor Search Configuration
+clap_anchor_search:
+  top_k: 10  # Number of similar songs to retrieve
+  similarity_threshold: 0.7  # Minimum cosine similarity
+
+# Audio Processing Configuration
+audio:
+  sample_rate: 48000  # CLAP's native sample rate
+  duration: 30.0  # Duration in seconds for processing (0 for full song)
+  n_mels: 128  # Number of mel bands
+  n_fft: 2048
+  hop_length: 512
+  window_size: 2048
+
+# Model Architecture Configuration
+model:
+  # Music Encoder (Student)
+  music_encoder:
+    input_channels: 1
+    conv_filters: [32, 64, 128]
+    kernel_sizes: [[3, 3], [3, 3], [3, 3]]
+    pool_sizes: [[2, 2], [2, 2], [2, 2]]
+    embedding_dim: 256
+    dropout: 0.1
+
+  # Text Encoder (Student)
+  text_encoder:
+    vocab_size: 30000  # Will be determined by tokenizer
+    max_seq_length: 128
+    embedding_dim: 256
+    num_layers: 2
+    num_heads: 4
+    hidden_dim: 256
+    dropout: 0.1
+
+# Training Configuration
+training:
+  # Data split
+  train_split: 0.8
+  val_split: 0.2
+  
+  # Batch size
+  batch_size: 32
+  
+  # Optimization
+  learning_rate: 0.0001
+  num_epochs: 100
+  
+  # Loss weights
+  loss_weights:
+    musicnn_distillation: 0.3
+    clap_distillation: 0.4
+    contrastive: 0.3
+  
+  # Contrastive learning
+  temperature: 0.07  # Temperature for InfoNCE loss
+  
+  # Checkpointing
+  save_every: 5  # Save checkpoint every N epochs
+  checkpoint_dir: "./student/checkpoints"
+  
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 0.0001
+
+# Data Caching Configuration
+cache:
+  audio_cache_dir: "./student/cache/audio"
+  text_cache_dir: "./student/cache/text"
+  enable_audio_cache: true
+  enable_text_cache: true
+
+# Export Configuration
+export:
+  output_dir: "./student/exported_models"
+  music_encoder_name: "student_music_encoder.onnx"
+  text_encoder_name: "student_text_encoder.onnx"
+
+# Logging Configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_file: "./student/training.log"
+  log_to_console: true
+
+# Device Configuration
+device:
+  use_cuda: true  # Use GPU if available
+  cuda_device: 0  # CUDA device ID

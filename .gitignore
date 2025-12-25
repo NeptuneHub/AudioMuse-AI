@@ -51,3 +51,11 @@ htmlcov/
 
 # Exported MuLan models
 mulan_model_export/
+
+# Student training system artifacts
+/student/cache/
+/student/checkpoints/
+/student/exported_models/
+/student/training.log
+/student/*.onnx
+/student/test_*.py
