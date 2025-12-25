@@ -1,0 +1,33 @@
+# Student CLAP Training Dependencies
+
+# Core ONNX and training
+onnx>=1.15.0
+onnxruntime-training>=1.17.0
+
+# Numerical computing
+numpy>=1.24.0
+
+# Audio processing
+librosa>=0.10.0
+soundfile>=0.12.0
+
+# Database
+psycopg2-binary>=2.9.0
+
+# HTTP requests (for Jellyfin)
+requests>=2.31.0
+
+# Configuration
+pyyaml>=6.0
+
+# Progress bars
+tqdm>=4.65.0
+
+# Visualization
+matplotlib>=3.7.0
+
+# Machine learning utilities
+scikit-learn>=1.3.0
+
+# Optional: Audio augmentation
+# audiomentations>=0.30.0  # Uncomment if using augmentation

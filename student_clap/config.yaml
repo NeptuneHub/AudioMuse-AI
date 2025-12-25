@@ -1,0 +1,99 @@
+# Student CLAP Configuration
+# Copy this file to config.local.yaml and edit with your settings
+
+# Database connection (PostgreSQL)
+database:
+  host: ${DB_HOST}
+  port: 5432
+  database: ${DB_NAME}
+  user: ${DB_USER}
+  password: ${DB_PASSWORD}
+
+# Jellyfin connection (for audio download)
+jellyfin:
+  url: ${JELLYFIN_URL}
+  user_id: ${JELLYFIN_USER_ID}
+  token: ${JELLYFIN_TOKEN}
+
+# Audio processing (MUST match CLAP preprocessing)
+audio:
+  sample_rate: 48000           # Sample rate for audio loading
+  segment_length: 480000       # 10 seconds at 48kHz (CRITICAL: match teacher)
+  hop_length: 240000           # 5 seconds hop, 50% overlap (CRITICAL: match teacher)
+  
+  # Mel-spectrogram parameters (for student model input)
+  n_mels: 128                  # Number of mel bands (student uses 128)
+  n_fft: 1024                  # FFT window size
+  hop_length_stft: 480         # STFT hop length
+  fmin: 0                      # Minimum frequency
+  fmax: 14000                  # Maximum frequency
+
+# Model architecture (TinyCLAP-inspired)
+model:
+  architecture: "tinyclap"     # Architecture type
+  embedding_dim: 512           # MUST be 512 for CLAP compatibility
+  
+  # CNN stem
+  cnn_channels: [32, 64, 128]  # CNN channel progression
+  
+  # Transformer
+  transformer_layers: 2        # Number of transformer layers
+  attention_heads: 4           # Number of attention heads
+  hidden_dim: 256              # Transformer hidden dimension
+  
+  # Dropout (for regularization)
+  dropout: 0.1
+
+# Training hyperparameters
+training:
+  # Basic settings
+  batch_size: 16               # Number of songs per batch
+  learning_rate: 1e-4          # Initial learning rate
+  epochs: 100                  # Total training epochs
+  warmup_epochs: 5             # Warmup period for learning rate
+  
+  # Optimizer
+  optimizer: "adam"            # Optimizer type (adam, adamw, sgd)
+  weight_decay: 1e-5           # Weight decay for regularization
+  grad_clip: 1.0               # Gradient clipping value
+  
+  # Loss weights
+  mse_weight: 0.6              # Weight for MSE loss
+  cosine_weight: 0.4           # Weight for cosine similarity loss
+  
+  # Checkpointing
+  save_every: 5                # Save checkpoint every N epochs
+  early_stopping_patience: 10  # Stop if no improvement for N epochs
+  
+  # Validation
+  validation_split: 0.15       # 15% of data for validation
+
+# Data augmentation (optional, for robustness)
+augmentation:
+  enabled: false               # Enable/disable augmentation
+  time_stretch_range: [0.95, 1.05]  # ±5% time stretch
+  pitch_shift_range: [-1, 1]        # ±1 semitone pitch shift
+  gaussian_noise_std: 0.005         # Gaussian noise std dev
+
+# Paths
+paths:
+  audio_cache: "./cache/audio"      # Cache for downloaded audio files
+  checkpoints: "./checkpoints"      # Model checkpoints directory
+  logs: "./logs"                    # Training logs directory
+  final_model: "./models/student_clap_audio.onnx"  # Final exported model
+
+# Validation metrics
+validation:
+  metrics: ["mse", "cosine_similarity", "l2_distance"]
+  
+# Hardware settings
+hardware:
+  use_cuda: true               # Use CUDA if available
+  num_workers: 4               # Number of data loading workers
+  prefetch_factor: 2           # Prefetch batches per worker
+
+# Logging
+logging:
+  level: "INFO"                # Logging level (DEBUG, INFO, WARNING, ERROR)
+  log_every: 10                # Log every N batches
+  tensorboard: false           # Enable TensorBoard logging (if installed)
