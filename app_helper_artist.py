@@ -15,16 +15,15 @@ def upsert_artist_mapping(artist_name, artist_id):
     Stores or updates the mapping between artist name and artist ID.
     If artist_name or artist_id is None/empty, does nothing.
     """
-    # Sanitize inputs
+    # Sanitize inputs using centralized function
     if artist_name:
-        artist_name = artist_name.replace('\x00', '').strip()
-        artist_name = ''.join(char for char in artist_name if char.isprintable() or char in '\n\t ')
-        if len(artist_name) > 500:
+        artist_name = sanitize_string_for_db(artist_name)
+        if artist_name and len(artist_name) > 500:
             artist_name = artist_name[:500]
     
     if artist_id:
-        artist_id = str(artist_id).replace('\x00', '').strip()
-        if len(artist_id) > 200:
+        artist_id = sanitize_string_for_db(str(artist_id))
+        if artist_id and len(artist_id) > 200:
             artist_id = artist_id[:200]
     
     if not artist_name or not artist_id:
