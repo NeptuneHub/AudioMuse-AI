@@ -667,59 +667,46 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
             
             return audio_embedding[0]  # Remove batch dimension
         
-        # Choose processing mode based on CLAP_PYTHON_MULTITHREADS
-        if not config.CLAP_PYTHON_MULTITHREADS:
-            # ONNX internal threading - process segments sequentially
-            logger.info(f"CLAP: Processing {num_segments} segments sequentially (ONNX internal threading)")
-            all_embeddings = []
-            for seg in segments:
-                try:
-                    embedding = process_segment(seg)
-                    all_embeddings.append(embedding)
-                except Exception as e:
-                    logger.error(f"Segment processing failed: {e}")
-                    raise
-        else:
-            # Python ThreadPoolExecutor - parallel processing with ONNX single-threaded
-            # Auto-calculate thread count: (physical_cores - 1) + (logical_cores // 2)
-            import psutil
-            physical_cores = psutil.cpu_count(logical=False)
-            logical_cores = psutil.cpu_count(logical=True)
-            num_threads = max(1, (physical_cores - 1) + ((logical_cores - physical_cores) // 2))
-            logger.info(f"CLAP: Processing {num_segments} segments with {num_threads} Python threads (physical: {physical_cores}, logical: {logical_cores})")
-            
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            
-            # Pre-allocate result array
-            all_embeddings = [None] * num_segments
-            
-            executor = None
-            try:
-                executor = ThreadPoolExecutor(max_workers=num_threads)
-                
-                # Submit all segments
-                future_to_idx = {executor.submit(process_segment, seg): i 
-                                for i, seg in enumerate(segments)}
-                
-                # Collect results as they complete (maintain order)
-                for future in as_completed(future_to_idx):
-                    try:
-                        idx = future_to_idx[future]
-                        embedding = future.result()
-                        all_embeddings[idx] = embedding
-                    except Exception as e:
-                        logger.error(f"Segment processing failed: {e}")
-                        raise
-            finally:
-                # Force immediate shutdown of all threads
-                if executor is not None:
-                    executor.shutdown(wait=True, cancel_futures=True)
-                    import time
-                    time.sleep(0.1)
-                
-                # Cleanup thread-local storage
-                import gc
-                gc.collect()
+        # Simplified approach: always run batched ONNX inference for all segments (CPU or GPU).
+        # This avoids complex branching and reduces Python overhead. We still keep OOM handling.
+        if num_segments < 1:
+            logger.error("No segments to process for CLAP analysis")
+            raise RuntimeError("No segments generated for CLAP analysis")
+
+        logger.info(f"CLAP: Running batched ONNX inference with {num_segments} segments")
+
+        # Compute mel-spectrograms for all segments and stack into a single batch
+        mel_list = [compute_mel_spectrogram(seg, SAMPLE_RATE) for seg in segments]
+        # Each mel has shape (1, time_frames, 64); add channel dim -> (1,1,time,64), then stack -> (batch,1,time,64)
+        try:
+            mel_batch = np.concatenate([m[:, np.newaxis, :, :] for m in mel_list], axis=0)
+        except Exception as e:
+            logger.error(f"Failed to create mel batch: {e}")
+            raise
+
+        onnx_inputs = {'mel_spectrogram': mel_batch}
+        try:
+            outputs = session.run(None, onnx_inputs)
+            all_embeddings = outputs[0]  # shape: (batch, dim)
+        except Exception as e:
+            # Handle memory allocation errors with cleanup and retry
+            def cleanup_fn():
+                cleanup_cuda_memory(force=True)
+
+            def retry_fn():
+                return session.run(None, onnx_inputs)
+
+            result = handle_onnx_memory_error(
+                e,
+                f"CLAP batched segment inference",
+                cleanup_func=cleanup_fn,
+                retry_func=retry_fn
+            )
+
+            if result is not None:
+                all_embeddings = result[0]
+            else:
+                raise
         
         # Combine all embeddings
         all_embeddings = np.vstack(all_embeddings)
