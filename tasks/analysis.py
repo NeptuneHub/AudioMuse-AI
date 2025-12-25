@@ -10,6 +10,7 @@ import random
 import logging
 import uuid
 import traceback
+import gc
 from pydub import AudioSegment
 from tempfile import NamedTemporaryFile
 
@@ -55,6 +56,13 @@ from .voyager_manager import build_and_store_voyager_index
 from .artist_gmm_manager import build_and_store_artist_index
 # MODIFIED: The functions from mediaserver no longer need server-specific parameters.
 from .mediaserver import get_recent_albums, get_tracks_from_album, download_track
+# Import memory management utilities
+from .memory_utils import (
+    cleanup_cuda_memory, 
+    cleanup_onnx_session, 
+    handle_onnx_memory_error,
+    SessionRecycler
+)
 
 
 from psycopg2 import OperationalError
@@ -399,6 +407,32 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         return None, None
 
 # --- 3. Run Main Models (Embedding and Prediction) ---
+    # Initialize variables for cleanup in finally block - MUST be before try block
+    embedding_sess = None
+    prediction_sess = None
+    should_cleanup_sessions = False
+    
+    # Configure provider options for GPU memory management (used for main and secondary models)
+    available_providers = ort.get_available_providers()
+    if 'CUDAExecutionProvider' in available_providers:
+        # Get GPU device ID from environment or default to 0
+        gpu_device_id = 0
+        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+        if cuda_visible and cuda_visible != '-1':
+            gpu_device_id = 0
+        
+        cuda_options = {
+            'device_id': gpu_device_id,
+            'arena_extend_strategy': 'kNextPowerOfTwo',
+            'cudnn_conv_algo_search': 'EXHAUSTIVE',
+            'do_copy_in_default_stream': True,
+        }
+        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
+        logger.info(f"CUDA provider available - attempting to use GPU for analysis (device_id={gpu_device_id})")
+    else:
+        provider_options = [('CPUExecutionProvider', {})]
+        logger.info("CUDA provider not available - using CPU only")
+    
     try:
         # Use pre-loaded sessions if provided, otherwise load per-song
         if onnx_sessions is not None:
@@ -406,32 +440,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             prediction_sess = onnx_sessions['prediction']
             should_cleanup_sessions = False
         else:
-            # Load and run embedding model (ONNX) with GPU memory management
-            # ONNX Runtime handles CUDA availability and fallback internally
-            available_providers = ort.get_available_providers()
-            
-            # Configure provider options for GPU memory management
-            if 'CUDAExecutionProvider' in available_providers:
-                # Get GPU device ID from environment or default to 0
-                # Docker sets NVIDIA_VISIBLE_DEVICES, CUDA runtime uses CUDA_VISIBLE_DEVICES
-                gpu_device_id = 0
-                cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-                if cuda_visible and cuda_visible != '-1':
-                    # If CUDA_VISIBLE_DEVICES is set, use first device (already mapped to 0)
-                    gpu_device_id = 0
-                
-                # GPU mode with memory management to prevent fragmentation
-                cuda_options = {
-                    'device_id': gpu_device_id,
-                    'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-                    'cudnn_conv_algo_search': 'DEFAULT',
-                }
-                provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-                logger.info(f"CUDA provider available - attempting to use GPU for analysis (device_id={gpu_device_id})")
-            else:
-                provider_options = [('CPUExecutionProvider', {})]
-                logger.info("CUDA provider not available - using CPU only")
-            
+            # Load embedding and prediction models with configured providers
             try:
                 embedding_sess = ort.InferenceSession(
                     model_paths['embedding'],
@@ -462,17 +471,55 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             should_cleanup_sessions = True
         
         embedding_feed_dict = {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches}
-        embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+        try:
+            embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+        except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
+            if "Failed to allocate memory" in str(e):
+                logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during embedding inference, attempting CPU fallback...")
+                
+                # Cleanup old session and recreate with CPU
+                if should_cleanup_sessions:
+                    cleanup_onnx_session(embedding_sess, "embedding")
+                
+                cleanup_cuda_memory(force=True)
+                
+                # Create CPU session
+                embedding_sess = ort.InferenceSession(
+                    model_paths['embedding'],
+                    providers=['CPUExecutionProvider']
+                )
+                
+                # Retry with CPU session
+                embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+                logger.info(f"Successfully completed embedding inference on CPU after OOM")
+            else:
+                raise
         
         prediction_feed_dict = {DEFINED_TENSOR_NAMES['prediction']['input']: embeddings_per_patch}
-        mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
+        try:
+            mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
+        except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
+            if "Failed to allocate memory" in str(e):
+                logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during prediction inference, attempting CPU fallback...")
+                
+                # Cleanup old session and recreate with CPU
+                if should_cleanup_sessions:
+                    cleanup_onnx_session(prediction_sess, "prediction")
+                
+                cleanup_cuda_memory(force=True)
+                
+                # Create CPU session
+                prediction_sess = ort.InferenceSession(
+                    model_paths['prediction'],
+                    providers=['CPUExecutionProvider']
+                )
+                
+                # Retry with CPU session
+                mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
+                logger.info(f"Successfully completed prediction inference on CPU after OOM")
+            else:
+                raise
         
-        # Only cleanup if we loaded models in this function (not reusing album-level sessions)
-        if should_cleanup_sessions:
-            del embedding_sess, prediction_sess
-            import gc
-            gc.collect()
-
         averaged_logits = np.mean(mood_logits, axis=0)
         # Apply sigmoid to convert raw model outputs (logits) into probabilities
         final_mood_predictions = sigmoid(averaged_logits)
@@ -482,12 +529,24 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     except Exception as e:
         logger.error(f"Main model inference failed for {os.path.basename(file_path)}: {e}", exc_info=True)
         return None, None
+    finally:
+        # ✅ Always cleanup, even on error
+        if should_cleanup_sessions:
+            try:
+                cleanup_onnx_session(embedding_sess, "embedding")
+                cleanup_onnx_session(prediction_sess, "prediction")
+                cleanup_cuda_memory(force=True)
+                logger.debug(f"Cleaned up sessions for {os.path.basename(file_path)} (error path)")
+            except Exception as cleanup_error:
+                logger.warning(f"Error during cleanup: {cleanup_error}")
 
         
     # --- 4. Run Secondary Models ---
     other_predictions = {}
 
     for key in ["danceable", "aggressive", "happy", "party", "relaxed", "sad"]:
+        other_sess = None
+        should_cleanup_other = False
         try:
             # Use pre-loaded sessions if provided, otherwise load per-song
             if onnx_sessions is not None:
@@ -512,13 +571,29 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                 should_cleanup_other = True
             
             feed_dict = {DEFINED_TENSOR_NAMES[key]['input']: embeddings_per_patch}
-            probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
-            
-            # Only cleanup if we loaded model in this function
-            if should_cleanup_other:
-                del other_sess
-                import gc
-                gc.collect()
+            try:
+                probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
+            except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
+                if "Failed to allocate memory" in str(e):
+                    logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during {key} inference, attempting CPU fallback...")
+                    
+                    # Cleanup old session and recreate with CPU
+                    if should_cleanup_other:
+                        cleanup_onnx_session(other_sess, key)
+                    
+                    cleanup_cuda_memory(force=True)
+                    
+                    # Create CPU session
+                    other_sess = ort.InferenceSession(
+                        model_paths[key],
+                        providers=['CPUExecutionProvider']
+                    )
+                    
+                    # Retry with CPU session
+                    probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
+                    logger.info(f"Successfully completed {key} inference on CPU after OOM")
+                else:
+                    raise
 
             if probabilities_per_patch is None:
                 other_predictions[key] = 0.0
@@ -534,6 +609,15 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         except Exception as e:
             logger.error(f"Error predicting '{key}' for {os.path.basename(file_path)}: {e}", exc_info=True)
             other_predictions[key] = 0.0
+        finally:
+            # Cleanup secondary model session if we loaded it
+            if should_cleanup_other and other_sess is not None:
+                try:
+                    cleanup_onnx_session(other_sess, key)
+                    del other_sess
+                    gc.collect()
+                except Exception as cleanup_error:
+                    logger.warning(f"Error cleaning up {key} session: {cleanup_error}")
 
     # --- 5. Final Aggregation for Storage ---
     processed_embeddings = np.mean(embeddings_per_patch, axis=0)
@@ -577,6 +661,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         
         # Essentia models will be lazy-loaded on first song that needs MusiCNN analysis
         onnx_sessions = None
+        
+        # Initialize SessionRecycler to prevent cumulative memory leaks
+        session_recycler = SessionRecycler(recycle_interval=20)
 
         def log_and_update_album_task(message, progress, **kwargs):
             nonlocal current_progress_val, current_task_logs
@@ -706,8 +793,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                     gpu_device_id = 0
                                 cuda_options = {
                                     'device_id': gpu_device_id,
-                                    'arena_extend_strategy': 'kSameAsRequested',
-                                    'cudnn_conv_algo_search': 'DEFAULT',
+                                    'arena_extend_strategy': 'kNextPowerOfTwo',  # Better memory allocation
+                                    'cudnn_conv_algo_search': 'EXHAUSTIVE',      # Find memory-efficient algorithms
+                                    'do_copy_in_default_stream': True,           # Better memory sync
                                 }
                                 provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
                             else:
@@ -731,6 +819,57 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                 logger.error(f"Failed to load Essentia models: {e}")
                                 onnx_sessions = None
                         
+                        # Check if sessions should be recycled to prevent cumulative memory leaks
+                        if onnx_sessions and session_recycler.should_recycle():
+                            logger.info(f"Recycling ONNX sessions after {session_recycler.get_use_count()} tracks")
+                            
+                            # Cleanup old sessions
+                            for model_name, session in onnx_sessions.items():
+                                cleanup_onnx_session(session, model_name)
+                            
+                            # Force CUDA cleanup
+                            cleanup_cuda_memory(force=True)
+                            
+                            # Recreate sessions
+                            onnx_sessions = {}
+                            available_providers = ort.get_available_providers()
+                            
+                            if 'CUDAExecutionProvider' in available_providers:
+                                gpu_device_id = 0
+                                cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+                                if cuda_visible and cuda_visible != '-1':
+                                    gpu_device_id = 0
+                                cuda_options = {
+                                    'device_id': gpu_device_id,
+                                    'arena_extend_strategy': 'kNextPowerOfTwo',
+                                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
+                                    'do_copy_in_default_stream': True,
+                                }
+                                provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
+                            else:
+                                provider_options = [('CPUExecutionProvider', {})]
+                            
+                            try:
+                                for model_name, model_path in model_paths.items():
+                                    try:
+                                        onnx_sessions[model_name] = ort.InferenceSession(
+                                            model_path,
+                                            providers=[p[0] for p in provider_options],
+                                            provider_options=[p[1] for p in provider_options]
+                                        )
+                                    except Exception:
+                                        onnx_sessions[model_name] = ort.InferenceSession(
+                                            model_path,
+                                            providers=['CPUExecutionProvider']
+                                        )
+                                logger.info(f"✓ Recycled {len(onnx_sessions)} Essentia model sessions")
+                            except Exception as e:
+                                logger.error(f"Failed to recycle Essentia models: {e}")
+                                onnx_sessions = None
+                            
+                            # Mark as recycled
+                            session_recycler.mark_recycled()
+                        
                         analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions)
                         if analysis is None:
                             logger.warning(f"Skipping track {track_name_full} as analysis returned None.")
@@ -747,6 +886,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         
                         save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding, energy=analysis['energy'], other_features=other_features)
                         track_processed = True
+                        
+                        # Increment session recycler counter after successful analysis
+                        session_recycler.increment()
                     else:
                         logger.info(f"SKIPPED MusiCNN for '{track_name_full}' (already analyzed)")
                     
@@ -792,8 +934,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             # Cleanup all models after album analysis to free memory
             if onnx_sessions:
                 logger.info(f"Cleaning up {len(onnx_sessions)} Essentia model sessions")
-                del onnx_sessions
-                import gc
+                for model_name, session in onnx_sessions.items():
+                    cleanup_onnx_session(session, model_name)
+                onnx_sessions = None  # Clear reference but don't delete the variable
                 gc.collect()
             
             # Cleanup CLAP model if it was loaded during this album
@@ -807,6 +950,10 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             if is_mulan_model_loaded():
                 logger.info("Cleaning up MuLan model after album analysis")
                 unload_mulan_model()
+            
+            # Final CUDA cleanup after album completion
+            logger.info("Performing final CUDA cleanup after album analysis")
+            cleanup_cuda_memory(force=True)
 
             summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album}
             log_and_update_album_task(f"Album '{album_name}' analysis complete.", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
@@ -820,6 +967,42 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             logger.critical(f"Album analysis {album_id} failed: {e}", exc_info=True)
             log_and_update_album_task(f"Failed to analyze album '{album_name}': {e}", current_progress_val, task_state=TASK_STATUS_FAILURE, final_summary_details={"error": str(e), "traceback": traceback.format_exc()})
             raise
+        finally:
+            # ✅ Always cleanup, even on error or early return
+            if onnx_sessions:
+                logger.info(f"Cleaning up {len(onnx_sessions)} Essentia model sessions (finally block)")
+                for model_name, session in onnx_sessions.items():
+                    try:
+                        cleanup_onnx_session(session, model_name)
+                    except Exception as e:
+                        logger.warning(f"Error cleaning up {model_name} session: {e}")
+                onnx_sessions = None  # Clear reference but don't delete the variable
+                gc.collect()
+            
+            # Cleanup CUDA memory
+            try:
+                cleanup_cuda_memory(force=True)
+                logger.debug("Final CUDA cleanup completed (finally block)")
+            except Exception as e:
+                logger.warning(f"Error during final CUDA cleanup: {e}")
+            
+            # Cleanup CLAP model if loaded
+            try:
+                from .clap_analyzer import unload_clap_model, is_clap_model_loaded
+                if is_clap_model_loaded():
+                    unload_clap_model()
+                    logger.debug("CLAP model cleanup completed (finally block)")
+            except Exception as e:
+                logger.warning(f"Error cleaning up CLAP model: {e}")
+            
+            # Cleanup MuLan model if loaded
+            try:
+                from .mulan_analyzer import unload_mulan_model, is_mulan_model_loaded
+                if is_mulan_model_loaded():
+                    unload_mulan_model()
+                    logger.debug("MuLan model cleanup completed (finally block)")
+            except Exception as e:
+                logger.warning(f"Error cleaning up MuLan model: {e}")
 
 # MODIFIED: Removed jellyfin_url, jellyfin_user_id, jellyfin_token from signature.
 def run_analysis_task(num_recent_albums, top_n_moods):
@@ -880,6 +1063,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
             total_albums_to_check = len(all_albums)
             active_jobs, launched_jobs = {}, []
+            launched_job_ids = set()  # Track job IDs launched in THIS run only
             albums_skipped, albums_launched, albums_completed, last_rebuild_count = 0, 0, 0, 0
 
             def get_existing_track_ids(track_ids):
@@ -899,12 +1083,21 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 job when it finishes) and uses that as the source of truth. This
                 helps in cases where RQ job state is not available or the worker
                 uses a different Redis namespace.
+                
+                CRITICAL: Also removes jobs from active_jobs if they're not in launched_job_ids
+                (zombie jobs from previous failed runs) to prevent blocking forever.
                 """
                 nonlocal albums_completed, last_rebuild_count
                 removed = 0
 
                 # First: try to detect terminal jobs via RQ
                 for job_id in list(active_jobs.keys()):
+                    # CRITICAL: Remove jobs that aren't in launched_job_ids (zombie jobs from previous runs)
+                    if job_id not in launched_job_ids:
+                        logger.warning(f"Removing zombie job {job_id} from active_jobs (not in current run's launched_job_ids)")
+                        del active_jobs[job_id]
+                        continue
+                    
                     try:
                         job = Job.fetch(job_id, connection=redis_conn)
                         if job.is_finished or job.is_failed or job.is_canceled:
@@ -924,17 +1117,21 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     albums_completed += removed
 
                 # Second: reconcile with DB child task statuses (authoritative)
+                # BUT only count child tasks that were launched in THIS run (in launched_job_ids)
                 try:
                     from app_helper import get_child_tasks_from_db
                     child_tasks = get_child_tasks_from_db(current_task_id)
                     terminal_statuses = {TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED}
-                    db_completed = sum(1 for t in child_tasks if t.get('status') in terminal_statuses)
+                    # Filter to only count tasks launched in this run
+                    db_completed = sum(1 for t in child_tasks 
+                                      if t.get('status') in terminal_statuses 
+                                      and t.get('task_id') in launched_job_ids)
 
                     if db_completed != albums_completed:
-                        logger.info(f"Reconciling albums_completed: RQ_count={albums_completed} DB_count={db_completed}")
+                        logger.info(f"Reconciling albums_completed: RQ_count={albums_completed} DB_count={db_completed} (from {len(launched_job_ids)} launched jobs)")
                         albums_completed = db_completed
                         # Remove any active_jobs whose IDs are in DB terminal list
-                        terminal_ids = {t['task_id'] for t in child_tasks if t.get('status') in terminal_statuses}
+                        terminal_ids = {t['task_id'] for t in child_tasks if t.get('status') in terminal_statuses and t.get('task_id') in launched_job_ids}
                         for job_id in list(active_jobs.keys()):
                             if job_id in terminal_ids:
                                 try:
@@ -1040,6 +1237,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 job = rq_queue_default.enqueue('tasks.analysis.analyze_album_task', args=(album['Id'], album['Name'], top_n_moods, current_task_id), job_id=str(uuid.uuid4()), job_timeout=-1, retry=Retry(max=3))
                 active_jobs[job.id] = job
                 launched_jobs.append(job)
+                launched_job_ids.add(job.id)  # Track this job ID for reconciliation
                 albums_launched += 1
                 checked_album_ids.add(album['Id'])
                 

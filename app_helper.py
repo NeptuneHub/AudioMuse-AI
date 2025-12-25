@@ -224,6 +224,7 @@ def clean_up_previous_main_tasks():
     Cleans up all previous main tasks before a new one starts.
     - Archives tasks in SUCCESS state.
     - Archives stale tasks stuck in PENDING, STARTED, or PROGRESS states.
+    - DELETES all child tasks associated with archived parent tasks to prevent DB bloat.
     A main task is identified by having a NULL parent_task_id.
     """
     db = get_db() # This now calls the function within this file
@@ -237,6 +238,8 @@ def clean_up_previous_main_tasks():
         tasks_to_archive = cur.fetchall()
 
         archived_count = 0
+        deleted_children_count = 0
+        
         for task_row in tasks_to_archive:
             task_id = task_row['task_id']
             original_status = task_row['status']
@@ -264,6 +267,18 @@ def clean_up_previous_main_tasks():
             archived_details_json = json.dumps(archived_details)
 
             with db.cursor() as update_cur:
+                # First, delete all child tasks to prevent DB bloat and avoid counting old tasks
+                update_cur.execute(
+                    "DELETE FROM task_status WHERE parent_task_id = %s",
+                    (task_id,)
+                )
+                children_deleted = update_cur.rowcount
+                deleted_children_count += children_deleted
+                
+                if children_deleted > 0:
+                    logger.info(f"Deleted {children_deleted} child tasks for parent task {task_id}")
+                
+                # Then archive the parent task
                 update_cur.execute(
                     "UPDATE task_status SET status = %s, details = %s, progress = 100, timestamp = NOW() WHERE task_id = %s AND status = %s",
                     (TASK_STATUS_REVOKED, archived_details_json, task_id, original_status)
@@ -272,7 +287,7 @@ def clean_up_previous_main_tasks():
 
         if archived_count > 0:
             db.commit()
-            logger.info(f"Archived {archived_count} previous main tasks.")
+            logger.info(f"Archived {archived_count} previous main tasks and deleted {deleted_children_count} child tasks.")
         else:
             logger.info("No previous main tasks found to clean up.")
     except Exception as e_main_clean:
@@ -409,12 +424,44 @@ def track_exists(item_id):
 
 def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None):
     """Saves track analysis and embedding in a single transaction."""
-    # Sanitize string inputs to remove NUL characters
-    title = title.replace('\x00', '') if title else title
-    author = author.replace('\x00', '') if author else author
-    key = key.replace('\x00', '') if key else key
-    scale = scale.replace('\x00', '') if scale else scale
-    other_features = other_features.replace('\x00', '') if other_features else other_features
+    
+    def _sanitize_string(s, max_length=1000, field_name="field"):
+        """Sanitize string for PostgreSQL insertion."""
+        if s is None:
+            return None
+        
+        # Ensure it's a string
+        if not isinstance(s, str):
+            try:
+                s = str(s)
+            except Exception:
+                logger.warning(f"Could not convert {field_name} to string, using empty string")
+                return ""
+        
+        # Remove problematic characters
+        # NUL byte (0x00) - PostgreSQL cannot store
+        s = s.replace('\x00', '')
+        
+        # Remove other control characters that could cause issues
+        # Keep only printable ASCII, space, tab, newline, and common Unicode
+        s = ''.join(char for char in s if char.isprintable() or char in '\n\t ')
+        
+        # Truncate to max length to prevent overly long strings
+        if len(s) > max_length:
+            logger.warning(f"{field_name} truncated from {len(s)} to {max_length} characters")
+            s = s[:max_length]
+        
+        # Strip leading/trailing whitespace
+        s = s.strip()
+        
+        return s
+    
+    # Sanitize all string inputs with field-specific limits
+    title = _sanitize_string(title, max_length=500, field_name="title")
+    author = _sanitize_string(author, max_length=200, field_name="author")
+    key = _sanitize_string(key, max_length=10, field_name="key")
+    scale = _sanitize_string(scale, max_length=10, field_name="scale")
+    other_features = _sanitize_string(other_features, max_length=2000, field_name="other_features")
 
     mood_str = ','.join(f"{k}:{v:.3f}" for k, v in moods.items())
     

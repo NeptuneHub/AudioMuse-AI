@@ -1,4 +1,4 @@
-# **Application Feature Analysis**
+# **Algorithm description**
 
 This document provides a detailed functional (high-level) and technical (algorithm-level) breakdown of the core features of the AudioMuse-AI application. It covers the data ingestion and analysis process, the playlist generation and clustering process, the similarity-based playlist creation process, the song pathfinding process, the vector-based song manipulation (alchemy) process, the interactive music map visualization, the personalized sonic fingerprint generation, and the AI-driven instant playlist creation via chat.
 
@@ -1322,3 +1322,183 @@ Operational Notes
 
 * The scheduler is intended to be invoked periodically (e.g., via a thread in `app.py` or a separate process). Ensure only one scheduler instance updates `last_run` to avoid duplicate enqueues in multi-process deployments (use a leader election or central cron runner if required).
 * Tuning the cron expressions and the clustering defaults is recommended to balance freshness and compute cost.
+
+## **11. Text Search (CLAP)**
+
+This section details the "Text Search" feature, which enables natural language music discovery using CLAP (Contrastive Language-Audio Pretraining) embeddings. Users can search their music library using plain English descriptions like "upbeat summer songs" or "relaxing instrumental music" instead of relying on traditional metadata filters.
+
+### **11.1. Functional Analysis (High-Level)**
+
+From a user's perspective, "Text Search" provides an intuitive, Google-like search experience for music discovery. The feature leverages pre-computed CLAP embeddings to match natural language queries against audio characteristics.
+
+#### **Key User Interactions & Workflow**
+
+1. **Prerequisite:** The user must have already run the "Start Analysis" task at least once with CLAP enabled. This generates and stores CLAP embeddings for all analyzed tracks.
+2. **Initiation:** The user navigates to the "Text Search" page (clap_search.html).
+3. **Model Warmup (Automatic):**
+   * When the page loads, it automatically calls the `/api/clap/warmup` endpoint to preload the CLAP text model into memory.
+   * This warmup starts a timer (default 5 minutes) that keeps the model loaded for fast subsequent searches. The timer resets with each search.
+   * A status indicator shows whether the model is "ready" and displays the remaining time before automatic unload.
+4. **Query Input:**
+   * The user types a natural language query into the search box (minimum 3 characters required).
+   * Suggested queries are displayed as clickable buttons for inspiration (e.g., "energetic rock songs", "calm acoustic guitar", "upbeat electronic dance").
+5. **Search Execution:**
+   * The user presses Enter or clicks the search button.
+   * The query is sent to `/api/clap/search` which returns matching songs ranked by semantic similarity.
+6. **Results Display:**
+   * Results are displayed in a table showing Title, Artist, and a Similarity score (0.0 to 1.0).
+   * Results are ordered by relevance, with the most semantically similar songs at the top.
+   * The number of results defaults to 100 but can be configured (maximum 500).
+7. **Playlist Creation:**
+   * If results are found, a "Create Playlist" button appears.
+   * The user can edit the suggested playlist name (defaults to the search query) and click **"Create Playlist on Media Server"** to save the results.
+8. **Cache Management:**
+   * An admin "Refresh Cache" button allows reloading CLAP embeddings from the database after new songs are analyzed.
+   * Cache statistics (number of songs, memory usage) are displayed for monitoring.
+9. **Outcome:** Users discover music based on sonic characteristics and mood rather than relying solely on metadata like genre tags or artist names.
+
+#### **Core Purpose**
+
+The functional purpose is to **"search music by audio characteristics using simple text queries"**. CLAP embeddings capture audio characteristics in a high-dimensional space aligned with natural language descriptors. The system works best with simple queries combining genre (e.g., "rock", "electronic"), instrumentation (e.g., "acoustic guitar", "piano", "synthesizer"), and mood descriptors (e.g., "energetic", "calm"). Performance is strongest for genre and instrument identification, with mood recognition being somewhat less precise.
+
+### **11.2. Technical Analysis (Algorithm-Level)**
+
+The Text Search system is architected around two core components: CLAP embedding generation during analysis, and fast in-memory similarity search at query time.
+
+#### **Stage 0: CLAP Embedding Generation (During Analysis)**
+
+CLAP embeddings are generated as part of the song analysis pipeline, running in parallel with mood/embedding extraction.
+
+1. **Model Architecture:** The system uses split ONNX CLAP models:
+   * **Audio model** (`clap_audio_model.onnx`, ~268MB): Loaded in worker containers during analysis to generate embeddings from audio files.
+   * **Text model** (`clap_text_model.onnx`, ~478MB): Loaded in Flask containers during search to generate embeddings from text queries.
+   * This split architecture saves memory—workers only load audio, Flask only loads text (vs. ~746MB combined).
+2. **Audio Processing (analyze_track in tasks/analysis.py):**
+   * After loading audio with librosa, if `CLAP_ENABLED=true`, the system calls `get_clap_audio_embedding` from `tasks.clap_analyzer`.
+   * Audio is resampled to 48kHz mono and converted to a mel-spectrogram.
+   * The CLAP audio model generates a 512-dimensional embedding vector.
+3. **Database Storage:**
+   * The embedding is serialized to binary (BYTEA) and stored in the `clap_embedding` table, linked to the track's `item_id`.
+   * Table schema: `(item_id PRIMARY KEY, embedding BYTEA)` with foreign key to `score(item_id)`.
+4. **Normalization:** Both audio and text embeddings are L2-normalized, enabling fast cosine similarity computation via dot product.
+
+#### **Stage 1: In-Memory Cache Loading (Flask Startup)**
+
+1. **Cache Initialization:** When the Flask application starts (app.py), it calls `load_clap_cache_from_db` if `CLAP_ENABLED=true`.
+2. **Bulk Load:**
+   * Fetches all rows from `clap_embedding` joined with `score` to get `(item_id, embedding, title, author)`.
+   * Converts BYTEA embeddings to NumPy arrays and validates dimensionality (512).
+   * Builds three parallel data structures:
+     * `embeddings`: NumPy matrix (N × 512) for vectorized operations.
+     * `metadata`: List of dicts with `{item_id, title, author}`.
+     * `item_ids`: List of item IDs for index mapping.
+3. **Memory Footprint:** For a typical library of 10,000 songs:
+   * Embeddings: 10,000 × 512 × 4 bytes (float32) ≈ 20 MB
+   * Metadata: ~2-3 MB
+   * Total: ~22-23 MB in RAM
+4. **Global Cache:** Stored in `_CLAP_CACHE` global dictionary with a `loaded` flag for fast status checks.
+
+#### **Stage 2: Model Warmup & Timer Management**
+
+1. **Lazy Text Model Loading:**
+   * The CLAP text model is **not** loaded at startup to save memory (~478MB).
+   * When `/api/clap/warmup` is called (page load or first search), `initialize_clap_text_model` loads the text model into `_text_session`.
+2. **Warmup Timer:**
+   * After loading, a background thread starts a countdown (default `CLAP_TEXT_SEARCH_WARMUP_DURATION=300` seconds).
+   * Each search or warmup call resets the timer.
+   * When the timer expires, `unload_clap_model` is called to free memory.
+   * The audio model is never loaded in Flask containers (only in workers).
+3. **Status Endpoint:** `/api/clap/warmup/status` returns `{active: bool, seconds_remaining: int}` for UI feedback.
+
+#### **Stage 3: Text Query Search (search_by_text)**
+
+1. **API Call:** User submits query via POST to `/api/clap/search` with JSON: `{query: "upbeat summer songs", limit: 100}`.
+2. **Auto-Warmup:** `search_by_text` calls `warmup_text_search_model()` to ensure the text model is loaded and reset the timer.
+3. **Text Embedding Generation:**
+   * Query text is tokenized using a RoBERTa tokenizer (loaded from `transformers` library).
+   * The CLAP text model (`_text_session`) generates a 512-dimensional embedding via ONNX Runtime inference.
+   * The embedding is L2-normalized.
+4. **Vectorized Similarity Computation:**
+   * Computes cosine similarity between the query embedding and all cached song embeddings using a single matrix multiplication:
+     ```python
+     similarities = _CLAP_CACHE['embeddings'] @ text_embedding  # (N,) array
+     ```
+   * This vectorized operation is extremely fast (~1-2ms for 10,000 songs on CPU).
+5. **Top-K Selection:**
+   * Uses `np.argsort(similarities)[::-1][:limit]` to get indices of top results.
+   * Maps indices back to metadata to construct result dicts with `{item_id, title, author, similarity}`.
+6. **Response:** Returns JSON with `{query, results, count}` to the frontend.
+
+#### **Stage 4: Top Queries (Precomputation)**
+
+1. **Background Generation:** At startup (if cache loaded), a background thread may compute "top queries" by:
+   * Loading category-weighted terms from `query.json` (Genre, Mood, Instrumentation, etc.).
+   * Generating thousands of random 3-term queries (e.g., "energetic rock guitar").
+   * Scoring each query by embedding diversity and result count.
+   * Selecting top N (default 50) diverse queries for UI suggestions.
+2. **Caching:** Stored in `_TOP_QUERIES_CACHE` global with a `ready` flag.
+3. **Endpoint:** `/api/clap/top_queries` returns precomputed queries as inspiration buttons.
+
+#### **Stage 5: Playlist Creation**
+
+* Identical to Stage 4 of "Playlist from Similar Song," using the `/api/create_playlist` endpoint.
+* The frontend passes the list of `item_id`s from search results to create the playlist.
+
+### **11.3. Environment Variable Configuration**
+
+The Text Search functionality is configured by the following environment variables (from config.py):
+
+#### **Core Infrastructure**
+
+* `REDIS_URL`: **(Required)** Used by RQ workers and pub/sub.
+* `DATABASE_URL` (or `POSTGRES_*` variables): **(Required)** Used to fetch CLAP embeddings and song metadata.
+* `MEDIASERVER_TYPE`, `JELLYFIN_URL`, etc.: **(Required)** Used to create playlists from search results.
+
+#### **CLAP Feature Toggle**
+
+* `CLAP_ENABLED`: (Boolean, default `true`) Master switch for CLAP functionality. If `false`, CLAP embeddings are not generated during analysis and text search is disabled.
+
+#### **CLAP Model Paths**
+
+* `CLAP_AUDIO_MODEL_PATH`: Filesystem path to the audio ONNX model (default `/app/model/clap_audio_model.onnx`). Used by workers during analysis.
+* `CLAP_TEXT_MODEL_PATH`: Filesystem path to the text ONNX model (default `/app/model/clap_text_model.onnx`). Used by Flask for search queries.
+* `CLAP_MODEL_PATH`: Legacy path for combined model (not used with split architecture, kept for backward compatibility).
+* `CLAP_EMBEDDING_DIMENSION`: Expected embedding vector size (fixed at 512 for LAION CLAP models). Used for validation.
+
+#### **ONNX Runtime Configuration**
+
+* `CLAP_PYTHON_MULTITHREADS`: (Boolean, default `false`)
+  * `false`: ONNX Runtime uses automatic thread management (recommended).
+  * `true`: ONNX single-threaded, expects Python-level `ThreadPoolExecutor` for parallelism.
+
+#### **Text Search Behavior**
+
+* `CLAP_TEXT_SEARCH_WARMUP_DURATION`: Duration in seconds to keep the text model loaded after last use (default `300` = 5 minutes). Balances memory usage vs. search responsiveness.
+
+#### **Top Queries Generation**
+
+* `CLAP_TOP_QUERIES_COUNT`: Number of random queries to generate and score when computing top suggestions (default `1000`).
+* `CLAP_CATEGORY_WEIGHTS`: JSON dict mapping query categories to sampling weights. Categories with higher weights appear more frequently in generated queries. Default:
+  ```json
+  {
+    "Genre": 1.5,
+    "Mood": 1.5,
+    "Energy": 1.2,
+    "Tempo": 1.0,
+    "Instrumentation": 1.0,
+    "Voice_Type": 0.8,
+    "Production": 0.7,
+    "Era": 0.5
+  }
+  ```
+
+#### **Operational Notes**
+
+* **Memory Management:** The split-model architecture is crucial for efficient resource usage:
+  * Worker containers: Load only audio model (~268MB) during analysis.
+  * Flask containers: Load only text model (~478MB) during searches, with automatic unloading after inactivity.
+  * Cache is always in memory (~20-30MB) but models are lazy-loaded.
+* **GPU Support:** CLAP models support CUDA acceleration if available (configured via `CUDA_VISIBLE_DEVICES`). Text model typically runs on CPU in Flask; audio model benefits from GPU in workers.
+* **Cache Refresh:** After running analysis on new albums, use `/api/clap/cache/refresh` to reload embeddings without restarting Flask.
+* **Query Quality:** CLAP performs best with simple queries (2-4 words) combining genre, instrument, and mood descriptors. Genre and instrument queries yield the most accurate results, while mood-based queries are less precise. Examples: "energetic rock guitar", "calm piano instrumental", "electronic dance synthesizer".
+* **Tokenizer:** Uses HuggingFace `transformers` library's RoBERTa tokenizer. The `TRANSFORMERS_NO_ADVISORY_WARNINGS` env var suppresses PyTorch/TensorFlow warnings since only the tokenizer is used.

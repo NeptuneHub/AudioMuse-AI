@@ -22,9 +22,9 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 * **Song Paths**: Create a seamless listening journey between two songs. AudioMuse-AI finds the perfect tracks to bridge the sonic gap.
 * **Sonic Fingerprint**: Generates playlists based on your listening habits, finding tracks similar to what you've been playing most often.
 * **Song Alchemy**: Mix your ideal vibe, mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and a 2D preview. Export the final selection directly to your media server.
+* **Text Search**: search your song with simple text that can contains mood, instruments and genre like calm piano songs.
 
-
-More information, like **Frequently Asked Question (FAQ)** can be found in the [docs folder](docs).
+More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [FAQ](docs/FAQ.md), [GPU DEPLOYMENT](docs/GPU.md), [HARDWARE REQUIREMENTS](docs/HARDWARE.md) and [CONFIGURATION PARAMETERS](docs/PARAMETERS.md) can be found in the [docs folder](docs).
 
 **The full list or AudioMuse-AI related repository are:** 
   > * [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI): the core application, it run Flask and Worker containers to actually run all the feature;
@@ -43,167 +43,85 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 
 ## **Table of Contents**
 
-- [Quick Start Deployment on K3S WITH HELM](#quick-start-deployment-on-k3s-with-helm)
-- [Quick Start Deployment on K3S](#quick-start-deployment-on-k3s)
-- [Local Deployment with Docker Compose](#local-deployment-with-docker-compose)
-- [Local Deployment with Podman Quadlets](#local-deployment-with-podman-quadlets)
+- [Quick Start Deployment](#quick-start-deployment)
 - [Hardware Requirements](#hardware-requirements)
-- [Configuration Parameters](#configuration-parameters)
 - [Docker Image Tagging Strategy](#docker-image-tagging-strategy)
 - [Key Technologies](#key-technologies)
 - [How To Contribute](#how-to-contribute)
 - [Star History](#star-history)
 
-## **Quick Start Deployment on K3S WITH HELM**
+## Quick Start Deployment
 
-The best way to install AudioMuse-AI on K3S (kubernetes) is by [AudioMuse-AI Helm Chart repository](https://github.com/NeptuneHub/AudioMuse-AI-helm)
+Get AudioMuse-AI running in minutes with Docker Compose. 
 
-*  **Prerequisites:**
-    *   A running `K3S cluster`.
-    *   `kubectl` configured to interact with your cluster.
-    *   `helm` installed.
-    *   `Jellyfin` or `Navidrome` or `Lyrion` installed.
-    *   Respect the HW requirements (look the specific chapter)
+If you need more deployment example take a look at [DEPLOYMENT](docs/DEPLOYMENT.md) page.
 
-You can directly check the Helm Chart repo for more details and deployments examples.
+For a full list of configuration parameter take a look at [PARAMETERS](docs/PARAMETERS.md) page.
 
-## **Quick Start Deployment on K3S**
-
-This section provides a minimal guide to deploy AudioMuse-AI on a K3S (Kubernetes) cluster by directly using the `deployment` manifests.
-
-* **Prerequisites:**
-    *   A running K3S cluster.
-    *   `kubectl` configured to interact with your cluster.
-    *   `Jellyfin` or `Navidrome` or `Lyrion` installed.
-    *   Respect the HW requirements (look the specific chapter)
-
-*  **Jellyfin Configuration:**
-    *   Navigate to the `deployment/` directory.
-    *   Edit `deployment.yaml` to configure mandatory parameters:
-        *   **Secrets:**
-            *   `jellyfin-credentials`: Update `api_token` and `user_id`.
-            *   `postgres-credentials`: Update `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`.
-            *   `gemini-api-credentials` (if using Gemini for AI Naming): Update `GEMINI_API_KEY`.
-            *   `mistral-api-credentials` (if using Mistral for AI Naming): Update `MISTRAL_API_KEY`.
-        *   **ConfigMap (`audiomuse-ai-config`):**
-            *   Update `JELLYFIN_URL`.
-            *   Ensure `POSTGRES_HOST`, `POSTGRES_PORT`, and `REDIS_URL` are correct for your setup (defaults are for in-cluster services).
-
-*  **Navidrome/LMS (Open Subsonic API Music Server) Configuration:**
-    *   Navigate to the `deployment/` directory.
-    *   Edit `deployment-navidrome.yaml` to configure mandatory parameters:
-        *   **Secrets:**
-            *   `navidrome-credentials`: Update `NAVIDROME_USER` and `NAVIDROME_PASSWORD`.
-            *   `postgres-credentials`: Update `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`.
-            *   `gemini-api-credentials` (if using Gemini for AI Naming): Update `GEMINI_API_KEY`.
-            *   `mistral-api-credentials` (if using Mistral for AI Naming): Update `MISTRAL_API_KEY`.
-        *   **ConfigMap (`audiomuse-ai-config`):**
-            *   Update `NAVIDROME_URL`.
-            *   Ensure `POSTGRES_HOST`, `POSTGRES_PORT`, and `REDIS_URL` are correct for your setup (defaults are for in-cluster services).
-        *   > The same instruction used for Navidrome could apply to other Mediaserver that support Subsonic API. LMS for example is supported, only remember to user the Subsonic API token instead of the password.
-
-*  **Lyrion Configuration:**
-    *   Navigate to the `deployment/` directory.
-    *   Edit `deployment-lyrion.yaml` to configure mandatory parameters:
-        *   **Secrets:**
-            *   `postgres-credentials`: Update `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`.
-            *   `gemini-api-credentials` (if using Gemini for AI Naming): Update `GEMINI_API_KEY`.
-        *   **ConfigMap (`audiomuse-ai-config`):**
-            *   Update `LYRION_URL`.
-            *   Ensure `POSTGRES_HOST`, `POSTGRES_PORT`, and `REDIS_URL` are correct for your setup (defaults are for in-cluster services).
-            
-*  **Deploy:**
-    ```bash
-    kubectl apply -f deployment/deployment.yaml
-    ```
-*  **Access:**
-    *   **Main UI:** Access at `http://<EXTERNAL-IP>:8000`
-    *   **API Docs (Swagger UI):** Explore the API at `http://<EXTERNAL-IP>:8000/apidocs`
- 
-## **Local Deployment with Docker Compose**
-
-AudioMuse-AI provides Docker Compose files for different media server backends:
-
-- **Jellyfin**: Use `deployment/docker-compose.yaml`
-- **Navidrome**: Use `deployment/docker-compose-navidrome.yaml`
-- **Lyrion**: Use `deployment/docker-compose-lyrion.yaml`
-- **Emby**: Use `deployment/docker-compose-emby.yaml`
-
-Choose the appropriate file based on your media server setup.
+For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](docs/ARCHITECTURE.md) page.
 
 **Prerequisites:**
-*   Docker and Docker Compose installed.
-*   `Jellyfin` or `Navidrome` or `Lyrion` or `Emby` installed.
-*   Respect the [hardware requirements](#hardware-requirements)
-*   Optionally, you can install the `docker-model-plugin` to enable the use of the [Docker Model Runner](https://docs.docker.com/ai/model-runner/get-started/#docker-engine) for running AI models locally. If you choose this setup, use `deployment/docker-compose-dmr.yaml` to configure AudioMuse-AI to communicate with DMR through an OpenAI-compatible API interface.
+* Docker and Docker Compose installed
+* A running media server (Jellyfin, Navidrome, Lyrion, or Emby)
+* See [Hardware Requirements](#hardware-requirements)
 
 **Steps:**
-1.  **Create your environment file:**
-    ```bash
-    cp deployment/.env.example deployment/.env
-    ```
-    you can find the example here: [deployment/.env.example](deployment/.env.example)
-    
-2.  **Review and Customize:**
-    Edit `.env` and provide the media-server credentials (e.g., `JELLYFIN_URL`, `JELLYFIN_USER_ID`, `JELLYFIN_TOKEN` or `NAVIDROME_*`, `EMBY_*`, `LYRION_URL`) along with any API keys (`GEMINI_API_KEY`, `MISTRAL_API_KEY`). The same values are injected into every compose file, so you only need to edit them here.
-3.  **Start the Services:**
-    ```bash
-    docker compose -f deployment/docker-compose.yaml up -d
-    ```
-    Swap the compose filename if you're targeting Navidrome (`docker-compose-navidrome.yaml`), Lyrion (`docker-compose-lyrion.yaml`) or Emby (`docker-compose-emby.yaml`). This command starts all services (Flask app, RQ workers, Redis, PostgreSQL) in detached mode (`-d`).
 
-    **IMPORTANT:** both `docker-compose.yaml` and `.env` file need to be in the same directory.
-5.  **Access the Application:**
-    Once the containers are up, you can access the web UI at `http://localhost:8000`.
-6.  **Stopping the Services:**
-    ```bash
-    docker compose -f deployment/docker-compose.yaml down
-    ```
-    Swap the compose filename here as well if you started a different variant.
-**Note:**
-  > If you use LMS instead of the password you need to create and use the Subsonic API token. Additional Subsonic API based Mediaserver could require it in place of the password.
+1. **Create your environment file:**
+   ```bash
+   cp deployment/.env.example deployment/.env
+   ```
 
-**Remote worker tip:**
-If you deploy a worker on different hardware (using `docker-compose-worker.yaml` or `docker-compose-worker-nvidia.yaml`), copy your `.env` to that machine and update `WORKER_POSTGRES_HOST` and `WORKER_REDIS_URL` so the worker can reach the main server.
+2. **Edit `.env` with your media server credentials:**
+   
+   **For Jellyfin:**
+   ```env
+   MEDIASERVER_TYPE=jellyfin
+   JELLYFIN_URL=http://your-jellyfin-server:8096
+   JELLYFIN_USER_ID=your-user-id
+   JELLYFIN_TOKEN=your-api-token
+   ```
+   
+   **For Navidrome:**
+   ```env
+   MEDIASERVER_TYPE=navidrome
+   NAVIDROME_URL=http://your-navidrome-server:4533
+   NAVIDROME_USER=your-username
+   NAVIDROME_PASSWORD=your-password
+   ```
+   
+   **For Lyrion:**
+   ```env
+   MEDIASERVER_TYPE=lyrion
+   LYRION_URL=http://your-lyrion-server:9000
+   ```
 
-## **Local Deployment with Podman Quadlets**
+   **For Emby:**
+   ```env
+   MEDIASERVER_TYPE=emby
+   EMBY_URL=http://your-emby-server:8096
+   EMBY_USER_ID=your-user-id
+   EMBY_TOKEN=your-api-token
+   ```
 
-For an alternative local setup, [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files are provided in the `deployment/podman-quadlets` directory for interacting with **Navidrome**. The unit files can  be edited for use with **Jellyfin**. 
+3. **Start the services:**
+   ```bash
+   docker compose -f deployment/docker-compose.yaml up -d
+   ```
 
-These files are configured to automatically update AudioMuse-AI using the [latest](#docker-image-tagging-strategy) stable release and should perform an automatic rollback if the updated image fails to start.
+4. **Access the application:**
+   Open your browser at `http://localhost:8000`
 
-**Prerequisites:**
-*   Podman and systemd.
-*   `Jellyfin` or `Navidrome` installed.
-*   Respect the [hardware requirements](#hardware-requirements)
+5. **Run your first analysis:**
+   - Navigate to "Analysis and Clustering" page
+   - Click "Start Analysis" to scan your library
+   - Wait for completion, then explore features like clustering and music map
 
-**Steps:**
-1.  **Navigate to the `deployment/podman-quadlets` directory:**
-    ```bash
-    cd deployment/podman-quadlets
-    ```
-2.  **Review and Customize:**
+**Stopping the services:**
+```bash
+docker compose -f deployment/docker-compose.yaml down
+```
 
-    The `audiomuse-ai-postgres.container` and `audiomuse-redis.container` files are pre-configured with default credentials and settings suitable for local testing. <BR>
-    You will need to edit environment variables within `audiomuse-ai-worker.container` and `audiomuse-ai-flask.container` files to reflect your personal credentials and environment.
-    * For **Navidrome**, update `NAVIDROME_URL`, `NAVIDROME_USER` and `NAVIDROME_PASSWORD` with your real credentials.  
-    * For **Jellyfin** replace these variables with `JELLYFIN_URL`, `JELLYFIN_USER_ID`, `JELLYFIN_TOKEN`; add your real credentials; and change the `MEDIASERVER_TYPE` to `jellyfin`. 
-
-    Once you've customized the unit files, you will need to copy all of them into a systemd container directory, such as `/etc/containers/systemd/user/`.<BR>
-
-3.  **Start the Services:**
-    ```bash
-    systemctl --user daemon-reload
-    systemctl --user start audiomuse-pod
-    ```
-    The first command reloads systemd (generating the systemd service files) and the second command starts all AudioMuse services (Flask app, RQ worker, Redis, PostgreSQL).
-4.  **Access the Application:**
-    Once the containers are up, you can access the web UI at `http://localhost:8000`.
-5.  **Stopping the Services:**
-    ```bash
-    systemctl --user stop audiomuse-pod
-    ```
-      
 ## **Hardware Requirements**
 
 AudioMuse-AI has been tested on:
@@ -215,206 +133,9 @@ Suggested requirements:
 * 8 GB RAM
 * SSD storage
 
-It may run on older CPUs (3rd generation and above) and with less RAM (for example, 4 GB), but these configurations are untested.
-
-First-generation Intel i7 CPUs and older are not supported because TensorFlow requires AVX support.
-
-If you have tested the software on older CPUs, please open an issue to share your feedback.
-
 You can check the [Tested Hardware and Configuration](docs/HARDWARE.md) notes to see which hardware has already been validated.
 
-**IMPORTANT:** From `v0.7.0-beta`, ONNX replaces TensorFlow. As a result, some CPUs previously not supported may now work.
-
-### (Optional) Experimental Nvidia Support
-
-NVidia GPU support is available for analysis task in the worker process. This can significantly speed up processing of tracks.
-
-**NEW:** GPU-accelerated clustering is now available using RAPIDS cuML. This can provide **10-30x speedup** for clustering tasks.
-
-**Features:**
-- GPU-accelerated KMeans, DBSCAN, and PCA using RAPIDS cuML
-- Automatic fallback to CPU if GPU is unavailable or encounters errors
-- Supports all existing clustering configurations and parameters
-- Compatible with NVIDIA GPUs with CUDA 12.8.1+
-
-**To enable GPU clustering:**
-
-1. Use the NVIDIA Docker image (e.g., `nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04`)
-2. Set environment variable in your `.env` file:
-   ```
-   USE_GPU_CLUSTERING=true
-   ```
-3. Ensure NVIDIA Container Toolkit is installed on your host
-4. Use docker-compose files with GPU support (e.g., `docker-compose-nvidia.yaml` or `docker-compose-worker-nvidia.yaml`)
-
-**Performance Impact:**
-- **KMeans**: 10-50x faster than CPU
-- **DBSCAN**: 5-100x faster than CPU
-- **PCA**: 10-40x faster than CPU
-- **Overall clustering task**: 10-30x speedup for typical workloads (5000 iterations)
-
-**Example:** A clustering task that takes 2-4 hours on CPU may complete in 5-15 minutes on GPU.
-
-**Notes:**
-- GaussianMixture and SpectralClustering use CPU (no GPU implementation available)
-- GPU clustering is disabled by default (`USE_GPU_CLUSTERING=false`)
-- GPU is already used for audio analysis models (ONNX inference)
-
-## **Configuration Parameters**
-
-These are the parameters accepted for this script. You can pass them as environment variables using, for example, /deployment/deployment.yaml in this repository.
-
-How to find jellyfin **userid**:
-* Log into Jellyfin from your browser as an admin
-* Go to Dashboard > “admin panel” > Users.
-* Click on the user’s name that you are interested
-* The User ID is visible in the URL (is the part just after = ):
-  * http://your-jellyfin-server/web/index.html#!/useredit.html?userId=xxxxx
-
-How to create an the **jellyfin's API token**:
-* The API Token, still as admin you can go to Dashboard > “Admin panel” > API Key and create a new one.
-
-The **mandatory** parameter that you need to change from the example are this:
-
-| Parameter            | Description                                                             | Default Value                     |
-|----------------------|-------------------------------------------------------------------------|-----------------------------------|
-| `JELLYFIN_URL`       | (Required) Your Jellyfin server's full URL                              | `http://YOUR_JELLYFIN_IP:8096`    |
-| `JELLYFIN_USER_ID`   | (Required) Jellyfin User ID.                                            | *(N/A - from Secret)* |
-| `JELLYFIN_TOKEN`     | (Required) Jellyfin API Token.                                          | *(N/A - from Secret)* |
-| `NAVIDROME_URL`      | (Required) Your Navidrome server's full URL                             | `http://YOUR_JELLYFIN_IP:4553`    |
-| `NAVIDROME_USER`     | (Required) Navidrome User ID.                                           | *(N/A - from Secret)* |
-| `NAVIDROME_PASSWORD` | (Required) Navidrome user Password.                                     | *(N/A - from Secret)* |
-| `LYRION_URL`         | (Required) Your Lyrion server's full URL                                | `http://YOUR_LYRION_IP:9000`      |
-| `POSTGRES_USER`      | (Required) PostgreSQL username.                                         | *(N/A - from Secret)* |
-| `POSTGRES_PASSWORD`  | (Required) PostgreSQL password.                                         | *(N/A - from Secret)* |
-| `POSTGRES_DB`        | (Required) PostgreSQL database name.                                    | *(N/A - from Secret)* |
-| `POSTGRES_HOST`      | (Required) PostgreSQL host.                                             | `postgres-service.playlist`       |
-| `POSTGRES_PORT`      | (Required) PostgreSQL port.                                             | `5432`                            |
-| `REDIS_URL`          | (Required) URL for Redis.                                               | `redis://localhost:6379/0`        |
-| `GEMINI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is GEMINI) Your Google Gemini API Key. | *(N/A - from Secret)* |
-| `MISTRAL_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MISTRAL) Your Mistral API Key.      | *(N/A - from Secret)* |
-| `OPENAI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is OPENAI) Your OpenAI / OpenRouter API Key. | *(N/A - from Secret)* |
-
-These parameters can be left as-is:
-
-| Parameter               | Description                                  | Default Value     |
-|-------------------------|----------------------------------------------|-------------------|
-| `TEMP_DIR`              | Temp directory for audio files              | `/app/temp_audio` |
-| `CLEANING_SAFETY_LIMIT` | Max number of albums deleted during cleaning | `100`             |
-| `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names. | `""` (empty - scan all) |
-| `ENABLE_PROXY_FIX` | Enable Proxy Fix for Flask when behind a reverse proxy. Example Nginx configuration: [config.py](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/config.py#L346) | `false` |
-| `WORKER_URL` | This is the Url your worker instance runs on. The server instance uses this parameter to call the worker. Make sure to include /worker at the end of the url (e.g. http://worker.example.com:8029/worker) | `false` |
-| `WORKER_POSTGRES_HOST` | This is the Url of your the postgres service on your server. The worker uses this to connect the postgres service the flask app uses too. Make sure to not include a protocol (like "http") (e.g. 100.000.00.00) | `false` |
-| `WORKER_REDIS_URL` | This is the Url of your the redis service on your server. The worker uses this to connect to the redis service the flask app uses too. Make sure to include the protocol "redis://" and the dbindex "/0" (e.g. redis://100.000.00.00:6379/0)   | `false` |
-
-These are the default parameters used when launching analysis or clustering tasks. You can change them directly in the front-end.
-
-| Parameter                                   | Description                                                                                                                | Default Value   |
-|---------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|-----------------|
-| **CLAP MODEL - TEXT SEARCH**                |                                                                                                                            |                 |
-| `CLAP_ENABLED`                              | If false disable CLAP model during the analysis and the use of Text Search functionality.                                  | `true` |
-| `CLAP_PYTHON_MULTITHREADS`                  | CPU threading for CLAP analysis. False (default) = Use ONNX internal threading (recommended). True = Use Python ThreadPoolExecutor  | `false`         |
-| **Analysis General**                        |                                                                                                                            |                 |
-| `NUM_RECENT_ALBUMS`                         | Number of recent albums to scan (0 for all).                                                                              | `0`             |
-| `TOP_N_MOODS`                               | Number of top moods per track for feature vector.                                                                         | `5`             |
-| `CLAP_ENABLED`                              | Enable or disable CLAP model for text-to-audio search capabilities.                                                       | `true`          |
-| `MULAN_ENABLED`                             | Enable or disable MuLan (MuQ) model for text-to-audio search capabilities.  **STILL IN DEVELOPING**                       | `false`          |
-| `CLAP_PYTHON_MULTITHREADS`                  | CPU threading for CLAP analysis. False (default) = Use ONNX internal threading (recommended). True = Use Python ThreadPoolExecutor  | `false`         |
-| **Clustering General**                      |                                                                                                                            |                 |
-| `ENABLE_CLUSTERING_EMBEDDINGS`              | Whether to use audio embeddings (True) or score-based features (False) for clustering.                                    | `true`          |
-| `CLUSTER_ALGORITHM`                         | Default clustering: `kmeans`, `dbscan`, `gmm`, `spectral`.                                                                | `kmeans`        |
-| `MAX_SONGS_PER_CLUSTER`                     | Max songs per generated playlist segment.                                                                                 | `0`             |
-| `MAX_SONGS_PER_ARTIST`                      | Max songs from one artist per cluster.                                                                                    | `3`             |
-| `MAX_DISTANCE`                              | Normalized distance threshold for tracks in a cluster.                                                                    | `0.5`           |
-| `CLUSTERING_RUNS`                           | Iterations for Monte Carlo evolutionary search.                                                                           | `5000`          |
-| `TOP_N_PLAYLISTS`                           | POST Clustering it keep only the top N diverse playlist.                                                                  | `8`             |
-| `USE_GPU_CLUSTERING`                        | When true enalbe the use of GPU on K-Means, DBSCAN and PCA                                                                | `false`         |
-| **Similarity General**                      |                                                                                                                           |                 |
-| `INDEX_NAME`                                | Name of the index, no need to change.                                                                                     | `music_library` |
-| `VOYAGER_EF_CONSTRUCTION`                   | Number of element analyzed to create the neighbor list in the index.                                                      | `1024`          |
-| `VOYAGER_M`                                 | Number of neighbore More = higher accuracy.                                                                               | `64`            |
-| `VOYAGER_QUERY_EF`                          | Number neighbor analyzed during the query.                                                                                | `1024`          |
-| `VOYAGER_METRIC`                            | Different tipe of distance metrics: `angular`, `euclidean`,`dot`                                                          | `angular`       |
-| `SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT`   | It enable the possibility of use the `MAX_SONGS_PER_ARTIST` also in similar song                                          | `true`          |
-| `SIMILARITY_RADIUS_DEFAULT`                 | Default behavior for radius similarity mode. When `true`, similarity results may be re-ordered using the radius (bucketed) algorithm for better listening paths. | `true`          |
-| **Sonic Fingerprint General**               |                                                                                                                            |                 |
-| `SONIC_FINGERPRINT_NEIGHBORS`               | Default number of track for the sonic fingerprint                                                                         | `100`           |
-| **Song Alchemy General**                     |                                                                                                                            |                 |
-| `ALCHEMY_DEFAULT_N_RESULTS`                  | Number of similar songs to return when creating the Alchemy result (default).                                              | `100`           |
-| `ALCHEMY_MAX_N_RESULTS`                      | Maximum number of similar songs to return for Alchemy results.                                                             | `200`           |
-| `ALCHEMY_TEMPERATURE`                        | Temperature for probabilistic sampling in Song Alchemy (softmax temperature). Use `0.0` for deterministic selection.       | `1.0`           |
-| `ALCHEMY_SUBTRACT_DISTANCE`                  | Minimum distance from the subtract-centroid to keep a candidate (metric-dependent).                                         | `0.2`           |
-| **Similar Song and Song Path Duplicate filtering General** |                                                                                                            |                 |
-| `DUPLICATE_DISTANCE_THRESHOLD_COSINE`       | Less than this cosine distance the track is a duplicate.                                                                  | `0.01`          |
-| `DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN`    | Less than this euclidean distance the track is a duplicate.                                                               | `0.15`          |
-| `DUPLICATE_DISTANCE_CHECK_LOOKBACK`         | How many previous song need to be checked for duplicate.                                                                  | `1`             |
-| `MOOD_SIMILARITY_THRESHOLD`                 | Maximum normalized distance for mood similarity filtering. Lower value will give more importance to mood                  | `0.15`          |
-| **Song Path General**                       |                                                                                                                            |                 |
-| `PATH_DISTANCE_METRIC`                      | The distance metric to use for pathfinding. Options: 'angular', 'euclidean'                                               | `angular`       |
-| `PATH_DEFAULT_LENGTH`                       | Default number of songs in the path if not specified in the API request                                                   | `25`            |
-| `PATH_AVG_JUMP_SAMPLE_SIZE`                 | Number of random songs to sample for calculating the average jump distance                                                | `200`           |
-| `PATH_CANDIDATES_PER_STEP`                  | Number of candidate songs to retrieve from Voyager for each step in the path                                              | `25`            |
-| `PATH_LCORE_MULTIPLIER`                     | It multiply the number of centroid created based on the distance. Higher is better for distant song and worst for nearest. | `3`             |
-| `PATH_FIX_SIZE`                             | When `true`, path generation will attempt to produce exactly the requested path length using centroid merging and backfilling. When `false`, the algorithm will perform a single best pick per centroid and may return a shorter path. Can be overridden per-request via the `path_fix_size` query parameter. | `false`         |
-| **Evolutionary Clustering & Scoring**      |                                                                                            |                                        |
-| `ITERATIONS_PER_BATCH_JOB`                  | Number of clustering iterations processed per RQ batch job.                                | `20`                                   |
-| `MAX_CONCURRENT_BATCH_JOBS`                 | Maximum number of clustering batch jobs to run simultaneously.                             | `10`                                   |
-| `CLUSTERING_BATCH_TIMEOUT_MINUTES`          | Max time a batch can run before being considered failed (prevents infinite hangs).        | `60`                                   |
-| `CLUSTERING_MAX_FAILED_BATCHES`             | Max number of failed batches before stopping new launches and forcing completion.         | `10`                                   |
-| `CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS`   | How often to check batch status for timeout detection.                                    | `30`                                   |
-| `TOP_K_MOODS_FOR_PURITY_CALCULATION`        | Number of centroid's top moods to consider when calculating playlist purity.              | `3`                                    |
-| `EXPLOITATION_START_FRACTION`               | Fraction of runs before starting to use elites.                                           | `0.2`                                  |
-| `EXPLOITATION_PROBABILITY_CONFIG`           | Probability of mutating an elite vs. random generation.                                   | `0.7`                                  |
-| `MUTATION_INT_ABS_DELTA`                    | Max absolute change for integer parameter mutation.                                        | `3`                                    |
-| `MUTATION_FLOAT_ABS_DELTA`                  | Max absolute change for float parameter mutation.                                          | `0.05`                                 |
-| `MUTATION_KMEANS_COORD_FRACTION`            | Fractional change for KMeans centroid coordinates.                                        | `0.05`                                 |
-| **K-Means Ranges**                          |                                                                                            |                                        |
-| `NUM_CLUSTERS_MIN`                          | Min $K$ for K-Means.                                                                      | `40`                                   |
-| `NUM_CLUSTERS_MAX`                          | Max $K$ for K-Means.                                                                      | `100`                                  |
-| `USE_MINIBATCH_KMEANS`                      | Whether to use MiniBatchKMeans (True) or standard KMeans (False) when clustering embeddings. | `false`                            |
-| **DBSCAN Ranges**                           |                                                                                            |                                        |
-| `DBSCAN_EPS_MIN`                            | Min epsilon for DBSCAN.                                                                   | `0.1`                                  |
-| `DBSCAN_EPS_MAX`                            | Max epsilon for DBSCAN.                                                                   | `0.5`                                  |
-| `DBSCAN_MIN_SAMPLES_MIN`                    | Min `min_samples` for DBSCAN.                                                             | `5`                                    |
-| `DBSCAN_MIN_SAMPLES_MAX`                    | Max `min_samples` for DBSCAN.                                                             | `20`                                   |
-| **GMM Ranges**                              |                                                                                            |                                        |
-| `GMM_N_COMPONENTS_MIN`                      | Min components for GMM.                                                                   | `40`                                   |
-| `GMM_N_COMPONENTS_MAX`                      | Max components for GMM.                                                                   | `100`                                  |
-| `GMM_COVARIANCE_TYPE`                       | Covariance type for GMM (task uses `full`).                                               | `full`                                 |
-| **Spectral Ranges**                         |                                                                                            |                                        |
-| `SPECTRAL_N_CLUSTERS_MIN`                   | Min components for Spectral clustering.                                                   | `40`                                   |
-| `SPECTRAL_N_CLUSTERS_MAX`                   | Max components for Spectral clustering.                                                   | `100`                                  |
-| `SPECTRAL_N_NEIGHBORS`                      | Number of Neighbors on which do clustering. Higher is better but slower                   | `20`                                   |
-| **PCA Ranges**                              |                                                                                            |                                        |
-| `PCA_COMPONENTS_MIN`                        | Min PCA components (0 to disable).                                                        | `0`                                    |
-| `PCA_COMPONENTS_MAX`                        | Max PCA components (e.g., `8` for feature vectors, `199` for embeddings).                 | `199`                                  |
-| **AI Naming (*)**                           |                                                                                            |                                        |
-| `AI_MODEL_PROVIDER`                         | AI provider: `OLLAMA`, `GEMINI`, `MISTRAL`, `OpenAI` or `NONE`.                           | `NONE`                                 |
-| `AI_REQUEST_TIMEOUT_SECONDS`                | Timeout (in seconds) for AI API requests. Increase for slower hardware or larger models.  | `300`                                  |
-| `TOP_N_ELITES`                              | Number of best solutions kept as elites.                                                  | `10`                                   |
-| `SAMPLING_PERCENTAGE_CHANGE_PER_RUN`        | Percentage of songs to swap out in the stratified sample between runs (0.0 to 1.0).       | `0.2`                                  |
-| `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`    | Minimum number of songs to target per stratified genre during sampling.                   | `100`                                  |
-| `STRATIFIED_SAMPLING_TARGET_PERCENTILE`     | Percentile of genre song counts to use for target songs per stratified genre.             | `50`                                   |
-| `OLLAMA_SERVER_URL`                         | URL for your Ollama instance (if `AI_MODEL_PROVIDER` is OLLAMA).                          | `http://<your-ip>:11434/api/generate` |
-| `OLLAMA_MODEL_NAME`                         | Ollama model to use (if `AI_MODEL_PROVIDER` is OLLAMA).                                   | `mistral:7b`                          |
-| `GEMINI_MODEL_NAME`                         | Gemini model to use (if `AI_MODEL_PROVIDER` is GEMINI).                                   | `gemini-2.5-pro`                      |
-| `MISTRAL_MODEL_NAME`                        | Mistral model to use (if `AI_MODEL_PROVIDER` is MISTRAL).                                 | `ministral-3b-latest`                  |
-| `OPENAI_MODEL_NAME`                         | OpenAI or OpenRouter model to use (if `AI_MODEL_PROVIDER` is OPENAI).                     | `openai/gpt-4`                          |
-| `OPENAI_SERVER_URL`                         | URL for OpenAI / OpenRouter (if `AI_MODEL_PROVIDER` is OPENAI).                          | `https://openrouter.ai/api/v1/chat/completions` |
-| **Scoring Weights**                         |                                                                                            |                                        |
-| `SCORE_WEIGHT_DIVERSITY`                    | Weight for inter-playlist mood diversity.                                                 | `2.0`                                  |
-| `SCORE_WEIGHT_PURITY`                       | Weight for playlist purity (intra-playlist mood consistency).                             | `1.0`                                  |
-| `SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY`      | Weight for inter-playlist 'other feature' diversity.                                      | `0.0`                                  |
-| `SCORE_WEIGHT_OTHER_FEATURE_PURITY`         | Weight for intra-playlist 'other feature' consistency.                                    | `0.0`                                  |
-| `SCORE_WEIGHT_SILHOUETTE`                   | Weight for Silhouette Score (cluster separation).                                         | `0.0`                                  |
-| `SCORE_WEIGHT_DAVIES_BOULDIN`               | Weight for Davies-Bouldin Index (cluster separation).                                     | `0.0`                                  |
-| `SCORE_WEIGHT_CALINSKI_HARABASZ`            | Weight for Calinski-Harabasz Index (cluster separation).                                  | `0.0`                                  |
-
-
-
-**(*)** For using GEMINI API you need to have a Google account, a free account can be used if needed. Same goes for Mistral. Instead if you want to self-host Ollama here you can find a deployment example:
-
-* https://github.com/NeptuneHub/k3s-supreme-waffle/tree/main/ollama
+For more information about the GPU deployment requirements have a look to the [GPU](docs/GPU.md) page.
 
 ## **Docker Image Tagging Strategy**
 

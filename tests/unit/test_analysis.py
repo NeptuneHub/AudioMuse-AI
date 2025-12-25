@@ -1026,3 +1026,388 @@ class TestAnalyzeTrack:
         assert isinstance(result['energy'], float)
 
 
+class TestOOMFallback:
+    """Tests for GPU OOM detection and CPU fallback"""
+
+    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis.librosa.feature.chroma_stft')
+    @patch('tasks.analysis.librosa.feature.rms')
+    @patch('tasks.analysis.librosa.beat.beat_track')
+    @patch('tasks.analysis.librosa.feature.melspectrogram')
+    @patch('tasks.analysis.robust_load_audio_with_fallback')
+    @patch('tasks.analysis.ort.get_available_providers')
+    def test_embedding_oom_fallback_to_cpu(self, mock_providers, mock_audio_load, mock_mel, 
+                                           mock_beat, mock_rms, mock_chroma, mock_onnx_session):
+        """Test GPU OOM during embedding inference triggers CPU fallback
+        
+        TESTS: OOM detection and automatic CPU fallback for embedding model
+        """
+        mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        
+        mock_audio = np.random.rand(16000)
+        mock_audio_load.return_value = (mock_audio, 16000)
+        
+        mock_beat.return_value = (120.0, np.array([0, 100]))
+        mock_rms.return_value = np.array([[0.5]])
+        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_mel.return_value = np.random.rand(96, 1000)
+        
+        # Mock GPU session that fails with OOM on first run
+        gpu_session_call_count = [0]
+        cpu_session_call_count = [0]
+        
+        def gpu_run(output_names, feed_dict):
+            gpu_session_call_count[0] += 1
+            # First call (embedding) should OOM, subsequent calls succeed
+            if gpu_session_call_count[0] == 1:
+                import onnxruntime as ort
+                raise ort.capi.onnxruntime_pybind11_state.RuntimeException(
+                    "Failed to allocate memory for requested buffer of size 765249024"
+                )
+            return [np.random.rand(5, 200)]
+        
+        def cpu_run(output_names, feed_dict):
+            cpu_session_call_count[0] += 1
+            return [np.random.rand(5, 200)]
+        
+        # Track created sessions
+        sessions_created = []
+        
+        def create_session(model_path, providers=None, provider_options=None):
+            mock_session = Mock()
+            mock_input = Mock()
+            mock_input.name = 'input'
+            mock_output = Mock()
+            mock_output.name = 'output'
+            mock_session.get_inputs.return_value = [mock_input]
+            mock_session.get_outputs.return_value = [mock_output]
+            
+            # Determine if this is a CPU or GPU session
+            if isinstance(providers, list) and 'CPUExecutionProvider' in providers and len(providers) == 1:
+                # CPU-only session
+                mock_session.run.side_effect = cpu_run
+                sessions_created.append('CPU')
+            else:
+                # GPU session
+                mock_session.run.side_effect = gpu_run
+                sessions_created.append('GPU')
+            
+            return mock_session
+        
+        mock_onnx_session.side_effect = create_session
+        
+        mood_labels = ['happy']
+        model_paths = {
+            'embedding': '/path/to/embedding.onnx',
+            'prediction': '/path/to/prediction.onnx',
+            'danceable': '/path/to/danceable.onnx',
+            'aggressive': '/path/to/aggressive.onnx',
+            'happy': '/path/to/happy.onnx',
+            'party': '/path/to/party.onnx',
+            'relaxed': '/path/to/relaxed.onnx',
+            'sad': '/path/to/sad.onnx'
+        }
+        
+        result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
+        
+        # WHAT WE'RE TESTING: Analysis completes successfully after OOM
+        assert result is not None
+        assert embeddings is not None
+        # Verify CPU fallback session was created
+        assert 'CPU' in sessions_created
+        assert cpu_session_call_count[0] > 0
+
+    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis.librosa.feature.chroma_stft')
+    @patch('tasks.analysis.librosa.feature.rms')
+    @patch('tasks.analysis.librosa.beat.beat_track')
+    @patch('tasks.analysis.librosa.feature.melspectrogram')
+    @patch('tasks.analysis.robust_load_audio_with_fallback')
+    @patch('tasks.analysis.ort.get_available_providers')
+    def test_prediction_oom_fallback_to_cpu(self, mock_providers, mock_audio_load, mock_mel, 
+                                            mock_beat, mock_rms, mock_chroma, mock_onnx_session):
+        """Test GPU OOM during prediction inference triggers CPU fallback
+        
+        TESTS: OOM detection and automatic CPU fallback for prediction model
+        """
+        mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        
+        mock_audio = np.random.rand(16000)
+        mock_audio_load.return_value = (mock_audio, 16000)
+        
+        mock_beat.return_value = (120.0, np.array([0, 100]))
+        mock_rms.return_value = np.array([[0.5]])
+        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_mel.return_value = np.random.rand(96, 1000)
+        
+        gpu_session_call_count = [0]
+        cpu_session_call_count = [0]
+        
+        def gpu_run(output_names, feed_dict):
+            gpu_session_call_count[0] += 1
+            # Second call (prediction) should OOM
+            if gpu_session_call_count[0] == 2:
+                import onnxruntime as ort
+                raise ort.capi.onnxruntime_pybind11_state.RuntimeException(
+                    "Failed to allocate memory for requested buffer"
+                )
+            return [np.random.rand(5, 200)]
+        
+        def cpu_run(output_names, feed_dict):
+            cpu_session_call_count[0] += 1
+            return [np.random.rand(5, 200)]
+        
+        sessions_created = []
+        
+        def create_session(model_path, providers=None, provider_options=None):
+            mock_session = Mock()
+            mock_input = Mock()
+            mock_input.name = 'input'
+            mock_output = Mock()
+            mock_output.name = 'output'
+            mock_session.get_inputs.return_value = [mock_input]
+            mock_session.get_outputs.return_value = [mock_output]
+            
+            if isinstance(providers, list) and 'CPUExecutionProvider' in providers and len(providers) == 1:
+                mock_session.run.side_effect = cpu_run
+                sessions_created.append('CPU')
+            else:
+                mock_session.run.side_effect = gpu_run
+                sessions_created.append('GPU')
+            
+            return mock_session
+        
+        mock_onnx_session.side_effect = create_session
+        
+        mood_labels = ['happy']
+        model_paths = {
+            'embedding': '/path/to/embedding.onnx',
+            'prediction': '/path/to/prediction.onnx',
+            'danceable': '/path/to/danceable.onnx',
+            'aggressive': '/path/to/aggressive.onnx',
+            'happy': '/path/to/happy.onnx',
+            'party': '/path/to/party.onnx',
+            'relaxed': '/path/to/relaxed.onnx',
+            'sad': '/path/to/sad.onnx'
+        }
+        
+        result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
+        
+        assert result is not None
+        assert embeddings is not None
+        assert 'CPU' in sessions_created
+        assert cpu_session_call_count[0] > 0
+
+    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis.librosa.feature.chroma_stft')
+    @patch('tasks.analysis.librosa.feature.rms')
+    @patch('tasks.analysis.librosa.beat.beat_track')
+    @patch('tasks.analysis.librosa.feature.melspectrogram')
+    @patch('tasks.analysis.robust_load_audio_with_fallback')
+    @patch('tasks.analysis.ort.get_available_providers')
+    def test_secondary_model_oom_fallback_to_cpu(self, mock_providers, mock_audio_load, mock_mel, 
+                                                  mock_beat, mock_rms, mock_chroma, mock_onnx_session):
+        """Test GPU OOM during secondary model inference triggers CPU fallback
+        
+        TESTS: OOM detection and automatic CPU fallback for secondary models
+        """
+        mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        
+        mock_audio = np.random.rand(16000)
+        mock_audio_load.return_value = (mock_audio, 16000)
+        
+        mock_beat.return_value = (120.0, np.array([0, 100]))
+        mock_rms.return_value = np.array([[0.5]])
+        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_mel.return_value = np.random.rand(96, 1000)
+        
+        gpu_session_call_count = [0]
+        cpu_session_call_count = [0]
+        
+        def gpu_run(output_names, feed_dict):
+            gpu_session_call_count[0] += 1
+            # Make secondary models OOM (after embedding and prediction)
+            if gpu_session_call_count[0] > 2:
+                import onnxruntime as ort
+                raise ort.capi.onnxruntime_pybind11_state.RuntimeException(
+                    "Failed to allocate memory"
+                )
+            return [np.random.rand(5, 200) if gpu_session_call_count[0] <= 2 else np.random.rand(5, 2)]
+        
+        def cpu_run(output_names, feed_dict):
+            cpu_session_call_count[0] += 1
+            return [np.random.rand(5, 2)]
+        
+        sessions_created = []
+        
+        def create_session(model_path, providers=None, provider_options=None):
+            mock_session = Mock()
+            mock_input = Mock()
+            mock_input.name = 'input'
+            mock_output = Mock()
+            mock_output.name = 'output'
+            mock_session.get_inputs.return_value = [mock_input]
+            mock_session.get_outputs.return_value = [mock_output]
+            
+            if isinstance(providers, list) and 'CPUExecutionProvider' in providers and len(providers) == 1:
+                mock_session.run.side_effect = cpu_run
+                sessions_created.append('CPU')
+            else:
+                mock_session.run.side_effect = gpu_run
+                sessions_created.append('GPU')
+            
+            return mock_session
+        
+        mock_onnx_session.side_effect = create_session
+        
+        mood_labels = ['happy']
+        model_paths = {
+            'embedding': '/path/to/embedding.onnx',
+            'prediction': '/path/to/prediction.onnx',
+            'danceable': '/path/to/danceable.onnx',
+            'aggressive': '/path/to/aggressive.onnx',
+            'happy': '/path/to/happy.onnx',
+            'party': '/path/to/party.onnx',
+            'relaxed': '/path/to/relaxed.onnx',
+            'sad': '/path/to/sad.onnx'
+        }
+        
+        result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
+        
+        assert result is not None
+        assert embeddings is not None
+        # Verify CPU fallback sessions were created for secondary models
+        assert 'CPU' in sessions_created
+        assert cpu_session_call_count[0] > 0
+
+    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis.librosa.feature.chroma_stft')
+    @patch('tasks.analysis.librosa.feature.rms')
+    @patch('tasks.analysis.librosa.beat.beat_track')
+    @patch('tasks.analysis.librosa.feature.melspectrogram')
+    @patch('tasks.analysis.robust_load_audio_with_fallback')
+    @patch('tasks.analysis.ort.get_available_providers')
+    def test_non_oom_exception_is_reraised(self, mock_providers, mock_audio_load, mock_mel, 
+                                           mock_beat, mock_rms, mock_chroma, mock_onnx_session):
+        """Test non-OOM exceptions are re-raised (not caught by OOM handler)
+        
+        TESTS: Only OOM errors trigger fallback, other errors propagate
+        """
+        mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        
+        mock_audio = np.random.rand(16000)
+        mock_audio_load.return_value = (mock_audio, 16000)
+        
+        mock_beat.return_value = (120.0, np.array([0, 100]))
+        mock_rms.return_value = np.array([[0.5]])
+        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_mel.return_value = np.random.rand(96, 1000)
+        
+        def gpu_run(output_names, feed_dict):
+            import onnxruntime as ort
+            # Raise a non-OOM ONNX exception
+            raise ort.capi.onnxruntime_pybind11_state.RuntimeException(
+                "Model execution error: Invalid input shape"
+            )
+        
+        mock_session = Mock()
+        mock_input = Mock()
+        mock_input.name = 'input'
+        mock_output = Mock()
+        mock_output.name = 'output'
+        mock_session.get_inputs.return_value = [mock_input]
+        mock_session.get_outputs.return_value = [mock_output]
+        mock_session.run.side_effect = gpu_run
+        mock_onnx_session.return_value = mock_session
+        
+        mood_labels = ['happy']
+        model_paths = {
+            'embedding': '/path/to/embedding.onnx',
+            'prediction': '/path/to/prediction.onnx',
+            'danceable': '/path/to/danceable.onnx',
+            'aggressive': '/path/to/aggressive.onnx',
+            'happy': '/path/to/happy.onnx',
+            'party': '/path/to/party.onnx',
+            'relaxed': '/path/to/relaxed.onnx',
+            'sad': '/path/to/sad.onnx'
+        }
+        
+        # Non-OOM exception should propagate and result in None return
+        result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
+        
+        # Should return None due to exception (caught by outer try-except)
+        assert result is None
+        assert embeddings is None
+
+    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis.librosa.feature.chroma_stft')
+    @patch('tasks.analysis.librosa.feature.rms')
+    @patch('tasks.analysis.librosa.beat.beat_track')
+    @patch('tasks.analysis.librosa.feature.melspectrogram')
+    @patch('tasks.analysis.robust_load_audio_with_fallback')
+    @patch('tasks.analysis.ort.get_available_providers')
+    def test_successful_gpu_inference_no_fallback(self, mock_providers, mock_audio_load, mock_mel, 
+                                                  mock_beat, mock_rms, mock_chroma, mock_onnx_session):
+        """Test successful GPU inference doesn't trigger CPU fallback
+        
+        TESTS: Normal operation - no OOM, no fallback
+        """
+        mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        
+        mock_audio = np.random.rand(16000)
+        mock_audio_load.return_value = (mock_audio, 16000)
+        
+        mock_beat.return_value = (120.0, np.array([0, 100]))
+        mock_rms.return_value = np.array([[0.5]])
+        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_mel.return_value = np.random.rand(96, 1000)
+        
+        cpu_fallback_used = [False]
+        
+        def create_session(model_path, providers=None, provider_options=None):
+            # Check if this is a CPU-only fallback session
+            if isinstance(providers, list) and 'CPUExecutionProvider' in providers and len(providers) == 1:
+                cpu_fallback_used[0] = True
+            
+            mock_session = Mock()
+            mock_input = Mock()
+            mock_input.name = 'input'
+            mock_output = Mock()
+            mock_output.name = 'output'
+            mock_session.get_inputs.return_value = [mock_input]
+            mock_session.get_outputs.return_value = [mock_output]
+            
+            # Successful inference - no OOM
+            call_count = [0]
+            def successful_run(output_names, feed_dict):
+                call_count[0] += 1
+                if call_count[0] <= 2:
+                    return [np.random.rand(5, 200)]
+                else:
+                    return [np.random.rand(5, 2)]
+            
+            mock_session.run.side_effect = successful_run
+            return mock_session
+        
+        mock_onnx_session.side_effect = create_session
+        
+        mood_labels = ['happy']
+        model_paths = {
+            'embedding': '/path/to/embedding.onnx',
+            'prediction': '/path/to/prediction.onnx',
+            'danceable': '/path/to/danceable.onnx',
+            'aggressive': '/path/to/aggressive.onnx',
+            'happy': '/path/to/happy.onnx',
+            'party': '/path/to/party.onnx',
+            'relaxed': '/path/to/relaxed.onnx',
+            'sad': '/path/to/sad.onnx'
+        }
+        
+        result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
+        
+        # Analysis should succeed without CPU fallback
+        assert result is not None
+        assert embeddings is not None
+        assert cpu_fallback_used[0] is False
+
+

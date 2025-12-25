@@ -26,6 +26,7 @@ from typing import Tuple, Optional
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
 
 import config
+from tasks.memory_utils import cleanup_cuda_memory, handle_onnx_memory_error
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +51,16 @@ def _load_audio_model():
     sess_options.log_severity_level = 3  # 0=Verbose, 1=Info, 2=Warning, 3=Error, 4=Fatal
     
     # Threading configuration based on CLAP_PYTHON_MULTITHREADS:
-    # - False (default): Let ONNX Runtime decide optimal thread count automatically
+    # - False (default): Use half of logical cores to avoid starving other processes
     # - True: Disable ONNX threading (set to 1), use Python ThreadPoolExecutor instead
     if not config.CLAP_PYTHON_MULTITHREADS:
-        logger.info("CLAP Audio: Using ONNX Runtime automatic thread management")
+        # Use half of available cores (including hyperthreading) to leave room for other processes
+        import psutil
+        logical_cores = psutil.cpu_count(logical=True) or 4
+        num_threads = max(1, logical_cores // 2)
+        sess_options.intra_op_num_threads = num_threads
+        sess_options.inter_op_num_threads = num_threads
+        logger.info(f"CLAP Audio: Using {num_threads} threads (half of {logical_cores} logical cores)")
     else:
         # Python ThreadPoolExecutor will handle threading - disable ONNX threading
         sess_options.intra_op_num_threads = 1  # Single-threaded ONNX operations
@@ -619,8 +626,28 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
                 'mel_spectrogram': mel_input
             }
             
-            outputs = session.run(None, onnx_inputs)
-            audio_embedding = outputs[0]  # Output is audio_embedding
+            try:
+                outputs = session.run(None, onnx_inputs)
+                audio_embedding = outputs[0]  # Output is audio_embedding
+            except Exception as e:
+                # Handle memory allocation errors with cleanup and retry
+                def cleanup_fn():
+                    cleanup_cuda_memory(force=True)
+                
+                def retry_fn():
+                    return session.run(None, onnx_inputs)
+                
+                result = handle_onnx_memory_error(
+                    e,
+                    f"CLAP segment inference",
+                    cleanup_func=cleanup_fn,
+                    retry_func=retry_fn
+                )
+                
+                if result is not None:
+                    audio_embedding = result[0]
+                else:
+                    raise
             
             return audio_embedding[0]  # Remove batch dimension
         
@@ -690,12 +717,19 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         import gc
         gc.collect()
         
+        # Cleanup CUDA memory after analysis
+        cleanup_cuda_memory(force=False)
+        
         return avg_embedding, duration_sec, num_segments
         
     except Exception as e:
         logger.error(f"CLAP analysis failed for {audio_path}: {e}")
         import traceback
         traceback.print_exc()
+        
+        # Cleanup CUDA memory on error
+        cleanup_cuda_memory(force=True)
+        
         return None, 0, 0
     finally:
         # Force cleanup even on error

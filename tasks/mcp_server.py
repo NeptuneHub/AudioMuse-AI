@@ -1,38 +1,21 @@
 """
-MCP Server for AudioMuse-AI
-Exposes database operations and AI tools as MCP resources for playlist generation.
+Playlist Generation Tool Functions
+Sync functions for playlist generation used by the web interface (chat.html).
+Each function implements a specific search/query strategy.
 """
-import asyncio
 import logging
 import json
-from typing import List, Dict, Any, Optional
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from typing import List, Dict, Optional
 import psycopg2
 from psycopg2.extras import DictCursor
-from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
-
-# Create the MCP server
-mcp_server = Server("audiomuse-ai")
-
-# Thread pool for running sync database operations
-executor = ThreadPoolExecutor(max_workers=5)
 
 
 def get_db_connection():
     """Get database connection using config settings."""
     from config import DATABASE_URL
-    import psycopg2
     return psycopg2.connect(DATABASE_URL)
-
-
-async def run_in_executor(func, *args):
-    """Run a synchronous function in a thread pool."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(executor, func, *args)
 
 
 def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> List[Dict]:
@@ -266,6 +249,107 @@ List the famous songs by {artist} now:"""
         
         log_messages.append(f"Found {len(found_songs)} songs by {artist}")
         return {"songs": found_songs, "message": "\n".join(log_messages)}
+    finally:
+        db_conn.close()
+
+
+def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filter: Optional[str], get_songs: int) -> Dict:
+    """Synchronous implementation of CLAP text search with optional hybrid filtering."""
+    from tasks.clap_text_search import search_by_text
+    from config import CLAP_ENABLED
+    
+    db_conn = get_db_connection()
+    log_messages = []
+    
+    try:
+        if not CLAP_ENABLED:
+            log_messages.append("CLAP text search is disabled")
+            return {"songs": [], "message": "CLAP text search is not enabled. Please enable CLAP_ENABLED in config."}
+        
+        if not description:
+            return {"songs": [], "message": "No description provided for text search"}
+        
+        log_messages.append(f"CLAP text search: '{description}'")
+        
+        # Get up to 100 songs from CLAP
+        clap_results = search_by_text(description, limit=100)
+        
+        if not clap_results:
+            log_messages.append("No results from CLAP text search")
+            return {"songs": [], "message": "\n".join(log_messages)}
+        
+        log_messages.append(f"CLAP returned {len(clap_results)} songs")
+        
+        # If tempo/energy filters specified, apply hybrid filtering
+        if tempo_filter or energy_filter:
+            log_messages.append(f"Applying hybrid filters (tempo: {tempo_filter}, energy: {energy_filter})")
+            
+            # Get item_ids from CLAP results
+            item_ids = [r['item_id'] for r in clap_results]
+            
+            # Define tempo ranges (BPM)
+            tempo_ranges = {
+                'slow': (0, 90),
+                'medium': (90, 140),
+                'fast': (140, 300)
+            }
+            
+            # Define energy ranges (normalized)
+            energy_ranges = {
+                'low': (0, 0.05),
+                'medium': (0.05, 0.10),
+                'high': (0.10, 1.0)
+            }
+            
+            # Build SQL filter conditions
+            filter_conditions = []
+            query_params = []
+            
+            if tempo_filter and tempo_filter in tempo_ranges:
+                tempo_min, tempo_max = tempo_ranges[tempo_filter]
+                filter_conditions.append("tempo >= %s AND tempo < %s")
+                query_params.extend([tempo_min, tempo_max])
+            
+            if energy_filter and energy_filter in energy_ranges:
+                energy_min, energy_max = energy_ranges[energy_filter]
+                filter_conditions.append("energy_normalized >= %s AND energy_normalized < %s")
+                query_params.extend([energy_min, energy_max])
+            
+            # Query database to filter by tempo/energy
+            with db_conn.cursor(cursor_factory=DictCursor) as cur:
+                placeholders = ','.join(['%s'] * len(item_ids))
+                where_clause = ' AND '.join(filter_conditions)
+                
+                sql = f"""
+                    SELECT item_id, title, author
+                    FROM public.score
+                    WHERE item_id IN ({placeholders})
+                    AND {where_clause}
+                """
+                
+                cur.execute(sql, item_ids + query_params)
+                filtered_results = cur.fetchall()
+            
+            # Preserve CLAP similarity order for filtered results
+            filtered_item_ids = {r['item_id'] for r in filtered_results}
+            songs = [
+                {"item_id": r['item_id'], "title": r['title'], "artist": r['author']}
+                for r in clap_results
+                if r['item_id'] in filtered_item_ids
+            ]
+            
+            log_messages.append(f"Filtered to {len(songs)} songs matching tempo/energy criteria")
+        else:
+            # No filters - return CLAP results as-is
+            songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in clap_results]
+            log_messages.append(f"Retrieved {len(songs)} songs from CLAP")
+        
+        return {"songs": songs[:get_songs], "message": "\n".join(log_messages)}
+    except Exception as e:
+        import traceback
+        log_messages.append(f"Error in text search: {str(e)}")
+        log_messages.append(traceback.format_exc())
+        return {"songs": [], "message": "\n".join(log_messages)}
     finally:
         db_conn.close()
 
@@ -855,282 +939,3 @@ def _explore_database_sync(
         return results
     finally:
         db_conn.close()
-
-
-# ==================== MCP TOOL DEFINITIONS ====================
-
-@mcp_server.list_tools()
-async def list_tools() -> List[Tool]:
-    """List all available MCP tools - 4 CORE TOOLS."""
-    return [
-        Tool(
-            name="artist_similarity",
-            description="EXACT API: Find songs from similar artists (NOT the artist's own songs).",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "artist": {
-                        "type": "string",
-                        "description": "Name of the artist"
-                    },
-                    "get_songs": {
-                        "type": "integer",
-                        "description": "Number of songs to retrieve",
-                        "default": 100
-                    }
-                },
-                "required": ["artist"]
-            }
-        ),
-        Tool(
-            name="song_similarity",
-            description="EXACT API: Find songs similar to a specific song (requires title+artist).",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "song_title": {
-                        "type": "string",
-                        "description": "Title of the song"
-                    },
-                    "song_artist": {
-                        "type": "string",
-                        "description": "Artist of the song"
-                    },
-                    "get_songs": {
-                        "type": "integer",
-                        "description": "Number of similar songs",
-                        "default": 100
-                    }
-                },
-                "required": ["song_title", "song_artist"]
-            }
-        ),
-        Tool(
-            name="search_database",
-            description="EXACT DB: Search by genre/mood/tempo/energy filters. COMBINE all filters in ONE call!",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "genres": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Genres (rock, pop, metal, jazz, etc.)"
-                    },
-                    "moods": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Moods (danceable, aggressive, happy, party, relaxed, sad)"
-                    },
-                    "tempo_min": {
-                        "type": "number",
-                        "description": "Min BPM (40-200)"
-                    },
-                    "tempo_max": {
-                        "type": "number",
-                        "description": "Max BPM (40-200)"
-                    },
-                    "energy_min": {
-                        "type": "number",
-                        "description": "Min energy (0.01-0.15)"
-                    },
-                    "energy_max": {
-                        "type": "number",
-                        "description": "Max energy (0.01-0.15)"
-                    },
-                    "key": {
-                        "type": "string",
-                        "description": "Musical key (C, D, E, F, G, A, B with # or b)"
-                    },
-                    "get_songs": {
-                        "type": "integer",
-                        "description": "Number of songs",
-                        "default": 100
-                    }
-                }
-            }
-        ),
-        Tool(
-            name="song_alchemy",
-            description="""VECTOR ARITHMETIC: Musical math - blend artists/songs or remove unwanted vibes.
-
-WHEN TO USE THIS TOOL:
-✅ USE for these patterns:
-  - "Like X but NOT Y" → add X, subtract Y
-  - "Mix/blend two artists" → add both artists
-  - "Artist X meets Artist Y" → add both
-  - "This song but calmer/faster/darker" → add song, subtract mood
-  - "Remove unwanted vibe" → add wanted, subtract unwanted
-  
-❌ DO NOT USE for:
-  - Simple artist search → use artist_similarity instead
-  - Genre/mood search → use search_database instead
-  - Just finding similar songs → use song_similarity instead
-  
-EXAMPLES:
-  ✅ "Songs like The Beatles but not ballads" → add_items: Beatles (artist), subtract_items: slow ballad song
-  ✅ "Radiohead meets Pink Floyd" → add_items: Radiohead (artist) + Pink Floyd (artist)
-  ✅ "Energetic rock but not aggressive" → add_items: energetic rock songs, subtract_items: aggressive song
-  ❌ "Find AC/DC songs" → WRONG! Use artist_similarity or artist_hits instead
-  ❌ "Metal songs" → WRONG! Use search_database with genres=['metal'] instead
-
-CRITICAL: You can ADD/SUBTRACT both ARTISTS and SONGS. Each item needs 'type' ('artist' or 'song') and 'id'.""",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "add_items": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "type": {
-                                    "type": "string",
-                                    "enum": ["song", "artist"],
-                                    "description": "Type of item: 'song' for specific songs, 'artist' for artist's style"
-                                },
-                                "id": {
-                                    "type": "string",
-                                    "description": "Item ID from database (item_id for songs, artist name for artists)"
-                                }
-                            },
-                            "required": ["type", "id"]
-                        },
-                        "description": "Items to ADD (blend together). REQUIRED - at least one item."
-                    },
-                    "subtract_items": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "type": {
-                                    "type": "string",
-                                    "enum": ["song", "artist"],
-                                    "description": "Type of item: 'song' for specific songs, 'artist' for artist's style"
-                                },
-                                "id": {
-                                    "type": "string",
-                                    "description": "Item ID from database (item_id for songs, artist name for artists)"
-                                }
-                            },
-                            "required": ["type", "id"]
-                        },
-                        "description": "Items to SUBTRACT (remove this vibe). OPTIONAL - use only for 'but not' requests."
-                    },
-                    "get_songs": {
-                        "type": "integer",
-                        "description": "Number of results to return",
-                        "default": 100
-                    }
-                },
-                "required": ["add_items"]
-            }
-        ),
-        Tool(
-            name="ai_brainstorm",
-            description="AI KNOWLEDGE: Suggest songs for complex requests (artist's own songs, trending, era, etc.).",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "user_request": {
-                        "type": "string",
-                        "description": "The user's request (e.g., 'trending songs 2025', 'top radio hits', 'greatest rock songs')"
-                    },
-                    "ai_provider": {
-                        "type": "string",
-                        "description": "AI provider",
-                        "enum": ["OLLAMA", "GEMINI", "MISTRAL", "OPENAI"]
-                    },
-                    "ai_config": {
-                        "type": "object",
-                        "description": "AI configuration"
-                    },
-                    "get_songs": {
-                        "type": "integer",
-                        "description": "Number of songs",
-                        "default": 100
-                    }
-                },
-                "required": ["user_request", "ai_provider", "ai_config"]
-            }
-        )
-    ]
-
-
-@mcp_server.call_tool()
-async def call_tool(name: str, arguments: Any) -> List[TextContent]:
-    """Handle tool calls from AI - 4 CORE TOOLS."""
-    try:
-        if name == "artist_similarity":
-            result = await run_in_executor(
-                _artist_similarity_api_sync,
-                arguments['artist'],
-                15,  # count - hardcoded
-                arguments.get('get_songs', 100)
-            )
-        elif name == "song_similarity":
-            result = await run_in_executor(
-                _song_similarity_api_sync,
-                arguments['song_title'],
-                arguments['song_artist'],
-                arguments.get('get_songs', 100)
-            )
-        elif name == "search_database":
-            result = await run_in_executor(
-                _database_genre_query_sync,
-                arguments.get('genres'),
-                arguments.get('get_songs', 100),
-                arguments.get('moods'),
-                arguments.get('tempo_min'),
-                arguments.get('tempo_max'),
-                arguments.get('energy_min'),
-                arguments.get('energy_max'),
-                arguments.get('key')
-            )
-        elif name == "ai_brainstorm":
-            ai_config = {
-                'provider': arguments['ai_provider'],
-                **arguments['ai_config']
-            }
-            result = await run_in_executor(
-                _ai_brainstorm_sync,
-                arguments['user_request'],
-                ai_config,
-                arguments.get('get_songs', 100)
-            )
-        else:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
-        
-        # Return result as JSON
-        return [TextContent(type="text", text=json.dumps(result, indent=2))]
-    
-    except Exception as e:
-        logger.exception(f"Error executing tool {name}")
-        return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
-
-
-# ==================== SERVER RUNNER ====================
-
-async def run_mcp_server():
-    """Run the MCP server using stdio transport."""
-    async with stdio_server() as (read_stream, write_stream):
-        await mcp_server.run(
-            read_stream,
-            write_stream,
-            mcp_server.create_initialization_options()
-        )
-
-
-def main():
-    """Main entry point for the MCP server."""
-    import sys
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        stream=sys.stderr  # MCP uses stdout for protocol, stderr for logs
-    )
-    
-    logger.info("Starting AudioMuse-AI MCP Server...")
-    asyncio.run(run_mcp_server())
-
-
-if __name__ == "__main__":
-    main()
