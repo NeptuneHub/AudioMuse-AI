@@ -26,6 +26,10 @@ from typing import Tuple, Optional
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
 
 import config
+try:
+    from config import AUDIO_LOAD_TIMEOUT
+except Exception:
+    AUDIO_LOAD_TIMEOUT = None
 from tasks.memory_utils import cleanup_cuda_memory, handle_onnx_memory_error
 
 logger = logging.getLogger(__name__)
@@ -581,7 +585,19 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         SEGMENT_LENGTH = 480000  # 10 seconds at 48kHz
         HOP_LENGTH = 240000      # 5 seconds (50% overlap)
         
-        audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True)
+        # Use configured AUDIO_LOAD_TIMEOUT if present to limit librosa loading duration
+        try:
+            if AUDIO_LOAD_TIMEOUT is not None:
+                audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True, duration=AUDIO_LOAD_TIMEOUT)
+            else:
+                audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True)
+        except Exception as e:
+            logger.error(f"Failed to load audio for CLAP analysis ({audio_path}) with AUDIO_LOAD_TIMEOUT={AUDIO_LOAD_TIMEOUT}: {e}")
+            import traceback
+            traceback.print_exc()
+            # Ensure CUDA memory is cleaned up on load failure
+            cleanup_cuda_memory(force=True)
+            return None, 0, 0
         
         # CRITICAL: Quantize audio to int16 and back (matching PyTorch CLAP preprocessing)
         # This simulates the precision loss that happens in real-world audio processing
