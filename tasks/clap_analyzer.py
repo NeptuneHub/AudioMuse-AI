@@ -712,22 +712,42 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
                     outputs = session.run(None, onnx_inputs)
                     batch_embeddings = outputs[0]  # shape: (mini_batch_size, embedding_dim)
                 except Exception as e:
-                    # Handle memory allocation errors with cleanup and retry
-                    def cleanup_fn():
-                        cleanup_cuda_memory(force=True)
-                    
-                    def retry_fn():
-                        return session.run(None, onnx_inputs)
-                    
-                    result = handle_onnx_memory_error(
-                        e,
-                        f"CLAP mini-batch {batch_num}/{total_batches} inference",
-                        cleanup_func=cleanup_fn,
-                        retry_func=retry_fn
-                    )
-                    
-                    if result is not None:
-                        batch_embeddings = result[0]
+                    # Check if this is a GPU OOM error
+                    if "Failed to allocate memory" in str(e):
+                        logger.warning(f"GPU OOM detected for CLAP mini-batch {batch_num}/{total_batches}, attempting CPU fallback...")
+                        
+                        # Comprehensive cleanup before CPU fallback
+                        comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
+                        
+                        # Recreate session with CPU provider (update global session)
+                        global _audio_session
+                        import onnxruntime as ort
+                        
+                        sess_options = ort.SessionOptions()
+                        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                        sess_options.log_severity_level = 3
+                        
+                        if not config.CLAP_PYTHON_MULTITHREADS:
+                            import psutil
+                            logical_cores = psutil.cpu_count(logical=True) or 4
+                            num_threads = max(1, logical_cores // 2)
+                            sess_options.intra_op_num_threads = num_threads
+                            sess_options.inter_op_num_threads = num_threads
+                        else:
+                            sess_options.intra_op_num_threads = 1
+                            sess_options.inter_op_num_threads = 1
+                        
+                        _audio_session = ort.InferenceSession(
+                            config.CLAP_AUDIO_MODEL_PATH,
+                            sess_options=sess_options,
+                            providers=['CPUExecutionProvider']
+                        )
+                        session = _audio_session
+                        
+                        # Retry with CPU session
+                        outputs = session.run(None, onnx_inputs)
+                        batch_embeddings = outputs[0]
+                        logger.info(f"Successfully completed CLAP mini-batch {batch_num} on CPU after OOM")
                     else:
                         raise
                 
