@@ -48,9 +48,9 @@ model:
 training:
   # Basic settings
   batch_size: 16               # Back to 16 songs per batch
-  learning_rate: 0.0001        # Initial learning rate (1e-4)
-  epochs: 20                   # More realistic: 15-25 epochs are enough
-  warmup_epochs: 2             # Less warmup for shorter training
+  learning_rate: 1e-4          # Initial learning rate
+  epochs: 15                   # Balanced: not too long, not too short
+  warmup_epochs: 2             # Back to 2 epochs warmup
   
   # Optimizer
   optimizer: "adam"            # Optimizer type (adam, adamw, sgd)
@@ -87,11 +87,12 @@ paths:
 validation:
   metrics: ["mse", "cosine_similarity", "l2_distance"]
   
-# Hardware settings
+# Hardware settings (Mac Mini optimized)
 hardware:
-  use_cuda: true               # Use CUDA if available
-  num_workers: 4               # Number of data loading workers
-  prefetch_factor: 2           # Prefetch batches per worker
+  use_cuda: false              # Mac Mini doesn't have CUDA
+  use_mps: true                # Use Apple Silicon GPU if available
+  num_workers: 2               # Reduced for Mac Mini
+  prefetch_factor: 1           # Reduced memory usage
 
 # Logging
 logging:

@@ -228,7 +228,13 @@ class StudentCLAPTrainer:
     
     def __init__(self, config: Dict):
         self.config = config
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Use Apple Silicon MPS if available, otherwise CPU
+        if torch.backends.mps.is_available():
+            self.device = torch.device('mps')
+        elif torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        else:
+            self.device = torch.device('cpu')
         
         # Initialize model
         self.model = StudentCLAPAudio(config).to(self.device)
