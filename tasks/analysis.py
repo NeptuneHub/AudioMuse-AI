@@ -61,7 +61,8 @@ from .memory_utils import (
     cleanup_cuda_memory, 
     cleanup_onnx_session, 
     handle_onnx_memory_error,
-    SessionRecycler
+    SessionRecycler,
+    comprehensive_memory_cleanup
 )
 
 
@@ -481,7 +482,8 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                 if should_cleanup_sessions:
                     cleanup_onnx_session(embedding_sess, "embedding")
                 
-                cleanup_cuda_memory(force=True)
+                # Use comprehensive cleanup for OOM errors
+                comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
                 
                 # Create CPU session
                 embedding_sess = ort.InferenceSession(
@@ -506,7 +508,8 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                 if should_cleanup_sessions:
                     cleanup_onnx_session(prediction_sess, "prediction")
                 
-                cleanup_cuda_memory(force=True)
+                # Use comprehensive cleanup for OOM errors
+                comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
                 
                 # Create CPU session
                 prediction_sess = ort.InferenceSession(
@@ -581,7 +584,8 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                     if should_cleanup_other:
                         cleanup_onnx_session(other_sess, key)
                     
-                    cleanup_cuda_memory(force=True)
+                    # Use comprehensive cleanup for OOM errors
+                    comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
                     
                     # Create CPU session
                     other_sess = ort.InferenceSession(
@@ -621,6 +625,16 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
 
     # --- 5. Final Aggregation for Storage ---
     processed_embeddings = np.mean(embeddings_per_patch, axis=0)
+    
+    # CRITICAL: Clean up large tensors before return
+    try:
+        del embeddings_per_patch, audio, patches
+        import gc
+        gc.collect()
+        # Use comprehensive cleanup for successful analysis
+        comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
+    except Exception as cleanup_error:
+        logger.warning(f"Error during final tensor cleanup: {cleanup_error}")
 
     return {
         "tempo": float(tempo), "key": musical_key, "scale": scale,
@@ -827,8 +841,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             for model_name, session in onnx_sessions.items():
                                 cleanup_onnx_session(session, model_name)
                             
-                            # Force CUDA cleanup
-                            cleanup_cuda_memory(force=True)
+                            # Use comprehensive cleanup during session recycling
+                            comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
                             
                             # Recreate sessions
                             onnx_sessions = {}
@@ -951,9 +965,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 logger.info("Cleaning up MuLan model after album analysis")
                 unload_mulan_model()
             
-            # Final CUDA cleanup after album completion
-            logger.info("Performing final CUDA cleanup after album analysis")
-            cleanup_cuda_memory(force=True)
+            # Final comprehensive cleanup after album completion
+            logger.info("Performing final comprehensive cleanup after album analysis")
+            comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
 
             summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album}
             log_and_update_album_task(f"Album '{album_name}' analysis complete.", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
@@ -981,10 +995,10 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             
             # Cleanup CUDA memory
             try:
-                cleanup_cuda_memory(force=True)
-                logger.debug("Final CUDA cleanup completed (finally block)")
+                comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
+                logger.debug("Final comprehensive cleanup completed (finally block)")
             except Exception as e:
-                logger.warning(f"Error during final CUDA cleanup: {e}")
+                logger.warning(f"Error during final comprehensive cleanup: {e}")
             
             # Cleanup CLAP model if loaded
             try:

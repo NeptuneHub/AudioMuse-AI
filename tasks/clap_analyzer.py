@@ -30,7 +30,7 @@ try:
     from config import AUDIO_LOAD_TIMEOUT
 except Exception:
     AUDIO_LOAD_TIMEOUT = None
-from tasks.memory_utils import cleanup_cuda_memory, handle_onnx_memory_error
+from tasks.memory_utils import cleanup_cuda_memory, handle_onnx_memory_error, comprehensive_memory_cleanup
 
 logger = logging.getLogger(__name__)
 
@@ -682,6 +682,10 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
             mel_batch = np.concatenate([m[:, np.newaxis, :, :] for m in mel_list], axis=0)
         except Exception as e:
             logger.error(f"Failed to create mel batch: {e}")
+            # Clean up mel_list before raising
+            del mel_list
+            import gc
+            gc.collect()
             raise
 
         onnx_inputs = {'mel_spectrogram': mel_batch}
@@ -715,13 +719,13 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         # Normalize (should already be normalized, but ensure it)
         avg_embedding = avg_embedding / np.linalg.norm(avg_embedding)
         
-        # Aggressive cleanup to prevent memory leaks
-        del all_embeddings, segments, audio_data
+        # CRITICAL: Delete all large memory allocations immediately
+        del all_embeddings, mel_batch, mel_list, segments, audio_data
         import gc
         gc.collect()
         
-        # Cleanup CUDA memory after analysis
-        cleanup_cuda_memory(force=False)
+        # Comprehensive CUDA and ONNX memory cleanup
+        comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
         
         return avg_embedding, duration_sec, num_segments
         
@@ -730,12 +734,12 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         import traceback
         traceback.print_exc()
         
-        # Cleanup CUDA memory on error
-        cleanup_cuda_memory(force=True)
+        # Comprehensive cleanup on error - force cleanup including ONNX pool reset
+        comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
         
         return None, 0, 0
     finally:
-        # Force cleanup even on error
+        # Final cleanup even on error
         import gc
         gc.collect()
 
