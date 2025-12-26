@@ -47,7 +47,8 @@ model:
 # Training hyperparameters
 training:
   # Basic settings
-  batch_size: 16               # Back to 16 songs per batch
+  batch_size: 4                # Reduced from 16 to save memory
+  gradient_accumulation_steps: 4  # Accumulate over 4 mini-batches (effective batch=16)
   learning_rate: 0.0001        # Initial learning rate (1e-4)
   epochs: 15                   # Balanced: not too long, not too short
   warmup_epochs: 2             # Back to 2 epochs warmup

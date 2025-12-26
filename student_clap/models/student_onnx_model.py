@@ -250,6 +250,10 @@ class StudentCLAPTrainer:
             weight_decay=config['training']['weight_decay']
         )
         
+        # Gradient accumulation setup
+        self.gradient_accumulation_steps = config['training'].get('gradient_accumulation_steps', 1)
+        self.accumulation_counter = 0
+        
         # Learning rate scheduler
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer,
@@ -321,7 +325,10 @@ class StudentCLAPTrainer:
             step_metrics: Dictionary with loss and performance metrics
         """
         self.model.train()
-        self.optimizer.zero_grad()
+        
+        # Only zero gradients at the start of accumulation cycle
+        if self.accumulation_counter == 0:
+            self.optimizer.zero_grad()
         
         # Process each song in the batch
         student_embeddings = []
@@ -347,16 +354,32 @@ class StudentCLAPTrainer:
         # Compute loss
         loss, loss_dict = self.compute_loss(student_embeddings, teacher_embeddings)
         
+        # Scale loss by accumulation steps (important for gradient accumulation)
+        loss = loss / self.gradient_accumulation_steps
+        
         # Backward pass
         loss.backward()
         
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config['training']['grad_clip'])
+        # Update accumulation counter
+        self.accumulation_counter += 1
         
-        # Optimizer step
-        self.optimizer.step()
+        # Only update weights when we've accumulated enough gradients
+        if self.accumulation_counter >= self.gradient_accumulation_steps:
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config['training']['grad_clip'])
+            
+            # Optimizer step
+            self.optimizer.step()
+            
+            # Reset accumulation counter
+            self.accumulation_counter = 0
         
-        return loss_dict
+        # Scale loss_dict back to original scale for logging
+        scaled_loss_dict = {k: v * self.gradient_accumulation_steps if 'loss' in k else v for k, v in loss_dict.items()}
+        scaled_loss_dict['accumulation_step'] = self.accumulation_counter
+        scaled_loss_dict['will_update'] = (self.accumulation_counter == 0)
+        
+        return scaled_loss_dict
         
     def export_to_onnx(self, output_path: str):
         """

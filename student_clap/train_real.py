@@ -124,7 +124,9 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             step_metrics = trainer.train_step(batch)
             
             # Log detailed metrics
-            logger.info(f"   ✅ Forward pass through student CNN + Transformer")
+            accumulation_info = f" [acc {step_metrics['accumulation_step']}/{trainer.gradient_accumulation_steps}]"
+            update_info = " 🔄 WEIGHTS UPDATED!" if step_metrics['will_update'] else ""
+            logger.info(f"   ✅ Forward pass through student CNN + Transformer{accumulation_info}{update_info}")
             logger.info(f"   📊 Loss: {step_metrics['total_loss']:.6f}")
             logger.info(f"      └─ MSE Loss: {step_metrics['mse_loss']:.6f}")
             logger.info(f"      └─ Cosine Loss: {step_metrics['cosine_loss']:.6f}")
