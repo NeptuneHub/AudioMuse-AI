@@ -628,7 +628,13 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     
     # CRITICAL: Clean up large tensors before return
     try:
-        del embeddings_per_patch, audio, patches
+        # Clean up all large intermediate variables
+        del embeddings_per_patch, audio, mel_spec, log_mel_spec, spec_patches, transposed_patches, final_patches
+        del embedding_feed_dict, prediction_feed_dict
+        if 'mood_logits' in locals():
+            del mood_logits
+        if 'averaged_logits' in locals():
+            del averaged_logits
         import gc
         gc.collect()
         # Use comprehensive cleanup for successful analysis

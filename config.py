@@ -276,6 +276,11 @@ CLAP_EMBEDDING_DIMENSION = 512
 # - False (default): Use ONNX internal threading (auto-detects all CPU cores, recommended)
 # - True: Use Python ThreadPoolExecutor with auto-calculated threads: (physical_cores - 1) + (logical_cores // 2)
 CLAP_PYTHON_MULTITHREADS = os.environ.get("CLAP_PYTHON_MULTITHREADS", "False").lower() == "true"
+# Mini-batch size for CLAP segment processing (reduces GPU memory usage)
+# - 4 (default): Safe for 4GB GPU, processes 4 segments at a time
+# - 8: Good for 6GB+ GPU, faster but uses more memory
+# - 1: Ultra-safe sequential processing (slowest, minimal memory)
+CLAP_MINI_BATCH_SIZE = int(os.environ.get("CLAP_MINI_BATCH_SIZE", "4"))
 
 # Category weights for CLAP query generation (affects random query sampling probabilities)
 # Higher weights favor categories where CLAP excels (Genre, Instrumentation)

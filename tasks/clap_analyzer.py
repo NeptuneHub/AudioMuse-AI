@@ -667,60 +667,98 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
             
             return audio_embedding[0]  # Remove batch dimension
         
-        # Simplified approach: always run batched ONNX inference for all segments (CPU or GPU).
-        # This avoids complex branching and reduces Python overhead. We still keep OOM handling.
+        # Mini-batch processing to reduce GPU memory usage and prevent OOM errors
+        # Process segments in small batches with cleanup between each batch
         if num_segments < 1:
             logger.error("No segments to process for CLAP analysis")
             raise RuntimeError("No segments generated for CLAP analysis")
 
-        logger.info(f"CLAP: Running batched ONNX inference with {num_segments} segments")
+        # Get mini-batch size from config (default: 4 segments per batch)
+        MINI_BATCH_SIZE = config.CLAP_MINI_BATCH_SIZE
+        total_batches = (num_segments + MINI_BATCH_SIZE - 1) // MINI_BATCH_SIZE
+        
+        logger.info(f"CLAP: Processing {num_segments} segments in {total_batches} mini-batches of {MINI_BATCH_SIZE}")
 
-        # Compute mel-spectrograms for all segments and stack into a single batch
-        mel_list = [compute_mel_spectrogram(seg, SAMPLE_RATE) for seg in segments]
-        # Each mel has shape (1, time_frames, 64); add channel dim -> (1,1,time,64), then stack -> (batch,1,time,64)
-        try:
-            mel_batch = np.concatenate([m[:, np.newaxis, :, :] for m in mel_list], axis=0)
-        except Exception as e:
-            logger.error(f"Failed to create mel batch: {e}")
-            # Clean up mel_list before raising
-            del mel_list
-            import gc
-            gc.collect()
-            raise
+        all_embeddings_list = []  # Accumulate embeddings from each mini-batch
+        
+        # Process segments in mini-batches
+        for batch_start in range(0, num_segments, MINI_BATCH_SIZE):
+            batch_end = min(batch_start + MINI_BATCH_SIZE, num_segments)
+            batch_segments = segments[batch_start:batch_end]
+            batch_num = (batch_start // MINI_BATCH_SIZE) + 1
+            
+            logger.debug(f"Processing mini-batch {batch_num}/{total_batches} (segments {batch_start+1}-{batch_end})")
+            
+            try:
+                # Step 1: Compute mel-spectrograms for this mini-batch only
+                mel_list = [compute_mel_spectrogram(seg, SAMPLE_RATE) for seg in batch_segments]
+                
+                # Step 2: Stack into mini-batch tensor
+                # Each mel has shape (1, time_frames, 64); add channel dim -> (1,1,time,64), then stack -> (batch,1,time,64)
+                try:
+                    mel_batch = np.concatenate([m[:, np.newaxis, :, :] for m in mel_list], axis=0)
+                except Exception as e:
+                    logger.error(f"Failed to create mel batch for mini-batch {batch_num}: {e}")
+                    # Clean up mel_list before raising
+                    del mel_list
+                    import gc
+                    gc.collect()
+                    raise
 
-        onnx_inputs = {'mel_spectrogram': mel_batch}
-        try:
-            outputs = session.run(None, onnx_inputs)
-            all_embeddings = outputs[0]  # shape: (batch, dim)
-        except Exception as e:
-            # Handle memory allocation errors with cleanup and retry
-            def cleanup_fn():
+                # Step 3: ONNX inference on mini-batch
+                onnx_inputs = {'mel_spectrogram': mel_batch}
+                
+                try:
+                    outputs = session.run(None, onnx_inputs)
+                    batch_embeddings = outputs[0]  # shape: (mini_batch_size, embedding_dim)
+                except Exception as e:
+                    # Handle memory allocation errors with cleanup and retry
+                    def cleanup_fn():
+                        cleanup_cuda_memory(force=True)
+                    
+                    def retry_fn():
+                        return session.run(None, onnx_inputs)
+                    
+                    result = handle_onnx_memory_error(
+                        e,
+                        f"CLAP mini-batch {batch_num}/{total_batches} inference",
+                        cleanup_func=cleanup_fn,
+                        retry_func=retry_fn
+                    )
+                    
+                    if result is not None:
+                        batch_embeddings = result[0]
+                    else:
+                        raise
+                
+                # Step 4: Store embeddings for later averaging
+                all_embeddings_list.append(batch_embeddings)
+                
+                # Step 5: AGGRESSIVE CLEANUP - Free everything except embeddings
+                del mel_list, mel_batch, onnx_inputs, outputs, batch_embeddings
+                import gc
+                gc.collect()
+                
+                # Step 6: Periodic CUDA cleanup (every 3 mini-batches)
+                if batch_num % 3 == 0:
+                    cleanup_cuda_memory(force=False)
+                    logger.debug(f"Performed CUDA cleanup after mini-batch {batch_num}")
+            
+            except Exception as e:
+                logger.error(f"Mini-batch {batch_num}/{total_batches} processing failed: {e}")
+                # Cleanup on error
                 cleanup_cuda_memory(force=True)
-
-            def retry_fn():
-                return session.run(None, onnx_inputs)
-
-            result = handle_onnx_memory_error(
-                e,
-                f"CLAP batched segment inference",
-                cleanup_func=cleanup_fn,
-                retry_func=retry_fn
-            )
-
-            if result is not None:
-                all_embeddings = result[0]
-            else:
                 raise
         
-        # Combine all embeddings
-        all_embeddings = np.vstack(all_embeddings)
+        # Step 7: Combine all mini-batch embeddings
+        all_embeddings = np.vstack(all_embeddings_list)
         avg_embedding = np.mean(all_embeddings, axis=0)
         
         # Normalize (should already be normalized, but ensure it)
         avg_embedding = avg_embedding / np.linalg.norm(avg_embedding)
         
-        # CRITICAL: Delete all large memory allocations immediately
-        del all_embeddings, mel_batch, mel_list, segments, audio_data
+        # Step 8: Final cleanup
+        del all_embeddings, all_embeddings_list, segments, audio_data
         import gc
         gc.collect()
         
