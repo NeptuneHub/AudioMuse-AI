@@ -51,3 +51,10 @@ htmlcov/
 
 # Exported MuLan models
 mulan_model_export/
+
+# Student CLAP training artifacts
+student_clap/cache/
+student_clap/checkpoints/
+student_clap/logs/
+student_clap/models/*.onnx
+student_clap/config.local.yaml
