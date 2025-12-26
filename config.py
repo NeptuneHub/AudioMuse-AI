@@ -280,7 +280,7 @@ CLAP_PYTHON_MULTITHREADS = os.environ.get("CLAP_PYTHON_MULTITHREADS", "False").l
 # - 4 (default): Safe for 4GB GPU, processes 4 segments at a time
 # - 8: Good for 6GB+ GPU, faster but uses more memory
 # - 1: Ultra-safe sequential processing (slowest, minimal memory)
-CLAP_MINI_BATCH_SIZE = int(os.environ.get("CLAP_MINI_BATCH_SIZE", "4"))
+CLAP_MINI_BATCH_SIZE = int(os.environ.get("CLAP_MINI_BATCH_SIZE", "60"))
 
 # Category weights for CLAP query generation (affects random query sampling probabilities)
 # Higher weights favor categories where CLAP excels (Genre, Instrumentation)
