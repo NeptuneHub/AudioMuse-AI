@@ -9,7 +9,8 @@ import os
 import sys
 import logging
 import numpy as np
-import librosa
+import torch
+import torchaudio
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 
@@ -214,14 +215,22 @@ class StudentCLAPDataset:
                         logger.error(f"Failed to download audio for {item_id}")
                         continue
                         
-                    # Load and process audio immediately
-                    audio_data, sr = librosa.load(
-                        audio_path,
-                        sr=self.audio_config['sample_rate'],
-                        mono=True
-                    )
+                    # Load audio with torchaudio (MUCH faster than librosa)
+                    import torchaudio
+                    audio_tensor, sr = torchaudio.load(audio_path)
                     
-                    # Process segments
+                    # Convert to mono if needed and resample if necessary
+                    if audio_tensor.shape[0] > 1:
+                        audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
+                    
+                    if sr != self.audio_config['sample_rate']:
+                        resampler = torchaudio.transforms.Resample(sr, self.audio_config['sample_rate'])
+                        audio_tensor = resampler(audio_tensor)
+                    
+                    # Convert to numpy for segmentation
+                    audio_data = audio_tensor.squeeze(0).numpy()
+                    
+                    # Process segments (keep raw audio, no mel-spec preprocessing!)
                     segments = segment_audio(
                         audio_data,
                         sample_rate=self.audio_config['sample_rate'],
@@ -229,24 +238,16 @@ class StudentCLAPDataset:
                         hop_length=self.audio_config['hop_length']
                     )
                     
-                    # Compute mel-spectrograms
-                    mel_specs = compute_mel_spectrogram_batch(
-                        segments,
-                        sr=self.audio_config['sample_rate'],
-                        n_mels=self.audio_config['n_mels'],
-                        n_fft=self.audio_config['n_fft'],
-                        hop_length=self.audio_config['hop_length_stft'],
-                        fmin=self.audio_config['fmin'],
-                        fmax=self.audio_config['fmax']
-                    )
+                    # Convert segments list to numpy array then to torch tensors (skip mel-spec computation!)
+                    segments_array = np.array(segments) if isinstance(segments, list) else segments
+                    audio_segments_tensor = torch.from_numpy(segments_array).float()
                     
                     sample = {
                         'item_id': item_id,
                         'title': item['title'],
                         'author': item['author'],
                         'audio_path': audio_path,
-                        'audio_segments': segments,
-                        'mel_spectrograms': mel_specs,
+                        'audio_segments': audio_segments_tensor,  # Raw audio segments (fast!)
                         'teacher_embedding': item['embedding'],
                         'num_segments': len(segments)
                     }

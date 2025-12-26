@@ -189,6 +189,10 @@ class StudentCLAPAudio(nn.Module):
         Returns:
             averaged_embedding: Single 512-dim L2-normalized embedding
         """
+        # Ensure tensor is on the same device as model and correct dtype
+        model_device = next(self.parameters()).device
+        audio_segments = audio_segments.to(model_device, dtype=torch.float32)
+        
         # Compute mel-spectrograms for all segments
         mel_specs = self.compute_mel_spectrogram(audio_segments)  # (num_segments, 1, 128, time)
         
