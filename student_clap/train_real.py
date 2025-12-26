@@ -138,6 +138,39 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             num_songs += len(batch_data)
             
             batch_time = time.time() - batch_start_time
+            
+            # 🧹 AGGRESSIVE MEMORY CLEANUP (prevent 15GB buildup)
+            import gc
+            import torch
+            
+            # Clear only the large tensors, keep variables we need
+            if 'batch' in locals():
+                if 'audio_segments' in batch:
+                    del batch['audio_segments']  # This is the heavy data
+                del batch
+            if 'step_metrics' in locals():
+                del step_metrics
+            
+            # Force garbage collection
+            gc.collect()
+            
+            # Clear PyTorch cache (MPS and CPU)
+            if hasattr(torch, 'mps') and torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            logger.info(f"   🧹 Memory cleaned after batch")
+            
+            # 📊 Log memory usage (Mac Mini has 16GB)
+            try:
+                import psutil
+                memory = psutil.virtual_memory()
+                memory_used_gb = (memory.total - memory.available) / (1024**3)
+                memory_total_gb = memory.total / (1024**3)
+                logger.info(f"   💾 Memory: {memory_used_gb:.1f}/{memory_total_gb:.1f}GB ({memory.percent:.1f}%)")
+            except ImportError:
+                pass  # psutil not available
             epoch_progress = (num_batches + 1) / total_batches * 100
             total_progress = ((epoch - 1) + (num_batches + 1) / total_batches) / config['training']['epochs'] * 100
             
