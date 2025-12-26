@@ -419,7 +419,7 @@ def initialize_clap_model():
 
 
 def unload_clap_model():
-    """Unload CLAP model from memory to free RAM."""
+    """Unload CLAP model from memory to free RAM and GPU VRAM."""
     global _audio_session, _text_session, _tokenizer, _cached_dummy_input_ids
     
     if _audio_session is None and _text_session is None:
@@ -442,7 +442,12 @@ def unload_clap_model():
         import gc
         gc.collect()
         
-        logger.info(f"✓ CLAP model(s) unloaded from memory (~{freed_mb}MB freed)")
+        # Aggressive CUDA cleanup after unloading CLAP
+        # This forces ONNX Runtime to release GPU memory back to CUDA
+        from .memory_utils import comprehensive_memory_cleanup
+        comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
+        
+        logger.info(f"✓ CLAP model(s) unloaded from memory (~{freed_mb}MB freed + GPU memory released)")
         return True
     except Exception as e:
         logger.error(f"Error unloading CLAP model: {e}")

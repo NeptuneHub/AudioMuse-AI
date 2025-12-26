@@ -280,7 +280,16 @@ CLAP_PYTHON_MULTITHREADS = os.environ.get("CLAP_PYTHON_MULTITHREADS", "False").l
 # - 4 (default): Safe for 4GB GPU, processes 4 segments at a time
 # - 8: Good for 6GB+ GPU, faster but uses more memory
 # - 1: Ultra-safe sequential processing (slowest, minimal memory)
-CLAP_MINI_BATCH_SIZE = int(os.environ.get("CLAP_MINI_BATCH_SIZE", "60"))
+CLAP_MINI_BATCH_SIZE = int(os.environ.get("CLAP_MINI_BATCH_SIZE", "1"))
+
+# Model reloading strategy to prevent GPU VRAM accumulation
+# - true (default): Unload both MusiCNN and CLAP models after each song
+#   Pros: Stable memory usage, prevents VRAM leaks
+#   Cons: Slower (~2-3 seconds overhead per song for model loading)
+# - false: MusiCNN reloads every 20 songs, CLAP at album end (faster but may accumulate memory)
+#   Pros: Faster processing (no per-song reload overhead)
+#   Cons: May see gradual VRAM growth on some systems
+PER_SONG_MODEL_RELOAD = os.environ.get("PER_SONG_MODEL_RELOAD", "true").lower() == "true"
 
 # Category weights for CLAP query generation (affects random query sampling probabilities)
 # Higher weights favor categories where CLAP excels (Genre, Instrumentation)

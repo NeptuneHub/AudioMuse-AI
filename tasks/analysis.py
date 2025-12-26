@@ -38,7 +38,7 @@ from config import (
     MUTATION_KMEANS_COORD_FRACTION, MUTATION_INT_ABS_DELTA, MUTATION_FLOAT_ABS_DELTA,
     TOP_N_ELITES, EXPLOITATION_START_FRACTION, EXPLOITATION_PROBABILITY_CONFIG, TOP_N_MOODS, TOP_N_OTHER_FEATURES,
     STRATIFIED_GENRES, MIN_SONGS_PER_GENRE_FOR_STRATIFICATION, SAMPLING_PERCENTAGE_CHANGE_PER_RUN, ITERATIONS_PER_BATCH_JOB, MAX_CONCURRENT_BATCH_JOBS, REBUILD_INDEX_BATCH_SIZE,
-    MAX_QUEUED_ANALYSIS_JOBS,
+    MAX_QUEUED_ANALYSIS_JOBS, PER_SONG_MODEL_RELOAD,
     TOP_K_MOODS_FOR_PURITY_CALCULATION, LN_MOOD_DIVERSITY_STATS, LN_MOOD_PURITY_STATS,
     LN_OTHER_FEATURES_DIVERSITY_STATS, LN_OTHER_FEATURES_PURITY_STATS,
     STRATIFIED_SAMPLING_TARGET_PERCENTILE,
@@ -424,7 +424,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         
         cuda_options = {
             'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kNextPowerOfTwo',
+            'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
             'cudnn_conv_algo_search': 'EXHAUSTIVE',
             'do_copy_in_default_stream': True,
         }
@@ -683,7 +683,12 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         onnx_sessions = None
         
         # Initialize SessionRecycler to prevent cumulative memory leaks
-        session_recycler = SessionRecycler(recycle_interval=20)
+        # Interval depends on PER_SONG_MODEL_RELOAD setting:
+        # - true: Reload every 1 song (aggressive, prevents memory leaks)
+        # - false: Reload every 20 songs (original behavior, faster but may accumulate memory)
+        recycle_interval = 1 if PER_SONG_MODEL_RELOAD else 20
+        session_recycler = SessionRecycler(recycle_interval=recycle_interval)
+        logger.info(f"MusiCNN session recycling: every {recycle_interval} song(s) (PER_SONG_MODEL_RELOAD={PER_SONG_MODEL_RELOAD})")
 
         def log_and_update_album_task(message, progress, **kwargs):
             nonlocal current_progress_val, current_task_logs
@@ -813,7 +818,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                     gpu_device_id = 0
                                 cuda_options = {
                                     'device_id': gpu_device_id,
-                                    'arena_extend_strategy': 'kNextPowerOfTwo',  # Better memory allocation
+                                    'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
                                     'cudnn_conv_algo_search': 'EXHAUSTIVE',      # Find memory-efficient algorithms
                                     'do_copy_in_default_stream': True,           # Better memory sync
                                 }
@@ -861,7 +866,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                     gpu_device_id = 0
                                 cuda_options = {
                                     'device_id': gpu_device_id,
-                                    'arena_extend_strategy': 'kNextPowerOfTwo',
+                                    'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
                                     'cudnn_conv_algo_search': 'EXHAUSTIVE',
                                     'do_copy_in_default_stream': True,
                                 }
@@ -909,6 +914,10 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         
                         # Increment session recycler counter after successful analysis
                         session_recycler.increment()
+                        
+                        # Aggressive GPU memory cleanup after each MusiCNN analysis
+                        # This prevents gradual VRAM accumulation from ONNX Runtime allocator
+                        cleanup_cuda_memory(force=False)
                     else:
                         logger.info(f"SKIPPED MusiCNN for '{track_name_full}' (already analyzed)")
                     
@@ -921,6 +930,12 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                 save_clap_embedding(item['Id'], clap_embedding)
                                 logger.info(f"  - CLAP embedding saved (512-dim)")
                                 track_processed = True
+                            
+                            # Conditionally unload CLAP model based on PER_SONG_MODEL_RELOAD
+                            if PER_SONG_MODEL_RELOAD:
+                                from .clap_analyzer import unload_clap_model
+                                unload_clap_model()
+                                logger.debug(f"  - CLAP model unloaded after song (PER_SONG_MODEL_RELOAD=true)")
                         except Exception as e:
                             logger.warning(f"  - CLAP analysis failed: {e}")
                     elif not needs_clap and is_clap_available():
