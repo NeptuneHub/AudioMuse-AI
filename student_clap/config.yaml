@@ -23,7 +23,7 @@ audio:
   
   # Mel-spectrogram parameters (for student model input)
   n_mels: 128                  # Number of mel bands (student uses 128)
-  n_fft: 1024                  # FFT window size
+  n_fft: 2048                  # FFT window size (increased for more freq bins)
   hop_length_stft: 480         # STFT hop length
   fmin: 0                      # Minimum frequency
   fmax: 14000                  # Maximum frequency
@@ -47,14 +47,14 @@ model:
 # Training hyperparameters
 training:
   # Basic settings
-  batch_size: 16               # Number of songs per batch
-  learning_rate: 1e-4          # Initial learning rate
-  epochs: 100                  # Total training epochs
-  warmup_epochs: 5             # Warmup period for learning rate
+  batch_size: 16               # Back to 16 songs per batch
+  learning_rate: 0.0001        # Initial learning rate (1e-4)
+  epochs: 20                   # More realistic: 15-25 epochs are enough
+  warmup_epochs: 2             # Less warmup for shorter training
   
   # Optimizer
   optimizer: "adam"            # Optimizer type (adam, adamw, sgd)
-  weight_decay: 1e-5           # Weight decay for regularization
+  weight_decay: 0.00001        # Weight decay for regularization (1e-5)
   grad_clip: 1.0               # Gradient clipping value
   
   # Loss weights
@@ -77,9 +77,10 @@ augmentation:
 
 # Paths
 paths:
-  audio_cache: "./cache/audio"      # Cache for downloaded audio files
-  checkpoints: "./checkpoints"      # Model checkpoints directory
-  logs: "./logs"                    # Training logs directory
+  audio_cache: "./cache/audio"          # Cache for downloaded audio files  
+  max_cache_size_gb: 2                  # Keep only 2GB in cache (streaming mode)
+  checkpoints: "./checkpoints"          # Model checkpoints directory
+  logs: "./logs"                        # Training logs directory
   final_model: "./models/student_clap_audio.onnx"  # Final exported model
 
 # Validation metrics

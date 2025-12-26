@@ -53,9 +53,13 @@ class StudentCLAPDataset:
         
         # Initialize loaders
         self.db_loader = DatabaseLoader(self.db_config)
+        
+        # Get cache size limit from config (default 2GB)
+        max_cache_gb = self.paths_config.get('max_cache_size_gb', 2.0)
         self.jellyfin_downloader = JellyfinDownloader(
             self.jellyfin_config,
-            cache_dir=self.paths_config['audio_cache']
+            cache_dir=self.paths_config['audio_cache'],
+            max_cache_size_gb=max_cache_gb
         )
         
         # Load embeddings
@@ -173,9 +177,9 @@ class StudentCLAPDataset:
                 
         return batch
         
-    def iterate_batches(self, batch_size: int, shuffle: bool = True):
+    def iterate_batches_streaming(self, batch_size: int, shuffle: bool = True):
         """
-        Iterate over dataset in batches.
+        STREAMING batch iteration - downloads ONLY current batch.
         
         Args:
             batch_size: Number of samples per batch
@@ -193,12 +197,68 @@ class StudentCLAPDataset:
             end_idx = min(start_idx + batch_size, len(self))
             batch_indices = indices[start_idx:end_idx]
             
+            logger.info(f"📥 DOWNLOADING batch {start_idx//batch_size + 1}: songs {start_idx+1}-{end_idx}")
+            
+            # Download and process EXACTLY this batch, one by one
             batch = []
-            for idx in batch_indices:
-                sample = self[idx]
-                if sample is not None:
+            for i, idx in enumerate(batch_indices):
+                item = self.items[idx]
+                item_id = item['item_id']
+                
+                logger.debug(f"  Downloading song {i+1}/{len(batch_indices)}: {item['title']}")
+                
+                try:
+                    # Download this single audio file
+                    audio_path = self.jellyfin_downloader.download(item_id)
+                    if audio_path is None:
+                        logger.error(f"Failed to download audio for {item_id}")
+                        continue
+                        
+                    # Load and process audio immediately
+                    audio_data, sr = librosa.load(
+                        audio_path,
+                        sr=self.audio_config['sample_rate'],
+                        mono=True
+                    )
+                    
+                    # Process segments
+                    segments = segment_audio(
+                        audio_data,
+                        sample_rate=self.audio_config['sample_rate'],
+                        segment_length=self.audio_config['segment_length'],
+                        hop_length=self.audio_config['hop_length']
+                    )
+                    
+                    # Compute mel-spectrograms
+                    mel_specs = compute_mel_spectrogram_batch(
+                        segments,
+                        sr=self.audio_config['sample_rate'],
+                        n_mels=self.audio_config['n_mels'],
+                        n_fft=self.audio_config['n_fft'],
+                        hop_length=self.audio_config['hop_length_stft'],
+                        fmin=self.audio_config['fmin'],
+                        fmax=self.audio_config['fmax']
+                    )
+                    
+                    sample = {
+                        'item_id': item_id,
+                        'title': item['title'],
+                        'author': item['author'],
+                        'audio_path': audio_path,
+                        'audio_segments': segments,
+                        'mel_spectrograms': mel_specs,
+                        'teacher_embedding': item['embedding'],
+                        'num_segments': len(segments)
+                    }
+                    
                     batch.append(sample)
                     
+                except Exception as e:
+                    logger.error(f"Failed to load item {item_id}: {e}")
+                    continue
+                    
+            logger.info(f"✅ PROCESSED batch: {len(batch)} songs ready for training")
+            
             if batch:  # Only yield non-empty batches
                 yield batch
                 
@@ -226,6 +286,43 @@ class StudentCLAPDataset:
         })
         
         return stats
+        
+    def _segment_audio(self, audio_data: np.ndarray) -> np.ndarray:
+        """
+        Segment audio using the same strategy as teacher CLAP.
+        This is critical for compatibility - must match exactly.
+        
+        Args:
+            audio_data: Raw audio samples at 48kHz
+            
+        Returns:
+            segments: Array of shape (num_segments, segment_length) 
+                     where segment_length = 480,000 (10 seconds at 48kHz)
+        """
+        sample_rate = self.audio_config['sample_rate']  # 48000
+        segment_length = self.audio_config['segment_length']  # 480000 (10s)
+        hop_length = self.audio_config['hop_length']  # 240000 (5s)
+        
+        total_length = len(audio_data)
+        
+        # If audio is shorter than 10 seconds, pad to 10 seconds
+        if total_length <= segment_length:
+            padded = np.pad(audio_data, (0, segment_length - total_length), mode='constant')
+            return padded.reshape(1, -1)  # (1, segment_length)
+        
+        # For longer audio: create overlapping segments (10s segments, 5s hop)
+        segments = []
+        for start in range(0, total_length - segment_length + 1, hop_length):
+            segment = audio_data[start:start + segment_length]
+            segments.append(segment)
+        
+        # Add final segment if needed (to capture the end of the audio)
+        last_start = len(segments) * hop_length
+        if last_start < total_length:
+            final_segment = audio_data[-segment_length:]
+            segments.append(final_segment)
+        
+        return np.array(segments)  # (num_segments, segment_length)
         
     def close(self):
         """Clean up resources."""

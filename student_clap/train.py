@@ -23,14 +23,17 @@ import argparse
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
+from dotenv import load_dotenv
+
+# Load .env file if it exists
+load_dotenv()
 
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from student_clap.data.dataset import StudentCLAPDataset
-from student_clap.training.losses import compute_batch_loss
+from student_clap.models.student_onnx_model import StudentCLAPTrainer
 from student_clap.training.evaluation import evaluate_embeddings, print_evaluation_report
-from student_clap.models.tinyclap_audio import TinyCLAPConfig, get_architecture_description
 
 logger = logging.getLogger(__name__)
 
@@ -64,20 +67,18 @@ def expand_env_vars(config: dict) -> dict:
         return config
 
 
-def train_epoch_placeholder(dataset: StudentCLAPDataset,
-                            config: dict,
-                            epoch: int) -> dict:
+def train_epoch_real(trainer: StudentCLAPTrainer,
+                    dataset: StudentCLAPDataset,
+                    config: dict,
+                    epoch: int) -> dict:
     """
-    Placeholder for one training epoch.
+    Real ONNX-based training epoch using PyTorch with ONNX export.
     
-    In a real implementation, this would:
-    1. Load batches from dataset
-    2. Forward pass through student model
-    3. Average segment embeddings
-    4. Compute loss vs teacher embeddings
-    5. Backward pass and optimizer step
+    Uses knowledge distillation from existing CLAP embeddings in database
+    to train a lightweight student model following tinyCLAP approach.
     
     Args:
+        trainer: Student CLAP trainer with real ONNX model
         dataset: Training dataset
         config: Configuration dict
         epoch: Current epoch number
@@ -85,47 +86,67 @@ def train_epoch_placeholder(dataset: StudentCLAPDataset,
     Returns:
         Dict with epoch metrics
     """
-    logger.info(f"Epoch {epoch}/{config['training']['epochs']}")
+    logger.info(f"🚀 REAL ONNX TRAINING - Epoch {epoch}/{config['training']['epochs']}")
     
     batch_size = config['training']['batch_size']
-    mse_weight = config['training']['mse_weight']
-    cosine_weight = config['training']['cosine_weight']
     
     total_loss = 0.0
+    total_mse = 0.0
+    total_cosine_sim = 0.0
     num_batches = 0
+    num_songs = 0
     
-    # Iterate over batches
-    for batch in tqdm(dataset.iterate_batches(batch_size, shuffle=True), 
-                     desc=f"Epoch {epoch}"):
-        # In real implementation:
-        # 1. Extract mel-spectrograms from batch
-        # 2. Forward pass through student model
-        # 3. Get segment embeddings
-        # 4. Average segment embeddings per song
-        # 5. Compute loss
-        # 6. Backward pass
-        # 7. Optimizer step
+    epoch_start_time = time.time()
+    
+    # Iterate over batches with STREAMING downloads
+    for batch_data in tqdm(dataset.iterate_batches_streaming(batch_size, shuffle=True), 
+                          desc=f"Epoch {epoch} - Real Training"):
         
-        # Placeholder: just compute loss on dummy embeddings
-        teacher_embeddings = np.stack([item['teacher_embedding'] for item in batch])
+        batch_start_time = time.time()
         
-        # Simulate student embeddings (in practice, from model forward pass)
-        student_embeddings = [
-            teacher_embeddings[i:i+1].repeat(item['num_segments'], axis=0) + 
-            np.random.randn(item['num_segments'], 512).astype(np.float32) * 0.1
-            for i, item in enumerate(batch)
-        ]
+        # Prepare batch for training
+        batch = {
+            'audio_segments': [],
+            'teacher_embeddings': [],
+            'song_ids': []
+        }
         
-        # Compute loss
-        loss, loss_dict = compute_batch_loss(
-            student_embeddings,
-            teacher_embeddings,
-            mse_weight,
-            cosine_weight
-        )
+        for item in batch_data:
+            # Get audio segments for this song (10s segments, 5s hop)
+            audio_segments = dataset._segment_audio(item['audio_data'])
+            batch['audio_segments'].append(audio_segments)
+            batch['teacher_embeddings'].append(item['teacher_embedding'])
+            batch['song_ids'].append(item['song_id'])
         
-        total_loss += loss
-        num_batches += 1
+        # 🧠 REAL TRAINING STEP
+        logger.info(f"🔥 BATCH {num_batches + 1}: Training on {len(batch_data)} songs...")
+        
+        try:
+            # Forward pass, loss computation, and backward pass
+            step_metrics = trainer.train_step(batch)
+            
+            # Log detailed metrics
+            logger.info(f"   ✅ Forward pass through student CNN + Transformer")
+            logger.info(f"   📊 Loss: {step_metrics['total_loss']:.6f}")
+            logger.info(f"      └─ MSE Loss: {step_metrics['mse_loss']:.6f}")
+            logger.info(f"      └─ Cosine Loss: {step_metrics['cosine_loss']:.6f}")
+            logger.info(f"   🎯 Cosine Similarity: {step_metrics['mean_cosine_sim']:.4f} (min: {step_metrics['min_cosine_sim']:.4f}, max: {step_metrics['max_cosine_sim']:.4f})")
+            
+            # Accumulate metrics
+            total_loss += step_metrics['total_loss']
+            total_mse += step_metrics['mse_loss']
+            total_cosine_sim += step_metrics['mean_cosine_sim']
+            num_batches += 1
+            num_songs += len(batch_data)
+            
+            batch_time = time.time() - batch_start_time
+            logger.info(f"   ⏱️ Batch time: {batch_time:.1f}s ({batch_time/len(batch_data):.1f}s/song)")
+            
+        except Exception as e:
+            logger.error(f"❌ Training failed on batch {num_batches + 1}: {e}")
+            continue
+        
+        logger.info(f"─" * 60)
         
         if num_batches % config['logging']['log_every'] == 0:
             logger.info(f"  Batch {num_batches}: loss={loss:.6f}")
@@ -157,7 +178,7 @@ def validate_placeholder(dataset: StudentCLAPDataset,
     student_embeddings_list = []
     teacher_embeddings_list = []
     
-    for batch in dataset.iterate_batches(config['training']['batch_size'], shuffle=False):
+    for batch in dataset.iterate_batches_streaming(config['training']['batch_size'], shuffle=False):
         teacher_embeddings = np.stack([item['teacher_embedding'] for item in batch])
         
         # Simulate student embeddings

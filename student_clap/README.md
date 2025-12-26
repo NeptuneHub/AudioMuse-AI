@@ -95,38 +95,96 @@ avg_embedding = np.mean(segment_embeddings, axis=0)
 cd student_clap/
 ```
 
-2. Install dependencies:
+2. Create and activate a Python virtual environment:
+```bash
+# Create virtual environment
+python3 -m venv venv
+
+# Activate virtual environment
+# On macOS/Linux:
+source venv/bin/activate
+# On Windows:
+# venv\Scripts\activate
+```
+
+3. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Configure environment:
+4. Configure environment variables:
 ```bash
-# Copy and edit config.yaml with your settings
-cp config.yaml config.local.yaml
-# Edit config.local.yaml with your database and Jellyfin credentials
+# Copy the environment template
+cp .env.example .env
+
+# Edit .env with your actual credentials
+nano .env  # or use your preferred editor
+```
+
+Edit your `.env` file with your actual values:
+```bash
+# Database Configuration
+DB_HOST=your_postgres_host
+DB_NAME=audiomuse
+DB_USER=your_postgres_user
+DB_PASSWORD=your_postgres_password
+
+# Jellyfin Configuration
+JELLYFIN_URL=http://your_jellyfin_url:8096
+JELLYFIN_USER_ID=your_jellyfin_user_id
+JELLYFIN_TOKEN=your_jellyfin_token
+```
+
+5. Verify configuration:
+```bash
+# Test database connection
+python3 -c "import psycopg2; print('Database connection OK')"
+
+# Test Jellyfin connection (optional)
+curl -H "X-Emby-Token: YOUR_TOKEN" http://your_jellyfin_url:8096/System/Info
 ```
 
 ## Configuration
 
-Edit `config.yaml` (or create `config.local.yaml`) with your settings:
+The configuration uses a combination of `config.yaml` and environment variables loaded from a `.env` file.
+
+### Environment Variables (.env file)
+
+The `.env` file contains your sensitive credentials and connection details:
+
+```bash
+# Database Configuration
+DB_HOST=your_postgres_host
+DB_NAME=audiomuse
+DB_USER=your_postgres_user  
+DB_PASSWORD=your_postgres_password
+
+# Jellyfin Configuration
+JELLYFIN_URL=http://your_jellyfin_url:8096
+JELLYFIN_USER_ID=your_jellyfin_user_id
+JELLYFIN_TOKEN=your_jellyfin_token
+```
+
+### Configuration File (config.yaml)
+
+The `config.yaml` file references these environment variables and contains model/training settings:
 
 ### Database Connection
 ```yaml
 database:
-  host: your_db_host
+  host: ${DB_HOST}
   port: 5432
-  database: audiomuse
-  user: your_db_user
-  password: your_db_password
+  database: ${DB_NAME}
+  user: ${DB_USER}
+  password: ${DB_PASSWORD}
 ```
 
 ### Jellyfin Connection
 ```yaml
 jellyfin:
-  url: http://your_jellyfin_url:8096
-  user_id: your_user_id
-  token: your_api_token
+  url: ${JELLYFIN_URL}
+  user_id: ${JELLYFIN_USER_ID}
+  token: ${JELLYFIN_TOKEN}
 ```
 
 ### Audio Processing (Match CLAP)
@@ -195,23 +253,31 @@ This script will:
 Check that audio files and embeddings are properly loaded:
 
 ```bash
-python data/database_loader.py --verify
+python3 data/database_loader.py --verify
 ```
 
 ## Training
 
 ### Start Training
 
+Ensure your virtual environment is activated:
+
+```bash
+# Activate virtual environment if not already active
+source venv/bin/activate  # On macOS/Linux
+# venv\Scripts\activate   # On Windows
+```
+
 Run the main training script:
 
 ```bash
-python train.py --config config.yaml
+python3 train.py --config config.yaml
 ```
 
 Or with custom config:
 
 ```bash
-python train.py --config config.local.yaml
+python3 train.py --config config.local.yaml
 ```
 
 ### Training Process
@@ -240,7 +306,7 @@ Checkpoints are saved to `./checkpoints/` every 5 epochs (configurable).
 To resume from a checkpoint:
 
 ```bash
-python train.py --config config.yaml --resume checkpoints/epoch_50.onnx
+python3 train.py --config config.yaml --resume checkpoints/epoch_50.onnx
 ```
 
 ## Evaluation
@@ -274,7 +340,7 @@ Expected performance:
 Convert the trained model to an optimized inference ONNX model:
 
 ```bash
-python export/export_inference.py \
+python3 export/export_inference.py \
     --checkpoint checkpoints/epoch_100.onnx \
     --output models/student_clap_audio.onnx
 ```
@@ -290,7 +356,7 @@ This will:
 Test the exported model:
 
 ```bash
-python export/export_inference.py \
+python3 export/export_inference.py \
     --checkpoint models/student_clap_audio.onnx \
     --test \
     --test-audio /path/to/test.mp3
@@ -341,7 +407,11 @@ student_clap/
 ├── README.md                        # This file
 ├── requirements.txt                 # Training dependencies
 ├── config.yaml                      # Configuration template
+├── .env.example                     # Environment variables template
+├── .env                             # Your actual environment variables (git-ignored)
+├── .gitignore                       # Git ignore file
 ├── train.py                         # Main training entry point
+├── venv/                            # Python virtual environment (git-ignored)
 │
 ├── models/
 │   ├── tinyclap_audio.py           # Lightweight audio encoder architecture
@@ -413,10 +483,10 @@ total_loss = 0.6 * mse_loss + 0.4 * cosine_loss
 
 ### ONNX Training
 
-This project uses pure ONNX training (`onnxruntime-training`) without PyTorch:
-- Models built programmatically as ONNX graphs
-- Training using ONNX Runtime training API
-- Export to standard ONNX inference format
+This project uses PyTorch for training with ONNX export for inference:
+- Models built and trained using PyTorch
+- Export to ONNX format for production deployment
+- Compatible with existing ONNX inference pipelines
 
 ## Troubleshooting
 
@@ -448,7 +518,7 @@ training:
 1. Reduce batch size
 2. Use CPU-only training (slower but works):
 ```bash
-CUDA_VISIBLE_DEVICES=-1 python train.py --config config.yaml
+CUDA_VISIBLE_DEVICES=-1 python3 train.py --config config.yaml
 ```
 
 ### Issue: Student embeddings don't match teacher

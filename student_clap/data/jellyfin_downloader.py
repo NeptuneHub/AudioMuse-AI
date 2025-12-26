@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class JellyfinDownloader:
     """Downloads audio files from Jellyfin with caching."""
     
-    def __init__(self, config: dict, cache_dir: str = './cache/audio'):
+    def __init__(self, config: dict, cache_dir: str = './cache/audio', max_cache_size_gb: float = 2.0):
         """
         Initialize Jellyfin downloader.
         
@@ -33,11 +33,13 @@ class JellyfinDownloader:
                 - user_id: User ID
                 - token: API token
             cache_dir: Directory for caching downloaded files
+            max_cache_size_gb: Maximum cache size in GB (default: 2GB)
         """
         self.url = config['url'].rstrip('/')
         self.user_id = config['user_id']
         self.token = config['token']
         self.cache_dir = Path(cache_dir)
+        self.max_cache_size = max_cache_size_gb * 1024 * 1024 * 1024  # Convert to bytes
         
         # Create cache directory
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -85,6 +87,41 @@ class JellyfinDownloader:
             logger.error(f"Failed to get item info for {item_id}: {e}")
             return None
             
+    def _cleanup_cache(self):
+        """Remove old files if cache size exceeds limit."""
+        current_size = self.get_cache_size()
+        if current_size <= self.max_cache_size:
+            return
+            
+        logger.info(f"Cache size {current_size / (1024**3):.1f}GB exceeds limit {self.max_cache_size / (1024**3):.1f}GB, cleaning up...")
+        
+        # Get all cached files with their access times
+        cache_files = []
+        for cache_file in self.cache_dir.glob('*'):
+            if cache_file.is_file():
+                stat = cache_file.stat()
+                cache_files.append({
+                    'path': cache_file,
+                    'size': stat.st_size,
+                    'atime': stat.st_atime  # Access time
+                })
+        
+        # Sort by access time (oldest first)
+        cache_files.sort(key=lambda x: x['atime'])
+        
+        # Remove files until we're under the limit
+        freed_space = 0
+        files_removed = 0
+        for file_info in cache_files:
+            if current_size - freed_space <= self.max_cache_size:
+                break
+                
+            file_info['path'].unlink()
+            freed_space += file_info['size']
+            files_removed += 1
+            
+        logger.info(f"Removed {files_removed} old files, freed {freed_space / (1024**2):.1f}MB")
+            
     def download(self, item_id: str, force: bool = False) -> Optional[str]:
         """
         Download audio file from Jellyfin (with caching).
@@ -111,7 +148,12 @@ class JellyfinDownloader:
         if cache_path.exists() and not force:
             logger.debug(f"Cache hit for {item_id}: {cache_path}")
             self.cache_hit_count += 1
+            # Update access time for LRU cache management
+            cache_path.touch()
             return str(cache_path)
+            
+        # Clean up cache if needed before downloading
+        self._cleanup_cache()
             
         # Download from Jellyfin
         try:
