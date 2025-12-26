@@ -48,7 +48,7 @@ model:
 training:
   # Basic settings
   batch_size: 16               # Back to 16 songs per batch
-  learning_rate: 1e-4          # Initial learning rate
+  learning_rate: 0.0001        # Initial learning rate (1e-4)
   epochs: 15                   # Balanced: not too long, not too short
   warmup_epochs: 2             # Back to 2 epochs warmup
   
@@ -62,7 +62,7 @@ training:
   cosine_weight: 0.4           # Weight for cosine similarity loss
   
   # Checkpointing
-  save_every: 5                # Save checkpoint every N epochs
+  save_every: 1                # Save checkpoint every epoch (CRITICAL for crash recovery)
   early_stopping_patience: 10  # Stop if no improvement for N epochs
   
   # Validation

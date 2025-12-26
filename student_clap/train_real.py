@@ -316,19 +316,71 @@ def train(config_path: str, resume: str = None):
     checkpoint_dir = Path(config['paths']['checkpoints'])
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
-    # Resume from checkpoint if specified
+    # Auto-detect and resume from existing checkpoints
     start_epoch = 1
+    best_val_cosine = 0.0
+    patience_counter = 0
+    
+    # Check for resume argument first
     if resume:
-        logger.info(f"\n⏮️ Resuming from checkpoint: {resume}")
-        # In a full implementation, load checkpoint here
-        # trainer.load_checkpoint(resume)
+        logger.info(f"\n⏮️ Manual resume requested: {resume}")
+        resume_path = resume
+    else:
+        # Auto-detect latest checkpoint
+        latest_path = checkpoint_dir / "latest.pth"
+        if latest_path.exists() and latest_path.is_file():
+            logger.info(f"\n🔍 Auto-detected existing checkpoint: {latest_path}")
+            resume_path = str(latest_path)
+        else:
+            logger.info(f"\n🆕 No existing checkpoints found - starting fresh training")
+            resume_path = None
+    
+    # Load checkpoint if we have one
+    if resume_path:
+        try:
+            logger.info(f"📂 Loading checkpoint: {resume_path}")
+            checkpoint = torch.load(resume_path, map_location=trainer.device)
+            
+            # Restore model and optimizer state
+            trainer.model.load_state_dict(checkpoint['model_state_dict'])
+            trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            
+            # Restore training state
+            start_epoch = checkpoint['epoch'] + 1
+            best_val_cosine = checkpoint.get('best_val_cosine', 0.0)
+            patience_counter = checkpoint.get('patience_counter', 0)
+            
+            # Show resume info
+            logger.info(f"✅ Successfully resumed from epoch {checkpoint['epoch']}")
+            logger.info(f"   📈 Best cosine similarity so far: {best_val_cosine:.4f}")
+            logger.info(f"   ⏰ Patience counter: {patience_counter}/{config['training']['early_stopping_patience']}")
+            logger.info(f"   🎯 Will continue from epoch {start_epoch}")
+            
+            # Check if we've already reached the target epochs
+            if start_epoch > config['training']['epochs']:
+                logger.info(f"🎉 Training already completed! (reached {config['training']['epochs']} epochs)")
+                return
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to load checkpoint: {e}")
+            logger.info("🔄 Starting training from scratch...")
+            start_epoch = 1
+            best_val_cosine = 0.0
+            patience_counter = 0
     
     # Training loop
     logger.info("\n" + "=" * 60)
-    logger.info("🎓 Starting REAL ONNX Training...")
+    if start_epoch == 1:
+        logger.info("🎓 Starting FRESH ONNX Training...")
+    else:
+        logger.info(f"🔄 RESUMING ONNX Training from epoch {start_epoch}...")
     logger.info("   📚 Using existing CLAP embeddings from database")
     logger.info("   🏗️ Knowledge distillation: Teacher (268MB) → Student (~20-40MB)")
     logger.info("   🎵 Music-specialized compression following tinyCLAP")
+    if start_epoch > 1:
+        progress_pct = (start_epoch - 1) / config['training']['epochs'] * 100
+        logger.info(f"   📊 Training progress: {progress_pct:.1f}% complete ({start_epoch-1}/{config['training']['epochs']} epochs done)")
     logger.info("=" * 60)
     
     best_val_cosine = 0.0
@@ -353,14 +405,18 @@ def train(config_path: str, resume: str = None):
                 
                 # Save best checkpoint
                 best_checkpoint_path = checkpoint_dir / f"best_model_epoch_{epoch}.pth"
-                torch.save({
+                best_checkpoint_data = {
                     'epoch': epoch,
                     'model_state_dict': trainer.model.state_dict(),
                     'optimizer_state_dict': trainer.optimizer.state_dict(),
                     'scheduler_state_dict': trainer.scheduler.state_dict(),
                     'val_cosine_sim': val_cosine,
-                    'config': config
-                }, best_checkpoint_path)
+                    'best_val_cosine': best_val_cosine,
+                    'patience_counter': patience_counter,
+                    'config': config,
+                    'timestamp': time.time()
+                }
+                torch.save(best_checkpoint_data, best_checkpoint_path)
                 logger.info(f"  💾 Saved best checkpoint: {best_checkpoint_path}")
                 
                 # Export to ONNX
@@ -371,18 +427,34 @@ def train(config_path: str, resume: str = None):
                 patience_counter += 1
                 logger.info(f"No improvement ({patience_counter}/{config['training']['early_stopping_patience']})")
         
-        # Save regular checkpoint
-        if epoch % config['training']['save_every'] == 0:
-            checkpoint_path = checkpoint_dir / f"epoch_{epoch}.pth"
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': trainer.model.state_dict(),
-                'optimizer_state_dict': trainer.optimizer.state_dict(),
-                'scheduler_state_dict': trainer.scheduler.state_dict(),
-                'train_metrics': train_metrics,
-                'config': config
-            }, checkpoint_path)
-            logger.info(f"💾 Saved checkpoint: {checkpoint_path}")
+        # Save checkpoint after EVERY epoch (crash recovery)
+        checkpoint_path = checkpoint_dir / f"epoch_{epoch}.pth"
+        checkpoint_data = {
+            'epoch': epoch,
+            'model_state_dict': trainer.model.state_dict(),
+            'optimizer_state_dict': trainer.optimizer.state_dict(),
+            'scheduler_state_dict': trainer.scheduler.state_dict(),
+            'train_metrics': train_metrics,
+            'best_val_cosine': best_val_cosine,
+            'patience_counter': patience_counter,
+            'config': config,
+            'timestamp': time.time()
+        }
+        torch.save(checkpoint_data, checkpoint_path)
+        logger.info(f"💾 Saved checkpoint: {checkpoint_path}")
+        
+        # Keep a "latest" symlink for easy resuming
+        latest_path = checkpoint_dir / "latest.pth"
+        if latest_path.exists():
+            latest_path.unlink()
+        latest_path.symlink_to(checkpoint_path.name)
+        logger.info(f"🔗 Updated latest checkpoint: {latest_path}")
+        
+        # Save additional checkpoint every 5 epochs (backup)
+        if epoch % 5 == 0:
+            backup_path = checkpoint_dir / f"backup_epoch_{epoch}.pth"
+            torch.save(checkpoint_data, backup_path)
+            logger.info(f"📦 Backup checkpoint: {backup_path}")
         
         # Early stopping
         if patience_counter >= config['training']['early_stopping_patience']:
