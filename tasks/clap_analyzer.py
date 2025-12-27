@@ -746,15 +746,8 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
                 # Step 4: Store embeddings for later averaging
                 all_embeddings_list.append(batch_embeddings)
                 
-                # Step 5: AGGRESSIVE CLEANUP - Free everything except embeddings
+                # Step 5: Free memory references (but don't trigger expensive GC yet)
                 del mel_list, mel_batch, onnx_inputs, outputs, batch_embeddings
-                import gc
-                gc.collect()
-                
-                # Step 6: Periodic CUDA cleanup (every 3 mini-batches)
-                if batch_num % 3 == 0:
-                    cleanup_cuda_memory(force=False)
-                    logger.debug(f"Performed CUDA cleanup after mini-batch {batch_num}")
             
             except Exception as e:
                 logger.error(f"Mini-batch {batch_num}/{total_batches} processing failed: {e}")
@@ -762,20 +755,20 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
                 cleanup_cuda_memory(force=True)
                 raise
         
-        # Step 7: Combine all mini-batch embeddings
+        # Step 6: Combine all mini-batch embeddings
         all_embeddings = np.vstack(all_embeddings_list)
         avg_embedding = np.mean(all_embeddings, axis=0)
         
         # Normalize (should already be normalized, but ensure it)
         avg_embedding = avg_embedding / np.linalg.norm(avg_embedding)
         
-        # Step 8: Final cleanup
+        # Step 7: Final cleanup AFTER entire song is processed (not per segment/batch)
         del all_embeddings, all_embeddings_list, segments, audio_data
         import gc
         gc.collect()
         
-        # Comprehensive CUDA and ONNX memory cleanup
-        comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
+        # CUDA cleanup once per song (not per segment)
+        cleanup_cuda_memory(force=False)
         
         return avg_embedding, duration_sec, num_segments
         
