@@ -9,6 +9,7 @@ Find answers to common questions about setting up, configuring, and deploying Au
 ### Which is the HW requirements?
 
 AudioMuse-AI work on both ARM and INTEL architecture. The suggested requirements are 4core and 8gb of ram with SSD. Some very old processor could have issue due to not supported command.
+If you want to use the -nvidia version we suggest a GPU with 8gb VRAM.
 
 ### How to deploy AudioMuse-AI?
 
@@ -18,6 +19,12 @@ The [readme](../README.md) section has the explanation and multiple examples can
 Yes, it can support multiple music libraries within a single media server instance (e.g., two separate music folders in one Jellyfin server). However, a single AudioMuse-AI instance cannot connect to multiple different media servers (e.g., one Jellyfin and one Navidrome server) at the same time. 
 
 The ENV variable `MUSIC_LIBRARIES` can be used for match multiple music library on the same music server. Is a Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names.	"" (empty - scan all)
+
+### The analysis takes to long, can I speed up it?
+The time needed for the analysis really depends from your HW and how big is your music collection. For big collection (100k+ songs) or old HW 1week+ of analysis can be totally normal.
+If you want to have a faster analysis you can also disable the text search functionality by putting the env var `CLAP_ENABLED` to false. This will run the analysis only for the Musicnn model skipping the CLAP model.
+Alternatives could also be run multiple worker container in parallel, learn more by taking a look to the [ARCHITECTURE](docs/ARCHITECTURE.md) page and to the different example of deployment in `deployment/` folder.
+GPU analysis is also supported but still experimental. Take a look to [GPU DEPLOYMENT](docs/GPU.md) page.
 
 ## User Guide FAQs
 
