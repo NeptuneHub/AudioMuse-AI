@@ -6,7 +6,7 @@ With the new CLAP model used in Text Search functionality, GPU VRAM is used more
 
 Putting the `CLAP_MINI_BATCH_SIZE`  to `1`, and `PER_SONG_MODEL_RELOAD` to `true` will use less VRAM but will be slower. This is the default configuration.
 
-Putting the `CLAP_MINI_BATCH_SIZE`  to `40` or more, and `PER_SONG_MODEL_RELOAD` to `false` will use more VRAM but with the risk of OutOfMemory vram error.
+Putting the `CLAP_MINI_BATCH_SIZE`  to `8` or more, and `PER_SONG_MODEL_RELOAD` to `false` will use more VRAM but with the risk of OutOfMemory vram error.
 
 **NEW:** GPU-accelerated clustering is now available using RAPIDS cuML. This can provide **10-30x speedup** for clustering tasks.
 
