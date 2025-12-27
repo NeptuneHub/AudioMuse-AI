@@ -280,7 +280,8 @@ CLAP_PYTHON_MULTITHREADS = os.environ.get("CLAP_PYTHON_MULTITHREADS", "False").l
 # - 4 (default): Safe for 4GB GPU, processes 4 segments at a time
 # - 8: Good for 6GB+ GPU, faster but uses more memory
 # - 1: Ultra-safe sequential processing (slowest, minimal memory)
-CLAP_MINI_BATCH_SIZE = int(os.environ.get("CLAP_MINI_BATCH_SIZE", "8"))
+# Note: Set to 1 for deterministic embeddings (ONNX model has batch-sensitive operations)
+CLAP_MINI_BATCH_SIZE = int(os.environ.get("CLAP_MINI_BATCH_SIZE", "1"))
 
 # Model reloading strategy to prevent GPU VRAM accumulation
 # - true (default): Unload both MusiCNN and CLAP models after each song
