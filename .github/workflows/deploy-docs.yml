@@ -42,6 +42,7 @@ jobs:
         run: |
           mkdir -p web # Ensure the 'web' directory exists before copying
           cp README.md web/index.md # Copy the root README.md and rename it to index.md inside 'web'
+          cp -r docs/* web/ # Copy all documentation files from docs/ to web/
 
       - name: Build MkDocs documentation
         # This command builds your site into the './site' directory by default.

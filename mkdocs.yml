@@ -6,5 +6,13 @@ repo_name: GitHub
 
 nav:
   - Home: index.md
+  - Algorithm: ALGORITHM.md
+  - Architecture: ARCHITECTURE.md
+  - Deployment: DEPLOYMENT.md
+  - FAQ: FAQ.md
+  - GPU: GPU.md
+  - Hardware: HARDWARE.md
+  - Memory Fixes: MEMORY_FIXES.md
+  - Parameters: PARAMETERS.md
 
 theme: readthedocs
