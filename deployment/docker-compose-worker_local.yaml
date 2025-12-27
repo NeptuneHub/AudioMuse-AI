@@ -15,7 +15,7 @@ services:
         BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
     container_name: audiomuse-ai-worker-instance
     ports:
-      - "8029:8000"  # Expose worker API
+      - "${WORKER_PORT:-8029}:8000"  # Expose worker API
     environment:
       SERVICE_TYPE: "worker"
       MEDIASERVER_TYPE: "${MEDIASERVER_TYPE:-jellyfin}"

@@ -11,7 +11,7 @@ services:
     image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
     container_name: audiomuse-ai-worker-instance
     ports:
-      - "8029:8000"  # Expose worker API
+      - "${WORKER_PORT:-8029}:8000"  # Expose worker API
     environment:
       SERVICE_TYPE: "worker"
       MEDIASERVER_TYPE: "jellyfin"

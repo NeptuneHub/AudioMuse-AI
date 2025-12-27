@@ -5,7 +5,7 @@ services:
     image: redis:7-alpine
     container_name: audiomuse-redis
     ports:
-      - "6379:6379" # Expose Redis port to the host
+      - "${REDIS_PORT:-6379}:6379" # Expose Redis port to the host
     volumes:
       - redis-data:/data # Persistent storage for Redis data
     restart: unless-stopped
@@ -19,7 +19,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
       POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
     ports:
-      - "5432:5432" # Expose PostgreSQL port to the host
+      - "${POSTGRES_PORT:-5432}:5432" # Expose PostgreSQL port to the host
     volumes:
       - postgres-data:/var/lib/postgresql/data # Persistent storage for PostgreSQL data
     restart: unless-stopped
@@ -29,7 +29,7 @@ services:
     image: ghcr.io/neptunehub/audiomuse-ai:latest # Reflects deployment.yaml
     container_name: audiomuse-ai-flask-app
     ports:
-      - "8000:8000" # Map host port 8000 to container port 8000
+      - "${FRONTEND_PORT:-8000}:8000" # Map host port 8000 to container port 8000
     environment:
       SERVICE_TYPE: "flask" # Tells the container to run the Flask app
       MEDIASERVER_TYPE: "emby" # Specify the media server type

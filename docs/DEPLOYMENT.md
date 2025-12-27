@@ -99,7 +99,7 @@ Choose the appropriate file based on your media server setup.
 
     **IMPORTANT:** both `docker-compose.yaml` and `.env` file need to be in the same directory.
 5.  **Access the Application:**
-    Once the containers are up, you can access the web UI at `http://localhost:8000`.
+    Once the containers are up, you can access the web UI at `http://localhost:8000`. You can change the value of the used port by changing the FRONTEND_PORT value
 6.  **Stopping the Services:**
     ```bash
     docker compose -f deployment/docker-compose.yaml down

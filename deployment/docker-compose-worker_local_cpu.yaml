@@ -14,7 +14,7 @@ services:
       # No args needed - defaults to ubuntu:22.04 (CPU-only)
     container_name: audiomuse-ai-worker-cpu-instance
     ports:
-      - "8029:8000"  # Expose worker API
+      - "${WORKER_PORT:-8029}:8000"  # Expose worker API
     environment:
       SERVICE_TYPE: "worker"
       MEDIASERVER_TYPE: "${MEDIASERVER_TYPE:-jellyfin}"

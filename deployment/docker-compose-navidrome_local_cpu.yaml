@@ -4,7 +4,7 @@ services:
     image: redis:7-alpine
     container_name: audiomuse-redis
     ports:
-      - "6379:6379" # Expose Redis port to the host
+      - "${REDIS_PORT:-6379}:6379" # Expose Redis port to the host
     volumes:
       - redis-data:/data # Persistent storage for Redis data
     restart: unless-stopped
@@ -18,7 +18,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
       POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -33,7 +33,7 @@ services:
     pull_policy: never  # Always use locally built image, never pull from registry
     container_name: audiomuse-ai-flask-app
     ports:
-      - "8000:8000"
+      - "${FRONTEND_PORT:-8000}:8000"
     environment:
       SERVICE_TYPE: "flask"
       MEDIASERVER_TYPE: "navidrome"
