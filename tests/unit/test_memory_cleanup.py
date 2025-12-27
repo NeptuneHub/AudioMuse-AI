@@ -172,7 +172,7 @@ class TestAnalyzeAlbumMemoryCleanup:
         # This test primarily verifies that OperationalError propagates correctly
     
     @patch('tasks.analysis.get_tracks_from_album')
-    @patch('tasks.analysis.cleanup_cuda_memory')
+    @patch('tasks.analysis.comprehensive_memory_cleanup')
     @patch('app_helper.save_task_status')
     @patch('app_helper.get_task_info_from_db')
     @patch('tasks.analysis.get_current_job')
@@ -184,7 +184,7 @@ class TestAnalyzeAlbumMemoryCleanup:
     def test_cleanup_all_models_in_finally(
         self, mock_mulan_loaded, mock_mulan_unload, mock_clap_loaded, 
         mock_clap_unload, mock_get_db, mock_get_job, mock_get_task_info,
-        mock_save_task, mock_cuda_cleanup, mock_get_tracks
+        mock_save_task, mock_memory_cleanup, mock_get_tracks
     ):
         """Test that all models are cleaned up in finally block."""
         from tasks.analysis import analyze_album_task
@@ -202,7 +202,7 @@ class TestAnalyzeAlbumMemoryCleanup:
         result = analyze_album_task("album_123", "Empty Album", 5, None)
         
         # Verify all cleanup functions were called
-        assert mock_cuda_cleanup.called
+        assert mock_memory_cleanup.called
         assert mock_clap_unload.called
         assert mock_mulan_unload.called
     

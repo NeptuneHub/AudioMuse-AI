@@ -30,7 +30,7 @@ try:
     from config import AUDIO_LOAD_TIMEOUT
 except Exception:
     AUDIO_LOAD_TIMEOUT = None
-from tasks.memory_utils import cleanup_cuda_memory, handle_onnx_memory_error
+from tasks.memory_utils import cleanup_cuda_memory, handle_onnx_memory_error, comprehensive_memory_cleanup
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,6 @@ def _load_audio_model():
         
         active_provider = session.get_providers()[0]
         logger.info(f"✓ CLAP audio model loaded successfully (~268MB)")
-        logger.info(f"  Active execution provider: {active_provider}")
             
     except Exception as e:
         logger.warning(f"Failed to load with preferred providers: {e}")
@@ -122,9 +121,6 @@ def _load_audio_model():
     
     if session is None:
         raise RuntimeError("Failed to create audio ONNX session")
-    
-    logger.info(f"  Inputs: {[i.name for i in session.get_inputs()]}")
-    logger.info(f"  Outputs: {[o.name for o in session.get_outputs()]}")
     
     gc.collect()
     return session
@@ -182,7 +178,6 @@ def _load_text_model():
         
         active_provider = session.get_providers()[0]
         logger.info(f"✓ CLAP text model loaded successfully (~478MB)")
-        logger.info(f"  Active execution provider: {active_provider}")
             
     except Exception as e:
         logger.warning(f"Failed to load with preferred providers: {e}")
@@ -200,9 +195,6 @@ def _load_text_model():
     
     if session is None:
         raise RuntimeError("Failed to create text ONNX session")
-    
-    logger.info(f"  Inputs: {[i.name for i in session.get_inputs()]}")
-    logger.info(f"  Outputs: {[o.name for o in session.get_outputs()]}")
     
     gc.collect()
     return session
@@ -276,7 +268,6 @@ def _load_onnx_model():
         
         active_provider = session.get_providers()[0]
         logger.info(f"✓ CLAP ONNX model loaded successfully")
-        logger.info(f"  Active execution provider: {active_provider}")
             
     except Exception as e:
         # Final fallback: force CPU-only
@@ -289,16 +280,12 @@ def _load_onnx_model():
                 providers=['CPUExecutionProvider']
             )
             logger.info(f"✓ CLAP ONNX model loaded successfully (CPU fallback)")
-            logger.info(f"  Active execution provider: CPUExecutionProvider")
         except Exception as cpu_error:
             logger.error(f"Failed to load ONNX model even with CPU: {cpu_error}")
             raise
     
     if session is None:
         raise RuntimeError("Failed to create ONNX session")
-    
-    logger.info(f"  Inputs: {[i.name for i in session.get_inputs()]}")
-    logger.info(f"  Outputs: {[o.name for o in session.get_outputs()]}")
     
     gc.collect()
     return session
@@ -419,7 +406,7 @@ def initialize_clap_model():
 
 
 def unload_clap_model():
-    """Unload CLAP model from memory to free RAM."""
+    """Unload CLAP model from memory to free RAM and GPU VRAM."""
     global _audio_session, _text_session, _tokenizer, _cached_dummy_input_ids
     
     if _audio_session is None and _text_session is None:
@@ -442,7 +429,12 @@ def unload_clap_model():
         import gc
         gc.collect()
         
-        logger.info(f"✓ CLAP model(s) unloaded from memory (~{freed_mb}MB freed)")
+        # Aggressive CUDA cleanup after unloading CLAP
+        # This forces ONNX Runtime to release GPU memory back to CUDA
+        from .memory_utils import comprehensive_memory_cleanup
+        comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
+        
+        logger.info(f"✓ CLAP model(s) unloaded from memory (~{freed_mb}MB freed + GPU memory released)")
         return True
     except Exception as e:
         logger.error(f"Error unloading CLAP model: {e}")
@@ -667,73 +659,115 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
             
             return audio_embedding[0]  # Remove batch dimension
         
-        # Choose processing mode based on CLAP_PYTHON_MULTITHREADS
-        if not config.CLAP_PYTHON_MULTITHREADS:
-            # ONNX internal threading - process segments sequentially
-            logger.info(f"CLAP: Processing {num_segments} segments sequentially (ONNX internal threading)")
-            all_embeddings = []
-            for seg in segments:
-                try:
-                    embedding = process_segment(seg)
-                    all_embeddings.append(embedding)
-                except Exception as e:
-                    logger.error(f"Segment processing failed: {e}")
-                    raise
-        else:
-            # Python ThreadPoolExecutor - parallel processing with ONNX single-threaded
-            # Auto-calculate thread count: (physical_cores - 1) + (logical_cores // 2)
-            import psutil
-            physical_cores = psutil.cpu_count(logical=False)
-            logical_cores = psutil.cpu_count(logical=True)
-            num_threads = max(1, (physical_cores - 1) + ((logical_cores - physical_cores) // 2))
-            logger.info(f"CLAP: Processing {num_segments} segments with {num_threads} Python threads (physical: {physical_cores}, logical: {logical_cores})")
-            
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            
-            # Pre-allocate result array
-            all_embeddings = [None] * num_segments
-            
-            executor = None
-            try:
-                executor = ThreadPoolExecutor(max_workers=num_threads)
-                
-                # Submit all segments
-                future_to_idx = {executor.submit(process_segment, seg): i 
-                                for i, seg in enumerate(segments)}
-                
-                # Collect results as they complete (maintain order)
-                for future in as_completed(future_to_idx):
-                    try:
-                        idx = future_to_idx[future]
-                        embedding = future.result()
-                        all_embeddings[idx] = embedding
-                    except Exception as e:
-                        logger.error(f"Segment processing failed: {e}")
-                        raise
-            finally:
-                # Force immediate shutdown of all threads
-                if executor is not None:
-                    executor.shutdown(wait=True, cancel_futures=True)
-                    import time
-                    time.sleep(0.1)
-                
-                # Cleanup thread-local storage
-                import gc
-                gc.collect()
+        # Mini-batch processing to reduce GPU memory usage and prevent OOM errors
+        # Process segments in small batches with cleanup between each batch
+        if num_segments < 1:
+            logger.error("No segments to process for CLAP analysis")
+            raise RuntimeError("No segments generated for CLAP analysis")
+
+        # Get mini-batch size from config (default: 4 segments per batch)
+        MINI_BATCH_SIZE = config.CLAP_MINI_BATCH_SIZE
+        total_batches = (num_segments + MINI_BATCH_SIZE - 1) // MINI_BATCH_SIZE
         
-        # Combine all embeddings
-        all_embeddings = np.vstack(all_embeddings)
+        logger.info(f"CLAP: Processing {num_segments} segments in {total_batches} mini-batches of {MINI_BATCH_SIZE}")
+
+        all_embeddings_list = []  # Accumulate embeddings from each mini-batch
+        
+        # Process segments in mini-batches
+        for batch_start in range(0, num_segments, MINI_BATCH_SIZE):
+            batch_end = min(batch_start + MINI_BATCH_SIZE, num_segments)
+            batch_segments = segments[batch_start:batch_end]
+            batch_num = (batch_start // MINI_BATCH_SIZE) + 1
+            
+            logger.debug(f"Processing mini-batch {batch_num}/{total_batches} (segments {batch_start+1}-{batch_end})")
+            
+            try:
+                # Step 1: Compute mel-spectrograms for this mini-batch only
+                mel_list = [compute_mel_spectrogram(seg, SAMPLE_RATE) for seg in batch_segments]
+                
+                # Step 2: Stack into mini-batch tensor
+                # Each mel has shape (1, time_frames, 64); add channel dim -> (1,1,time,64), then stack -> (batch,1,time,64)
+                try:
+                    mel_batch = np.concatenate([m[:, np.newaxis, :, :] for m in mel_list], axis=0)
+                except Exception as e:
+                    logger.error(f"Failed to create mel batch for mini-batch {batch_num}: {e}")
+                    # Clean up mel_list before raising
+                    del mel_list
+                    import gc
+                    gc.collect()
+                    raise
+
+                # Step 3: ONNX inference on mini-batch
+                onnx_inputs = {'mel_spectrogram': mel_batch}
+                
+                try:
+                    outputs = session.run(None, onnx_inputs)
+                    batch_embeddings = outputs[0]  # shape: (mini_batch_size, embedding_dim)
+                except Exception as e:
+                    # Check if this is a GPU OOM error
+                    if "Failed to allocate memory" in str(e):
+                        logger.warning(f"GPU OOM detected for CLAP mini-batch {batch_num}/{total_batches}, attempting CPU fallback...")
+                        
+                        # Comprehensive cleanup before CPU fallback
+                        comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
+                        
+                        # Recreate session with CPU provider (update global session)
+                        global _audio_session
+                        import onnxruntime as ort
+                        
+                        sess_options = ort.SessionOptions()
+                        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                        sess_options.log_severity_level = 3
+                        
+                        if not config.CLAP_PYTHON_MULTITHREADS:
+                            import psutil
+                            logical_cores = psutil.cpu_count(logical=True) or 4
+                            num_threads = max(1, logical_cores // 2)
+                            sess_options.intra_op_num_threads = num_threads
+                            sess_options.inter_op_num_threads = num_threads
+                        else:
+                            sess_options.intra_op_num_threads = 1
+                            sess_options.inter_op_num_threads = 1
+                        
+                        _audio_session = ort.InferenceSession(
+                            config.CLAP_AUDIO_MODEL_PATH,
+                            sess_options=sess_options,
+                            providers=['CPUExecutionProvider']
+                        )
+                        session = _audio_session
+                        
+                        # Retry with CPU session
+                        outputs = session.run(None, onnx_inputs)
+                        batch_embeddings = outputs[0]
+                        logger.info(f"Successfully completed CLAP mini-batch {batch_num} on CPU after OOM")
+                    else:
+                        raise
+                
+                # Step 4: Store embeddings for later averaging
+                all_embeddings_list.append(batch_embeddings)
+                
+                # Step 5: Free memory references (but don't trigger expensive GC yet)
+                del mel_list, mel_batch, onnx_inputs, outputs, batch_embeddings
+            
+            except Exception as e:
+                logger.error(f"Mini-batch {batch_num}/{total_batches} processing failed: {e}")
+                # Cleanup on error
+                cleanup_cuda_memory(force=True)
+                raise
+        
+        # Step 6: Combine all mini-batch embeddings
+        all_embeddings = np.vstack(all_embeddings_list)
         avg_embedding = np.mean(all_embeddings, axis=0)
         
         # Normalize (should already be normalized, but ensure it)
         avg_embedding = avg_embedding / np.linalg.norm(avg_embedding)
         
-        # Aggressive cleanup to prevent memory leaks
-        del all_embeddings, segments, audio_data
+        # Step 7: Final cleanup AFTER entire song is processed (not per segment/batch)
+        del all_embeddings, all_embeddings_list, segments, audio_data
         import gc
         gc.collect()
         
-        # Cleanup CUDA memory after analysis
+        # CUDA cleanup once per song (not per segment)
         cleanup_cuda_memory(force=False)
         
         return avg_embedding, duration_sec, num_segments
@@ -743,12 +777,12 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         import traceback
         traceback.print_exc()
         
-        # Cleanup CUDA memory on error
-        cleanup_cuda_memory(force=True)
+        # Comprehensive cleanup on error - force cleanup including ONNX pool reset
+        comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
         
         return None, 0, 0
     finally:
-        # Force cleanup even on error
+        # Final cleanup even on error
         import gc
         gc.collect()
 

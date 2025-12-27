@@ -80,28 +80,48 @@ def cleanup_cuda_memory(force: bool = False) -> bool:
         - After an allocation error occurs
         - Between albums or at periodic intervals
     """
+    cuda_cleanup_performed = False
+    
+    # Try PyTorch cleanup first (if available)
     try:
         import torch
         if torch.cuda.is_available():
             if force:
                 # Aggressive cleanup: empty cache completely
                 torch.cuda.empty_cache()
-                logger.debug("Forced CUDA cache empty")
+                logger.debug("PyTorch CUDA cache emptied")
             else:
                 # Standard cleanup: synchronize and collect
                 torch.cuda.synchronize()
-                logger.debug("CUDA synchronize completed")
-            
-            # Always run garbage collection with CUDA cleanup
-            gc.collect()
-            return True
+                logger.debug("PyTorch CUDA synchronize completed")
+            cuda_cleanup_performed = True
     except ImportError:
-        # torch not available, skip CUDA cleanup
+        # PyTorch not available, try alternative methods
         pass
     except Exception as e:
-        logger.warning(f"Error during CUDA cleanup: {e}")
+        logger.warning(f"Error during PyTorch CUDA cleanup: {e}")
     
-    return False
+    # Try CuPy cleanup if PyTorch failed/unavailable
+    if not cuda_cleanup_performed:
+        try:
+            import cupy
+            if force:
+                cupy.get_default_memory_pool().free_all_blocks()
+                cupy.get_default_pinned_memory_pool().free_all_blocks()
+                logger.debug("CuPy memory pool cleared")
+            cuda_cleanup_performed = True
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"Error during CuPy CUDA cleanup: {e}")
+    
+    # Always run garbage collection
+    gc.collect()
+    
+    if not cuda_cleanup_performed:
+        logger.debug("No CUDA cleanup libraries available (PyTorch/CuPy)")
+    
+    return cuda_cleanup_performed
 
 
 def cleanup_onnx_session(session, name: str = "session") -> None:
@@ -131,6 +151,158 @@ def cleanup_onnx_session(session, name: str = "session") -> None:
         logger.debug(f"Cleaned up ONNX session: {name}")
     except Exception as e:
         logger.warning(f"Error cleaning up ONNX session {name}: {e}")
+
+
+def cleanup_tensors(*tensor_vars) -> None:
+    """
+    Explicit tensor cleanup with immediate garbage collection.
+    
+    Deletes multiple tensor variables and forces garbage collection.
+    This is critical for large tensors like mel-spectrograms and embeddings.
+    
+    Args:
+        *tensor_vars: Variable names to delete from caller's scope
+        
+    Example:
+        >>> mel_list = [...]
+        >>> mel_batch = np.array(...)
+        >>> cleanup_tensors('mel_list', 'mel_batch')  # Cleans caller's variables
+    """
+    import inspect
+    
+    # Get caller's frame to delete variables in their scope
+    frame = inspect.currentframe().f_back
+    
+    for var_name in tensor_vars:
+        if var_name in frame.f_locals:
+            try:
+                del frame.f_locals[var_name]
+                logger.debug(f"Deleted tensor variable: {var_name}")
+            except Exception as e:
+                logger.warning(f"Failed to delete tensor {var_name}: {e}")
+        elif var_name in frame.f_globals:
+            try:
+                del frame.f_globals[var_name]
+                logger.debug(f"Deleted global tensor variable: {var_name}")
+            except Exception as e:
+                logger.warning(f"Failed to delete global tensor {var_name}: {e}")
+    
+    # Force garbage collection after deletions
+    gc.collect()
+
+
+def reset_onnx_memory_pool() -> bool:
+    """
+    Reset ONNX Runtime memory pool to clear accumulated allocations.
+    
+    ONNX Runtime's memory allocators (BFCArena for GPU, default for CPU) can accumulate 
+    memory fragmentation over many inferences. This function attempts to reset the 
+    memory pool by triggering internal cleanup for both CPU and GPU providers.
+    
+    Returns:
+        True if reset was attempted, False if not supported
+        
+    Note:
+        This is an experimental function that uses internal ONNX Runtime mechanisms.
+        Results may vary across ONNX Runtime versions.
+    """
+    try:
+        import onnxruntime as ort
+        
+        # Force garbage collection first
+        gc.collect()
+        
+        # Determine available providers
+        providers = ort.get_available_providers()
+        preferred_provider = None
+        
+        if 'CUDAExecutionProvider' in providers:
+            preferred_provider = 'CUDAExecutionProvider'
+            logger.debug("Using CUDA provider for ONNX memory pool reset")
+        elif 'CPUExecutionProvider' in providers:
+            preferred_provider = 'CPUExecutionProvider'
+            logger.debug("Using CPU provider for ONNX memory pool reset")
+        else:
+            logger.debug("No suitable ONNX provider found for memory pool reset")
+            return False
+            
+        # Create and immediately delete a minimal session to trigger cleanup
+        # This forces ONNX Runtime to cleanup its internal caches
+        try:
+            import tempfile
+            import onnx
+            from onnx import helper, TensorProto
+            
+            # Create minimal ONNX model
+            input_tensor = helper.make_tensor_value_info('input', TensorProto.FLOAT, [1, 1])
+            output_tensor = helper.make_tensor_value_info('output', TensorProto.FLOAT, [1, 1])
+            identity_node = helper.make_node('Identity', ['input'], ['output'], name='identity')
+            graph = helper.make_graph([identity_node], 'reset_graph', [input_tensor], [output_tensor])
+            model = helper.make_model(graph, producer_name='memory_reset')
+            
+            with tempfile.NamedTemporaryFile(suffix='.onnx', delete=True) as tmp_file:
+                onnx.save(model, tmp_file.name)
+                
+                # Create and immediately destroy session to force cleanup
+                temp_session = ort.InferenceSession(tmp_file.name, providers=[preferred_provider])
+                del temp_session
+                gc.collect()
+                
+                logger.debug(f"ONNX {preferred_provider} memory pool reset attempted")
+                return True
+                
+        except Exception as e:
+            logger.debug(f"Detailed ONNX memory reset failed: {e}")
+            # Fallback to simple garbage collection
+            gc.collect()
+            return True
+            
+    except ImportError as e:
+        logger.debug(f"ONNX Runtime not available for memory pool reset: {e}")
+        return False
+    except Exception as e:
+        logger.warning(f"Error resetting ONNX memory pool: {e}")
+        return False
+
+
+def comprehensive_memory_cleanup(force_cuda: bool = True, reset_onnx_pool: bool = True) -> Dict[str, bool]:
+    """
+    Perform comprehensive memory cleanup combining all available methods.
+    Works for both CPU and GPU environments - adapts automatically.
+    
+    Args:
+        force_cuda: Whether to perform CUDA cache cleanup (no-op on CPU-only systems)
+        reset_onnx_pool: Whether to attempt ONNX memory pool reset (works for both CPU/GPU)
+        
+    Returns:
+        Dict with cleanup results: {'cuda': bool, 'onnx_pool': bool, 'gc': bool}
+        
+    Example:
+        >>> results = comprehensive_memory_cleanup()
+        >>> logger.info(f"Cleanup success: {sum(results.values())}/3 methods")
+    """
+    results = {
+        'cuda': False,
+        'onnx_pool': False,
+        'gc': True  # Garbage collection always succeeds
+    }
+    
+    # CUDA cleanup (no-op on CPU-only systems)
+    if force_cuda:
+        results['cuda'] = cleanup_cuda_memory(force=True)
+        # Note: cleanup_cuda_memory() returns False on CPU-only systems, which is expected
+    
+    # ONNX memory pool reset (works for both CPU and GPU)
+    if reset_onnx_pool:
+        results['onnx_pool'] = reset_onnx_memory_pool()
+    
+    # Final garbage collection (always works)
+    gc.collect()
+    
+    successful_cleanups = sum(results.values())
+    total_methods = len([k for k, v in {'cuda': force_cuda, 'onnx_pool': reset_onnx_pool, 'gc': True}.items() if v])
+    
+    return results
 
 
 def handle_onnx_memory_error(
@@ -269,7 +441,6 @@ class SessionRecycler:
         """
         self.recycle_interval = recycle_interval
         self.use_count = 0
-        logger.info(f"SessionRecycler initialized with interval={recycle_interval}")
     
     def increment(self) -> None:
         """Increment the usage counter (call after each use)."""

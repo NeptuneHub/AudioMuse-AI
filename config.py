@@ -51,7 +51,7 @@ MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music"
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v0.8.4"
+APP_VERSION = "v0.8.5"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -276,6 +276,21 @@ CLAP_EMBEDDING_DIMENSION = 512
 # - False (default): Use ONNX internal threading (auto-detects all CPU cores, recommended)
 # - True: Use Python ThreadPoolExecutor with auto-calculated threads: (physical_cores - 1) + (logical_cores // 2)
 CLAP_PYTHON_MULTITHREADS = os.environ.get("CLAP_PYTHON_MULTITHREADS", "False").lower() == "true"
+# Mini-batch size for CLAP segment processing (reduces GPU memory usage)
+# - 4 (default): Safe for 4GB GPU, processes 4 segments at a time
+# - 8: Good for 6GB+ GPU, faster but uses more memory
+# - 1: Ultra-safe sequential processing (slowest, minimal memory)
+# Note: Set to 1 for deterministic embeddings (ONNX model has batch-sensitive operations)
+CLAP_MINI_BATCH_SIZE = int(os.environ.get("CLAP_MINI_BATCH_SIZE", "1"))
+
+# Model reloading strategy to prevent GPU VRAM accumulation
+# - true (default): Unload both MusiCNN and CLAP models after each song
+#   Pros: Stable memory usage, prevents VRAM leaks
+#   Cons: Slower (~2-3 seconds overhead per song for model loading)
+# - false: MusiCNN reloads every 20 songs, CLAP at album end (faster but may accumulate memory)
+#   Pros: Faster processing (no per-song reload overhead)
+#   Cons: May see gradual VRAM growth on some systems
+PER_SONG_MODEL_RELOAD = os.environ.get("PER_SONG_MODEL_RELOAD", "true").lower() == "true"
 
 # Category weights for CLAP query generation (affects random query sampling probabilities)
 # Higher weights favor categories where CLAP excels (Genre, Instrumentation)
