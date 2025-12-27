@@ -1219,9 +1219,9 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                         artist_id = track.get('ArtistId')
                         if artist_name and artist_id:
                             upsert_artist_mapping(artist_name, artist_id)
-                            logger.info(f"✓ Mapped artist: '{artist_name}' → '{artist_id}'")
                         elif artist_name and not artist_id:
                             logger.warning(f"✗ No artist_id for '{artist_name}' in album '{album.get('Name')}'")
+                    logger.info(f"✓ Artist mapping for album '{album.get('Name')}' done")
                 except Exception as e:
                     logger.error(f"Failed to store artist mappings for album '{album.get('Name')}': {e}", exc_info=True)
 

@@ -302,17 +302,6 @@ def comprehensive_memory_cleanup(force_cuda: bool = True, reset_onnx_pool: bool 
     successful_cleanups = sum(results.values())
     total_methods = len([k for k, v in {'cuda': force_cuda, 'onnx_pool': reset_onnx_pool, 'gc': True}.items() if v])
     
-    # Determine environment for logging based on actual CUDA availability
-    try:
-        import onnxruntime as ort
-        cuda_available = 'CUDAExecutionProvider' in ort.get_available_providers()
-    except:
-        cuda_available = False
-    
-    env_type = "GPU" if cuda_available else "CPU"
-    
-    logger.info(f"Comprehensive cleanup completed ({env_type}): {successful_cleanups}/{total_methods} methods successful")
-    
     return results
 
 
@@ -452,7 +441,6 @@ class SessionRecycler:
         """
         self.recycle_interval = recycle_interval
         self.use_count = 0
-        logger.info(f"SessionRecycler initialized with interval={recycle_interval}")
     
     def increment(self) -> None:
         """Increment the usage counter (call after each use)."""

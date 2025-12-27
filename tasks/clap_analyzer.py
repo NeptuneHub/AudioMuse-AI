@@ -104,7 +104,6 @@ def _load_audio_model():
         
         active_provider = session.get_providers()[0]
         logger.info(f"✓ CLAP audio model loaded successfully (~268MB)")
-        logger.info(f"  Active execution provider: {active_provider}")
             
     except Exception as e:
         logger.warning(f"Failed to load with preferred providers: {e}")
@@ -122,9 +121,6 @@ def _load_audio_model():
     
     if session is None:
         raise RuntimeError("Failed to create audio ONNX session")
-    
-    logger.info(f"  Inputs: {[i.name for i in session.get_inputs()]}")
-    logger.info(f"  Outputs: {[o.name for o in session.get_outputs()]}")
     
     gc.collect()
     return session
@@ -182,7 +178,6 @@ def _load_text_model():
         
         active_provider = session.get_providers()[0]
         logger.info(f"✓ CLAP text model loaded successfully (~478MB)")
-        logger.info(f"  Active execution provider: {active_provider}")
             
     except Exception as e:
         logger.warning(f"Failed to load with preferred providers: {e}")
@@ -200,9 +195,6 @@ def _load_text_model():
     
     if session is None:
         raise RuntimeError("Failed to create text ONNX session")
-    
-    logger.info(f"  Inputs: {[i.name for i in session.get_inputs()]}")
-    logger.info(f"  Outputs: {[o.name for o in session.get_outputs()]}")
     
     gc.collect()
     return session
@@ -276,7 +268,6 @@ def _load_onnx_model():
         
         active_provider = session.get_providers()[0]
         logger.info(f"✓ CLAP ONNX model loaded successfully")
-        logger.info(f"  Active execution provider: {active_provider}")
             
     except Exception as e:
         # Final fallback: force CPU-only
@@ -289,16 +280,12 @@ def _load_onnx_model():
                 providers=['CPUExecutionProvider']
             )
             logger.info(f"✓ CLAP ONNX model loaded successfully (CPU fallback)")
-            logger.info(f"  Active execution provider: CPUExecutionProvider")
         except Exception as cpu_error:
             logger.error(f"Failed to load ONNX model even with CPU: {cpu_error}")
             raise
     
     if session is None:
         raise RuntimeError("Failed to create ONNX session")
-    
-    logger.info(f"  Inputs: {[i.name for i in session.get_inputs()]}")
-    logger.info(f"  Outputs: {[o.name for o in session.get_outputs()]}")
     
     gc.collect()
     return session
