@@ -12,7 +12,6 @@ nav:
   - FAQ: FAQ.md
   - GPU: GPU.md
   - Hardware: HARDWARE.md
-  - Memory Fixes: MEMORY_FIXES.md
   - Parameters: PARAMETERS.md
 
 theme: readthedocs
