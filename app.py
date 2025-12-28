@@ -509,6 +509,8 @@ def listen_for_index_reloads():
   When a 'reload' message is received, it triggers the in-memory Voyager index and map to be reloaded.
   This is the recommended pattern for inter-process communication in this architecture,
   avoiding direct HTTP calls from workers to the web server.
+  
+  The reload process verifies each component and tracks success/failure for monitoring.
   """
   # Create a new Redis connection for this thread.
   # Sharing the main redis_conn object across threads is not recommended.
@@ -533,42 +535,105 @@ def listen_for_index_reloads():
       if message_data == 'reload':
         # We need the application context to access 'g' and the database connection.
         with app.app_context():
-          logger.info("Triggering in-memory Voyager index and map reload from background listener.")
+          logger.info("🔄 Triggering in-memory index and map reload from background listener...")
+          
+          # Track which components reload successfully
+          reload_status = {
+            'voyager': False,
+            'artist_similarity': False,
+            'main_map': False,
+            'artist_map': False,
+            'map_cache': False,
+            'clap': False,
+            'mulan': False
+          }
+          
           try:
-            from tasks.voyager_manager import load_voyager_index_for_querying
-            load_voyager_index_for_querying(force_reload=True)
-            from tasks.artist_gmm_manager import load_artist_index_for_querying
-            load_artist_index_for_querying(force_reload=True)
-            from app_helper import load_map_projection, load_artist_projection
-            load_map_projection('main_map', force_reload=True)
-            load_artist_projection('artist_map', force_reload=True)
+            # Reload Voyager index
+            try:
+              from tasks.voyager_manager import load_voyager_index_for_querying
+              load_voyager_index_for_querying(force_reload=True)
+              reload_status['voyager'] = True
+              logger.info("✓ Voyager index reloaded successfully")
+            except Exception as e:
+              logger.error(f"✗ Failed to reload Voyager index: {e}", exc_info=True)
+            
+            # Reload artist similarity index
+            try:
+              from tasks.artist_gmm_manager import load_artist_index_for_querying
+              load_artist_index_for_querying(force_reload=True)
+              reload_status['artist_similarity'] = True
+              logger.info("✓ Artist similarity index reloaded successfully")
+            except Exception as e:
+              logger.error(f"✗ Failed to reload artist similarity index: {e}", exc_info=True)
+            
+            # Reload main map projection
+            try:
+              from app_helper import load_map_projection
+              load_map_projection('main_map', force_reload=True)
+              reload_status['main_map'] = True
+              logger.info("✓ Main map projection reloaded successfully")
+            except Exception as e:
+              logger.error(f"✗ Failed to reload main map projection: {e}", exc_info=True)
+            
+            # Reload artist map projection
+            try:
+              from app_helper import load_artist_projection
+              load_artist_projection('artist_map', force_reload=True)
+              reload_status['artist_map'] = True
+              logger.info("✓ Artist map projection reloaded successfully")
+            except Exception as e:
+              logger.error(f"✗ Failed to reload artist map projection: {e}", exc_info=True)
+            
             # Rebuild the map JSON cache used by the /api/map endpoint
-            from app_map import build_map_cache
-            build_map_cache()
+            try:
+              from app_map import build_map_cache
+              build_map_cache()
+              reload_status['map_cache'] = True
+              logger.info("✓ Map cache rebuilt successfully")
+            except Exception as e:
+              logger.error(f"✗ Failed to rebuild map cache: {e}", exc_info=True)
             
-            # Reload CLAP cache (with logging)
-            logger.info("Reloading CLAP embedding cache...")
-            from tasks.clap_text_search import refresh_clap_cache
-            clap_success = refresh_clap_cache()
+            # Reload CLAP cache
+            try:
+              from tasks.clap_text_search import refresh_clap_cache
+              clap_success = refresh_clap_cache()
+              reload_status['clap'] = clap_success
+              logger.info(f"{'✓' if clap_success else '✗'} CLAP embedding cache reload {'succeeded' if clap_success else 'failed'}")
+            except Exception as e:
+              logger.error(f"✗ Failed to reload CLAP cache: {e}", exc_info=True)
             
-            # Reload MuLan cache (with logging)
-            logger.info("Reloading MuLan embedding cache...")
-            from tasks.mulan_text_search import refresh_mulan_cache
-            mulan_success = refresh_mulan_cache()
+            # Reload MuLan cache
+            try:
+              from tasks.mulan_text_search import refresh_mulan_cache
+              mulan_success = refresh_mulan_cache()
+              reload_status['mulan'] = mulan_success
+              logger.info(f"{'✓' if mulan_success else '✗'} MuLan embedding cache reload {'succeeded' if mulan_success else 'failed'}")
+            except Exception as e:
+              logger.error(f"✗ Failed to reload MuLan cache: {e}", exc_info=True)
             
-            logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, MuLan {'✓' if mulan_success else '✗'}")
+            # Summary of reload results
+            successful = [k for k, v in reload_status.items() if v]
+            failed = [k for k, v in reload_status.items() if not v]
+            
+            if failed:
+              logger.warning(f"⚠️ In-memory reload completed with failures. Success: {successful}, Failed: {failed}")
+            else:
+              logger.info(f"✅ In-memory reload completed successfully. All components reloaded: {successful}")
+              
           except Exception as e:
-            logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
+            logger.error(f"❌ Critical error during reload process: {e}", exc_info=True)
+            
       elif message_data == 'reload-artist':
         # Reload artist similarity index only (legacy support)
         with app.app_context():
-          logger.info("Triggering in-memory artist similarity index reload from background listener.")
+          logger.info("🔄 Triggering in-memory artist similarity index reload from background listener...")
           try:
             from tasks.artist_gmm_manager import load_artist_index_for_querying
             load_artist_index_for_querying(force_reload=True)
-            logger.info("In-memory artist similarity index reloaded successfully by background listener.")
+            logger.info("✓ In-memory artist similarity index reloaded successfully by background listener.")
           except Exception as e:
-            logger.error(f"Error reloading artist similarity index from background listener: {e}", exc_info=True)
+            logger.error(f"✗ Error reloading artist similarity index from background listener: {e}", exc_info=True)
 
 
 

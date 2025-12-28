@@ -285,54 +285,109 @@ def rebuild_all_indexes_task():
     Rebuild all indexes (Voyager, Artist GMM, Map, Artist projection) as a standalone RQ task.
     This is enqueued on the default queue to run serially with album analysis tasks,
     preventing CPU overlap between song analysis and index rebuilds.
+    
+    Returns a dict with:
+      - status: "SUCCESS" or "FAILURE"
+      - message: Summary message
+      - indexes_rebuilt: List of successfully rebuilt indexes
+      - indexes_failed: List of failed indexes
     """
     from app import app
     from app_helper import get_db, redis_conn
     
     logger.info("🔨 Starting index rebuild task (enqueued as subtask)...")
     
+    indexes_rebuilt = []
+    indexes_failed = []
+    
     with app.app_context():
         try:
             # Build Voyager index
-            build_and_store_voyager_index(get_db())
-            logger.info('✓ Voyager index rebuilt')
+            try:
+                db_conn = get_db()
+                build_and_store_voyager_index(db_conn)
+                # Verify the index was stored successfully by checking the database
+                with db_conn.cursor() as cur:
+                    cur.execute("SELECT index_name, embedding_dimension, created_at FROM voyager_index_data WHERE index_name = %s", (INDEX_NAME,))
+                    result = cur.fetchone()
+                    if result:
+                        logger.info(f'✓ Voyager index rebuilt and verified (dimension: {result[1]}, created: {result[2]})')
+                        indexes_rebuilt.append('voyager')
+                    else:
+                        logger.error('✗ Voyager index rebuild verification failed: index not found in database')
+                        indexes_failed.append('voyager')
+            except Exception as e:
+                logger.error(f"Failed to build/store Voyager index: {e}", exc_info=True)
+                indexes_failed.append('voyager')
             
             # Build artist similarity index
             try:
                 build_and_store_artist_index(get_db())
                 logger.info('✓ Artist similarity index rebuilt')
+                indexes_rebuilt.append('artist_similarity')
             except Exception as e:
                 logger.warning(f"Failed to build/store artist similarity index: {e}")
+                indexes_failed.append('artist_similarity')
             
             # Build song map projection
             try:
                 from app_helper import build_and_store_map_projection
                 build_and_store_map_projection('main_map')
                 logger.info('✓ Song map projection rebuilt')
+                indexes_rebuilt.append('main_map')
             except Exception as e:
                 logger.warning(f"Failed to build/store map projection: {e}")
+                indexes_failed.append('main_map')
             
             # Build artist component projection
             try:
                 from app_helper import build_and_store_artist_projection
                 build_and_store_artist_projection('artist_map')
                 logger.info('✓ Artist component projection rebuilt')
+                indexes_rebuilt.append('artist_map')
             except Exception as e:
                 logger.warning(f"Failed to build/store artist projection: {e}")
+                indexes_failed.append('artist_map')
             
-            # Publish reload message to Flask container
-            try:
-                redis_conn.publish('index-updates', 'reload')
-                logger.info('✓ Published reload message to Flask container')
-            except Exception as e:
-                logger.warning(f'Could not publish reload message: {e}')
+            # Only publish reload message if at least one index was successfully rebuilt
+            if indexes_rebuilt:
+                try:
+                    redis_conn.publish('index-updates', 'reload')
+                    logger.info(f'✓ Published reload message to Flask container (rebuilt: {", ".join(indexes_rebuilt)})')
+                except Exception as e:
+                    logger.warning(f'Could not publish reload message: {e}')
+                    # Return partial success since indexes were built but reload notification failed
+                    return {
+                        "status": "PARTIAL_SUCCESS",
+                        "message": f"Indexes rebuilt but reload notification failed: {e}",
+                        "indexes_rebuilt": indexes_rebuilt,
+                        "indexes_failed": indexes_failed
+                    }
+            else:
+                logger.error("❌ No indexes were successfully rebuilt, skipping reload message")
+                return {
+                    "status": "FAILURE",
+                    "message": "All index rebuilds failed",
+                    "indexes_rebuilt": indexes_rebuilt,
+                    "indexes_failed": indexes_failed
+                }
             
-            logger.info("✅ Index rebuild task completed successfully")
-            return {"status": "SUCCESS", "message": "All indexes rebuilt"}
+            logger.info(f"✅ Index rebuild task completed successfully (rebuilt: {len(indexes_rebuilt)}, failed: {len(indexes_failed)})")
+            return {
+                "status": "SUCCESS",
+                "message": f"Successfully rebuilt {len(indexes_rebuilt)} index(es)",
+                "indexes_rebuilt": indexes_rebuilt,
+                "indexes_failed": indexes_failed
+            }
             
         except Exception as e:
-            logger.error(f"❌ Index rebuild task failed: {e}", exc_info=True)
-            return {"status": "FAILURE", "message": str(e)}
+            logger.error(f"❌ Index rebuild task failed with unexpected error: {e}", exc_info=True)
+            return {
+                "status": "FAILURE",
+                "message": str(e),
+                "indexes_rebuilt": indexes_rebuilt,
+                "indexes_failed": indexes_failed
+            }
 
 def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     """
