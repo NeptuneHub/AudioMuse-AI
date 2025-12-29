@@ -100,6 +100,8 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
     max_retries = 3
     base_delay = 5
     tried_max_tokens_fallback = False
+    tried_aggressive_fallback = False  # NEW: Track aggressive parameter fallback state
+    tried_ultra_minimal_fallback = False  # NEW: Track ultra-minimal fallback state
 
     for attempt in range(max_retries + 1):
         try:
@@ -201,6 +203,33 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                     logger.info("Retrying in %s seconds...", sleep_time)
                     time.sleep(sleep_time)
                     continue
+            
+            # === NEW: Parameter error handling (ADD) ===
+            if e.response.status_code == 400 and is_openai_format:
+                try:
+                    error_body = e.response.json()
+                    error_msg = error_body.get('error', {}).get('message', '').lower()
+                    
+                    # Aggressive fallback: first parameter error
+                    if 'unsupported' in error_msg and not tried_aggressive_fallback:
+                        logger.info("Unsupported parameter detected, switching to max_completion_tokens and removing temperature")
+                        payload.pop('temperature', None)
+                        payload.pop('max_tokens', None)
+                        payload['max_completion_tokens'] = 8000
+                        # Also remove from nested options (Ollama format)
+                        if 'options' in payload and isinstance(payload['options'], dict):
+                            payload['options'].pop('temperature', None)
+                        tried_aggressive_fallback = True
+                        continue  # Immediate retry, no delay, no attempt increment
+                    
+                    # Ultra-minimal fallback: still failing after aggressive
+                    elif tried_aggressive_fallback and not tried_ultra_minimal_fallback:
+                        logger.info("Still failing with max_completion_tokens, removing it (ultra-minimal mode)")
+                        payload.pop('max_completion_tokens', None)
+                        tried_ultra_minimal_fallback = True
+                        continue  # Immediate retry, no delay, no attempt increment
+                except:
+                    pass  # Can't parse error, fall through
             
             # Check if it's the max_tokens vs max_completion_tokens issue
             if e.response.status_code == 400 and is_openai_format and not tried_max_tokens_fallback:
