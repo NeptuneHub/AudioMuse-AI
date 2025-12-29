@@ -209,7 +209,9 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                     error_body = e.response.json()
                     error_code = error_body.get('error', {}).get('code', '')
                     
-                    # Check for unsupported_parameter or unsupported_value error codes
+                    # Check for OpenAI error codes indicating parameter/value not supported by model
+                    # 'unsupported_parameter': parameter not accepted (e.g., max_tokens)
+                    # 'unsupported_value': parameter value not accepted (e.g., temperature=0.7)
                     if error_code in ('unsupported_parameter', 'unsupported_value'):
                         # Aggressive fallback: first parameter error
                         if not tried_aggressive_fallback:

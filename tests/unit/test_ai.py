@@ -485,7 +485,7 @@ class TestGetOpenAICompatiblePlaylistName:
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     def test_existing_max_tokens_fallback_still_works(self, mock_post, mock_env):
-        """Test that max_tokens parameter errors are handled by the new fallback logic"""
+        """Test that max_tokens parameter errors with error code 'unsupported_parameter' are handled"""
         # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
         
@@ -530,7 +530,7 @@ class TestGetOpenAICompatiblePlaylistName:
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     def test_ultra_minimal_fallback_requires_proper_error_code(self, mock_post, mock_env):
-        """Test that ultra-minimal fallback only triggers with proper error codes"""
+        """Test that ultra-minimal fallback only triggers with error codes 'unsupported_parameter' or 'unsupported_value'"""
         # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
         
