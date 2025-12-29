@@ -216,9 +216,6 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                         payload.pop('temperature', None)
                         payload.pop('max_tokens', None)
                         payload['max_completion_tokens'] = 8000
-                        # Also remove from nested options (Ollama format)
-                        if 'options' in payload and isinstance(payload['options'], dict):
-                            payload['options'].pop('temperature', None)
                         tried_aggressive_fallback = True
                         continue  # Immediate retry, no delay, no attempt increment
                     
