@@ -99,7 +99,6 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
 
     max_retries = 3
     base_delay = 5
-    tried_max_tokens_fallback = False
     tried_aggressive_fallback = False
     tried_ultra_minimal_fallback = False
 
@@ -208,41 +207,27 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
             if e.response.status_code == 400 and is_openai_format:
                 try:
                     error_body = e.response.json()
-                    error_msg = error_body.get('error', {}).get('message', '').lower()
+                    error_code = error_body.get('error', {}).get('code', '')
                     
-                    # Aggressive fallback: first parameter error
-                    if 'unsupported' in error_msg and not tried_aggressive_fallback:
-                        logger.info("Unsupported parameter detected, switching to max_completion_tokens and removing temperature")
-                        payload.pop('temperature', None)
-                        payload.pop('max_tokens', None)
-                        payload['max_completion_tokens'] = 8000
-                        tried_aggressive_fallback = True
-                        continue  # Immediate retry, no delay, no attempt increment
-                    
-                    # Ultra-minimal fallback: still failing after aggressive
-                    elif 'unsupported' in error_msg and tried_aggressive_fallback and not tried_ultra_minimal_fallback:
-                        logger.info("Still failing with max_completion_tokens, removing it (ultra-minimal mode)")
-                        payload.pop('max_completion_tokens', None)
-                        tried_ultra_minimal_fallback = True
-                        continue  # Immediate retry, no delay, no attempt increment
+                    # Check for unsupported_parameter or unsupported_value error codes
+                    if error_code in ('unsupported_parameter', 'unsupported_value'):
+                        # Aggressive fallback: first parameter error
+                        if not tried_aggressive_fallback:
+                            logger.info("Unsupported parameter detected (code: %s), switching to max_completion_tokens and removing temperature", error_code)
+                            payload.pop('temperature', None)
+                            payload.pop('max_tokens', None)
+                            payload['max_completion_tokens'] = 8000
+                            tried_aggressive_fallback = True
+                            continue  # Immediate retry, no delay, no attempt increment
+                        
+                        # Ultra-minimal fallback: still failing after aggressive
+                        elif not tried_ultra_minimal_fallback:
+                            logger.info("Still failing with max_completion_tokens (code: %s), removing it (ultra-minimal mode)", error_code)
+                            payload.pop('max_completion_tokens', None)
+                            tried_ultra_minimal_fallback = True
+                            continue  # Immediate retry, no delay, no attempt increment
                 except (json.JSONDecodeError, KeyError, AttributeError):
                     pass  # Can't parse error, fall through
-            
-            # Check if it's the max_tokens vs max_completion_tokens issue
-            if e.response.status_code == 400 and is_openai_format and not tried_max_tokens_fallback:
-                try:
-                    error_body = e.response.json()
-                    error_msg = error_body.get('error', {}).get('message', '')
-                    
-                    # If error is about max_tokens not supported, try max_completion_tokens
-                    if 'max_tokens' in error_msg.lower() and 'not supported' in error_msg.lower():
-                        logger.info("Model doesn't support max_tokens, switching to max_completion_tokens")
-                        payload.pop('max_tokens', None)
-                        payload['max_completion_tokens'] = 8000
-                        tried_max_tokens_fallback = True
-                        continue
-                except (json.JSONDecodeError, KeyError, AttributeError):
-                    pass
             
             # Log the response body for better debugging
             error_detail = ""

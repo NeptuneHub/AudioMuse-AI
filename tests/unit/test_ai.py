@@ -267,7 +267,10 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response_400.status_code = 400
         error_response = {
             'error': {
-                'message': 'Extra inputs are not permitted. The following unsupported parameters were provided: temperature, max_tokens'
+                'message': "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+                'type': 'invalid_request_error',
+                'param': 'max_tokens',
+                'code': 'unsupported_parameter'
             }
         }
         mock_response_400.json.return_value = error_response
@@ -314,7 +317,10 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response_400_1.status_code = 400
         error_response_1 = {
             'error': {
-                'message': 'Extra inputs are not permitted. The following unsupported parameters were provided: temperature'
+                'message': "Unsupported value: 'temperature' does not support 0.7 with this model. Only the default (1) value is supported.",
+                'type': 'invalid_request_error',
+                'param': 'temperature',
+                'code': 'unsupported_value'
             }
         }
         mock_response_400_1.json.return_value = error_response_1
@@ -325,7 +331,10 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response_400_2.status_code = 400
         error_response_2 = {
             'error': {
-                'message': 'Extra inputs are not permitted. The following unsupported parameters: max_completion_tokens'
+                'message': "Unsupported parameter: 'max_completion_tokens' is not supported with this model.",
+                'type': 'invalid_request_error',
+                'param': 'max_completion_tokens',
+                'code': 'unsupported_parameter'
             }
         }
         mock_response_400_2.json.return_value = error_response_2
@@ -377,7 +386,10 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response_400.status_code = 400
         error_response = {
             'error': {
-                'message': 'Extra inputs are not permitted. unsupported: temperature'
+                'message': "Unsupported parameter: 'temperature' is not supported with this model.",
+                'type': 'invalid_request_error',
+                'param': 'temperature',
+                'code': 'unsupported_parameter'
             }
         }
         mock_response_400.json.return_value = error_response
@@ -425,7 +437,10 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response_400_1.status_code = 400
         error_response_1 = {
             'error': {
-                'message': 'unsupported parameter: temperature'
+                'message': "Unsupported parameter: 'temperature' is not supported with this model.",
+                'type': 'invalid_request_error',
+                'param': 'temperature',
+                'code': 'unsupported_parameter'
             }
         }
         mock_response_400_1.json.return_value = error_response_1
@@ -436,7 +451,10 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response_400_2.status_code = 400
         error_response_2 = {
             'error': {
-                'message': 'unsupported: max_completion_tokens'
+                'message': "Unsupported parameter: 'max_completion_tokens' is not supported with this model.",
+                'type': 'invalid_request_error',
+                'param': 'max_completion_tokens',
+                'code': 'unsupported_parameter'
             }
         }
         mock_response_400_2.json.return_value = error_response_2
@@ -467,16 +485,19 @@ class TestGetOpenAICompatiblePlaylistName:
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     def test_existing_max_tokens_fallback_still_works(self, mock_post, mock_env):
-        """Test that existing max_tokens fallback logic is preserved"""
+        """Test that max_tokens parameter errors are handled by the new fallback logic"""
         # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
         
-        # First call: 400 with max_tokens not supported
+        # First call: 400 with max_tokens not supported (using proper error code)
         mock_response_400 = Mock()
         mock_response_400.status_code = 400
         error_response = {
             'error': {
-                'message': 'max_tokens is not supported for this model'
+                'message': "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+                'type': 'invalid_request_error',
+                'param': 'max_tokens',
+                'code': 'unsupported_parameter'
             }
         }
         mock_response_400.json.return_value = error_response
@@ -508,28 +529,34 @@ class TestGetOpenAICompatiblePlaylistName:
 
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
-    def test_ultra_minimal_fallback_requires_unsupported_keyword(self, mock_post, mock_env):
-        """Test that ultra-minimal fallback only triggers with 'unsupported' keyword"""
+    def test_ultra_minimal_fallback_requires_proper_error_code(self, mock_post, mock_env):
+        """Test that ultra-minimal fallback only triggers with proper error codes"""
         # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
         
-        # First call: 400 with unsupported parameter (triggers aggressive fallback)
+        # First call: 400 with proper error code (triggers aggressive fallback)
         mock_response_400_1 = Mock()
         mock_response_400_1.status_code = 400
         error_response_1 = {
             'error': {
-                'message': 'Extra inputs are not permitted. unsupported: temperature'
+                'message': "Unsupported parameter: 'temperature' is not supported with this model.",
+                'type': 'invalid_request_error',
+                'param': 'temperature',
+                'code': 'unsupported_parameter'
             }
         }
         mock_response_400_1.json.return_value = error_response_1
         mock_response_400_1.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_1)
 
-        # Second call: 400 but WITHOUT 'unsupported' keyword (should NOT trigger ultra-minimal)
+        # Second call: 400 but WITHOUT proper error code (should NOT trigger ultra-minimal)
         mock_response_400_2 = Mock()
         mock_response_400_2.status_code = 400
         error_response_2 = {
             'error': {
-                'message': 'Invalid parameter: max_completion_tokens'
+                'message': 'Invalid parameter: max_completion_tokens',
+                'type': 'invalid_request_error',
+                'param': 'max_completion_tokens',
+                'code': 'invalid_parameter'  # Different error code
             }
         }
         mock_response_400_2.json.return_value = error_response_2
