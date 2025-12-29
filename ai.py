@@ -99,7 +99,8 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
 
     max_retries = 3
     base_delay = 5
-    tried_max_tokens_fallback = False
+    tried_aggressive_fallback = False
+    tried_ultra_minimal_fallback = False
 
     for attempt in range(max_retries + 1):
         try:
@@ -202,21 +203,33 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                     time.sleep(sleep_time)
                     continue
             
-            # Check if it's the max_tokens vs max_completion_tokens issue
-            if e.response.status_code == 400 and is_openai_format and not tried_max_tokens_fallback:
+            # Parameter error handling with fallback logic
+            if e.response.status_code == 400 and is_openai_format:
                 try:
                     error_body = e.response.json()
-                    error_msg = error_body.get('error', {}).get('message', '')
+                    error_code = error_body.get('error', {}).get('code', '')
                     
-                    # If error is about max_tokens not supported, try max_completion_tokens
-                    if 'max_tokens' in error_msg.lower() and 'not supported' in error_msg.lower():
-                        logger.info("Model doesn't support max_tokens, switching to max_completion_tokens")
-                        payload.pop('max_tokens', None)
-                        payload['max_completion_tokens'] = 8000
-                        tried_max_tokens_fallback = True
-                        continue
-                except:
-                    pass
+                    # Check for OpenAI error codes indicating parameter/value not supported by model
+                    # 'unsupported_parameter': parameter not accepted (e.g., max_tokens)
+                    # 'unsupported_value': parameter value not accepted (e.g., temperature=0.7)
+                    if error_code in ('unsupported_parameter', 'unsupported_value'):
+                        # Aggressive fallback: first parameter error
+                        if not tried_aggressive_fallback:
+                            logger.info("Unsupported parameter detected (code: %s), switching to max_completion_tokens and removing temperature", error_code)
+                            payload.pop('temperature', None)
+                            payload.pop('max_tokens', None)
+                            payload['max_completion_tokens'] = 8000
+                            tried_aggressive_fallback = True
+                            continue  # Immediate retry, no delay, no attempt increment
+                        
+                        # Ultra-minimal fallback: still failing after aggressive
+                        elif not tried_ultra_minimal_fallback:
+                            logger.info("Still failing with max_completion_tokens (code: %s), removing it (ultra-minimal mode)", error_code)
+                            payload.pop('max_completion_tokens', None)
+                            tried_ultra_minimal_fallback = True
+                            continue  # Immediate retry, no delay, no attempt increment
+                except (json.JSONDecodeError, KeyError, AttributeError):
+                    pass  # Can't parse error, fall through
             
             # Log the response body for better debugging
             error_detail = ""
