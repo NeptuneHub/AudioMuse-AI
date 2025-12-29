@@ -506,6 +506,50 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'max_tokens' not in second_call_data
         assert second_call_data.get('max_completion_tokens') == 8000
 
+    @patch('ai.os.environ.get')
+    @patch('ai.requests.post')
+    def test_ultra_minimal_fallback_requires_unsupported_keyword(self, mock_post, mock_env):
+        """Test that ultra-minimal fallback only triggers with 'unsupported' keyword"""
+        # Disable initial delay for cleaner testing
+        mock_env.return_value = "0"
+        
+        # First call: 400 with unsupported parameter (triggers aggressive fallback)
+        mock_response_400_1 = Mock()
+        mock_response_400_1.status_code = 400
+        error_response_1 = {
+            'error': {
+                'message': 'Extra inputs are not permitted. unsupported: temperature'
+            }
+        }
+        mock_response_400_1.json.return_value = error_response_1
+        mock_response_400_1.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_1)
+
+        # Second call: 400 but WITHOUT 'unsupported' keyword (should NOT trigger ultra-minimal)
+        mock_response_400_2 = Mock()
+        mock_response_400_2.status_code = 400
+        error_response_2 = {
+            'error': {
+                'message': 'Invalid parameter: max_completion_tokens'
+            }
+        }
+        mock_response_400_2.json.return_value = error_response_2
+        mock_response_400_2.text = 'Invalid parameter'
+        mock_response_400_2.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_2)
+
+        mock_post.side_effect = [mock_response_400_1, mock_response_400_2]
+
+        result = get_openai_compatible_playlist_name(
+            server_url="https://api.openai.com/v1/chat/completions",
+            model_name="model",
+            full_prompt="test",
+            api_key="test-key"
+        )
+
+        # Should return error, not trigger ultra-minimal fallback
+        assert "Error" in result
+        # Should only have made 2 calls (initial + aggressive fallback, then error)
+        assert mock_post.call_count == 2
+
 
 class TestGetOllamaPlaylistName:
     """Tests for Ollama-specific wrapper function"""

@@ -223,12 +223,12 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                         continue  # Immediate retry, no delay, no attempt increment
                     
                     # Ultra-minimal fallback: still failing after aggressive
-                    elif tried_aggressive_fallback and not tried_ultra_minimal_fallback:
+                    elif 'unsupported' in error_msg and tried_aggressive_fallback and not tried_ultra_minimal_fallback:
                         logger.info("Still failing with max_completion_tokens, removing it (ultra-minimal mode)")
                         payload.pop('max_completion_tokens', None)
                         tried_ultra_minimal_fallback = True
                         continue  # Immediate retry, no delay, no attempt increment
-                except:
+                except (json.JSONDecodeError, KeyError, AttributeError):
                     pass  # Can't parse error, fall through
             
             # Check if it's the max_tokens vs max_completion_tokens issue
@@ -244,7 +244,7 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                         payload['max_completion_tokens'] = 8000
                         tried_max_tokens_fallback = True
                         continue
-                except:
+                except (json.JSONDecodeError, KeyError, AttributeError):
                     pass
             
             # Log the response body for better debugging
