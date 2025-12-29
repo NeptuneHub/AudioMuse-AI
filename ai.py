@@ -100,6 +100,7 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
     max_retries = 3
     base_delay = 5
     tried_max_tokens_fallback = False
+    excluded_params = set()  # Track params we've already tried removing
 
     for attempt in range(max_retries + 1):
         try:
@@ -202,6 +203,20 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                     time.sleep(sleep_time)
                     continue
             
+            # Check for temperature not supported
+            if e.response.status_code == 400 and is_openai_format and 'temperature' not in excluded_params:
+                try:
+                    error_body = e.response.json()
+                    error_msg = error_body.get('error', {}).get('message', '')
+                    
+                    if 'temperature' in error_msg.lower() and ('not supported' in error_msg.lower() or 'not permitted' in error_msg.lower() or 'unsupported' in error_msg.lower()):
+                        logger.info("Model doesn't support temperature parameter, retrying without it")
+                        payload.pop('temperature', None)
+                        excluded_params.add('temperature')
+                        continue
+                except:
+                    pass
+            
             # Check if it's the max_tokens vs max_completion_tokens issue
             if e.response.status_code == 400 and is_openai_format and not tried_max_tokens_fallback:
                 try:
@@ -215,6 +230,45 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                         payload['max_completion_tokens'] = 8000
                         tried_max_tokens_fallback = True
                         continue
+                except:
+                    pass
+            
+            # Generic fallback: detect any unsupported parameter from error message
+            if e.response.status_code == 400 and is_openai_format:
+                try:
+                    error_body = e.response.json()
+                    error_msg = error_body.get('error', {}).get('message', '').lower()
+                    
+                    # Common patterns for unsupported parameter errors
+                    unsupported_patterns = [
+                        'not supported',
+                        'not permitted',
+                        'unsupported',
+                        'extra inputs',
+                        'invalid parameter'
+                    ]
+                    
+                    # Check if any pattern matches
+                    if any(pattern in error_msg for pattern in unsupported_patterns):
+                        # Try to extract the parameter name from common error message formats
+                        param_found = False
+                        
+                        # Pattern 1: "temperature is not supported"
+                        # Pattern 2: "Extra inputs are not permitted. Input: temperature"
+                        # Pattern 3: "unsupported_value: temperature"
+                        for param in ['temperature', 'max_tokens', 'max_completion_tokens', 'stream', 'top_p', 'frequency_penalty', 'presence_penalty']:
+                            if param in error_msg and param not in excluded_params:
+                                logger.info(f"Parameter '{param}' not supported by model, retrying without it")
+                                payload.pop(param, None)
+                                # Also check nested options
+                                if 'options' in payload and isinstance(payload['options'], dict):
+                                    payload['options'].pop(param, None)
+                                excluded_params.add(param)
+                                param_found = True
+                                break
+                        
+                        if param_found:
+                            continue
                 except:
                     pass
             
