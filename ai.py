@@ -100,8 +100,8 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
     max_retries = 3
     base_delay = 5
     tried_max_tokens_fallback = False
-    tried_aggressive_fallback = False  # NEW: Track aggressive parameter fallback state
-    tried_ultra_minimal_fallback = False  # NEW: Track ultra-minimal fallback state
+    tried_aggressive_fallback = False
+    tried_ultra_minimal_fallback = False
 
     for attempt in range(max_retries + 1):
         try:
@@ -204,7 +204,7 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                     time.sleep(sleep_time)
                     continue
             
-            # === NEW: Parameter error handling (ADD) ===
+            # Parameter error handling with fallback logic
             if e.response.status_code == 400 and is_openai_format:
                 try:
                     error_body = e.response.json()
