@@ -175,9 +175,9 @@ RUN set -ux; \
     until [ "$n" -ge 5 ]; do \
         if apt-get update && apt-get install -y --no-install-recommends \
             python3 python3-pip python3-dev \
-            libfftw3-3=3.3.10-1ubuntu3 libfftw3-dev \
-            libyaml-0-2 libyaml-dev \
-            libsamplerate0 libsamplerate0-dev \
+            libfftw3-double3=3.3.10-1ubuntu3 libfftw3-dev \
+            libyaml-0-2=0.2.5-1build1 libyaml-dev \
+            libsamplerate0=0.2.2-4build1 libsamplerate0-dev \
             libsndfile1=1.2.2-1ubuntu5 libsndfile1-dev \
             libopenblas-dev=0.3.26+ds-1 \
             liblapack-dev=3.12.0-3build1 \
