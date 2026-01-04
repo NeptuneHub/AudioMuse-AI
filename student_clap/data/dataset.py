@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from student_clap.data.database_loader import DatabaseLoader
 from student_clap.data.jellyfin_downloader import JellyfinDownloader
+from student_clap.data.mel_cache import MelSpectrogramCache
 from student_clap.preprocessing.audio_segmentation import (
     segment_audio, SAMPLE_RATE, SEGMENT_LENGTH, HOP_LENGTH
 )
@@ -51,6 +52,7 @@ class StudentCLAPDataset:
         self.jellyfin_config = config['jellyfin']
         self.audio_config = config['audio']
         self.paths_config = config['paths']
+        self.dataset_config = config.get('dataset', {})
         
         # Initialize loaders
         self.db_loader = DatabaseLoader(self.db_config)
@@ -63,9 +65,26 @@ class StudentCLAPDataset:
             max_cache_size_gb=max_cache_gb
         )
         
-        # Load embeddings
+        # Initialize mel spectrogram cache (MASSIVE speedup for epoch 2+!)
+        mel_cache_path = self.paths_config.get('mel_cache', './cache/mel_spectrograms.db')
+        self.mel_cache = MelSpectrogramCache(mel_cache_path)
+        logger.info("🚀 Mel spectrogram cache enabled - subsequent epochs will be MUCH faster!")
+        
+        # Load embeddings (with optional balanced sampling)
         logger.info("Loading embeddings from database...")
-        all_items = self.db_loader.load_embeddings()
+        sample_size = self.dataset_config.get('sample_size')
+        balanced_genres = self.dataset_config.get('balanced_genres')
+        
+        if sample_size and balanced_genres:
+            logger.info(f"🎯 Using balanced genre sampling: {sample_size} songs across {len(balanced_genres)} genres")
+            all_items = self.db_loader.load_embeddings(
+                sample_size=sample_size,
+                balanced_genres=balanced_genres
+            )
+        else:
+            logger.info("📚 Loading all available embeddings (no sampling)")
+            all_items = self.db_loader.load_embeddings()
+        
         logger.info(f"Loaded {len(all_items)} total items")
         
         # Split into train/val
@@ -200,21 +219,79 @@ class StudentCLAPDataset:
             
             logger.info(f"📥 DOWNLOADING batch {start_idx//batch_size + 1}: songs {start_idx+1}-{end_idx}")
             
-            # Download and process EXACTLY this batch, one by one
+            # Prepare batch items
+            batch_items = [self.items[idx] for idx in batch_indices]
+            batch_item_ids = [item['item_id'] for item in batch_items]
+            
+            # 🚀 CHECK MEL CACHE FIRST - skip download/compute if already saved!
+            items_needing_download = []
+            cached_items = []
+            
+            logger.info(f"   🔍 Checking mel cache for {len(batch_items)} songs...")
+            for item in batch_items:
+                if self.mel_cache.has(item['item_id']):
+                    cached_items.append(item)
+                    logger.debug(f"      ✓ CACHED: {item['title']}")
+                else:
+                    items_needing_download.append(item)
+                    logger.debug(f"      ✗ NEED DOWNLOAD: {item['title']}")
+            
+            logger.info(f"   💾 Mel cache: {len(cached_items)} hits, {len(items_needing_download)} misses")
+            if len(cached_items) > 0:
+                logger.info(f"      🎉 Skipping download/compute for {len(cached_items)} songs (already processed!)")
+            
+            # Download and compute mel specs for cache misses
+            download_results = {}
+            if items_needing_download:
+                need_download_ids = [item['item_id'] for item in items_needing_download]
+                logger.info(f"   🔥 Parallel downloading {len(need_download_ids)} songs with 8 workers...")
+                download_results = self.jellyfin_downloader.download_batch(
+                    need_download_ids, 
+                    max_workers=8  # Parallel downloads for max speed!
+                )
+                logger.info(f"   ✅ Downloads complete! Computing mel spectrograms...")
+            
+            # Process all items (cached + newly downloaded)
             batch = []
-            for i, idx in enumerate(batch_indices):
-                item = self.items[idx]
+            
+            # 1. Load cached items (instant!)
+            for item in cached_items:
                 item_id = item['item_id']
+                try:
+                    # Load mel spectrograms from cache
+                    mel_specs = self.mel_cache.get(item_id)
+                    
+                    # Convert to tensor
+                    mel_tensor = torch.from_numpy(mel_specs).float()
+                    
+                    sample = {
+                        'item_id': item_id,
+                        'title': item['title'],
+                        'author': item['author'],
+                        'audio_path': 'cached',
+                        'audio_segments': mel_tensor,  # Mel spectrograms from cache!
+                        'teacher_embedding': item['embedding'],
+                        'num_segments': len(mel_specs)
+                    }
+                    batch.append(sample)
+                    logger.debug(f"  ✓ Loaded from cache: {item['title']}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to load cached item {item_id}: {e}")
+                    continue
+            
+            # 2. Process newly downloaded items
+            for item in items_needing_download:
+                item_id = item['item_id']
+                audio_path = download_results.get(item_id)
                 
-                logger.debug(f"  Downloading song {i+1}/{len(batch_indices)}: {item['title']}")
+                if audio_path is None:
+                    logger.error(f"Failed to download audio for {item_id}")
+                    continue
+                
+                logger.debug(f"  Computing mel specs for: {item['title']}")
                 
                 try:
-                    # Download this single audio file
-                    audio_path = self.jellyfin_downloader.download(item_id)
-                    if audio_path is None:
-                        logger.error(f"Failed to download audio for {item_id}")
-                        continue
-                        
                     # Load audio with torchaudio (MUCH faster than librosa)
                     import torchaudio
                     audio_tensor, sr = torchaudio.load(audio_path)
@@ -230,7 +307,7 @@ class StudentCLAPDataset:
                     # Convert to numpy for segmentation
                     audio_data = audio_tensor.squeeze(0).numpy()
                     
-                    # Process segments (keep raw audio, no mel-spec preprocessing!)
+                    # Segment audio
                     segments = segment_audio(
                         audio_data,
                         sample_rate=self.audio_config['sample_rate'],
@@ -238,16 +315,33 @@ class StudentCLAPDataset:
                         hop_length=self.audio_config['hop_length']
                     )
                     
-                    # Convert segments list to numpy array then to torch tensors (skip mel-spec computation!)
+                    # 🚀 COMPUTE MEL SPECTROGRAMS (only once, then cached!)
                     segments_array = np.array(segments) if isinstance(segments, list) else segments
-                    audio_segments_tensor = torch.from_numpy(segments_array).float()
+                    mel_specs = compute_mel_spectrogram_batch(
+                        segments_array,
+                        sr=self.audio_config['sample_rate'],
+                        n_mels=self.audio_config['n_mels'],
+                        n_fft=self.audio_config['n_fft'],
+                        hop_length=self.audio_config['hop_length_stft'],
+                        fmin=self.audio_config['fmin'],
+                        fmax=self.audio_config['fmax']
+                    )
+                    
+                    # 💾 SAVE TO CACHE IMMEDIATELY (crash-safe commit!)
+                    # If training crashes after this, we won't re-download/re-compute this song!
+                    logger.debug(f"      💾 Saving mel to cache (crash-safe): {item['title']}")
+                    self.mel_cache.put(item_id, mel_specs)
+                    logger.debug(f"      ✅ Mel cached successfully: {item_id}")
+                    
+                    # Convert to tensor
+                    mel_tensor = torch.from_numpy(mel_specs).float()
                     
                     sample = {
                         'item_id': item_id,
                         'title': item['title'],
                         'author': item['author'],
                         'audio_path': audio_path,
-                        'audio_segments': audio_segments_tensor,  # Raw audio segments (fast!)
+                        'audio_segments': mel_tensor,  # Mel spectrograms!
                         'teacher_embedding': item['embedding'],
                         'num_segments': len(segments)
                     }
@@ -286,6 +380,14 @@ class StudentCLAPDataset:
             'cache_size_mb': downloader_stats['cache_size_mb']
         })
         
+        # Add mel cache stats
+        mel_cache_stats = self.mel_cache.get_stats()
+        stats.update({
+            'mel_cache_items': mel_cache_stats['total_cached'],
+            'mel_cache_size_mb': mel_cache_stats['cache_size_mb'],
+            'mel_cache_hit_rate': mel_cache_stats['hit_rate_percent']
+        })
+        
         return stats
         
     def _segment_audio(self, audio_data: np.ndarray) -> np.ndarray:
@@ -306,6 +408,7 @@ class StudentCLAPDataset:
         
         total_length = len(audio_data)
         
+        self.mel_cache.close()
         # If audio is shorter than 10 seconds, pad to 10 seconds
         if total_length <= segment_length:
             padded = np.pad(audio_data, (0, segment_length - total_length), mode='constant')

@@ -80,9 +80,20 @@ augmentation:
 paths:
   audio_cache: "./cache/audio"          # Cache for downloaded audio files  
   max_cache_size_gb: 2                  # Keep only 2GB in cache (streaming mode)
+  mel_cache: "./cache/mel_spectrograms.db"  # SQLite cache for computed mel spectrograms (HUGE speedup!)
   checkpoints: "./checkpoints"          # Model checkpoints directory
   logs: "./logs"                        # Training logs directory
   final_model: "./models/student_clap_audio.onnx"  # Final exported model
+
+# Dataset sampling (for faster training)
+dataset:
+  sample_size: 10000  # Total songs to use for training (10k for fast training, null for all songs)
+  balanced_genres: [  # Sample equally from these genres
+    'rock', 'pop', 'alternative', 'indie', 'electronic', 'jazz', 'metal', 'classic rock', 'soul',
+    'indie rock', 'electronica', 'folk', 'punk', 'blues', 'hard rock', 'ambient', 'acoustic',
+    'experimental', 'Hip-Hop', 'country', 'funk', 'electro', 'heavy metal', 'Progressive rock',
+    'rnb', 'indie pop', 'House'
+  ]
 
 # Validation metrics
 validation:

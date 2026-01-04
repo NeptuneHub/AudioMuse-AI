@@ -66,12 +66,15 @@ class DatabaseLoader:
             self.conn = None
             logger.info("Database connection closed")
             
-    def load_embeddings(self, limit: Optional[int] = None) -> List[Dict]:
+    def load_embeddings(self, limit: Optional[int] = None, sample_size: Optional[int] = None, 
+                       balanced_genres: Optional[List[str]] = None) -> List[Dict]:
         """
-        Load all CLAP embeddings with metadata.
+        Load CLAP embeddings with metadata.
         
         Args:
-            limit: Optional limit on number of embeddings to load
+            limit: Optional limit on number of embeddings to load (legacy, use sample_size instead)
+            sample_size: Total number of songs to sample (e.g., 10000)
+            balanced_genres: List of genres to balance equally across sample_size
             
         Returns:
             List of dicts with keys:
@@ -82,6 +85,11 @@ class DatabaseLoader:
         """
         self.connect()
         
+        # If balanced genre sampling is requested
+        if sample_size and balanced_genres:
+            return self._load_balanced_genre_sample(sample_size, balanced_genres)
+        
+        # Legacy path: load all or limited
         query = """
             SELECT ce.item_id, ce.embedding, s.title, s.author
             FROM clap_embedding ce
@@ -120,6 +128,87 @@ class DatabaseLoader:
             
         except Exception as e:
             logger.error(f"Failed to load embeddings: {e}")
+            raise
+    
+    def _load_balanced_genre_sample(self, sample_size: int, genres: List[str]) -> List[Dict]:
+        """
+        Load embeddings with balanced genre sampling.
+        
+        Fast stratified sampling: equal songs per genre up to sample_size total.
+        Uses mood_vector column which stores genres as "genre:score,genre2:score".
+        
+        Args:
+            sample_size: Total number of songs to sample (e.g., 10000)
+            genres: List of genre names to balance
+            
+        Returns:
+            List of embedding dicts
+        """
+        songs_per_genre = sample_size // len(genres)
+        logger.info(f"🎯 Balanced genre sampling: {sample_size} total songs, "
+                   f"~{songs_per_genre} per genre across {len(genres)} genres")
+        
+        # Build query that samples songs for each genre
+        # Note: mood_vector is like "rock:0.9,pop:0.1,indie:0.8"
+        # We'll union multiple queries, one per genre
+        genre_queries = []
+        for genre in genres:
+            genre_queries.append(f"""
+                (SELECT 
+                    ce.item_id, 
+                    ce.embedding, 
+                    s.title, 
+                    s.author,
+                    '{genre}' as genre_matched
+                FROM clap_embedding ce
+                JOIN score s ON ce.item_id = s.item_id
+                WHERE ce.embedding IS NOT NULL
+                  AND s.mood_vector ILIKE '%{genre}%'
+                ORDER BY ce.item_id
+                LIMIT {songs_per_genre})
+            """)
+        
+        query = " UNION ALL ".join(genre_queries)
+        
+        try:
+            with self.conn.cursor(cursor_factory=DictCursor) as cur:
+                logger.info(f"   ⏱️  Executing balanced sampling query...")
+                cur.execute(query)
+                rows = cur.fetchall()
+            
+            # Count songs per genre
+            genre_counts = {}
+            results = []
+            
+            for row in rows:
+                # Decode embedding
+                embedding_bytes = bytes(row['embedding'])
+                embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
+                
+                if len(embedding) != 512:
+                    logger.warning(f"Unexpected embedding dimension for {row['item_id']}: {len(embedding)}")
+                    continue
+                
+                # Track genre counts
+                genre = row['genre_matched']
+                genre_counts[genre] = genre_counts.get(genre, 0) + 1
+                
+                results.append({
+                    'item_id': row['item_id'],
+                    'title': row['title'] or 'Unknown',
+                    'author': row['author'] or 'Unknown Artist',
+                    'embedding': embedding
+                })
+            
+            # Log distribution
+            logger.info(f"   ✅ Loaded {len(results)} songs with balanced distribution:")
+            for genre in sorted(genre_counts.keys()):
+                logger.info(f"      {genre}: {genre_counts[genre]} songs")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Failed to load balanced genre sample: {e}")
             raise
             
     def get_embedding_stats(self) -> Dict:

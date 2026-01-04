@@ -334,16 +334,23 @@ class StudentCLAPTrainer:
         student_embeddings = []
         teacher_embeddings = []
         
-        for i, (audio_segments, teacher_emb) in enumerate(zip(batch['audio_segments'], batch['teacher_embeddings'])):
-            # Convert audio segments to tensor (optimize for performance)
-            if not isinstance(audio_segments, torch.Tensor):
-                # Convert to single numpy array first to avoid slow list->tensor conversion
-                if isinstance(audio_segments, list):
-                    audio_segments = np.array(audio_segments, dtype=np.float32)
-                audio_segments = torch.from_numpy(audio_segments).to(self.device)
+        for i, (mel_segments, teacher_emb) in enumerate(zip(batch['audio_segments'], batch['teacher_embeddings'])):
+            # mel_segments is already computed mel spectrograms: (num_segments, 1, n_mels, time)
+            # Convert to tensor if needed
+            if not isinstance(mel_segments, torch.Tensor):
+                mel_segments = torch.from_numpy(mel_segments)
             
-            # Process segments and get averaged embedding
-            avg_embedding = self.model.process_audio_segments(audio_segments)  # (1, 512)
+            mel_segments = mel_segments.to(self.device, dtype=torch.float32)
+            
+            # Forward pass through model directly (mels already computed!)
+            segment_embeddings = self.model.forward(mel_segments)  # (num_segments, 512)
+            
+            # Average embeddings across segments (same as teacher CLAP)
+            avg_embedding = torch.mean(segment_embeddings, dim=0, keepdim=True)  # (1, 512)
+            
+            # Re-normalize after averaging
+            avg_embedding = F.normalize(avg_embedding, p=2, dim=1)
+            
             student_embeddings.append(avg_embedding)
             teacher_embeddings.append(teacher_emb)
         
