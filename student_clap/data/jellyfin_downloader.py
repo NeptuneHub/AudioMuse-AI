@@ -151,9 +151,18 @@ class JellyfinDownloader:
             # Update access time for LRU cache management
             cache_path.touch()
             return str(cache_path)
+        
+        # Wait if cache is full (let mel computation cleanup make space)
+        import time
+        max_retries = 10
+        retry_count = 0
+        while self.get_cache_size() >= self.max_cache_size and retry_count < max_retries:
+            logger.debug(f"Cache full, waiting for cleanup... ({retry_count+1}/{max_retries})")
+            time.sleep(1)  # Wait 1 second for mel computation to cleanup
+            retry_count += 1
             
-        # Clean up cache if needed before downloading
-        self._cleanup_cache()
+        if retry_count >= max_retries:
+            logger.error(f"Cache still full after {max_retries} retries, downloading anyway...")
             
         # Download from Jellyfin
         try:

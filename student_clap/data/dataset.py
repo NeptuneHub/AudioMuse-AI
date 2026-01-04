@@ -244,10 +244,10 @@ class StudentCLAPDataset:
             download_results = {}
             if items_needing_download:
                 need_download_ids = [item['item_id'] for item in items_needing_download]
-                logger.info(f"   🔥 Parallel downloading {len(need_download_ids)} songs with 8 workers...")
+                logger.info(f"   🔥 Parallel downloading {len(need_download_ids)} songs with {batch_size} workers...")
                 download_results = self.jellyfin_downloader.download_batch(
                     need_download_ids, 
-                    max_workers=8  # Parallel downloads for max speed!
+                    max_workers=batch_size  # Use batch_size workers for optimal parallelism
                 )
                 logger.info(f"   ✅ Downloads complete! Computing mel spectrograms...")
             
@@ -332,6 +332,15 @@ class StudentCLAPDataset:
                     logger.debug(f"      💾 Saving mel to cache (crash-safe): {item['title']}")
                     self.mel_cache.put(item_id, mel_specs)
                     logger.debug(f"      ✅ Mel cached successfully: {item_id}")
+                    
+                    # 🗑️ DELETE AUDIO FILE immediately after mel computation (free space!)
+                    try:
+                        import os
+                        if os.path.exists(audio_path):
+                            os.remove(audio_path)
+                            logger.debug(f"      🗑️ Deleted audio file to free space: {audio_path}")
+                    except Exception as e:
+                        logger.warning(f"      ⚠️ Could not delete audio file {audio_path}: {e}")
                     
                     # Convert to tensor
                     mel_tensor = torch.from_numpy(mel_specs).float()
