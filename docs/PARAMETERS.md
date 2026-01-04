@@ -12,6 +12,7 @@ How to find jellyfin **userid**:
 How to create an the **jellyfin's API token**:
 * The API Token, still as admin you can go to Dashboard > “Admin panel” > API Key and create a new one.
 
+
 The **mandatory** parameter that you need to change from the example are this:
 
 | Parameter            | Description                                                             | Default Value                     |
@@ -150,6 +151,15 @@ These are the default parameters used when launching analysis or clustering task
 | `SCORE_WEIGHT_CALINSKI_HARABASZ`            | Weight for Calinski-Harabasz Index (cluster separation).                                  | `0.0`                                  |
 
 
+The **AI model** tested for Clustering naming and for the instant playlist functionality are:
+* mistral:7b
+* llama3.1:8b
+* gemini-2.5-pro
+* gemini-1.5-flash-latest
+
+different model could have different parameter and don't work.
+
+For selhosting we suggest llama, instead for cloud genini.
 
 **(*)** For using GEMINI API you need to have a Google account, a free account can be used if needed. Same goes for Mistral. Instead if you want to self-host Ollama here you can find a deployment example:
 
