@@ -11,7 +11,9 @@ With the new CLAP model used in Text Search functionality, GPU VRAM is used more
 - GPU-accelerated KMeans, DBSCAN, and PCA using RAPIDS cuML
 - Automatic fallback to CPU if GPU is unavailable or encounters errors
 - Supports all existing clustering configurations and parameters
-- Compatible with NVIDIA GPUs with CUDA 12.8.1+
+- Compatible with NVIDIA GPUs with CUDA 12.8.1+ (*)
+
+(*) Old driver are NOT supported from the actual build but you can try on your own to build your image like in https://github.com/NeptuneHub/AudioMuse-AI/issues/265
 
 **To enable GPU clustering:**
 

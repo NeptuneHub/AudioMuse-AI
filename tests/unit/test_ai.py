@@ -203,7 +203,8 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
         mock_response.iter_lines.return_value = [
-            b'data: {"choices":[{"delta":{"content":"Test"},"finish_reason":"stop"}]}\n'
+            b'data: {"choices":[{"delta":{"content":"Test"}}]}\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
         ]
         mock_post.return_value = mock_response
 
@@ -219,6 +220,362 @@ class TestGetOpenAICompatiblePlaylistName:
         headers = call_args[1]['headers']
         assert "HTTP-Referer" in headers
         assert "X-Title" in headers
+
+    @patch('ai.requests.post')
+    @patch('ai.time.sleep')
+    def test_rate_limit_retry_with_exponential_backoff(self, mock_sleep, mock_post):
+        """Test that rate limit errors (429) retry with exponential backoff"""
+        # First call: 429 rate limit
+        mock_response_429 = Mock()
+        mock_response_429.status_code = 429
+        mock_response_429.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_429)
+
+        # Second call: Success
+        mock_response_success = Mock()
+        mock_response_success.status_code = 200
+        mock_response_success.raise_for_status = Mock()
+        mock_response_success.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"content":"Success"}}]}\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+        ]
+
+        mock_post.side_effect = [mock_response_429, mock_response_success]
+
+        result = get_openai_compatible_playlist_name(
+            server_url="https://api.openai.com/v1/chat/completions",
+            model_name="gpt-4",
+            full_prompt="test",
+            api_key="test-key"
+        )
+
+        assert result == "Success"
+        # Should have delayed with base_delay * (2 ** 0) = 5 seconds for first retry
+        assert mock_sleep.call_count >= 2  # Initial delay + retry delay
+        sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
+        assert 5 in sleep_calls  # Exponential backoff for attempt 0
+
+    @patch('ai.os.environ.get')
+    @patch('ai.requests.post')
+    @patch('ai.time.sleep')
+    def test_aggressive_fallback_on_unsupported_parameter(self, mock_sleep, mock_post, mock_env):
+        """Test aggressive fallback removes temperature and switches to max_completion_tokens"""
+        # Disable initial delay for cleaner testing
+        mock_env.return_value = "0"
+        
+        # First call: 400 with unsupported parameter
+        mock_response_400 = Mock()
+        mock_response_400.status_code = 400
+        error_response = {
+            'error': {
+                'message': "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+                'type': 'invalid_request_error',
+                'param': 'max_tokens',
+                'code': 'unsupported_parameter'
+            }
+        }
+        mock_response_400.json.return_value = error_response
+        mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400)
+
+        # Second call: Success (content comes before finish_reason)
+        mock_response_success = Mock()
+        mock_response_success.status_code = 200
+        mock_response_success.raise_for_status = Mock()
+        mock_response_success.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"content":"Fallback Success"}}]}\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+        ]
+
+        mock_post.side_effect = [mock_response_400, mock_response_success]
+
+        result = get_openai_compatible_playlist_name(
+            server_url="https://api.openai.com/v1/chat/completions",
+            model_name="gpt-4o-mini",
+            full_prompt="test",
+            api_key="test-key"
+        )
+
+        assert result == "Fallback Success"
+        # Should be exactly 2 calls (initial + fallback retry)
+        assert mock_post.call_count == 2
+        
+        # Check second call has modified payload
+        second_call_data = json.loads(mock_post.call_args_list[1][1]['data'])
+        assert 'temperature' not in second_call_data
+        assert 'max_tokens' not in second_call_data
+        assert second_call_data.get('max_completion_tokens') == 8000
+
+    @patch('ai.os.environ.get')
+    @patch('ai.requests.post')
+    @patch('ai.time.sleep')
+    def test_ultra_minimal_fallback_after_aggressive_fails(self, mock_sleep, mock_post, mock_env):
+        """Test ultra-minimal fallback removes max_completion_tokens if aggressive fails"""
+        # Disable initial delay for cleaner testing
+        mock_env.return_value = "0"
+        
+        # First call: 400 with unsupported parameter
+        mock_response_400_1 = Mock()
+        mock_response_400_1.status_code = 400
+        error_response_1 = {
+            'error': {
+                'message': "Unsupported value: 'temperature' does not support 0.7 with this model. Only the default (1) value is supported.",
+                'type': 'invalid_request_error',
+                'param': 'temperature',
+                'code': 'unsupported_value'
+            }
+        }
+        mock_response_400_1.json.return_value = error_response_1
+        mock_response_400_1.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_1)
+
+        # Second call: Still 400 with max_completion_tokens
+        mock_response_400_2 = Mock()
+        mock_response_400_2.status_code = 400
+        error_response_2 = {
+            'error': {
+                'message': "Unsupported parameter: 'max_completion_tokens' is not supported with this model.",
+                'type': 'invalid_request_error',
+                'param': 'max_completion_tokens',
+                'code': 'unsupported_parameter'
+            }
+        }
+        mock_response_400_2.json.return_value = error_response_2
+        mock_response_400_2.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_2)
+
+        # Third call: Success
+        mock_response_success = Mock()
+        mock_response_success.status_code = 200
+        mock_response_success.raise_for_status = Mock()
+        mock_response_success.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"content":"Ultra Minimal"}}]}\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+        ]
+
+        mock_post.side_effect = [mock_response_400_1, mock_response_400_2, mock_response_success]
+
+        result = get_openai_compatible_playlist_name(
+            server_url="https://api.openai.com/v1/chat/completions",
+            model_name="gpt-4o-mini",
+            full_prompt="test",
+            api_key="test-key"
+        )
+
+        assert result == "Ultra Minimal"
+        # Should be exactly 3 calls (initial + aggressive fallback + ultra-minimal fallback)
+        assert mock_post.call_count == 3
+        
+        # Check third call has minimal payload (no token limits, no temperature)
+        third_call_data = json.loads(mock_post.call_args_list[2][1]['data'])
+        assert 'temperature' not in third_call_data
+        assert 'max_tokens' not in third_call_data
+        assert 'max_completion_tokens' not in third_call_data
+
+    @patch('ai.os.environ.get')
+    @patch('ai.requests.post')
+    @patch('ai.time.sleep')
+    def test_rate_limit_then_parameter_error(self, mock_sleep, mock_post, mock_env):
+        """Test rate limit retry followed by parameter error fallback"""
+        # Disable initial delay for cleaner testing
+        mock_env.return_value = "0"
+        
+        # First call: 429 rate limit
+        mock_response_429 = Mock()
+        mock_response_429.status_code = 429
+        mock_response_429.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_429)
+
+        # Second call: 400 unsupported parameter
+        mock_response_400 = Mock()
+        mock_response_400.status_code = 400
+        error_response = {
+            'error': {
+                'message': "Unsupported parameter: 'temperature' is not supported with this model.",
+                'type': 'invalid_request_error',
+                'param': 'temperature',
+                'code': 'unsupported_parameter'
+            }
+        }
+        mock_response_400.json.return_value = error_response
+        mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400)
+
+        # Third call: Success
+        mock_response_success = Mock()
+        mock_response_success.status_code = 200
+        mock_response_success.raise_for_status = Mock()
+        mock_response_success.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"content":"Combined Success"}}]}\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+        ]
+
+        mock_post.side_effect = [mock_response_429, mock_response_400, mock_response_success]
+
+        result = get_openai_compatible_playlist_name(
+            server_url="https://api.openai.com/v1/chat/completions",
+            model_name="gpt-4o-mini",
+            full_prompt="test",
+            api_key="test-key"
+        )
+
+        assert result == "Combined Success"
+        # Should be exactly 3 calls (initial with 429, retry with 400, fallback success)
+        assert mock_post.call_count == 3
+        
+        # Check that sleep was called for rate limit (exponential backoff)
+        sleep_calls = [call[0][0] for call in mock_sleep.call_args_list if call[0][0] >= 5]
+        assert len(sleep_calls) >= 1  # At least one sleep for rate limit
+
+    @patch('ai.os.environ.get')
+    @patch('ai.requests.post')
+    @patch('ai.time.sleep')
+    def test_parameter_fallbacks_dont_consume_retry_budget(self, mock_sleep, mock_post, mock_env):
+        """Test that parameter fallbacks use continue and don't increment attempt counter"""
+        # Disable initial delay for cleaner testing
+        mock_env.return_value = "0"
+        
+        # We'll simulate: 400 (unsupported) -> 400 (still unsupported) -> timeout -> success
+        # This tests that fallbacks don't consume the retry budget
+        
+        # First call: 400 with unsupported
+        mock_response_400_1 = Mock()
+        mock_response_400_1.status_code = 400
+        error_response_1 = {
+            'error': {
+                'message': "Unsupported parameter: 'temperature' is not supported with this model.",
+                'type': 'invalid_request_error',
+                'param': 'temperature',
+                'code': 'unsupported_parameter'
+            }
+        }
+        mock_response_400_1.json.return_value = error_response_1
+        mock_response_400_1.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_1)
+
+        # Second call: 400 still unsupported (max_completion_tokens)
+        mock_response_400_2 = Mock()
+        mock_response_400_2.status_code = 400
+        error_response_2 = {
+            'error': {
+                'message': "Unsupported parameter: 'max_completion_tokens' is not supported with this model.",
+                'type': 'invalid_request_error',
+                'param': 'max_completion_tokens',
+                'code': 'unsupported_parameter'
+            }
+        }
+        mock_response_400_2.json.return_value = error_response_2
+        mock_response_400_2.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_2)
+
+        # Third call: Success
+        mock_response_success = Mock()
+        mock_response_success.status_code = 200
+        mock_response_success.raise_for_status = Mock()
+        mock_response_success.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"content":"Final Success"}}]}\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+        ]
+
+        mock_post.side_effect = [mock_response_400_1, mock_response_400_2, mock_response_success]
+
+        result = get_openai_compatible_playlist_name(
+            server_url="https://api.openai.com/v1/chat/completions",
+            model_name="model",
+            full_prompt="test",
+            api_key="test-key"
+        )
+
+        assert result == "Final Success"
+        # Should be exactly 3 calls total
+        assert mock_post.call_count == 3
+
+    @patch('ai.os.environ.get')
+    @patch('ai.requests.post')
+    def test_existing_max_tokens_fallback_still_works(self, mock_post, mock_env):
+        """Test that max_tokens parameter errors with error code 'unsupported_parameter' are handled"""
+        # Disable initial delay for cleaner testing
+        mock_env.return_value = "0"
+        
+        # First call: 400 with max_tokens not supported (using proper error code)
+        mock_response_400 = Mock()
+        mock_response_400.status_code = 400
+        error_response = {
+            'error': {
+                'message': "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+                'type': 'invalid_request_error',
+                'param': 'max_tokens',
+                'code': 'unsupported_parameter'
+            }
+        }
+        mock_response_400.json.return_value = error_response
+        mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400)
+
+        # Second call: Success
+        mock_response_success = Mock()
+        mock_response_success.status_code = 200
+        mock_response_success.raise_for_status = Mock()
+        mock_response_success.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"content":"Max Tokens Fallback"}}]}\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+        ]
+
+        mock_post.side_effect = [mock_response_400, mock_response_success]
+
+        result = get_openai_compatible_playlist_name(
+            server_url="https://api.openai.com/v1/chat/completions",
+            model_name="model",
+            full_prompt="test",
+            api_key="test-key"
+        )
+
+        assert result == "Max Tokens Fallback"
+        # Should have switched to max_completion_tokens
+        second_call_data = json.loads(mock_post.call_args_list[1][1]['data'])
+        assert 'max_tokens' not in second_call_data
+        assert second_call_data.get('max_completion_tokens') == 8000
+
+    @patch('ai.os.environ.get')
+    @patch('ai.requests.post')
+    def test_ultra_minimal_fallback_requires_proper_error_code(self, mock_post, mock_env):
+        """Test that ultra-minimal fallback only triggers with error codes 'unsupported_parameter' or 'unsupported_value'"""
+        # Disable initial delay for cleaner testing
+        mock_env.return_value = "0"
+        
+        # First call: 400 with proper error code (triggers aggressive fallback)
+        mock_response_400_1 = Mock()
+        mock_response_400_1.status_code = 400
+        error_response_1 = {
+            'error': {
+                'message': "Unsupported parameter: 'temperature' is not supported with this model.",
+                'type': 'invalid_request_error',
+                'param': 'temperature',
+                'code': 'unsupported_parameter'
+            }
+        }
+        mock_response_400_1.json.return_value = error_response_1
+        mock_response_400_1.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_1)
+
+        # Second call: 400 but WITHOUT proper error code (should NOT trigger ultra-minimal)
+        mock_response_400_2 = Mock()
+        mock_response_400_2.status_code = 400
+        error_response_2 = {
+            'error': {
+                'message': 'Invalid parameter: max_completion_tokens',
+                'type': 'invalid_request_error',
+                'param': 'max_completion_tokens',
+                'code': 'invalid_parameter'  # Different error code
+            }
+        }
+        mock_response_400_2.json.return_value = error_response_2
+        mock_response_400_2.text = 'Invalid parameter'
+        mock_response_400_2.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_2)
+
+        mock_post.side_effect = [mock_response_400_1, mock_response_400_2]
+
+        result = get_openai_compatible_playlist_name(
+            server_url="https://api.openai.com/v1/chat/completions",
+            model_name="model",
+            full_prompt="test",
+            api_key="test-key"
+        )
+
+        # Should return error, not trigger ultra-minimal fallback
+        assert "Error" in result
+        # Should only have made 2 calls (initial + aggressive fallback, then error)
+        assert mock_post.call_count == 2
 
 
 class TestGetOllamaPlaylistName:

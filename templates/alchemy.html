@@ -879,8 +879,10 @@
             // Collect ADD song ids from the current rows (they should be added to the playlist even if not in results)
             const addIds = Array.from(document.querySelectorAll('.alchemy-card')).map(card => {
                 const op = card.querySelector('.op')?.value;
+                const itemType = card.querySelector('.item-type')?.value;
                 const id = card.querySelector('.song-id')?.value?.trim();
-                return (op && op.toUpperCase() === 'ADD' && id) ? id : null;
+                // Only include if ADD operation AND it's a song (not artist)
+                return (op && op.toUpperCase() === 'ADD' && itemType === 'song' && id) ? id : null;
             }).filter(Boolean);
 
             const resultIds = window.currentResultIds || [];
