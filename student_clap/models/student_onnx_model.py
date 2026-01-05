@@ -241,7 +241,7 @@ class StudentCLAPTrainer:
             self.device = torch.device('cpu')
         
         # Initialize model
-        self.model = StudentCLAPAudio(config).to(self.device)
+        self.model = StudentCLAPAudio(config).to(self.device).float()
         
         # Initialize optimizer
         self.optimizer = torch.optim.Adam(
@@ -284,7 +284,9 @@ class StudentCLAPTrainer:
         """
         # Convert teacher embeddings to torch tensors if needed
         if not isinstance(teacher_embeddings, torch.Tensor):
-            teacher_embeddings = torch.tensor(teacher_embeddings, dtype=torch.float32, device=self.device)
+            teacher_embeddings = torch.from_numpy(teacher_embeddings).to(dtype=torch.float32, device=self.device)
+        else:
+            teacher_embeddings = teacher_embeddings.to(dtype=torch.float32, device=self.device)
         
         # Ensure teacher embeddings are L2-normalized
         teacher_embeddings = F.normalize(teacher_embeddings, p=2, dim=1)
@@ -325,6 +327,7 @@ class StudentCLAPTrainer:
             step_metrics: Dictionary with loss and performance metrics
         """
         self.model.train()
+        self.model.float()  # Ensure model is in float32 mode
         
         # Only zero gradients at the start of accumulation cycle
         if self.accumulation_counter == 0:
@@ -338,9 +341,9 @@ class StudentCLAPTrainer:
             # mel_segments is already computed mel spectrograms: (num_segments, 1, n_mels, time)
             # Convert to tensor if needed
             if not isinstance(mel_segments, torch.Tensor):
-                mel_segments = torch.from_numpy(mel_segments)
-            
-            mel_segments = mel_segments.to(self.device, dtype=torch.float32)
+                mel_segments = torch.from_numpy(mel_segments).to(dtype=torch.float32, device=self.device)
+            else:
+                mel_segments = mel_segments.to(dtype=torch.float32, device=self.device)
             
             # Forward pass through model directly (mels already computed!)
             segment_embeddings = self.model.forward(mel_segments)  # (num_segments, 512)

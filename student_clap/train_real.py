@@ -244,6 +244,7 @@ def validate_real(trainer: StudentCLAPTrainer,
     logger.info("🔍 Running REAL validation...")
     
     trainer.model.eval()
+    trainer.model.float()  # Ensure model is in float32 mode
     
     # Collect embeddings
     student_embeddings_list = []
@@ -272,7 +273,9 @@ def validate_real(trainer: StudentCLAPTrainer,
             for i, audio_segments in enumerate(batch['audio_segments']):
                 # audio_segments are PRE-COMPUTED mel spectrograms! (num_segments, 1, 128, time)
                 if not isinstance(audio_segments, torch.Tensor):
-                    audio_segments = torch.tensor(audio_segments, dtype=torch.float32, device=trainer.device)
+                    audio_segments = torch.from_numpy(audio_segments).to(dtype=torch.float32, device=trainer.device)
+                else:
+                    audio_segments = audio_segments.to(dtype=torch.float32, device=trainer.device)
                 
                 # Get averaged embedding - use forward() not process_audio_segments()!
                 avg_embedding = trainer.model(audio_segments)  # Mels already computed!
@@ -389,6 +392,14 @@ def train(config_path: str, resume: str = None):
     
     # Create datasets NOW that we know start_epoch
     logger.info("\n📁 Creating datasets...")
+    
+    # 🔄 Check for mel cache checkpoint (in case previous training failed)
+    cache_checkpoint_path = Path(config['paths']['checkpoints']) / 'mel_cache_checkpoint.pkl'
+    if cache_checkpoint_path.exists():
+        logger.info(f"💡 Found mel cache checkpoint: {cache_checkpoint_path}")
+        logger.info("   Note: Mel cache will be automatically restored from this if needed")
+        logger.info("   (The dataset class handles cache restoration automatically)")
+    
     train_dataset = StudentCLAPDataset(config, split='train', 
                                        validation_split=config['training']['validation_split'],
                                        epoch=start_epoch)
@@ -466,6 +477,31 @@ def train(config_path: str, resume: str = None):
         progress_pct = (start_epoch - 1) / config['training']['epochs'] * 100
         logger.info(f"   📊 Training progress: {progress_pct:.1f}% complete ({start_epoch-1}/{config['training']['epochs']} epochs done)")
     logger.info("=" * 60)
+    
+    # 💾 Save mel cache checkpoint before training starts
+    logger.info("\n💾 Creating mel cache checkpoint before training...")
+    cache_checkpoint_path = Path(config['paths']['checkpoints']) / 'mel_cache_checkpoint.pkl'
+    try:
+        # Save cache state from both datasets
+        import pickle
+        cache_data = {
+            'train_cache': dict(train_dataset.mel_cache) if hasattr(train_dataset, 'mel_cache') else {},
+            'val_cache': dict(val_dataset.mel_cache) if hasattr(val_dataset, 'mel_cache') else {},
+            'train_size': len(train_dataset),
+            'val_size': len(val_dataset),
+            'config': config
+        }
+        with open(cache_checkpoint_path, 'wb') as f:
+            pickle.dump(cache_data, f)
+        logger.info(f"✅ Mel cache checkpoint saved: {cache_checkpoint_path}")
+        if hasattr(train_dataset, 'mel_cache'):
+            logger.info(f"   Train cache: {len(train_dataset.mel_cache)} songs")
+        if hasattr(val_dataset, 'mel_cache'):
+            logger.info(f"   Val cache: {len(val_dataset.mel_cache)} songs")
+        logger.info("   💡 If training fails, you can restore this cache to avoid recomputing!")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to save mel cache checkpoint: {e}")
+        logger.warning("   Training will continue, but cache won't be preserved on failure")
     
     best_val_cosine = 0.0
     patience_counter = 0
