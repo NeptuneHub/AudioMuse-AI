@@ -279,6 +279,11 @@ def validate_real(trainer: StudentCLAPTrainer,
                 else:
                     audio_segments = audio_segments.to(dtype=torch.float32, device=trainer.device)
                 
+                # ⚠️ SKIP SONGS WITH ONLY 1 SEGMENT (BatchNorm requires at least 2 samples)
+                if audio_segments.shape[0] < 2:
+                    logger.warning(f"⚠️ Skipping song {batch['song_ids'][i]} in validation - only {audio_segments.shape[0]} segment")
+                    continue
+                
                 # Forward pass returns (num_segments, 512) - one embedding per segment
                 segment_embeddings = trainer.model(audio_segments)  # (num_segments, 512)
                 

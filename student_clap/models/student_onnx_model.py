@@ -345,6 +345,11 @@ class StudentCLAPTrainer:
             else:
                 mel_segments = mel_segments.to(dtype=torch.float32, device=self.device)
             
+            # ⚠️ SKIP SONGS WITH ONLY 1 SEGMENT (BatchNorm requires at least 2 samples)
+            if mel_segments.shape[0] < 2:
+                logger.warning(f"⚠️ Skipping song {batch['song_ids'][i]} - only {mel_segments.shape[0]} segment (BatchNorm needs ≥2)")
+                continue
+            
             # Forward pass through model directly (mels already computed!)
             segment_embeddings = self.model.forward(mel_segments)  # (num_segments, 512)
             
@@ -405,13 +410,17 @@ class StudentCLAPTrainer:
         # For 10-second audio at 48kHz with hop_length=480: time_frames = 1000
         dummy_input = torch.randn(1, 1, 128, 1000, device=self.device)
         
-        # Export to ONNX
+        # Export to ONNX with opset 17 for maximum compatibility
+        # Opset 17 supports all modern PyTorch operators including:
+        # - scaled_dot_product_attention (requires opset >= 14)
+        # - unflatten (requires opset >= 13)
+        # - All transformer and attention operators
         torch.onnx.export(
             self.model,
             dummy_input,
             output_path,
             export_params=True,
-            opset_version=11,
+            opset_version=17,  # Use opset 17 for full PyTorch operator support
             do_constant_folding=True,
             input_names=['mel_spectrogram'],
             output_names=['embedding'],
