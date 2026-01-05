@@ -86,6 +86,23 @@ class JellyfinDownloader:
         except Exception as e:
             logger.error(f"Failed to get item info for {item_id}: {e}")
             return None
+    
+    def check_item_exists(self, item_id: str) -> bool:
+        """
+        Quick check if item exists in Jellyfin (HEAD request).
+        
+        Args:
+            item_id: Jellyfin item ID
+            
+        Returns:
+            True if item exists and is accessible
+        """
+        try:
+            url = f"{self.url}/Users/{self.user_id}/Items/{item_id}"
+            response = requests.head(url, headers=self.headers, timeout=10)
+            return response.status_code == 200
+        except Exception:
+            return False
             
     def _cleanup_cache(self):
         """Remove old files if cache size exceeds limit."""

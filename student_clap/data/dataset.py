@@ -113,6 +113,69 @@ class StudentCLAPDataset:
             
         logger.info(f"Dataset split '{split}': {len(self.items)} items")
         
+        # 🔍 VALIDATE: Check which songs can actually be accessed
+        if epoch == 1:
+            logger.info(f"🔍 Validating song availability in Jellyfin for {split} split...")
+            valid_items = []
+            cached_count = 0
+            available_count = 0
+            failed_items = []
+            
+            for item in self.items:
+                item_id = item['item_id']
+                # Check if cached (instant access)
+                if self.mel_cache.has(item_id):
+                    valid_items.append(item)
+                    cached_count += 1
+                else:
+                    # Check if song exists in Jellyfin (quick HEAD request)
+                    if self.jellyfin_downloader.check_item_exists(item_id):
+                        valid_items.append(item)
+                        available_count += 1
+                    else:
+                        failed_items.append(item)
+                        logger.debug(f"      ⚠️ Song not available in Jellyfin: {item_id}")
+            
+            failed_count = len(failed_items)
+            logger.info(f"✅ Validated {split} split: {len(valid_items)}/{len(self.items)} songs available")
+            logger.info(f"   📦 Cached: {cached_count}")
+            logger.info(f"   🆕 Need download: {available_count}")
+            logger.info(f"   ❌ Not available: {failed_count}")
+            
+            # If we lost songs, try to replace them (for both train and val)
+            if failed_count > 0:
+                logger.info(f"🔄 Attempting to replace {failed_count} missing songs in {split} split...")
+                
+                # Load more songs to replace missing ones
+                replacement_size = failed_count * 2  # Load 2x to account for more failures
+                logger.info(f"   📥 Loading {replacement_size} additional songs from database...")
+                
+                additional_items = self.db_loader.load_embeddings(
+                    sample_size=replacement_size,
+                    balanced_genres=balanced_genres
+                )
+                
+                # Filter out songs we already have
+                existing_ids = set(item['item_id'] for item in valid_items)
+                additional_items = [item for item in additional_items if item['item_id'] not in existing_ids]
+                
+                logger.info(f"   🔍 Validating {len(additional_items)} additional songs...")
+                added_count = 0
+                for item in additional_items:
+                    if len(valid_items) >= len(self.items):  # Reached original target
+                        break
+                    
+                    item_id = item['item_id']
+                    # Check if cached or available
+                    if self.mel_cache.has(item_id) or self.jellyfin_downloader.check_item_exists(item_id):
+                        valid_items.append(item)
+                        added_count += 1
+                
+                logger.info(f"   ✅ Added {added_count} replacement songs to {split} split")
+                logger.info(f"   📊 Final {split} size: {len(valid_items)} songs")
+            
+            self.items = valid_items
+        
     def __len__(self) -> int:
         """Return number of items in dataset."""
         return len(self.items)
@@ -355,9 +418,9 @@ class StudentCLAPDataset:
                     )
                     
                     # 💾 SAVE TO CACHE (no size limit - cache all songs!)
-                    logger.debug(f"      💾 Saving mel to cache: {item['title']}")
+                    logger.info(f"      💾 Caching mel for: {item['title']} (ID: {item_id})")
                     self.mel_cache.put(item_id, mel_specs)
-                    logger.debug(f"      ✅ Mel cached successfully: {item_id}")
+                    logger.info(f"      ✅ Successfully cached: {item_id}")
                     
                     # 🗑️ DELETE AUDIO FILE immediately after mel computation (free space!)
                     try:

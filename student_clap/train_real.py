@@ -203,6 +203,14 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
     
     epoch_time = time.time() - epoch_start_time
     
+    # Show mel cache stats at end of epoch 1
+    if epoch == 1:
+        cache_stats = dataset.mel_cache.get_stats()
+        logger.info(f"📦 MEL CACHE STATS (END OF EPOCH 1):")
+        logger.info(f"   🎵 Total cached: {cache_stats['total_cached']} songs")
+        logger.info(f"   💾 Cache size: {cache_stats['cache_size_gb']:.1f} GB")
+        logger.info(f"   📊 Hit rate: {cache_stats['hit_rate_percent']:.1f}%")
+    
     logger.info(f"🎯 EPOCH {epoch}/{config['training']['epochs']} COMPLETE:")
     logger.info(f"   📈 Average Loss: {avg_loss:.6f}")
     logger.info(f"   📊 Average MSE: {avg_mse:.6f}")
@@ -272,6 +280,8 @@ def validate_real(trainer: StudentCLAPTrainer,
             
             # Forward pass without gradients
             student_embeddings = []
+            teacher_embeddings_batch = []  # Only include teachers for processed students
+            
             for i, audio_segments in enumerate(batch['audio_segments']):
                 # audio_segments are PRE-COMPUTED mel spectrograms! (num_segments, 1, 128, time)
                 if not isinstance(audio_segments, torch.Tensor):
@@ -294,14 +304,16 @@ def validate_real(trainer: StudentCLAPTrainer,
                 avg_embedding = torch.nn.functional.normalize(avg_embedding, p=2, dim=1)
                 
                 student_embeddings.append(avg_embedding.cpu().numpy())
+                teacher_embeddings_batch.append(batch['teacher_embeddings'][i])  # Only add teacher if student was processed
             
-            # Stack and store
-            student_batch = np.vstack(student_embeddings)
-            teacher_batch = np.stack(batch['teacher_embeddings'])
-            
-            student_embeddings_list.append(student_batch)
-            teacher_embeddings_list.append(teacher_batch)
-            song_ids.extend(batch['song_ids'])
+            # Stack and store (only if we have valid embeddings)
+            if student_embeddings:
+                student_batch = np.vstack(student_embeddings)
+                teacher_batch = np.stack(teacher_embeddings_batch)
+                
+                student_embeddings_list.append(student_batch)
+                teacher_embeddings_list.append(teacher_batch)
+                song_ids.extend([batch['song_ids'][i] for i in range(len(batch['song_ids'])) if batch['audio_segments'][i].shape[0] >= 2])
     
     # Concatenate all embeddings
     student_all = np.vstack(student_embeddings_list)
