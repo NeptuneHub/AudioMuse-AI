@@ -89,18 +89,29 @@ class JellyfinDownloader:
     
     def check_item_exists(self, item_id: str) -> bool:
         """
-        Quick check if item exists in Jellyfin (HEAD request).
+        Check if item's audio file can actually be downloaded (not just metadata exists).
         
         Args:
             item_id: Jellyfin item ID
             
         Returns:
-            True if item exists and is accessible
+            True if audio file exists and is downloadable
         """
         try:
-            url = f"{self.url}/Users/{self.user_id}/Items/{item_id}"
-            response = requests.head(url, headers=self.headers, timeout=10)
-            return response.status_code == 200
+            # Get download URL
+            url = f"{self.url}/Items/{item_id}/Download"
+            params = {"api_key": self.token}
+            
+            # Try to download first 1KB to verify file is accessible
+            response = requests.get(url, params=params, headers=self.headers, 
+                                  timeout=10, stream=True)
+            
+            # If we can start downloading, file exists
+            if response.status_code == 200:
+                # Close connection immediately (don't download full file)
+                response.close()
+                return True
+            return False
         except Exception:
             return False
             

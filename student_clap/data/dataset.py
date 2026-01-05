@@ -71,6 +71,7 @@ class StudentCLAPDataset:
         # Initialize mel spectrogram cache (MASSIVE speedup for epoch 2+!)
         mel_cache_path = self.paths_config.get('mel_cache', './cache/mel_spectrograms.db')
         self.mel_cache = MelSpectrogramCache(mel_cache_path)
+        logger.info(f"🔧 MEL CACHE PATH: {mel_cache_path}")
         logger.info(f"🔧 MEL CACHE: No size limit - will cache all songs")
         
         # Load embeddings (with optional balanced sampling)
@@ -121,10 +122,14 @@ class StudentCLAPDataset:
             available_count = 0
             failed_items = []
             
+            # Get actual cached item IDs directly from database (most reliable)
+            cached_item_ids = set(self.mel_cache.get_cached_item_ids())
+            logger.info(f"   📊 Actual cache has {len(cached_item_ids)} songs")
+            
             for item in self.items:
                 item_id = item['item_id']
-                # Check if cached (instant access)
-                if self.mel_cache.has(item_id):
+                # Check if cached using direct set lookup
+                if item_id in cached_item_ids:
                     valid_items.append(item)
                     cached_count += 1
                 else:
