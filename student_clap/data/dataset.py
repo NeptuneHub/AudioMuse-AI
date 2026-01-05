@@ -124,7 +124,7 @@ class StudentCLAPDataset:
             
             # Get actual cached item IDs directly from database (most reliable)
             cached_item_ids = set(self.mel_cache.get_cached_item_ids())
-            logger.info(f"   📊 Actual cache has {len(cached_item_ids)} songs")
+            logger.info(f"   📊 Mel cache has {len(cached_item_ids)} songs total")
             
             for item in self.items:
                 item_id = item['item_id']
@@ -133,51 +133,14 @@ class StudentCLAPDataset:
                     valid_items.append(item)
                     cached_count += 1
                 else:
-                    # Check if song exists in Jellyfin
-                    if self.jellyfin_downloader.check_item_exists(item_id):
-                        valid_items.append(item)
-                        available_count += 1
-                    else:
-                        failed_items.append(item)
-                        logger.debug(f"      ⚠️ Song not available in Jellyfin: {item_id}")
+                    # In epoch 1: assume all non-cached songs will be downloaded (skip expensive checks)
+                    # Jellyfin check is too slow and unreliable for thousands of songs
+                    valid_items.append(item)
+                    available_count += 1
             
-            failed_count = len(failed_items)
-            logger.info(f"✅ Validated {split} split: {len(valid_items)}/{len(self.items)} songs available")
-            logger.info(f"   📦 Cached: {cached_count}")
-            logger.info(f"   🆕 Need download: {available_count}")
-            logger.info(f"   ❌ Not available: {failed_count}")
-            
-            # If we lost songs, try to replace them (for both train and val)
-            if failed_count > 0:
-                logger.info(f"🔄 Attempting to replace {failed_count} missing songs in {split} split...")
-                
-                # Load more songs to replace missing ones
-                replacement_size = failed_count * 2  # Load 2x to account for more failures
-                logger.info(f"   📥 Loading {replacement_size} additional songs from database...")
-                
-                additional_items = self.db_loader.load_embeddings(
-                    sample_size=replacement_size,
-                    balanced_genres=balanced_genres
-                )
-                
-                # Filter out songs we already have
-                existing_ids = set(item['item_id'] for item in valid_items)
-                additional_items = [item for item in additional_items if item['item_id'] not in existing_ids]
-                
-                logger.info(f"   🔍 Validating {len(additional_items)} additional songs...")
-                added_count = 0
-                for item in additional_items:
-                    if len(valid_items) >= len(self.items):  # Reached original target
-                        break
-                    
-                    item_id = item['item_id']
-                    # Check if cached or available (use set lookup, not has() method)
-                    if item_id in cached_item_ids or self.jellyfin_downloader.check_item_exists(item_id):
-                        valid_items.append(item)
-                        added_count += 1
-                
-                logger.info(f"   ✅ Added {added_count} replacement songs to {split} split")
-                logger.info(f"   📊 Final {split} size: {len(valid_items)} songs")
+            logger.info(f"✅ {split} split ready: {len(valid_items)} songs")
+            logger.info(f"   📦 Already cached: {cached_count}")
+            logger.info(f"   🆕 Will download in epoch 1: {available_count}")
             
             self.items = valid_items
         
