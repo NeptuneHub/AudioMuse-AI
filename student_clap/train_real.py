@@ -331,12 +331,70 @@ def train(config_path: str, resume: str = None):
     logger.info(f"   Estimated size: {model_info['estimated_size_mb']:.1f} MB")
     logger.info(f"   Device: {trainer.device}")
     
-    # Create datasets
+    # Initialize start_epoch early (before datasets need it)
+    start_epoch = 1
+    best_val_cosine = 0.0
+    patience_counter = 0
+    
+    # Create checkpoint directory
+    checkpoint_dir = Path(config['paths']['checkpoints'])
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Check for resume argument first
+    if resume:
+        logger.info(f"\n⏮️ Manual resume requested: {resume}")
+        resume_path = resume
+    else:
+        # Auto-detect latest checkpoint
+        latest_path = checkpoint_dir / "latest.pth"
+        if latest_path.exists() and latest_path.is_file():
+            logger.info(f"\n🔍 Auto-detected existing checkpoint: {latest_path}")
+            resume_path = str(latest_path)
+        else:
+            logger.info(f"\n🆕 No existing checkpoints found - starting fresh training")
+            resume_path = None
+    
+    # Load checkpoint if we have one
+    if resume_path:
+        try:
+            logger.info(f"📂 Loading checkpoint: {resume_path}")
+            checkpoint = torch.load(resume_path, map_location=trainer.device)
+            
+            # Restore model and optimizer state
+            trainer.model.load_state_dict(checkpoint['model_state_dict'])
+            trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            
+            # Restore training state
+            start_epoch = checkpoint['epoch'] + 1
+            best_val_cosine = checkpoint.get('best_val_cosine', 0.0)
+            patience_counter = checkpoint.get('patience_counter', 0)
+            
+            logger.info(f"✅ Successfully resumed from epoch {checkpoint['epoch']}")
+            logger.info(f"   📈 Best cosine similarity so far: {best_val_cosine:.4f}")
+            logger.info(f"   ⏰ Patience counter: {patience_counter}/{config['training']['early_stopping_patience']}")
+            logger.info(f"   🎯 Will continue from epoch {start_epoch}")
+            
+            # Check if we've already reached the target epochs
+            if start_epoch > config['training']['epochs']:
+                logger.info(f"🎉 Training already completed! (reached {config['training']['epochs']} epochs)")
+                return
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to load checkpoint: {e}")
+            logger.info("🔄 Starting training from scratch...")
+            start_epoch = 1
+            best_val_cosine = 0.0
+            patience_counter = 0
+    
+    # Create datasets NOW that we know start_epoch
     logger.info("\n📁 Creating datasets...")
     train_dataset = StudentCLAPDataset(config, split='train', 
-                                       validation_split=config['training']['validation_split'])
+                                       validation_split=config['training']['validation_split'],
+                                       epoch=start_epoch)
     val_dataset = StudentCLAPDataset(config, split='val',
-                                     validation_split=config['training']['validation_split'])
+                                     validation_split=config['training']['validation_split'],
+                                     epoch=start_epoch)
     
     logger.info(f"  Train: {len(train_dataset)} samples")
     logger.info(f"  Val:   {len(val_dataset)} samples")
@@ -346,15 +404,6 @@ def train(config_path: str, resume: str = None):
     logger.info(f"\n📈 Dataset statistics:")
     for key, value in train_stats.items():
         logger.info(f"  {key}: {value}")
-    
-    # Create checkpoint directory
-    checkpoint_dir = Path(config['paths']['checkpoints'])
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Auto-detect and resume from existing checkpoints
-    start_epoch = 1
-    best_val_cosine = 0.0
-    patience_counter = 0
     
     # Check for resume argument first
     if resume:
@@ -423,6 +472,16 @@ def train(config_path: str, resume: str = None):
     training_start_time = time.time()
     
     for epoch in range(start_epoch, config['training']['epochs'] + 1):
+        # Recreate datasets for each epoch (to handle epoch-specific behavior)
+        if epoch > start_epoch:
+            logger.info(f"\n📁 Reloading datasets for epoch {epoch}...")
+            train_dataset = StudentCLAPDataset(config, split='train', 
+                                               validation_split=config['training']['validation_split'],
+                                               epoch=epoch)
+            val_dataset = StudentCLAPDataset(config, split='val',
+                                             validation_split=config['training']['validation_split'],
+                                             epoch=epoch)
+        
         # Train epoch with REAL implementation
         train_metrics = train_epoch_real(trainer, train_dataset, config, epoch)
         
