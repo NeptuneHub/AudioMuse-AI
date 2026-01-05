@@ -508,7 +508,7 @@ def train(config_path: str, resume: str = None):
             print_evaluation_report(val_metrics, f"Validation - Epoch {epoch}")
             
             # Check for improvement (use cosine similarity as main metric)
-            val_cosine = val_metrics['cosine_similarity']
+            val_cosine = val_metrics['cosine_similarity']['mean']
             if val_cosine > best_val_cosine:
                 best_val_cosine = val_cosine
                 patience_counter = 0
