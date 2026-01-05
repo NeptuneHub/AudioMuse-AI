@@ -270,12 +270,12 @@ def validate_real(trainer: StudentCLAPTrainer,
             # Forward pass without gradients
             student_embeddings = []
             for i, audio_segments in enumerate(batch['audio_segments']):
-                # Convert to tensor
+                # audio_segments are PRE-COMPUTED mel spectrograms! (num_segments, 1, 128, time)
                 if not isinstance(audio_segments, torch.Tensor):
                     audio_segments = torch.tensor(audio_segments, dtype=torch.float32, device=trainer.device)
                 
-                # Get averaged embedding
-                avg_embedding = trainer.model.process_audio_segments(audio_segments)
+                # Get averaged embedding - use forward() not process_audio_segments()!
+                avg_embedding = trainer.model(audio_segments)  # Mels already computed!
                 student_embeddings.append(avg_embedding.cpu().numpy())
             
             # Stack and store
