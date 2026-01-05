@@ -65,9 +65,7 @@ training:
 
 # Paths
 paths:
-  audio_cache: "./cache/audio"
-  max_cache_size_gb: 2         # Keep only 2GB in audio cache
-  # mel_cache: "./cache/mel_spectrograms.db"
+  audio_cache: "./cache/audio"  # Temporary storage, files deleted after mel computation
   mel_cache: "/Volumes/audiomuse/student_clap_cache/mel_spectrograms.db"
   checkpoints: "./checkpoints"
   logs: "./logs"
@@ -77,10 +75,10 @@ paths:
 dataset:
   sample_size: 10000  # ⭐ TOTAL NUMBER OF SONGS TO USE (10k = fast training)
   balanced_genres: [  # Sample equally from these genres
-    'rock', 'pop', 'alternative', 'indie', 'electronic', 'jazz', 'metal', 'classic rock', 'soul',
-    'indie rock', 'electronica', 'folk', 'punk', 'blues', 'hard rock', 'ambient', 'acoustic',
-    'experimental', 'Hip-Hop', 'country', 'funk', 'electro', 'heavy metal', 'Progressive rock',
-    'rnb', 'indie pop', 'House'
+    'rock', 'pop', 'indie', 'electronic', 'jazz', 'metal', 'classic rock', 'soul',
+    'folk', 'punk', 'blues', 'hard rock', 'ambient', 'acoustic',
+    'experimental', 'Hip-Hop', 'country', 'funk', 'heavy metal',
+    'rnb', 'House'
   ]
 
 # Logging

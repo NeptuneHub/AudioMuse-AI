@@ -134,7 +134,7 @@ class DatabaseLoader:
         """
         Load embeddings with balanced genre sampling.
         
-        Fast stratified sampling: equal songs per genre up to sample_size total.
+        Each song appears ONCE with its TOP genre (highest score in mood_vector).
         Uses mood_vector column which stores genres as "genre:score,genre2:score".
         
         Args:
@@ -142,43 +142,49 @@ class DatabaseLoader:
             genres: List of genre names to balance
             
         Returns:
-            List of embedding dicts
+            List of embedding dicts (each song appears exactly once)
         """
         songs_per_genre = sample_size // len(genres)
         logger.info(f"🎯 Balanced genre sampling: {sample_size} total songs, "
                    f"~{songs_per_genre} per genre across {len(genres)} genres")
+        logger.info(f"   📊 Each song will appear ONCE with its TOP genre only")
         
-        # Build query that samples songs for each genre
-        # Note: mood_vector is like "rock:0.9,pop:0.1,indie:0.8"
-        # We'll union multiple queries, one per genre
-        genre_queries = []
-        for genre in genres:
-            genre_queries.append(f"""
-                (SELECT 
-                    ce.item_id, 
-                    ce.embedding, 
-                    s.title, 
-                    s.author,
-                    '{genre}' as genre_matched
-                FROM clap_embedding ce
-                JOIN score s ON ce.item_id = s.item_id
-                WHERE ce.embedding IS NOT NULL
-                  AND s.mood_vector ILIKE '%{genre}%'
-                ORDER BY ce.item_id
-                LIMIT {songs_per_genre})
-            """)
+        # Sort target genres by length (longest first) to prioritize specific genres
+        # This ensures "hard rock" is checked before "rock", "indie pop" before "indie", etc.
+        sorted_genres = sorted(genres, key=lambda g: len(g), reverse=True)
         
-        query = " UNION ALL ".join(genre_queries)
+        # First, load ALL songs that match any of the requested genres
+        genre_filter = " OR ".join([f"s.mood_vector ILIKE '%{genre}%'" for genre in genres])
+        
+        query = f"""
+            SELECT 
+                ce.item_id, 
+                ce.embedding, 
+                s.title, 
+                s.author,
+                s.mood_vector
+            FROM clap_embedding ce
+            JOIN score s ON ce.item_id = s.item_id
+            WHERE ce.embedding IS NOT NULL
+              AND ({genre_filter})
+        """
         
         try:
             with self.conn.cursor(cursor_factory=DictCursor) as cur:
-                logger.info(f"   ⏱️  Executing balanced sampling query...")
+                logger.info(f"   ⏱️  Loading all songs with target genres...")
                 cur.execute(query)
                 rows = cur.fetchall()
             
-            # Count songs per genre
-            genre_counts = {}
-            results = []
+            logger.info(f"   ✅ Found {len(rows)} songs matching target genres")
+            
+            # DEBUG: Sample a few mood_vectors to see the format
+            logger.info(f"   🔍 Sample mood_vectors from database:")
+            for i, row in enumerate(rows[:3]):
+                logger.info(f"      Song {i+1}: {row['mood_vector'][:100]}...")
+            
+            # Group songs by their TOP genre
+            genre_songs = {genre: [] for genre in genres}
+            skipped = 0
             
             for row in rows:
                 # Decode embedding
@@ -189,19 +195,138 @@ class DatabaseLoader:
                     logger.warning(f"Unexpected embedding dimension for {row['item_id']}: {len(embedding)}")
                     continue
                 
-                # Track genre counts
-                genre = row['genre_matched']
-                genre_counts[genre] = genre_counts.get(genre, 0) + 1
+                # Parse mood_vector to find TOP genre that matches our target list
+                # Format: "female vocalists:0.577,jazz:0.544,folk:0.537,pop:0.535,rock:0.528"
+                mood_vector = row['mood_vector'] or ""
                 
-                results.append({
-                    'item_id': row['item_id'],
-                    'title': row['title'] or 'Unknown',
-                    'author': row['author'] or 'Unknown Artist',
-                    'embedding': embedding
-                })
+                # Parse all genres with scores, sorted by score (highest first)
+                song_genres = []
+                for pair in mood_vector.split(','):
+                    pair = pair.strip()
+                    if ':' not in pair:
+                        continue
+                    genre_name, score_str = pair.split(':', 1)
+                    genre_name = genre_name.strip().lower()
+                    
+                    try:
+                        score = float(score_str)
+                        song_genres.append((genre_name, score))
+                    except ValueError:
+                        continue
+                
+                # Sort by score descending
+                song_genres.sort(key=lambda x: x[1], reverse=True)
+                
+                # Find the HIGHEST scored genre that matches our target list
+                top_genre = None
+                for genre_name, score in song_genres:
+                    # Check if this genre EXACTLY matches any target genre (no substring matching!)
+                    for target_genre in sorted_genres:
+                        target_lower = target_genre.lower()
+                        # EXACT match only - "rock" should NOT match "hard rock"
+                        if target_lower == genre_name:
+                            top_genre = target_genre
+                            break
+                    
+                    # If we found a match, stop checking
+                    if top_genre:
+                        break
+                
+                # Add song to its top genre bucket
+                if top_genre:
+                    genre_songs[top_genre].append({
+                        'item_id': row['item_id'],
+                        'title': row['title'] or 'Unknown',
+                        'author': row['author'] or 'Unknown Artist',
+                        'embedding': embedding
+                    })
+                else:
+                    skipped += 1
+            
+            if skipped > 0:
+                logger.info(f"   📝 {skipped} songs not assigned yet (will use for fallback)")
+            
+            # FIRST: Sample from each genre bucket (only take songs_per_genre from each)
+            results = []
+            genre_counts = {}
+            sampled_item_ids = set()
+            
+            for genre in genres:
+                available = len(genre_songs[genre])
+                to_sample = min(songs_per_genre, available)
+                
+                if to_sample > 0:
+                    # Randomly sample (deterministic with numpy seed already set)
+                    indices = np.random.choice(available, size=to_sample, replace=False)
+                    sampled = [genre_songs[genre][i] for i in indices]
+                    results.extend(sampled)
+                    genre_counts[genre] = len(sampled)
+                    # Track which songs were actually sampled
+                    for song in sampled:
+                        sampled_item_ids.add(song['item_id'])
+                else:
+                    genre_counts[genre] = 0
+            
+            logger.info(f"   ✅ PASS 1 sampled: {len(results)} songs")
+            
+            # PASS 2: Fill underrepresented genres with UN-SAMPLED songs (including leftovers from other genres!)
+            # Collect all songs that were NOT sampled
+            unsampled_songs = []
+            for row in rows:
+                if row['item_id'] not in sampled_item_ids:
+                    embedding_bytes = bytes(row['embedding'])
+                    embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
+                    if len(embedding) == 512:
+                        unsampled_songs.append({
+                            'item_id': row['item_id'],
+                            'title': row['title'] or 'Unknown',
+                            'author': row['author'] or 'Unknown Artist',
+                            'embedding': embedding,
+                            'mood_vector': row['mood_vector'] or ""
+                        })
+            
+            logger.info(f"   🔄 PASS 2 FALLBACK: {len(unsampled_songs)} unsampled songs available (includes leftovers from popular genres)")
+            
+            # For each genre that needs more songs, check unsampled pool
+            for target_genre in sorted_genres:
+                current_count = genre_counts.get(target_genre, 0)
+                if current_count < songs_per_genre and unsampled_songs:
+                    needed = songs_per_genre - current_count
+                    target_lower = target_genre.lower()
+                    
+                    # Find unsampled songs that have this genre EXACTLY in their mood_vector
+                    candidates = []
+                    for song in unsampled_songs:
+                        mood_vector = song['mood_vector']
+                        # Check if target genre appears EXACTLY anywhere in mood_vector
+                        for pair in mood_vector.split(','):
+                            if ':' not in pair:
+                                continue
+                            genre_name = pair.split(':', 1)[0].strip().lower()
+                            
+                            # EXACT match only - "hard rock" must match "hard rock" exactly
+                            if target_lower == genre_name:
+                                candidates.append(song)
+                                break
+                    
+                    # Take what we need from candidates
+                    if candidates:
+                        to_add = min(needed, len(candidates))
+                        for i in range(to_add):
+                            song = candidates[i]
+                            results.append({
+                                'item_id': song['item_id'],
+                                'title': song['title'],
+                                'author': song['author'],
+                                'embedding': song['embedding']
+                            })
+                            genre_counts[target_genre] = genre_counts.get(target_genre, 0) + 1
+                            # Remove from unsampled
+                            unsampled_songs.remove(song)
+                        logger.info(f"   ✅ FALLBACK: Added {to_add} songs to '{target_genre}' (was {current_count}, now {genre_counts[target_genre]})")
             
             # Log distribution
-            logger.info(f"   ✅ Loaded {len(results)} songs with balanced distribution:")
+            logger.info(f"   ✅ Loaded {len(results)} UNIQUE songs with balanced distribution:")
             for genre in sorted(genre_counts.keys()):
                 logger.info(f"      {genre}: {genre_counts[genre]} songs")
             

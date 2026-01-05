@@ -60,12 +60,10 @@ class StudentCLAPDataset:
         # Initialize loaders
         self.db_loader = DatabaseLoader(self.db_config)
         
-        # Get cache size limit from config (default 2GB)
-        max_cache_gb = self.paths_config.get('max_cache_size_gb', 2.0)
+        # Jellyfin downloader (temporary audio storage - files deleted after processing)
         self.jellyfin_downloader = JellyfinDownloader(
             self.jellyfin_config,
-            cache_dir=self.paths_config['audio_cache'],
-            max_cache_size_gb=max_cache_gb
+            cache_dir=self.paths_config['audio_cache']
         )
         
         # Initialize mel spectrogram cache (MASSIVE speedup for epoch 2+!)
@@ -344,15 +342,26 @@ class StudentCLAPDataset:
                 audio_path = download_results.get(item_id)
                 
                 if audio_path is None:
-                    logger.error(f"Failed to download audio for {item_id}")
+                    logger.warning(f"⚠️ Skipping {item['title']}: download failed")
                     continue
                 
                 logger.debug(f"  Computing mel specs for: {item['title']}")
                 
+                # BULLETPROOF: Always delete audio file, even on error
                 try:
                     # Load audio with torchaudio (MUCH faster than librosa)
                     import torchaudio
-                    audio_tensor, sr = torchaudio.load(audio_path)
+                    import os
+                    
+                    try:
+                        audio_tensor, sr = torchaudio.load(audio_path)
+                    except Exception as load_error:
+                        logger.error(f"❌ Audio load failed for {item['title']}: {load_error}")
+                        # Delete corrupted file immediately
+                        if os.path.exists(audio_path):
+                            os.remove(audio_path)
+                            logger.info(f"      🗑️ Deleted corrupted audio: {audio_path}")
+                        continue
                     
                     # Convert to mono if needed and resample if necessary
                     if audio_tensor.shape[0] > 1:
@@ -390,17 +399,32 @@ class StudentCLAPDataset:
                     self.mel_cache.put(item_id, mel_specs)
                     logger.info(f"      ✅ Successfully cached: {item_id}")
                     
-                    # 🗑️ DELETE AUDIO FILE immediately after mel computation (free space!)
-                    try:
-                        import os
-                        if os.path.exists(audio_path):
-                            os.remove(audio_path)
-                            logger.debug(f"      🗑️ Deleted audio file to free space: {audio_path}")
-                    except Exception as e:
-                        logger.warning(f"      ⚠️ Could not delete audio file {audio_path}: {e}")
-                    
                     # Convert to tensor
                     mel_tensor = torch.from_numpy(mel_specs).float()
+                    
+                    # 🗑️ DELETE AUDIO FILE IMMEDIATELY - BULLETPROOF!
+                    if os.path.exists(audio_path):
+                        file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+                        try:
+                            os.remove(audio_path)
+                            logger.info(f"      🗑️ DELETED audio ({file_size_mb:.1f}MB): {os.path.basename(audio_path)}")
+                        except Exception as del_error:
+                            logger.error(f"      ❌ Delete failed: {del_error}")
+                            # Force delete with multiple retries
+                            import time
+                            for retry in range(5):
+                                time.sleep(0.2)
+                                try:
+                                    if os.path.exists(audio_path):
+                                        os.remove(audio_path)
+                                        logger.info(f"      ✅ Deleted on retry {retry+1}")
+                                        break
+                                except:
+                                    if retry == 4:
+                                        logger.error(f"      💀 CANNOT DELETE: {audio_path} - manual cleanup needed!")
+                    
+                    # Free up tensor memory immediately too
+                    del audio_data, audio_tensor, segments, segments_array
                     
                     sample = {
                         'item_id': item_id,
@@ -409,16 +433,58 @@ class StudentCLAPDataset:
                         'audio_path': audio_path,
                         'audio_segments': mel_tensor,  # Mel spectrograms!
                         'teacher_embedding': item['embedding'],
-                        'num_segments': len(segments)
+                        'num_segments': len(mel_specs)
                     }
                     
                     batch.append(sample)
                     
                 except Exception as e:
-                    logger.error(f"Failed to load item {item_id}: {e}")
+                    logger.error(f"❌ Processing failed for {item['title']} ({item_id}): {str(e)[:100]}")
+                    # CRITICAL: Delete audio file even on ANY error!
+                    import os
+                    if audio_path and os.path.exists(audio_path):
+                        try:
+                            file_size = os.path.getsize(audio_path) / (1024 * 1024)
+                            os.remove(audio_path)
+                            logger.info(f"      🗑️ Cleaned up failed file ({file_size:.1f}MB)")
+                        except Exception as cleanup_error:
+                            logger.error(f"      💀 Cannot delete failed file: {cleanup_error}")
+                            # Last resort: try multiple times
+                            import time
+                            for retry in range(3):
+                                time.sleep(0.5)
+                                try:
+                                    if os.path.exists(audio_path):
+                                        os.remove(audio_path)
+                                        logger.info(f"      ✅ Cleanup succeeded on retry {retry+1}")
+                                        break
+                                except:
+                                    pass
                     continue
                     
             logger.info(f"✅ PROCESSED batch: {len(batch)} songs ready for training")
+            
+            # 🧹 FINAL CLEANUP: Aggressively check for any remaining audio files
+            import os
+            audio_cache_dir = Path(self.paths_config['audio_cache'])
+            if audio_cache_dir.exists():
+                remaining_files = list(audio_cache_dir.glob('*'))
+                remaining_audio = [f for f in remaining_files if f.is_file()]
+                if remaining_audio:
+                    total_size_mb = sum(f.stat().st_size for f in remaining_audio) / (1024 * 1024)
+                    logger.info(f"   📁 Audio cache still has {len(remaining_audio)} files ({total_size_mb:.1f}MB)")
+                    if total_size_mb > 1500:  # Over 1.5GB? Aggressively clean old files
+                        logger.warning(f"   🧹 Cache over 1.5GB, cleaning up old audio files...")
+                        # Sort by modification time, delete oldest first
+                        remaining_audio.sort(key=lambda f: f.stat().st_mtime)
+                        cleaned = 0
+                        for old_file in remaining_audio[:len(remaining_audio)//2]:  # Delete oldest half
+                            try:
+                                old_file.unlink()
+                                cleaned += 1
+                            except:
+                                pass
+                        logger.info(f"   ✅ Cleaned {cleaned} old audio files")
             
             if batch:  # Only yield non-empty batches
                 yield batch
