@@ -229,7 +229,8 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
 
 def validate_real(trainer: StudentCLAPTrainer,
                  dataset: StudentCLAPDataset,
-                 config: dict) -> dict:
+                 config: dict,
+                 epoch: int = 1) -> dict:
     """
     Real validation using trained student model.
     
@@ -237,11 +238,12 @@ def validate_real(trainer: StudentCLAPTrainer,
         trainer: Student CLAP trainer with trained model
         dataset: Validation dataset
         config: Configuration dict
+        epoch: Current epoch number for logging
         
     Returns:
         Dict with validation metrics
     """
-    logger.info("🔍 Running REAL validation...")
+    logger.info(f"🔍 Running REAL validation (Epoch {epoch})...")
     
     trainer.model.eval()
     trainer.model.float()  # Ensure model is in float32 mode
@@ -253,7 +255,7 @@ def validate_real(trainer: StudentCLAPTrainer,
     
     with torch.no_grad():
         for batch_data in tqdm(dataset.iterate_batches_streaming(config['training']['batch_size'], shuffle=False),
-                              desc="Validation"):
+                              desc=f"Validation (Epoch {epoch})"):
             
             # Prepare batch
             batch = {
@@ -523,7 +525,7 @@ def train(config_path: str, resume: str = None):
         
         # Validate every few epochs
         if epoch % 5 == 0 or epoch == 1:
-            val_metrics = validate_real(trainer, val_dataset, config)
+            val_metrics = validate_real(trainer, val_dataset, config, epoch)
             print_evaluation_report(val_metrics, f"Validation - Epoch {epoch}")
             
             # Check for improvement (use cosine similarity as main metric)

@@ -270,6 +270,33 @@ class StudentCLAPDataset:
             
             # Download and compute mel specs for cache misses
             download_results = {}
+            
+            # 🛑 If cache limit reached in epoch 1, stop processing entirely
+            if self.cache_limit_reached and self.epoch == 1:
+                logger.info(f"⏭️ STOPPING batch processing - cache limit reached in epoch 1")
+                logger.info(f"   💡 Use only cached songs: {len(cached_items)} songs ready")
+                # Only yield cached items if any
+                if cached_items:
+                    batch = []
+                    for item in cached_items:
+                        item_id = item['item_id']
+                        mel_specs = self.mel_cache.get(item_id)
+                        mel_tensor = torch.from_numpy(mel_specs).float()
+                        sample = {
+                            'item_id': item_id,
+                            'title': item['title'],
+                            'author': item['author'],
+                            'audio_path': '',
+                            'audio_segments': mel_tensor,
+                            'teacher_embedding': item['embedding'],
+                            'num_segments': mel_specs.shape[0]
+                        }
+                        batch.append(sample)
+                    logger.info(f"✅ PROCESSED batch: {len(batch)} songs ready for training (from cache)")
+                    if batch:
+                        yield batch
+                return  # Stop the entire generator
+            
             if items_needing_download:
                 need_download_ids = [item['item_id'] for item in items_needing_download]
                 logger.info(f"   🔥 Parallel downloading {len(need_download_ids)} songs with {batch_size} workers...")
@@ -363,8 +390,8 @@ class StudentCLAPDataset:
                             # LIMIT REACHED - STOP PROCESSING NEW SONGS!
                             logger.warning(f"🛑 MEL CACHE LIMIT REACHED: {current_cache_gb:.1f}GB/{self.max_mel_cache_gb}GB")
                             stats = self.mel_cache.get_stats()
-                            logger.warning(f"   ✅ Cached {stats['total_songs']} songs successfully")
-                            logger.warning(f"   🛑 STOPPING EPOCH 1 HERE - Will use only these {stats['total_songs']} songs")
+                            logger.warning(f"   ✅ Cached {stats['total_cached']} songs successfully")
+                            logger.warning(f"   🛑 STOPPING EPOCH 1 HERE - Will use only these {stats['total_cached']} songs")
                             logger.warning(f"   💡 Restart training to begin epochs 2-15 with cached songs only!")
                             self.cache_limit_reached = True
                             # Don't process this song or any more - skip and end iteration
