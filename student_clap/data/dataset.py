@@ -125,20 +125,15 @@ class StudentCLAPDataset:
             # Get actual cached item IDs directly from database (most reliable)
             cached_item_ids = set(self.mel_cache.get_cached_item_ids())
             logger.info(f"   📊 Actual cache has {len(cached_item_ids)} songs")
-            logger.info(f"   🔬 Sample cached IDs: {list(cached_item_ids)[:5]}")
             
-            checked_count = 0
             for item in self.items:
                 item_id = item['item_id']
-                checked_count += 1
-                if checked_count <= 5:
-                    logger.info(f"   🔬 Checking item {checked_count}: {item_id} (type: {type(item_id)}) - in cache: {item_id in cached_item_ids}")
                 # Check if cached using direct set lookup
                 if item_id in cached_item_ids:
                     valid_items.append(item)
                     cached_count += 1
                 else:
-                    # Check if song exists in Jellyfin (quick HEAD request)
+                    # Check if song exists in Jellyfin
                     if self.jellyfin_downloader.check_item_exists(item_id):
                         valid_items.append(item)
                         available_count += 1
@@ -176,8 +171,8 @@ class StudentCLAPDataset:
                         break
                     
                     item_id = item['item_id']
-                    # Check if cached or available
-                    if self.mel_cache.has(item_id) or self.jellyfin_downloader.check_item_exists(item_id):
+                    # Check if cached or available (use set lookup, not has() method)
+                    if item_id in cached_item_ids or self.jellyfin_downloader.check_item_exists(item_id):
                         valid_items.append(item)
                         added_count += 1
                 
@@ -516,7 +511,6 @@ class StudentCLAPDataset:
         
         total_length = len(audio_data)
         
-        self.mel_cache.close()
         # If audio is shorter than 10 seconds, pad to 10 seconds
         if total_length <= segment_length:
             padded = np.pad(audio_data, (0, segment_length - total_length), mode='constant')

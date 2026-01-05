@@ -166,6 +166,7 @@ class MelSpectrogramCache:
         return {
             'total_cached': total_cached,
             'cache_size_mb': total_size_bytes / (1024 * 1024),
+            'cache_size_gb': total_size_bytes / (1024 * 1024 * 1024),
             'cache_hits': self.cache_hits,
             'cache_misses': self.cache_misses,
             'hit_rate_percent': hit_rate
