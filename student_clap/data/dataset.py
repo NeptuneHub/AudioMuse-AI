@@ -125,9 +125,14 @@ class StudentCLAPDataset:
             # Get actual cached item IDs directly from database (most reliable)
             cached_item_ids = set(self.mel_cache.get_cached_item_ids())
             logger.info(f"   📊 Actual cache has {len(cached_item_ids)} songs")
+            logger.info(f"   🔬 Sample cached IDs: {list(cached_item_ids)[:5]}")
             
+            checked_count = 0
             for item in self.items:
                 item_id = item['item_id']
+                checked_count += 1
+                if checked_count <= 5:
+                    logger.info(f"   🔬 Checking item {checked_count}: {item_id} (type: {type(item_id)}) - in cache: {item_id in cached_item_ids}")
                 # Check if cached using direct set lookup
                 if item_id in cached_item_ids:
                     valid_items.append(item)
