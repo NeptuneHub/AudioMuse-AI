@@ -271,31 +271,11 @@ class StudentCLAPDataset:
             # Download and compute mel specs for cache misses
             download_results = {}
             
-            # 🛑 If cache limit reached in epoch 1, stop processing entirely
-            if self.cache_limit_reached and self.epoch == 1:
-                logger.info(f"⏭️ STOPPING batch processing - cache limit reached in epoch 1")
-                logger.info(f"   💡 Use only cached songs: {len(cached_items)} songs ready")
-                # Only yield cached items if any
-                if cached_items:
-                    batch = []
-                    for item in cached_items:
-                        item_id = item['item_id']
-                        mel_specs = self.mel_cache.get(item_id)
-                        mel_tensor = torch.from_numpy(mel_specs).float()
-                        sample = {
-                            'item_id': item_id,
-                            'title': item['title'],
-                            'author': item['author'],
-                            'audio_path': '',
-                            'audio_segments': mel_tensor,
-                            'teacher_embedding': item['embedding'],
-                            'num_segments': mel_specs.shape[0]
-                        }
-                        batch.append(sample)
-                    logger.info(f"✅ PROCESSED batch: {len(batch)} songs ready for training (from cache)")
-                    if batch:
-                        yield batch
-                return  # Stop the entire generator
+            # In epochs 2+, we should only have cached items (no downloads needed)
+            if self.epoch > 1 and items_needing_download:
+                logger.warning(f"⚠️ EPOCH {self.epoch}: Found {len(items_needing_download)} uncached songs - this shouldn't happen!")
+                logger.warning(f"   Using only {len(cached_items)} cached songs for this batch")
+                items_needing_download = []  # Don't download in epoch 2+
             
             if items_needing_download:
                 need_download_ids = [item['item_id'] for item in items_needing_download]
@@ -394,8 +374,10 @@ class StudentCLAPDataset:
                             logger.warning(f"   🛑 STOPPING EPOCH 1 HERE - Will use only these {stats['total_cached']} songs")
                             logger.warning(f"   💡 Restart training to begin epochs 2-15 with cached songs only!")
                             self.cache_limit_reached = True
-                            # Don't process this song or any more - skip and end iteration
-                            logger.info(f"⏭️ Skipping remaining songs in epoch 1 (limit reached)")
+                            # Yield the current batch (with cached items) before stopping
+                            logger.info(f"⏭️ Yielding current batch ({len(batch)} songs) then stopping")
+                            if batch:
+                                yield batch
                             return  # Exit the generator early!
                         else:
                             # Still have space - cache this song
