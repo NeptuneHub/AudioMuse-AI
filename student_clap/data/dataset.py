@@ -68,7 +68,9 @@ class StudentCLAPDataset:
         # Initialize mel spectrogram cache (MASSIVE speedup for epoch 2+!)
         mel_cache_path = self.paths_config.get('mel_cache', './cache/mel_spectrograms.db')
         self.mel_cache = MelSpectrogramCache(mel_cache_path)
-        logger.info("🚀 Mel spectrogram cache enabled - subsequent epochs will be MUCH faster!")
+        self.max_mel_cache_gb = self.paths_config.get('max_mel_cache_size_gb', 100.0)
+        self.cache_limit_reached = False
+        logger.info(f"🚀 Mel cache enabled (max: {self.max_mel_cache_gb}GB) - epochs 2+ will be MUCH faster!")
         
         # Load embeddings (with optional balanced sampling)
         logger.info("Loading embeddings from database...")
@@ -86,6 +88,18 @@ class StudentCLAPDataset:
             all_items = self.db_loader.load_embeddings()
         
         logger.info(f"Loaded {len(all_items)} total items")
+        
+        # Check if we should filter to only cached songs (after first epoch or restart)
+        cached_item_ids = set(self.mel_cache.get_cached_item_ids())
+        if cached_item_ids:
+            cache_size_gb = self.mel_cache.get_cache_size_gb()
+            logger.info(f"📦 Found existing mel cache: {len(cached_item_ids)} songs, {cache_size_gb:.1f}GB")
+            
+            # Filter to only use cached songs if cache is substantial
+            if len(cached_item_ids) >= 1000:  # At least 1000 songs cached
+                logger.info(f"🎯 Using ONLY {len(cached_item_ids)} cached songs for training (cache reuse mode)")
+                all_items = [item for item in all_items if item['item_id'] in cached_item_ids]
+                self.cache_limit_reached = True  # Don't try to cache more
         
         # Split into train/val
         np.random.seed(42)  # Reproducible split
@@ -327,11 +341,20 @@ class StudentCLAPDataset:
                         fmax=self.audio_config['fmax']
                     )
                     
-                    # 💾 SAVE TO CACHE IMMEDIATELY (crash-safe commit!)
-                    # If training crashes after this, we won't re-download/re-compute this song!
-                    logger.debug(f"      💾 Saving mel to cache (crash-safe): {item['title']}")
-                    self.mel_cache.put(item_id, mel_specs)
-                    logger.debug(f"      ✅ Mel cached successfully: {item_id}")
+                    # 💾 SAVE TO CACHE (if not over limit)
+                    if not self.cache_limit_reached:
+                        # Check cache size before saving
+                        current_cache_gb = self.mel_cache.get_cache_size_gb()
+                        if current_cache_gb < self.max_mel_cache_gb:
+                            logger.debug(f"      💾 Saving mel to cache: {item['title']} ({current_cache_gb:.1f}GB/{self.max_mel_cache_gb}GB)")
+                            self.mel_cache.put(item_id, mel_specs)
+                            logger.debug(f"      ✅ Mel cached successfully: {item_id}")
+                        else:
+                            if not self.cache_limit_reached:
+                                logger.warning(f"⚠️ MEL CACHE LIMIT REACHED ({current_cache_gb:.1f}GB/{self.max_mel_cache_gb}GB)")
+                                logger.warning(f"   Songs after this will be computed fresh each epoch (not cached)")
+                                logger.warning(f"   Restart training to use only cached songs for all epochs")
+                                self.cache_limit_reached = True
                     
                     # 🗑️ DELETE AUDIO FILE immediately after mel computation (free space!)
                     try:

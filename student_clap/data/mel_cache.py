@@ -170,6 +170,28 @@ class MelSpectrogramCache:
             'cache_misses': self.cache_misses,
             'hit_rate_percent': hit_rate
         }
+    
+    def get_cache_size_gb(self) -> float:
+        """
+        Get total cache size in GB.
+        
+        Returns:
+            Cache size in gigabytes
+        """
+        cursor = self.conn.execute("SELECT SUM(LENGTH(mel_data)) as total_bytes FROM mel_spectrograms")
+        row = cursor.fetchone()
+        total_bytes = row[0] or 0
+        return total_bytes / (1024 * 1024 * 1024)
+    
+    def get_cached_item_ids(self) -> list:
+        """
+        Get list of all cached item IDs.
+        
+        Returns:
+            List of item_id strings
+        """
+        cursor = self.conn.execute("SELECT item_id FROM mel_spectrograms")
+        return [row[0] for row in cursor.fetchall()]
         
     def clear(self):
         """Clear all cached mel spectrograms."""

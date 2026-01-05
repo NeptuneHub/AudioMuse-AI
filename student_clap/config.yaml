@@ -66,8 +66,9 @@ training:
 # Paths
 paths:
   audio_cache: "./cache/audio"
-  max_cache_size_gb: 2         # Keep only 2GB in cache
+  max_cache_size_gb: 2         # Keep only 2GB in audio cache
   mel_cache: "./cache/mel_spectrograms.db"
+  max_mel_cache_size_gb: 110   # Max mel cache size (stops caching when reached, uses only cached songs)
   checkpoints: "./checkpoints"
   logs: "./logs"
   final_model: "./models/student_clap_audio.onnx"
