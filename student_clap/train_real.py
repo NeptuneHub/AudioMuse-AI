@@ -279,8 +279,15 @@ def validate_real(trainer: StudentCLAPTrainer,
                 else:
                     audio_segments = audio_segments.to(dtype=torch.float32, device=trainer.device)
                 
-                # Get averaged embedding - use forward() not process_audio_segments()!
-                avg_embedding = trainer.model(audio_segments)  # Mels already computed!
+                # Forward pass returns (num_segments, 512) - one embedding per segment
+                segment_embeddings = trainer.model(audio_segments)  # (num_segments, 512)
+                
+                # Average across segments to get single embedding per song (same as training!)
+                avg_embedding = torch.mean(segment_embeddings, dim=0, keepdim=True)  # (1, 512)
+                
+                # Re-normalize after averaging
+                avg_embedding = torch.nn.functional.normalize(avg_embedding, p=2, dim=1)
+                
                 student_embeddings.append(avg_embedding.cpu().numpy())
             
             # Stack and store
@@ -418,54 +425,6 @@ def train(config_path: str, resume: str = None):
     for key, value in train_stats.items():
         logger.info(f"  {key}: {value}")
     
-    # Check for resume argument first
-    if resume:
-        logger.info(f"\n⏮️ Manual resume requested: {resume}")
-        resume_path = resume
-    else:
-        # Auto-detect latest checkpoint
-        latest_path = checkpoint_dir / "latest.pth"
-        if latest_path.exists() and latest_path.is_file():
-            logger.info(f"\n🔍 Auto-detected existing checkpoint: {latest_path}")
-            resume_path = str(latest_path)
-        else:
-            logger.info(f"\n🆕 No existing checkpoints found - starting fresh training")
-            resume_path = None
-    
-    # Load checkpoint if we have one
-    if resume_path:
-        try:
-            logger.info(f"📂 Loading checkpoint: {resume_path}")
-            checkpoint = torch.load(resume_path, map_location=trainer.device)
-            
-            # Restore model and optimizer state
-            trainer.model.load_state_dict(checkpoint['model_state_dict'])
-            trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            
-            # Restore training state
-            start_epoch = checkpoint['epoch'] + 1
-            best_val_cosine = checkpoint.get('best_val_cosine', 0.0)
-            patience_counter = checkpoint.get('patience_counter', 0)
-            
-            # Show resume info
-            logger.info(f"✅ Successfully resumed from epoch {checkpoint['epoch']}")
-            logger.info(f"   📈 Best cosine similarity so far: {best_val_cosine:.4f}")
-            logger.info(f"   ⏰ Patience counter: {patience_counter}/{config['training']['early_stopping_patience']}")
-            logger.info(f"   🎯 Will continue from epoch {start_epoch}")
-            
-            # Check if we've already reached the target epochs
-            if start_epoch > config['training']['epochs']:
-                logger.info(f"🎉 Training already completed! (reached {config['training']['epochs']} epochs)")
-                return
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to load checkpoint: {e}")
-            logger.info("🔄 Starting training from scratch...")
-            start_epoch = 1
-            best_val_cosine = 0.0
-            patience_counter = 0
-    
     # Training loop
     logger.info("\n" + "=" * 60)
     if start_epoch == 1:
@@ -522,6 +481,26 @@ def train(config_path: str, resume: str = None):
         
         # Train epoch with REAL implementation
         train_metrics = train_epoch_real(trainer, train_dataset, config, epoch)
+        
+        # 💾 SAVE CHECKPOINT AFTER EVERY EPOCH (for resume capability)
+        logger.info(f"💾 Saving checkpoint after epoch {epoch}...")
+        epoch_checkpoint_path = checkpoint_dir / f"checkpoint_epoch_{epoch}.pth"
+        latest_checkpoint_path = checkpoint_dir / "latest.pth"
+        epoch_checkpoint_data = {
+            'epoch': epoch,
+            'model_state_dict': trainer.model.state_dict(),
+            'optimizer_state_dict': trainer.optimizer.state_dict(),
+            'scheduler_state_dict': trainer.scheduler.state_dict(),
+            'train_metrics': train_metrics,
+            'best_val_cosine': best_val_cosine,
+            'patience_counter': patience_counter,
+            'config': config,
+            'timestamp': time.time()
+        }
+        torch.save(epoch_checkpoint_data, epoch_checkpoint_path)
+        torch.save(epoch_checkpoint_data, latest_checkpoint_path)  # Also save as latest
+        logger.info(f"✅ Checkpoint saved: {epoch_checkpoint_path}")
+        logger.info(f"✅ Latest checkpoint updated: {latest_checkpoint_path}")
         
         # Validate every few epochs
         if epoch % 5 == 0 or epoch == 1:
