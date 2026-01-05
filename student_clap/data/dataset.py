@@ -103,7 +103,8 @@ class StudentCLAPDataset:
                 logger.info(f"🔨 EPOCH 1: Continuing cache build - will cache up to {self.max_mel_cache_gb}GB or {len(all_items)} songs")
                 logger.info(f"   Already cached: {len(cached_item_ids)} songs ({cache_size_gb:.1f}GB)")
                 logger.info(f"   Remaining: {len(all_items) - len(cached_item_ids)} songs to process")
-                # Use all_items as-is, cache miss handling will skip downloads for cached songs
+                # Don't set cache_limit_reached - let it continue caching up to max_mel_cache_gb
+                # Cache miss handling will download and cache new songs
             else:
                 logger.info(f"🎯 EPOCH {self.epoch}: Cache reuse mode - using ONLY {len(cached_item_ids)} cached songs")
                 all_items = [item for item in all_items if item['item_id'] in cached_item_ids]
@@ -257,12 +258,14 @@ class StudentCLAPDataset:
                     cached_items.append(item)
                     logger.debug(f"      ✓ CACHED: {item['title']}")
                 else:
-                    # If cache limit already reached in epoch 1, skip non-cached songs
-                    if self.cache_limit_reached and self.epoch == 1:
-                        logger.debug(f"      ⏭️ SKIPPING (limit reached): {item['title']}")
+                    # In epoch 1: Always try to download and cache (limit check happens during caching)
+                    # In epoch 2+: Skip uncached songs entirely
+                    if self.epoch == 1:
+                        items_needing_download.append(item)
+                        logger.debug(f"      ✗ NEED DOWNLOAD: {item['title']}")
+                    else:
+                        logger.debug(f"      ⏭️ SKIPPING (epoch {self.epoch}, not cached): {item['title']}")
                         continue
-                    items_needing_download.append(item)
-                    logger.debug(f"      ✗ NEED DOWNLOAD: {item['title']}")
             
             logger.info(f"   💾 Mel cache: {len(cached_items)} hits, {len(items_needing_download)} misses")
             if len(cached_items) > 0:
