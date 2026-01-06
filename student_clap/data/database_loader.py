@@ -282,7 +282,7 @@ class DatabaseLoader:
             logger.info(f"   ✅ PASS 1: Added ALL {total_cached_used} cached songs")
             
             # PASS 2: Add NEW songs to reach exactly sample_size limit
-            # Only sample from UNDER-REPRESENTED genres (below target)
+            # Intelligently balance under-represented genres
             remaining_budget = sample_size - len(results)
             logger.info(f"   💰 Budget remaining: {remaining_budget} new songs to reach {sample_size} total")
             
@@ -291,35 +291,64 @@ class DatabaseLoader:
                 target_per_genre = sample_size // len(genres)
                 logger.info(f"   🎯 Target per genre: ~{target_per_genre} songs")
                 
-                # Identify under-represented genres (below target)
-                under_represented_genres = [g for g in genres if genre_counts.get(g, 0) < target_per_genre]
-                logger.info(f"   📉 Under-represented genres: {len(under_represented_genres)}/{len(genres)} genres")
+                # Identify under-represented genres (below target) and calculate their needs
+                genre_needs = {}  # How many songs each genre needs to reach target
+                for genre in genres:
+                    current_count = genre_counts.get(genre, 0)
+                    if current_count < target_per_genre:
+                        need = target_per_genre - current_count
+                        available = len(genre_songs_new[genre])
+                        # Can only take what's available
+                        genre_needs[genre] = min(need, available)
                 
-                # Collect new songs ONLY from under-represented genres
-                available_new_songs = []
-                for genre in under_represented_genres:
-                    new_available = len(genre_songs_new[genre])
-                    if new_available > 0:
-                        for song in genre_songs_new[genre]:
-                            available_new_songs.append((genre, song))
+                logger.info(f"   📉 Under-represented genres: {len(genre_needs)}/{len(genres)} genres")
                 
-                logger.info(f"   📦 Available new songs from under-represented genres: {len(available_new_songs)}")
+                # Calculate total need across all under-represented genres
+                total_need = sum(genre_needs.values())
+                logger.info(f"   📊 Total need to reach target: {total_need} songs, budget: {remaining_budget}")
                 
-                # Randomly shuffle to avoid genre bias within under-represented genres
-                np.random.shuffle(available_new_songs)
+                # Proportionally allocate remaining budget to each genre based on their needs
+                genre_allocations = {}
+                if total_need <= remaining_budget:
+                    # We have enough budget - give each genre what it needs
+                    genre_allocations = genre_needs.copy()
+                else:
+                    # Not enough budget - proportionally distribute
+                    for genre, need in genre_needs.items():
+                        # Proportional allocation: (genre_need / total_need) * remaining_budget
+                        allocation = int((need / total_need) * remaining_budget)
+                        genre_allocations[genre] = allocation
+                    
+                    # Distribute remaining songs (due to rounding) to genres with highest need
+                    allocated_total = sum(genre_allocations.values())
+                    remaining = remaining_budget - allocated_total
+                    if remaining > 0:
+                        # Sort genres by need (descending) and give them the leftover songs
+                        sorted_genres = sorted(genre_needs.items(), key=lambda x: x[1], reverse=True)
+                        for i in range(remaining):
+                            genre = sorted_genres[i % len(sorted_genres)][0]
+                            genre_allocations[genre] = genre_allocations.get(genre, 0) + 1
                 
-                # Take exactly remaining_budget songs (or all available if less)
-                songs_to_add = min(remaining_budget, len(available_new_songs))
+                # Now sample from each genre according to allocation
+                songs_added = 0
+                for genre, allocation in genre_allocations.items():
+                    if allocation > 0 and len(genre_songs_new[genre]) > 0:
+                        # Randomly sample 'allocation' songs from this genre
+                        available_songs = genre_songs_new[genre].copy()
+                        np.random.shuffle(available_songs)
+                        
+                        # Take up to 'allocation' songs (or all available)
+                        to_take = min(allocation, len(available_songs))
+                        for i in range(to_take):
+                            song = available_songs[i]
+                            # Verify no duplicate (safety check)
+                            if song['item_id'] not in sampled_item_ids:
+                                results.append(song)
+                                sampled_item_ids.add(song['item_id'])
+                                genre_counts[genre] = genre_counts[genre] + 1
+                                songs_added += 1
                 
-                for i in range(songs_to_add):
-                    genre, song = available_new_songs[i]
-                    # Verify no duplicate (safety check)
-                    if song['item_id'] not in sampled_item_ids:
-                        results.append(song)
-                        sampled_item_ids.add(song['item_id'])
-                        genre_counts[genre] = genre_counts[genre] + 1
-                
-                logger.info(f"   ✅ PASS 2: Added {songs_to_add} new songs from under-represented genres")
+                logger.info(f"   ✅ PASS 2: Added {songs_added} new songs with intelligent balancing")
             
             logger.info(f"   🎉 FINAL: {len(results)} total songs ({total_cached_used} cached, {len(results) - total_cached_used} new)")
             logger.info(f"   ✅ Uniqueness verified: {len(sampled_item_ids)} unique item_ids = {len(results)} total songs")
