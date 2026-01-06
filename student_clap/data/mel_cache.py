@@ -11,6 +11,10 @@ import sqlite3
 import logging
 import numpy as np
 import io
+import zlib
+import threading
+import queue
+import time
 from pathlib import Path
 from typing import Optional, Dict
 
@@ -41,9 +45,101 @@ class MelSpectrogramCache:
         # Stats
         self.cache_hits = 0
         self.cache_misses = 0
+        self.migrations_completed = 0
+        
+        # Background compression thread
+        self.compression_queue = queue.Queue()
+        self.compression_thread = None
+        self.stop_compression = threading.Event()
+        self._start_background_compression()
         
         logger.info(f"Mel spectrogram cache initialized: {self.db_path}")
         
+    def _start_background_compression(self):
+        """Start background thread to compress uncompressed entries."""
+        self.compression_thread = threading.Thread(
+            target=self._compression_worker,
+            daemon=True,
+            name="MelCacheCompressor"
+        )
+        self.compression_thread.start()
+        logger.info("🔄 Background compression thread started")
+    
+    def _compression_worker(self):
+        """Background worker that compresses uncompressed entries."""
+        # Create separate connection for this thread
+        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        
+        last_log_time = time.time()
+        
+        while not self.stop_compression.is_set():
+            try:
+                # Get batch of uncompressed entries
+                cursor = conn.execute("""
+                    SELECT item_id, mel_data 
+                    FROM mel_spectrograms 
+                    WHERE compressed = 0 OR compressed IS NULL
+                    LIMIT 10
+                """)
+                batch = cursor.fetchall()
+                
+                if not batch:
+                    # No more work, sleep a bit
+                    time.sleep(1)
+                    continue
+                
+                # Compress batch
+                for item_id, mel_data_bytes in batch:
+                    if self.stop_compression.is_set():
+                        break
+                    
+                    try:
+                        compressed_bytes = zlib.compress(mel_data_bytes, level=6)
+                        
+                        conn.execute("""
+                            UPDATE mel_spectrograms 
+                            SET mel_data = ?, compressed = 1 
+                            WHERE item_id = ?
+                        """, (compressed_bytes, item_id))
+                        conn.commit()
+                        
+                        self.migrations_completed += 1
+                        
+                        # Log progress every 10 seconds
+                        if time.time() - last_log_time > 10:
+                            stats = self._get_compression_stats(conn)
+                            logger.info(f"🔄 Background compression: {stats['compressed_count']}/{stats['total']} "
+                                      f"({stats['compression_rate_percent']:.1f}% complete)")
+                            last_log_time = time.time()
+                    
+                    except Exception as e:
+                        logger.debug(f"Failed to compress {item_id}: {e}")
+                        continue
+                
+            except Exception as e:
+                logger.debug(f"Compression worker error: {e}")
+                time.sleep(1)
+        
+        conn.close()
+        logger.info("🔄 Background compression thread stopped")
+    
+    def _get_compression_stats(self, conn):
+        """Get compression stats using provided connection."""
+        cursor = conn.execute("SELECT COUNT(*) FROM mel_spectrograms")
+        total = cursor.fetchone()[0]
+        
+        cursor = conn.execute("SELECT COUNT(*) FROM mel_spectrograms WHERE compressed = 1")
+        compressed_count = cursor.fetchone()[0]
+        
+        compression_rate = (compressed_count / total * 100) if total > 0 else 0
+        
+        return {
+            'total': total,
+            'compressed_count': compressed_count,
+            'compression_rate_percent': compression_rate
+        }
+    
     def _create_table(self):
         """Create mel spectrogram cache table."""
         self.conn.execute("""
@@ -53,10 +149,18 @@ class MelSpectrogramCache:
                 mel_shape_time INTEGER NOT NULL,
                 mel_shape_mels INTEGER NOT NULL,
                 mel_data BLOB NOT NULL,
+                compressed INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         self.conn.commit()
+        
+        # Add compressed column to existing tables (migration)
+        try:
+            self.conn.execute("ALTER TABLE mel_spectrograms ADD COLUMN compressed INTEGER DEFAULT 0")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         
         # Create index for faster lookups
         self.conn.execute("""
@@ -75,7 +179,7 @@ class MelSpectrogramCache:
             Mel spectrogram array of shape (num_segments, 1, n_mels, time) or None if not cached
         """
         cursor = self.conn.execute(
-            "SELECT num_segments, mel_shape_time, mel_shape_mels, mel_data FROM mel_spectrograms WHERE item_id = ?",
+            "SELECT num_segments, mel_shape_time, mel_shape_mels, mel_data, compressed FROM mel_spectrograms WHERE item_id = ?",
             (item_id,)
         )
         row = cursor.fetchone()
@@ -85,7 +189,13 @@ class MelSpectrogramCache:
             return None
             
         # Deserialize mel spectrogram
-        num_segments, mel_time, mel_mels, mel_data_bytes = row
+        num_segments, mel_time, mel_mels, mel_data_bytes, is_compressed = row
+        
+        # Decompress if compressed (background thread handles migration)
+        if is_compressed:
+            mel_data_bytes = zlib.decompress(mel_data_bytes)
+        # If uncompressed, use as-is (background thread will compress it later)
+        
         mel_data = np.frombuffer(mel_data_bytes, dtype=np.float32)
         # Reshape to (num_segments, 1, n_mels, time)
         mel_data = mel_data.reshape(num_segments, 1, mel_mels, mel_time)
@@ -93,6 +203,51 @@ class MelSpectrogramCache:
         self.cache_hits += 1
         logger.debug(f"Cache HIT for {item_id}: {mel_data.shape}")
         return mel_data
+    
+    def get_with_compression_status(self, item_id: str) -> Optional[tuple]:
+        """
+        Get mel and compression status (for parallel batch loading).
+        Returns: (mel_array, is_compressed, original_bytes_if_uncompressed) or None
+        """
+        cursor = self.conn.execute(
+            "SELECT num_segments, mel_shape_time, mel_shape_mels, mel_data, compressed FROM mel_spectrograms WHERE item_id = ?",
+            (item_id,)
+        )
+        row = cursor.fetchone()
+        
+        if row is None:
+            self.cache_misses += 1
+            return None
+            
+        num_segments, mel_time, mel_mels, mel_data_bytes, is_compressed = row
+        
+        if is_compressed:
+            # Decompress and return
+            decompressed = zlib.decompress(mel_data_bytes)
+            mel_data = np.frombuffer(decompressed, dtype=np.float32)
+            mel_data = mel_data.reshape(num_segments, 1, mel_mels, mel_time)
+            self.cache_hits += 1
+            return (mel_data, True, None)  # Already compressed
+        else:
+            # Return uncompressed data + original bytes for compression
+            mel_data = np.frombuffer(mel_data_bytes, dtype=np.float32)
+            mel_data = mel_data.reshape(num_segments, 1, mel_mels, mel_time)
+            self.cache_hits += 1
+            return (mel_data, False, mel_data_bytes)  # Needs compression
+    
+    def compress_and_update(self, item_id: str, original_bytes: bytes):
+        """Compress and update entry (called from worker thread)."""
+        try:
+            compressed = zlib.compress(original_bytes, level=6)
+            conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("UPDATE mel_spectrograms SET mel_data = ?, compressed = 1 WHERE item_id = ?",
+                        (compressed, item_id))
+            conn.commit()
+            conn.close()
+            self.migrations_completed += 1
+        except Exception as e:
+            logger.debug(f"Compression failed for {item_id}: {e}")
         
     def put(self, item_id: str, mel_spectrogram: np.ndarray):
         """
@@ -113,18 +268,22 @@ class MelSpectrogramCache:
         mel_n_mels = mel_spectrogram.shape[2]     # 128
         mel_time = mel_spectrogram.shape[3]       # time frames
         
+        # Compress with zlib (level 6 for good balance)
+        compressed_bytes = zlib.compress(mel_data_bytes, level=6)
+        compression_ratio = len(mel_data_bytes) / len(compressed_bytes)
+        
         try:
             # Insert or replace (atomic operation)
             self.conn.execute("""
                 INSERT OR REPLACE INTO mel_spectrograms 
-                (item_id, num_segments, mel_shape_time, mel_shape_mels, mel_data)
-                VALUES (?, ?, ?, ?, ?)
-            """, (item_id, num_segments, mel_time, mel_n_mels, mel_data_bytes))
+                (item_id, num_segments, mel_shape_time, mel_shape_mels, mel_data, compressed)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (item_id, num_segments, mel_time, mel_n_mels, compressed_bytes, 1))
             
             # IMMEDIATE commit - ensures data is saved even if process crashes!
             self.conn.commit()
             
-            logger.debug(f"💾 Cache SAVED (crash-safe): {item_id} {mel_spectrogram.shape}")
+            logger.debug(f"💾 Cache SAVED (compressed {compression_ratio:.1f}x): {item_id} {mel_spectrogram.shape}")
             
         except Exception as e:
             logger.error(f"❌ Failed to save mel cache for {item_id}: {e}")
@@ -160,8 +319,17 @@ class MelSpectrogramCache:
         cursor = self.conn.execute("SELECT SUM(LENGTH(mel_data)) FROM mel_spectrograms")
         total_size_bytes = cursor.fetchone()[0] or 0
         
+        # Get compression stats
+        cursor = self.conn.execute("SELECT COUNT(*) FROM mel_spectrograms WHERE compressed = 1")
+        compressed_count = cursor.fetchone()[0]
+        
+        cursor = self.conn.execute("SELECT COUNT(*) FROM mel_spectrograms WHERE compressed = 0 OR compressed IS NULL")
+        uncompressed_count = cursor.fetchone()[0]
+        
         total_requests = self.cache_hits + self.cache_misses
         hit_rate = (self.cache_hits / total_requests * 100) if total_requests > 0 else 0
+        
+        compression_rate = (compressed_count / total_cached * 100) if total_cached > 0 else 0
         
         return {
             'total_cached': total_cached,
@@ -169,7 +337,10 @@ class MelSpectrogramCache:
             'cache_size_gb': total_size_bytes / (1024 * 1024 * 1024),
             'cache_hits': self.cache_hits,
             'cache_misses': self.cache_misses,
-            'hit_rate_percent': hit_rate
+            'hit_rate_percent': hit_rate,
+            'compressed_count': compressed_count,
+            'uncompressed_count': uncompressed_count,
+            'compression_rate_percent': compression_rate
         }
     
     def get_cache_size_gb(self) -> float:
@@ -201,11 +372,22 @@ class MelSpectrogramCache:
         logger.info("Cleared all mel spectrogram cache")
         
     def close(self):
-        """Close database connection."""
+        """Close database connection and stop background compression."""
+        # Stop background compression thread
+        if self.compression_thread and self.compression_thread.is_alive():
+            logger.info("🛑 Stopping background compression thread...")
+            self.stop_compression.set()
+            self.compression_thread.join(timeout=5)
+        
         stats = self.get_stats()
         logger.info(f"Mel cache stats: {stats['total_cached']} items, "
-                   f"{stats['cache_size_mb']:.1f}MB, "
+                   f"{stats['cache_size_gb']:.1f}GB, "
                    f"hit rate: {stats['hit_rate_percent']:.1f}%")
+        logger.info(f"Compression: {stats['compressed_count']} compressed, "
+                   f"{stats['uncompressed_count']} uncompressed "
+                   f"({stats['compression_rate_percent']:.1f}% migrated)")
+        if self.migrations_completed > 0:
+            logger.info(f"🔄 Background migrations completed: {self.migrations_completed}")
         self.conn.close()
         
     def __enter__(self):

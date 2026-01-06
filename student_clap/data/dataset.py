@@ -263,235 +263,148 @@ class StudentCLAPDataset:
             end_idx = min(start_idx + batch_size, len(self))
             batch_indices = indices[start_idx:end_idx]
             
-            logger.info(f"📥 DOWNLOADING batch {start_idx//batch_size + 1}: songs {start_idx+1}-{end_idx}")
+            logger.info(f"📥 Loading batch {start_idx//batch_size + 1}: songs {start_idx+1}-{end_idx}")
             
             # Prepare batch items
             batch_items = [self.items[idx] for idx in batch_indices]
-            batch_item_ids = [item['item_id'] for item in batch_items]
             
-            # 🚀 CHECK MEL CACHE FIRST - skip download/compute if already saved!
-            items_needing_download = []
-            cached_items = []
+            # Check cache status and prepare tasks
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            import threading
             
-            logger.info(f"   🔍 Checking mel cache for {len(batch_items)} songs...")
+            tasks_to_download = []
+            tasks_to_compress = []
+            tasks_cached = []
+            
             for item in batch_items:
-                if self.mel_cache.has(item['item_id']):
-                    cached_items.append(item)
-                    logger.debug(f"      ✓ CACHED: {item['title']}")
-                else:
-                    # In epoch 1: Always try to download and cache (limit check happens during caching)
-                    # In epoch 2+: Skip uncached songs entirely
+                result = self.mel_cache.get_with_compression_status(item['item_id'])
+                if result is None:
+                    # Not cached - needs download
                     if self.epoch == 1:
-                        items_needing_download.append(item)
-                        logger.debug(f"      ✗ NEED DOWNLOAD: {item['title']}")
+                        tasks_to_download.append(item)
+                else:
+                    mel_data, is_compressed, original_bytes = result
+                    if is_compressed:
+                        tasks_cached.append((item, mel_data))
                     else:
-                        logger.debug(f"      ⏭️ SKIPPING (epoch {self.epoch}, not cached): {item['title']}")
-                        continue
+                        tasks_to_compress.append((item, mel_data, original_bytes))
             
-            logger.info(f"   💾 Mel cache: {len(cached_items)} hits, {len(items_needing_download)} misses")
-            if len(cached_items) > 0:
-                logger.info(f"      🎉 Skipping download/compute for {len(cached_items)} songs (already processed!)")
+            logger.info(f"   📊 {len(tasks_cached)} compressed, "
+                       f"{len(tasks_to_compress)} uncompressed, "
+                       f"{len(tasks_to_download)} to download")
             
-            # Download and compute mel specs for cache misses
-            download_results = {}
-            
-            # In epochs 2+, we should only have cached items (no downloads needed)
-            if self.epoch > 1 and items_needing_download:
-                logger.warning(f"⚠️ EPOCH {self.epoch}: Found {len(items_needing_download)} uncached songs - this shouldn't happen!")
-                logger.warning(f"   Using only {len(cached_items)} cached songs for this batch")
-                items_needing_download = []  # Don't download in epoch 2+
-            
-            if items_needing_download:
-                need_download_ids = [item['item_id'] for item in items_needing_download]
-                logger.info(f"   🔥 Parallel downloading {len(need_download_ids)} songs with {batch_size} workers...")
-                download_results = self.jellyfin_downloader.download_batch(
-                    need_download_ids, 
-                    max_workers=batch_size  # Use batch_size workers for optimal parallelism
-                )
-                logger.info(f"   ✅ Downloads complete! Computing mel spectrograms...")
-            
-            # Process all items (cached + newly downloaded)
+            # Process in parallel with max 4 threads
             batch = []
             
-            # 1. Load cached items (instant!)
-            for item in cached_items:
-                item_id = item['item_id']
-                try:
-                    # Load mel spectrograms from cache
-                    mel_specs = self.mel_cache.get(item_id)
-                    
-                    # Convert to tensor
-                    mel_tensor = torch.from_numpy(mel_specs).float()
-                    
-                    sample = {
-                        'item_id': item_id,
-                        'title': item['title'],
-                        'author': item['author'],
-                        'audio_path': 'cached',
-                        'audio_segments': mel_tensor,  # Mel spectrograms from cache!
-                        'teacher_embedding': item['embedding'],
-                        'num_segments': len(mel_specs)
-                    }
-                    batch.append(sample)
-                    logger.debug(f"  ✓ Loaded from cache: {item['title']}")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to load cached item {item_id}: {e}")
-                    continue
+            def process_cached(item, mel_data):
+                mel_tensor = torch.from_numpy(mel_data).float()
+                return {
+                    'item_id': item['item_id'],
+                    'title': item['title'],
+                    'author': item['author'],
+                    'audio_path': 'cached',
+                    'audio_segments': mel_tensor,
+                    'teacher_embedding': item['embedding'],
+                    'num_segments': len(mel_data)
+                }
             
-            # 2. Process newly downloaded items
-            for item in items_needing_download:
-                item_id = item['item_id']
-                audio_path = download_results.get(item_id)
+            def process_compress(item, mel_data, original_bytes):
+                # Start compression in background
+                threading.Thread(
+                    target=self.mel_cache.compress_and_update,
+                    args=(item['item_id'], original_bytes),
+                    daemon=True
+                ).start()
                 
-                if audio_path is None:
-                    logger.warning(f"⚠️ Skipping {item['title']}: download failed")
-                    continue
+                mel_tensor = torch.from_numpy(mel_data).float()
+                return {
+                    'item_id': item['item_id'],
+                    'title': item['title'],
+                    'author': item['author'],
+                    'audio_path': 'cached (compressing)',
+                    'audio_segments': mel_tensor,
+                    'teacher_embedding': item['embedding'],
+                    'num_segments': len(mel_data)
+                }
+            
+            def process_download(item):
+                # Download, compute, save compressed
+                download_result = self.jellyfin_downloader.download_batch([item['item_id']], max_workers=1)
+                audio_path = download_result.get(item['item_id'])
+                if not audio_path:
+                    return None
                 
-                logger.debug(f"  Computing mel specs for: {item['title']}")
-                
-                # BULLETPROOF: Always delete audio file, even on error
                 try:
-                    # Load audio with torchaudio (MUCH faster than librosa)
                     import torchaudio
                     import os
+                    from student_clap.preprocessing.audio_segmentation import segment_audio
+                    from student_clap.preprocessing.mel_spectrogram import compute_mel_spectrogram_batch
                     
-                    try:
-                        audio_tensor, sr = torchaudio.load(audio_path)
-                    except Exception as load_error:
-                        logger.error(f"❌ Audio load failed for {item['title']}: {load_error}")
-                        # Delete corrupted file immediately
-                        if os.path.exists(audio_path):
-                            os.remove(audio_path)
-                            logger.info(f"      🗑️ Deleted corrupted audio: {audio_path}")
-                        continue
-                    
-                    # Convert to mono if needed and resample if necessary
+                    audio_tensor, sr = torchaudio.load(audio_path)
                     if audio_tensor.shape[0] > 1:
                         audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
-                    
                     if sr != self.audio_config['sample_rate']:
                         resampler = torchaudio.transforms.Resample(sr, self.audio_config['sample_rate'])
                         audio_tensor = resampler(audio_tensor)
                     
-                    # Convert to numpy for segmentation
                     audio_data = audio_tensor.squeeze(0).numpy()
+                    segments = segment_audio(audio_data, self.audio_config['sample_rate'],
+                                            self.audio_config['segment_length'], self.audio_config['hop_length'])
                     
-                    # Segment audio
-                    segments = segment_audio(
-                        audio_data,
-                        sample_rate=self.audio_config['sample_rate'],
-                        segment_length=self.audio_config['segment_length'],
-                        hop_length=self.audio_config['hop_length']
-                    )
-                    
-                    # 🚀 COMPUTE MEL SPECTROGRAMS (only once, then cached!)
                     segments_array = np.array(segments) if isinstance(segments, list) else segments
                     mel_specs = compute_mel_spectrogram_batch(
-                        segments_array,
-                        sr=self.audio_config['sample_rate'],
-                        n_mels=self.audio_config['n_mels'],
-                        n_fft=self.audio_config['n_fft'],
+                        segments_array, sr=self.audio_config['sample_rate'],
+                        n_mels=self.audio_config['n_mels'], n_fft=self.audio_config['n_fft'],
                         hop_length=self.audio_config['hop_length_stft'],
-                        fmin=self.audio_config['fmin'],
-                        fmax=self.audio_config['fmax']
+                        fmin=self.audio_config['fmin'], fmax=self.audio_config['fmax']
                     )
                     
-                    # 💾 SAVE TO CACHE (no size limit - cache all songs!)
-                    logger.info(f"      💾 Caching mel for: {item['title']} (ID: {item_id})")
-                    self.mel_cache.put(item_id, mel_specs)
-                    logger.info(f"      ✅ Successfully cached: {item_id}")
+                    # Save compressed
+                    self.mel_cache.put(item['item_id'], mel_specs)
                     
-                    # Convert to tensor
-                    mel_tensor = torch.from_numpy(mel_specs).float()
-                    
-                    # 🗑️ DELETE AUDIO FILE IMMEDIATELY - BULLETPROOF!
+                    # Delete audio
                     if os.path.exists(audio_path):
-                        file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
-                        try:
-                            os.remove(audio_path)
-                            logger.info(f"      🗑️ DELETED audio ({file_size_mb:.1f}MB): {os.path.basename(audio_path)}")
-                        except Exception as del_error:
-                            logger.error(f"      ❌ Delete failed: {del_error}")
-                            # Force delete with multiple retries
-                            import time
-                            for retry in range(5):
-                                time.sleep(0.2)
-                                try:
-                                    if os.path.exists(audio_path):
-                                        os.remove(audio_path)
-                                        logger.info(f"      ✅ Deleted on retry {retry+1}")
-                                        break
-                                except:
-                                    if retry == 4:
-                                        logger.error(f"      💀 CANNOT DELETE: {audio_path} - manual cleanup needed!")
+                        os.remove(audio_path)
                     
-                    # Free up tensor memory immediately too
-                    del audio_data, audio_tensor, segments, segments_array
-                    
-                    sample = {
-                        'item_id': item_id,
+                    mel_tensor = torch.from_numpy(mel_specs).float()
+                    return {
+                        'item_id': item['item_id'],
                         'title': item['title'],
                         'author': item['author'],
                         'audio_path': audio_path,
-                        'audio_segments': mel_tensor,  # Mel spectrograms!
+                        'audio_segments': mel_tensor,
                         'teacher_embedding': item['embedding'],
                         'num_segments': len(mel_specs)
                     }
-                    
-                    batch.append(sample)
-                    
                 except Exception as e:
-                    logger.error(f"❌ Processing failed for {item['title']} ({item_id}): {str(e)[:100]}")
-                    # CRITICAL: Delete audio file even on ANY error!
-                    import os
-                    if audio_path and os.path.exists(audio_path):
-                        try:
-                            file_size = os.path.getsize(audio_path) / (1024 * 1024)
-                            os.remove(audio_path)
-                            logger.info(f"      🗑️ Cleaned up failed file ({file_size:.1f}MB)")
-                        except Exception as cleanup_error:
-                            logger.error(f"      💀 Cannot delete failed file: {cleanup_error}")
-                            # Last resort: try multiple times
-                            import time
-                            for retry in range(3):
-                                time.sleep(0.5)
-                                try:
-                                    if os.path.exists(audio_path):
-                                        os.remove(audio_path)
-                                        logger.info(f"      ✅ Cleanup succeeded on retry {retry+1}")
-                                        break
-                                except:
-                                    pass
-                    continue
-                    
-            logger.info(f"✅ PROCESSED batch: {len(batch)} songs ready for training")
+                    logger.error(f"Failed to process {item['title']}: {e}")
+                    return None
             
-            # 🧹 FINAL CLEANUP: Aggressively check for any remaining audio files
-            import os
-            audio_cache_dir = Path(self.paths_config['audio_cache'])
-            if audio_cache_dir.exists():
-                remaining_files = list(audio_cache_dir.glob('*'))
-                remaining_audio = [f for f in remaining_files if f.is_file()]
-                if remaining_audio:
-                    total_size_mb = sum(f.stat().st_size for f in remaining_audio) / (1024 * 1024)
-                    logger.info(f"   📁 Audio cache still has {len(remaining_audio)} files ({total_size_mb:.1f}MB)")
-                    if total_size_mb > 1500:  # Over 1.5GB? Aggressively clean old files
-                        logger.warning(f"   🧹 Cache over 1.5GB, cleaning up old audio files...")
-                        # Sort by modification time, delete oldest first
-                        remaining_audio.sort(key=lambda f: f.stat().st_mtime)
-                        cleaned = 0
-                        for old_file in remaining_audio[:len(remaining_audio)//2]:  # Delete oldest half
-                            try:
-                                old_file.unlink()
-                                cleaned += 1
-                            except:
-                                pass
-                        logger.info(f"   ✅ Cleaned {cleaned} old audio files")
-            
-            if batch:  # Only yield non-empty batches
-                yield batch
+            # Execute all tasks in parallel
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = []
                 
+                for item, mel_data in tasks_cached:
+                    futures.append(executor.submit(process_cached, item, mel_data))
+                
+                for item, mel_data, original_bytes in tasks_to_compress:
+                    futures.append(executor.submit(process_compress, item, mel_data, original_bytes))
+                
+                for item in tasks_to_download:
+                    futures.append(executor.submit(process_download, item))
+                
+                for future in as_completed(futures):
+                    sample = future.result()
+                    if sample:
+                        batch.append(sample)
+            
+            logger.info(f"   ✅ Batch ready: {len(batch)} samples")
+            
+            if len(batch) == 0:
+                continue
+                
+            yield batch
+    
     def get_dataset_stats(self) -> Dict:
         """
         Get dataset statistics.
