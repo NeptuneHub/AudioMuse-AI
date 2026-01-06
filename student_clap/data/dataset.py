@@ -174,6 +174,7 @@ class StudentCLAPDataset:
             for item, mel_data in tasks_cached:
                 # Get teacher embedding from cache
                 teacher_embedding = self.mel_cache.get_embedding(item['item_id'])
+                teacher_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
                 if teacher_embedding is None:
                     logger.warning(f"Missing teacher embedding for {item['item_id']}, will reprocess")
                     tasks_to_process.append(item)
@@ -188,6 +189,7 @@ class StudentCLAPDataset:
                     'audio_path': 'cached',
                     'audio_segments': mel_tensor,
                     'teacher_embedding': teacher_embedding,
+                    'teacher_segment_embeddings': teacher_segment_embeddings,
                     'num_segments': len(mel_data)
                 })
             
@@ -195,6 +197,7 @@ class StudentCLAPDataset:
             for item, mel_data, original_bytes in tasks_to_compress:
                 # Get teacher embedding from cache
                 teacher_embedding = self.mel_cache.get_embedding(item['item_id'])
+                teacher_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
                 if teacher_embedding is None:
                     logger.warning(f"Missing teacher embedding for {item['item_id']}, will reprocess")
                     tasks_to_process.append(item)
@@ -216,6 +219,7 @@ class StudentCLAPDataset:
                     'audio_path': 'cached (compressing)',
                     'audio_segments': mel_tensor,
                     'teacher_embedding': teacher_embedding,
+                    'teacher_segment_embeddings': teacher_segment_embeddings,
                     'num_segments': len(mel_data)
                 })
             
@@ -231,17 +235,21 @@ class StudentCLAPDataset:
                         # Check what's already cached
                         cached_mel = self.mel_cache.get(item['item_id'])
                         cached_embedding = self.mel_cache.get_embedding(item['item_id'])
+                        cached_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
                         
                         # Get teacher embedding (compute if not cached)
-                        if cached_embedding is not None:
+                        if cached_embedding is not None and cached_segment_embeddings is not None:
                             teacher_embedding = cached_embedding
+                            teacher_segment_embeddings = cached_segment_embeddings
                         else:
-                            teacher_embedding, duration_sec, num_segments = self.clap_embedder.analyze_audio(audio_path)
+                            teacher_embedding, duration_sec, num_segments, teacher_segment_embeddings = self.clap_embedder.analyze_audio(audio_path)
                             if teacher_embedding is None:
                                 logger.error(f"CLAP analysis failed for {item['title']}")
                                 continue
-                            # Cache the embedding
+                            # Cache both averaged and per-segment embeddings
                             self.mel_cache.put_embedding(item['item_id'], teacher_embedding, audio_path)
+                            if teacher_segment_embeddings:
+                                self.mel_cache.put_segment_embeddings(item['item_id'], teacher_segment_embeddings)
                         
                         # Get mel spectrograms (compute if not cached)
                         if cached_mel is not None:
@@ -289,6 +297,7 @@ class StudentCLAPDataset:
                             'audio_path': audio_path,
                             'audio_segments': mel_tensor,
                             'teacher_embedding': teacher_embedding,
+                            'teacher_segment_embeddings': teacher_segment_embeddings,
                             'num_segments': len(mel_specs)
                         })
                     except Exception as e:

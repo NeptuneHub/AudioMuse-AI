@@ -61,16 +61,43 @@ class MelSpectrogramCache:
         """)
         self.conn.commit()
         
-        # Create song_embeddings table for teacher CLAP embeddings
+        # Create song_embeddings table for teacher CLAP embeddings (averaged)
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS song_embeddings (
                 item_id TEXT PRIMARY KEY,
                 embedding BLOB NOT NULL,
                 file_path TEXT NOT NULL,
+                compressed INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         self.conn.commit()
+        
+        # Create segment_embeddings table for per-segment teacher CLAP embeddings
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS segment_embeddings (
+                item_id TEXT NOT NULL,
+                segment_index INTEGER NOT NULL,
+                embedding BLOB NOT NULL,
+                compressed INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (item_id, segment_index)
+            )
+        """)
+        self.conn.commit()
+        
+        # Add compressed column to existing tables (migration)
+        try:
+            self.conn.execute("ALTER TABLE song_embeddings ADD COLUMN compressed INTEGER DEFAULT 0")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        
+        try:
+            self.conn.execute("ALTER TABLE segment_embeddings ADD COLUMN compressed INTEGER DEFAULT 0")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         
         # Add compressed column to existing tables (migration)
         try:
@@ -85,6 +112,9 @@ class MelSpectrogramCache:
         """)
         self.conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_embedding_item_id ON song_embeddings(item_id)
+        """)
+        self.conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_segment_item_id ON segment_embeddings(item_id)
         """)
         self.conn.commit()
         
@@ -293,25 +323,30 @@ class MelSpectrogramCache:
     
     def put_embedding(self, item_id: str, embedding: np.ndarray, file_path: str):
         """
-        Store teacher CLAP embedding for a song.
+        Store teacher CLAP embedding for a song (compressed).
         
         Args:
             item_id: Song item ID
             embedding: Teacher embedding array (512-dim)
             file_path: Full path to audio file
         """
-        # Serialize embedding (uncompressed)
+        # Serialize embedding
+        if embedding.dtype != np.float32:
+            embedding = embedding.astype(np.float32)
         embedding_bytes = embedding.tobytes()
         
+        # Compress with zlib (embeddings are ~2KB each, but good for storage)
+        compressed_bytes = zlib.compress(embedding_bytes, level=6)
+        
         self.conn.execute(
-            "INSERT OR REPLACE INTO song_embeddings (item_id, embedding, file_path) VALUES (?, ?, ?)",
-            (item_id, embedding_bytes, file_path)
+            "INSERT OR REPLACE INTO song_embeddings (item_id, embedding, file_path, compressed) VALUES (?, ?, ?, ?)",
+            (item_id, compressed_bytes, file_path, 1)
         )
         self.conn.commit()
     
     def get_embedding(self, item_id: str) -> Optional[np.ndarray]:
         """
-        Get teacher CLAP embedding from cache.
+        Get teacher CLAP embedding from cache (with decompression).
         
         Args:
             item_id: Song item ID
@@ -320,7 +355,7 @@ class MelSpectrogramCache:
             Embedding array (512-dim) or None if not cached
         """
         cursor = self.conn.execute(
-            "SELECT embedding FROM song_embeddings WHERE item_id = ?",
+            "SELECT embedding, compressed FROM song_embeddings WHERE item_id = ?",
             (item_id,)
         )
         row = cursor.fetchone()
@@ -328,7 +363,12 @@ class MelSpectrogramCache:
         if row is None:
             return None
         
-        embedding_bytes = row[0]
+        embedding_bytes, is_compressed = row
+        
+        # Decompress if needed
+        if is_compressed:
+            embedding_bytes = zlib.decompress(embedding_bytes)
+        
         embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
         return embedding
     
@@ -344,6 +384,81 @@ class MelSpectrogramCache:
         """
         cursor = self.conn.execute(
             "SELECT COUNT(*) FROM song_embeddings WHERE item_id = ?",
+            (item_id,)
+        )
+        count = cursor.fetchone()[0]
+        return count > 0
+    
+    def put_segment_embeddings(self, item_id: str, segment_embeddings: list):
+        """
+        Store per-segment teacher CLAP embeddings for a song (compressed).
+        
+        Args:
+            item_id: Song item ID
+            segment_embeddings: List of embedding arrays (one per segment, each 512-dim)
+        """
+        # Delete existing segments first
+        self.conn.execute("DELETE FROM segment_embeddings WHERE item_id = ?", (item_id,))
+        
+        # Insert all segments with compression
+        for segment_idx, embedding in enumerate(segment_embeddings):
+            if embedding.dtype != np.float32:
+                embedding = embedding.astype(np.float32)
+            embedding_bytes = embedding.tobytes()
+            
+            # Compress
+            compressed_bytes = zlib.compress(embedding_bytes, level=6)
+            
+            self.conn.execute(
+                "INSERT INTO segment_embeddings (item_id, segment_index, embedding, compressed) VALUES (?, ?, ?, ?)",
+                (item_id, segment_idx, compressed_bytes, 1)
+            )
+        
+        self.conn.commit()
+        logger.debug(f"💾 Cached {len(segment_embeddings)} compressed segment embeddings for {item_id}")
+    
+    def get_segment_embeddings(self, item_id: str) -> Optional[list]:
+        """
+        Get per-segment teacher CLAP embeddings from cache (with decompression).
+        
+        Args:
+            item_id: Song item ID
+            
+        Returns:
+            List of embedding arrays (512-dim each) or None if not cached
+        """
+        cursor = self.conn.execute(
+            "SELECT segment_index, embedding, compressed FROM segment_embeddings WHERE item_id = ? ORDER BY segment_index",
+            (item_id,)
+        )
+        rows = cursor.fetchall()
+        
+        if not rows:
+            return None
+        
+        embeddings = []
+        for segment_idx, embedding_bytes, is_compressed in rows:
+            # Decompress if needed
+            if is_compressed:
+                embedding_bytes = zlib.decompress(embedding_bytes)
+            
+            embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
+            embeddings.append(embedding)
+        
+        return embeddings
+    
+    def has_segment_embeddings(self, item_id: str) -> bool:
+        """
+        Check if per-segment teacher embeddings are cached for a song.
+        
+        Args:
+            item_id: Song item ID
+            
+        Returns:
+            True if segment embeddings are cached
+        """
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) FROM segment_embeddings WHERE item_id = ?",
             (item_id,)
         )
         count = cursor.fetchone()[0]

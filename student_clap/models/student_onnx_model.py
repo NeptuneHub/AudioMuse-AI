@@ -265,8 +265,12 @@ class StudentCLAPTrainer:
         self.mse_weight = config['training']['mse_weight']
         self.cosine_weight = config['training']['cosine_weight']
         
+        # Training strategy
+        self.training_strategy = config['training'].get('training_strategy', 'averaged')
+        
         logger.info(f"Initialized Student CLAP trainer on {self.device}")
         logger.info(f"Model parameters: {self.model.count_parameters()}")
+        logger.info(f"Training strategy: {self.training_strategy}")
         
     def compute_loss(self, 
                     student_embeddings: torch.Tensor, 
@@ -337,7 +341,11 @@ class StudentCLAPTrainer:
         student_embeddings = []
         teacher_embeddings = []
         
-        for i, (mel_segments, teacher_emb) in enumerate(zip(batch['audio_segments'], batch['teacher_embeddings'])):
+        for i, (mel_segments, teacher_emb, teacher_segment_embs) in enumerate(zip(
+            batch['audio_segments'], 
+            batch['teacher_embeddings'],
+            batch.get('teacher_segment_embeddings', [None] * len(batch['audio_segments']))
+        )):
             # mel_segments is already computed mel spectrograms: (num_segments, 1, n_mels, time)
             # Convert to tensor if needed
             if not isinstance(mel_segments, torch.Tensor):
@@ -353,14 +361,43 @@ class StudentCLAPTrainer:
             # Forward pass through model directly (mels already computed!)
             segment_embeddings = self.model.forward(mel_segments)  # (num_segments, 512)
             
-            # Average embeddings across segments (same as teacher CLAP)
-            avg_embedding = torch.mean(segment_embeddings, dim=0, keepdim=True)  # (1, 512)
+            # Training strategy determines what we train on
+            if self.training_strategy == "segments":
+                # Train on individual segments (more training samples!)
+                for seg_idx, seg_emb in enumerate(segment_embeddings):
+                    student_embeddings.append(seg_emb.unsqueeze(0))  # (1, 512)
+                    # Use per-segment teacher if available, otherwise use averaged
+                    if teacher_segment_embs is not None and seg_idx < len(teacher_segment_embs):
+                        teacher_embeddings.append(teacher_segment_embs[seg_idx])
+                    else:
+                        teacher_embeddings.append(teacher_emb)  # Fallback to averaged
+                    
+            elif self.training_strategy == "averaged":
+                # Original approach: train only on averaged embedding
+                avg_embedding = torch.mean(segment_embeddings, dim=0, keepdim=True)  # (1, 512)
+                avg_embedding = F.normalize(avg_embedding, p=2, dim=1)
+                student_embeddings.append(avg_embedding)
+                teacher_embeddings.append(teacher_emb)
+                
+            elif self.training_strategy == "both":
+                # BEST: Train on individual segments AND averaged (recommended!)
+                # 1. Add individual segment embeddings with their corresponding teacher segments
+                for seg_idx, seg_emb in enumerate(segment_embeddings):
+                    student_embeddings.append(seg_emb.unsqueeze(0))  # (1, 512)
+                    # Use per-segment teacher if available, otherwise use averaged
+                    if teacher_segment_embs is not None and seg_idx < len(teacher_segment_embs):
+                        teacher_embeddings.append(teacher_segment_embs[seg_idx])
+                    else:
+                        teacher_embeddings.append(teacher_emb)  # Fallback to averaged
+                
+                # 2. Also add the averaged embedding with averaged teacher
+                avg_embedding = torch.mean(segment_embeddings, dim=0, keepdim=True)  # (1, 512)
+                avg_embedding = F.normalize(avg_embedding, p=2, dim=1)
+                student_embeddings.append(avg_embedding)
+                teacher_embeddings.append(teacher_emb)
             
-            # Re-normalize after averaging
-            avg_embedding = F.normalize(avg_embedding, p=2, dim=1)
-            
-            student_embeddings.append(avg_embedding)
-            teacher_embeddings.append(teacher_emb)
+            else:
+                raise ValueError(f"Unknown training_strategy: {self.training_strategy}")
         
         # Stack embeddings
         student_embeddings = torch.cat(student_embeddings, dim=0)  # (batch_size, 512)
@@ -393,6 +430,7 @@ class StudentCLAPTrainer:
         scaled_loss_dict = {k: v * self.gradient_accumulation_steps if 'loss' in k else v for k, v in loss_dict.items()}
         scaled_loss_dict['accumulation_step'] = self.accumulation_counter
         scaled_loss_dict['will_update'] = (self.accumulation_counter == 0)
+        scaled_loss_dict['num_training_samples'] = len(student_embeddings)
         
         return scaled_loss_dict
         

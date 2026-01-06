@@ -119,16 +119,16 @@ class CLAPEmbedder:
         
         return mel.astype(np.float32)
     
-    def analyze_audio(self, audio_path: str) -> Tuple[Optional[np.ndarray], float, int]:
+    def analyze_audio(self, audio_path: str) -> Tuple[Optional[np.ndarray], float, int, Optional[list]]:
         """
-        Analyze an audio file and return averaged CLAP embedding.
+        Analyze an audio file and return averaged CLAP embedding + individual segment embeddings.
         
         Args:
             audio_path: Path to audio file
             
         Returns:
-            Tuple of (embedding_vector, duration_seconds, num_segments)
-            Returns (None, 0, 0) if analysis fails
+            Tuple of (averaged_embedding, duration_seconds, num_segments, segment_embeddings_list)
+            Returns (None, 0, 0, None) if analysis fails
         """
         try:
             # Load audio at 48kHz
@@ -182,8 +182,9 @@ class CLAPEmbedder:
             # Average embeddings across segments
             avg_embedding = np.mean(embeddings, axis=0).astype(np.float32)
             
-            return avg_embedding, duration_sec, num_segments
+            # Return both averaged and individual segment embeddings
+            return avg_embedding, duration_sec, num_segments, embeddings
             
         except Exception as e:
             logger.error(f"Failed to analyze {audio_path}: {e}")
-            return None, 0, 0
+            return None, 0, 0, None

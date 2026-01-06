@@ -106,6 +106,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
         batch = {
             'audio_segments': [],
             'teacher_embeddings': [],
+            'teacher_segment_embeddings': [],
             'song_ids': []
         }
         
@@ -114,6 +115,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             audio_segments = item['audio_segments']
             batch['audio_segments'].append(audio_segments)
             batch['teacher_embeddings'].append(item['teacher_embedding'])
+            batch['teacher_segment_embeddings'].append(item.get('teacher_segment_embeddings'))
             batch['song_ids'].append(item['item_id'])
         
         # 🧠 REAL TRAINING STEP
@@ -126,7 +128,9 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             # Log detailed metrics
             accumulation_info = f" [acc {step_metrics['accumulation_step']}/{trainer.gradient_accumulation_steps}]"
             update_info = " 🔄 WEIGHTS UPDATED!" if step_metrics['will_update'] else ""
+            num_training_samples = step_metrics.get('num_training_samples', len(batch_data))
             logger.info(f"   ✅ Forward pass through student CNN + Transformer{accumulation_info}{update_info}")
+            logger.info(f"   📈 Training samples: {num_training_samples} (from {len(batch_data)} songs)")
             logger.info(f"   📊 Loss: {step_metrics['total_loss']:.6f}")
             logger.info(f"      └─ MSE Loss: {step_metrics['mse_loss']:.6f}")
             logger.info(f"      └─ Cosine Loss: {step_metrics['cosine_loss']:.6f}")
