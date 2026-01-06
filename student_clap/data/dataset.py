@@ -72,6 +72,9 @@ class StudentCLAPDataset:
         logger.info(f"🔧 MEL CACHE PATH: {mel_cache_path}")
         logger.info(f"🔧 MEL CACHE: No size limit - will cache all songs")
         
+        # Check existing cache FIRST (to prioritize cached songs in sampling)
+        cached_item_ids = set(self.mel_cache.get_cached_item_ids())
+        
         # Load embeddings (with optional balanced sampling)
         logger.info("Loading embeddings from database...")
         sample_size = self.dataset_config.get('sample_size')
@@ -79,18 +82,18 @@ class StudentCLAPDataset:
         
         if sample_size and balanced_genres:
             logger.info(f"🎯 Using balanced genre sampling: {sample_size} songs across {len(balanced_genres)} genres")
+            if cached_item_ids:
+                logger.info(f"   📦 Will PRIORITIZE {len(cached_item_ids)} already cached songs to avoid re-downloading!")
             all_items = self.db_loader.load_embeddings(
                 sample_size=sample_size,
-                balanced_genres=balanced_genres
+                balanced_genres=balanced_genres,
+                cached_item_ids=cached_item_ids  # Pass cached IDs for prioritization
             )
         else:
             logger.info("📚 Loading all available embeddings (no sampling)")
             all_items = self.db_loader.load_embeddings()
         
         logger.info(f"Loaded {len(all_items)} total items")
-        
-        # Check existing cache
-        cached_item_ids = set(self.mel_cache.get_cached_item_ids())
         if cached_item_ids:
             cache_size_gb = self.mel_cache.get_cache_size_gb()
             logger.info(f"📦 Found existing mel cache: {len(cached_item_ids)} songs, {cache_size_gb:.1f}GB")
