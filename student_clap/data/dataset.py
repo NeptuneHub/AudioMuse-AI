@@ -268,8 +268,7 @@ class StudentCLAPDataset:
             # Prepare batch items
             batch_items = [self.items[idx] for idx in batch_indices]
             
-            # Check cache status and prepare tasks
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+            # Check cache status and categorize
             import threading
             
             tasks_to_download = []
@@ -279,7 +278,6 @@ class StudentCLAPDataset:
             for item in batch_items:
                 result = self.mel_cache.get_with_compression_status(item['item_id'])
                 if result is None:
-                    # Not cached - needs download
                     if self.epoch == 1:
                         tasks_to_download.append(item)
                 else:
@@ -293,12 +291,12 @@ class StudentCLAPDataset:
                        f"{len(tasks_to_compress)} uncompressed, "
                        f"{len(tasks_to_download)} to download")
             
-            # Process in parallel with max 4 threads
             batch = []
             
-            def process_cached(item, mel_data):
+            # 1. Process cached (fast, sequential is fine)
+            for item, mel_data in tasks_cached:
                 mel_tensor = torch.from_numpy(mel_data).float()
-                return {
+                batch.append({
                     'item_id': item['item_id'],
                     'title': item['title'],
                     'author': item['author'],
@@ -306,10 +304,11 @@ class StudentCLAPDataset:
                     'audio_segments': mel_tensor,
                     'teacher_embedding': item['embedding'],
                     'num_segments': len(mel_data)
-                }
+                })
             
-            def process_compress(item, mel_data, original_bytes):
-                # Start compression in background
+            # 2. Process uncompressed (spawn compression threads)
+            for item, mel_data, original_bytes in tasks_to_compress:
+                # Spawn compression thread
                 threading.Thread(
                     target=self.mel_cache.compress_and_update,
                     args=(item['item_id'], original_bytes),
@@ -317,7 +316,7 @@ class StudentCLAPDataset:
                 ).start()
                 
                 mel_tensor = torch.from_numpy(mel_data).float()
-                return {
+                batch.append({
                     'item_id': item['item_id'],
                     'title': item['title'],
                     'author': item['author'],
@@ -325,78 +324,61 @@ class StudentCLAPDataset:
                     'audio_segments': mel_tensor,
                     'teacher_embedding': item['embedding'],
                     'num_segments': len(mel_data)
-                }
+                })
             
-            def process_download(item):
-                # Download, compute, save compressed
-                download_result = self.jellyfin_downloader.download_batch([item['item_id']], max_workers=1)
-                audio_path = download_result.get(item['item_id'])
-                if not audio_path:
-                    return None
+            # 3. Download in parallel (use existing download_batch logic)
+            if tasks_to_download:
+                download_ids = [item['item_id'] for item in tasks_to_download]
+                download_results = self.jellyfin_downloader.download_batch(download_ids, max_workers=batch_size)
                 
-                try:
-                    import torchaudio
-                    import os
-                    from student_clap.preprocessing.audio_segmentation import segment_audio
-                    from student_clap.preprocessing.mel_spectrogram import compute_mel_spectrogram_batch
-                    
-                    audio_tensor, sr = torchaudio.load(audio_path)
-                    if audio_tensor.shape[0] > 1:
-                        audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
-                    if sr != self.audio_config['sample_rate']:
-                        resampler = torchaudio.transforms.Resample(sr, self.audio_config['sample_rate'])
-                        audio_tensor = resampler(audio_tensor)
-                    
-                    audio_data = audio_tensor.squeeze(0).numpy()
-                    segments = segment_audio(audio_data, self.audio_config['sample_rate'],
-                                            self.audio_config['segment_length'], self.audio_config['hop_length'])
-                    
-                    segments_array = np.array(segments) if isinstance(segments, list) else segments
-                    mel_specs = compute_mel_spectrogram_batch(
-                        segments_array, sr=self.audio_config['sample_rate'],
-                        n_mels=self.audio_config['n_mels'], n_fft=self.audio_config['n_fft'],
-                        hop_length=self.audio_config['hop_length_stft'],
-                        fmin=self.audio_config['fmin'], fmax=self.audio_config['fmax']
-                    )
-                    
-                    # Save compressed
-                    self.mel_cache.put(item['item_id'], mel_specs)
-                    
-                    # Delete audio
-                    if os.path.exists(audio_path):
-                        os.remove(audio_path)
-                    
-                    mel_tensor = torch.from_numpy(mel_specs).float()
-                    return {
-                        'item_id': item['item_id'],
-                        'title': item['title'],
-                        'author': item['author'],
-                        'audio_path': audio_path,
-                        'audio_segments': mel_tensor,
-                        'teacher_embedding': item['embedding'],
-                        'num_segments': len(mel_specs)
-                    }
-                except Exception as e:
-                    logger.error(f"Failed to process {item['title']}: {e}")
-                    return None
-            
-            # Execute all tasks in parallel
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = []
-                
-                for item, mel_data in tasks_cached:
-                    futures.append(executor.submit(process_cached, item, mel_data))
-                
-                for item, mel_data, original_bytes in tasks_to_compress:
-                    futures.append(executor.submit(process_compress, item, mel_data, original_bytes))
-                
+                # Process downloads sequentially (to avoid nested parallelism)
                 for item in tasks_to_download:
-                    futures.append(executor.submit(process_download, item))
-                
-                for future in as_completed(futures):
-                    sample = future.result()
-                    if sample:
-                        batch.append(sample)
+                    audio_path = download_results.get(item['item_id'])
+                    if not audio_path:
+                        continue
+                    
+                    try:
+                        import torchaudio
+                        import os
+                        from student_clap.preprocessing.audio_segmentation import segment_audio
+                        from student_clap.preprocessing.mel_spectrogram import compute_mel_spectrogram_batch
+                        
+                        audio_tensor, sr = torchaudio.load(audio_path)
+                        if audio_tensor.shape[0] > 1:
+                            audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
+                        if sr != self.audio_config['sample_rate']:
+                            resampler = torchaudio.transforms.Resample(sr, self.audio_config['sample_rate'])
+                            audio_tensor = resampler(audio_tensor)
+                        
+                        audio_data = audio_tensor.squeeze(0).numpy()
+                        segments = segment_audio(audio_data, self.audio_config['sample_rate'],
+                                                self.audio_config['segment_length'], self.audio_config['hop_length'])
+                        
+                        segments_array = np.array(segments) if isinstance(segments, list) else segments
+                        mel_specs = compute_mel_spectrogram_batch(
+                            segments_array, sr=self.audio_config['sample_rate'],
+                            n_mels=self.audio_config['n_mels'], n_fft=self.audio_config['n_fft'],
+                            hop_length=self.audio_config['hop_length_stft'],
+                            fmin=self.audio_config['fmin'], fmax=self.audio_config['fmax']
+                        )
+                        
+                        self.mel_cache.put(item['item_id'], mel_specs)
+                        
+                        if os.path.exists(audio_path):
+                            os.remove(audio_path)
+                        
+                        mel_tensor = torch.from_numpy(mel_specs).float()
+                        batch.append({
+                            'item_id': item['item_id'],
+                            'title': item['title'],
+                            'author': item['author'],
+                            'audio_path': audio_path,
+                            'audio_segments': mel_tensor,
+                            'teacher_embedding': item['embedding'],
+                            'num_segments': len(mel_specs)
+                        })
+                    except Exception as e:
+                        logger.error(f"Failed to process {item['title']}: {e}")
             
             logger.info(f"   ✅ Batch ready: {len(batch)} samples")
             
