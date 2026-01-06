@@ -442,6 +442,67 @@ def train(config_path: str, resume: str = None):
     for key, value in train_stats.items():
         logger.info(f"  {key}: {value}")
     
+    # Create songs.md file with training song list
+    logger.info("\n📝 Creating songs.md with training dataset...")
+    model_dir = Path(config['paths']['final_model']).parent
+    model_dir.mkdir(parents=True, exist_ok=True)
+    songs_md_path = model_dir / 'songs.md'
+    
+    # Delete existing file if present
+    if songs_md_path.exists():
+        songs_md_path.unlink()
+        logger.info(f"🗑️  Removed existing {songs_md_path}")
+    
+    try:
+        with open(songs_md_path, 'w', encoding='utf-8') as f:
+            f.write("# Training Dataset - Free Music Archive\n\n")
+            f.write("This model was trained using music from the **Free Music Archive** (https://freemusicarchive.org/), ")
+            f.write("a library of high-quality audio recordings released under Creative Commons licenses.\n\n")
+            f.write("All songs in this training dataset are licensed under **CC0 (Public Domain)** or **CC-BY (Attribution)** licenses, ")
+            f.write("which permit use for training machine learning models.\n\n")
+            f.write("## License Information\n\n")
+            f.write("- **CC0 (Public Domain)**: No rights reserved, free to use for any purpose\n")
+            f.write("- **CC-BY (Attribution)**: Free to use with attribution to the original artist\n\n")
+            f.write("## Dataset Characteristics\n\n")
+            f.write("The training dataset is **unbalanced** across the following genres from the Free Music Archive:\n\n")
+            f.write("- Blues\n")
+            f.write("- Classical\n")
+            f.write("- Country\n")
+            f.write("- Electronic\n")
+            f.write("- Folk\n")
+            f.write("- Hip-Hop\n")
+            f.write("- Instrumental\n")
+            f.write("- International\n")
+            f.write("- Jazz\n")
+            f.write("- Pop\n")
+            f.write("- Rock\n")
+            f.write("- Soul-RnB\n\n")
+            f.write("This reflects the natural distribution of music available in the Free Music Archive.\n\n")
+            f.write("## Acknowledgments\n\n")
+            f.write("We extend our gratitude to:\n")
+            f.write("- The artists who generously shared their music under open licenses\n")
+            f.write("- Free Music Archive (https://freemusicarchive.org/) for curating and hosting this content\n")
+            f.write("- The Creative Commons organization for enabling culture sharing\n\n")
+            f.write("---\n\n")
+            f.write(f"## Training Dataset Songs ({len(train_dataset)} songs)\n\n")
+            
+            for item in train_dataset.items:
+                f.write(f"- {item['title']} (`{item['item_id']}`)\n")
+            
+            f.write(f"\n## Validation Dataset Songs ({len(val_dataset)} songs)\n\n")
+            
+            for item in val_dataset.items:
+                f.write(f"- {item['title']} (`{item['item_id']}`)\n")
+            
+            f.write(f"\n---\n\n")
+            f.write(f"**Total songs used**: {len(train_dataset) + len(val_dataset)}\n")
+            f.write(f"**Training songs**: {len(train_dataset)}\n")
+            f.write(f"**Validation songs**: {len(val_dataset)}\n")
+        
+        logger.info(f"✅ Created {songs_md_path} with {len(train_dataset) + len(val_dataset)} songs")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to create songs.md: {e}")
+    
     # Training loop
     logger.info("\n" + "=" * 60)
     if start_epoch == 1:

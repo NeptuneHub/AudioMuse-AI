@@ -61,6 +61,17 @@ class MelSpectrogramCache:
         """)
         self.conn.commit()
         
+        # Create song_embeddings table for teacher CLAP embeddings
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS song_embeddings (
+                item_id TEXT PRIMARY KEY,
+                embedding BLOB NOT NULL,
+                file_path TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self.conn.commit()
+        
         # Add compressed column to existing tables (migration)
         try:
             self.conn.execute("ALTER TABLE mel_spectrograms ADD COLUMN compressed INTEGER DEFAULT 0")
@@ -71,6 +82,9 @@ class MelSpectrogramCache:
         # Create index for faster lookups
         self.conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_item_id ON mel_spectrograms(item_id)
+        """)
+        self.conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_embedding_item_id ON song_embeddings(item_id)
         """)
         self.conn.commit()
         
@@ -276,6 +290,95 @@ class MelSpectrogramCache:
         self.conn.execute("DELETE FROM mel_spectrograms")
         self.conn.commit()
         logger.info("Cleared all mel spectrogram cache")
+    
+    def put_embedding(self, item_id: str, embedding: np.ndarray, file_path: str):
+        """
+        Store teacher CLAP embedding for a song.
+        
+        Args:
+            item_id: Song item ID
+            embedding: Teacher embedding array (512-dim)
+            file_path: Full path to audio file
+        """
+        # Serialize embedding (uncompressed)
+        embedding_bytes = embedding.tobytes()
+        
+        self.conn.execute(
+            "INSERT OR REPLACE INTO song_embeddings (item_id, embedding, file_path) VALUES (?, ?, ?)",
+            (item_id, embedding_bytes, file_path)
+        )
+        self.conn.commit()
+    
+    def get_embedding(self, item_id: str) -> Optional[np.ndarray]:
+        """
+        Get teacher CLAP embedding from cache.
+        
+        Args:
+            item_id: Song item ID
+            
+        Returns:
+            Embedding array (512-dim) or None if not cached
+        """
+        cursor = self.conn.execute(
+            "SELECT embedding FROM song_embeddings WHERE item_id = ?",
+            (item_id,)
+        )
+        row = cursor.fetchone()
+        
+        if row is None:
+            return None
+        
+        embedding_bytes = row[0]
+        embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
+        return embedding
+    
+    def has_embedding(self, item_id: str) -> bool:
+        """
+        Check if teacher embedding is cached for a song.
+        
+        Args:
+            item_id: Song item ID
+            
+        Returns:
+            True if embedding is cached
+        """
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) FROM song_embeddings WHERE item_id = ?",
+            (item_id,)
+        )
+        count = cursor.fetchone()[0]
+        return count > 0
+    
+    def get_song_info(self, item_id: str) -> Optional[Dict]:
+        """
+        Get song information from cache.
+        
+        Args:
+            item_id: Song item ID
+            
+        Returns:
+            Dict with file_path and created_at, or None if not cached
+        """
+        cursor = self.conn.execute(
+            "SELECT file_path, created_at FROM song_embeddings WHERE item_id = ?",
+            (item_id,)
+        )
+        row = cursor.fetchone()
+        
+        if row is None:
+            return None
+        
+        return {
+            'file_path': row[0],
+            'created_at': row[1]
+        }
+        
+    def clear(self):
+        """Clear all cached data."""
+        self.conn.execute("DELETE FROM mel_spectrograms")
+        self.conn.execute("DELETE FROM song_embeddings")
+        self.conn.commit()
+        logger.info("Cleared all mel spectrogram and embedding cache")
         
     def close(self):
         """Close database connection."""

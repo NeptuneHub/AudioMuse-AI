@@ -1,19 +1,5 @@
 # Student CLAP Configuration
 
-# Database connection (PostgreSQL)
-database:
-  host: ${DB_HOST}
-  port: 5432
-  database: ${DB_NAME}
-  user: ${DB_USER}
-  password: ${DB_PASSWORD}
-
-# Jellyfin connection (for audio download)
-jellyfin:
-  url: ${JELLYFIN_URL}
-  user_id: ${JELLYFIN_USER_ID}
-  token: ${JELLYFIN_TOKEN}
-
 # Audio processing (MUST match CLAP preprocessing)
 audio:
   sample_rate: 48000           # Sample rate for audio loading
@@ -65,21 +51,16 @@ training:
 
 # Paths
 paths:
-  audio_cache: "./cache/audio"  # Temporary storage, files deleted after mel computation
-  mel_cache: "/Volumes/audiomuse/student_clap_cache/mel_spectrograms.db"
+  teacher_model: "../model/clap_audio_model.onnx"  # INPUT: CLAP teacher model (~268MB)
+  mel_cache: "/Volumes/audiomuse/student_clap_cache/mel_spectrograms.db"  # SQLite DB (mel specs + embeddings)
   checkpoints: "./checkpoints"
   logs: "./logs"
-  final_model: "./models/student_clap_audio.onnx"
+  final_model: "./models/student_clap_audio.onnx"  # OUTPUT: trained student model (~11MB)
 
-# Dataset sampling - THIS IS WHERE YOU SET THE 10,000 SONGS!
+# Dataset configuration - LOCAL FMA
 dataset:
-  sample_size: 10000  # ⭐ TOTAL NUMBER OF SONGS TO USE (10k = fast training)
-  balanced_genres: [  # Sample equally from these genres
-    'rock', 'pop', 'indie', 'electronic', 'jazz', 'metal', 'classic rock', 'soul',
-    'folk', 'punk', 'blues', 'hard rock', 'ambient', 'acoustic',
-    'experimental', 'Hip-Hop', 'country', 'funk', 'heavy metal',
-    'rnb', 'House'
-  ]
+  fma_path: "/Users/guidocolangiuli/Music/FMA"  # Path to local FMA audio files
+  sample_size: 0  # Total number of songs to use (null = all songs)
 
 # Logging
 logging:

@@ -1,8 +1,8 @@
 """
 Training Dataset for Student CLAP
 
-Loads audio files, segments them, and pairs with teacher embeddings
-for knowledge distillation training.
+Loads local audio files from FMA, analyzes with CLAP for teacher embeddings,
+and pairs with student mel-spectrograms for knowledge distillation training.
 """
 
 import os
@@ -17,8 +17,8 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from student_clap.data.database_loader import DatabaseLoader
-from student_clap.data.jellyfin_downloader import JellyfinDownloader
+from student_clap.data.local_song_loader import LocalSongLoader
+from student_clap.data.clap_embedder import CLAPEmbedder
 from student_clap.data.mel_cache import MelSpectrogramCache
 from student_clap.preprocessing.audio_segmentation import (
     segment_audio, SAMPLE_RATE, SEGMENT_LENGTH, HOP_LENGTH
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class StudentCLAPDataset:
-    """Dataset for training student CLAP model."""
+    """Dataset for training student CLAP model using local FMA files."""
     
     def __init__(self, 
                  config: dict,
@@ -51,201 +51,64 @@ class StudentCLAPDataset:
         self.epoch = epoch
         
         # Extract configs
-        self.db_config = config['database']
-        self.jellyfin_config = config['jellyfin']
         self.audio_config = config['audio']
         self.paths_config = config['paths']
         self.dataset_config = config.get('dataset', {})
         
-        # Initialize loaders
-        self.db_loader = DatabaseLoader(self.db_config)
+        # Initialize local song loader (replaces database + Jellyfin)
+        fma_path = self.dataset_config['fma_path']
+        self.song_loader = LocalSongLoader(fma_path)
         
-        # Jellyfin downloader (temporary audio storage - files deleted after processing)
-        self.jellyfin_downloader = JellyfinDownloader(
-            self.jellyfin_config,
-            cache_dir=self.paths_config['audio_cache']
-        )
+        # Initialize CLAP embedder for teacher embeddings
+        teacher_model_path = self.paths_config['teacher_model']
+        self.clap_embedder = CLAPEmbedder(teacher_model_path)
         
-        # Initialize mel spectrogram cache (MASSIVE speedup for epoch 2+!)
+        # Initialize mel spectrogram cache (stores both mel specs and embeddings)
         mel_cache_path = self.paths_config.get('mel_cache', './cache/mel_spectrograms.db')
         self.mel_cache = MelSpectrogramCache(mel_cache_path)
         logger.info(f"🔧 MEL CACHE PATH: {mel_cache_path}")
         logger.info(f"🔧 MEL CACHE: No size limit - will cache all songs")
         
-        # Check existing cache FIRST (to prioritize cached songs in sampling)
-        cached_item_ids = set(self.mel_cache.get_cached_item_ids())
-        
-        # Load embeddings (with optional balanced sampling)
-        logger.info("Loading embeddings from database...")
+        # Load songs from local FMA directory
+        logger.info("Loading songs from local FMA directory...")
         sample_size = self.dataset_config.get('sample_size')
-        balanced_genres = self.dataset_config.get('balanced_genres')
+        all_songs = self.song_loader.load_songs(limit=sample_size)
         
-        if sample_size and balanced_genres:
-            logger.info(f"🎯 Using balanced genre sampling: {sample_size} songs across {len(balanced_genres)} genres")
-            if cached_item_ids:
-                logger.info(f"   📦 Will PRIORITIZE {len(cached_item_ids)} already cached songs to avoid re-downloading!")
-            all_items = self.db_loader.load_embeddings(
-                sample_size=sample_size,
-                balanced_genres=balanced_genres,
-                cached_item_ids=cached_item_ids  # Pass cached IDs for prioritization
-            )
+        # Show big label with song count
+        logger.info("="*80)
+        logger.info("="*80)
+        if sample_size == 0 or sample_size is None:
+            logger.info(f"🎵 LOADING ALL SONGS: {len(all_songs)} AUDIO FILES FOUND 🎵")
         else:
-            logger.info("📚 Loading all available embeddings (no sampling)")
-            all_items = self.db_loader.load_embeddings()
+            logger.info(f"🎵 LOADING SAMPLE: {len(all_songs)} AUDIO FILES (limited from dataset) 🎵")
+        logger.info("="*80)
+        logger.info("="*80)
         
-        logger.info(f"Loaded {len(all_items)} total items")
+        # Check what's already cached
+        cached_item_ids = set(self.mel_cache.get_cached_item_ids())
         if cached_item_ids:
             cache_size_gb = self.mel_cache.get_cache_size_gb()
             logger.info(f"📦 Found existing mel cache: {len(cached_item_ids)} songs, {cache_size_gb:.1f}GB")
-            logger.info(f"🔨 CACHE BUILDING MODE: Will cache ALL songs (no size limit)")
-            logger.info(f"   Already cached: {len(cached_item_ids)} songs ({cache_size_gb:.1f}GB)")
-            logger.info(f"   Total songs available: {len(all_items)}")
-        else:
-            logger.info(f"🚀 Building mel cache from scratch (no size limit)")
         
         # Split into train/val
         np.random.seed(42)  # Reproducible split
-        indices = np.random.permutation(len(all_items))
-        split_idx = int(len(all_items) * (1 - validation_split))
+        indices = np.random.permutation(len(all_songs))
+        split_idx = int(len(all_songs) * (1 - validation_split))
         
         if split == 'train':
-            self.items = [all_items[i] for i in indices[:split_idx]]
+            self.items = [all_songs[i] for i in indices[:split_idx]]
         else:
-            self.items = [all_items[i] for i in indices[split_idx:]]
+            self.items = [all_songs[i] for i in indices[split_idx:]]
             
         logger.info(f"Dataset split '{split}': {len(self.items)} items")
-        
-        # 🔍 VALIDATE: Check which songs can actually be accessed
-        if epoch == 1:
-            logger.info(f"🔍 Validating song availability in Jellyfin for {split} split...")
-            valid_items = []
-            cached_count = 0
-            available_count = 0
-            failed_items = []
-            
-            # Get actual cached item IDs directly from database (most reliable)
-            cached_item_ids = set(self.mel_cache.get_cached_item_ids())
-            logger.info(f"   📊 Mel cache has {len(cached_item_ids)} songs total")
-            
-            for item in self.items:
-                item_id = item['item_id']
-                # Check if cached using direct set lookup
-                if item_id in cached_item_ids:
-                    valid_items.append(item)
-                    cached_count += 1
-                else:
-                    # In epoch 1: assume all non-cached songs will be downloaded (skip expensive checks)
-                    # Jellyfin check is too slow and unreliable for thousands of songs
-                    valid_items.append(item)
-                    available_count += 1
-            
-            logger.info(f"✅ {split} split ready: {len(valid_items)} songs")
-            logger.info(f"   📦 Already cached: {cached_count}")
-            logger.info(f"   🆕 Will download in epoch 1: {available_count}")
-            
-            self.items = valid_items
         
     def __len__(self) -> int:
         """Return number of items in dataset."""
         return len(self.items)
-        
-    def __getitem__(self, idx: int) -> Optional[Dict]:
-        """
-        Get a single training sample.
-        
-        Args:
-            idx: Sample index
-            
-        Returns:
-            Dict with keys:
-                - item_id: Song ID
-                - title: Song title
-                - author: Song artist
-                - audio_path: Path to cached audio file
-                - audio_segments: List of audio segments (each 10s)
-                - mel_spectrograms: Batch of mel-specs (num_segments, time, mels)
-                - teacher_embedding: 512-dim teacher embedding
-            Returns None if loading fails
-        """
-        item = self.items[idx]
-        item_id = item['item_id']
-        
-        try:
-            # Download audio (with caching)
-            audio_path = self.jellyfin_downloader.download(item_id)
-            if audio_path is None:
-                logger.error(f"Failed to download audio for {item_id}")
-                return None
-                
-            # Load audio at 48kHz
-            audio_data, sr = librosa.load(
-                audio_path,
-                sr=self.audio_config['sample_rate'],
-                mono=True
-            )
-            
-            # Quantize to int16 and back (match teacher preprocessing)
-            audio_data = np.clip(audio_data, -1.0, 1.0)
-            audio_data = (audio_data * 32767.0).astype(np.int16)
-            audio_data = (audio_data / 32767.0).astype(np.float32)
-            
-            # Segment audio (10s segments, 5s hop)
-            segments = segment_audio(
-                audio_data,
-                sample_rate=self.audio_config['sample_rate'],
-                segment_length=self.audio_config['segment_length'],
-                hop_length=self.audio_config['hop_length']
-            )
-            
-            # Compute mel-spectrograms for all segments
-            mel_specs = compute_mel_spectrogram_batch(
-                segments,
-                sr=self.audio_config['sample_rate'],
-                n_mels=self.audio_config['n_mels'],
-                n_fft=self.audio_config['n_fft'],
-                hop_length=self.audio_config['hop_length_stft'],
-                fmin=self.audio_config['fmin'],
-                fmax=self.audio_config['fmax']
-            )
-            
-            return {
-                'item_id': item_id,
-                'title': item['title'],
-                'author': item['author'],
-                'audio_path': audio_path,
-                'audio_segments': segments,
-                'mel_spectrograms': mel_specs,
-                'teacher_embedding': item['embedding'],
-                'num_segments': len(segments)
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to load item {item_id}: {e}")
-            return None
-            
-    def get_batch(self, batch_size: int) -> List[Dict]:
-        """
-        Get a batch of samples.
-        
-        Args:
-            batch_size: Number of samples per batch
-            
-        Returns:
-            List of sample dicts
-        """
-        indices = np.random.choice(len(self), batch_size, replace=False)
-        batch = []
-        
-        for idx in indices:
-            sample = self[idx]
-            if sample is not None:
-                batch.append(sample)
-                
-        return batch
-        
+    
     def iterate_batches_streaming(self, batch_size: int, shuffle: bool = True):
         """
-        STREAMING batch iteration - downloads ONLY current batch.
+        STREAMING batch iteration - processes songs from local FMA directory.
         
         Args:
             batch_size: Number of samples per batch
@@ -271,43 +134,72 @@ class StudentCLAPDataset:
             # Check cache status and categorize
             import threading
             
-            tasks_to_download = []
+            tasks_to_process = []
             tasks_to_compress = []
             tasks_cached = []
             
+            # Track cache statistics
+            mel_cached_count = 0
+            embedding_cached_count = 0
+            
             for item in batch_items:
-                result = self.mel_cache.get_with_compression_status(item['item_id'])
-                if result is None:
-                    if self.epoch == 1:
-                        tasks_to_download.append(item)
+                mel_result = self.mel_cache.get_with_compression_status(item['item_id'])
+                has_embedding = self.mel_cache.has_embedding(item['item_id'])
+                
+                # Update cache counts
+                if mel_result is not None:
+                    mel_cached_count += 1
+                if has_embedding:
+                    embedding_cached_count += 1
+                
+                # Decide what to do with this item
+                if mel_result is None:
+                    # No mel cache - need to process
+                    tasks_to_process.append(item)
                 else:
-                    mel_data, is_compressed, original_bytes = result
+                    mel_data, is_compressed, original_bytes = mel_result
                     if is_compressed:
                         tasks_cached.append((item, mel_data))
                     else:
                         tasks_to_compress.append((item, mel_data, original_bytes))
             
-            logger.info(f"   📊 {len(tasks_cached)} compressed, "
-                       f"{len(tasks_to_compress)} uncompressed, "
-                       f"{len(tasks_to_download)} to download")
+            logger.info(f"   📊 Cache Status: Mel={mel_cached_count}/{len(batch_items)} | Embedding={embedding_cached_count}/{len(batch_items)}")
+            logger.info(f"   📦 Processing: {len(tasks_cached)} fully cached, "
+                       f"{len(tasks_to_compress)} need compression, "
+                       f"{len(tasks_to_process)} need analysis")
             
             batch = []
             
             # 1. Process cached (fast, sequential is fine)
             for item, mel_data in tasks_cached:
-                mel_tensor = torch.from_numpy(mel_data).float()
+                # Get teacher embedding from cache
+                teacher_embedding = self.mel_cache.get_embedding(item['item_id'])
+                if teacher_embedding is None:
+                    logger.warning(f"Missing teacher embedding for {item['item_id']}, will reprocess")
+                    tasks_to_process.append(item)
+                    continue
+                    
+                # Copy to make array writable for PyTorch
+                mel_tensor = torch.from_numpy(mel_data.copy()).float()
                 batch.append({
                     'item_id': item['item_id'],
                     'title': item['title'],
-                    'author': item['author'],
+                    'author': item.get('author', 'Unknown'),
                     'audio_path': 'cached',
                     'audio_segments': mel_tensor,
-                    'teacher_embedding': item['embedding'],
+                    'teacher_embedding': teacher_embedding,
                     'num_segments': len(mel_data)
                 })
             
             # 2. Process uncompressed (spawn compression threads)
             for item, mel_data, original_bytes in tasks_to_compress:
+                # Get teacher embedding from cache
+                teacher_embedding = self.mel_cache.get_embedding(item['item_id'])
+                if teacher_embedding is None:
+                    logger.warning(f"Missing teacher embedding for {item['item_id']}, will reprocess")
+                    tasks_to_process.append(item)
+                    continue
+                
                 # Spawn compression thread
                 threading.Thread(
                     target=self.mel_cache.compress_and_update,
@@ -315,66 +207,88 @@ class StudentCLAPDataset:
                     daemon=True
                 ).start()
                 
-                mel_tensor = torch.from_numpy(mel_data).float()
+                # Copy to make array writable for PyTorch
+                mel_tensor = torch.from_numpy(mel_data.copy()).float()
                 batch.append({
                     'item_id': item['item_id'],
                     'title': item['title'],
-                    'author': item['author'],
+                    'author': item.get('author', 'Unknown'),
                     'audio_path': 'cached (compressing)',
                     'audio_segments': mel_tensor,
-                    'teacher_embedding': item['embedding'],
+                    'teacher_embedding': teacher_embedding,
                     'num_segments': len(mel_data)
                 })
             
-            # 3. Download in parallel (use existing download_batch logic)
-            if tasks_to_download:
-                download_ids = [item['item_id'] for item in tasks_to_download]
-                download_results = self.jellyfin_downloader.download_batch(download_ids, max_workers=batch_size)
+            # 3. Process new songs from local files
+            if tasks_to_process:
+                from student_clap.preprocessing.audio_segmentation import segment_audio
+                from student_clap.preprocessing.mel_spectrogram import compute_mel_spectrogram_batch
                 
-                # Process downloads sequentially (to avoid nested parallelism)
-                for item in tasks_to_download:
-                    audio_path = download_results.get(item['item_id'])
-                    if not audio_path:
-                        continue
+                for item in tasks_to_process:
+                    audio_path = item['file_path']
                     
                     try:
-                        import torchaudio
-                        import os
-                        from student_clap.preprocessing.audio_segmentation import segment_audio
-                        from student_clap.preprocessing.mel_spectrogram import compute_mel_spectrogram_batch
+                        # Check what's already cached
+                        cached_mel = self.mel_cache.get(item['item_id'])
+                        cached_embedding = self.mel_cache.get_embedding(item['item_id'])
                         
-                        audio_tensor, sr = torchaudio.load(audio_path)
-                        if audio_tensor.shape[0] > 1:
-                            audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
-                        if sr != self.audio_config['sample_rate']:
-                            resampler = torchaudio.transforms.Resample(sr, self.audio_config['sample_rate'])
-                            audio_tensor = resampler(audio_tensor)
+                        # Get teacher embedding (compute if not cached)
+                        if cached_embedding is not None:
+                            teacher_embedding = cached_embedding
+                        else:
+                            teacher_embedding, duration_sec, num_segments = self.clap_embedder.analyze_audio(audio_path)
+                            if teacher_embedding is None:
+                                logger.error(f"CLAP analysis failed for {item['title']}")
+                                continue
+                            # Cache the embedding
+                            self.mel_cache.put_embedding(item['item_id'], teacher_embedding, audio_path)
                         
-                        audio_data = audio_tensor.squeeze(0).numpy()
-                        segments = segment_audio(audio_data, self.audio_config['sample_rate'],
-                                                self.audio_config['segment_length'], self.audio_config['hop_length'])
-                        
-                        segments_array = np.array(segments) if isinstance(segments, list) else segments
-                        mel_specs = compute_mel_spectrogram_batch(
-                            segments_array, sr=self.audio_config['sample_rate'],
-                            n_mels=self.audio_config['n_mels'], n_fft=self.audio_config['n_fft'],
-                            hop_length=self.audio_config['hop_length_stft'],
-                            fmin=self.audio_config['fmin'], fmax=self.audio_config['fmax']
-                        )
-                        
-                        self.mel_cache.put(item['item_id'], mel_specs)
-                        
-                        if os.path.exists(audio_path):
-                            os.remove(audio_path)
+                        # Get mel spectrograms (compute if not cached)
+                        if cached_mel is not None:
+                            mel_specs = cached_mel
+                        else:
+                            # Load audio at 48kHz
+                            import torchaudio
+                            audio_tensor, sr = torchaudio.load(audio_path)
+                            if audio_tensor.shape[0] > 1:
+                                audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
+                            if sr != self.audio_config['sample_rate']:
+                                resampler = torchaudio.transforms.Resample(sr, self.audio_config['sample_rate'])
+                                audio_tensor = resampler(audio_tensor)
+                            
+                            audio_data = audio_tensor.squeeze(0).numpy()
+                            
+                            # Segment audio (10s segments, 5s hop)
+                            segments = segment_audio(
+                                audio_data, 
+                                self.audio_config['sample_rate'],
+                                self.audio_config['segment_length'], 
+                                self.audio_config['hop_length']
+                            )
+                            
+                            # Compute mel-spectrograms for all segments
+                            segments_array = np.array(segments) if isinstance(segments, list) else segments
+                            mel_specs = compute_mel_spectrogram_batch(
+                                segments_array, 
+                                sr=self.audio_config['sample_rate'],
+                                n_mels=self.audio_config['n_mels'], 
+                                n_fft=self.audio_config['n_fft'],
+                                hop_length=self.audio_config['hop_length_stft'],
+                                fmin=self.audio_config['fmin'], 
+                                fmax=self.audio_config['fmax']
+                            )
+                            
+                            # Cache the mel spectrograms
+                            self.mel_cache.put(item['item_id'], mel_specs)
                         
                         mel_tensor = torch.from_numpy(mel_specs).float()
                         batch.append({
                             'item_id': item['item_id'],
                             'title': item['title'],
-                            'author': item['author'],
+                            'author': item.get('author', 'Unknown'),
                             'audio_path': audio_path,
                             'audio_segments': mel_tensor,
-                            'teacher_embedding': item['embedding'],
+                            'teacher_embedding': teacher_embedding,
                             'num_segments': len(mel_specs)
                         })
                     except Exception as e:
@@ -402,13 +316,6 @@ class StudentCLAPDataset:
             'hop_length': self.audio_config['hop_length'],
             'embedding_dim': 512
         }
-        
-        # Add downloader stats
-        downloader_stats = self.jellyfin_downloader.get_stats()
-        stats.update({
-            'cached_files': downloader_stats['cached_files'],
-            'cache_size_mb': downloader_stats['cache_size_mb']
-        })
         
         # Add mel cache stats
         mel_cache_stats = self.mel_cache.get_stats()
@@ -459,7 +366,7 @@ class StudentCLAPDataset:
         
     def close(self):
         """Clean up resources."""
-        self.db_loader.close()
+        self.mel_cache.close()
 
 
 def collate_batch(batch: List[Dict]) -> Dict:
@@ -540,29 +447,25 @@ if __name__ == '__main__':
     for key, value in stats.items():
         print(f"  {key}: {value}")
     
-    # Test loading samples
-    print(f"\nTesting {args.num_samples} samples:")
-    for i in range(min(args.num_samples, len(dataset))):
-        print(f"\nSample {i}:")
-        sample = dataset[i]
-        
-        if sample:
-            print(f"  Item ID: {sample['item_id']}")
-            print(f"  Title: {sample['title']}")
-            print(f"  Author: {sample['author']}")
-            print(f"  Num segments: {sample['num_segments']}")
-            print(f"  Mel-specs shape: {sample['mel_spectrograms'].shape}")
-            print(f"  Teacher embedding shape: {sample['teacher_embedding'].shape}")
-            print(f"  Teacher embedding norm: {np.linalg.norm(sample['teacher_embedding']):.4f}")
-        else:
-            print(f"  ✗ Failed to load")
-    
     # Test batch iteration
-    print(f"\nTesting batch iteration (batch_size=2):")
+    print(f"\nTesting streaming batch iteration (batch_size=2):")
     batch_count = 0
-    for batch in dataset.iterate_batches(batch_size=2):
+    for batch in dataset.iterate_batches_streaming(batch_size=2, shuffle=False):
         batch_count += 1
-        print(f"  Batch {batch_count}: {len(batch)} samples")
+        print(f"\n  Batch {batch_count}: {len(batch)} samples")
+        
+        # Show first sample in batch
+        if batch:
+            sample = batch[0]
+            print(f"    First sample:")
+            print(f"      Item ID: {sample['item_id']}")
+            print(f"      Title: {sample['title']}")
+            print(f"      Author: {sample['author']}")
+            print(f"      Num segments: {sample['num_segments']}")
+            print(f"      Mel-specs shape: {sample['audio_segments'].shape}")
+            print(f"      Teacher embedding shape: {sample['teacher_embedding'].shape}")
+            print(f"      Teacher embedding norm: {np.linalg.norm(sample['teacher_embedding']):.4f}")
+        
         if batch_count >= 3:
             break
     
