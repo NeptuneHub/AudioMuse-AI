@@ -61,18 +61,7 @@ class MelSpectrogramCache:
         """)
         self.conn.commit()
         
-        # Create song_embeddings table for teacher CLAP embeddings (averaged)
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS song_embeddings (
-                item_id TEXT PRIMARY KEY,
-                embedding BLOB NOT NULL,
-                file_path TEXT NOT NULL,
-                compressed INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        self.conn.commit()
-        
+
         # Create segment_embeddings table for per-segment teacher CLAP embeddings
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS segment_embeddings (
@@ -87,12 +76,6 @@ class MelSpectrogramCache:
         self.conn.commit()
         
         # Add compressed column to existing tables (migration)
-        try:
-            self.conn.execute("ALTER TABLE song_embeddings ADD COLUMN compressed INTEGER DEFAULT 0")
-            self.conn.commit()
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-        
         try:
             self.conn.execute("ALTER TABLE segment_embeddings ADD COLUMN compressed INTEGER DEFAULT 0")
             self.conn.commit()
@@ -109,9 +92,6 @@ class MelSpectrogramCache:
         # Create index for faster lookups
         self.conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_item_id ON mel_spectrograms(item_id)
-        """)
-        self.conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_embedding_item_id ON song_embeddings(item_id)
         """)
         self.conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_segment_item_id ON segment_embeddings(item_id)
@@ -429,24 +409,25 @@ class MelSpectrogramCache:
         Returns:
             Dict with file_path and created_at, or None if not cached
         """
+        # Note: Now only uses segment_embeddings since song_embeddings table removed
         cursor = self.conn.execute(
-            "SELECT file_path, created_at FROM song_embeddings WHERE item_id = ?",
+            "SELECT MIN(created_at) FROM segment_embeddings WHERE item_id = ?",
             (item_id,)
         )
         row = cursor.fetchone()
         
-        if row is None:
+        if row is None or row[0] is None:
             return None
         
         return {
-            'file_path': row[0],
-            'created_at': row[1]
+            'file_path': 'N/A',  # Not stored in segment_embeddings
+            'created_at': row[0]
         }
         
     def clear(self):
         """Clear all cached data."""
         self.conn.execute("DELETE FROM mel_spectrograms")
-        self.conn.execute("DELETE FROM song_embeddings")
+        self.conn.execute("DELETE FROM segment_embeddings")
         self.conn.commit()
         logger.info("Cleared all mel spectrogram and embedding cache")
         
