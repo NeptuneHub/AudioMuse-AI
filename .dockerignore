@@ -16,6 +16,9 @@ deployment/
 !deployment/supervisord.conf
 test/
 
+# Student CLAP training (not needed in production)
+student_clap/
+
 # Python virtual environment and cache
 __pycache__/
 *.pyc
