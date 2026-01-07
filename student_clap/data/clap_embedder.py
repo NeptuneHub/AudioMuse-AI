@@ -81,6 +81,13 @@ class CLAPEmbedder:
         active_provider = self.session.get_providers()[0]
         logger.info(f"CLAP model loaded: {model_path}")
         logger.info(f"✅ Active provider: {active_provider}")
+        logger.info(f"📋 All available providers: {self.session.get_providers()}")
+        
+        # Verify GPU is actually being used
+        if active_provider == 'CoreMLExecutionProvider':
+            logger.info("🎮 GPU acceleration ACTIVE via CoreML (Metal)")
+        else:
+            logger.warning(f"⚠️ Running on CPU! Active provider: {active_provider}")
     
     def compute_mel_spectrogram(self, audio_data: np.ndarray) -> np.ndarray:
         """

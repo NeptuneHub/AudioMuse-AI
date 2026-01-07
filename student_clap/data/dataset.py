@@ -144,7 +144,7 @@ class StudentCLAPDataset:
             
             for item in batch_items:
                 mel_result = self.mel_cache.get_with_compression_status(item['item_id'])
-                has_embedding = self.mel_cache.has_embedding(item['item_id'])
+                has_embedding = self.mel_cache.has_segment_embeddings(item['item_id'])
                 
                 # Update cache counts
                 if mel_result is not None:
@@ -172,13 +172,15 @@ class StudentCLAPDataset:
             
             # 1. Process cached (fast, sequential is fine)
             for item, mel_data in tasks_cached:
-                # Get teacher embedding from cache
-                teacher_embedding = self.mel_cache.get_embedding(item['item_id'])
+                # Get teacher embeddings from cache
                 teacher_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
-                if teacher_embedding is None:
-                    logger.warning(f"Missing teacher embedding for {item['item_id']}, will reprocess")
+                if teacher_segment_embeddings is None:
+                    logger.warning(f"Missing teacher embeddings for {item['item_id']}, will reprocess")
                     tasks_to_process.append(item)
                     continue
+                
+                # Compute averaged embedding on-the-fly (fast)
+                teacher_embedding = self.mel_cache.get_averaged_embedding(item['item_id'])
                     
                 # Copy to make array writable for PyTorch
                 mel_tensor = torch.from_numpy(mel_data.copy()).float()
@@ -195,13 +197,15 @@ class StudentCLAPDataset:
             
             # 2. Process uncompressed (spawn compression threads)
             for item, mel_data, original_bytes in tasks_to_compress:
-                # Get teacher embedding from cache
-                teacher_embedding = self.mel_cache.get_embedding(item['item_id'])
+                # Get teacher embeddings from cache
                 teacher_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
-                if teacher_embedding is None:
-                    logger.warning(f"Missing teacher embedding for {item['item_id']}, will reprocess")
+                if teacher_segment_embeddings is None:
+                    logger.warning(f"Missing teacher embeddings for {item['item_id']}, will reprocess")
                     tasks_to_process.append(item)
                     continue
+                
+                # Compute averaged embedding on-the-fly (fast)
+                teacher_embedding = self.mel_cache.get_averaged_embedding(item['item_id'])
                 
                 # Spawn compression thread
                 threading.Thread(
@@ -234,20 +238,20 @@ class StudentCLAPDataset:
                     try:
                         # Check what's already cached
                         cached_mel = self.mel_cache.get(item['item_id'])
-                        cached_embedding = self.mel_cache.get_embedding(item['item_id'])
                         cached_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
                         
-                        # Get teacher embedding (compute if not cached)
-                        if cached_embedding is not None and cached_segment_embeddings is not None:
-                            teacher_embedding = cached_embedding
+                        # Get teacher embeddings (compute if not cached)
+                        if cached_segment_embeddings is not None:
+                            # Use cached segments and compute average on-the-fly
                             teacher_segment_embeddings = cached_segment_embeddings
+                            teacher_embedding = self.mel_cache.get_averaged_embedding(item['item_id'])
                         else:
+                            # Compute from audio and cache segments only
                             teacher_embedding, duration_sec, num_segments, teacher_segment_embeddings = self.clap_embedder.analyze_audio(audio_path)
                             if teacher_embedding is None:
                                 logger.error(f"CLAP analysis failed for {item['title']}")
                                 continue
-                            # Cache both averaged and per-segment embeddings
-                            self.mel_cache.put_embedding(item['item_id'], teacher_embedding, audio_path)
+                            # Cache only per-segment embeddings (average computed on-the-fly)
                             if teacher_segment_embeddings:
                                 self.mel_cache.put_segment_embeddings(item['item_id'], teacher_segment_embeddings)
                         

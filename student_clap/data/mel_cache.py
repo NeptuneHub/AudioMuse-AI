@@ -321,73 +321,28 @@ class MelSpectrogramCache:
         self.conn.commit()
         logger.info("Cleared all mel spectrogram cache")
     
-    def put_embedding(self, item_id: str, embedding: np.ndarray, file_path: str):
+    def get_averaged_embedding(self, item_id: str) -> Optional[np.ndarray]:
         """
-        Store teacher CLAP embedding for a song (compressed).
-        
-        Args:
-            item_id: Song item ID
-            embedding: Teacher embedding array (512-dim)
-            file_path: Full path to audio file
-        """
-        # Serialize embedding
-        if embedding.dtype != np.float32:
-            embedding = embedding.astype(np.float32)
-        embedding_bytes = embedding.tobytes()
-        
-        # Compress with zlib (embeddings are ~2KB each, but good for storage)
-        compressed_bytes = zlib.compress(embedding_bytes, level=6)
-        
-        self.conn.execute(
-            "INSERT OR REPLACE INTO song_embeddings (item_id, embedding, file_path, compressed) VALUES (?, ?, ?, ?)",
-            (item_id, compressed_bytes, file_path, 1)
-        )
-        self.conn.commit()
-    
-    def get_embedding(self, item_id: str) -> Optional[np.ndarray]:
-        """
-        Get teacher CLAP embedding from cache (with decompression).
+        Compute averaged teacher embedding from segment embeddings (no storage needed).
         
         Args:
             item_id: Song item ID
             
         Returns:
-            Embedding array (512-dim) or None if not cached
+            Averaged embedding array (512-dim) or None if segments not cached
         """
-        cursor = self.conn.execute(
-            "SELECT embedding, compressed FROM song_embeddings WHERE item_id = ?",
-            (item_id,)
-        )
-        row = cursor.fetchone()
-        
-        if row is None:
+        segment_embeddings = self.get_segment_embeddings(item_id)
+        if segment_embeddings is None:
             return None
         
-        embedding_bytes, is_compressed = row
+        # Average and normalize
+        avg_embedding = np.mean(segment_embeddings, axis=0).astype(np.float32)
+        # L2 normalize
+        norm = np.linalg.norm(avg_embedding)
+        if norm > 0:
+            avg_embedding = avg_embedding / norm
         
-        # Decompress if needed
-        if is_compressed:
-            embedding_bytes = zlib.decompress(embedding_bytes)
-        
-        embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
-        return embedding
-    
-    def has_embedding(self, item_id: str) -> bool:
-        """
-        Check if teacher embedding is cached for a song.
-        
-        Args:
-            item_id: Song item ID
-            
-        Returns:
-            True if embedding is cached
-        """
-        cursor = self.conn.execute(
-            "SELECT COUNT(*) FROM song_embeddings WHERE item_id = ?",
-            (item_id,)
-        )
-        count = cursor.fetchone()[0]
-        return count > 0
+        return avg_embedding
     
     def put_segment_embeddings(self, item_id: str, segment_embeddings: list):
         """
