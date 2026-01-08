@@ -18,7 +18,7 @@ sqlglot
 google-genai==1.57.0
 mistralai
 umap-learn 
-pydub>=0.25.1
+pydub==0.25.1
 python-mpd2
 psutil
 onnx==1.20.0
