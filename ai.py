@@ -300,8 +300,7 @@ def get_gemini_playlist_name(gemini_api_key, model_name, full_prompt, skip_delay
             model=model_name,
             contents=full_prompt,
             config=genai.types.GenerateContentConfig(
-                temperature=0.9,  # Explicitly set temperature for more creative/varied responses
-                http_options=genai.types.HttpOptions(timeout=960)
+                temperature=0.9  # Explicitly set temperature for more creative/varied responses
             )
         )
         
