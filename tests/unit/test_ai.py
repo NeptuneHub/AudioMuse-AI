@@ -605,27 +605,20 @@ class TestGetOllamaPlaylistName:
 class TestGetGeminiPlaylistName:
     """Tests for Google Gemini API function"""
 
-    @patch('ai.genai.GenerativeModel')
-    @patch('ai.genai.configure')
+    @patch('ai.genai.Client')
     @patch('ai.time.sleep')
-    def test_successful_gemini_call(self, mock_sleep, mock_configure, mock_model_class):
+    def test_successful_gemini_call(self, mock_sleep, mock_client_class):
         """Test successful Gemini API call"""
-        # Mock response structure
-        mock_part = Mock()
-        mock_part.text = "Chill Vibes"
-
-        mock_content = Mock()
-        mock_content.parts = [mock_part]
-
-        mock_candidate = Mock()
-        mock_candidate.content = mock_content
-
+        # Mock response structure for new google-genai API
         mock_response = Mock()
-        mock_response.candidates = [mock_candidate]
+        mock_response.text = "Chill Vibes"
 
-        mock_model = Mock()
-        mock_model.generate_content.return_value = mock_response
-        mock_model_class.return_value = mock_model
+        mock_models = Mock()
+        mock_models.generate_content.return_value = mock_response
+
+        mock_client = Mock()
+        mock_client.models = mock_models
+        mock_client_class.return_value = mock_client
 
         result = get_gemini_playlist_name(
             gemini_api_key="valid-key",
@@ -634,7 +627,7 @@ class TestGetGeminiPlaylistName:
         )
 
         assert result == "Chill Vibes"
-        mock_configure.assert_called_once_with(api_key="valid-key")
+        mock_client_class.assert_called_once_with(api_key="valid-key")
         assert mock_sleep.called
 
     def test_rejects_empty_api_key(self):
@@ -658,14 +651,16 @@ class TestGetGeminiPlaylistName:
 
         assert "Error" in result
 
-    @patch('ai.genai.GenerativeModel')
-    @patch('ai.genai.configure')
+    @patch('ai.genai.Client')
     @patch('ai.time.sleep')
-    def test_handles_gemini_api_error(self, mock_sleep, mock_configure, mock_model_class):
+    def test_handles_gemini_api_error(self, mock_sleep, mock_client_class):
         """Test handling of Gemini API errors"""
-        mock_model = Mock()
-        mock_model.generate_content.side_effect = Exception("API Error")
-        mock_model_class.return_value = mock_model
+        mock_models = Mock()
+        mock_models.generate_content.side_effect = Exception("API Error")
+
+        mock_client = Mock()
+        mock_client.models = mock_models
+        mock_client_class.return_value = mock_client
 
         result = get_gemini_playlist_name(
             gemini_api_key="valid-key",
