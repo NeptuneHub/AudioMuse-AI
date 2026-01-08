@@ -939,7 +939,7 @@ def get_tracks_from_album(album_id):
     # The 'titles' command with a filter is the correct way to get songs for an album.
     # We now fetch all songs and filter them by the album ID.
     try:
-        response = _jsonrpc_request("titles", [0, 999999, f"album_id:{album_id}"])
+        response = _jsonrpc_request("titles", [0, 999999, f"album_id:{album_id}", "tags:galdu"])
         logger.debug(f"Lyrion API Raw Track Response for Album {album_id}: {response}")
     except Exception as e:
         logger.error(f"Lyrion API call for album {album_id} failed: {e}", exc_info=True)
