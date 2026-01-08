@@ -5,7 +5,7 @@ import ftfy # Import the ftfy library
 import time # Import the time library
 import logging
 import unicodedata
-import google.generativeai as genai # Import Gemini library
+import google.genai as genai # Import Gemini library
 from mistralai import Mistral
 import os # Import os to potentially read GEMINI_API_CALL_DELAY_SECONDS
 from config import MAX_SONGS_IN_AI_PROMPT

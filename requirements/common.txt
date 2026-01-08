@@ -15,10 +15,10 @@ psycopg2-binary
 ftfy
 flasgger
 sqlglot
-google-generativeai
+google-genai
 mistralai
 umap-learn 
-pydub
+pydub>=0.25.1
 python-mpd2
 psutil
 onnx==1.16.0

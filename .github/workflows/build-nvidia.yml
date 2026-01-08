@@ -92,6 +92,6 @@ jobs:
           push: true
           tags: ${{ steps.docker_tags.outputs.docker_tags }}
           build-args: |
-            BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+            BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
           cache-from: type=gha,scope=nvidia
           cache-to: type=gha,scope=nvidia,mode=max

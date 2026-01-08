@@ -5,29 +5,19 @@
 # Build examples:
 #   CPU:  docker build -t audiomuse-ai .
 #   GPU:  docker build --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 -t audiomuse-ai-gpu .
-#
-# Optimizations:
-#   - Ubuntu 24.04 (Python 3.12)
-#   - Removed unused PyTorch/Torchaudio from CPU builds
-#   - Smart model caching: models only re-download if release version changes
-#   - Multi-stage build for optimal layer caching
 
 ARG BASE_IMAGE=ubuntu:24.04
 
 # ============================================================================
-# Stage 1: Model Cache with Checksum Validation (v3.0.0)
+# Stage 1: Download ML models (cached separately for faster rebuilds)
 # ============================================================================
-# This stage caches model downloads. Docker will reuse this layer unless:
-# - Model release version changes (v3.0.0 → v3.0.1)
-# - Model checksums change
-# - Dockerfile content in this stage changes
-FROM ubuntu:24.04 AS model-cache-v3.0.0
+FROM ubuntu:24.04 AS models
 
 SHELL ["/bin/bash", "-lc"]
 
 RUN mkdir -p /app/model
 
-# Install download tools
+# Install download tools with exponential backoff retry
 RUN set -ux; \
     n=0; \
     until [ "$n" -ge 5 ]; do \
@@ -40,120 +30,42 @@ RUN set -ux; \
     done; \
     rm -rf /var/lib/apt/lists/*
 
-# Download small ONNX models (~10MB each) with checksum verification
-# These models rarely change - Docker will cache this layer
+# Download ONNX models with diagnostics and retry logic
 RUN set -eux; \
-    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
-    models=( \
-        "danceability-msd-musicnn-1.onnx" \
-        "mood_aggressive-msd-musicnn-1.onnx" \
-        "mood_happy-msd-musicnn-1.onnx" \
-        "mood_party-msd-musicnn-1.onnx" \
-        "mood_relaxed-msd-musicnn-1.onnx" \
-        "mood_sad-msd-musicnn-1.onnx" \
-        "msd-msd-musicnn-1.onnx" \
-        "msd-musicnn-1.onnx" \
+    urls=( \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/danceability-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_aggressive-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_happy-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_party-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_relaxed-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_sad-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/msd-msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/msd-musicnn-1.onnx" \
     ); \
     mkdir -p /app/model; \
-    for model in "${models[@]}"; do \
+    for u in "${urls[@]}"; do \
         n=0; \
-        fname="/app/model/$model"; \
-        url="$base_url/$model"; \
+        fname="/app/model/$(basename "$u")"; \
+        # Diagnostic: print server response headers (helpful when downloads return 0 bytes) \
+        wget --server-response --spider --timeout=15 --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" "$u" || true; \
         until [ "$n" -ge 5 ]; do \
-            if wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 \
-                --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-                -O "$fname" "$url"; then \
-                echo "✓ Downloaded $model"; \
+            # Use wget with retries. --tries and --waitretry add backoff for transient failures. \
+            if wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" -O "$fname" "$u"; then \
+                echo "Downloaded $u -> $fname"; \
                 break; \
             fi; \
             n=$((n+1)); \
-            echo "wget attempt $n for $model failed — retrying in $((n*n))s"; \
+            echo "wget attempt $n for $u failed — retrying in $((n*n))s"; \
             sleep $((n*n)); \
         done; \
         if [ "$n" -ge 5 ]; then \
-            echo "ERROR: failed to download $model after 5 attempts"; \
+            echo "ERROR: failed to download $u after 5 attempts"; \
+            ls -lah /app/model || true; \
             exit 1; \
         fi; \
-    done; \
-    echo "✓ All small ONNX models cached successfully"; \
-    ls -lh /app/model/
+    done
 
-# Download CLAP models (~746MB total) - cached separately
-# Only re-downloads if this stage changes
-RUN set -eux; \
-    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
-    audio_model="clap_audio_model.onnx"; \
-    text_model="clap_text_model.onnx"; \
-    \
-    # Download audio model (~268MB) \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "/app/model/$audio_model" "$base_url/$audio_model"; then \
-            echo "✓ CLAP audio model cached"; \
-            break; \
-        fi; \
-        n=$((n+1)); \
-        sleep $((n*n)); \
-    done; \
-    \
-    # Download text model (~478MB) \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "/app/model/$text_model" "$base_url/$text_model"; then \
-            echo "✓ CLAP text model cached"; \
-            break; \
-        fi; \
-        n=$((n+1)); \
-        sleep $((n*n)); \
-    done; \
-    \
-    # Verify sizes \
-    audio_size=$(stat -c%s "/app/model/$audio_model" 2>/dev/null || echo "0"); \
-    text_size=$(stat -c%s "/app/model/$text_model" 2>/dev/null || echo "0"); \
-    if [ "$audio_size" -lt 250000000 ]; then \
-        echo "ERROR: CLAP audio model too small"; \
-        exit 1; \
-    fi; \
-    if [ "$text_size" -lt 450000000 ]; then \
-        echo "ERROR: CLAP text model too small"; \
-        exit 1; \
-    fi; \
-    echo "✓ CLAP models cached successfully"; \
-    ls -lh /app/model/*.onnx
-
-# Download HuggingFace models (~985MB) - cached separately
-RUN set -eux; \
-    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
-    hf_models="huggingface_models.tar.gz"; \
-    cache_dir="/app/.cache/huggingface"; \
-    \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "/tmp/$hf_models" "$base_url/$hf_models"; then \
-            echo "✓ HuggingFace models downloaded"; \
-            break; \
-        fi; \
-        n=$((n+1)); \
-        sleep $((n*n)); \
-    done; \
-    \
-    mkdir -p "$cache_dir"; \
-    tar -xzf "/tmp/$hf_models" -C "$cache_dir"; \
-    rm -f "/tmp/$hf_models"; \
-    \
-    if [ ! -d "$cache_dir/hub" ]; then \
-        echo "ERROR: HuggingFace models extraction failed"; \
-        exit 1; \
-    fi; \
-    \
-    echo "✓ HuggingFace models cached successfully"; \
-    du -sh "$cache_dir"
+# NOTE: CLAP model download moved to runner stage to avoid EOF errors with large file transfers in multi-arch builds
 
 # ============================================================================
 # Stage 2: Base - System dependencies and build tools
@@ -178,9 +90,9 @@ RUN set -ux; \
             libfftw3-double3=3.3.10-1ubuntu3 libfftw3-dev \
             libyaml-0-2=0.2.5-1build1 libyaml-dev \
             libsamplerate0=0.2.2-4build1 libsamplerate0-dev \
-            libsndfile1=1.2.2-1ubuntu5 libsndfile1-dev \
+            libsndfile1=1.2.2-1ubuntu5.24.04.1 libsndfile1-dev \
             libopenblas-dev=0.3.26+ds-1 \
-            liblapack-dev=3.12.0-3build1 \
+            liblapack-dev=3.12.0-3build1.1 \
             libpq-dev \
             ffmpeg wget curl \
             supervisor procps \
@@ -195,7 +107,8 @@ RUN set -ux; \
     done; \
     rm -rf /var/lib/apt/lists/* && \
     apt-get remove -y python3-numpy || true && \
-    apt-get autoremove -y || true
+    apt-get autoremove -y || true && \
+    rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
 # ============================================================================
 # Stage 3: Libraries - Python packages installation
@@ -211,7 +124,7 @@ COPY requirements/ /app/requirements/
 
 # Install Python packages with uv (combined in single layer for efficiency)
 # GPU builds: cupy, cuml, onnxruntime-gpu, voyager, torch (CUDA)
-# CPU builds: onnxruntime (CPU only), no torch/torchaudio
+# CPU builds: onnxruntime (CPU only), torch (CPU)
 # Note: --index-strategy unsafe-best-match resolves conflicts between pypi.nvidia.com and pypi.org
 RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
         echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager, torch+cuda)"; \
@@ -225,7 +138,51 @@ RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
     && find /usr/local/lib/python3.12/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.12/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
-# NOTE: HuggingFace models are now cached in model-cache stage
+# Download HuggingFace models (BERT, RoBERTa, BART, T5) from GitHub release
+# These are the text encoders needed by laion-clap library for text embeddings
+# and T5 for MuLan text encoding
+RUN set -eux; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+    hf_models="huggingface_models.tar.gz"; \
+    cache_dir="/app/.cache/huggingface"; \
+    echo "Downloading HuggingFace models (~985MB)..."; \
+    \
+    # Download with retry logic \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/tmp/$hf_models" "$base_url/$hf_models"; then \
+            echo "✓ HuggingFace models downloaded"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "Download attempt $n failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download HuggingFace models after 5 attempts"; \
+        exit 1; \
+    fi; \
+    \
+    # Extract to cache directory \
+    mkdir -p "$cache_dir"; \
+    echo "Extracting HuggingFace models..."; \
+    tar -xzf "/tmp/$hf_models" -C "$cache_dir"; \
+    \
+    # Verify extraction \
+    if [ ! -d "$cache_dir/hub" ]; then \
+        echo "ERROR: HuggingFace models extraction failed"; \
+        exit 1; \
+    fi; \
+    \
+    # Clean up tarball \
+    rm -f "/tmp/$hf_models"; \
+    \
+    echo "✓ HuggingFace models extracted to $cache_dir"; \
+    du -sh "$cache_dir"
+
+# NOTE: MuLan model download moved to runner stage (like CLAP) to avoid EOF errors with large file transfers
 
 # ============================================================================
 # Stage 4: Runner - Final production image
@@ -243,17 +200,146 @@ WORKDIR /app
 
 # Copy Python packages from libraries stage
 COPY --from=libraries /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/
+# Copy HuggingFace cache (RoBERTa model) from libraries stage
+COPY --from=libraries /app/.cache/huggingface/ /app/.cache/huggingface/
 
-# Copy ALL cached models from model-cache stage
-COPY --from=model-cache-v3.0.0 /app/model/ /app/model/
-COPY --from=model-cache-v3.0.0 /app/.cache/huggingface/ /app/.cache/huggingface/
+# Verify cache was copied correctly
+RUN ls -lah /app/.cache/huggingface/ && \
+    echo "HuggingFace cache contents:" && \
+    du -sh /app/.cache/huggingface/* || echo "Cache directory empty!"
 
-# Verify models were copied
-RUN ls -lah /app/model/ && \
-    echo "Model files:" && \
-    ls -lh /app/model/*.onnx && \
-    echo "HuggingFace cache:" && \
-    du -sh /app/.cache/huggingface/
+# Copy ONNX models from models stage (small files, no issues)
+COPY --from=models /app/model/*.onnx /app/model/
+
+# Download CLAP split ONNX models directly in runner stage
+# Split models allow loading only what's needed:
+# - Audio model (~268MB): For music analysis in worker containers
+# - Text model (~478MB): For text search in Flask containers
+# - Combined: ~746MB (vs old combined model ~746MB)
+RUN set -eux; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+    arch=$(uname -m); \
+    echo "Architecture detected: $arch - Downloading CLAP split ONNX models..."; \
+    \
+    # Download audio model (~268MB) \
+    audio_model="clap_audio_model.onnx"; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/app/model/$audio_model" "$base_url/$audio_model"; then \
+            echo "✓ CLAP audio model downloaded"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "Download attempt $n for audio model failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download CLAP audio model after 5 attempts"; \
+        exit 1; \
+    fi; \
+    \
+    # Download text model (~478MB) \
+    text_model="clap_text_model.onnx"; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/app/model/$text_model" "$base_url/$text_model"; then \
+            echo "✓ CLAP text model downloaded"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "Download attempt $n for text model failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download CLAP text model after 5 attempts"; \
+        exit 1; \
+    fi; \
+    \
+    # Verify audio model \
+    if [ ! -f "/app/model/$audio_model" ]; then \
+        echo "ERROR: CLAP audio model file not created"; \
+        exit 1; \
+    fi; \
+    file_size=$(stat -c%s "/app/model/$audio_model" 2>/dev/null || stat -f%z "/app/model/$audio_model" 2>/dev/null || echo "0"); \
+    if [ "$file_size" -lt 250000000 ]; then \
+        echo "ERROR: CLAP audio model file is too small (expected ~268MB, got $file_size bytes)"; \
+        exit 1; \
+    fi; \
+    \
+    # Verify text model \
+    if [ ! -f "/app/model/$text_model" ]; then \
+        echo "ERROR: CLAP text model file not created"; \
+        exit 1; \
+    fi; \
+    file_size=$(stat -c%s "/app/model/$text_model" 2>/dev/null || stat -f%z "/app/model/$text_model" 2>/dev/null || echo "0"); \
+    if [ "$file_size" -lt 450000000 ]; then \
+        echo "ERROR: CLAP text model file is too small (expected ~478MB, got $file_size bytes)"; \
+        exit 1; \
+    fi; \
+    \
+    echo "✓ CLAP split models downloaded successfully (arch: $arch)"; \
+    ls -lh "/app/model/$audio_model" "/app/model/$text_model"
+
+# Download MuQ-MuLan ONNX models directly in runner stage (DISABLED: change 'false' to 'true' to enable)
+# MuLan models (~2.5GB total) - pre-converted ONNX (no PyTorch dependency)
+# Files: mulan_audio_encoder.onnx + .data, mulan_text_encoder.onnx + .data, mulan_tokenizer.tar.gz
+RUN set -eux; \
+    if false; then \
+        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+        mulan_dir="/app/model/mulan"; \
+        mkdir -p "$mulan_dir"; \
+        \
+        # List of files to download (onnx models + data files + tokenizer)
+        files=( \
+            "mulan_audio_encoder.onnx" \
+            "mulan_audio_encoder.onnx.data" \
+            "mulan_text_encoder.onnx" \
+            "mulan_text_encoder.onnx.data" \
+            "mulan_tokenizer.tar.gz" \
+        ); \
+        \
+        echo "Downloading MuQ-MuLan ONNX models (~2.5GB total)..."; \
+        for f in "${files[@]}"; do \
+            n=0; \
+            until [ "$n" -ge 5 ]; do \
+                if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+                    --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+                    -O "$mulan_dir/$f" "$base_url/$f"; then \
+                    echo "✓ Downloaded: $f"; \
+                    break; \
+                fi; \
+                n=$((n+1)); \
+                echo "Download attempt $n for $f failed — retrying in $((n*n))s"; \
+                sleep $((n*n)); \
+            done; \
+            if [ "$n" -ge 5 ]; then \
+                echo "ERROR: Failed to download $f after 5 attempts"; \
+                exit 1; \
+            fi; \
+        done; \
+        \
+        # Extract tokenizer files
+        echo "Extracting MuLan tokenizer..."; \
+        tar -xzf "$mulan_dir/mulan_tokenizer.tar.gz" -C "$mulan_dir"; \
+        rm "$mulan_dir/mulan_tokenizer.tar.gz"; \
+        \
+        # Verify all files exist (tokenizer.json excluded - using slow tokenizer for compatibility)
+        for f in mulan_audio_encoder.onnx mulan_audio_encoder.onnx.data \
+                 mulan_text_encoder.onnx mulan_text_encoder.onnx.data \
+                 sentencepiece.bpe.model tokenizer_config.json special_tokens_map.json; do \
+            if [ ! -f "$mulan_dir/$f" ]; then \
+                echo "ERROR: Missing file: $f"; \
+                exit 1; \
+            fi; \
+        done; \
+        \
+        echo "✓ MuQ-MuLan ONNX models ready"; \
+        ls -lh "$mulan_dir"; \
+    fi
 
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app
