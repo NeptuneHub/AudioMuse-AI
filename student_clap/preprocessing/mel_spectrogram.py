@@ -47,7 +47,7 @@ def compute_mel_spectrogram(audio_data: np.ndarray,
         fmax: Maximum frequency
         
     Returns:
-        Log mel-spectrogram of shape (1, time_frames, n_mels)
+        Log mel-spectrogram of shape (1, n_mels, time_frames) for CNN input
     """
     # Compute mel-spectrogram
     mel = librosa.feature.melspectrogram(
@@ -68,11 +68,8 @@ def compute_mel_spectrogram(audio_data: np.ndarray,
     # Convert to log scale (dB)
     mel = librosa.power_to_db(mel, ref=1.0, amin=1e-10, top_db=None)
     
-    # Transpose to (time_frames, mel_bins)
-    mel = mel.T
-    
-    # Add batch dimension: (1, time_frames, n_mels)
-    mel = mel[np.newaxis, :, :]
+    # Shape is (n_mels, time_frames) - add batch dimension
+    mel = mel[np.newaxis, :, :]  # (1, n_mels, time_frames)
     
     return mel.astype(np.float32)
 
@@ -88,7 +85,7 @@ def compute_mel_spectrogram_batch(audio_segments: list,
     Compute mel-spectrograms for a batch of audio segments.
     
     Args:
-        audio_segments: List of audio segments, each of shape (n_samples,)
+        audio_segments: List or array of audio segments, each of shape (n_samples,)
         sr: Sample rate
         n_mels: Number of mel bands
         n_fft: FFT window size
@@ -97,7 +94,8 @@ def compute_mel_spectrogram_batch(audio_segments: list,
         fmax: Maximum frequency
         
     Returns:
-        Batch of mel-spectrograms, shape (batch_size, time_frames, n_mels)
+        Batch of mel-spectrograms, shape (batch_size, 1, n_mels, time_frames)
+        Ready for CNN input: (batch, channels, height, width)
     """
     mel_specs = []
     
@@ -105,10 +103,12 @@ def compute_mel_spectrogram_batch(audio_segments: list,
         mel = compute_mel_spectrogram(
             segment, sr, n_mels, n_fft, hop_length, fmin, fmax
         )
+        # mel is (1, n_mels, time) -> add channel dim -> (1, 1, n_mels, time)
+        mel = mel[:, np.newaxis, :, :]  # Add channel dimension
         mel_specs.append(mel)
     
-    # Stack into batch (remove individual batch dims and create new one)
-    mel_batch = np.concatenate(mel_specs, axis=0)
+    # Stack into batch
+    mel_batch = np.concatenate(mel_specs, axis=0)  # (batch, 1, n_mels, time)
     
     return mel_batch
 

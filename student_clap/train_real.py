@@ -106,6 +106,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
         batch = {
             'audio_segments': [],
             'teacher_embeddings': [],
+            'teacher_segment_embeddings': [],
             'song_ids': []
         }
         
@@ -114,6 +115,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             audio_segments = item['audio_segments']
             batch['audio_segments'].append(audio_segments)
             batch['teacher_embeddings'].append(item['teacher_embedding'])
+            batch['teacher_segment_embeddings'].append(item.get('teacher_segment_embeddings'))
             batch['song_ids'].append(item['item_id'])
         
         # 🧠 REAL TRAINING STEP
@@ -126,7 +128,9 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             # Log detailed metrics
             accumulation_info = f" [acc {step_metrics['accumulation_step']}/{trainer.gradient_accumulation_steps}]"
             update_info = " 🔄 WEIGHTS UPDATED!" if step_metrics['will_update'] else ""
+            num_training_samples = step_metrics.get('num_training_samples', len(batch_data))
             logger.info(f"   ✅ Forward pass through student CNN + Transformer{accumulation_info}{update_info}")
+            logger.info(f"   📈 Training samples: {num_training_samples} (from {len(batch_data)} songs)")
             logger.info(f"   📊 Loss: {step_metrics['total_loss']:.6f}")
             logger.info(f"      └─ MSE Loss: {step_metrics['mse_loss']:.6f}")
             logger.info(f"      └─ Cosine Loss: {step_metrics['cosine_loss']:.6f}")
@@ -203,6 +207,14 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
     
     epoch_time = time.time() - epoch_start_time
     
+    # Show mel cache stats at end of epoch 1
+    if epoch == 1:
+        cache_stats = dataset.mel_cache.get_stats()
+        logger.info(f"📦 MEL CACHE STATS (END OF EPOCH 1):")
+        logger.info(f"   🎵 Total cached: {cache_stats['total_cached']} songs")
+        logger.info(f"   💾 Cache size: {cache_stats['cache_size_gb']:.1f} GB")
+        logger.info(f"   📊 Hit rate: {cache_stats['hit_rate_percent']:.1f}%")
+    
     logger.info(f"🎯 EPOCH {epoch}/{config['training']['epochs']} COMPLETE:")
     logger.info(f"   📈 Average Loss: {avg_loss:.6f}")
     logger.info(f"   📊 Average MSE: {avg_mse:.6f}")
@@ -229,7 +241,8 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
 
 def validate_real(trainer: StudentCLAPTrainer,
                  dataset: StudentCLAPDataset,
-                 config: dict) -> dict:
+                 config: dict,
+                 epoch: int = 1) -> dict:
     """
     Real validation using trained student model.
     
@@ -237,13 +250,15 @@ def validate_real(trainer: StudentCLAPTrainer,
         trainer: Student CLAP trainer with trained model
         dataset: Validation dataset
         config: Configuration dict
+        epoch: Current epoch number for logging
         
     Returns:
         Dict with validation metrics
     """
-    logger.info("🔍 Running REAL validation...")
+    logger.info(f"🔍 Running REAL validation (Epoch {epoch})...")
     
     trainer.model.eval()
+    trainer.model.float()  # Ensure model is in float32 mode
     
     # Collect embeddings
     student_embeddings_list = []
@@ -252,7 +267,7 @@ def validate_real(trainer: StudentCLAPTrainer,
     
     with torch.no_grad():
         for batch_data in tqdm(dataset.iterate_batches_streaming(config['training']['batch_size'], shuffle=False),
-                              desc="Validation"):
+                              desc=f"Validation (Epoch {epoch})"):
             
             # Prepare batch
             batch = {
@@ -269,22 +284,40 @@ def validate_real(trainer: StudentCLAPTrainer,
             
             # Forward pass without gradients
             student_embeddings = []
+            teacher_embeddings_batch = []  # Only include teachers for processed students
+            
             for i, audio_segments in enumerate(batch['audio_segments']):
-                # Convert to tensor
+                # audio_segments are PRE-COMPUTED mel spectrograms! (num_segments, 1, 128, time)
                 if not isinstance(audio_segments, torch.Tensor):
-                    audio_segments = torch.tensor(audio_segments, dtype=torch.float32, device=trainer.device)
+                    audio_segments = torch.from_numpy(audio_segments).to(dtype=torch.float32, device=trainer.device)
+                else:
+                    audio_segments = audio_segments.to(dtype=torch.float32, device=trainer.device)
                 
-                # Get averaged embedding
-                avg_embedding = trainer.model.process_audio_segments(audio_segments)
+                # ⚠️ SKIP SONGS WITH ONLY 1 SEGMENT (BatchNorm requires at least 2 samples)
+                if audio_segments.shape[0] < 2:
+                    logger.warning(f"⚠️ Skipping song {batch['song_ids'][i]} in validation - only {audio_segments.shape[0]} segment")
+                    continue
+                
+                # Forward pass returns (num_segments, 512) - one embedding per segment
+                segment_embeddings = trainer.model(audio_segments)  # (num_segments, 512)
+                
+                # Average across segments to get single embedding per song (same as training!)
+                avg_embedding = torch.mean(segment_embeddings, dim=0, keepdim=True)  # (1, 512)
+                
+                # Re-normalize after averaging
+                avg_embedding = torch.nn.functional.normalize(avg_embedding, p=2, dim=1)
+                
                 student_embeddings.append(avg_embedding.cpu().numpy())
+                teacher_embeddings_batch.append(batch['teacher_embeddings'][i])  # Only add teacher if student was processed
             
-            # Stack and store
-            student_batch = np.vstack(student_embeddings)
-            teacher_batch = np.stack(batch['teacher_embeddings'])
-            
-            student_embeddings_list.append(student_batch)
-            teacher_embeddings_list.append(teacher_batch)
-            song_ids.extend(batch['song_ids'])
+            # Stack and store (only if we have valid embeddings)
+            if student_embeddings:
+                student_batch = np.vstack(student_embeddings)
+                teacher_batch = np.stack(teacher_embeddings_batch)
+                
+                student_embeddings_list.append(student_batch)
+                teacher_embeddings_list.append(teacher_batch)
+                song_ids.extend([batch['song_ids'][i] for i in range(len(batch['song_ids'])) if batch['audio_segments'][i].shape[0] >= 2])
     
     # Concatenate all embeddings
     student_all = np.vstack(student_embeddings_list)
@@ -331,30 +364,14 @@ def train(config_path: str, resume: str = None):
     logger.info(f"   Estimated size: {model_info['estimated_size_mb']:.1f} MB")
     logger.info(f"   Device: {trainer.device}")
     
-    # Create datasets
-    logger.info("\n📁 Creating datasets...")
-    train_dataset = StudentCLAPDataset(config, split='train', 
-                                       validation_split=config['training']['validation_split'])
-    val_dataset = StudentCLAPDataset(config, split='val',
-                                     validation_split=config['training']['validation_split'])
-    
-    logger.info(f"  Train: {len(train_dataset)} samples")
-    logger.info(f"  Val:   {len(val_dataset)} samples")
-    
-    # Print dataset stats
-    train_stats = train_dataset.get_dataset_stats()
-    logger.info(f"\n📈 Dataset statistics:")
-    for key, value in train_stats.items():
-        logger.info(f"  {key}: {value}")
+    # Initialize start_epoch early (before datasets need it)
+    start_epoch = 1
+    best_val_cosine = 0.0
+    patience_counter = 0
     
     # Create checkpoint directory
     checkpoint_dir = Path(config['paths']['checkpoints'])
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Auto-detect and resume from existing checkpoints
-    start_epoch = 1
-    best_val_cosine = 0.0
-    patience_counter = 0
     
     # Check for resume argument first
     if resume:
@@ -386,7 +403,6 @@ def train(config_path: str, resume: str = None):
             best_val_cosine = checkpoint.get('best_val_cosine', 0.0)
             patience_counter = checkpoint.get('patience_counter', 0)
             
-            # Show resume info
             logger.info(f"✅ Successfully resumed from epoch {checkpoint['epoch']}")
             logger.info(f"   📈 Best cosine similarity so far: {best_val_cosine:.4f}")
             logger.info(f"   ⏰ Patience counter: {patience_counter}/{config['training']['early_stopping_patience']}")
@@ -404,6 +420,93 @@ def train(config_path: str, resume: str = None):
             best_val_cosine = 0.0
             patience_counter = 0
     
+    # Create datasets NOW that we know start_epoch
+    logger.info("\n📁 Creating datasets...")
+    
+    # 🔄 Check for mel cache checkpoint (in case previous training failed)
+    cache_checkpoint_path = Path(config['paths']['checkpoints']) / 'mel_cache_checkpoint.pkl'
+    if cache_checkpoint_path.exists():
+        logger.info(f"💡 Found mel cache checkpoint: {cache_checkpoint_path}")
+        logger.info("   Note: Mel cache will be automatically restored from this if needed")
+        logger.info("   (The dataset class handles cache restoration automatically)")
+    
+    train_dataset = StudentCLAPDataset(config, split='train', 
+                                       validation_split=config['training']['validation_split'],
+                                       epoch=start_epoch)
+    val_dataset = StudentCLAPDataset(config, split='val',
+                                     validation_split=config['training']['validation_split'],
+                                     epoch=start_epoch)
+    
+    logger.info(f"  Train: {len(train_dataset)} samples")
+    logger.info(f"  Val:   {len(val_dataset)} samples")
+    
+    # Print dataset stats
+    train_stats = train_dataset.get_dataset_stats()
+    logger.info(f"\n📈 Dataset statistics:")
+    for key, value in train_stats.items():
+        logger.info(f"  {key}: {value}")
+    
+    # Create songs.md file with training song list
+    logger.info("\n📝 Creating songs.md with training dataset...")
+    model_dir = Path(config['paths']['final_model']).parent
+    model_dir.mkdir(parents=True, exist_ok=True)
+    songs_md_path = model_dir / 'songs.md'
+    
+    # Delete existing file if present
+    if songs_md_path.exists():
+        songs_md_path.unlink()
+        logger.info(f"🗑️  Removed existing {songs_md_path}")
+    
+    try:
+        with open(songs_md_path, 'w', encoding='utf-8') as f:
+            f.write("# Training Dataset - Free Music Archive\n\n")
+            f.write("This model was trained using music from the **Free Music Archive** (https://freemusicarchive.org/), ")
+            f.write("a library of high-quality audio recordings released under Creative Commons licenses.\n\n")
+            f.write("All songs in this training dataset are licensed under **CC0 (Public Domain)** or **CC-BY (Attribution)** licenses, ")
+            f.write("which permit use for training machine learning models.\n\n")
+            f.write("## License Information\n\n")
+            f.write("- **CC0 (Public Domain)**: No rights reserved, free to use for any purpose\n")
+            f.write("- **CC-BY (Attribution)**: Free to use with attribution to the original artist\n\n")
+            f.write("## Dataset Characteristics\n\n")
+            f.write("The training dataset is **unbalanced** across the following genres from the Free Music Archive:\n\n")
+            f.write("- Blues\n")
+            f.write("- Classical\n")
+            f.write("- Country\n")
+            f.write("- Electronic\n")
+            f.write("- Folk\n")
+            f.write("- Hip-Hop\n")
+            f.write("- Instrumental\n")
+            f.write("- International\n")
+            f.write("- Jazz\n")
+            f.write("- Pop\n")
+            f.write("- Rock\n")
+            f.write("- Soul-RnB\n\n")
+            f.write("This reflects the natural distribution of music available in the Free Music Archive.\n\n")
+            f.write("## Acknowledgments\n\n")
+            f.write("We extend our gratitude to:\n")
+            f.write("- The artists who generously shared their music under open licenses\n")
+            f.write("- Free Music Archive (https://freemusicarchive.org/) for curating and hosting this content\n")
+            f.write("- The Creative Commons organization for enabling culture sharing\n\n")
+            f.write("---\n\n")
+            f.write(f"## Training Dataset Songs ({len(train_dataset)} songs)\n\n")
+            
+            for item in train_dataset.items:
+                f.write(f"- {item['title']} (`{item['item_id']}`)\n")
+            
+            f.write(f"\n## Validation Dataset Songs ({len(val_dataset)} songs)\n\n")
+            
+            for item in val_dataset.items:
+                f.write(f"- {item['title']} (`{item['item_id']}`)\n")
+            
+            f.write(f"\n---\n\n")
+            f.write(f"**Total songs used**: {len(train_dataset) + len(val_dataset)}\n")
+            f.write(f"**Training songs**: {len(train_dataset)}\n")
+            f.write(f"**Validation songs**: {len(val_dataset)}\n")
+        
+        logger.info(f"✅ Created {songs_md_path} with {len(train_dataset) + len(val_dataset)} songs")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to create songs.md: {e}")
+    
     # Training loop
     logger.info("\n" + "=" * 60)
     if start_epoch == 1:
@@ -418,21 +521,76 @@ def train(config_path: str, resume: str = None):
         logger.info(f"   📊 Training progress: {progress_pct:.1f}% complete ({start_epoch-1}/{config['training']['epochs']} epochs done)")
     logger.info("=" * 60)
     
+    # 💾 Save mel cache checkpoint before training starts
+    logger.info("\n💾 Creating mel cache checkpoint before training...")
+    cache_checkpoint_path = Path(config['paths']['checkpoints']) / 'mel_cache_checkpoint.pkl'
+    try:
+        # Save cache state from both datasets
+        import pickle
+        cache_data = {
+            'train_cache': dict(train_dataset.mel_cache) if hasattr(train_dataset, 'mel_cache') else {},
+            'val_cache': dict(val_dataset.mel_cache) if hasattr(val_dataset, 'mel_cache') else {},
+            'train_size': len(train_dataset),
+            'val_size': len(val_dataset),
+            'config': config
+        }
+        with open(cache_checkpoint_path, 'wb') as f:
+            pickle.dump(cache_data, f)
+        logger.info(f"✅ Mel cache checkpoint saved: {cache_checkpoint_path}")
+        if hasattr(train_dataset, 'mel_cache'):
+            logger.info(f"   Train cache: {len(train_dataset.mel_cache)} songs")
+        if hasattr(val_dataset, 'mel_cache'):
+            logger.info(f"   Val cache: {len(val_dataset.mel_cache)} songs")
+        logger.info("   💡 If training fails, you can restore this cache to avoid recomputing!")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to save mel cache checkpoint: {e}")
+        logger.warning("   Training will continue, but cache won't be preserved on failure")
+    
     best_val_cosine = 0.0
     patience_counter = 0
     training_start_time = time.time()
     
     for epoch in range(start_epoch, config['training']['epochs'] + 1):
+        # Recreate datasets for each epoch (to handle epoch-specific behavior)
+        if epoch > start_epoch:
+            logger.info(f"\n📁 Reloading datasets for epoch {epoch}...")
+            train_dataset = StudentCLAPDataset(config, split='train', 
+                                               validation_split=config['training']['validation_split'],
+                                               epoch=epoch)
+            val_dataset = StudentCLAPDataset(config, split='val',
+                                             validation_split=config['training']['validation_split'],
+                                             epoch=epoch)
+        
         # Train epoch with REAL implementation
         train_metrics = train_epoch_real(trainer, train_dataset, config, epoch)
         
+        # 💾 SAVE CHECKPOINT AFTER EVERY EPOCH (for resume capability)
+        logger.info(f"💾 Saving checkpoint after epoch {epoch}...")
+        epoch_checkpoint_path = checkpoint_dir / f"checkpoint_epoch_{epoch}.pth"
+        latest_checkpoint_path = checkpoint_dir / "latest.pth"
+        epoch_checkpoint_data = {
+            'epoch': epoch,
+            'model_state_dict': trainer.model.state_dict(),
+            'optimizer_state_dict': trainer.optimizer.state_dict(),
+            'scheduler_state_dict': trainer.scheduler.state_dict(),
+            'train_metrics': train_metrics,
+            'best_val_cosine': best_val_cosine,
+            'patience_counter': patience_counter,
+            'config': config,
+            'timestamp': time.time()
+        }
+        torch.save(epoch_checkpoint_data, epoch_checkpoint_path)
+        torch.save(epoch_checkpoint_data, latest_checkpoint_path)  # Also save as latest
+        logger.info(f"✅ Checkpoint saved: {epoch_checkpoint_path}")
+        logger.info(f"✅ Latest checkpoint updated: {latest_checkpoint_path}")
+        
         # Validate every few epochs
         if epoch % 5 == 0 or epoch == 1:
-            val_metrics = validate_real(trainer, val_dataset, config)
+            val_metrics = validate_real(trainer, val_dataset, config, epoch)
             print_evaluation_report(val_metrics, f"Validation - Epoch {epoch}")
             
             # Check for improvement (use cosine similarity as main metric)
-            val_cosine = val_metrics['cosine_similarity']
+            val_cosine = val_metrics['cosine_similarity']['mean']
             if val_cosine > best_val_cosine:
                 best_val_cosine = val_cosine
                 patience_counter = 0

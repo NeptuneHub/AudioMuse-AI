@@ -86,41 +86,39 @@ class JellyfinDownloader:
         except Exception as e:
             logger.error(f"Failed to get item info for {item_id}: {e}")
             return None
+    
+    def check_item_exists(self, item_id: str) -> bool:
+        """
+        Check if item's audio file can actually be downloaded (not just metadata exists).
+        
+        Args:
+            item_id: Jellyfin item ID
+            
+        Returns:
+            True if audio file exists and is downloadable
+        """
+        try:
+            # Get download URL
+            url = f"{self.url}/Items/{item_id}/Download"
+            params = {"api_key": self.token}
+            
+            # Try to download first 1KB to verify file is accessible
+            response = requests.get(url, params=params, headers=self.headers, 
+                                  timeout=10, stream=True)
+            
+            # If we can start downloading, file exists
+            if response.status_code == 200:
+                # Close connection immediately (don't download full file)
+                response.close()
+                return True
+            return False
+        except Exception:
+            return False
             
     def _cleanup_cache(self):
-        """Remove old files if cache size exceeds limit."""
-        current_size = self.get_cache_size()
-        if current_size <= self.max_cache_size:
-            return
-            
-        logger.info(f"Cache size {current_size / (1024**3):.1f}GB exceeds limit {self.max_cache_size / (1024**3):.1f}GB, cleaning up...")
-        
-        # Get all cached files with their access times
-        cache_files = []
-        for cache_file in self.cache_dir.glob('*'):
-            if cache_file.is_file():
-                stat = cache_file.stat()
-                cache_files.append({
-                    'path': cache_file,
-                    'size': stat.st_size,
-                    'atime': stat.st_atime  # Access time
-                })
-        
-        # Sort by access time (oldest first)
-        cache_files.sort(key=lambda x: x['atime'])
-        
-        # Remove files until we're under the limit
-        freed_space = 0
-        files_removed = 0
-        for file_info in cache_files:
-            if current_size - freed_space <= self.max_cache_size:
-                break
-                
-            file_info['path'].unlink()
-            freed_space += file_info['size']
-            files_removed += 1
-            
-        logger.info(f"Removed {files_removed} old files, freed {freed_space / (1024**2):.1f}MB")
+        """Clean up old cached files (not used - files deleted immediately after processing)."""
+        # This method is no longer needed since files are deleted immediately after mel computation
+        return
             
     def download(self, item_id: str, force: bool = False) -> Optional[str]:
         """
@@ -151,9 +149,9 @@ class JellyfinDownloader:
             # Update access time for LRU cache management
             cache_path.touch()
             return str(cache_path)
-            
-        # Clean up cache if needed before downloading
-        self._cleanup_cache()
+        
+        # NO CACHE SIZE CHECK - files are deleted immediately after mel computation!
+        # Simple flow: Download → Analyze → Delete. No limits needed.
             
         # Download from Jellyfin
         try:

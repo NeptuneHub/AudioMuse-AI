@@ -1,19 +1,4 @@
 # Student CLAP Configuration
-# Copy this file to config.local.yaml and edit with your settings
-
-# Database connection (PostgreSQL)
-database:
-  host: ${DB_HOST}
-  port: 5432
-  database: ${DB_NAME}
-  user: ${DB_USER}
-  password: ${DB_PASSWORD}
-
-# Jellyfin connection (for audio download)
-jellyfin:
-  url: ${JELLYFIN_URL}
-  user_id: ${JELLYFIN_USER_ID}
-  token: ${JELLYFIN_TOKEN}
 
 # Audio processing (MUST match CLAP preprocessing)
 audio:
@@ -22,81 +7,68 @@ audio:
   hop_length: 240000           # 5 seconds hop, 50% overlap (CRITICAL: match teacher)
   
   # Mel-spectrogram parameters (for student model input)
-  n_mels: 128                  # Number of mel bands (student uses 128)
-  n_fft: 2048                  # FFT window size (increased for more freq bins)
+  n_mels: 128                  # Number of mel bands
+  n_fft: 2048                  # FFT window size
   hop_length_stft: 480         # STFT hop length
   fmin: 0                      # Minimum frequency
   fmax: 14000                  # Maximum frequency
 
 # Model architecture (TinyCLAP-inspired)
 model:
-  architecture: "tinyclap"     # Architecture type
   embedding_dim: 512           # MUST be 512 for CLAP compatibility
   
   # CNN stem
-  cnn_channels: [32, 64, 128]  # CNN channel progression
+  cnn_channels: [32, 64, 128]
   
   # Transformer
-  transformer_layers: 2        # Number of transformer layers
-  attention_heads: 4           # Number of attention heads
-  hidden_dim: 256              # Transformer hidden dimension
+  transformer_layers: 2
+  attention_heads: 4
+  hidden_dim: 256
   
-  # Dropout (for regularization)
   dropout: 0.1
 
 # Training hyperparameters
 training:
-  # Basic settings
-  batch_size: 4                # Reduced from 16 to save memory
-  gradient_accumulation_steps: 4  # Accumulate over 4 mini-batches (effective batch=16)
-  learning_rate: 0.0001        # Initial learning rate (1e-4)
-  epochs: 15                   # Balanced: not too long, not too short
-  warmup_epochs: 2             # Back to 2 epochs warmup
+  batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 0.0001
+  epochs: 15
   
-  # Optimizer
-  optimizer: "adam"            # Optimizer type (adam, adamw, sgd)
-  weight_decay: 0.00001        # Weight decay for regularization (1e-5)
-  grad_clip: 1.0               # Gradient clipping value
+  optimizer: "adam"
+  weight_decay: 0.00001
+  grad_clip: 1.0
   
   # Loss weights
-  mse_weight: 0.6              # Weight for MSE loss
-  cosine_weight: 0.4           # Weight for cosine similarity loss
+  mse_weight: 0.6
+  cosine_weight: 0.4
+  
+  # Training strategy: "segments", "averaged", or "both"
+  # - segments: Train on each segment individually (more data, segment-level learning)
+  # - averaged: Train on averaged embedding per song (original approach)
+  # - both: Train on segments AND averaged (RECOMMENDED: best of both worlds!)
+  training_strategy: "both"
   
   # Checkpointing
-  save_every: 1                # Save checkpoint every epoch (CRITICAL for crash recovery)
+  save_every: 1                # Save checkpoint every epoch
   early_stopping_patience: 10  # Stop if no improvement for N epochs
   
   # Validation
   validation_split: 0.15       # 15% of data for validation
 
-# Data augmentation (optional, for robustness)
-augmentation:
-  enabled: false               # Enable/disable augmentation
-  time_stretch_range: [0.95, 1.05]  # ±5% time stretch
-  pitch_shift_range: [-1, 1]        # ±1 semitone pitch shift
-  gaussian_noise_std: 0.005         # Gaussian noise std dev
-
 # Paths
 paths:
-  audio_cache: "./cache/audio"          # Cache for downloaded audio files  
-  max_cache_size_gb: 2                  # Keep only 2GB in cache (streaming mode)
-  checkpoints: "./checkpoints"          # Model checkpoints directory
-  logs: "./logs"                        # Training logs directory
-  final_model: "./models/student_clap_audio.onnx"  # Final exported model
+  teacher_model: "../model/clap_audio_model.onnx"  # INPUT: CLAP teacher model (~268MB)
+  mel_cache: "/Volumes/audiomuse/student_clap_cache/mel_spectrograms.db"  # SQLite DB (mel specs + embeddings)
+  checkpoints: "./checkpoints"
+  logs: "./logs"
+  final_model: "./models/student_clap_audio.onnx"  # OUTPUT: trained student model (~11MB)
 
-# Validation metrics
-validation:
-  metrics: ["mse", "cosine_similarity", "l2_distance"]
-  
-# Hardware settings (Mac Mini optimized)
-hardware:
-  use_cuda: false              # Mac Mini doesn't have CUDA
-  use_mps: true                # Use Apple Silicon GPU if available
-  num_workers: 2               # Reduced for Mac Mini
-  prefetch_factor: 1           # Reduced memory usage
+# Dataset configuration - LOCAL FMA
+dataset:
+  fma_path: "/Users/guidocolangiuli/Music/FMA"  # Path to local FMA audio files
+  sample_size: 0  # Total number of songs to use (null = all songs)
 
 # Logging
 logging:
-  level: "INFO"                # Logging level (DEBUG, INFO, WARNING, ERROR)
-  log_every: 10                # Log every N batches
-  tensorboard: false           # Enable TensorBoard logging (if installed)
+  level: "INFO"
+  log_every: 10
