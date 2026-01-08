@@ -66,12 +66,15 @@ class DatabaseLoader:
             self.conn = None
             logger.info("Database connection closed")
             
-    def load_embeddings(self, limit: Optional[int] = None) -> List[Dict]:
+    def load_embeddings(self, limit: Optional[int] = None, sample_size: Optional[int] = None, 
+                       balanced_genres: Optional[List[str]] = None, cached_item_ids: Optional[set] = None) -> List[Dict]:
         """
-        Load all CLAP embeddings with metadata.
+        Load CLAP embeddings with metadata.
         
         Args:
-            limit: Optional limit on number of embeddings to load
+            limit: Optional limit on number of embeddings to load (legacy, use sample_size instead)
+            sample_size: Total number of songs to sample (e.g., 10000)
+            balanced_genres: List of genres to balance equally across sample_size
             
         Returns:
             List of dicts with keys:
@@ -82,6 +85,11 @@ class DatabaseLoader:
         """
         self.connect()
         
+        # If balanced genre sampling is requested
+        if sample_size and balanced_genres:
+            return self._load_balanced_genre_sample(sample_size, balanced_genres, cached_item_ids)
+        
+        # Legacy path: load all or limited
         query = """
             SELECT ce.item_id, ce.embedding, s.title, s.author
             FROM clap_embedding ce
@@ -120,6 +128,243 @@ class DatabaseLoader:
             
         except Exception as e:
             logger.error(f"Failed to load embeddings: {e}")
+            raise
+    
+    def _load_balanced_genre_sample(self, sample_size: int, genres: List[str], cached_item_ids: Optional[set] = None) -> List[Dict]:
+        """
+        Load embeddings with balanced genre sampling.
+        
+        Each song appears ONCE with its TOP genre (highest score in mood_vector).
+        Uses mood_vector column which stores genres as "genre:score,genre2:score".
+        
+        Args:
+            sample_size: Total number of songs to sample (e.g., 10000)
+            genres: List of genre names to balance
+            
+        Returns:
+            List of embedding dicts (each song appears exactly once)
+        """
+        songs_per_genre = sample_size // len(genres)
+        logger.info(f"🎯 Balanced genre sampling: {sample_size} total songs, "
+                   f"~{songs_per_genre} per genre across {len(genres)} genres")
+        logger.info(f"   📊 Each song will appear ONCE with its TOP genre only")
+        
+        # Sort target genres by length (longest first) to prioritize specific genres
+        # This ensures "hard rock" is checked before "rock", "indie pop" before "indie", etc.
+        sorted_genres = sorted(genres, key=lambda g: len(g), reverse=True)
+        
+        # First, load ALL songs that match any of the requested genres
+        genre_filter = " OR ".join([f"s.mood_vector ILIKE '%{genre}%'" for genre in genres])
+        
+        query = f"""
+            SELECT 
+                ce.item_id, 
+                ce.embedding, 
+                s.title, 
+                s.author,
+                s.mood_vector
+            FROM clap_embedding ce
+            JOIN score s ON ce.item_id = s.item_id
+            WHERE ce.embedding IS NOT NULL
+              AND ({genre_filter})
+        """
+        
+        try:
+            with self.conn.cursor(cursor_factory=DictCursor) as cur:
+                logger.info(f"   ⏱️  Loading all songs with target genres...")
+                cur.execute(query)
+                rows = cur.fetchall()
+            
+            logger.info(f"   ✅ Found {len(rows)} songs matching target genres")
+            
+            # DEBUG: Sample a few mood_vectors to see the format
+            logger.info(f"   🔍 Sample mood_vectors from database:")
+            for i, row in enumerate(rows[:3]):
+                logger.info(f"      Song {i+1}: {row['mood_vector'][:100]}...")
+            
+            # Group songs by their TOP genre (separate cached vs non-cached)
+            genre_songs_cached = {genre: [] for genre in genres}
+            genre_songs_new = {genre: [] for genre in genres}
+            skipped = 0
+            
+            cached_item_ids = cached_item_ids or set()  # Handle None case
+            
+            for row in rows:
+                # Decode embedding
+                embedding_bytes = bytes(row['embedding'])
+                embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
+                
+                if len(embedding) != 512:
+                    logger.warning(f"Unexpected embedding dimension for {row['item_id']}: {len(embedding)}")
+                    continue
+                
+                # Parse mood_vector to find TOP genre that matches our target list
+                # Format: "female vocalists:0.577,jazz:0.544,folk:0.537,pop:0.535,rock:0.528"
+                mood_vector = row['mood_vector'] or ""
+                
+                # Parse all genres with scores, sorted by score (highest first)
+                song_genres = []
+                for pair in mood_vector.split(','):
+                    pair = pair.strip()
+                    if ':' not in pair:
+                        continue
+                    genre_name, score_str = pair.split(':', 1)
+                    genre_name = genre_name.strip().lower()
+                    
+                    try:
+                        score = float(score_str)
+                        song_genres.append((genre_name, score))
+                    except ValueError:
+                        continue
+                
+                # Sort by score descending
+                song_genres.sort(key=lambda x: x[1], reverse=True)
+                
+                # Find the HIGHEST scored genre that matches our target list
+                top_genre = None
+                for genre_name, score in song_genres:
+                    # Check if this genre EXACTLY matches any target genre (no substring matching!)
+                    for target_genre in sorted_genres:
+                        target_lower = target_genre.lower()
+                        # EXACT match only - "rock" should NOT match "hard rock"
+                        if target_lower == genre_name:
+                            top_genre = target_genre
+                            break
+                    
+                    # If we found a match, stop checking
+                    if top_genre:
+                        break
+                
+                # Add song to its top genre bucket (cached or new)
+                if top_genre:
+                    song_data = {
+                        'item_id': row['item_id'],
+                        'title': row['title'] or 'Unknown',
+                        'author': row['author'] or 'Unknown Artist',
+                        'embedding': embedding
+                    }
+                    if row['item_id'] in cached_item_ids:
+                        genre_songs_cached[top_genre].append(song_data)
+                    else:
+                        genre_songs_new[top_genre].append(song_data)
+                else:
+                    skipped += 1
+            
+            if skipped > 0:
+                logger.info(f"   📝 {skipped} songs not assigned yet (will use for fallback)")
+            
+            # Log cache distribution across genres
+            total_cached_available = sum(len(genre_songs_cached[g]) for g in genres)
+            total_new_available = sum(len(genre_songs_new[g]) for g in genres)
+            logger.info(f"   📊 Cache distribution: {total_cached_available} cached songs, {total_new_available} new songs across genres")
+            
+            # PASS 1: Take ALL cached songs (no limit, genres will be unbalanced)
+            results = []
+            genre_counts = {}
+            sampled_item_ids = set()
+            total_cached_used = 0
+            
+            logger.info(f"   🎯 STRATEGY: Use ALL {total_cached_available} cached songs + fill to {sample_size} with new songs")
+            
+            for genre in genres:
+                cached_available = len(genre_songs_cached[genre])
+                
+                # Take ALL cached songs for this genre (no limit)
+                if cached_available > 0:
+                    results.extend(genre_songs_cached[genre])
+                    genre_counts[genre] = cached_available
+                    total_cached_used += cached_available
+                    for song in genre_songs_cached[genre]:
+                        sampled_item_ids.add(song['item_id'])
+                else:
+                    genre_counts[genre] = 0
+            
+            logger.info(f"   ✅ PASS 1: Added ALL {total_cached_used} cached songs")
+            
+            # PASS 2: Add NEW songs to reach exactly sample_size limit
+            # Intelligently balance under-represented genres
+            remaining_budget = sample_size - len(results)
+            logger.info(f"   💰 Budget remaining: {remaining_budget} new songs to reach {sample_size} total")
+            
+            if remaining_budget > 0:
+                # Calculate target per genre (even distribution)
+                target_per_genre = sample_size // len(genres)
+                logger.info(f"   🎯 Target per genre: ~{target_per_genre} songs")
+                
+                # Identify under-represented genres (below target) and calculate their needs
+                genre_needs = {}  # How many songs each genre needs to reach target
+                for genre in genres:
+                    current_count = genre_counts.get(genre, 0)
+                    if current_count < target_per_genre:
+                        need = target_per_genre - current_count
+                        available = len(genre_songs_new[genre])
+                        # Can only take what's available
+                        genre_needs[genre] = min(need, available)
+                
+                logger.info(f"   📉 Under-represented genres: {len(genre_needs)}/{len(genres)} genres")
+                
+                # Calculate total need across all under-represented genres
+                total_need = sum(genre_needs.values())
+                logger.info(f"   📊 Total need to reach target: {total_need} songs, budget: {remaining_budget}")
+                
+                # Proportionally allocate remaining budget to each genre based on their needs
+                genre_allocations = {}
+                if total_need <= remaining_budget:
+                    # We have enough budget - give each genre what it needs
+                    genre_allocations = genre_needs.copy()
+                else:
+                    # Not enough budget - proportionally distribute
+                    for genre, need in genre_needs.items():
+                        # Proportional allocation: (genre_need / total_need) * remaining_budget
+                        allocation = int((need / total_need) * remaining_budget)
+                        genre_allocations[genre] = allocation
+                    
+                    # Distribute remaining songs (due to rounding) to genres with highest need
+                    allocated_total = sum(genre_allocations.values())
+                    remaining = remaining_budget - allocated_total
+                    if remaining > 0:
+                        # Sort genres by need (descending) and give them the leftover songs
+                        sorted_genres = sorted(genre_needs.items(), key=lambda x: x[1], reverse=True)
+                        for i in range(remaining):
+                            genre = sorted_genres[i % len(sorted_genres)][0]
+                            genre_allocations[genre] = genre_allocations.get(genre, 0) + 1
+                
+                # Now sample from each genre according to allocation
+                songs_added = 0
+                for genre, allocation in genre_allocations.items():
+                    if allocation > 0 and len(genre_songs_new[genre]) > 0:
+                        # Randomly sample 'allocation' songs from this genre
+                        available_songs = genre_songs_new[genre].copy()
+                        np.random.shuffle(available_songs)
+                        
+                        # Take up to 'allocation' songs (or all available)
+                        to_take = min(allocation, len(available_songs))
+                        for i in range(to_take):
+                            song = available_songs[i]
+                            # Verify no duplicate (safety check)
+                            if song['item_id'] not in sampled_item_ids:
+                                results.append(song)
+                                sampled_item_ids.add(song['item_id'])
+                                genre_counts[genre] = genre_counts[genre] + 1
+                                songs_added += 1
+                
+                logger.info(f"   ✅ PASS 2: Added {songs_added} new songs with intelligent balancing")
+            
+            logger.info(f"   🎉 FINAL: {len(results)} total songs ({total_cached_used} cached, {len(results) - total_cached_used} new)")
+            logger.info(f"   ✅ Uniqueness verified: {len(sampled_item_ids)} unique item_ids = {len(results)} total songs")
+            
+            # No Pass 2 fallback needed - we already balanced above within budget limit
+            
+            
+            # Log distribution
+            logger.info(f"   ✅ Loaded {len(results)} UNIQUE songs with balanced distribution:")
+            for genre in sorted(genre_counts.keys()):
+                logger.info(f"      {genre}: {genre_counts[genre]} songs")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Failed to load balanced genre sample: {e}")
             raise
             
     def get_embedding_stats(self) -> Dict:

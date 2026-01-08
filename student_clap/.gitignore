@@ -7,12 +7,15 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+*.pth
 
 # Training artifacts
 cache/
 checkpoints/
 logs/
 models/*.onnx
+models/*.pth
+models/songs.md
 
 # IDE files
 .vscode/
