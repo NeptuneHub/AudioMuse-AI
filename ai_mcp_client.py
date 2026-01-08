@@ -45,7 +45,7 @@ def call_ai_with_mcp_tools(
 def _call_gemini_with_tools(user_message: str, tools: List[Dict], ai_config: Dict, log_messages: List[str]) -> Dict:
     """Call Gemini with function calling."""
     try:
-        import google.generativeai as genai
+        import google.genai as genai
         
         api_key = ai_config.get('gemini_key')
         model_name = ai_config.get('gemini_model', 'gemini-2.5-pro')
@@ -53,7 +53,8 @@ def _call_gemini_with_tools(user_message: str, tools: List[Dict], ai_config: Dic
         if not api_key or api_key == "YOUR-GEMINI-API-KEY-HERE":
             return {"error": "Valid Gemini API key required"}
         
-        genai.configure(api_key=api_key)
+        # Use new google-genai Client API
+        client = genai.Client(api_key=api_key)
         
         # Convert MCP tools to Gemini function declarations
         # Gemini uses a different schema format - need to convert types
@@ -109,12 +110,6 @@ def _call_gemini_with_tools(user_message: str, tools: List[Dict], ai_config: Dic
             }
             function_declarations.append(func_decl)
         
-        # Create model with tools
-        model = genai.GenerativeModel(
-            model_name=model_name,
-            tools=function_declarations
-        )
-        
         # System instruction for playlist generation
         system_instruction = """You are an expert music playlist curator with access to a music database.
 
@@ -136,33 +131,57 @@ Available strategies:
 
 Call the appropriate tools now to fulfill the user's request."""
         
-        # Generate response with function calling
-        chat = model.start_chat()
-        response = chat.send_message(f"{system_instruction}\n\nUser request: {user_message}")
+        # Prepare tools for new API
+        tools_list = [genai.types.Tool(function_declarations=function_declarations)]
+        
+        # Generate response with function calling using new API
+        # Note: Using 'ANY' mode to force tool calling instead of text response
+        response = client.models.generate_content(
+            model=model_name,
+            contents=f"{system_instruction}\n\nUser request: {user_message}",
+            config=genai.types.GenerateContentConfig(
+                tools=tools_list,
+                tool_config=genai.types.ToolConfig(
+                    function_calling_config=genai.types.FunctionCallingConfig(mode='ANY')
+                )
+            )
+        )
         
         log_messages.append(f"Gemini response type: {type(response)}")
         
-        # Helper to recursively convert protobuf objects to dict
+        # Helper to recursively convert protobuf/dict objects to clean dict
         def convert_to_dict(obj):
             """Recursively convert protobuf objects (like RepeatedComposite) to native Python types."""
-            if hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes)):
+            if hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, dict)):
                 if hasattr(obj, 'items'):  # dict-like
                     return {k: convert_to_dict(v) for k, v in obj.items()}
                 else:  # list-like
                     return [convert_to_dict(item) for item in obj]
+            elif isinstance(obj, dict):
+                return {k: convert_to_dict(v) for k, v in obj.items()}
             return obj
         
-        # Extract function calls
+        # Extract function calls from new API response structure
+        # New API returns candidates with parts containing function_call
         tool_calls = []
+        
         if hasattr(response, 'candidates') and response.candidates:
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, 'function_call'):
-                    fc = part.function_call
-                    # Recursively convert protobuf args to native Python types
-                    tool_calls.append({
-                        "name": fc.name,
-                        "arguments": convert_to_dict(dict(fc.args))
-                    })
+            candidate = response.candidates[0]
+            if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                for part in candidate.content.parts:
+                    if hasattr(part, 'function_call') and part.function_call:
+                        fc = part.function_call
+                        # Extract arguments - could be in 'args' dict or 'arguments' field
+                        args_dict = {}
+                        if hasattr(fc, 'args'):
+                            args_dict = dict(fc.args) if fc.args else {}
+                        elif hasattr(fc, 'arguments'):
+                            args_dict = fc.arguments if isinstance(fc.arguments, dict) else {}
+                        
+                        tool_calls.append({
+                            "name": fc.name,
+                            "arguments": convert_to_dict(args_dict)
+                        })
         
         if not tool_calls:
             # If no tool calls, Gemini might have returned text
