@@ -3,4 +3,3 @@ cupy-cuda12x
 onnxruntime-gpu==1.19.2
 cuml-cu12==24.12.*
 torch==2.5.1
-torchaudio==2.5.1
