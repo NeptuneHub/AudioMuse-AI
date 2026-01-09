@@ -91,7 +91,7 @@ RUN set -ux; \
             libyaml-0-2=0.2.5-1build1 libyaml-dev \
             libsamplerate0=0.2.2-4build1 libsamplerate0-dev \
             libsndfile1=1.2.2-1ubuntu5.24.04.1 libsndfile1-dev \
-            libopenblas-dev=0.3.26+ds-1 \
+            libopenblas-dev \
             liblapack-dev=3.12.0-3build1.1 \
             libpq-dev \
             ffmpeg wget curl \
