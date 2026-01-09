@@ -1,6 +1,7 @@
 # tasks/mediaserver.py
 
 import logging
+import os
 import config  # Import the config module to access server type and settings
 
 # Import the specific implementations
@@ -158,13 +159,83 @@ def get_tracks_from_album(album_id):
     return []
 
 def download_track(temp_dir, item):
-    """Downloads a track using admin credentials."""
-    if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_download_track(temp_dir, item)
-    if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_download_track(temp_dir, item)
-    if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_download_track(temp_dir, item)
-    if config.MEDIASERVER_TYPE == 'mpd': return mpd_download_track(temp_dir, item)
-    if config.MEDIASERVER_TYPE == 'emby': return emby_download_track(temp_dir, item)
-    return None
+    """Downloads a track using admin credentials. Detects format from file if .tmp extension is used."""
+    downloaded_path = None
+    
+    if config.MEDIASERVER_TYPE == 'jellyfin': downloaded_path = jellyfin_download_track(temp_dir, item)
+    elif config.MEDIASERVER_TYPE == 'navidrome': downloaded_path = navidrome_download_track(temp_dir, item)
+    elif config.MEDIASERVER_TYPE == 'lyrion': downloaded_path = lyrion_download_track(temp_dir, item)
+    elif config.MEDIASERVER_TYPE == 'mpd': downloaded_path = mpd_download_track(temp_dir, item)
+    elif config.MEDIASERVER_TYPE == 'emby': downloaded_path = emby_download_track(temp_dir, item)
+    
+    # If download failed or returned None, return as is
+    if not downloaded_path:
+        return None
+    
+    # If file has .tmp extension, try to detect real format from file content
+    if downloaded_path.endswith('.tmp'):
+        try:
+            # Check if file exists before trying to detect format
+            if not os.path.exists(downloaded_path):
+                logger.warning(f"Downloaded file does not exist: {downloaded_path}")
+                return downloaded_path
+                
+            detected_ext = _detect_audio_format(downloaded_path)
+            if detected_ext and detected_ext != '.tmp':
+                new_path = downloaded_path.replace('.tmp', detected_ext)
+                # Check if target file already exists (avoid overwriting)
+                if os.path.exists(new_path):
+                    logger.warning(f"Target file already exists, keeping .tmp: {new_path}")
+                    return downloaded_path
+                os.rename(downloaded_path, new_path)
+                logger.info(f"Detected format and renamed: {os.path.basename(downloaded_path)} -> {os.path.basename(new_path)}")
+                return new_path
+        except Exception as e:
+            logger.debug(f"Format detection failed for {os.path.basename(downloaded_path)}, keeping .tmp: {e}")
+    
+    return downloaded_path
+
+
+def _detect_audio_format(filepath):
+    """Detects audio format from file magic numbers. Returns extension like '.mp3' or '.flac'."""
+    try:
+        with open(filepath, 'rb') as f:
+            header = f.read(12)
+            
+            # Check magic numbers for common audio formats
+            if len(header) < 4:
+                return '.tmp'
+            
+            # FLAC: fLaC
+            if header[:4] == b'fLaC':
+                return '.flac'
+            
+            # MP3: ID3 tag or MP3 sync bits
+            if header[:3] == b'ID3' or (len(header) >= 2 and header[0] == 0xFF and (header[1] & 0xE0) == 0xE0):
+                return '.mp3'
+            
+            # OGG: OggS
+            if header[:4] == b'OggS':
+                return '.ogg'
+            
+            # WAV/RIFF: RIFF....WAVE
+            if header[:4] == b'RIFF' and len(header) >= 12 and header[8:12] == b'WAVE':
+                return '.wav'
+            
+            # M4A/AAC: ftyp
+            if len(header) >= 8 and header[4:8] == b'ftyp':
+                return '.m4a'
+            
+            # WMA: ASF header
+            if header[:4] == b'\x30\x26\xb2\x75':
+                return '.wma'
+            
+            logger.debug(f"Unknown audio format, header: {header[:4].hex()}")
+            return '.tmp'
+            
+    except Exception as e:
+        logger.debug(f"Error detecting audio format: {e}")
+        return '.tmp'
 
 def get_all_songs():
     """Fetches all songs using admin credentials."""
