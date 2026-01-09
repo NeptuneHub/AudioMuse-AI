@@ -30,7 +30,7 @@ services:
       context: ../       # Build from project root (one level up from deployment/)
       dockerfile: Dockerfile
       args:  # GPU build args
-        BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+        BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
     container_name: audiomuse-ai-flask-app
     ports:
       - "${FRONTEND_PORT:-8000}:8000"
