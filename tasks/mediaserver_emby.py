@@ -457,7 +457,22 @@ def download_track(temp_dir, item):
     # https://dev.emby.media/reference/RestAPI/LibraryService/getItemsByIdDownload.html
     try:
         track_id = item['Id']
-        file_extension = os.path.splitext(item.get('Path', ''))[1] or '.tmp'
+        
+        # Try to get format from Container field first (most reliable)
+        file_extension = '.tmp'
+        try:
+            container = item.get('Container')
+            if container and isinstance(container, str) and container.strip():
+                # Ensure container value is safe (no path separators, etc.)
+                safe_container = container.strip().replace('/', '').replace('\\', '')
+                if safe_container:
+                    file_extension = f".{safe_container}"
+                    logger.debug(f"Using Container field for format: {file_extension}")
+            elif item.get('Path'):
+                file_extension = os.path.splitext(item['Path'])[1] or '.tmp'
+        except Exception as e:
+            logger.debug(f"Error getting format from Container/Path, using .tmp: {e}")
+        
         download_url = f"{config.EMBY_URL}/emby/Items/{track_id}/Download"
         local_filename = os.path.join(temp_dir, f"{track_id}{file_extension}")
         with requests.get(download_url, headers=config.HEADERS, stream=True, timeout=REQUESTS_TIMEOUT) as r:

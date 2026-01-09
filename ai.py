@@ -5,7 +5,7 @@ import ftfy # Import the ftfy library
 import time # Import the time library
 import logging
 import unicodedata
-import google.generativeai as genai # Import Gemini library
+import google.genai as genai # Import Gemini library
 from mistralai import Mistral
 import os # Import os to potentially read GEMINI_API_CALL_DELAY_SECONDS
 from config import MAX_SONGS_IN_AI_PROMPT
@@ -290,18 +290,23 @@ def get_gemini_playlist_name(gemini_api_key, model_name, full_prompt, skip_delay
                 logger.debug("Waiting for %ss before Gemini API call to respect rate limits.", gemini_call_delay)
                 time.sleep(gemini_call_delay)
 
-        genai.configure(api_key=gemini_api_key)
-        model = genai.GenerativeModel(model_name)
+        # Use the new google-genai Client API
+        client = genai.Client(api_key=gemini_api_key)
 
         logger.debug("Starting API call for model '%s'.", model_name)
  
-        generation_config = genai.types.GenerationConfig(
-            temperature=0.9 # Explicitly set temperature for more creative/varied responses
+        # Use the new API with generate_content
+        response = client.models.generate_content(
+            model=model_name,
+            contents=full_prompt,
+            config=genai.types.GenerateContentConfig(
+                temperature=0.9  # Explicitly set temperature for more creative/varied responses
+            )
         )
-        response = model.generate_content(full_prompt, generation_config=generation_config, request_options={'timeout': 960})
-        # Extract text from the response # type: ignore
-        if response and response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
-            extracted_text = "".join(part.text for part in response.candidates[0].content.parts)
+        
+        # Extract text from the response
+        if response and hasattr(response, 'text') and response.text:
+            extracted_text = response.text
             # Log the raw response for debugging (consistent with OpenAI/OpenRouter)
             logger.info("Gemini API returned: '%s'", extracted_text)
         else:

@@ -24,23 +24,25 @@ def _ensure_stubs():
     """Insert minimal runtime stubs for optional heavy packages so importing
     `tasks.analysis` won't fail during the integration test.
     """
-    # google.generativeai stub
-    if 'google.generativeai' not in sys.modules:
-        genai = types.ModuleType('google.generativeai')
-        def _configure(**kwargs):
-            return None
-        class _GenModel:
-            def __init__(self, name):
-                self.name = name
-            def generate_content(self, prompt, generation_config=None, request_options=None):
-                part = types.SimpleNamespace(text='[stubbed google.generativeai]')
-                content = types.SimpleNamespace(parts=[part])
-                candidate = types.SimpleNamespace(content=content)
-                return types.SimpleNamespace(candidates=[candidate])
-        genai.configure = _configure
-        genai.GenerativeModel = _GenModel
-        genai.types = types.SimpleNamespace(GenerationConfig=lambda *a, **k: None)
-        sys.modules['google.generativeai'] = genai
+    # google.genai stub (new API)
+    if 'google.genai' not in sys.modules:
+        genai = types.ModuleType('google.genai')
+        
+        class _Client:
+            def __init__(self, api_key=None, **kwargs):
+                self.api_key = api_key
+                self.models = self
+            
+            def generate_content(self, model=None, contents=None, config=None, **kwargs):
+                """Mock generate_content for new google-genai API"""
+                return types.SimpleNamespace(text='[stubbed google.genai]')
+        
+        genai.Client = _Client
+        genai.types = types.SimpleNamespace(
+            GenerateContentConfig=lambda *a, **k: None,
+            HttpOptions=lambda *a, **k: None
+        )
+        sys.modules['google.genai'] = genai
 
     # mistralai stub
     if 'mistralai' not in sys.modules:

@@ -29,7 +29,7 @@ services:
     build:
       context: ../       # Build from project root (one level up from deployment/)
       dockerfile: Dockerfile
-      # No args needed - defaults to ubuntu:22.04 (CPU-only)
+      # No args needed - defaults to ubuntu:24.04 (CPU-only)
     pull_policy: never  # Always use locally built image, never pull from registry
     container_name: audiomuse-ai-flask-app
     ports:

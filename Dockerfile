@@ -1,17 +1,17 @@
 # syntax=docker/dockerfile:1
 # AudioMuse-AI Dockerfile
-# Supports both CPU (ubuntu:22.04) and GPU (nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04) builds
+# Supports both CPU (ubuntu:24.04) and GPU (nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04) builds
 #
 # Build examples:
 #   CPU:  docker build -t audiomuse-ai .
-#   GPU:  docker build --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 -t audiomuse-ai-gpu .
+#   GPU:  docker build --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 -t audiomuse-ai-gpu .
 
-ARG BASE_IMAGE=ubuntu:22.04
+ARG BASE_IMAGE=ubuntu:24.04
 
 # ============================================================================
 # Stage 1: Download ML models (cached separately for faster rebuilds)
 # ============================================================================
-FROM ubuntu:22.04 AS models
+FROM ubuntu:24.04 AS models
 
 SHELL ["/bin/bash", "-lc"]
 
@@ -87,12 +87,12 @@ RUN set -ux; \
     until [ "$n" -ge 5 ]; do \
         if apt-get update && apt-get install -y --no-install-recommends \
             python3 python3-pip python3-dev \
-            libfftw3-3=3.3.8-2ubuntu8 libfftw3-dev \
-            libyaml-0-2 libyaml-dev \
-            libsamplerate0 libsamplerate0-dev \
-            libsndfile1=1.0.31-2ubuntu0.2 libsndfile1-dev \
-            libopenblas-dev=0.3.20+ds-1 \
-            liblapack-dev=3.10.0-2ubuntu1 \
+            libfftw3-double3=3.3.10-1ubuntu3 libfftw3-dev \
+            libyaml-0-2=0.2.5-1build1 libyaml-dev \
+            libsamplerate0=0.2.2-4build1 libsamplerate0-dev \
+            libsndfile1=1.2.2-1ubuntu5.24.04.1 libsndfile1-dev \
+            libopenblas-dev \
+            liblapack-dev=3.12.0-3build1.1 \
             libpq-dev \
             ffmpeg wget curl \
             supervisor procps \
@@ -107,7 +107,8 @@ RUN set -ux; \
     done; \
     rm -rf /var/lib/apt/lists/* && \
     apt-get remove -y python3-numpy || true && \
-    apt-get autoremove -y || true
+    apt-get autoremove -y || true && \
+    rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
 # ============================================================================
 # Stage 3: Libraries - Python packages installation
@@ -134,8 +135,8 @@ RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
     fi \
     && echo "Verifying psycopg2 installation..." \
     && python3 -c "import psycopg2; print('psycopg2 OK')" \
-    && find /usr/local/lib/python3.10/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
-    && find /usr/local/lib/python3.10/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+    && find /usr/local/lib/python3.12/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/lib/python3.12/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
 # Download HuggingFace models (BERT, RoBERTa, BART, T5) from GitHub release
 # These are the text encoders needed by laion-clap library for text embeddings
@@ -198,8 +199,7 @@ ENV LANG=C.UTF-8 \
 WORKDIR /app
 
 # Copy Python packages from libraries stage
-COPY --from=libraries /usr/local/lib/python3.10/dist-packages/ /usr/local/lib/python3.10/dist-packages/
-
+COPY --from=libraries /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/
 # Copy HuggingFace cache (RoBERTa model) from libraries stage
 COPY --from=libraries /app/.cache/huggingface/ /app/.cache/huggingface/
 

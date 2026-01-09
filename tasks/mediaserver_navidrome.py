@@ -120,7 +120,22 @@ def download_track(temp_dir, item):
     """Downloads a single track from Navidrome using admin credentials."""
     try:
         track_id = item['id'] 
-        file_extension = os.path.splitext(item.get('path', ''))[1] or '.tmp'
+        
+        # Try to get format from suffix field first (Subsonic API standard)
+        file_extension = '.tmp'
+        try:
+            suffix = item.get('suffix')
+            if suffix and isinstance(suffix, str) and suffix.strip():
+                # Ensure suffix value is safe (no path separators, etc.)
+                safe_suffix = suffix.strip().replace('/', '').replace('\\', '')
+                if safe_suffix:
+                    file_extension = f".{safe_suffix}"
+                    logger.debug(f"Using suffix field for format: {file_extension}")
+            elif item.get('path'):
+                file_extension = os.path.splitext(item['path'])[1] or '.tmp'
+        except Exception as e:
+            logger.debug(f"Error getting format from suffix/path, using .tmp: {e}")
+        
         local_filename = os.path.join(temp_dir, f"{track_id}{file_extension}")
         
         response = _navidrome_request("stream", params={"id": track_id}, stream=True)
