@@ -8,6 +8,9 @@ Standalone script for analyzing audio files and searching with natural language 
 Uses CLAMP3 model (SAAS version) for audio-text retrieval.
 """
 
+print("Starting CLAMP3 demo script...")
+print("Importing dependencies...")
+
 import os
 import sys
 import numpy as np
@@ -19,6 +22,8 @@ from tqdm import tqdm
 import librosa
 import warnings
 warnings.filterwarnings('ignore')
+
+print("✓ All imports successful!")
 
 
 # =============================================================================
@@ -45,6 +50,7 @@ class CLaMP3AudioEncoder(nn.Module):
         
         # Load text model (XLM-RoBERTa)
         print("Loading text encoder (XLM-RoBERTa)...")
+        print("  (This may take a few minutes on first run - downloading from HuggingFace)")
         self.text_model = AutoModel.from_pretrained(TEXT_MODEL_NAME)
         self.text_proj = nn.Linear(self.text_model.config.hidden_size, CLAMP3_HIDDEN_SIZE)
         
@@ -133,6 +139,7 @@ class MERTFeatureExtractor:
         self.window_size = 5  # 5-second windows
         
         print(f"Loading MERT model: {model_name}")
+        print("  (This may take a few minutes on first run - downloading ~400MB)")
         from transformers import AutoModel as HFAutoModel
         self.model = HFAutoModel.from_pretrained(model_name, trust_remote_code=True)
         self.model = self.model.to(self.device)
@@ -433,11 +440,11 @@ def main():
     """Main function."""
     # Paths
     script_dir = Path(__file__).parent
-    model_path = script_dir / "weights_clamp3_saas_h_size_768_t_model_FacebookAI_xlm-roberta-base_t_length_128_a_size_768_a_layers_12_a_length_128_s_size_768_s_layers_12_p_size_64_p_length_512.pth"
+    model_path = script_dir.parent.parent / "CLAMP3" / "weights_clamp3_saas_h_size_768_t_model_FacebookAI_xlm-roberta-base_t_length_128_a_size_768_a_layers_12_a_length_128_s_size_768_s_layers_12_p_size_64_p_length_512.pth"
     
     # Check for MERT features folder
-    mert_folder = script_dir.parent / "test" / "songs_mert"
-    audio_folder = script_dir.parent / "test" / "songs"
+    mert_folder = script_dir.parent.parent / "test" / "songs_mert"
+    audio_folder = script_dir.parent.parent / "test" / "songs"
     
     # Check if model exists
     if not model_path.exists():
