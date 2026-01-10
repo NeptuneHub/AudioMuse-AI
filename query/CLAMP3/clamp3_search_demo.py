@@ -132,13 +132,23 @@ class CLaMP3AudioEncoder(nn.Module):
 class MERTFeatureExtractor:
     """MERT feature extractor for audio preprocessing."""
     
-    def __init__(self, model_name='m-a-p/MERT-v1-95M', device='cpu'):
-        """Initialize MERT model for feature extraction."""
+    def __init__(self, model_name='m-a-p/MERT-v1-95M', device='cpu', 
+                 window_size=10, overlap_percent=50):
+        """Initialize MERT model for feature extraction.
+        
+        Args:
+            model_name: HuggingFace model name
+            device: cpu or cuda
+            window_size: Window size in seconds (default: 10)
+            overlap_percent: Overlap percentage 0-100 (default: 50)
+        """
         self.device = torch.device(device)
         self.target_sr = 24000
-        self.window_size = 5  # 5-second windows
+        self.window_size = window_size  # seconds
+        self.overlap_percent = overlap_percent
         
         print(f"Loading MERT model: {model_name}")
+        print(f"  Window: {window_size}s with {overlap_percent}% overlap")
         print("  (This may take a few minutes on first run - downloading ~400MB)")
         from transformers import AutoModel as HFAutoModel
         self.model = HFAutoModel.from_pretrained(model_name, trust_remote_code=True)
@@ -172,56 +182,54 @@ class MERTFeatureExtractor:
     def extract_features(self, audio_path):
         """Extract MERT features from audio file.
         
-        Following CLAMP3 official preprocessing from extract_mert.py:
-        - Wav2Vec2FeatureExtractor for normalization (CRITICAL!)
-        - 5-second non-overlapping chunks  
-        - Extract features with layer=None, reduction='mean'
-        - Results in one feature vector per 5-second chunk
+        Returns: (num_windows, hidden_dim) array - one vector per window
         """
         # Load audio
         waveform = self.load_audio(audio_path)
         if waveform is None:
             return None
         
-        # CRITICAL: Process through Wav2Vec2FeatureExtractor for proper normalization
+        # Get audio duration for debugging
+        duration_sec = len(waveform) / self.target_sr
+        
+        # Process through Wav2Vec2FeatureExtractor for normalization
         processed_wav = self.processor(waveform.numpy(), return_tensors="pt", 
                                        sampling_rate=self.target_sr).input_values[0]
         processed_wav = processed_wav.to(self.device)
         
-        # 5-second chunks, no overlap (matching official code)
-        chunk_size = self.target_sr * self.window_size
+        # Calculate stride based on overlap
+        window_samples = int(self.target_sr * self.window_size)
+        stride_samples = int(window_samples * (1 - self.overlap_percent / 100))
         
         all_features = []
         
+        print(f"    Audio: {duration_sec:.1f}s | Window: {self.window_size}s | Overlap: {self.overlap_percent}%", end=" ")
+        
         with torch.no_grad():
-            for start in range(0, processed_wav.shape[-1], chunk_size):
-                chunk = processed_wav[start:start + chunk_size]
-                
-                # Skip chunks shorter than 1 second
-                if len(chunk) < self.target_sr * 1:
-                    break
-                
-                # Official code: extract with layer=None (all layers), reduction='mean'
-                # This returns (num_layers, hidden_size) after averaging across time
+            for start in range(0, processed_wav.shape[-1] - window_samples + 1, stride_samples):
+                chunk = processed_wav[start:start + window_samples]
                 chunk = chunk.unsqueeze(0)  # Add batch dimension
                 
+                # Get all layers from MERT
                 outputs = self.model(chunk, output_hidden_states=True)
-                hidden_states = outputs.hidden_states  # Tuple of (batch=1, seq_len, hidden) per layer
+                hidden_states = outputs.hidden_states  # Tuple of (1, seq_len, hidden) per layer
                 
-                # Stack all layers and average across time dimension
-                hidden_states = torch.stack(hidden_states)  # (num_layers, batch, seq_len, hidden)
-                features = hidden_states.mean(dim=2)  # Average across time: (num_layers, batch, hidden)
-                features = features.mean(dim=0)  # Average across layers: (batch, hidden)
+                # Stack layers: (num_layers, 1, seq_len, hidden)
+                hidden_states = torch.stack(hidden_states)
                 
-                all_features.append(features.squeeze(0).cpu())  # Remove batch dim
+                # Average across TIME and LAYERS to get ONE vector per window
+                features = hidden_states.mean(dim=2)  # Average time: (num_layers, 1, hidden)
+                features = features.mean(dim=0)  # Average layers: (1, hidden)
+                
+                all_features.append(features.squeeze(0).cpu())
         
-        # Stack all chunks: (num_chunks, hidden_dim)
         if len(all_features) == 0:
             return None
-            
-        all_features = torch.stack(all_features)
         
-        # Keep temporal sequence - each row is one 5-second chunk
+        # Stack: (num_windows, hidden_dim)
+        all_features = torch.stack(all_features)
+        print(f"→ {len(all_features)} windows")
+        
         return all_features.numpy()
 
 
@@ -229,7 +237,7 @@ def extract_mert_features_simple(audio_path, mert_extractor=None):
     """
     Load pre-extracted MERT features (.npy files) or extract on-the-fly.
     
-    CRITICAL: Official CLAMP3 uses --mean_features flag which averages all chunks!
+    Returns: (num_windows, hidden_dim) - multiple windows per song (NOT averaged)
     """
     npy_path = Path(audio_path).with_suffix('.npy')
     
@@ -237,27 +245,20 @@ def extract_mert_features_simple(audio_path, mert_extractor=None):
     if npy_path.exists():
         features = np.load(npy_path)
         features = torch.tensor(features).float()
-        # Reshape to (time, feature_dim) or (feature_dim,) if already averaged
         if features.ndim == 3:
             features = features.squeeze(0)
         if features.ndim == 1:
-            features = features.unsqueeze(0)  # Make it (1, feature_dim)
+            features = features.unsqueeze(0)
         return features
     
     # Extract features on-the-fly if MERT extractor is provided
     if mert_extractor is not None:
         features = mert_extractor.extract_features(audio_path)
         if features is not None:
-            # CRITICAL: Average all chunks to get single vector (matching --mean_features)
-            features_tensor = torch.tensor(features).float()
-            features_averaged = features_tensor.mean(dim=0, keepdim=True)  # Average across chunks
-            
-            # Optionally save averaged features for future use
+            # Save multi-window features (NOT averaged) 
             npy_path.parent.mkdir(parents=True, exist_ok=True)
-            np.save(npy_path, features_averaged.numpy())
-            return features_averaged
-    
-    return None
+            np.save(npy_path, features)
+            return torch.tensor(features).float()
 
 
 # =============================================================================
@@ -284,7 +285,14 @@ class CLAMP3Searcher:
         self.audio_files = []
     
     def get_audio_embedding(self, audio_features):
-        """Get CLAMP3 embedding for audio (from MERT features)."""
+        """Get CLAMP3 embedding for audio (from MERT features).
+        
+        Args:
+            audio_features: (num_windows, hidden_dim) tensor from MERT
+            
+        Returns:
+            Single embedding vector for the whole audio
+        """
         if audio_features is None:
             return None
         
@@ -292,28 +300,57 @@ class CLAMP3Searcher:
         zero_vec = torch.zeros((1, audio_features.size(-1)))
         audio_features = torch.cat((zero_vec, audio_features, zero_vec), 0)
         
-        # Store actual length before padding
-        actual_length = audio_features.size(0)
+        total_length = audio_features.size(0)
         
-        # Truncate or pad to MAX_AUDIO_LENGTH
-        if actual_length > MAX_AUDIO_LENGTH:
-            audio_features = audio_features[:MAX_AUDIO_LENGTH]
-            actual_length = MAX_AUDIO_LENGTH
+        # If features fit in MAX_AUDIO_LENGTH, process at once
+        if total_length <= MAX_AUDIO_LENGTH:
+            # Pad to MAX_AUDIO_LENGTH
+            pad_len = MAX_AUDIO_LENGTH - total_length
+            if pad_len > 0:
+                pad = torch.zeros((pad_len, audio_features.size(-1)))
+                audio_features_padded = torch.cat((audio_features, pad), 0)
+            else:
+                audio_features_padded = audio_features
+            
+            # Create mask for actual content
+            mask = torch.zeros(MAX_AUDIO_LENGTH)
+            mask[:total_length] = 1
+            
+            # Get embedding from CLAMP3
+            audio_features_padded = audio_features_padded.unsqueeze(0).to(self.device)
+            mask = mask.unsqueeze(0).to(self.device)
+            
+            embedding = self.model.get_audio_embedding(audio_features_padded, mask)
+            return embedding.cpu().numpy().flatten()
+        
         else:
-            pad_len = MAX_AUDIO_LENGTH - actual_length
-            pad = torch.zeros((pad_len, audio_features.size(-1)))
-            audio_features = torch.cat((audio_features, pad), 0)
-        
-        # Create mask based on actual content length
-        mask = torch.zeros(MAX_AUDIO_LENGTH)
-        mask[:actual_length] = 1
-        
-        # Get embedding
-        audio_features = audio_features.unsqueeze(0).to(self.device)
-        mask = mask.unsqueeze(0).to(self.device)
-        
-        embedding = self.model.get_audio_embedding(audio_features, mask)
-        return embedding.cpu().numpy().flatten()
+            # Song too long: split into chunks of MAX_AUDIO_LENGTH, get embeddings, average
+            embeddings_list = []
+            
+            for start_idx in range(0, total_length, MAX_AUDIO_LENGTH):
+                end_idx = min(start_idx + MAX_AUDIO_LENGTH, total_length)
+                chunk = audio_features[start_idx:end_idx]
+                
+                # Pad chunk
+                pad_len = MAX_AUDIO_LENGTH - chunk.size(0)
+                if pad_len > 0:
+                    pad = torch.zeros((pad_len, chunk.size(-1)))
+                    chunk = torch.cat((chunk, pad), 0)
+                
+                # Create mask
+                mask = torch.zeros(MAX_AUDIO_LENGTH)
+                mask[:end_idx - start_idx] = 1
+                
+                # Get embedding
+                chunk = chunk.unsqueeze(0).to(self.device)
+                mask = mask.unsqueeze(0).to(self.device)
+                
+                embedding = self.model.get_audio_embedding(chunk, mask)
+                embeddings_list.append(embedding)
+            
+            # Average all chunk embeddings
+            final_embedding = torch.stack(embeddings_list).mean(dim=0)
+            return final_embedding.cpu().numpy().flatten()
     
     def get_text_embedding(self, query_text):
         """Get CLAMP3 embedding for text query."""
