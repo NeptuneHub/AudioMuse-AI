@@ -172,10 +172,10 @@ class MERTFeatureExtractor:
     def extract_features(self, audio_path):
         """Extract MERT features from audio file.
         
-        Following CLAMP3 official preprocessing:
+        Following CLAMP3 official preprocessing from extract_mert.py:
         - Wav2Vec2FeatureExtractor for normalization (CRITICAL!)
-        - 5-second non-overlapping chunks
-        - All layers, average across time dimension, then average layers
+        - 5-second non-overlapping chunks  
+        - Extract features with layer=None, reduction='mean'
         - Results in one feature vector per 5-second chunk
         """
         # Load audio
@@ -184,54 +184,42 @@ class MERTFeatureExtractor:
             return None
         
         # CRITICAL: Process through Wav2Vec2FeatureExtractor for proper normalization
-        # This is what the official code does in hf_pretrains.py
         processed_wav = self.processor(waveform.numpy(), return_tensors="pt", 
                                        sampling_rate=self.target_sr).input_values[0]
         processed_wav = processed_wav.to(self.device)
         
-        # 5-second chunks, no overlap
+        # 5-second chunks, no overlap (matching official code)
         chunk_size = self.target_sr * self.window_size
         
         all_features = []
         
         with torch.no_grad():
             for start in range(0, processed_wav.shape[-1], chunk_size):
-                end = min(start + chunk_size, processed_wav.shape[-1])
-                chunk = processed_wav[start:end]
+                chunk = processed_wav[start:start + chunk_size]
                 
                 # Skip chunks shorter than 1 second
                 if len(chunk) < self.target_sr * 1:
                     break
                 
-                # Pad last chunk if needed
-                if len(chunk) < chunk_size:
-                    chunk = torch.nn.functional.pad(chunk, (0, chunk_size - len(chunk)))
+                # Official code: extract with layer=None (all layers), reduction='mean'
+                # This returns (num_layers, hidden_size) after averaging across time
+                chunk = chunk.unsqueeze(0)  # Add batch dimension
                 
-                # Add batch dimension
-                chunk = chunk.unsqueeze(0)
-                
-                # Get all hidden states from all layers
                 outputs = self.model(chunk, output_hidden_states=True)
-                hidden_states = outputs.hidden_states  # Tuple of (batch, seq_len, hidden) per layer
+                hidden_states = outputs.hidden_states  # Tuple of (batch=1, seq_len, hidden) per layer
                 
-                # Stack all layers: (num_layers, batch, seq_len, hidden)
-                hidden_states = torch.stack(hidden_states)
+                # Stack all layers and average across time dimension
+                hidden_states = torch.stack(hidden_states)  # (num_layers, batch, seq_len, hidden)
+                features = hidden_states.mean(dim=2)  # Average across time: (num_layers, batch, hidden)
+                features = features.mean(dim=0)  # Average across layers: (batch, hidden)
                 
-                # Average across TIME dimension first (as in official code)
-                # Result: (num_layers, batch, hidden)
-                features = hidden_states.mean(dim=2)
-                
-                # Average across layers
-                # Result: (batch, hidden)
-                features = features.mean(dim=0)
-                
-                all_features.append(features.cpu())
+                all_features.append(features.squeeze(0).cpu())  # Remove batch dim
         
         # Stack all chunks: (num_chunks, hidden_dim)
         if len(all_features) == 0:
             return None
             
-        all_features = torch.cat(all_features, dim=0)
+        all_features = torch.stack(all_features)
         
         # Keep temporal sequence - each row is one 5-second chunk
         return all_features.numpy()
@@ -240,6 +228,8 @@ class MERTFeatureExtractor:
 def extract_mert_features_simple(audio_path, mert_extractor=None):
     """
     Load pre-extracted MERT features (.npy files) or extract on-the-fly.
+    
+    CRITICAL: Official CLAMP3 uses --mean_features flag which averages all chunks!
     """
     npy_path = Path(audio_path).with_suffix('.npy')
     
@@ -247,19 +237,25 @@ def extract_mert_features_simple(audio_path, mert_extractor=None):
     if npy_path.exists():
         features = np.load(npy_path)
         features = torch.tensor(features).float()
-        # Reshape to (time, feature_dim)
+        # Reshape to (time, feature_dim) or (feature_dim,) if already averaged
         if features.ndim == 3:
             features = features.squeeze(0)
+        if features.ndim == 1:
+            features = features.unsqueeze(0)  # Make it (1, feature_dim)
         return features
     
     # Extract features on-the-fly if MERT extractor is provided
     if mert_extractor is not None:
         features = mert_extractor.extract_features(audio_path)
         if features is not None:
-            # Optionally save for future use
+            # CRITICAL: Average all chunks to get single vector (matching --mean_features)
+            features_tensor = torch.tensor(features).float()
+            features_averaged = features_tensor.mean(dim=0, keepdim=True)  # Average across chunks
+            
+            # Optionally save averaged features for future use
             npy_path.parent.mkdir(parents=True, exist_ok=True)
-            np.save(npy_path, features)
-            return torch.tensor(features).float()
+            np.save(npy_path, features_averaged.numpy())
+            return features_averaged
     
     return None
 
@@ -490,13 +486,14 @@ def main():
     
     # Search queries
     queries = [
-        "Calm piano song",
-        "Calm song",
-        "Piano songs",
-        "Energetic songs",
-        "Relaxed Song",
-        "happy electronic song",
-        "sad electronic song"
+        "relax ukulele song",
+        "calm piano song",
+        "Hard rock song",
+        "slash bass song",
+        "Classic music",
+        "happy pop song",
+        "Jazz song",
+        "POP song with Female Vocalist"
     ]
     
     if len(searcher.audio_embeddings) > 0:
