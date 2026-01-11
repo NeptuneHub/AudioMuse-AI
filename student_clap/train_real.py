@@ -551,15 +551,12 @@ def train(config_path: str, resume: str = None):
     training_start_time = time.time()
     
     for epoch in range(start_epoch, config['training']['epochs'] + 1):
-        # Recreate datasets for each epoch (to handle epoch-specific behavior)
-        if epoch > start_epoch:
-            logger.info(f"\n📁 Reloading datasets for epoch {epoch}...")
-            train_dataset = StudentCLAPDataset(config, split='train', 
-                                               validation_split=config['training']['validation_split'],
-                                               epoch=epoch)
-            val_dataset = StudentCLAPDataset(config, split='val',
-                                             validation_split=config['training']['validation_split'],
-                                             epoch=epoch)
+        # ✅ NO dataset recreation needed - iterate_batches_streaming handles everything!
+        # The datasets are already created before the loop and stream data lazily.
+        # Recreating them would:
+        #   1. Waste time
+        #   2. Risk memory leaks (old datasets not cleaned)
+        #   3. Re-query the cache database unnecessarily
         
         # Train epoch with REAL implementation
         train_metrics = train_epoch_real(trainer, train_dataset, config, epoch)

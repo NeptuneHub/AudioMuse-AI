@@ -84,11 +84,13 @@ class StudentCLAPDataset:
         logger.info("="*80)
         logger.info("="*80)
         
-        # Check what's already cached
-        cached_item_ids = set(self.mel_cache.get_cached_item_ids())
-        if cached_item_ids:
-            cache_size_gb = self.mel_cache.get_cache_size_gb()
-            logger.info(f"📦 Found existing mel cache: {len(cached_item_ids)} songs, {cache_size_gb:.1f}GB")
+        # Check cache size without loading all IDs into memory (memory optimization!)
+        cache_size_gb = self.mel_cache.get_cache_size_gb()
+        if cache_size_gb > 0:
+            # Count cached items efficiently without loading all IDs
+            cursor = self.mel_cache.conn.execute("SELECT COUNT(*) FROM mel_spectrograms")
+            cached_count = cursor.fetchone()[0]
+            logger.info(f"📦 Found existing mel cache: {cached_count} songs, {cache_size_gb:.1f}GB")
         
         # Split into train/val
         np.random.seed(42)  # Reproducible split
