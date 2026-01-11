@@ -68,8 +68,8 @@ paths:
 
 # Dataset configuration - LOCAL FMA
 dataset:
-  fma_path: "/Users/guidocolangiuli/Music/FMA"  # Path to local FMA audio files
-  sample_size: 10  # Total number of songs to use (null = all songs)
+  fma_path: "/Users/guidocolangiuli/Music/FMA-JAMENDO"  # Path to local FMA and JAMENADO audio files
+  sample_size: 0  # Total number of songs to use (null = all songs)
 
 # Logging
 logging:
