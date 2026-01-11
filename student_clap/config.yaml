@@ -34,13 +34,16 @@ training:
   learning_rate: 0.0001
   epochs: 15
   
+  # Two-stage training (like tinyCLAP)
+  # Stage 1: Train entire model for 'epochs' epochs
+  # Stage 2: Freeze encoder, train only projection for 'stage2_epochs' epochs with higher LR
+  stage2_epochs: 5           # Additional epochs for projection-only refinement
+  stage2_learning_rate: 0.0004  # 4x higher LR for stage 2 (projection fine-tuning)
+  projection_only: false     # Set to true for stage 2 (handled automatically)
+  
   optimizer: "adam"
   weight_decay: 0.00001
   grad_clip: 1.0
-  
-  # Loss weights
-  mse_weight: 0.6
-  cosine_weight: 0.4
   
   # Training strategy: "segments", "averaged", or "both"
   # - segments: Train on each segment individually (more data, segment-level learning)
@@ -66,7 +69,7 @@ paths:
 # Dataset configuration - LOCAL FMA
 dataset:
   fma_path: "/Users/guidocolangiuli/Music/FMA"  # Path to local FMA audio files
-  sample_size: 0  # Total number of songs to use (null = all songs)
+  sample_size: 10  # Total number of songs to use (null = all songs)
 
 # Logging
 logging:

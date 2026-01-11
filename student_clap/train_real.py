@@ -446,79 +446,25 @@ def train(config_path: str, resume: str = None):
     for key, value in train_stats.items():
         logger.info(f"  {key}: {value}")
     
-    # Create songs.md file with training song list
-    logger.info("\n📝 Creating songs.md with training dataset...")
-    model_dir = Path(config['paths']['final_model']).parent
-    model_dir.mkdir(parents=True, exist_ok=True)
-    songs_md_path = model_dir / 'songs.md'
-    
-    # Delete existing file if present
-    if songs_md_path.exists():
-        songs_md_path.unlink()
-        logger.info(f"🗑️  Removed existing {songs_md_path}")
-    
-    try:
-        with open(songs_md_path, 'w', encoding='utf-8') as f:
-            f.write("# Training Dataset - Free Music Archive\n\n")
-            f.write("This model was trained using music from the **Free Music Archive** (https://freemusicarchive.org/), ")
-            f.write("a library of high-quality audio recordings released under Creative Commons licenses.\n\n")
-            f.write("All songs in this training dataset are licensed under **CC0 (Public Domain)** or **CC-BY (Attribution)** licenses, ")
-            f.write("which permit use for training machine learning models.\n\n")
-            f.write("## License Information\n\n")
-            f.write("- **CC0 (Public Domain)**: No rights reserved, free to use for any purpose\n")
-            f.write("- **CC-BY (Attribution)**: Free to use with attribution to the original artist\n\n")
-            f.write("## Dataset Characteristics\n\n")
-            f.write("The training dataset is **unbalanced** across the following genres from the Free Music Archive:\n\n")
-            f.write("- Blues\n")
-            f.write("- Classical\n")
-            f.write("- Country\n")
-            f.write("- Electronic\n")
-            f.write("- Folk\n")
-            f.write("- Hip-Hop\n")
-            f.write("- Instrumental\n")
-            f.write("- International\n")
-            f.write("- Jazz\n")
-            f.write("- Pop\n")
-            f.write("- Rock\n")
-            f.write("- Soul-RnB\n\n")
-            f.write("This reflects the natural distribution of music available in the Free Music Archive.\n\n")
-            f.write("## Acknowledgments\n\n")
-            f.write("We extend our gratitude to:\n")
-            f.write("- The artists who generously shared their music under open licenses\n")
-            f.write("- Free Music Archive (https://freemusicarchive.org/) for curating and hosting this content\n")
-            f.write("- The Creative Commons organization for enabling culture sharing\n\n")
-            f.write("---\n\n")
-            f.write(f"## Training Dataset Songs ({len(train_dataset)} songs)\n\n")
-            
-            for item in train_dataset.items:
-                f.write(f"- {item['title']} (`{item['item_id']}`)\n")
-            
-            f.write(f"\n## Validation Dataset Songs ({len(val_dataset)} songs)\n\n")
-            
-            for item in val_dataset.items:
-                f.write(f"- {item['title']} (`{item['item_id']}`)\n")
-            
-            f.write(f"\n---\n\n")
-            f.write(f"**Total songs used**: {len(train_dataset) + len(val_dataset)}\n")
-            f.write(f"**Training songs**: {len(train_dataset)}\n")
-            f.write(f"**Validation songs**: {len(val_dataset)}\n")
-        
-        logger.info(f"✅ Created {songs_md_path} with {len(train_dataset) + len(val_dataset)} songs")
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to create songs.md: {e}")
+    # Two-stage training setup (like tinyCLAP)
+    stage1_epochs = config['training']['epochs']  # 15 epochs
+    stage2_epochs = config['training'].get('stage2_epochs', 5)  # 5 additional epochs
+    total_epochs = stage1_epochs + stage2_epochs  # 20 total
     
     # Training loop
     logger.info("\n" + "=" * 60)
     if start_epoch == 1:
-        logger.info("🎓 Starting FRESH ONNX Training...")
+        logger.info("🎓 Starting FRESH ONNX Training (TWO-STAGE)...")
     else:
         logger.info(f"🔄 RESUMING ONNX Training from epoch {start_epoch}...")
     logger.info("   📚 Using existing CLAP embeddings from database")
     logger.info("   🏗️ Knowledge distillation: Teacher (268MB) → Student (~20-40MB)")
     logger.info("   🎵 Music-specialized compression following tinyCLAP")
+    logger.info("   🎯 STAGE 1: Epochs 1-{} - Train entire model".format(stage1_epochs))
+    logger.info("   🎯 STAGE 2: Epochs {}-{} - Freeze encoder, refine projection only".format(stage1_epochs + 1, total_epochs))
     if start_epoch > 1:
-        progress_pct = (start_epoch - 1) / config['training']['epochs'] * 100
-        logger.info(f"   📊 Training progress: {progress_pct:.1f}% complete ({start_epoch-1}/{config['training']['epochs']} epochs done)")
+        progress_pct = (start_epoch - 1) / total_epochs * 100
+        logger.info(f"   📊 Training progress: {progress_pct:.1f}% complete ({start_epoch-1}/{total_epochs} epochs done)")
     logger.info("=" * 60)
     
     # 💾 Save mel cache checkpoint before training starts
@@ -549,8 +495,39 @@ def train(config_path: str, resume: str = None):
     best_val_cosine = 0.0
     patience_counter = 0
     training_start_time = time.time()
+    stage2_triggered = False
     
-    for epoch in range(start_epoch, config['training']['epochs'] + 1):
+    for epoch in range(start_epoch, total_epochs + 1):
+        # STAGE 2: Switch to projection-only training after stage1_epochs
+        if epoch == stage1_epochs + 1 and not stage2_triggered:
+            logger.info("\n" + "=" * 60)
+            logger.info("🔄 SWITCHING TO STAGE 2: Projection-only refinement")
+            logger.info("=" * 60)
+            
+            # Freeze encoder layers
+            trainer._freeze_encoder()
+            
+            # Create new optimizer with higher learning rate for projection head
+            stage2_lr = config['training'].get('stage2_learning_rate', 0.0004)
+            trainer.optimizer = torch.optim.Adam(
+                filter(lambda p: p.requires_grad, trainer.model.parameters()),
+                lr=stage2_lr,
+                weight_decay=config['training']['weight_decay']
+            )
+            
+            # Reset scheduler for stage 2
+            trainer.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                trainer.optimizer,
+                T_max=stage2_epochs,
+                eta_min=1e-6
+            )
+            
+            logger.info(f"   📈 Stage 2 learning rate: {stage2_lr:.2e} (4x higher)")
+            logger.info(f"   📊 Training {sum(p.numel() for p in trainer.model.parameters() if p.requires_grad):,} parameters (projection head only)")
+            logger.info("   🎯 This refines the embedding alignment while keeping learned features intact")
+            logger.info("=" * 60 + "\n")
+            
+            stage2_triggered = True
         # ✅ NO dataset recreation needed - iterate_batches_streaming handles everything!
         # The datasets are already created before the loop and stream data lazily.
         # Recreating them would:
@@ -558,8 +535,15 @@ def train(config_path: str, resume: str = None):
         #   2. Risk memory leaks (old datasets not cleaned)
         #   3. Re-query the cache database unnecessarily
         
+        # Update config with current stage info for logging
+        current_stage = 1 if epoch <= stage1_epochs else 2
+        config_with_stage = config.copy()
+        config_with_stage['training'] = config['training'].copy()
+        config_with_stage['training']['epochs'] = total_epochs
+        config_with_stage['current_stage'] = current_stage
+        
         # Train epoch with REAL implementation
-        train_metrics = train_epoch_real(trainer, train_dataset, config, epoch)
+        train_metrics = train_epoch_real(trainer, train_dataset, config_with_stage, epoch)
         
         # 💾 SAVE CHECKPOINT AFTER EVERY EPOCH (for resume capability)
         logger.info(f"💾 Saving checkpoint after epoch {epoch}...")

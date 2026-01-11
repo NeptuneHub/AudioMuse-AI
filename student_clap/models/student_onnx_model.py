@@ -261,22 +261,45 @@ class StudentCLAPTrainer:
             eta_min=1e-6
         )
         
-        # Loss weights
-        self.mse_weight = config['training']['mse_weight']
-        self.cosine_weight = config['training']['cosine_weight']
-        
         # Training strategy
         self.training_strategy = config['training'].get('training_strategy', 'averaged')
+        
+        # Two-stage training support (like tinyCLAP)
+        self.projection_only = config['training'].get('projection_only', False)
+        if self.projection_only:
+            logger.info("🔒 STAGE 2: Freezing encoder, training projection head only")
+            self._freeze_encoder()
         
         logger.info(f"Initialized Student CLAP trainer on {self.device}")
         logger.info(f"Model parameters: {self.model.count_parameters()}")
         logger.info(f"Training strategy: {self.training_strategy}")
+        
+    def _freeze_encoder(self):
+        """Freeze encoder layers, keep only projection head trainable (Stage 2)."""
+        # Freeze CNN stem
+        for param in self.model.cnn_stem.parameters():
+            param.requires_grad = False
+        
+        # Freeze transformer
+        for param in self.model.transformer.parameters():
+            param.requires_grad = False
+        
+        # Keep projection head trainable
+        for param in self.model.projection_head.parameters():
+            param.requires_grad = True
+        
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.model.parameters())
+        logger.info(f"   📊 Trainable params: {trainable_params:,}/{total_params:,} ({trainable_params/total_params*100:.1f}%)")
         
     def compute_loss(self, 
                     student_embeddings: torch.Tensor, 
                     teacher_embeddings: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
         """
         Compute knowledge distillation loss following tinyCLAP approach.
+        
+        Uses NEGATIVE COSINE SIMILARITY as the primary loss (like tinyCLAP paper).
+        This directly optimizes for embedding alignment, which is what matters for retrieval.
         
         Args:
             student_embeddings: Averaged embeddings from student model (batch, 512)
@@ -295,21 +318,20 @@ class StudentCLAPTrainer:
         # Ensure teacher embeddings are L2-normalized
         teacher_embeddings = F.normalize(teacher_embeddings, p=2, dim=1)
         
-        # 1. MSE Loss: Minimize Euclidean distance
-        mse_loss = F.mse_loss(student_embeddings, teacher_embeddings)
-        
-        # 2. Cosine Similarity Loss: Ensure directional alignment
+        # tinyCLAP loss: Negative cosine similarity (directly optimize for alignment)
+        # This is better than MSE because it focuses on direction, not magnitude
         cosine_sim = F.cosine_similarity(student_embeddings, teacher_embeddings, dim=1)
-        cosine_loss = 1.0 - cosine_sim.mean()  # 1 - mean similarity
+        total_loss = -cosine_sim.mean()  # Negative because we want to MAXIMIZE similarity
         
-        # 3. Combined loss
-        total_loss = self.mse_weight * mse_loss + self.cosine_weight * cosine_loss
+        # Keep MSE for monitoring only (not used in loss)
+        with torch.no_grad():
+            mse_loss = F.mse_loss(student_embeddings, teacher_embeddings)
         
         # Collect metrics
         loss_dict = {
             'total_loss': total_loss.item(),
             'mse_loss': mse_loss.item(),
-            'cosine_loss': cosine_loss.item(),
+            'cosine_loss': -total_loss.item(),  # Positive value for logging (1 - sim)
             'mean_cosine_sim': cosine_sim.mean().item(),
             'min_cosine_sim': cosine_sim.min().item(),
             'max_cosine_sim': cosine_sim.max().item()

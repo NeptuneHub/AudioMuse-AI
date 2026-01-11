@@ -74,6 +74,37 @@ def compute_mel_spectrogram(audio_data: np.ndarray,
     return mel.astype(np.float32)
 
 
+def compute_full_mel_spectrogram(audio_data: np.ndarray,
+                                 sr: int = DEFAULT_SAMPLE_RATE,
+                                 n_mels: int = DEFAULT_N_MELS,
+                                 n_fft: int = DEFAULT_N_FFT,
+                                 hop_length: int = DEFAULT_HOP_LENGTH,
+                                 fmin: int = DEFAULT_FMIN,
+                                 fmax: int = DEFAULT_FMAX) -> np.ndarray:
+    """
+    Compute full mel-spectrogram from entire audio waveform (no segmentation).
+    
+    This is the SPACE-EFFICIENT approach: compute mel spectrogram for the entire
+    audio file once, store it, then extract overlapped segments at runtime.
+    
+    Args:
+        audio_data: Full audio waveform (mono, 48kHz), shape (n_samples,)
+        sr: Sample rate (should be 48000)
+        n_mels: Number of mel bands (128 for student)
+        n_fft: FFT window size
+        hop_length: STFT hop length
+        fmin: Minimum frequency
+        fmax: Maximum frequency
+        
+    Returns:
+        Full log mel-spectrogram of shape (1, n_mels, time_frames) 
+        where time_frames covers the entire audio
+    """
+    # Use the same computation as compute_mel_spectrogram
+    # but for the full audio (no segmentation)
+    return compute_mel_spectrogram(audio_data, sr, n_mels, n_fft, hop_length, fmin, fmax)
+
+
 def compute_mel_spectrogram_batch(audio_segments: list,
                                    sr: int = DEFAULT_SAMPLE_RATE,
                                    n_mels: int = DEFAULT_N_MELS,

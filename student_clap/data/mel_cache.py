@@ -42,20 +42,18 @@ class MelSpectrogramCache:
         # Stats
         self.cache_hits = 0
         self.cache_misses = 0
-        self.migrations_completed = 0
         
         logger.info(f"Mel spectrogram cache initialized: {self.db_path}")
         
     def _create_table(self):
-        """Create mel spectrogram cache table."""
+        """Create mel spectrogram cache table (NEW FORMAT ONLY - stores full spectrograms)."""
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS mel_spectrograms (
                 item_id TEXT PRIMARY KEY,
-                num_segments INTEGER NOT NULL,
                 mel_shape_time INTEGER NOT NULL,
                 mel_shape_mels INTEGER NOT NULL,
                 mel_data BLOB NOT NULL,
-                compressed INTEGER DEFAULT 0,
+                audio_length INTEGER NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -68,28 +66,13 @@ class MelSpectrogramCache:
                 item_id TEXT NOT NULL,
                 segment_index INTEGER NOT NULL,
                 embedding BLOB NOT NULL,
-                compressed INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (item_id, segment_index)
             )
         """)
         self.conn.commit()
         
-        # Add compressed column to existing tables (migration)
-        try:
-            self.conn.execute("ALTER TABLE segment_embeddings ADD COLUMN compressed INTEGER DEFAULT 0")
-            self.conn.commit()
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-        
-        # Add compressed column to existing tables (migration)
-        try:
-            self.conn.execute("ALTER TABLE mel_spectrograms ADD COLUMN compressed INTEGER DEFAULT 0")
-            self.conn.commit()
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-        
-        # Create index for faster lookups
+        # Create indexes for faster lookups
         self.conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_item_id ON mel_spectrograms(item_id)
         """)
@@ -100,16 +83,16 @@ class MelSpectrogramCache:
         
     def get(self, item_id: str) -> Optional[np.ndarray]:
         """
-        Get mel spectrogram from cache.
+        Get full mel spectrogram from cache.
         
         Args:
             item_id: Song item ID
             
         Returns:
-            Mel spectrogram array of shape (num_segments, 1, n_mels, time) or None if not cached
+            Full mel spectrogram array of shape (1, n_mels, time) or None if not cached
         """
         cursor = self.conn.execute(
-            "SELECT num_segments, mel_shape_time, mel_shape_mels, mel_data, compressed FROM mel_spectrograms WHERE item_id = ?",
+            "SELECT mel_shape_time, mel_shape_mels, mel_data, audio_length FROM mel_spectrograms WHERE item_id = ?",
             (item_id,)
         )
         row = cursor.fetchone()
@@ -119,28 +102,26 @@ class MelSpectrogramCache:
             return None
             
         # Deserialize mel spectrogram
-        num_segments, mel_time, mel_mels, mel_data_bytes, is_compressed = row
+        mel_time, mel_mels, mel_data_bytes, audio_length = row
         
-        # Decompress if compressed (background thread handles migration)
-        if is_compressed:
-            mel_data_bytes = zlib.decompress(mel_data_bytes)
-        # If uncompressed, use as-is (background thread will compress it later)
+        # Decompress
+        mel_data_bytes = zlib.decompress(mel_data_bytes)
         
         mel_data = np.frombuffer(mel_data_bytes, dtype=np.float32)
-        # Reshape to (num_segments, 1, n_mels, time)
-        mel_data = mel_data.reshape(num_segments, 1, mel_mels, mel_time)
+        # Reshape to (1, n_mels, time)
+        mel_data = mel_data.reshape(1, mel_mels, mel_time)
         
         self.cache_hits += 1
         logger.debug(f"Cache HIT for {item_id}: {mel_data.shape}")
         return mel_data
     
-    def get_with_compression_status(self, item_id: str) -> Optional[tuple]:
+    def get_with_audio_length(self, item_id: str) -> Optional[tuple]:
         """
-        Get mel and compression status (for parallel batch loading).
-        Returns: (mel_array, is_compressed, original_bytes_if_uncompressed) or None
+        Get full mel spectrogram with audio length info.
+        Returns: (mel_array, audio_length) or None
         """
         cursor = self.conn.execute(
-            "SELECT num_segments, mel_shape_time, mel_shape_mels, mel_data, compressed FROM mel_spectrograms WHERE item_id = ?",
+            "SELECT mel_shape_time, mel_shape_mels, mel_data, audio_length FROM mel_spectrograms WHERE item_id = ?",
             (item_id,)
         )
         row = cursor.fetchone()
@@ -149,54 +130,39 @@ class MelSpectrogramCache:
             self.cache_misses += 1
             return None
             
-        num_segments, mel_time, mel_mels, mel_data_bytes, is_compressed = row
+        mel_time, mel_mels, mel_data_bytes, audio_length = row
         
-        if is_compressed:
-            # Decompress and return
-            decompressed = zlib.decompress(mel_data_bytes)
-            mel_data = np.frombuffer(decompressed, dtype=np.float32)
-            mel_data = mel_data.reshape(num_segments, 1, mel_mels, mel_time)
-            self.cache_hits += 1
-            return (mel_data, True, None)  # Already compressed
-        else:
-            # Return uncompressed data + original bytes for compression
-            mel_data = np.frombuffer(mel_data_bytes, dtype=np.float32)
-            mel_data = mel_data.reshape(num_segments, 1, mel_mels, mel_time)
-            self.cache_hits += 1
-            return (mel_data, False, mel_data_bytes)  # Needs compression
+        # Decompress
+        decompressed = zlib.decompress(mel_data_bytes)
+        mel_data = np.frombuffer(decompressed, dtype=np.float32)
+        mel_data = mel_data.reshape(1, mel_mels, mel_time)
+        
+        self.cache_hits += 1
+        return (mel_data, audio_length)
     
-    def compress_and_update(self, item_id: str, original_bytes: bytes):
-        """Compress and update entry (called from worker thread)."""
-        try:
-            compressed = zlib.compress(original_bytes, level=6)
-            conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("UPDATE mel_spectrograms SET mel_data = ?, compressed = 1 WHERE item_id = ?",
-                        (compressed, item_id))
-            conn.commit()
-            conn.close()
-            self.migrations_completed += 1
-        except Exception as e:
-            logger.debug(f"Compression failed for {item_id}: {e}")
-        
-    def put(self, item_id: str, mel_spectrogram: np.ndarray):
+
+    def put(self, item_id: str, mel_spectrogram: np.ndarray, audio_length: int):
         """
-        Store mel spectrogram in cache (IMMEDIATE commit for crash safety).
+        Store FULL mel spectrogram in cache (compressed, immediate commit for crash safety).
         
         Args:
             item_id: Song item ID
-            mel_spectrogram: Mel spectrogram array of shape (num_segments, 1, n_mels, time)
+            mel_spectrogram: Full mel spectrogram array of shape (1, n_mels, time)
+            audio_length: Length of original audio in samples
         """
+        # Validate shape
+        if len(mel_spectrogram.shape) != 3 or mel_spectrogram.shape[0] != 1:
+            raise ValueError(f"Expected full mel spectrogram shape (1, n_mels, time), got {mel_spectrogram.shape}")
+        
         # Serialize mel spectrogram
         if mel_spectrogram.dtype != np.float32:
             mel_spectrogram = mel_spectrogram.astype(np.float32)
             
         mel_data_bytes = mel_spectrogram.tobytes()
-        # Shape is (num_segments, 1, n_mels, time_frames)
-        num_segments = mel_spectrogram.shape[0]
-        mel_channels = mel_spectrogram.shape[1]  # Always 1
-        mel_n_mels = mel_spectrogram.shape[2]     # 128
-        mel_time = mel_spectrogram.shape[3]       # time frames
+        
+        # Extract shape: (1, n_mels, time_frames)
+        mel_n_mels = mel_spectrogram.shape[1]  # 128
+        mel_time = mel_spectrogram.shape[2]    # time frames
         
         # Compress with zlib (level 6 for good balance)
         compressed_bytes = zlib.compress(mel_data_bytes, level=6)
@@ -206,20 +172,79 @@ class MelSpectrogramCache:
             # Insert or replace (atomic operation)
             self.conn.execute("""
                 INSERT OR REPLACE INTO mel_spectrograms 
-                (item_id, num_segments, mel_shape_time, mel_shape_mels, mel_data, compressed)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (item_id, num_segments, mel_time, mel_n_mels, compressed_bytes, 1))
+                (item_id, mel_shape_time, mel_shape_mels, mel_data, audio_length)
+                VALUES (?, ?, ?, ?, ?)
+            """, (item_id, mel_time, mel_n_mels, compressed_bytes, audio_length))
             
             # IMMEDIATE commit - ensures data is saved even if process crashes!
             self.conn.commit()
             
-            logger.debug(f"💾 Cache SAVED (compressed {compression_ratio:.1f}x): {item_id} {mel_spectrogram.shape}")
+            logger.debug(f"💾 Cache SAVED (FULL, compressed {compression_ratio:.1f}x): {item_id} {mel_spectrogram.shape}")
             
         except Exception as e:
             logger.error(f"❌ Failed to save mel cache for {item_id}: {e}")
             self.conn.rollback()
             raise
         
+    def extract_overlapped_segments(self, full_mel: np.ndarray, audio_length: int, 
+                                   segment_length: int = 480000, hop_length: int = 240000,
+                                   sample_rate: int = 48000, hop_length_stft: int = 480) -> np.ndarray:
+        """
+        Extract overlapped segments from full mel spectrogram at runtime.
+        
+        This is the KEY OPTIMIZATION: instead of storing overlapped segments,
+        we store the full spectrogram once and extract segments on-demand.
+        
+        Args:
+            full_mel: Full mel spectrogram, shape (1, n_mels, time_frames)
+            audio_length: Original audio length in samples
+            segment_length: Audio segment length in samples (default: 480000 = 10s at 48kHz)
+            hop_length: Audio hop length in samples (default: 240000 = 5s)
+            sample_rate: Audio sample rate (default: 48000)
+            hop_length_stft: STFT hop length used for mel computation (default: 480)
+            
+        Returns:
+            Segmented mel spectrogram of shape (num_segments, 1, n_mels, segment_time_frames)
+        """
+        # Calculate time frames per segment
+        segment_time_frames = segment_length // hop_length_stft
+        hop_time_frames = hop_length // hop_length_stft
+        
+        # Extract shape info
+        n_mels = full_mel.shape[1]
+        total_time_frames = full_mel.shape[2]
+        
+        segments = []
+        
+        if audio_length <= segment_length:
+            # Short audio: pad to segment length
+            if total_time_frames < segment_time_frames:
+                # Pad with zeros
+                padded = np.pad(full_mel, ((0, 0), (0, 0), (0, segment_time_frames - total_time_frames)), 
+                               mode='constant', constant_values=0)
+                segments.append(padded[:, :, :segment_time_frames])
+            else:
+                segments.append(full_mel[:, :, :segment_time_frames])
+        else:
+            # Create overlapping segments
+            start_frame = 0
+            while start_frame + segment_time_frames <= total_time_frames:
+                segment = full_mel[:, :, start_frame:start_frame + segment_time_frames]
+                segments.append(segment)
+                start_frame += hop_time_frames
+            
+            # Add final segment if needed
+            if start_frame < total_time_frames:
+                # Take last segment_time_frames from the end
+                final_segment = full_mel[:, :, -segment_time_frames:]
+                segments.append(final_segment)
+        
+        # Stack into batch: (num_segments, 1, n_mels, time)
+        segmented_mel = np.stack(segments, axis=0)
+        
+        logger.debug(f"Extracted {len(segments)} segments from full mel (shape {full_mel.shape} -> {segmented_mel.shape})")
+        return segmented_mel
+    
     def has(self, item_id: str) -> bool:
         """
         Check if item is in cache.
@@ -249,17 +274,8 @@ class MelSpectrogramCache:
         cursor = self.conn.execute("SELECT SUM(LENGTH(mel_data)) FROM mel_spectrograms")
         total_size_bytes = cursor.fetchone()[0] or 0
         
-        # Get compression stats
-        cursor = self.conn.execute("SELECT COUNT(*) FROM mel_spectrograms WHERE compressed = 1")
-        compressed_count = cursor.fetchone()[0]
-        
-        cursor = self.conn.execute("SELECT COUNT(*) FROM mel_spectrograms WHERE compressed = 0 OR compressed IS NULL")
-        uncompressed_count = cursor.fetchone()[0]
-        
         total_requests = self.cache_hits + self.cache_misses
         hit_rate = (self.cache_hits / total_requests * 100) if total_requests > 0 else 0
-        
-        compression_rate = (compressed_count / total_cached * 100) if total_cached > 0 else 0
         
         return {
             'total_cached': total_cached,
@@ -267,10 +283,7 @@ class MelSpectrogramCache:
             'cache_size_gb': total_size_bytes / (1024 * 1024 * 1024),
             'cache_hits': self.cache_hits,
             'cache_misses': self.cache_misses,
-            'hit_rate_percent': hit_rate,
-            'compressed_count': compressed_count,
-            'uncompressed_count': uncompressed_count,
-            'compression_rate_percent': compression_rate
+            'hit_rate_percent': hit_rate
         }
     
     def get_cache_size_gb(self) -> float:
@@ -326,7 +339,7 @@ class MelSpectrogramCache:
     
     def put_segment_embeddings(self, item_id: str, segment_embeddings: list):
         """
-        Store per-segment teacher CLAP embeddings for a song (compressed).
+        Store per-segment teacher CLAP embeddings for a song (always compressed).
         
         Args:
             item_id: Song item ID
@@ -345,8 +358,8 @@ class MelSpectrogramCache:
             compressed_bytes = zlib.compress(embedding_bytes, level=6)
             
             self.conn.execute(
-                "INSERT INTO segment_embeddings (item_id, segment_index, embedding, compressed) VALUES (?, ?, ?, ?)",
-                (item_id, segment_idx, compressed_bytes, 1)
+                "INSERT INTO segment_embeddings (item_id, segment_index, embedding) VALUES (?, ?, ?)",
+                (item_id, segment_idx, compressed_bytes)
             )
         
         self.conn.commit()
@@ -354,7 +367,7 @@ class MelSpectrogramCache:
     
     def get_segment_embeddings(self, item_id: str) -> Optional[list]:
         """
-        Get per-segment teacher CLAP embeddings from cache (with decompression).
+        Get per-segment teacher CLAP embeddings from cache (always compressed).
         
         Args:
             item_id: Song item ID
@@ -363,7 +376,7 @@ class MelSpectrogramCache:
             List of embedding arrays (512-dim each) or None if not cached
         """
         cursor = self.conn.execute(
-            "SELECT segment_index, embedding, compressed FROM segment_embeddings WHERE item_id = ? ORDER BY segment_index",
+            "SELECT segment_index, embedding FROM segment_embeddings WHERE item_id = ? ORDER BY segment_index",
             (item_id,)
         )
         rows = cursor.fetchall()
@@ -372,11 +385,9 @@ class MelSpectrogramCache:
             return None
         
         embeddings = []
-        for segment_idx, embedding_bytes, is_compressed in rows:
-            # Decompress if needed
-            if is_compressed:
-                embedding_bytes = zlib.decompress(embedding_bytes)
-            
+        for segment_idx, embedding_bytes in rows:
+            # Decompress
+            embedding_bytes = zlib.decompress(embedding_bytes)
             embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
             embeddings.append(embedding)
         
@@ -437,11 +448,6 @@ class MelSpectrogramCache:
         logger.info(f"Mel cache stats: {stats['total_cached']} items, "
                    f"{stats['cache_size_gb']:.1f}GB, "
                    f"hit rate: {stats['hit_rate_percent']:.1f}%")
-        logger.info(f"Compression: {stats['compressed_count']} compressed, "
-                   f"{stats['uncompressed_count']} uncompressed "
-                   f"({stats['compression_rate_percent']:.1f}% migrated)")
-        if self.migrations_completed > 0:
-            logger.info(f"🔄 On-demand compressions: {self.migrations_completed}")
         self.conn.close()
         
     def __enter__(self):
