@@ -48,3 +48,6 @@ And a dataset from:
 All the songs are under Creative Commons license, more details can be found here:
 - [student_clap/models/FMA_SONGS_2247_LICENSE.md](student_clap/models/FMA_SONGS_2247_LICENSE.md)
 - [student_clap/models/JAMENDO_SONGS_LICENSE.md](student_clap/models/JAMENDO_SONGS_LICENSE.md)
+
+The distillation approch follow the tinyCLAP approch:
+- https://github.com/fpaissan/tinyCLAP
