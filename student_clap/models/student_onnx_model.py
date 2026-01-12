@@ -1,8 +1,16 @@
 """
 Student CLAP ONNX Model Implementation
 
-Implements lightweight student CLAP audio encoder using ONNX with PyTorch training
-and export to pure ONNX for inference. Based on tinyCLAP architecture.
+Implements student CLAP audio encoder using PhiNet mobile-optimized architecture with PyTorch training
+and export to pure ONNX for inference. PhiNet uses inverted residual blocks with depthwise separable
+convolutions and squeeze-and-excitation modules for efficient mobile deployment.
+
+Architecture:
+- PhiNet: 5 PhiBlocks with inverted residuals and SE modules
+- Channels: [16, 24, 32, 64, 96]
+- Transformer: 2 layers for temporal modeling
+- Projection: 384 -> 256 -> 512 dimensional embedding space
+- Model size: ~10-15 MB (2-3M parameters)
 """
 
 import torch
@@ -18,12 +26,112 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class SEBlock(nn.Module):
+    """Squeeze-and-Excitation block for channel attention."""
+    
+    def __init__(self, channels: int, reduction: int = 4):
+        super().__init__()
+        self.squeeze = nn.AdaptiveAvgPool2d(1)
+        self.excitation = nn.Sequential(
+            nn.Linear(channels, channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Sigmoid()
+        )
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, _, _ = x.size()
+        y = self.squeeze(x).view(b, c)
+        y = self.excitation(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)
+
+
+class PhiBlock(nn.Module):
+    """PhiNet inverted residual block with depthwise separable convolution and SE module."""
+    
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 2, expansion: int = 4):
+        super().__init__()
+        hidden_dim = in_channels * expansion
+        self.use_residual = (stride == 1 and in_channels == out_channels)
+        
+        # Expansion phase (pointwise)
+        if expansion != 1:
+            self.expand = nn.Sequential(
+                nn.Conv2d(in_channels, hidden_dim, 1, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU(inplace=True)
+            )
+        else:
+            self.expand = nn.Identity()
+        
+        # Depthwise convolution
+        self.depthwise = nn.Sequential(
+            nn.Conv2d(hidden_dim, hidden_dim, 3, stride=stride, padding=1, groups=hidden_dim, bias=False),
+            nn.BatchNorm2d(hidden_dim),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Squeeze-and-Excitation
+        self.se = SEBlock(hidden_dim)
+        
+        # Projection phase (pointwise)
+        self.project = nn.Sequential(
+            nn.Conv2d(hidden_dim, out_channels, 1, bias=False),
+            nn.BatchNorm2d(out_channels)
+        )
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        identity = x
+        
+        # Expansion
+        out = self.expand(x)
+        
+        # Depthwise
+        out = self.depthwise(out)
+        
+        # SE applied before projection
+        out = self.se(out)
+        
+        # Projection
+        out = self.project(out)
+        
+        # Residual connection
+        if self.use_residual:
+            out = out + identity
+            
+        return out
+
+
+class ConvBlock(nn.Module):
+    """Standard convolutional block (kept for compatibility, not used in PhiNet)."""
+    
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.avg_pool2d(x, kernel_size=2, stride=2)
+        return x
+
+
 class StudentCLAPAudio(nn.Module):
     """
-    Lightweight student CLAP audio encoder based on tinyCLAP architecture.
+    Student CLAP audio encoder using PhiNet mobile-optimized architecture.
     
-    Designed to match the teacher CLAP's 512-dimensional embedding space
-    while being significantly smaller (~20-40MB vs 268MB).
+    Architecture follows PhiNet design with inverted residual blocks:
+    - 5 PhiBlocks with channels [16, 24, 32, 64, 96]
+    - Depthwise separable convolutions for efficiency
+    - Squeeze-and-Excitation modules for channel attention
+    - 2 Transformer layers for temporal modeling
+    - Projection head: 384 -> 256 -> 512
+    
+    Designed to match the teacher CLAP's 512-dimensional embedding space.
+    Model size: ~10-15 MB (2-3M parameters) - very lightweight and fast!
     """
     
     def __init__(self, config: Dict):
@@ -49,37 +157,33 @@ class StudentCLAPAudio(nn.Module):
         self.build_model()
         
     def build_model(self):
-        """Build the student model architecture following tinyCLAP design."""
+        """Build the student model architecture using PhiNet mobile-optimized design."""
         
-        # 1. CNN Stem for feature extraction
-        self.cnn_stem = nn.Sequential(
-            # Conv block 1: Input channels = n_mels (128), output = 32
-            nn.Conv2d(1, self.cnn_channels[0], kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(self.cnn_channels[0]),
-            nn.GELU(),
-            nn.MaxPool2d(2, 2),
-            
-            # Conv block 2: 32 -> 64
-            nn.Conv2d(self.cnn_channels[0], self.cnn_channels[1], kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(self.cnn_channels[1]),
-            nn.GELU(),
-            nn.MaxPool2d(2, 2),
-            
-            # Conv block 3: 64 -> 128
-            nn.Conv2d(self.cnn_channels[1], self.cnn_channels[2], kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(self.cnn_channels[2]),
-            nn.GELU(),
+        # 1. PhiNet stem: Initial convolution
+        # Input: (batch, 1, 128, time)
+        self.stem = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1, bias=False),  # -> (batch, 16, 64, time/2)
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True)
         )
         
-        # Calculate the flattened feature dimension after CNN
-        # For input mel-spec of shape (1, 128, T), after CNN operations:
-        # After conv1: (32, 64, T/2) -> MaxPool: (32, 32, T/4)  
-        # After conv2: (64, 16, T/8) -> MaxPool: (64, 8, T/16)
-        # After conv3: (128, 4, T/32)
-        # Flattened: 128 * 4 = 512 features per time step
-        self.cnn_output_dim = self.cnn_channels[2] * 4  # 128 * 4 = 512
+        # 2. PhiNet blocks: Inverted residual with depthwise separable conv + SE
+        # Each block reduces spatial dimensions by 2x
+        self.block1 = PhiBlock(16, 24, stride=2, expansion=4)   # -> (batch, 24, 32, time/4)
+        self.block2 = PhiBlock(24, 32, stride=2, expansion=4)   # -> (batch, 32, 16, time/8)
+        self.block3 = PhiBlock(32, 64, stride=2, expansion=4)   # -> (batch, 64, 8, time/16)
+        self.block4 = PhiBlock(64, 96, stride=2, expansion=4)   # -> (batch, 96, 4, time/32)
         
-        # 2. Transformer encoder for temporal modeling
+        # Group as cnn_stem for compatibility with freezing logic
+        self.cnn_stem = nn.ModuleList([self.stem, self.block1, self.block2, 
+                                       self.block3, self.block4])
+        
+        # Calculate the flattened feature dimension after PhiNet
+        # After 5 reductions: (96, 4, time/32)
+        # Flattened: 96 * 4 = 384 features per time step
+        self.cnn_output_dim = 96 * 4  # 384
+        
+        # 3. Transformer encoder for temporal modeling
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.cnn_output_dim,
             nhead=self.attention_heads,
@@ -93,17 +197,18 @@ class StudentCLAPAudio(nn.Module):
             num_layers=self.transformer_layers
         )
         
-        # 3. Projection head to 512-dimensional embedding
+        # 4. Projection head to 512-dimensional embedding
+        # Maps from 384 -> 256 -> 512 to reduce dimensions gradually
         self.projection_head = nn.Sequential(
-            nn.Linear(self.cnn_output_dim, self.hidden_dim),
+            nn.Linear(self.cnn_output_dim, self.hidden_dim),  # 384 -> 256
             nn.BatchNorm1d(self.hidden_dim),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(self.hidden_dim, self.embedding_dim),  # 512 dims
+            nn.Linear(self.hidden_dim, self.embedding_dim),  # 256 -> 512
         )
         
-        logger.info(f"Built Student CLAP model:")
-        logger.info(f"  CNN channels: {self.cnn_channels}")
+        logger.info(f"Built Student CLAP model with PhiNet mobile-optimized architecture:")
+        logger.info(f"  PhiNet: 5 PhiBlocks [16, 24, 32, 64, 96] with inverted residuals + SE")
         logger.info(f"  Transformer layers: {self.transformer_layers}")
         logger.info(f"  Attention heads: {self.attention_heads}")
         logger.info(f"  Output embedding dim: {self.embedding_dim}")
@@ -121,25 +226,28 @@ class StudentCLAPAudio(nn.Module):
         """
         batch_size = mel_spec.shape[0]
         
-        # 1. CNN feature extraction
-        # Input: (batch, 1, 128, time) -> Output: (batch, 128, 4, time/32)
-        cnn_features = self.cnn_stem(mel_spec)
+        # 1. PhiNet feature extraction with inverted residuals
+        # Input: (batch, 1, 128, time) -> Output: (batch, 96, 4, time/32)
+        x = mel_spec
+        for block in self.cnn_stem:
+            x = block(x)
+        cnn_features = x
         
-        # 2. Reshape for transformer: (batch, 128, 4, time/32) -> (batch, time/32, 512)
-        batch_size, channels, height, width = cnn_features.shape
-        cnn_features = cnn_features.permute(0, 3, 1, 2)  # (batch, time/32, 128, 4)
-        sequence_features = cnn_features.reshape(batch_size, width, -1)  # (batch, time/32, 512)
+        # 2. Reshape for transformer: (batch, 96, 4, time/32) -> (batch, time/32, 384)
+        b, c, h, w = cnn_features.shape
+        x = cnn_features.permute(0, 3, 1, 2)  # (batch, time/32, 96, 4)
+        x = x.reshape(b, w, c * h)  # (batch, time/32, 384)
         
-        # 3. Transformer encoding
-        transformer_output = self.transformer(sequence_features)  # (batch, time/32, 512)
+        # 3. Transformer for temporal modeling
+        x = self.transformer(x)  # (batch, time/32, 384)
         
-        # 4. Global average pooling over time dimension
-        pooled_features = torch.mean(transformer_output, dim=1)  # (batch, 512)
+        # 4. Global average pooling over time
+        x = x.mean(dim=1)  # (batch, 384)
         
-        # 5. Projection to embedding space
-        embeddings = self.projection_head(pooled_features)  # (batch, 512)
+        # 5. Projection to 512-dimensional embedding
+        embeddings = self.projection_head(x)  # (batch, 512)
         
-        # 6. L2 normalization (essential for CLAP compatibility)
+        # 6. L2 normalization (critical for cosine similarity)
         embeddings = F.normalize(embeddings, p=2, dim=1)
         
         return embeddings
@@ -359,7 +467,7 @@ class StudentCLAPTrainer:
         if self.accumulation_counter == 0:
             self.optimizer.zero_grad()
         
-        # Process each song in the batch
+        # Process ALL songs in batch together (like old approach - fast!)
         student_embeddings = []
         teacher_embeddings = []
         
@@ -380,39 +488,41 @@ class StudentCLAPTrainer:
                 logger.warning(f"⚠️ Skipping song {batch['song_ids'][i]} - only {mel_segments.shape[0]} segment (BatchNorm needs ≥2)")
                 continue
             
-            # Forward pass through model directly (mels already computed!)
-            segment_embeddings = self.model.forward(mel_segments)  # (num_segments, 512)
-            
             # Training strategy determines what we train on
             if self.training_strategy == "segments":
-                # Train on individual segments (more training samples!)
+                # Train on individual segments
+                # Process ALL segments at once (single forward pass!)
+                segment_embeddings = self.model.forward(mel_segments)  # (num_segments, 512)
                 for seg_idx, seg_emb in enumerate(segment_embeddings):
                     student_embeddings.append(seg_emb.unsqueeze(0))  # (1, 512)
-                    # Use per-segment teacher if available, otherwise use averaged
                     if teacher_segment_embs is not None and seg_idx < len(teacher_segment_embs):
                         teacher_embeddings.append(teacher_segment_embs[seg_idx])
                     else:
-                        teacher_embeddings.append(teacher_emb)  # Fallback to averaged
+                        teacher_embeddings.append(teacher_emb)
                     
             elif self.training_strategy == "averaged":
-                # Original approach: train only on averaged embedding
+                # Process segments and average embeddings
+                # Process ALL segments at once (single forward pass!)
+                segment_embeddings = self.model.forward(mel_segments)  # (num_segments, 512)
                 avg_embedding = torch.mean(segment_embeddings, dim=0, keepdim=True)  # (1, 512)
                 avg_embedding = F.normalize(avg_embedding, p=2, dim=1)
                 student_embeddings.append(avg_embedding)
                 teacher_embeddings.append(teacher_emb)
                 
             elif self.training_strategy == "both":
-                # BEST: Train on individual segments AND averaged (recommended!)
-                # 1. Add individual segment embeddings with their corresponding teacher segments
+                # Train on individual segments AND averaged embedding
+                # Process ALL segments at once (single forward pass = shared computation graph!)
+                segment_embeddings = self.model.forward(mel_segments)  # (num_segments, 512)
+                
+                # Add individual segments to training
                 for seg_idx, seg_emb in enumerate(segment_embeddings):
                     student_embeddings.append(seg_emb.unsqueeze(0))  # (1, 512)
-                    # Use per-segment teacher if available, otherwise use averaged
                     if teacher_segment_embs is not None and seg_idx < len(teacher_segment_embs):
                         teacher_embeddings.append(teacher_segment_embs[seg_idx])
                     else:
-                        teacher_embeddings.append(teacher_emb)  # Fallback to averaged
+                        teacher_embeddings.append(teacher_emb)
                 
-                # 2. Also add the averaged embedding with averaged teacher
+                # Average from the SAME segment embeddings (shares computation graph!)
                 avg_embedding = torch.mean(segment_embeddings, dim=0, keepdim=True)  # (1, 512)
                 avg_embedding = F.normalize(avg_embedding, p=2, dim=1)
                 student_embeddings.append(avg_embedding)
@@ -421,23 +531,24 @@ class StudentCLAPTrainer:
             else:
                 raise ValueError(f"Unknown training_strategy: {self.training_strategy}")
         
-        # Stack embeddings
-        student_embeddings = torch.cat(student_embeddings, dim=0)  # (batch_size, 512)
-        teacher_embeddings = np.stack(teacher_embeddings)  # (batch_size, 512)
+        # Stack all embeddings from entire batch (FAST APPROACH like devel!)
+        student_embeddings = torch.cat(student_embeddings, dim=0)
+        teacher_embeddings = np.stack(teacher_embeddings)
         
-        # Compute loss
+        # Compute loss for entire batch at once
         loss, loss_dict = self.compute_loss(student_embeddings, teacher_embeddings)
         
-        # Scale loss by accumulation steps (important for gradient accumulation)
+        # Scale loss by accumulation steps
         loss = loss / self.gradient_accumulation_steps
         
-        # Backward pass
+        # Single backward pass for entire batch
         loss.backward()
         
         # Update accumulation counter
         self.accumulation_counter += 1
         
         # Only update weights when we've accumulated enough gradients
+        will_update = False
         if self.accumulation_counter >= self.gradient_accumulation_steps:
             # Gradient clipping
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config['training']['grad_clip'])
@@ -447,14 +558,23 @@ class StudentCLAPTrainer:
             
             # Reset accumulation counter
             self.accumulation_counter = 0
+            will_update = True
         
-        # Scale loss_dict back to original scale for logging
-        scaled_loss_dict = {k: v * self.gradient_accumulation_steps if 'loss' in k else v for k, v in loss_dict.items()}
-        scaled_loss_dict['accumulation_step'] = self.accumulation_counter
-        scaled_loss_dict['will_update'] = (self.accumulation_counter == 0)
-        scaled_loss_dict['num_training_samples'] = len(student_embeddings)
-        
-        return scaled_loss_dict
+        # Return metrics
+        return {
+            'loss': loss.item() * self.gradient_accumulation_steps,
+            'total_loss': loss.item() * self.gradient_accumulation_steps,
+            'mse_loss': loss_dict['mse_loss'],
+            'cosine_loss': loss_dict['cosine_loss'],
+            'mean_cosine_sim': loss_dict['mean_cosine_sim'],
+            'min_cosine_sim': loss_dict['min_cosine_sim'],
+            'max_cosine_sim': loss_dict['max_cosine_sim'],
+            'cosine_similarity': loss_dict['mean_cosine_sim'],
+            'num_training_pairs': len(student_embeddings),
+            'num_training_samples': len(student_embeddings),
+            'accumulation_step': self.accumulation_counter,
+            'will_update': will_update,
+        }
         
     def export_to_onnx(self, output_path: str):
         """

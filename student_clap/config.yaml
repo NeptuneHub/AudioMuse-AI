@@ -29,27 +29,27 @@ model:
 
 # Training hyperparameters
 training:
-  batch_size: 4
-  gradient_accumulation_steps: 4
-  learning_rate: 0.0001
+  batch_size: 2                # Reduced from 4 to avoid swap (2x slower but stays in RAM)
+  gradient_accumulation_steps: 8  # Increased to keep effective batch=16
+  learning_rate: 0.003         # TinyCLAP Stage 1 LR (3e-3)
   epochs: 15
   
   # Two-stage training (like tinyCLAP)
-  # Stage 1: Train entire model for 'epochs' epochs
-  # Stage 2: Freeze encoder, train only projection for 'stage2_epochs' epochs with higher LR
+  # Stage 1: Train entire model for 'epochs' epochs with lr=0.003
+  # Stage 2: Freeze encoder, train only projection for 'stage2_epochs' epochs with lower LR
   stage2_epochs: 5           # Additional epochs for projection-only refinement
-  stage2_learning_rate: 0.0004  # 4x higher LR for stage 2 (projection fine-tuning)
+  stage2_learning_rate: 0.001  # TinyCLAP Stage 2 LR (1e-3) - 3x lower for fine-tuning
   projection_only: false     # Set to true for stage 2 (handled automatically)
   
   optimizer: "adam"
-  weight_decay: 0.00001
-  grad_clip: 1.0
+  weight_decay: 0.0          # No regularization - faster learning for distillation
+  grad_clip: 5.0             # Higher clip for lr=0.003 (was 1.0 for old lr=0.0001)
   
   # Training strategy: "segments", "averaged", or "both"
   # - segments: Train on each segment individually (more data, segment-level learning)
-  # - averaged: Train on averaged embedding per song (original approach)
-  # - both: Train on segments AND averaged (RECOMMENDED: best of both worlds!)
-  training_strategy: "both"
+  # - averaged: Train on averaged embedding per song (matches teacher CLAP - RECOMMENDED)
+  # - both: Train on segments AND averaged (BEST: learns both individual + averaged patterns)
+  training_strategy: "both"  # FIXED: Now uses single forward pass like devel branch!
   
   # Checkpointing
   save_every: 1                # Save checkpoint every epoch
