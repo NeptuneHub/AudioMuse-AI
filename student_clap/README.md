@@ -21,22 +21,21 @@ python3 train_real.py --config config.yaml
 
 ## Training
 
-**Architecture:** PhiNet mobile-optimized:
-- PhiNet: 5 PhiBlocks with inverted residuals and SE modules
-- Channels: [16, 24, 32, 64, 96]
-- Transformer: 2 layers for temporal modeling
-- Projection: 384 -> 256 -> 512 dimensional embedding space
-- Model size: 1.9M params, 7.4MB
+**Architecture:**
+- Custom PhiNet (micromind.PhiNet + BatchNorm2d + Conv2d projection)
+- Parameters: alpha=1.5, beta=0.75, t0=4, N=7
+- n_mels=128, embedding_dim=512
+- Projection: Residual (embed1+embed2), bias=False, dropout=0.5
+- Model size: 2.37M params
 
-**Strategy:** Two-stage distillation from CLAP teacher
-- Stage 1 (15 epochs): Full model, lr=0.003
-- Stage 2 (5 epochs): Projection only, lr=0.001
+**Strategy:** Distillation from CLAP teacher (100 epochs, LR=0.012, ReduceLROnPlateau)
 
-**Segmentation:** 10-sec segments, 50% overlap → train on individuals + averaged ("both" strategy)
+**Segmentation:** 10-sec segments, 50% overlap, process 10 segments/batch → train on "both" (individuals + averaged)
 
-**Batch:** 2 songs × gradient_accumulation=8 (effective=16), grad_clip=5.0, weight_decay=0.0
+**Batch:** 1 song × gradient_accumulation=8 (effective=8), grad_clip=1.0, weight_decay=0.01
 
 **Loss:** Negative cosine similarity
+
 
 ## License
 
