@@ -196,14 +196,15 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
         
         logger.info(f"─" * 60)
     
-    # Update learning rate scheduler
-    trainer.scheduler.step()
-    current_lr = trainer.optimizer.param_groups[0]['lr']
-    
-    # Compute averages
+    # Compute averages BEFORE updating scheduler (ReduceLROnPlateau needs the metric)
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
     avg_mse = total_mse / num_batches if num_batches > 0 else 0.0
     avg_cosine_sim = total_cosine_sim / num_batches if num_batches > 0 else 0.0
+    
+    # Update learning rate scheduler with loss (ReduceLROnPlateau monitors performance)
+    # Pass NEGATIVE cosine similarity as loss (we want to maximize similarity = minimize negative)
+    trainer.scheduler.step(-avg_cosine_sim)  # Use negative because we maximize cosine sim
+    current_lr = trainer.optimizer.param_groups[0]['lr']
     
     epoch_time = time.time() - epoch_start_time
     
@@ -396,7 +397,14 @@ def train(config_path: str, resume: str = None):
             # Restore model and optimizer state
             trainer.model.load_state_dict(checkpoint['model_state_dict'])
             trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            
+            # Try to restore scheduler state (may fail if scheduler type changed)
+            try:
+                trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                logger.info(f"✅ Scheduler state restored")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not restore scheduler state (scheduler type changed): {e}")
+                logger.warning(f"   Continuing with fresh scheduler (LR will reset to {config['training']['learning_rate']})")
             
             # Restore training state
             start_epoch = checkpoint['epoch'] + 1
@@ -515,14 +523,17 @@ def train(config_path: str, resume: str = None):
                 weight_decay=config['training']['weight_decay']
             )
             
-            # Reset scheduler for stage 2
-            trainer.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            # Reset scheduler for stage 2 - use ReduceLROnPlateau like tinyCLAP
+            trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 trainer.optimizer,
-                T_max=stage2_epochs,
-                eta_min=1e-6
+                mode='min',
+                factor=0.1,
+                patience=10,
+                min_lr=1e-6
             )
+            logger.info(f"📉 Stage 2 LR Scheduler reset: ReduceLROnPlateau (factor=0.1, patience=10)")
             
-            logger.info(f"   📈 Stage 2 learning rate: {stage2_lr:.2e} (4x higher)")
+            logger.info(f"   📈 Stage 2 learning rate: {stage2_lr:.2e}")
             logger.info(f"   📊 Training {sum(p.numel() for p in trainer.model.parameters() if p.requires_grad):,} parameters (projection head only)")
             logger.info("   🎯 This refines the embedding alignment while keeping learned features intact")
             logger.info("=" * 60 + "\n")

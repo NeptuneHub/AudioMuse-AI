@@ -362,12 +362,16 @@ class StudentCLAPTrainer:
         self.gradient_accumulation_steps = config['training'].get('gradient_accumulation_steps', 1)
         self.accumulation_counter = 0
         
-        # Learning rate scheduler
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        # Learning rate scheduler - tinyCLAP uses ReduceLROnPlateau (reduces only when stuck)
+        # This is MUCH better than CosineAnnealing which aggressively decays LR over time
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
-            T_max=config['training']['epochs'],
-            eta_min=1e-6
+            mode='min',          # Minimize loss
+            factor=0.1,          # Reduce LR by 10x when plateau
+            patience=10,         # Wait 10 epochs before reducing
+            min_lr=1e-6
         )
+        logger.info(f"📉 LR Scheduler: ReduceLROnPlateau (factor=0.1, patience=10)")
         
         # Training strategy
         self.training_strategy = config['training'].get('training_strategy', 'averaged')

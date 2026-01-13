@@ -1,77 +1,48 @@
-# Student CLAP Configuration
-
-# Audio processing (MUST match CLAP preprocessing)
 audio:
-  sample_rate: 48000           # Sample rate for audio loading
-  segment_length: 480000       # 10 seconds at 48kHz (CRITICAL: match teacher)
-  hop_length: 240000           # 5 seconds hop, 50% overlap (CRITICAL: match teacher)
-  
-  # Mel-spectrogram parameters (for student model input)
-  n_mels: 128                  # Number of mel bands
-  n_fft: 2048                  # FFT window size
-  hop_length_stft: 480         # STFT hop length
-  fmin: 0                      # Minimum frequency
-  fmax: 14000                  # Maximum frequency
+  sample_rate: 48000
+  segment_length: 480000
+  hop_length: 240000
+  n_mels: 128
+  n_fft: 2048
+  hop_length_stft: 480
+  fmin: 0
+  fmax: 14000
 
-# Model architecture (TinyCLAP-inspired)
 model:
-  embedding_dim: 512           # MUST be 512 for CLAP compatibility
-  
-  # CNN stem
+  embedding_dim: 512
   cnn_channels: [32, 64, 128]
-  
-  # Transformer
   transformer_layers: 2
   attention_heads: 4
   hidden_dim: 256
-  
   dropout: 0.1
 
-# Training hyperparameters
 training:
-  batch_size: 2                # Reduced from 4 to avoid swap (2x slower but stays in RAM)
-  gradient_accumulation_steps: 8  # Increased to keep effective batch=16
-  learning_rate: 0.003         # TinyCLAP Stage 1 LR (3e-3)
-  epochs: 15
-  
-  # Two-stage training (like tinyCLAP)
-  # Stage 1: Train entire model for 'epochs' epochs with lr=0.003
-  # Stage 2: Freeze encoder, train only projection for 'stage2_epochs' epochs with lower LR
-  stage2_epochs: 5           # Additional epochs for projection-only refinement
-  stage2_learning_rate: 0.001  # TinyCLAP Stage 2 LR (1e-3) - 3x lower for fine-tuning
-  projection_only: false     # Set to true for stage 2 (handled automatically)
-  
+  batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 0.012
+  epochs: 30
+  stage2_epochs: 10
+  stage2_learning_rate: 0.004
+  projection_only: false
   optimizer: "adam"
-  weight_decay: 0.0          # No regularization - faster learning for distillation
-  grad_clip: 5.0             # Higher clip for lr=0.003 (was 1.0 for old lr=0.0001)
-  
-  # Training strategy: "segments", "averaged", or "both"
-  # - segments: Train on each segment individually (more data, segment-level learning)
-  # - averaged: Train on averaged embedding per song (matches teacher CLAP - RECOMMENDED)
-  # - both: Train on segments AND averaged (BEST: learns both individual + averaged patterns)
-  training_strategy: "both"  # FIXED: Now uses single forward pass like devel branch!
-  
-  # Checkpointing
-  save_every: 1                # Save checkpoint every epoch
-  early_stopping_patience: 10  # Stop if no improvement for N epochs
-  
-  # Validation
-  validation_split: 0.15       # 15% of data for validation
+  weight_decay: 0.0
+  grad_clip: 5.0
+  training_strategy: "both"
+  save_every: 1
+  early_stopping_patience: 10
+  validation_split: 0.15
 
-# Paths
 paths:
-  teacher_model: "../model/clap_audio_model.onnx"  # INPUT: CLAP teacher model (~268MB)
-  mel_cache: "/Volumes/audiomuse/student_clap_cache/mel_spectrograms.db"  # SQLite DB (mel specs + embeddings)
+  teacher_model: "../model/clap_audio_model.onnx"
+  mel_cache: "/Volumes/audiomuse/student_clap_cache/mel_spectrograms.db"
   checkpoints: "./checkpoints"
   logs: "./logs"
-  final_model: "./models/student_clap_audio.onnx"  # OUTPUT: trained student model (~11MB)
+  final_model: "./models/student_clap_audio.onnx"
 
-# Dataset configuration - LOCAL FMA
 dataset:
-  fma_path: "/Users/guidocolangiuli/Music/FMA"  # Path to local FMA audio files
-  sample_size: 0  # Total number of songs to use (null = all songs)
+  fma_path: "/Users/guidocolangiuli/Music/FMA"
+  sample_size: 0
 
-# Logging
 logging:
   level: "INFO"
   log_every: 10
