@@ -2,7 +2,7 @@ audio:
   sample_rate: 48000
   segment_length: 480000
   hop_length: 240000
-  n_mels: 128
+  n_mels: 64
   n_fft: 2048
   hop_length_stft: 480
   fmin: 0
@@ -10,12 +10,11 @@ audio:
 
 model:
   embedding_dim: 512
-  phinet_alpha: 1.50
+  # PhiNet 5 configuration (0.29M params - smallest for 16GB RAM @ 10sec/48kHz)
+  phinet_alpha: 0.75
   phinet_beta: 0.75
-  phinet_t0: 6
+  phinet_t0: 4
   phinet_N: 7
-  transformer_layers: 2
-  attention_heads: 8
   hidden_dim: 256
   dropout: 0.1
 

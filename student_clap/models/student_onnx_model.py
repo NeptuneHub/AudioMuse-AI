@@ -22,6 +22,7 @@ import onnxruntime as ort
 import numpy as np
 from typing import Dict, Tuple, Optional
 import logging
+from micromind.networks import PhiNet
 
 logger = logging.getLogger(__name__)
 
@@ -158,85 +159,49 @@ class StudentCLAPAudio(nn.Module):
 
     def build_model(self):
         """
-        Build the student model architecture using parameterized PhiNet design.
+        Build the student model architecture using micromind PhiNet (EXACT tinyCLAP implementation).
 
-        Follows PhiNet paper (Paissan et al., 2022) with configurable width/shape multipliers:
+        Uses micromind.PhiNet library like tinyCLAP does:
         - alpha: Width multiplier for all layers
         - beta: Shape multiplier (controls block configuration)
-        - t0: Initial resolution divisor
-        - N: Number of PhiNet blocks
+        - t_zero: Initial resolution divisor (t0)
+        - num_layers: Number of PhiNet blocks (N)
 
-        tinyCLAP's successful config: alpha=3.00, beta=0.75, t0=4, N=7 (6.2M params)
+        tinyCLAP's successful configs:
+        - PhiNet 3: alpha=3.0, beta=0.75, t0=4, N=7 (6.2M params)
+        - PhiNet 4: alpha=1.5, beta=0.75, t0=4, N=7 (4.4M params)
+        - PhiNet 5: alpha=0.75, beta=0.75, t0=4, N=7 (3.5M params)
         """
         alpha = self.phinet_alpha
         beta = self.phinet_beta
         t0 = self.phinet_t0
         N = self.phinet_N
 
-        def make_divisible(v, divisor=8):
-            return max(divisor, int(v + divisor / 2) // divisor * divisor)
+        logger.info(f"Building micromind PhiNet with:")
+        logger.info(f"  alpha={alpha}, beta={beta}, t_zero={t0}, num_layers={N}")
+        logger.info(f"  input_shape=(1, 640, {self.n_mels})")
 
-        base_channels = []
-        if N > 0:
-            base_channels.append(24)
-        if N > 1:
-            base_channels.append(48)
-        if N > 2:
-            base_channels.append(96)
-        if N > 3:
-            base_channels.append(144)
-        if N > 4:
-            base_channels.append(192)
-        if N > 5:
-            base_channels.append(288)
-        if N > 6:
-            base_channels.append(384)
-
-        for i in range(len(base_channels), N):
-            base_channels.append(base_channels[-1] + 96)
-
-        channels = [make_divisible(c * alpha * beta) for c in base_channels]
-
-        stem_channel = make_divisible(16 * alpha)
-
-        logger.info(f"Building parameterized PhiNet with:")
-        logger.info(f"  alpha={alpha}, beta={beta}, t0={t0}, N={N}")
-        logger.info(f"  Stem channel: {stem_channel}")
-        logger.info(f"  Block channels: {channels}")
-
-        self.stem = nn.Sequential(
-            nn.Conv2d(1, stem_channel, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(stem_channel),
-            nn.ReLU6(inplace=True)
+        self.phinet = PhiNet(
+            input_shape=(1, 640, self.n_mels),
+            alpha=alpha,
+            beta=beta,
+            t_zero=t0,
+            num_layers=N,
+            compatibility=True
         )
 
-        blocks = []
-        in_ch = stem_channel
-
-        for i in range(N):
-            out_ch = channels[i]
-
-            stride = 2 if i < N else 1
-            expansion = 6
-
-            blocks.append(PhiBlock(in_ch, out_ch, stride=stride, expansion=expansion, use_se=True))
-            in_ch = out_ch
-
-        self.cnn_stem = nn.ModuleList([self.stem] + blocks)
-
-        self.final_channels = channels[-1] if channels else stem_channel
-
-        self.intermediate_dim = 1024
-        self.pn_block = nn.Conv2d(
-            self.final_channels,
-            self.intermediate_dim,
-            kernel_size=1,
-            stride=1,
-            bias=False
-        )
+        with torch.no_grad():
+            dummy_input = torch.randn(1, 1, self.n_mels, 640)
+            dummy_output = self.phinet(dummy_input)
+            phinet_output_dim = dummy_output.shape[1]
+            
+        logger.info(f"  PhiNet output shape: {list(dummy_output.shape)}")
+        logger.info(f"  PhiNet output channels: {phinet_output_dim}")
 
         self.projection_head = nn.Sequential(
-            nn.Linear(self.intermediate_dim, self.hidden_dim),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(phinet_output_dim, self.hidden_dim),
             nn.LayerNorm(self.hidden_dim),
             nn.GELU(),
             nn.Dropout(0.1),
@@ -244,31 +209,24 @@ class StudentCLAPAudio(nn.Module):
         )
 
         total_params = sum(p.numel() for p in self.parameters())
-        logger.info(f"Built Student CLAP model with parameterized PhiNet (NO TRANSFORMER):")
+        logger.info(f"Built Student CLAP model with micromind PhiNet (EXACT tinyCLAP):")
         logger.info(f"  Total parameters: {total_params:,} ({total_params/1e6:.2f}M)")
-        logger.info(f"  PhiNet: {N} blocks with channels {channels}")
-        logger.info(f"  Intermediate dim (pn_block): {self.intermediate_dim}")
+        logger.info(f"  PhiNet: {N} layers, output channels: {phinet_output_dim}")
         logger.info(f"  Output embedding dim: {self.embedding_dim}")
 
     def forward(self, mel_spec: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass through student model (tinyCLAP architecture: NO TRANSFORMER).
+        Forward pass through student model (EXACT tinyCLAP architecture with micromind PhiNet).
 
         Args:
             mel_spec: Mel-spectrogram of shape (batch, 1, n_mels, time)
-                     where n_mels=128, time varies by segment length
+                     where n_mels=64, time varies by segment length
 
         Returns:
             embeddings: L2-normalized embeddings of shape (batch, 512)
         """
 
-        x = mel_spec
-        for block in self.cnn_stem:
-            x = block(x)
-
-        x = self.pn_block(x)
-
-        x = x.mean((-1, -2))
+        x = self.phinet(mel_spec)
 
         embeddings = self.projection_head(x)
 
