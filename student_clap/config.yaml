@@ -10,17 +10,20 @@ audio:
 
 model:
   embedding_dim: 512
-  cnn_channels: [32, 64, 128]
+  phinet_alpha: 1.50
+  phinet_beta: 0.75
+  phinet_t0: 6
+  phinet_N: 7
   transformer_layers: 2
-  attention_heads: 4
+  attention_heads: 8
   hidden_dim: 256
   dropout: 0.1
 
 training:
-  batch_size: 2
+  batch_size: 1
   gradient_accumulation_steps: 8
   learning_rate: 0.012
-  epochs: 30
+  epochs: 100
   stage2_epochs: 10
   stage2_learning_rate: 0.004
   projection_only: false
