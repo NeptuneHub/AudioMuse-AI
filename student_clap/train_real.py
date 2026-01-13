@@ -299,8 +299,16 @@ def validate_real(trainer: StudentCLAPTrainer,
                     logger.warning(f"⚠️ Skipping song {batch['song_ids'][i]} in validation - only {audio_segments.shape[0]} segment")
                     continue
                 
-                # Forward pass returns (num_segments, 512) - one embedding per segment
-                segment_embeddings = trainer.model(audio_segments)  # (num_segments, 512)
+                # Process segments in chunks to reduce memory usage
+                chunk_size = config['model'].get('segment_batch_size', 10)
+                segment_embeddings_list = []
+                for chunk_start in range(0, audio_segments.shape[0], chunk_size):
+                    chunk_end = min(chunk_start + chunk_size, audio_segments.shape[0])
+                    chunk = audio_segments[chunk_start:chunk_end]
+                    chunk_embeddings = trainer.model(chunk)  # (chunk_size, 512)
+                    segment_embeddings_list.append(chunk_embeddings)
+                
+                segment_embeddings = torch.cat(segment_embeddings_list, dim=0)  # (num_segments, 512)
                 
                 # Average across segments to get single embedding per song (same as training!)
                 avg_embedding = torch.mean(segment_embeddings, dim=0, keepdim=True)  # (1, 512)

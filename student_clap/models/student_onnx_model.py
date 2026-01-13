@@ -22,9 +22,56 @@ import onnxruntime as ort
 import numpy as np
 from typing import Dict, Tuple, Optional
 import logging
-from micromind.networks import PhiNet
+from micromind.networks import PhiNet as MicromindPhiNet
 
 logger = logging.getLogger(__name__)
+
+class PhiNet(MicromindPhiNet):
+
+    def __init__(self, embedding_dim=2048, n_mels=64, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.bn0 = nn.BatchNorm2d(n_mels)
+
+        if embedding_dim is not None:
+            in_channels_next = self._layers[-1]._layers[-2].weight.shape[0]
+            self.pn_block = nn.Conv2d(
+                in_channels_next,
+                embedding_dim,
+                kernel_size=1,
+                stride=2,
+            )
+
+    def forward(self, x):
+        if x.dim() == 3:
+            x = x[:, None]
+
+        x = x.transpose(1, 3)
+        x = self.bn0(x)
+        x = x.transpose(1, 3)
+
+        x = super().forward(x)
+        embedding = x
+
+        x = self.pn_block(x)
+        x = x.mean((-1, -2))
+
+        return {"embedding": (x, embedding), "clipwise_output": x}
+
+class Projection(nn.Module):
+
+    def __init__(self, d_in: int, d_out: int, p: float = 0.5) -> None:
+        super().__init__()
+        self.linear1 = nn.Linear(d_in, d_out, bias=False)
+        self.linear2 = nn.Linear(d_out, d_out, bias=False)
+        self.layer_norm = nn.LayerNorm(d_out)
+        self.drop = nn.Dropout(p)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        embed1 = self.linear1(x)
+        embed2 = self.drop(self.linear2(F.gelu(embed1)))
+        embeds = self.layer_norm(embed1 + embed2)
+        return embeds
 
 class SEBlock(nn.Module):
     """Squeeze-and-Excitation block for channel attention."""
@@ -154,6 +201,8 @@ class StudentCLAPAudio(nn.Module):
         self.phinet_t0 = config['model']['phinet_t0']
         self.phinet_N = config['model']['phinet_N']
         self.hidden_dim = config['model']['hidden_dim']
+        self.use_gradient_checkpointing = config['model'].get('use_gradient_checkpointing', False)
+        self.segment_batch_size = config['model'].get('segment_batch_size', 10)
 
         self.build_model()
 
@@ -177,12 +226,15 @@ class StudentCLAPAudio(nn.Module):
         t0 = self.phinet_t0
         N = self.phinet_N
 
-        logger.info(f"Building micromind PhiNet with:")
+        logger.info(f"Building tinyCLAP custom PhiNet with:")
         logger.info(f"  alpha={alpha}, beta={beta}, t_zero={t0}, num_layers={N}")
         logger.info(f"  input_shape=(1, 640, {self.n_mels})")
+        logger.info(f"  embedding_dim=2048 (tinyCLAP architecture)")
 
         self.phinet = PhiNet(
             input_shape=(1, 640, self.n_mels),
+            embedding_dim=2048,
+            n_mels=self.n_mels,
             alpha=alpha,
             beta=beta,
             t_zero=t0,
@@ -191,32 +243,23 @@ class StudentCLAPAudio(nn.Module):
         )
 
         with torch.no_grad():
-            dummy_input = torch.randn(1, 1, self.n_mels, 640)
+            dummy_input = torch.randn(1, 640, self.n_mels)
             dummy_output = self.phinet(dummy_input)
-            phinet_output_dim = dummy_output.shape[1]
+            phinet_output_dim = dummy_output["embedding"][0].shape[1]
             
-        logger.info(f"  PhiNet output shape: {list(dummy_output.shape)}")
         logger.info(f"  PhiNet output channels: {phinet_output_dim}")
 
-        self.projection_head = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(phinet_output_dim, self.hidden_dim),
-            nn.LayerNorm(self.hidden_dim),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(self.hidden_dim, self.embedding_dim),
-        )
+        self.projection_head = Projection(phinet_output_dim, self.embedding_dim, p=0.5)
 
         total_params = sum(p.numel() for p in self.parameters())
-        logger.info(f"Built Student CLAP model with micromind PhiNet (EXACT tinyCLAP):")
+        logger.info(f"Built Student CLAP model with tinyCLAP custom PhiNet (EXACT):")
         logger.info(f"  Total parameters: {total_params:,} ({total_params/1e6:.2f}M)")
         logger.info(f"  PhiNet: {N} layers, output channels: {phinet_output_dim}")
         logger.info(f"  Output embedding dim: {self.embedding_dim}")
 
     def forward(self, mel_spec: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass through student model (EXACT tinyCLAP architecture with micromind PhiNet).
+        Forward pass through student model (EXACT tinyCLAP architecture).
 
         Args:
             mel_spec: Mel-spectrogram of shape (batch, 1, n_mels, time)
@@ -226,10 +269,19 @@ class StudentCLAPAudio(nn.Module):
             embeddings: L2-normalized embeddings of shape (batch, 512)
         """
 
-        x = self.phinet(mel_spec)
-
-        embeddings = self.projection_head(x)
-
+        if mel_spec.dim() == 4:
+            mel_spec = mel_spec.squeeze(1)
+        mel_spec = mel_spec.transpose(1, 2)
+        
+        if self.training and self.use_gradient_checkpointing:
+            def phinet_forward(x):
+                return self.phinet(x)
+            out_dict = torch.utils.checkpoint.checkpoint(phinet_forward, mel_spec, use_reentrant=False)
+        else:
+            out_dict = self.phinet(mel_spec)
+            
+        audio_features = out_dict["embedding"][0]
+        embeddings = self.projection_head(audio_features)
         embeddings = F.normalize(embeddings, p=2, dim=1)
 
         return embeddings
@@ -342,6 +394,7 @@ class StudentCLAPTrainer:
         logger.info(f"📉 LR Scheduler: ReduceLROnPlateau (factor=0.1, patience=10)")
 
         self.training_strategy = config['training'].get('training_strategy', 'averaged')
+        self.segment_batch_size = config['model'].get('segment_batch_size', 10)
 
         self.projection_only = config['training'].get('projection_only', False)
         if self.projection_only:
@@ -448,8 +501,17 @@ class StudentCLAPTrainer:
                 continue
 
             if self.training_strategy == "segments":
-
-                segment_embeddings = self.model.forward(mel_segments)
+                # Process segments in chunks to reduce memory usage
+                chunk_size = self.segment_batch_size
+                segment_embeddings_list = []
+                for chunk_start in range(0, mel_segments.shape[0], chunk_size):
+                    chunk_end = min(chunk_start + chunk_size, mel_segments.shape[0])
+                    chunk = mel_segments[chunk_start:chunk_end]
+                    chunk_embeddings = self.model.forward(chunk)
+                    segment_embeddings_list.append(chunk_embeddings)
+                
+                segment_embeddings = torch.cat(segment_embeddings_list, dim=0)
+                
                 for seg_idx, seg_emb in enumerate(segment_embeddings):
                     student_embeddings.append(seg_emb.unsqueeze(0))
                     if teacher_segment_embs is not None and seg_idx < len(teacher_segment_embs):
@@ -458,16 +520,33 @@ class StudentCLAPTrainer:
                         teacher_embeddings.append(teacher_emb)
 
             elif self.training_strategy == "averaged":
-
-                segment_embeddings = self.model.forward(mel_segments)
+                # Process segments in chunks to reduce memory usage
+                chunk_size = self.segment_batch_size
+                segment_embeddings_list = []
+                for chunk_start in range(0, mel_segments.shape[0], chunk_size):
+                    chunk_end = min(chunk_start + chunk_size, mel_segments.shape[0])
+                    chunk = mel_segments[chunk_start:chunk_end]
+                    chunk_embeddings = self.model.forward(chunk)
+                    segment_embeddings_list.append(chunk_embeddings)
+                
+                segment_embeddings = torch.cat(segment_embeddings_list, dim=0)
+                
                 avg_embedding = torch.mean(segment_embeddings, dim=0, keepdim=True)
                 avg_embedding = F.normalize(avg_embedding, p=2, dim=1)
                 student_embeddings.append(avg_embedding)
                 teacher_embeddings.append(teacher_emb)
 
             elif self.training_strategy == "both":
-
-                segment_embeddings = self.model.forward(mel_segments)
+                # Process segments in chunks to reduce memory usage
+                chunk_size = self.segment_batch_size
+                segment_embeddings_list = []
+                for chunk_start in range(0, mel_segments.shape[0], chunk_size):
+                    chunk_end = min(chunk_start + chunk_size, mel_segments.shape[0])
+                    chunk = mel_segments[chunk_start:chunk_end]
+                    chunk_embeddings = self.model.forward(chunk)
+                    segment_embeddings_list.append(chunk_embeddings)
+                
+                segment_embeddings = torch.cat(segment_embeddings_list, dim=0)
 
                 for seg_idx, seg_emb in enumerate(segment_embeddings):
                     student_embeddings.append(seg_emb.unsqueeze(0))

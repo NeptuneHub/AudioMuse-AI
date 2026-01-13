@@ -2,7 +2,7 @@ audio:
   sample_rate: 48000
   segment_length: 480000
   hop_length: 240000
-  n_mels: 64
+  n_mels: 128
   n_fft: 2048
   hop_length_stft: 480
   fmin: 0
@@ -10,13 +10,15 @@ audio:
 
 model:
   embedding_dim: 512
-  # PhiNet 5 configuration (0.29M params - smallest for 16GB RAM @ 10sec/48kHz)
-  phinet_alpha: 0.75
+  # PhiNet 4 configuration (tinyCLAP: alpha=1.5, beta=0.75, t0=4, N=7 → 4.4M params)
+  phinet_alpha: 1.5
   phinet_beta: 0.75
   phinet_t0: 4
   phinet_N: 7
   hidden_dim: 256
   dropout: 0.1
+  use_gradient_checkpointing: true
+  segment_batch_size: 10  # Process N segments at a time to reduce memory
 
 training:
   batch_size: 1
