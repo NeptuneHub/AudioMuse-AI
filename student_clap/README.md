@@ -1,5 +1,14 @@
 # Student CLAP: Lightweight Audio Encoder
 
+This is a standalone project that try to do a distillation process of LAION CLAP:
+- https://github.com/LAION-AI/CLAP
+
+by using as teacher the pretrained model: 
+- music_audioset_epoch_15_esc_90.14.pt
+
+and following the tinyCLAP distillation approch:
+- https://github.com/fpaissan/tinyCLAP
+
 ## Quick Start
 
 ```bash
@@ -30,11 +39,6 @@ python3 train_real.py --config config.yaml
 **Loss:** Negative cosine similarity
 
 ## License
-This is a standalone project that try to do a distillation process of LAION CLAP:
-- https://github.com/LAION-AI/CLAP
-
-by using the pretrained model: 
-- music_audioset_epoch_15_esc_90.14.pt
 
 As dataset it use a subset of the MTG jamendo dataset:
 - https://github.com/MTG/mtg-jamendo-dataset 
@@ -48,6 +52,3 @@ And a dataset from:
 All the songs are under Creative Commons license, more details can be found here:
 - [student_clap/models/FMA_SONGS_2247_LICENSE.md](student_clap/models/FMA_SONGS_2247_LICENSE.md)
 - [student_clap/models/JAMENDO_SONGS_LICENSE.md](student_clap/models/JAMENDO_SONGS_LICENSE.md)
-
-The distillation approch follow the tinyCLAP approch:
-- https://github.com/fpaissan/tinyCLAP
