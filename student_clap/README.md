@@ -40,15 +40,8 @@ python3 train_real.py --config config.yaml
 
 ## License
 
-As dataset it use a subset of the MTG jamendo dataset:
-- https://github.com/MTG/mtg-jamendo-dataset 
-
-that comes from:
-- https://www.jamendo.com/
-
-And a dataset from:
+As dataset we used some songs from FMA:
 - https://freemusicarchive.org/
 
 All the songs are under Creative Commons license, more details can be found here:
 - [student_clap/models/FMA_SONGS_2247_LICENSE.md](student_clap/models/FMA_SONGS_2247_LICENSE.md)
-- [student_clap/models/JAMENDO_SONGS_LICENSE.md](student_clap/models/JAMENDO_SONGS_LICENSE.md)
