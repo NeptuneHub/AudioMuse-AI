@@ -580,7 +580,10 @@ def train(config_path: str, resume: str = None):
             'timestamp': time.time()
         }
         torch.save(epoch_checkpoint_data, epoch_checkpoint_path)
-        torch.save(epoch_checkpoint_data, latest_checkpoint_path)  # Also save as latest
+        # Remove symlink if it exists before saving (prevents overwriting old epoch files)
+        if latest_checkpoint_path.exists() or latest_checkpoint_path.is_symlink():
+            latest_checkpoint_path.unlink()
+        torch.save(epoch_checkpoint_data, latest_checkpoint_path)  # Save as real file, not symlink
         logger.info(f"✅ Checkpoint saved: {epoch_checkpoint_path}")
         logger.info(f"✅ Latest checkpoint updated: {latest_checkpoint_path}")
         
@@ -636,11 +639,11 @@ def train(config_path: str, resume: str = None):
         torch.save(checkpoint_data, checkpoint_path)
         logger.info(f"💾 Saved checkpoint: {checkpoint_path}")
         
-        # Keep a "latest" symlink for easy resuming
+        # Update latest.pth as a real file (not symlink to avoid corruption)
         latest_path = checkpoint_dir / "latest.pth"
-        if latest_path.exists():
+        if latest_path.exists() or latest_path.is_symlink():
             latest_path.unlink()
-        latest_path.symlink_to(checkpoint_path.name)
+        torch.save(checkpoint_data, latest_path)
         logger.info(f"🔗 Updated latest checkpoint: {latest_path}")
         
         # Save additional checkpoint every 5 epochs (backup)
