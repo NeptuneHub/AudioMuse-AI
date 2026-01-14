@@ -412,7 +412,16 @@ def train(config_path: str, resume: str = None):
                 logger.info(f"✅ Scheduler state restored")
             except Exception as e:
                 logger.warning(f"⚠️ Could not restore scheduler state (scheduler type changed): {e}")
-                logger.warning(f"   Continuing with fresh scheduler (LR will reset to {config['training']['learning_rate']})")
+                logger.warning(f"   Creating new scheduler with patience=3, threshold=0.005, threshold_mode='rel'")
+                trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    trainer.optimizer,
+                    mode='min',
+                    factor=0.1,
+                    patience=3,
+                    threshold=0.005,
+                    threshold_mode='rel',
+                    min_lr=1e-6
+                )
             
             # Restore training state
             start_epoch = checkpoint['epoch'] + 1
@@ -531,15 +540,17 @@ def train(config_path: str, resume: str = None):
                 weight_decay=config['training']['weight_decay']
             )
             
-            # Reset scheduler for stage 2 - use ReduceLROnPlateau like tinyCLAP
+            # Reset scheduler for stage 2 - use ReduceLROnPlateau like tinyCLAP, but more sensitive
             trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 trainer.optimizer,
                 mode='min',
                 factor=0.1,
-                patience=10,
+                patience=3,
+                threshold=0.005,
+                threshold_mode='rel',
                 min_lr=1e-6
             )
-            logger.info(f"📉 Stage 2 LR Scheduler reset: ReduceLROnPlateau (factor=0.1, patience=10)")
+            logger.info(f"📉 Stage 2 LR Scheduler reset: ReduceLROnPlateau (factor=0.1, patience=3, threshold=0.005)")
             
             logger.info(f"   📈 Stage 2 learning rate: {stage2_lr:.2e}")
             logger.info(f"   📊 Training {sum(p.numel() for p in trainer.model.parameters() if p.requires_grad):,} parameters (projection head only)")
@@ -547,6 +558,17 @@ def train(config_path: str, resume: str = None):
             logger.info("=" * 60 + "\n")
             
             stage2_triggered = True
+
+        # --- LOG LR REDUCTION EVENT ---
+        if hasattr(trainer.scheduler, '_last_lr') and hasattr(trainer.scheduler, 'last_epoch'):
+            # Check if learning rate was reduced in the previous epoch
+            if epoch > start_epoch:
+                prev_lr = getattr(trainer.scheduler, '_last_lr', [None])[0]
+                curr_lr = trainer.optimizer.param_groups[0]['lr']
+                if prev_lr is not None and curr_lr < prev_lr:
+                    logger.info("\n" + "!"*60)
+                    logger.info(f"!!! LEARNING RATE REDUCED at start of EPOCH {epoch}: {prev_lr:.6f} -> {curr_lr:.6f} !!!")
+                    logger.info("!"*60 + "\n")
         # ✅ NO dataset recreation needed - iterate_batches_streaming handles everything!
         # The datasets are already created before the loop and stream data lazily.
         # Recreating them would:
