@@ -10,8 +10,8 @@ audio:
 
 model:
   embedding_dim: 512
-  # PhiNet 4 configuration (tinyCLAP: alpha=1.5, beta=0.75, t0=4, N=7 → 4.4M params)
-  phinet_alpha: 1.5
+  # PhiNet 3 configuration (tinyCLAP: alpha=3.0, beta=0.75, t0=4, N=7 → 6.2M params)
+  phinet_alpha: 3.0
   phinet_beta: 0.75
   phinet_t0: 4
   phinet_N: 7
