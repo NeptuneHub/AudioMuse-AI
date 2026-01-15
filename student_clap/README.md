@@ -24,7 +24,7 @@ python3 train_real.py --config config.yaml
 You can check how the avarage cosine similarity is going for each epoch with this one line command:
 
 ```
-for f in student_clap/checkpoints/checkpoint_epoch_*.pth; do echo -n "$f: "; python3 -c "import torch; print(torch.load('$f', map_location='cpu')['train_metrics']['avg_cosine_sim'])"; done4
+for f in student_clap/checkpoints/checkpoint_epoch_*.pth; do echo -n "$f: "; python3 -c "import torch; m=torch.load('$f', map_location='cpu')['train_metrics']; print(f\"cosine={m['avg_cosine_sim']}, lr={m['learning_rate']}\")"; done
 ```
 
 ## Training
