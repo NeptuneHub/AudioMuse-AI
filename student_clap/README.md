@@ -11,12 +11,20 @@ and following the tinyCLAP distillation approch:
 
 ## Quick Start
 
+With this command you will create the virtual env with all the dependencies and start the training:
+
 ```bash
 # Setup and install
 python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt
 
 # Run training
 python3 train_real.py --config config.yaml
+```
+
+You can check how the avarage cosine similarity is going for each epoch with this one line command:
+
+```
+for f in student_clap/checkpoints/checkpoint_epoch_*.pth; do echo -n "$f: "; python3 -c "import torch; print(torch.load('$f', map_location='cpu')['train_metrics']['avg_cosine_sim'])"; done4
 ```
 
 ## Training

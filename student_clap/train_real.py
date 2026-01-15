@@ -364,7 +364,11 @@ def train(config_path: str, resume: str = None):
     # Initialize trainer with real ONNX model
     logger.info("\n🏗️ Building Student CLAP model...")
     trainer = StudentCLAPTrainer(config)
-    
+
+    # Log initial learning rate for stage 1
+    initial_lr = trainer.optimizer.param_groups[0]['lr']
+    logger.info(f"🔧 Stage 1 initial learning rate: {initial_lr:.6f}")
+
     # Print model info
     model_info = trainer.model.count_parameters()
     logger.info(f"\n📊 Model Architecture:")
@@ -528,19 +532,28 @@ def train(config_path: str, resume: str = None):
             logger.info("\n" + "=" * 60)
             logger.info("🔄 SWITCHING TO STAGE 2: Projection-only refinement")
             logger.info("=" * 60)
-            
+
             # Freeze encoder layers
             trainer._freeze_encoder()
-            
-            # Create new optimizer with higher learning rate for projection head
-            stage2_lr = config['training'].get('stage2_learning_rate', 0.0004)
+
+            # Get current (final stage1) learning rate
+            stage1_lr = trainer.optimizer.param_groups[0]['lr']
+            default_stage2_lr = config['training'].get('stage2_learning_rate', 0.001)
+            # Use max(stage1_lr, 0.001) as stage2_lr, but if stage1_lr < 0.001, use stage1_lr and trigger reduction
+            if stage1_lr < default_stage2_lr:
+                stage2_lr = stage1_lr
+                logger.info(f"   ⚠️ Stage 1 LR ({stage1_lr:.2e}) < default stage2 LR ({default_stage2_lr:.2e}), using stage1 LR for stage2 start!")
+                trigger_reduction = True
+            else:
+                stage2_lr = default_stage2_lr
+                trigger_reduction = False
+
             trainer.optimizer = torch.optim.Adam(
                 filter(lambda p: p.requires_grad, trainer.model.parameters()),
                 lr=stage2_lr,
                 weight_decay=config['training']['weight_decay']
             )
-            
-            # Reset scheduler for stage 2 - use ReduceLROnPlateau like tinyCLAP, but more sensitive
+
             trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 trainer.optimizer,
                 mode='min',
@@ -551,12 +564,17 @@ def train(config_path: str, resume: str = None):
                 min_lr=1e-6
             )
             logger.info(f"📉 Stage 2 LR Scheduler reset: ReduceLROnPlateau (factor=0.1, patience=3, threshold=0.005)")
-            
             logger.info(f"   📈 Stage 2 learning rate: {stage2_lr:.2e}")
             logger.info(f"   📊 Training {sum(p.numel() for p in trainer.model.parameters() if p.requires_grad):,} parameters (projection head only)")
             logger.info("   🎯 This refines the embedding alignment while keeping learned features intact")
             logger.info("=" * 60 + "\n")
-            
+
+            # If stage1_lr < 0.001, trigger scheduler step to reduce LR immediately
+            if trigger_reduction:
+                logger.info(f"   🚨 Triggering immediate LR reduction in stage 2 (ReduceLROnPlateau.step)")
+                # Step with a high loss to force reduction
+                trainer.scheduler.step(1.0)
+
             stage2_triggered = True
 
         # --- LOG LR REDUCTION EVENT ---

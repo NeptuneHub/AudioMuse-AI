@@ -23,10 +23,10 @@ model:
 training:
   batch_size: 1
   gradient_accumulation_steps: 8
-  learning_rate: 0.012
+  learning_rate: 0.003
   epochs: 100
   stage2_epochs: 10
-  stage2_learning_rate: 0.004
+  stage2_learning_rate: 0.001
   projection_only: false
   optimizer: "adam"
   weight_decay: 0.0
