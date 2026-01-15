@@ -13,8 +13,8 @@ model:
   # PhiNet 3 configuration (tinyCLAP: alpha=3.0, beta=0.75, t0=4, N=7 → 6.2M params)
   phinet_alpha: 3.0
   phinet_beta: 0.75
-  phinet_t0: 4
-  phinet_N: 7
+  phinet_t0: 6
+  phinet_N: 8
   hidden_dim: 256
   dropout: 0.1
   use_gradient_checkpointing: true

@@ -21,15 +21,20 @@ python3 -m venv venv && source venv/bin/activate && pip install -r requirements.
 python3 train_real.py --config config.yaml
 ```
 
+## Useful command
 You can check how the avarage cosine similarity is going for each epoch with this one line command:
-
 ```
 for f in student_clap/checkpoints/checkpoint_epoch_*.pth; do echo -n "$f: "; python3 -c "import torch; m=torch.load('$f', map_location='cpu')['train_metrics']; print(f\"cosine={m['avg_cosine_sim']}, lr={m['learning_rate']}\")"; done
 ```
 
-You can check the million of parameter used for your configuration with this command:
+You can check the million of parameter used for your input configuration with this command:
 ```
 PYTHONPATH=.. python -c "import yaml; from student_clap.models.student_onnx_model import StudentCLAPAudio; config=yaml.safe_load(open('config.yaml')); m=StudentCLAPAudio(config); print(m.count_parameters())"
+```
+
+To check instead which configuration of input you used for a checkpoint you can use this command:
+```
+PYTHONPATH=.. python -c "import torch; m=torch.load('student_clap/checkpoints/CHECKPOINT-NAME-HERE.pth', map_location='cpu'); print({k: v for k, v in m['config']['model'].items() if k.startswith('phinet_')})"
 ```
 
 ## Training
