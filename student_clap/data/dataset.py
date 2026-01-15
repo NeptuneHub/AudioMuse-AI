@@ -183,8 +183,15 @@ class StudentCLAPDataset:
                     hop_length_stft=self.audio_config['hop_length_stft']
                 )
                 
-                # Convert to PyTorch tensor
-                mel_tensor = torch.from_numpy(mel_specs.copy()).float()
+                # --- Minimal augmentation: random gain (spectrogram level) ---
+                mel_aug = mel_specs.copy()
+                if self.split == 'train' and self.epoch == 1:
+                    gain = np.random.uniform(0.8, 1.2)
+                    import logging
+                    logging.getLogger(__name__).info(f"[AUGMENT] Epoch {self.epoch} (train): Applying random gain {gain:.3f}")
+                    mel_aug *= gain
+                # You can add more augmentations here (pitch shift, time stretch, etc.)
+                mel_tensor = torch.from_numpy(mel_aug).float()
                 batch.append({
                     'item_id': item['item_id'],
                     'title': item['title'],

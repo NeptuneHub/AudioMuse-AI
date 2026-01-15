@@ -97,8 +97,9 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
     logger.info(f"📊 EPOCH {epoch}/{config['training']['epochs']} - Processing {len(dataset)} songs in ~{total_batches} batches")
     
     # Iterate over batches with STREAMING downloads
-    for batch_data in tqdm(dataset.iterate_batches_streaming(batch_size, shuffle=True), 
-                          desc=f"Epoch {epoch} - Real Training"):
+    total_batches = (len(dataset) + batch_size - 1) // batch_size
+    for batch_idx, batch_data in enumerate(tqdm(dataset.iterate_batches_streaming(batch_size, shuffle=True), 
+                          desc=f"Epoch {epoch} - Real Training")):
         
         batch_start_time = time.time()
         
@@ -122,6 +123,12 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
         logger.info(f"🔥 BATCH {num_batches + 1}/{total_batches} (EPOCH {epoch}/{config['training']['epochs']}): Training on {len(batch_data)} songs...")
         
         try:
+            # --- Linear LR warmup for epoch 1 ---
+            if epoch == 1:
+                warmup_lr = (batch_idx + 1) / total_batches * config['training']['learning_rate']
+                for param_group in trainer.optimizer.param_groups:
+                    param_group['lr'] = warmup_lr
+                print(f"[LR WARMUP] Epoch 1, Batch {batch_idx+1}/{total_batches}: LR set to {warmup_lr:.6f}")
             # Forward pass, loss computation, and backward pass
             step_metrics = trainer.train_step(batch)
             

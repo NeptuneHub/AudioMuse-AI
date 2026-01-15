@@ -27,6 +27,11 @@ You can check how the avarage cosine similarity is going for each epoch with thi
 for f in student_clap/checkpoints/checkpoint_epoch_*.pth; do echo -n "$f: "; python3 -c "import torch; m=torch.load('$f', map_location='cpu')['train_metrics']; print(f\"cosine={m['avg_cosine_sim']}, lr={m['learning_rate']}\")"; done
 ```
 
+You can check the million of parameter used for your configuration with this command:
+```
+PYTHONPATH=.. python -c "import yaml; from student_clap.models.student_onnx_model import StudentCLAPAudio; config=yaml.safe_load(open('config.yaml')); m=StudentCLAPAudio(config); print(m.count_parameters())"
+```
+
 ## Training
 
 **Architecture:**
