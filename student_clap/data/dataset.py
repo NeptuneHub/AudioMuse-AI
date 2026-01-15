@@ -183,14 +183,43 @@ class StudentCLAPDataset:
                     hop_length_stft=self.audio_config['hop_length_stft']
                 )
                 
-                # --- Minimal augmentation: random gain (spectrogram level) ---
+                # --- Gold standard spectrogram augmentation ---
                 mel_aug = mel_specs.copy()
                 if self.split == 'train':
+                    # Random gain
                     gain = np.random.uniform(0.8, 1.2)
-                    import logging
-                    logging.getLogger(__name__).info(f"[AUGMENT] Epoch {self.epoch} (train): Applying random gain {gain:.3f}")
                     mel_aug *= gain
-                # You can add more augmentations here (pitch shift, time stretch, etc.)
+                    # Additive noise
+                    if np.random.rand() < 0.5:
+                        noise_level = np.random.uniform(0.001, 0.01)
+                        mel_aug += np.random.normal(0, noise_level, mel_aug.shape)
+                    # Time shifting
+                    if np.random.rand() < 0.5:
+                        shift = np.random.randint(-mel_aug.shape[1] // 20, mel_aug.shape[1] // 20)
+                        mel_aug = np.roll(mel_aug, shift, axis=1)
+                    # Frequency masking (SpecAugment)
+                    freq_masked = False
+                    if np.random.rand() < 0.5:
+                        num_masks = np.random.randint(1, 3)
+                        for _ in range(num_masks):
+                            f = np.random.randint(0, mel_aug.shape[0])
+                            f_width = np.random.randint(0, mel_aug.shape[0] // 8 + 1)
+                            mel_aug[max(0, f - f_width // 2):min(mel_aug.shape[0], f + f_width // 2), :] = 0
+                        freq_masked = True
+                    # Time masking (SpecAugment)
+                    time_masked = False
+                    if np.random.rand() < 0.5:
+                        num_masks = np.random.randint(1, 3)
+                        for _ in range(num_masks):
+                            t = np.random.randint(0, mel_aug.shape[1])
+                            t_width = np.random.randint(0, mel_aug.shape[1] // 10 + 1)
+                            mel_aug[:, max(0, t - t_width // 2):min(mel_aug.shape[1], t + t_width // 2)] = 0
+                        time_masked = True
+                    # Logging
+                    import logging
+                    logging.getLogger(__name__).info(
+                        f"[AUGMENT] Epoch {self.epoch} (train): gain={gain:.3f}, noise={'yes' if 'noise_level' in locals() else 'no'}, shift={'yes' if 'shift' in locals() and shift != 0 else 'no'}, freq_mask={'yes' if freq_masked else 'no'}, time_mask={'yes' if time_masked else 'no'}"
+                    )
                 mel_tensor = torch.from_numpy(mel_aug).float()
                 batch.append({
                     'item_id': item['item_id'],
