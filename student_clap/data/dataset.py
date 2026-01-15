@@ -185,7 +185,7 @@ class StudentCLAPDataset:
                 
                 # --- Minimal augmentation: random gain (spectrogram level) ---
                 mel_aug = mel_specs.copy()
-                if self.split == 'train' and self.epoch == 1:
+                if self.split == 'train':
                     gain = np.random.uniform(0.8, 1.2)
                     import logging
                     logging.getLogger(__name__).info(f"[AUGMENT] Epoch {self.epoch} (train): Applying random gain {gain:.3f}")

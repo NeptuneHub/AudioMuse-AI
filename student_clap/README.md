@@ -41,7 +41,12 @@ PYTHONPATH=.. python -c "import yaml; from student_clap.models.student_onnx_mode
 - Projection: Residual (embed1+embed2), bias=False, dropout=0.5
 - Model size: 2.37M params
 
-**Strategy:** Distillation from CLAP teacher (100 epochs, LR=0.012, ReduceLROnPlateau)
+**Strategy:**
+- Stage 1: Distillation from CLAP teacher (epochs 1-100), train all layers
+- Stage 2: Encoder frozen, finetune projection head only (epochs 101-110)
+- Learning rate warmup (epoch 1: LR linearly increases from 0 to target)
+- LR scheduler: ReduceLROnPlateau (monitors val loss, reduces LR on plateau)
+- Spectrogram augmentation (random gain, all epochs)
 
 **Segmentation:** 10-sec segments, 50% overlap, process 10 segments/batch → train on "both" (individuals + averaged)
 
