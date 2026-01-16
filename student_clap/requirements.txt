@@ -31,3 +31,8 @@ psutil
 # PhiNet architecture
 micromind
 importlib_metadata
+
+# Missing
+numpy
+dotenv
+torchcodec

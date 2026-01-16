@@ -52,19 +52,24 @@ class CLAPEmbedder:
         #sess_options.intra_op_num_threads = 8  # Parallel ops within a layer
         #sess_options.inter_op_num_threads = 2  # Parallel layers
         
-        # Use CPU only - it's actually MUCH faster than CoreML for this model
-        providers = ['CPUExecutionProvider']
-        
+        # Use CUDA if available, otherwise CPU
+        available_providers = ort.get_available_providers()
+        if 'CUDAExecutionProvider' in available_providers:
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+            logger.info(f"CLAP model loaded: {model_path}")
+            logger.info(f"✅ Using CUDA for ONNX teacher model")
+        else:
+            providers = ['CPUExecutionProvider']
+            logger.info(f"CLAP model loaded: {model_path}")
+            logger.info(f"✅ Using optimized CPU inference (8 threads)")
+            logger.info(f"   Performance: ~325ms/segment vs 713ms with CoreML")
+            logger.info(f"   Reason: Only 24% of ops supported by CoreML GPU, context switching overhead too high")
+
         self.session = ort.InferenceSession(
             model_path,
             sess_options=sess_options,
             providers=providers
         )
-        
-        logger.info(f"CLAP model loaded: {model_path}")
-        logger.info(f"✅ Using optimized CPU inference (8 threads)")
-        logger.info(f"   Performance: ~325ms/segment vs 713ms with CoreML")
-        logger.info(f"   Reason: Only 24% of ops supported by CoreML GPU, context switching overhead too high")
     
     def compute_mel_spectrogram(self, audio_data: np.ndarray) -> np.ndarray:
         """
