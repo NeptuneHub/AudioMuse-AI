@@ -8,6 +8,7 @@ torchaudio>=2.0.0
 onnx>=1.14.0
 onnxruntime>=1.17.0
 onnxruntime-gpu>=1.16.0  # CUDA support for ONNX Runtime
+onnxscript>=0.1.0  # Required for torch.onnx.export
 coremltools>=7.0  # macOS GPU acceleration for ONNX
 
 # Numerical computing
