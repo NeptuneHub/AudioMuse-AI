@@ -6,8 +6,16 @@ This is a standalone project that try to do a distillation process of LAION CLAP
 by using as teacher the pretrained model: 
 - music_audioset_epoch_15_esc_90.14.pt
 
-and following the tinyCLAP distillation approch:
+and following the tinyCLAP distillation approch for the AUDIO part:
 - https://github.com/fpaissan/tinyCLAP
+
+It also try to distill a text model, in `config.yaml` you can decide if train audio, text or both:
+
+```yaml
+distillation:
+	audio_enabled: true   # Enable/disable audio (songs) distillation
+	text_enabled: true    # Enable/disable text distillation
+```
 
 ## Quick Start
 
@@ -39,12 +47,14 @@ PYTHONPATH=.. python -c "import torch; m=torch.load('student_clap/checkpoints/CH
 
 ## Training
 
+## Training - Songs
+
 **Architecture:**
 - Custom PhiNet (micromind.PhiNet + BatchNorm2d + Conv2d projection)
-- Parameters: alpha=1.5, beta=0.75, t0=4, N=7
-- n_mels=128, embedding_dim=512
-- Projection: Residual (embed1+embed2), bias=False, dropout=0.5
-- Model size: 2.37M params
+- Parameters: alpha, beta, t0, N (configurable in config.yaml)
+- n_mels=128, embedding_dim=512 (configurable)
+- Projection: Residual (embed1+embed2), bias=False, dropout configurable
+- Model size: 2-3M params (depends on config)
 
 **Strategy:**
 - Stage 1: Distillation from CLAP teacher (epochs 1-100), train all layers
@@ -55,14 +65,29 @@ PYTHONPATH=.. python -c "import torch; m=torch.load('student_clap/checkpoints/CH
 
 **Segmentation:** 10-sec segments, 50% overlap, process 10 segments/batch → train on "both" (individuals + averaged)
 
-**Batch:** 1 song × gradient_accumulation=8 (effective=8), grad_clip=1.0, weight_decay=0.01
+**Loss:** Negative cosine similarity
+
+## Training - Text
+
+**Architecture:**
+- Lightweight Transformer encoder (configurable in config.yaml under `model_text`)
+- Parameters: embedding_dim, hidden_dim, num_layers, nhead (all configurable)
+- Embedding layer > TransformerEncoder > Linear projection > L2 normalization
+- Model size: typically ~1M params (depends on config)
+
+**Strategy:**
+- Distillation from CLAP teacher text encoder using text queries and teacher embeddings
+- Text queries are sampled from categories such as Genre/Style, Instrumentation/Vocal, and Emotion/Mood
+- The queries are generated using the `sample_text_queries` utility, which samples from a JSON file of possible text prompts (see `paths.text_json` in config.yaml)
+- For each batch, the student text model is trained to match the teacher's embedding for the sampled queries using negative cosine similarity loss
+- Learning rate scheduler and optimizer as in the audio model
 
 **Loss:** Negative cosine similarity
 
 
 ## License
 ### Code and Models
-All source code in this repository and the resulting trained model weights are licensed under the AGPL-3.0 License.
+All source code in this repository and the resulting trained model weights are licensed under the AGPL-3.0 License like all the project.
 
 ### Training Data
 The distillation process utilized a curated dataset of 2000+ songs:
