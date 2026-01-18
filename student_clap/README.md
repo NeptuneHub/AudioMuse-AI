@@ -67,6 +67,6 @@ All source code in this repository and the resulting trained model weights are l
 ### Training Data
 The distillation process utilized a curated dataset of 2000+ songs:
 
-- Free Music Archive (FMA): Songs used are under various Creative Commons licenses. Detailed attribution and specific license types for each track can be found in [student_clap/models/FMA_SONGS_LICENSE.md](student_clap/models/FMA_SONGS_LICENSE.md)
+- [Free Music Archive](https://freemusicarchive.org/): Songs used are under various Creative Commons licenses. Detailed attribution and specific license types for each track can be found in [student_clap/models/FMA_SONGS_LICENSE.md](student_clap/models/FMA_SONGS_LICENSE.md)
 
 - Public Domain: Additional tracks were sourced from CC0 1.0 sources.
