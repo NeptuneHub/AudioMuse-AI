@@ -61,9 +61,12 @@ PYTHONPATH=.. python -c "import torch; m=torch.load('student_clap/checkpoints/CH
 
 
 ## License
+### Code and Models
+All source code in this repository and the resulting trained model weights are licensed under the AGPL-3.0 License.
 
-As dataset we used some songs from FMA:
-- https://freemusicarchive.org/
+### Training Data
+The distillation process utilized a curated dataset of 2000+ songs:
 
-All the songs are under Creative Commons license, more details can be found here:
-- [student_clap/models/FMA_SONGS_2247_LICENSE.md](student_clap/models/FMA_SONGS_2247_LICENSE.md)
+- Free Music Archive (FMA): Songs used are under various Creative Commons licenses. Detailed attribution and specific license types for each track can be found in [student_clap/models/FMA_SONGS_LICENSE.md](student_clap/models/FMA_SONGS_LICENSE.md)
+
+- Public Domain: Additional tracks were sourced from CC0 1.0 sources.
