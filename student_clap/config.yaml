@@ -1,3 +1,6 @@
+distillation:
+  audio_enabled: true
+  text_enabled: false
 audio:
   sample_rate: 48000
   segment_length: 480000
@@ -18,7 +21,13 @@ model:
   hidden_dim: 256
   dropout: 0.1
   use_gradient_checkpointing: true
-  segment_batch_size: 10  # Process N segments at a time to reduce memory
+  segment_batch_size: 5  # Process N segments at a time to reduce memory
+
+model_text:
+  embedding_dim: 512
+  hidden_dim: 256
+  num_layers: 2
+  nhead: 4
 
 training:
   batch_size: 1
@@ -38,10 +47,13 @@ training:
 
 paths:
   teacher_model: "../model/clap_audio_model.onnx"
+  teacher_model_text: "../model/clap_text_model.onnx"
   mel_cache: "/Volumes/audiomuse/student_clap_cache/mel_spectrograms.db"
   checkpoints: "./checkpoints"
   logs: "./logs"
   final_model: "./models/student_clap_audio.onnx"
+  final_model_text: "./models/final_text_model.onnx"
+  text_json: "../model/text.json"
 
 dataset:
   fma_path: "/Users/guidocolangiuli/Music/FMA"

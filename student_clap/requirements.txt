@@ -1,3 +1,5 @@
+# For text tokenization
+transformers>=4.30.0
 # Student CLAP Training Dependencies - MINIMAL
 
 # Core PyTorch for training

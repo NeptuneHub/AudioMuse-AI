@@ -7,6 +7,7 @@ from existing CLAP embeddings stored in the database.
 """
 
 import os
+
 import sys
 import yaml
 import logging
@@ -17,6 +18,15 @@ import time
 from pathlib import Path
 from tqdm import tqdm
 from dotenv import load_dotenv
+
+# Ensure parent directory is in sys.path for local imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# Text distillation imports
+from student_clap.models.student_text_model import StudentCLAPText
+from student_clap.data.text_sampler import sample_text_queries
+from student_clap.data.clap_text_embedder import CLAPTextEmbedder
+from student_clap.data.text_tokenizer import get_tokenizer
 
 # Load .env file if it exists
 load_dotenv()
@@ -357,6 +367,37 @@ def train(config_path: str, resume: str = None):
     # Load config
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
+
+    # === DISTILLATION ENABLE FLAGS ===
+    audio_enabled = config.get('distillation', {}).get('audio_enabled', True)
+    text_enabled = config.get('distillation', {}).get('text_enabled', True)
+    if text_enabled:
+        text_json_path = Path(config['paths']['text_json'])
+        text_teacher_path = Path(config['paths']['teacher_model_text'])
+        text_checkpoint_dir = Path(config['paths']['checkpoints'])
+        text_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        # Categories to sample (pick any 3, or make configurable)
+        text_categories = ['Genre_Style', 'Instrumentation_Vocal', 'Emotion_Mood']
+        # Teacher text embedder and tokenizer
+        tokenizer = get_tokenizer()
+        vocab_size = tokenizer.vocab_size
+        text_cfg = config.get('model_text', {})
+        embedding_dim = text_cfg.get('embedding_dim', 512)
+        hidden_dim = text_cfg.get('hidden_dim', 256)
+        num_layers = text_cfg.get('num_layers', 2)
+        nhead = text_cfg.get('nhead', 4)
+        student_text_model = StudentCLAPText(
+            embedding_dim=embedding_dim,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            nhead=nhead
+        )
+        text_optimizer = torch.optim.Adam(student_text_model.parameters(), lr=3e-4)
+        text_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(text_optimizer, mode='min', factor=0.1, patience=5, min_lr=1e-6)
+        teacher_text_embedder = CLAPTextEmbedder(str(text_teacher_path))
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        student_text_model.to(device)
     
     # Expand environment variables
     config = expand_env_vars(config)
@@ -394,30 +435,36 @@ def train(config_path: str, resume: str = None):
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
     # Check for resume argument first
+    audio_resume_path = None
+    text_resume_path = None
     if resume:
         logger.info(f"\n⏮️ Manual resume requested: {resume}")
-        resume_path = resume
-    else:
-        # Auto-detect latest checkpoint
-        latest_path = checkpoint_dir / "latest.pth"
-        if latest_path.exists() and latest_path.is_file():
-            logger.info(f"\n🔍 Auto-detected existing checkpoint: {latest_path}")
-            resume_path = str(latest_path)
+        # User may provide either audio or text checkpoint manually
+        if 'text' in resume:
+            text_resume_path = resume
         else:
+            audio_resume_path = resume
+    else:
+        # Auto-detect latest checkpoint for audio and text
+        if audio_enabled:
+            audio_latest_path = checkpoint_dir / "latest.pth"
+            if audio_latest_path.exists() and audio_latest_path.is_file():
+                logger.info(f"\n🔍 Auto-detected existing audio checkpoint: {audio_latest_path}")
+                audio_resume_path = str(audio_latest_path)
+        if text_enabled:
+            text_latest_path = checkpoint_dir / "last_text.pth"
+            if text_latest_path.exists() and text_latest_path.is_file():
+                logger.info(f"\n🔍 Auto-detected existing text checkpoint: {text_latest_path}")
+                text_resume_path = str(text_latest_path)
+        if not audio_resume_path and not text_resume_path:
             logger.info(f"\n🆕 No existing checkpoints found - starting fresh training")
-            resume_path = None
-    
-    # Load checkpoint if we have one
-    if resume_path:
+    # Load audio checkpoint if available
+    if audio_enabled and audio_resume_path:
         try:
-            logger.info(f"📂 Loading checkpoint: {resume_path}")
-            checkpoint = torch.load(resume_path, map_location=trainer.device)
-            
-            # Restore model and optimizer state
+            logger.info(f"📂 Loading audio checkpoint: {audio_resume_path}")
+            checkpoint = torch.load(audio_resume_path, map_location=trainer.device)
             trainer.model.load_state_dict(checkpoint['model_state_dict'])
             trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            
-            # Try to restore scheduler state (may fail if scheduler type changed)
             try:
                 trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
                 logger.info(f"✅ Scheduler state restored")
@@ -433,28 +480,51 @@ def train(config_path: str, resume: str = None):
                     threshold_mode='rel',
                     min_lr=1e-6
                 )
-            
-            # Restore training state
             start_epoch = checkpoint['epoch'] + 1
             best_val_cosine = checkpoint.get('best_val_cosine', 0.0)
             patience_counter = checkpoint.get('patience_counter', 0)
-            
-            logger.info(f"✅ Successfully resumed from epoch {checkpoint['epoch']}")
+            logger.info(f"✅ Successfully resumed audio from epoch {checkpoint['epoch']}")
             logger.info(f"   📈 Best cosine similarity so far: {best_val_cosine:.4f}")
             logger.info(f"   ⏰ Patience counter: {patience_counter}/{config['training']['early_stopping_patience']}")
             logger.info(f"   🎯 Will continue from epoch {start_epoch}")
-            
-            # Check if we've already reached the target epochs
-            if start_epoch > config['training']['epochs']:
-                logger.info(f"🎉 Training already completed! (reached {config['training']['epochs']} epochs)")
+            if start_epoch > (config['training']['epochs'] + config['training'].get('stage2_epochs', 0)):
+                logger.info(f"🎉 Audio training already completed! (reached {config['training']['epochs'] + config['training'].get('stage2_epochs', 0)} epochs)")
+                final_onnx_path = Path(config['paths']['final_model'])
+                trainer.export_to_onnx(str(final_onnx_path))
+                logger.info(f"✅ Exported final audio ONNX model: {final_onnx_path}")
                 return
-                
         except Exception as e:
-            logger.error(f"❌ Failed to load checkpoint: {e}")
-            logger.info("🔄 Starting training from scratch...")
+            logger.error(f"❌ Failed to load audio checkpoint: {e}")
+            logger.info("🔄 Starting audio training from scratch...")
             start_epoch = 1
             best_val_cosine = 0.0
             patience_counter = 0
+    # Load text checkpoint if available
+    if text_enabled and text_resume_path:
+        try:
+            logger.info(f"📂 Loading text checkpoint: {text_resume_path}")
+            checkpoint = torch.load(text_resume_path, map_location=device)
+            student_text_model.load_state_dict(checkpoint['model_state_dict'])
+            text_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            try:
+                text_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                logger.info(f"✅ Text scheduler state restored")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not restore text scheduler state: {e}")
+            start_epoch = checkpoint['epoch'] + 1
+            logger.info(f"✅ Successfully resumed text from epoch {checkpoint['epoch']}")
+            if start_epoch > config['training']['epochs']:
+                logger.info(f"🎉 Text training already completed! (reached {config['training']['epochs']} epochs)")
+                # Export final text ONNX model to /student_clap/models/final_text_model.onnx
+                final_text_onnx_path = Path(config['paths']['final_model_text'])
+                final_text_onnx_path.parent.mkdir(parents=True, exist_ok=True)
+                student_text_model.export_to_onnx(str(final_text_onnx_path), device=device)
+                logger.info(f"✅ Exported final text ONNX model: {final_text_onnx_path}")
+                return
+        except Exception as e:
+            logger.error(f"❌ Failed to load text checkpoint: {e}")
+            logger.info("🔄 Starting text training from scratch...")
+            start_epoch = 1
     
     # Create datasets NOW that we know start_epoch
     logger.info("\n📁 Creating datasets...")
@@ -533,9 +603,65 @@ def train(config_path: str, resume: str = None):
     training_start_time = time.time()
     stage2_triggered = False
     
+    audio_enabled = config.get('distillation', {}).get('audio_enabled', True)
     for epoch in range(start_epoch, total_epochs + 1):
-        # STAGE 2: Switch to projection-only training after stage1_epochs
-        if epoch == stage1_epochs + 1 and not stage2_triggered:
+        # === TEXT DISTILLATION EPOCH ===
+        if text_enabled:
+            logger.info(f"\n=== TEXT DISTILLATION: Epoch {epoch} ===")
+            n_text_samples = config.get('dataset', {}).get('sample_size', 0)
+            if n_text_samples == 0:
+                n_text_samples = 50000
+            text_queries = sample_text_queries(text_json_path, text_categories, n_samples=n_text_samples)
+            batch_size = config.get('model', {}).get('segment_batch_size', 5)
+            total_batches = (len(text_queries) + batch_size - 1) // batch_size
+            logger.info(f"[TEXT] Using batch_size={batch_size}, n_text_samples={n_text_samples}, total_batches={total_batches}, actual_queries={len(text_queries)}")
+            student_text_model.train()
+            total_text_loss = 0.0
+            for batch_idx in range(total_batches):
+                start = batch_idx * batch_size
+                end = min((batch_idx + 1) * batch_size, len(text_queries))
+                batch_texts = text_queries[start:end]
+                logger.info(f"[DEBUG] Batch {batch_idx+1}/{total_batches}: {len(batch_texts)} queries (should be <= {batch_size})")
+                enc = tokenizer(batch_texts, padding=True, truncation=True, max_length=77, return_tensors='pt')
+                input_ids = enc['input_ids'].to(device)
+                attention_mask = enc['attention_mask'].to(device)
+                with torch.no_grad():
+                    teacher_emb = teacher_text_embedder.encode(input_ids.cpu().numpy(), attention_mask.cpu().numpy())
+                    teacher_emb = torch.from_numpy(teacher_emb).to(device).float()
+                student_emb = student_text_model(input_ids, attention_mask)
+                cosine_sim = torch.nn.functional.cosine_similarity(student_emb, teacher_emb, dim=1)
+                loss = -cosine_sim.mean()
+                text_optimizer.zero_grad()
+                loss.backward()
+                text_optimizer.step()
+                total_text_loss += loss.item()
+                for i, query in enumerate(batch_texts):
+                    logger.info(f"[TEXT][Batch {batch_idx+1}/{total_batches}] Query: '{query}' | Cosine Loss: {-cosine_sim[i].item():.6f} | Cosine Sim: {cosine_sim[i].item():.6f}")
+                min_sim = cosine_sim.min().item()
+                max_sim = cosine_sim.max().item()
+                logger.info(f"[TEXT][Batch {batch_idx+1}/{total_batches}] Min Cosine Sim: {min_sim:.6f} | Max Cosine Sim: {max_sim:.6f}")
+            avg_text_loss = total_text_loss / total_batches
+            text_scheduler.step(avg_text_loss)
+            logger.info(f"[TEXT] Epoch {epoch}: Avg distillation loss: {avg_text_loss:.6f}")
+
+            # Save text model checkpoint BEFORE audio checkpoint, so epoch is correct
+            text_ckpt = {
+                'epoch': epoch,
+                'model_state_dict': student_text_model.state_dict(),
+                'optimizer_state_dict': text_optimizer.state_dict(),
+                'scheduler_state_dict': text_scheduler.state_dict(),
+                'avg_text_loss': avg_text_loss,
+                'config': config,
+                'timestamp': time.time()
+            }
+            text_ckpt_path = text_checkpoint_dir / f"checkpoint_text_epoch_{epoch}.pth"
+            torch.save(text_ckpt, text_ckpt_path)
+            last_text_ckpt_path = text_checkpoint_dir / "last_text.pth"
+            torch.save(text_ckpt, last_text_ckpt_path)
+            logger.info(f"[TEXT] Saved checkpoint: {text_ckpt_path}")
+            logger.info(f"[TEXT] Updated last_text.pth: {last_text_ckpt_path}")
+        # STAGE 2: Switch to projection-only training after stage1_epochs (audio only)
+        if audio_enabled and epoch == stage1_epochs + 1 and not stage2_triggered:
             logger.info("\n" + "=" * 60)
             logger.info("🔄 SWITCHING TO STAGE 2: Projection-only refinement")
             logger.info("=" * 60)
@@ -607,45 +733,66 @@ def train(config_path: str, resume: str = None):
         config_with_stage['training'] = config['training'].copy()
         config_with_stage['training']['epochs'] = total_epochs
         config_with_stage['current_stage'] = current_stage
+
+        # Only run audio distillation if enabled
+        if audio_enabled:
+            # Train epoch with REAL implementation
+            train_metrics = train_epoch_real(trainer, train_dataset, config_with_stage, epoch)
+            if audio_enabled:
+                # 💾 SAVE CHECKPOINT AFTER EVERY EPOCH (for resume capability)
+                logger.info(f"💾 Saving checkpoint after epoch {epoch}...")
+                epoch_checkpoint_path = checkpoint_dir / f"checkpoint_epoch_{epoch}.pth"
+                latest_checkpoint_path = checkpoint_dir / "latest.pth"
+                epoch_checkpoint_data = {
+                    'epoch': epoch,
+                    'model_state_dict': trainer.model.state_dict(),
+                    'optimizer_state_dict': trainer.optimizer.state_dict(),
+                    'scheduler_state_dict': trainer.scheduler.state_dict(),
+                    'train_metrics': train_metrics,
+                    'best_val_cosine': best_val_cosine,
+                    'patience_counter': patience_counter,
+                    'config': config,
+                    'timestamp': time.time()
+                }
+                torch.save(epoch_checkpoint_data, epoch_checkpoint_path)
+                # Remove symlink if it exists before saving (prevents overwriting old epoch files)
+                if latest_checkpoint_path.exists() or latest_checkpoint_path.is_symlink():
+                    latest_checkpoint_path.unlink()
+                torch.save(epoch_checkpoint_data, latest_checkpoint_path)  # Save as real file, not symlink
+                logger.info(f"✅ Checkpoint saved: {epoch_checkpoint_path}")
+                logger.info(f"✅ Latest checkpoint updated: {latest_checkpoint_path}")
+        # Now save text model checkpoint (after both audio and text are trained, matching audio logic)
+        if text_enabled:
+            text_ckpt = {
+                'epoch': epoch,
+                'model_state_dict': student_text_model.state_dict(),
+                'optimizer_state_dict': text_optimizer.state_dict(),
+                'scheduler_state_dict': text_scheduler.state_dict(),
+                'avg_text_loss': avg_text_loss,
+                'config': config,
+                'timestamp': time.time()
+            }
+            text_ckpt_path = text_checkpoint_dir / f"checkpoint_text_epoch_{epoch}.pth"
+            torch.save(text_ckpt, text_ckpt_path)
+            last_text_ckpt_path = text_checkpoint_dir / "last_text.pth"
+            torch.save(text_ckpt, last_text_ckpt_path)
+            logger.info(f"[TEXT] Saved checkpoint: {text_ckpt_path}")
+            logger.info(f"[TEXT] Updated last_text.pth: {last_text_ckpt_path}")
+            # Export text model to ONNX after every epoch (only here, not in audio section)
+            text_onnx_path = text_checkpoint_dir / f"text_model_epoch_{epoch}.onnx"
+            student_text_model.export_to_onnx(str(text_onnx_path), device=device)
+            logger.info(f"[TEXT] Exported ONNX: {text_onnx_path}")
         
-        # Train epoch with REAL implementation
-        train_metrics = train_epoch_real(trainer, train_dataset, config_with_stage, epoch)
-        
-        # 💾 SAVE CHECKPOINT AFTER EVERY EPOCH (for resume capability)
-        logger.info(f"💾 Saving checkpoint after epoch {epoch}...")
-        epoch_checkpoint_path = checkpoint_dir / f"checkpoint_epoch_{epoch}.pth"
-        latest_checkpoint_path = checkpoint_dir / "latest.pth"
-        epoch_checkpoint_data = {
-            'epoch': epoch,
-            'model_state_dict': trainer.model.state_dict(),
-            'optimizer_state_dict': trainer.optimizer.state_dict(),
-            'scheduler_state_dict': trainer.scheduler.state_dict(),
-            'train_metrics': train_metrics,
-            'best_val_cosine': best_val_cosine,
-            'patience_counter': patience_counter,
-            'config': config,
-            'timestamp': time.time()
-        }
-        torch.save(epoch_checkpoint_data, epoch_checkpoint_path)
-        # Remove symlink if it exists before saving (prevents overwriting old epoch files)
-        if latest_checkpoint_path.exists() or latest_checkpoint_path.is_symlink():
-            latest_checkpoint_path.unlink()
-        torch.save(epoch_checkpoint_data, latest_checkpoint_path)  # Save as real file, not symlink
-        logger.info(f"✅ Checkpoint saved: {epoch_checkpoint_path}")
-        logger.info(f"✅ Latest checkpoint updated: {latest_checkpoint_path}")
-        
-        # Validate every few epochs
-        if epoch % 5 == 0 or epoch == 1:
+        # Validate every few epochs (only if audio distillation is enabled)
+        if audio_enabled and (epoch % 5 == 0 or epoch == 1):
             val_metrics = validate_real(trainer, val_dataset, config, epoch)
             print_evaluation_report(val_metrics, f"Validation - Epoch {epoch}")
-            
             # Check for improvement (use cosine similarity as main metric)
             val_cosine = val_metrics['cosine_similarity']['mean']
             if val_cosine > best_val_cosine:
                 best_val_cosine = val_cosine
                 patience_counter = 0
                 logger.info(f"✓ New best validation cosine similarity: {best_val_cosine:.4f}")
-                
                 # Save best checkpoint
                 best_checkpoint_path = checkpoint_dir / f"best_model_epoch_{epoch}.pth"
                 best_checkpoint_data = {
@@ -661,43 +808,44 @@ def train(config_path: str, resume: str = None):
                 }
                 torch.save(best_checkpoint_data, best_checkpoint_path)
                 logger.info(f"  💾 Saved best checkpoint: {best_checkpoint_path}")
-                
-                # Export to ONNX
+                # Export audio model to ONNX
                 onnx_path = checkpoint_dir / f"best_model_epoch_{epoch}.onnx"
                 trainer.export_to_onnx(str(onnx_path))
-                
             else:
                 patience_counter += 1
                 logger.info(f"No improvement ({patience_counter}/{config['training']['early_stopping_patience']})")
         
-        # Save checkpoint after EVERY epoch (crash recovery)
-        checkpoint_path = checkpoint_dir / f"epoch_{epoch}.pth"
-        checkpoint_data = {
-            'epoch': epoch,
-            'model_state_dict': trainer.model.state_dict(),
-            'optimizer_state_dict': trainer.optimizer.state_dict(),
-            'scheduler_state_dict': trainer.scheduler.state_dict(),
-            'train_metrics': train_metrics,
-            'best_val_cosine': best_val_cosine,
-            'patience_counter': patience_counter,
-            'config': config,
-            'timestamp': time.time()
-        }
-        torch.save(checkpoint_data, checkpoint_path)
-        logger.info(f"💾 Saved checkpoint: {checkpoint_path}")
-        
-        # Update latest.pth as a real file (not symlink to avoid corruption)
-        latest_path = checkpoint_dir / "latest.pth"
-        if latest_path.exists() or latest_path.is_symlink():
-            latest_path.unlink()
-        torch.save(checkpoint_data, latest_path)
-        logger.info(f"🔗 Updated latest checkpoint: {latest_path}")
-        
-        # Save additional checkpoint every 5 epochs (backup)
-        if epoch % 5 == 0:
-            backup_path = checkpoint_dir / f"backup_epoch_{epoch}.pth"
-            torch.save(checkpoint_data, backup_path)
-            logger.info(f"📦 Backup checkpoint: {backup_path}")
+        if audio_enabled:
+            # Save checkpoint after EVERY epoch (crash recovery)
+            checkpoint_path = checkpoint_dir / f"epoch_{epoch}.pth"
+            checkpoint_data = {
+                'epoch': epoch,
+                'model_state_dict': trainer.model.state_dict(),
+                'optimizer_state_dict': trainer.optimizer.state_dict(),
+                'scheduler_state_dict': trainer.scheduler.state_dict(),
+                'train_metrics': train_metrics,
+                'best_val_cosine': best_val_cosine,
+                'patience_counter': patience_counter,
+                'config': config,
+                'timestamp': time.time()
+            }
+            torch.save(checkpoint_data, checkpoint_path)
+            logger.info(f"💾 Saved checkpoint: {checkpoint_path}")
+            # Export text model to ONNX after every epoch (only if text_enabled)
+            if text_enabled:
+                text_onnx_path = checkpoint_dir / f"text_model_epoch_{epoch}.onnx"
+                student_text_model.export_to_onnx(str(text_onnx_path), device=device)
+            # Update latest.pth as a real file (not symlink to avoid corruption)
+            latest_path = checkpoint_dir / "latest.pth"
+            if latest_path.exists() or latest_path.is_symlink():
+                latest_path.unlink()
+            torch.save(checkpoint_data, latest_path)
+            logger.info(f"🔗 Updated latest checkpoint: {latest_path}")
+            # Save additional checkpoint every 5 epochs (backup)
+            if epoch % 5 == 0:
+                backup_path = checkpoint_dir / f"backup_epoch_{epoch}.pth"
+                torch.save(checkpoint_data, backup_path)
+                logger.info(f"📦 Backup checkpoint: {backup_path}")
         
         # Early stopping
         if patience_counter >= config['training']['early_stopping_patience']:
@@ -723,10 +871,15 @@ def train(config_path: str, resume: str = None):
         'total_epochs': epoch
     }, final_pth_path)
     
-    # Export final ONNX model
+    # Export final ONNX models (audio and text)
     trainer.export_to_onnx(str(final_model_path))
     logger.info(f"🎯 Final ONNX model: {final_model_path}")
     logger.info(f"🎯 Final PyTorch model: {final_pth_path}")
+    if text_enabled:
+        final_text_onnx_path = Path(config['paths']['final_model_text'])
+        final_text_onnx_path.parent.mkdir(parents=True, exist_ok=True)
+        student_text_model.export_to_onnx(str(final_text_onnx_path), device=device)
+        logger.info(f"🎯 Final Text ONNX model: {final_text_onnx_path}")
     
     # Cleanup
     train_dataset.close()
