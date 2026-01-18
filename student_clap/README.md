@@ -30,9 +30,16 @@ python3 train_real.py --config config.yaml
 ```
 
 ## Useful command
-You can check how the avarage cosine similarity is going for each epoch with this one line command:
+
+You can check how the average cosine similarity (training and validation) is going for each epoch with this one line command:
 ```
-for f in student_clap/checkpoints/checkpoint_epoch_*.pth; do echo -n "$f: "; python3 -c "import torch; m=torch.load('$f', map_location='cpu')['train_metrics']; print(f\"cosine={m['avg_cosine_sim']}, lr={m['learning_rate']}\")"; done
+for f in student_clap/checkpoints/checkpoint_epoch_*.pth; do \
+	echo -n "$f: "; \
+	python3 -c "import torch; ckpt=torch.load('$f', map_location='cpu'); \
+	m=ckpt['train_metrics']; \
+	val=ckpt.get('val_cosine_sim', ckpt.get('best_val_cosine', 'N/A')); \
+	print(f'cosine={{m["avg_cosine_sim"]}}, val_cosine={{val}}, lr={{m["learning_rate"]}}')"; \
+done
 ```
 
 You can check the million of parameter used for your input configuration with this command:
