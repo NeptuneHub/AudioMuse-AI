@@ -937,3 +937,7 @@ class TestGetAIPlaylistName:
             assert "Artist A" in prompt
             assert "Song Two" in prompt
             assert "Artist B" in prompt
+
+    def test_prompt_includes_length_requirement(self):
+        """Ensure the prompt specifies the 5-40 character length requirement"""
+        assert "The title MUST be within the range of 5 to 40 characters long." in creative_prompt_template
