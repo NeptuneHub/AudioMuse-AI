@@ -39,6 +39,7 @@ services:
       - "${FRONTEND_PORT:-8000}:8000"
     environment:
       SERVICE_TYPE: "flask"
+      TZ: "${TZ:-UTC}"
       MEDIASERVER_TYPE: "jellyfin"
       JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
       JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"

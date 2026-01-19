@@ -36,6 +36,7 @@ services:
       - "${FRONTEND_PORT:-8000}:8000"
     environment:
       SERVICE_TYPE: "flask"
+      TZ: "${TZ:-UTC}"
       MEDIASERVER_TYPE: "navidrome"
       NAVIDROME_URL: "${NAVIDROME_URL}"
       NAVIDROME_USER: "${NAVIDROME_USER}"
@@ -69,6 +70,7 @@ services:
     pull_policy: never  # Always use locally built image, never pull from registry
     environment:
       SERVICE_TYPE: "worker"
+      TZ: "${TZ:-UTC}"
       MEDIASERVER_TYPE: "navidrome"
       NAVIDROME_URL: "${NAVIDROME_URL}"
       NAVIDROME_USER: "${NAVIDROME_USER}"

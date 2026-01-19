@@ -14,15 +14,16 @@ logger = logging.getLogger(__name__)
 
 # creative_prompt_template is imported in tasks.py, so it should be defined here
 creative_prompt_template = (
-    "You're an expert of music and you need to give a title to this playlist.\n"
-    "The title need to represent the mood and the activity of when you listening the playlist.\n"
+    "You are an expert music collector and MUST give a title to this playlist.\n"
+    "The title MUST represent the mood and the activity of when you are listening to the playlist.\n"
     "The title MUST use ONLY standard ASCII (a-z, A-Z, 0-9, spaces, and - & ' ! . , ? ( ) [ ]).\n"
+    "The title MUST be within the range of 5 to 40 characters long.\n"
     "No special fonts or emojis.\n"
     "* BAD EXAMPLES: 'Ambient Electronic Space - Electric Soundscapes - Emotional Waves' (Too long/descriptive)\n"
     "* BAD EXAMPLES: 'Blues Rock Fast Tracks' (Too direct/literal, not evocative enough)\n"
     "* BAD EXAMPLES: '𝑯𝒘𝒆 𝒂𝒓𝒐𝒏𝒊 𝒅𝒆𝒕𝒔' (Non-standard characters)\n\n"
-    "CRITICAL: Your response MUST be ONLY the single playlist name. No explanations, no 'Playlist Name:', no numbering, no extra text or formatting whatsoever.\n"
-    "This is the playlist: {song_list_sample}\n\n" # {song_list_sample} will contain the full list
+    "CRITICAL: Your response MUST be ONLY the single playlist name. No explanations, no 'Playlist Name:', no numbering, no extra text or formatting whatsoever.\n\n"
+    "This is the playlist:\n{song_list_sample}\n\n" # {song_list_sample} will contain the full list
 
 )
 

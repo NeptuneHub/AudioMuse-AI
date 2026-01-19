@@ -36,6 +36,8 @@ data:
   REDIS_URL: "redis://redis-service.test:6379/0"
   CLAP_ENABLED: "true" # Enable CLAP text search (set to "false" for slower systems)
   TEMP_DIR: "/app/temp_audio"
+  # Timezone for containers; default UTC
+  TZ: "UTC"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -176,6 +178,11 @@ spec:
         env:
         - name: SERVICE_TYPE
           value: "flask"
+        - name: TZ
+          valueFrom:
+            configMapKeyRef:
+              name: audiomuse-ai-config
+              key: TZ
         - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:
@@ -265,6 +272,11 @@ spec:
         env:
         - name: SERVICE_TYPE
           value: "worker"
+        - name: TZ
+          valueFrom:
+            configMapKeyRef:
+              name: audiomuse-ai-config
+              key: TZ
         - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:

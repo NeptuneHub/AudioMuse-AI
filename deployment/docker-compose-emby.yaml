@@ -32,6 +32,7 @@ services:
       - "${FRONTEND_PORT:-8000}:8000" # Map host port 8000 to container port 8000
     environment:
       SERVICE_TYPE: "flask" # Tells the container to run the Flask app
+      TZ: "${TZ:-UTC}"
       MEDIASERVER_TYPE: "emby" # Specify the media server type
       EMBY_USER_ID: "${EMBY_USER_ID}"
       EMBY_TOKEN: "${EMBY_TOKEN}"
@@ -64,6 +65,7 @@ services:
     container_name: audiomuse-ai-worker-instance
     environment:
       SERVICE_TYPE: "worker" # Tells the container to run the RQ worker
+      TZ: "${TZ:-UTC}"
       MEDIASERVER_TYPE: "emby" # Specify the media server type
       EMBY_USER_ID: "${EMBY_USER_ID}"
       EMBY_TOKEN: "${EMBY_TOKEN}"

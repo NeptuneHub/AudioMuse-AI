@@ -58,3 +58,5 @@ student_clap/checkpoints/
 student_clap/logs/
 student_clap/models/*.onnx
 student_clap/config.local.yaml
+student_clap/models/FMA_SONGS_LICENSE.md
+student_clap/models/FMA_SONGS_2247_LICENSE.md

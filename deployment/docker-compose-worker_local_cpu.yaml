@@ -17,6 +17,7 @@ services:
       - "${WORKER_PORT:-8029}:8000"  # Expose worker API
     environment:
       SERVICE_TYPE: "worker"
+      TZ: "${TZ:-UTC}"
       MEDIASERVER_TYPE: "${MEDIASERVER_TYPE:-jellyfin}"
       JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
       JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"

@@ -84,11 +84,13 @@ class StudentCLAPDataset:
         logger.info("="*80)
         logger.info("="*80)
         
-        # Check what's already cached
-        cached_item_ids = set(self.mel_cache.get_cached_item_ids())
-        if cached_item_ids:
-            cache_size_gb = self.mel_cache.get_cache_size_gb()
-            logger.info(f"📦 Found existing mel cache: {len(cached_item_ids)} songs, {cache_size_gb:.1f}GB")
+        # Check cache size without loading all IDs into memory (memory optimization!)
+        cache_size_gb = self.mel_cache.get_cache_size_gb()
+        if cache_size_gb > 0:
+            # Count cached items efficiently without loading all IDs
+            cursor = self.mel_cache.conn.execute("SELECT COUNT(*) FROM mel_spectrograms")
+            cached_count = cursor.fetchone()[0]
+            logger.info(f"📦 Found existing mel cache: {cached_count} songs, {cache_size_gb:.1f}GB")
         
         # Split into train/val
         np.random.seed(42)  # Reproducible split
@@ -132,10 +134,7 @@ class StudentCLAPDataset:
             batch_items = [self.items[idx] for idx in batch_indices]
             
             # Check cache status and categorize
-            import threading
-            
             tasks_to_process = []
-            tasks_to_compress = []
             tasks_cached = []
             
             # Track cache statistics
@@ -143,7 +142,7 @@ class StudentCLAPDataset:
             embedding_cached_count = 0
             
             for item in batch_items:
-                mel_result = self.mel_cache.get_with_compression_status(item['item_id'])
+                mel_result = self.mel_cache.get_with_audio_length(item['item_id'])
                 has_embedding = self.mel_cache.has_segment_embeddings(item['item_id'])
                 
                 # Update cache counts
@@ -152,38 +151,76 @@ class StudentCLAPDataset:
                 if has_embedding:
                     embedding_cached_count += 1
                 
-                # Decide what to do with this item
-                if mel_result is None:
-                    # No mel cache - need to process
+                # Categorize items
+                if mel_result is None or not has_embedding:
+                    # Need to process from scratch
                     tasks_to_process.append(item)
                 else:
-                    mel_data, is_compressed, original_bytes = mel_result
-                    if is_compressed:
-                        tasks_cached.append((item, mel_data))
-                    else:
-                        tasks_to_compress.append((item, mel_data, original_bytes))
+                    # Fully cached
+                    tasks_cached.append((item, mel_result))
             
             logger.info(f"   📊 Cache Status: Mel={mel_cached_count}/{len(batch_items)} | Embedding={embedding_cached_count}/{len(batch_items)}")
             logger.info(f"   📦 Processing: {len(tasks_cached)} fully cached, "
-                       f"{len(tasks_to_compress)} need compression, "
                        f"{len(tasks_to_process)} need analysis")
             
             batch = []
             
-            # 1. Process cached (fast, sequential is fine)
-            for item, mel_data in tasks_cached:
+            # 1. Process cached (extract segments from full mel at runtime)
+            for item, mel_result in tasks_cached:
+                full_mel, audio_length = mel_result
+                
                 # Get teacher embeddings from cache
                 teacher_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
-                if teacher_segment_embeddings is None:
-                    logger.warning(f"Missing teacher embeddings for {item['item_id']}, will reprocess")
-                    tasks_to_process.append(item)
-                    continue
-                
-                # Compute averaged embedding on-the-fly (fast)
                 teacher_embedding = self.mel_cache.get_averaged_embedding(item['item_id'])
-                    
-                # Copy to make array writable for PyTorch
-                mel_tensor = torch.from_numpy(mel_data.copy()).float()
+                
+                # Extract overlapped segments from full mel spectrogram at runtime
+                mel_specs = self.mel_cache.extract_overlapped_segments(
+                    full_mel,
+                    audio_length=audio_length,
+                    segment_length=self.audio_config['segment_length'],
+                    hop_length=self.audio_config['hop_length'],
+                    sample_rate=self.audio_config['sample_rate'],
+                    hop_length_stft=self.audio_config['hop_length_stft']
+                )
+                
+                # --- Gold standard spectrogram augmentation ---
+                mel_aug = mel_specs.copy()
+                if self.split == 'train':
+                    # Random gain
+                    gain = np.random.uniform(0.8, 1.2)
+                    mel_aug *= gain
+                    # Additive noise
+                    if np.random.rand() < 0.5:
+                        noise_level = np.random.uniform(0.001, 0.01)
+                        mel_aug += np.random.normal(0, noise_level, mel_aug.shape)
+                    # Time shifting
+                    if np.random.rand() < 0.5:
+                        shift = np.random.randint(-mel_aug.shape[1] // 20, mel_aug.shape[1] // 20)
+                        mel_aug = np.roll(mel_aug, shift, axis=1)
+                    # Frequency masking (SpecAugment)
+                    freq_masked = False
+                    if np.random.rand() < 0.5:
+                        num_masks = np.random.randint(1, 3)
+                        for _ in range(num_masks):
+                            f = np.random.randint(0, mel_aug.shape[0])
+                            f_width = np.random.randint(0, mel_aug.shape[0] // 8 + 1)
+                            mel_aug[max(0, f - f_width // 2):min(mel_aug.shape[0], f + f_width // 2), :] = 0
+                        freq_masked = True
+                    # Time masking (SpecAugment)
+                    time_masked = False
+                    if np.random.rand() < 0.5:
+                        num_masks = np.random.randint(1, 3)
+                        for _ in range(num_masks):
+                            t = np.random.randint(0, mel_aug.shape[1])
+                            t_width = np.random.randint(0, mel_aug.shape[1] // 10 + 1)
+                            mel_aug[:, max(0, t - t_width // 2):min(mel_aug.shape[1], t + t_width // 2)] = 0
+                        time_masked = True
+                    # Logging
+                    import logging
+                    logging.getLogger(__name__).info(
+                        f"[AUGMENT] Epoch {self.epoch} (train): gain={gain:.3f}, noise={'yes' if 'noise_level' in locals() else 'no'}, shift={'yes' if 'shift' in locals() and shift != 0 else 'no'}, freq_mask={'yes' if freq_masked else 'no'}, time_mask={'yes' if time_masked else 'no'}"
+                    )
+                mel_tensor = torch.from_numpy(mel_aug).float()
                 batch.append({
                     'item_id': item['item_id'],
                     'title': item['title'],
@@ -192,52 +229,19 @@ class StudentCLAPDataset:
                     'audio_segments': mel_tensor,
                     'teacher_embedding': teacher_embedding,
                     'teacher_segment_embeddings': teacher_segment_embeddings,
-                    'num_segments': len(mel_data)
+                    'num_segments': len(mel_specs)
                 })
             
-            # 2. Process uncompressed (spawn compression threads)
-            for item, mel_data, original_bytes in tasks_to_compress:
-                # Get teacher embeddings from cache
-                teacher_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
-                if teacher_segment_embeddings is None:
-                    logger.warning(f"Missing teacher embeddings for {item['item_id']}, will reprocess")
-                    tasks_to_process.append(item)
-                    continue
-                
-                # Compute averaged embedding on-the-fly (fast)
-                teacher_embedding = self.mel_cache.get_averaged_embedding(item['item_id'])
-                
-                # Spawn compression thread
-                threading.Thread(
-                    target=self.mel_cache.compress_and_update,
-                    args=(item['item_id'], original_bytes),
-                    daemon=True
-                ).start()
-                
-                # Copy to make array writable for PyTorch
-                mel_tensor = torch.from_numpy(mel_data.copy()).float()
-                batch.append({
-                    'item_id': item['item_id'],
-                    'title': item['title'],
-                    'author': item.get('author', 'Unknown'),
-                    'audio_path': 'cached (compressing)',
-                    'audio_segments': mel_tensor,
-                    'teacher_embedding': teacher_embedding,
-                    'teacher_segment_embeddings': teacher_segment_embeddings,
-                    'num_segments': len(mel_data)
-                })
-            
-            # 3. Process new songs from local files
+            # 2. Process new songs from local files
             if tasks_to_process:
-                from student_clap.preprocessing.audio_segmentation import segment_audio
-                from student_clap.preprocessing.mel_spectrogram import compute_mel_spectrogram_batch
+                from student_clap.preprocessing.mel_spectrogram import compute_full_mel_spectrogram
                 
                 for item in tasks_to_process:
                     audio_path = item['file_path']
                     
                     try:
                         # Check what's already cached
-                        cached_mel = self.mel_cache.get(item['item_id'])
+                        cached_mel_result = self.mel_cache.get_with_audio_length(item['item_id'])
                         cached_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
                         
                         # Get teacher embeddings (compute if not cached)
@@ -256,8 +260,18 @@ class StudentCLAPDataset:
                                 self.mel_cache.put_segment_embeddings(item['item_id'], teacher_segment_embeddings)
                         
                         # Get mel spectrograms (compute if not cached)
-                        if cached_mel is not None:
-                            mel_specs = cached_mel
+                        if cached_mel_result is not None:
+                            full_mel, audio_length = cached_mel_result
+                            
+                            # Extract overlapped segments from full spectrogram at runtime
+                            mel_specs = self.mel_cache.extract_overlapped_segments(
+                                full_mel,
+                                audio_length=audio_length,
+                                segment_length=self.audio_config['segment_length'],
+                                hop_length=self.audio_config['hop_length'],
+                                sample_rate=self.audio_config['sample_rate'],
+                                hop_length_stft=self.audio_config['hop_length_stft']
+                            )
                         else:
                             # Load audio at 48kHz
                             import torchaudio
@@ -269,29 +283,32 @@ class StudentCLAPDataset:
                                 audio_tensor = resampler(audio_tensor)
                             
                             audio_data = audio_tensor.squeeze(0).numpy()
+                            audio_length = len(audio_data)
                             
-                            # Segment audio (10s segments, 5s hop)
-                            segments = segment_audio(
-                                audio_data, 
-                                self.audio_config['sample_rate'],
-                                self.audio_config['segment_length'], 
-                                self.audio_config['hop_length']
-                            )
-                            
-                            # Compute mel-spectrograms for all segments
-                            segments_array = np.array(segments) if isinstance(segments, list) else segments
-                            mel_specs = compute_mel_spectrogram_batch(
-                                segments_array, 
+                            # OPTIMIZED APPROACH: Compute FULL mel spectrogram once (SAVES SPACE!)
+                            logger.debug(f"Computing full mel spectrogram for {item['title']} ({audio_length} samples)")
+                            full_mel_spec = compute_full_mel_spectrogram(
+                                audio_data,
                                 sr=self.audio_config['sample_rate'],
-                                n_mels=self.audio_config['n_mels'], 
+                                n_mels=self.audio_config['n_mels'],
                                 n_fft=self.audio_config['n_fft'],
                                 hop_length=self.audio_config['hop_length_stft'],
-                                fmin=self.audio_config['fmin'], 
+                                fmin=self.audio_config['fmin'],
                                 fmax=self.audio_config['fmax']
                             )
                             
-                            # Cache the mel spectrograms
-                            self.mel_cache.put(item['item_id'], mel_specs)
+                            # Cache the FULL mel spectrogram (not segmented - SAVES SPACE!)
+                            self.mel_cache.put(item['item_id'], full_mel_spec, audio_length=audio_length)
+                            
+                            # Extract overlapped segments at runtime
+                            mel_specs = self.mel_cache.extract_overlapped_segments(
+                                full_mel_spec,
+                                audio_length=audio_length,
+                                segment_length=self.audio_config['segment_length'],
+                                hop_length=self.audio_config['hop_length'],
+                                sample_rate=self.audio_config['sample_rate'],
+                                hop_length_stft=self.audio_config['hop_length_stft']
+                            )
                         
                         mel_tensor = torch.from_numpy(mel_specs).float()
                         batch.append({
