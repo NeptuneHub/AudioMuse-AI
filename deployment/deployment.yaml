@@ -49,6 +49,8 @@ data:
   REDIS_URL: "redis://redis-service.playlist:6379/0"
   CLAP_ENABLED: "true" # Enable CLAP text search (set to "false" for slower systems)
   TEMP_DIR: "/app/temp_audio" # Updated to match code changes
+  # Timezone applied inside containers. Default is UTC but you may set this in the ConfigMap or via deployment overrides
+  TZ: "UTC"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -204,6 +206,11 @@ spec:
         env:
         - name: SERVICE_TYPE
           value: "flask" # Tells the container to run the Flask app
+        - name: TZ
+          valueFrom:
+            configMapKeyRef:
+              name: audiomuse-ai-config
+              key: TZ
         # --- Load Jellyfin Credentials from Secret ---
         - name: JELLYFIN_USER_ID
           valueFrom:
@@ -313,6 +320,11 @@ spec:
         env:
         - name: SERVICE_TYPE
           value: "worker" # Tells the container to run the RQ worker
+        - name: TZ
+          valueFrom:
+            configMapKeyRef:
+              name: audiomuse-ai-config
+              key: TZ
         # --- Load Jellyfin Credentials from Secret ---
         - name: JELLYFIN_USER_ID
           valueFrom:
