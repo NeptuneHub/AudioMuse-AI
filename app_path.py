@@ -51,7 +51,6 @@ def find_path_endpoint():
         # --- CHANGED: Process embedding vectors for JSON response ---
         for song in path:
             # The raw 'embedding' is a memoryview/bytes object and is not JSON serializable.
-            # We remove it as the frontend will use 'embedding_vector'.
             if 'embedding' in song:
                 del song['embedding']
 
@@ -59,8 +58,11 @@ def find_path_endpoint():
             if 'embedding_vector' in song and isinstance(song['embedding_vector'], np.ndarray):
                 song['embedding_vector'] = song['embedding_vector'].tolist()
             else:
-                # Ensure the key exists even if there's no vector, for frontend consistency
                 song['embedding_vector'] = []
+
+            # Ensure album field is present (for frontend)
+            if 'album' not in song:
+                song['album'] = song.get('album', '')
 
         # --- FIX: Convert total_distance from numpy.float32 to a standard Python float ---
         final_distance = float(total_distance) if total_distance is not None and math.isfinite(total_distance) else 0.0
