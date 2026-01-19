@@ -784,6 +784,18 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 
                 # Skip if ALL enabled analyses are already done
                 if not needs_musicnn and not needs_clap and not needs_mulan:
+                    # Ensure album metadata is persisted even for previously analyzed tracks
+                    album_val = item.get('Album') or 'unknown'
+                    try:
+                        # Update only when album column is empty or NULL to avoid overwriting existing data
+                        with get_db() as conn, conn.cursor() as cur:
+                            cur.execute("UPDATE score SET album = %s WHERE item_id = %s AND (album IS NULL OR trim(album) = '')", (album_val, track_id_str))
+                            if cur.rowcount:
+                                conn.commit()
+                                logger.info(f"Updated album for existing track {track_id_str} -> '{album_val}'")
+                    except Exception as e:
+                        logger.warning(f"Failed to update album for existing track {track_id_str}: {e}", exc_info=True)
+
                     tracks_skipped_count += 1
                     # Build dynamic status message based on enabled features
                     status_parts = ["MusiCNN: ✓"]
@@ -909,7 +921,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         logger.info(f"  - Top Moods: {top_moods}")
                         logger.info(f"  - Other Features: {other_features}")
                         
-                        save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding, energy=analysis['energy'], other_features=other_features)
+                        save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding, energy=analysis['energy'], other_features=other_features, album=item.get('Album', None))
                         track_processed = True
                         
                         # Increment session recycler counter after successful analysis
