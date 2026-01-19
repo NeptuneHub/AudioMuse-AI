@@ -36,6 +36,7 @@ services:
       - "${FRONTEND_PORT:-8000}:8000"
     environment:
       SERVICE_TYPE: "flask"
+      TZ: "${TZ:-UTC}"
       MEDIASERVER_TYPE: "navidrome"
       NAVIDROME_URL: "${NAVIDROME_URL}"
       NAVIDROME_USER: "${NAVIDROME_USER}"
@@ -75,6 +76,7 @@ services:
     image: audiomuse-ai:pr195-gpu  # Reuses the image built above
     environment:
       SERVICE_TYPE: "worker"
+      TZ: "${TZ:-UTC}"
       MEDIASERVER_TYPE: "navidrome"
       NAVIDROME_URL: "${NAVIDROME_URL}"
       NAVIDROME_USER: "${NAVIDROME_USER}"

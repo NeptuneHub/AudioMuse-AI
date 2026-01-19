@@ -32,6 +32,7 @@ services:
       - "${FRONTEND_PORT:-8000}:8000"
     environment:
       SERVICE_TYPE: "flask"
+      TZ: "${TZ:-UTC}"
       MEDIASERVER_TYPE: "lyrion"
       LYRION_URL: "${LYRION_URL}"
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
@@ -61,6 +62,7 @@ services:
     container_name: audiomuse-ai-worker-instance
     environment:
       SERVICE_TYPE: "worker"
+      TZ: "${TZ:-UTC}"
       MEDIASERVER_TYPE: "lyrion"
       LYRION_URL: "${LYRION_URL}"
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}

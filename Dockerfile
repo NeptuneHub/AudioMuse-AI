@@ -85,7 +85,8 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 RUN set -ux; \
     n=0; \
     until [ "$n" -ge 5 ]; do \
-        if apt-get update && apt-get install -y --no-install-recommends \
+        # Use noninteractive frontend to avoid tzdata prompts when installing tzdata
+        if DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             python3 python3-pip python3-dev \
             libfftw3-double3=3.3.10-1ubuntu3 libfftw3-dev \
             libyaml-0-2=0.2.5-1build1 libyaml-dev \
@@ -192,11 +193,16 @@ FROM base AS runner
 ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
+    TZ=UTC \
     HF_HOME=/app/.cache/huggingface \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1
 
 WORKDIR /app
+
+# Ensure tzdata package is installed so /usr/share/zoneinfo exists and TZ can be applied
+RUN set -eux; \
+    apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
 
 # Copy Python packages from libraries stage
 COPY --from=libraries /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/
@@ -382,4 +388,4 @@ ENV PYTHONPATH=/usr/local/lib/python3/dist-packages:/app
 EXPOSE 8000
 
 WORKDIR /workspace
-CMD ["bash", "-c", "if [ \"$SERVICE_TYPE\" = \"worker\" ]; then echo 'Starting worker processes via supervisord...' && /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf; else echo 'Starting web service...' && python3 /app/app.py; fi"]
+CMD ["bash", "-c", "if [ -n \"$TZ\" ] && [ -f \"/usr/share/zoneinfo/$TZ\" ]; then ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone; elif [ -n \"$TZ\" ]; then echo \"Warning: timezone '$TZ' not found in /usr/share/zoneinfo\" >&2; fi; if [ \"$SERVICE_TYPE\" = \"worker\" ]; then echo 'Starting worker processes via supervisord...' && /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf; else echo 'Starting web service...' && python3 /app/app.py; fi"]
