@@ -20,6 +20,9 @@ The **mandatory** parameter that you need to change from the example are this:
 | `JELLYFIN_URL`       | (Required) Your Jellyfin server's full URL                              | `http://YOUR_JELLYFIN_IP:8096`    |
 | `JELLYFIN_USER_ID`   | (Required) Jellyfin User ID.                                            | *(N/A - from Secret)* |
 | `JELLYFIN_TOKEN`     | (Required) Jellyfin API Token.                                          | *(N/A - from Secret)* |
+| `EMBY_URL`           | (Required) Your Emby server's full URL                                  | `http://YOUR_EMBY_IP:8096`    |
+| `EMBY_USER_ID`       | (Required) Emby User ID.                                                | *(N/A - from Secret)* |
+| `EMBY_TOKEN`         | (Required) Emby API Token.                                              | *(N/A - from Secret)* |
 | `NAVIDROME_URL`      | (Required) Your Navidrome server's full URL                             | `http://YOUR_JELLYFIN_IP:4553`    |
 | `NAVIDROME_USER`     | (Required) Navidrome User ID.                                           | *(N/A - from Secret)* |
 | `NAVIDROME_PASSWORD` | (Required) Navidrome user Password.                                     | *(N/A - from Secret)* |
@@ -34,6 +37,7 @@ The **mandatory** parameter that you need to change from the example are this:
 | `MISTRAL_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MISTRAL) Your Mistral API Key.      | *(N/A - from Secret)* |
 | `OPENAI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is OPENAI) Your OpenAI / OpenRouter API Key. | *(N/A - from Secret)* |
 
+
 These parameters can be left as-is:
 
 | Parameter               | Description                                  | Default Value     |
@@ -45,6 +49,7 @@ These parameters can be left as-is:
 | `WORKER_URL` | This is the Url your worker instance runs on. The server instance uses this parameter to call the worker. Make sure to include /worker at the end of the url (e.g. http://worker.example.com:8029/worker) | `false` |
 | `WORKER_POSTGRES_HOST` | This is the Url of your the postgres service on your server. The worker uses this to connect the postgres service the flask app uses too. Make sure to not include a protocol (like "http") (e.g. 100.000.00.00) | `false` |
 | `WORKER_REDIS_URL` | This is the Url of your the redis service on your server. The worker uses this to connect to the redis service the flask app uses too. Make sure to include the protocol "redis://" and the dbindex "/0" (e.g. redis://100.000.00.00:6379/0)   | `false` |
+| `TZ`     | Set the time zone of Flask and worker container | UTC |
 
 These are the default parameters used when launching analysis or clustering tasks. You can change them directly in the front-end.
 
