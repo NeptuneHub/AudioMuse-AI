@@ -124,6 +124,7 @@
             <tr>
                 <th>Title</th>
                 <th>Artist</th>
+                <th>Album</th>
                 <th>Distance</th>
             </tr>
             </thead>
@@ -188,7 +189,7 @@
                         tracks.forEach(track => {
                             const itemDiv = document.createElement('div');
                             itemDiv.className = 'autocomplete-item';
-                            itemDiv.innerHTML = `<div class="title">${track.title}</div><div class="artist">${track.author}</div>`;
+                            itemDiv.innerHTML = `<div class="title">${track.title}</div><div class="artist">${track.author}</div><div class="album">${track.album ? track.album : ''}</div>`;
                             itemDiv.addEventListener('click', () => {
                                 const allIds = Array.from(document.querySelectorAll('.song-id')).map(i => i.value).filter(Boolean);
                                 if (allIds.includes(track.item_id) && idEl.value !== track.item_id) {
@@ -482,7 +483,7 @@
                     data.results.forEach(r => {
                         const row = document.createElement('tr');
                         const distText = (typeof r.distance === 'number') ? r.distance.toFixed(4) : 'N/A';
-                        row.innerHTML = `<td>${r.title || 'N/A'}</td><td>${r.author || 'N/A'}</td><td>${distText}</td>`;
+                        row.innerHTML = `<td>${r.title || 'N/A'}</td><td>${r.author || 'N/A'}</td><td>${r.album || ''}</td><td>${distText}</td>`;
                         list.appendChild(row);
                         if (r.item_id) window.currentResultIds.push(r.item_id);
                     });
@@ -665,7 +666,7 @@
                     }
                 } else {
                      const row = document.createElement('tr');
-                     row.innerHTML = `<td colspan="3" style="text-align:center;">No results found.</td>`;
+                     row.innerHTML = `<td colspan="4" style="text-align:center;">No results found.</td>`;
                      list.appendChild(row);
                      document.getElementById('playlist-creator').classList.add('hidden');
 

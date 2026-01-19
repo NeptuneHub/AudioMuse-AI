@@ -242,7 +242,7 @@
                             tracks.forEach(track => {
                                 const itemDiv = document.createElement('div');
                                 itemDiv.className = 'autocomplete-item';
-                                itemDiv.innerHTML = `<div class="title">${track.title}</div><div class="artist">${track.author}</div>`;
+                                itemDiv.innerHTML = `<div class="title">${track.title}</div><div class="artist">${track.author}</div><div class="album">${track.album ? track.album : ''}</div>`;
                                 itemDiv.addEventListener('click', () => {
                                     artistInputEl.value = track.author;
                                     titleInputEl.value = track.title;
@@ -780,7 +780,7 @@
                     const tableHTML = `
                         <table>
                             <thead>
-                                <tr><th>#</th><th>Title</th><th>Artist</th></tr>
+                                <tr><th>#</th><th>Title</th><th>Artist</th><th>Album</th></tr>
                             </thead>
                             <tbody>
                                 ${currentPathData.map((track, index) => `
@@ -788,6 +788,7 @@
                                         <td>${index + 1}</td>
                                         <td>${track.title || 'N/A'}</td>
                                         <td>${track.author || 'N/A'}</td>
+                                        <td>${track.album || ''}</td>
                                     </tr>
                                 `).join('')}
                             </tbody>
