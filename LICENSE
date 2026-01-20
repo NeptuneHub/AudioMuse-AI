@@ -659,3 +659,33 @@ specific requirements.
 if any, to sign a "copyright disclaimer" for the program, if necessary.
 For more information on this, and how to apply and follow the GNU AGPL, see
 <https://www.gnu.org/licenses/>.
+
+END OF TERMS AND CONDITIONS
+
+----------------------------------------------------------------------
+ADDITIONAL NOTICE: INCLUDED MACHINE LEARNING MODELS
+----------------------------------------------------------------------
+
+This Program distributes pre-trained machine learning models which are 
+governed by their own respective licenses. These binary files are NOT 
+licensed under the GNU AGPLv3.
+
+By using the included models, you agree to the following terms:
+
+1. MUSI-CNN MODELS (Derived from MTG Essentia):
+   - License: CC BY-NC-SA 4.0 (Non-Commercial)
+   - Official Project: https://github.com/MTG/essentia-models
+
+2. CLAP MODELS (Derived from LAION-CLAP):
+   - License: CC0 1.0 (Public Domain)
+   - Official Project: https://github.com/LAION-AI/CLAP
+
+SUMMARY FOR USERS:
+The software code is Open Source under AGPLv3. However, the complete 
+distribution (including Docker images or releases containing these files) 
+is restricted to NON-COMMERCIAL use due to the inclusion of the 
+MusiCNN models. 
+
+To use this software for commercial purposes, the user must remove 
+the MusiCNN components and rely exclusively on the CLAP models or 
+other permissively licensed alternatives.
