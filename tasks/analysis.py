@@ -552,11 +552,17 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                 if not album_name or not isinstance(album_name, str) or not album_name.strip():
                                     album_name = 'Unknown'
 
-                                # Save results
+                                # Save only the top N moods in the mood_vector field
+                                try:
+                                    from config import TOP_N_MOODS
+                                except ImportError:
+                                    TOP_N_MOODS = 5
+                                moods_dict = analysis['moods']
+                                top_moods = dict(sorted(moods_dict.items(), key=lambda x: x[1], reverse=True)[:TOP_N_MOODS])
                                 save_track_analysis_and_embedding(
                                     item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'),
                                     analysis['tempo'], analysis['key'], analysis['scale'],
-                                    analysis['moods'], embedding,
+                                    top_moods, embedding,
                                     energy=analysis['energy'],
                                     other_features=analysis['other_features'],
                                     album=album_name
