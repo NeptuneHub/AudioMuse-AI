@@ -533,7 +533,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 try:
                     # Track if we processed anything (MusiCNN or CLAP)
                     track_processed = False
-                    
+
                     # CLAP analysis (Primary) - Only use embedding_is_clap
                     if is_clap_available():
                         if not embedding_is_clap(str(item['Id'])):
@@ -541,20 +541,25 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             try:
                                 # Use the new consolidated analyze_track function
                                 analysis, embedding = analyze_track(path)
-                                
+
                                 if analysis is None or embedding is None:
                                     logger.warning(f"Skipping track {track_name_full} as CLAP analysis returned None.")
                                     tracks_skipped_count += 1
                                     continue
-                                
+
+                                # Always provide a valid album name (never None)
+                                album_name = item.get('Album')
+                                if not album_name or not isinstance(album_name, str) or not album_name.strip():
+                                    album_name = 'Unknown'
+
                                 # Save results
                                 save_track_analysis_and_embedding(
                                     item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'),
                                     analysis['tempo'], analysis['key'], analysis['scale'],
-                                    analysis['moods'], embedding, 
-                                    energy=analysis['energy'], 
-                                    other_features=analysis['other_features'], 
-                                    album=item.get('Album', None)
+                                    analysis['moods'], embedding,
+                                    energy=analysis['energy'],
+                                    other_features=analysis['other_features'],
+                                    album=album_name
                                 )
                                 # --- Always cleanup any old clap_embedding row for this track ---
                                 try:
@@ -576,14 +581,14 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                 logger.warning(f"  - CLAP analysis failed: {e}")
                         else:
                             logger.info(f"  - CLAP embedding already exists, skipping")
-                    
+
                     # MuLan analysis (only if enabled AND needed)
                     # (MuLan logic can be similarly simplified if required)
-                    
+
                     # Count track as analyzed if we processed MusiCNN, CLAP, or MuLan
                     if track_processed:
                         tracks_analyzed_count += 1
-                    
+
                 finally:
                     if path and os.path.exists(path):
                         os.remove(path)
