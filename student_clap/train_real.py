@@ -429,6 +429,7 @@ def train(config_path: str, resume: str = None):
     start_epoch = 1
     best_val_cosine = 0.0
     patience_counter = 0
+    last_val_cosine = None  # Store last validation cosine (None if not run yet)
     
     # Create checkpoint directory
     checkpoint_dir = Path(config['paths']['checkpoints'])
@@ -786,9 +787,24 @@ def train(config_path: str, resume: str = None):
         # Validate every few epochs (only if audio distillation is enabled)
         if audio_enabled and (epoch % 5 == 0 or epoch == 1):
             val_metrics = validate_real(trainer, val_dataset, config, epoch)
-            print_evaluation_report(val_metrics, f"Validation - Epoch {epoch}")
-            # Check for improvement (use cosine similarity as main metric)
             val_cosine = val_metrics['cosine_similarity']['mean']
+            last_val_cosine = val_cosine
+            # Log concise validation summary (this will appear in training.log)
+            logger.info(f"🔍 Validation completed (Epoch {epoch}) — mean cosine: {val_cosine:.4f} (n={val_metrics.get('num_songs','N/A')})")
+            print_evaluation_report(val_metrics, f"Validation - Epoch {epoch}")
+
+            # Update the per-epoch checkpoint to include the last validation cosine so files reflect validation results
+            try:
+                epoch_checkpoint_data['last_val_cosine'] = last_val_cosine
+                torch.save(epoch_checkpoint_data, epoch_checkpoint_path)
+                if latest_checkpoint_path.exists() or latest_checkpoint_path.is_symlink():
+                    latest_checkpoint_path.unlink()
+                torch.save(epoch_checkpoint_data, latest_checkpoint_path)
+                logger.info(f"✅ Updated epoch checkpoint with validation metrics: {epoch_checkpoint_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to update epoch checkpoint with validation metrics: {e}")
+
+            # Check for improvement (use cosine similarity as main metric)
             if val_cosine > best_val_cosine:
                 best_val_cosine = val_cosine
                 patience_counter = 0
@@ -825,6 +841,7 @@ def train(config_path: str, resume: str = None):
                 'scheduler_state_dict': trainer.scheduler.state_dict(),
                 'train_metrics': train_metrics,
                 'best_val_cosine': best_val_cosine,
+                'last_val_cosine': last_val_cosine,
                 'patience_counter': patience_counter,
                 'config': config,
                 'timestamp': time.time()

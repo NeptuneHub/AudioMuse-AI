@@ -167,7 +167,8 @@ def load_voyager_index_for_querying(force_reload=False):
             return
 
         if db_embedding_dim != EMBEDDING_DIMENSION:
-            logger.error(f"FATAL: Voyager index dimension mismatch! DB has {db_embedding_dim}, config expects {EMBEDDING_DIMENSION}.")
+            logger.warning(f"Voyager index dimension mismatch: DB has {db_embedding_dim}, config expects {EMBEDDING_DIMENSION}. Ignoring stored index; a rebuild is required.")
+            # Clear cached index and allow background rebuild to recreate the index with current embedding dimension
             voyager_index, id_map, reverse_id_map = None, None, None
             return
 

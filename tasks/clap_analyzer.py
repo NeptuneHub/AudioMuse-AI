@@ -20,6 +20,8 @@ import sys
 import logging
 import numpy as np
 from typing import Tuple, Optional
+from pydub import AudioSegment
+from tempfile import NamedTemporaryFile
 
 # Silence transformers warning about missing PyTorch/TensorFlow/Flax
 # We only use transformers for tokenizer, not for model inference
@@ -550,6 +552,66 @@ def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarr
     
     return mel.astype(np.float32)
 
+def robust_load_audio(file_path, target_sr=48000):
+    """
+    Robustly load audio file, falling back to pydub conversion if librosa fails.
+    Target sample rate defaults to 48kHz for CLAP.
+    """
+    import librosa
+    
+    # Try direct load first
+    try:
+        if AUDIO_LOAD_TIMEOUT is not None:
+            audio, sr = librosa.load(file_path, sr=target_sr, mono=True, duration=AUDIO_LOAD_TIMEOUT)
+        else:
+            audio, sr = librosa.load(file_path, sr=target_sr, mono=True)
+            
+        if audio is not None and audio.size > 0:
+            return audio, sr
+    except Exception as e:
+        logger.warning(f"Direct librosa load failed for {os.path.basename(file_path)}: {e}. Attempting fallback.")
+
+    # Fallback: Convert to WAV with pydub
+    temp_wav_path = None
+    try:
+        audio_segment = AudioSegment.from_file(
+            file_path,
+            parameters=[
+                "-analyzeduration", "10M",
+                "-probesize", "10M",
+                "-ignore_unknown",
+                "-err_detect", "ignore_err",
+                "-ac", "2"
+            ]
+        )
+        
+        if len(audio_segment) == 0:
+            return None, None
+
+        with NamedTemporaryFile(suffix=".wav", delete=False) as temp_wav_file:
+            temp_wav_path = temp_wav_file.name
+        
+        # Resample and mix down during export
+        processed_segment = audio_segment.set_frame_rate(target_sr).set_channels(1)
+        processed_segment.export(
+            temp_wav_path, 
+            format="wav",
+            parameters=["-codec:a", "pcm_s16le", "-ar", str(target_sr), "-ac", "1"]
+        )
+        
+        # Load the safe WAV
+        if AUDIO_LOAD_TIMEOUT is not None:
+            audio, sr = librosa.load(temp_wav_path, sr=target_sr, mono=True, duration=AUDIO_LOAD_TIMEOUT)
+        else:
+            audio, sr = librosa.load(temp_wav_path, sr=target_sr, mono=True)
+            
+        return audio, sr
+    except Exception as e:
+        logger.error(f"Fallback loading failed for {os.path.basename(file_path)}: {e}")
+        return None, None
+    finally:
+        if temp_wav_path and os.path.exists(temp_wav_path):
+            os.remove(temp_wav_path)
 
 def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, int]:
     """
@@ -567,8 +629,6 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         return None, 0, 0
     
     try:
-        import librosa
-        
         # Get audio-only model for music analysis
         session = get_clap_audio_model()
         
@@ -577,18 +637,11 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         SEGMENT_LENGTH = 480000  # 10 seconds at 48kHz
         HOP_LENGTH = 240000      # 5 seconds (50% overlap)
         
-        # Use configured AUDIO_LOAD_TIMEOUT if present to limit librosa loading duration
-        try:
-            if AUDIO_LOAD_TIMEOUT is not None:
-                audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True, duration=AUDIO_LOAD_TIMEOUT)
-            else:
-                audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True)
-        except Exception as e:
-            logger.error(f"Failed to load audio for CLAP analysis ({audio_path}) with AUDIO_LOAD_TIMEOUT={AUDIO_LOAD_TIMEOUT}: {e}")
-            import traceback
-            traceback.print_exc()
-            # Ensure CUDA memory is cleaned up on load failure
-            cleanup_cuda_memory(force=True)
+        # Use robust loader
+        audio_data, sr = robust_load_audio(audio_path, target_sr=SAMPLE_RATE)
+        
+        if audio_data is None or audio_data.size == 0:
+            logger.warning(f"Could not load audio for CLAP analysis: {audio_path}")
             return None, 0, 0
         
         # CRITICAL: Quantize audio to int16 and back (matching PyTorch CLAP preprocessing)
@@ -836,6 +889,55 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
         
     except Exception as e:
         logger.error(f"Failed to get text embedding for '{query_text}': {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+# Simple in-memory cache for label text embeddings to avoid recomputing every song
+_LABEL_TEXT_EMBED_CACHE = {}
+
+
+def get_label_text_embeddings(labels: list) -> Optional[np.ndarray]:
+    """Return normalized CLAP text embeddings for ordered `labels`.
+
+    Uses a small in-memory cache to avoid repeated ONNX calls for static labels
+    like mood names and other feature names. Returns an (N,512) ndarray or None
+    on failure.
+    """
+    if not config.CLAP_ENABLED:
+        return None
+    if not labels:
+        return None
+
+    # Determine which labels are missing from cache
+    missing = [lbl for lbl in labels if lbl not in _LABEL_TEXT_EMBED_CACHE]
+    try:
+        if missing:
+            # Compute embeddings in a batch for missing labels
+            batch = get_text_embeddings_batch(missing)
+            if batch is None:
+                # Fall back to single calls
+                for i, lbl in enumerate(missing):
+                    emb = get_text_embedding(lbl)
+                    if emb is None:
+                        raise RuntimeError(f"Failed to compute text embedding for label: {lbl}")
+                    _LABEL_TEXT_EMBED_CACHE[lbl] = emb
+            else:
+                # Store each embedding in cache
+                for lbl, emb in zip(missing, batch):
+                    _LABEL_TEXT_EMBED_CACHE[lbl] = emb
+
+        # Build ordered array from cache
+        emb_list = [np.array(_LABEL_TEXT_EMBED_CACHE[lbl], dtype=np.float32) for lbl in labels]
+        emb_mat = np.vstack(emb_list)
+        # Ensure normalized
+        norms = np.linalg.norm(emb_mat, axis=1, keepdims=True)
+        emb_mat = emb_mat / (norms + 1e-12)
+        return emb_mat
+
+    except Exception as e:
+        logger.error(f"get_label_text_embeddings failed: {e}")
         import traceback
         traceback.print_exc()
         return None

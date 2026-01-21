@@ -507,7 +507,13 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
         cur.close()
 
 def save_clap_embedding(item_id, clap_embedding_vector):
-    """Saves CLAP embedding for a track."""
+    """Saves CLAP embedding into the `clap_embedding` table only.
+
+    NOTE: We intentionally do not mirror new CLAP runs into `embedding`.
+    Migration of legacy CLAP rows into `embedding` is handled separately by
+    the migration logic (migrate_clap_to_embedding), and new analyses write
+    directly into `embedding` via `save_track_analysis_and_embedding`.
+    """
     if clap_embedding_vector is None or (isinstance(clap_embedding_vector, np.ndarray) and clap_embedding_vector.size == 0):
         return
     
@@ -515,6 +521,7 @@ def save_clap_embedding(item_id, clap_embedding_vector):
     cur = conn.cursor()
     try:
         embedding_blob = clap_embedding_vector.astype(np.float32).tobytes()
+        # Save in clap_embedding table only
         cur.execute("""
             INSERT INTO clap_embedding (item_id, embedding) VALUES (%s, %s)
             ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding

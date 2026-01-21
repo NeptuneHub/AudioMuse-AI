@@ -142,7 +142,7 @@ def load_clap_cache_from_db():
     global _CLAP_CACHE
     
     from app_helper import get_db
-    from config import CLAP_ENABLED, CLAP_EMBEDDING_DIMENSION
+    from config import CLAP_ENABLED, EMBEDDING_DIMENSION
     
     if not CLAP_ENABLED:
         logger.info("CLAP is disabled, skipping cache load.")
@@ -152,23 +152,23 @@ def load_clap_cache_from_db():
         conn = get_db()
         cur = conn.cursor(cursor_factory=DictCursor)
         
-        # Fetch all CLAP embeddings with metadata from score table
+        # Fetch canonical embeddings (not clap table) with metadata from score table
         cur.execute("""
             SELECT 
-                ce.item_id,
-                ce.embedding,
+                e.item_id,
+                e.embedding,
                 s.title,
                 s.author
-            FROM clap_embedding ce
-            JOIN score s ON ce.item_id = s.item_id
-            ORDER BY ce.item_id
+            FROM embedding e
+            JOIN score s ON e.item_id = s.item_id
+            ORDER BY e.item_id
         """)
         
         rows = cur.fetchall()
         cur.close()
         
         if not rows:
-            logger.warning("No CLAP embeddings found in database.")
+            logger.warning("No embeddings found in database.")
             _CLAP_CACHE['loaded'] = False
             return False
         
@@ -186,8 +186,8 @@ def load_clap_cache_from_db():
             # Convert BYTEA to numpy array
             embedding = np.frombuffer(embedding_blob, dtype=np.float32)
             
-            if embedding.shape[0] != CLAP_EMBEDDING_DIMENSION:
-                logger.warning(f"Skipping {item_id}: wrong dimension {embedding.shape[0]} (expected {CLAP_EMBEDDING_DIMENSION})")
+            if embedding.shape[0] != EMBEDDING_DIMENSION:
+                logger.warning(f"Skipping {item_id}: wrong dimension {embedding.shape[0]} (expected {EMBEDDING_DIMENSION})")
                 continue
             
             embeddings_list.append(embedding)
@@ -199,7 +199,7 @@ def load_clap_cache_from_db():
             item_ids_list.append(item_id)
         
         if not embeddings_list:
-            logger.error("No valid CLAP embeddings loaded.")
+            logger.error("No valid embeddings loaded.")
             _CLAP_CACHE['loaded'] = False
             return False
         
@@ -209,7 +209,7 @@ def load_clap_cache_from_db():
         _CLAP_CACHE['item_ids'] = item_ids_list
         _CLAP_CACHE['loaded'] = True
         
-        logger.info(f"CLAP cache loaded: {len(metadata_list)} songs with 512-dim embeddings in memory")
+        logger.info(f"Embedding cache loaded: {len(metadata_list)} songs with {EMBEDDING_DIMENSION}-dim embeddings in memory")
         return True
         
     except Exception as e:

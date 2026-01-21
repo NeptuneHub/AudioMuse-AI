@@ -292,6 +292,21 @@ CLAP_MINI_BATCH_SIZE = int(os.environ.get("CLAP_MINI_BATCH_SIZE", "1"))
 #   Cons: May see gradual VRAM growth on some systems
 PER_SONG_MODEL_RELOAD = os.environ.get("PER_SONG_MODEL_RELOAD", "true").lower() == "true"
 
+# --- Embedding dimension: prefer explicit override; otherwise derive from active models
+# If CLAP is enabled and no explicit EMBEDDING_DIMENSION env var is provided, use CLAP embedding size
+_EMBEDDING_DIM_OVERRIDE = os.environ.get("EMBEDDING_DIMENSION")
+if _EMBEDDING_DIM_OVERRIDE:
+    try:
+        EMBEDDING_DIMENSION = int(_EMBEDDING_DIM_OVERRIDE)
+    except Exception:
+        EMBEDDING_DIMENSION = 200
+else:
+    # If CLAP is enabled, prefer its fixed 512-dim embedding; otherwise keep default
+    if 'CLAP_ENABLED' in globals() and CLAP_ENABLED:
+        EMBEDDING_DIMENSION = CLAP_EMBEDDING_DIMENSION
+    else:
+        EMBEDDING_DIMENSION = 200
+
 # Category weights for CLAP query generation (affects random query sampling probabilities)
 # Higher weights favor categories where CLAP excels (Genre, Instrumentation)
 # Format: JSON string with category names as keys and float weights as values

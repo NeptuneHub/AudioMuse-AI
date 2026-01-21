@@ -130,47 +130,47 @@ def evaluate_retrieval(student_embeddings: np.ndarray,
 
 def print_evaluation_report(metrics: Dict, title: str = "Evaluation Results"):
     """
-    Print formatted evaluation report.
+    Print formatted evaluation report (logged via logger.info so it appears in training logs).
     
     Args:
         metrics: Metrics dict from evaluate_embeddings()
         title: Report title
     """
-    print("\n" + "=" * 60)
-    print(title)
-    print("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info(title)
+    logger.info("=" * 60)
     
-    print(f"\nNumber of samples: {metrics['num_samples']}")
+    logger.info(f"\nNumber of samples: {metrics['num_samples']}")
     
-    print(f"\nMSE Loss: {metrics['mse']:.6f}")
+    logger.info(f"\nMSE Loss: {metrics['mse']:.6f}")
     
-    print(f"\nCosine Similarity:")
-    print(f"  Mean: {metrics['cosine_similarity']['mean']:.4f}")
-    print(f"  Std:  {metrics['cosine_similarity']['std']:.4f}")
-    print(f"  Min:  {metrics['cosine_similarity']['min']:.4f}")
-    print(f"  Max:  {metrics['cosine_similarity']['max']:.4f}")
+    logger.info(f"\nCosine Similarity:")
+    logger.info(f"  Mean: {metrics['cosine_similarity']['mean']:.4f}")
+    logger.info(f"  Std:  {metrics['cosine_similarity']['std']:.4f}")
+    logger.info(f"  Min:  {metrics['cosine_similarity']['min']:.4f}")
+    logger.info(f"  Max:  {metrics['cosine_similarity']['max']:.4f}")
     
-    print(f"\nL2 Distance:")
-    print(f"  Mean: {metrics['l2_distance']['mean']:.4f}")
-    print(f"  Std:  {metrics['l2_distance']['std']:.4f}")
+    logger.info(f"\nL2 Distance:")
+    logger.info(f"  Mean: {metrics['l2_distance']['mean']:.4f}")
+    logger.info(f"  Std:  {metrics['l2_distance']['std']:.4f}")
     
-    print(f"\nEmbedding Norms:")
-    print(f"  Student: {metrics['embedding_norms']['student_mean']:.4f}")
-    print(f"  Teacher: {metrics['embedding_norms']['teacher_mean']:.4f}")
+    logger.info(f"\nEmbedding Norms:")
+    logger.info(f"  Student: {metrics['embedding_norms']['student_mean']:.4f}")
+    logger.info(f"  Teacher: {metrics['embedding_norms']['teacher_mean']:.4f}")
     
     # Performance assessment
-    print(f"\nPerformance Assessment:")
+    logger.info(f"\nPerformance Assessment:")
     cosine_mean = metrics['cosine_similarity']['mean']
     if cosine_mean > 0.9:
-        print(f"  ✓ Excellent (cosine > 0.9)")
+        logger.info(f"  ✓ Excellent (cosine > 0.9)")
     elif cosine_mean > 0.85:
-        print(f"  ✓ Good (cosine > 0.85)")
+        logger.info(f"  ✓ Good (cosine > 0.85)")
     elif cosine_mean > 0.8:
-        print(f"  ⚠ Acceptable (cosine > 0.8)")
+        logger.info(f"  ⚠ Acceptable (cosine > 0.8)")
     else:
-        print(f"  ✗ Poor (cosine < 0.8)")
+        logger.info(f"  ✗ Poor (cosine < 0.8)")
     
-    print("=" * 60)
+    logger.info("=" * 60)
 
 
 if __name__ == '__main__':
