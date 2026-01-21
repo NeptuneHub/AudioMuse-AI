@@ -37,6 +37,7 @@ def get_cron_entries():
             'id': r['id'], 'name': r['name'], 'task_type': r['task_type'], 'cron_expr': r['cron_expr'],
             'enabled': bool(r['enabled']), 'last_run': r['last_run'], 'created_at': str(r['created_at'])
         })
+    # Remove the special-case append for sonic_fingerprint; now handled by DB init
     return jsonify(entries), 200
 
 
@@ -101,7 +102,7 @@ def cron_matches_now(expr, ts=None):
 
 
 def run_due_cron_jobs():
-    """Read enabled cron rows and enqueue analysis/clustering when cron matches now and not recently run."""
+    """Read enabled cron rows and enqueue analysis/clustering/sonic_fingerprint when cron matches now and not recently run."""
     logger = logging.getLogger(__name__)
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
@@ -117,14 +118,14 @@ def run_due_cron_jobs():
             if cron_matches_now(r['cron_expr'], now_ts):
                 task_type = r['task_type']
                 job_id = str(uuid.uuid4())
-                # mark queued in task_status
-                save_task_status(job_id, f"main_{task_type}", TASK_STATUS_PENDING, details={"message": "Enqueued by cron."})
                 if task_type == 'analysis':
-                    # enqueue analysis to process everything (0) and use default TOP_N_MOODS from config
+                    # mark queued in task_status
+                    save_task_status(job_id, f"main_{task_type}", TASK_STATUS_PENDING, details={"message": "Enqueued by cron."})
                     rq_queue_high.enqueue('tasks.analysis.run_analysis_task', args=(0, TOP_N_MOODS), job_id=job_id, description='Cron Analysis', job_timeout=-1)
                     logger.info(f"Cron: enqueued analysis job {job_id}")
                 elif task_type == 'clustering':
-                    # Build kwargs with sensible defaults (same defaults used by API endpoint)
+                    # mark queued in task_status
+                    save_task_status(job_id, f"main_{task_type}", TASK_STATUS_PENDING, details={"message": "Enqueued by cron."})
                     clustering_kwargs = {
                         "clustering_method": CLUSTER_ALGORITHM,
                         "num_clusters_min": int(NUM_CLUSTERS_MIN),
@@ -165,6 +166,25 @@ def run_due_cron_jobs():
                     }
                     rq_queue_high.enqueue('tasks.clustering.run_clustering_task', kwargs=clustering_kwargs, job_id=job_id, description='Cron Clustering', job_timeout=-1)
                     logger.info(f"Cron: enqueued clustering job {job_id}")
+                elif task_type == 'sonic_fingerprint':
+                    # Run synchronously, not via queue, and create playlist on media server
+                    from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
+                    from tasks.voyager_manager import create_playlist_from_ids
+                    try:
+                        fingerprint_results = generate_sonic_fingerprint()
+                        if not fingerprint_results:
+                            logger.warning(f"Cron: sonic fingerprint found no results (job_id={job_id})")
+                        else:
+                            track_ids = [r['item_id'] for r in fingerprint_results if 'item_id' in r]
+                            playlist_name = f"Sonic Fingerprint (Cron {time.strftime('%Y-%m-%d')})"
+                            try:
+                                playlist_id = create_playlist_from_ids(playlist_name, track_ids)
+                                logger.info(f"Cron: created sonic fingerprint playlist '{playlist_name}' (playlist_id={playlist_id}, job_id={job_id})")
+                            except Exception as e:
+                                logger.error(f"Cron: error creating playlist for sonic fingerprint: {e}")
+                        logger.info(f"Cron: ran sonic fingerprint synchronously (job_id={job_id})")
+                    except Exception as e:
+                        logger.error(f"Cron: error running sonic fingerprint: {e}")
                 # update last_run
                 cur2 = db.cursor()
                 cur2.execute("UPDATE cron SET last_run=%s WHERE id=%s", (now_ts, r['id']))
@@ -173,3 +193,9 @@ def run_due_cron_jobs():
         except Exception as e:
             logger.exception(f"Error processing cron row {r}: {e}")
     cur.close()
+
+
+"""
+NOTE: The cron table is NOT created in this file. It is typically created by a database migration or setup script (e.g., an SQL file or Alembic migration).
+Check your deployment or setup scripts for the SQL that creates the 'cron' table.
+"""

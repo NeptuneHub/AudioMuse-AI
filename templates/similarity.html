@@ -42,6 +42,8 @@
                     </span>
                 </label>
                 <input type="text" id="title_search" name="title_search" placeholder="Start typing track title..." autocomplete="off">
+                <div id="selected_album_display" style="margin-top:0.5rem; font-size:0.9rem; color:#666;"></div>
+                <input type="hidden" id="selected_item_album" name="album">
                 <div id="autocomplete-results" class="autocomplete-results hidden"></div>
             </div>
 
@@ -165,7 +167,7 @@
                     tracks.forEach(track => {
                         const itemDiv = document.createElement('div');
                         itemDiv.className = 'autocomplete-item';
-                        itemDiv.innerHTML = '<div class="title">' + track.title + '</div><div class="artist">' + track.author + '</div>';
+                        itemDiv.innerHTML = '<div class="title">' + (track.title || 'N/A') + '</div><div class="artist">' + (track.author || 'N/A') + '</div><div class="album">Album: ' + (track.album || 'Unknown') + '</div>';
                         itemDiv.addEventListener('click', () => selectTrack(track));
                         autocompleteResults.appendChild(itemDiv);
                     });
@@ -181,6 +183,13 @@
                 artistInput.value = track.author;
                 titleInput.value = track.title;
                 selectedItemIdInput.value = track.item_id;
+                // Store album (fallback to 'unknown' when missing) and show to user
+                const albumVal = (track.album || '').trim() || 'unknown';
+                const albumDisplay = (track.album || '').trim() || 'Unknown';
+                const albumInputEl = document.getElementById('selected_item_album');
+                if (albumInputEl) albumInputEl.value = albumVal;
+                const albumDisplayEl = document.getElementById('selected_album_display');
+                if (albumDisplayEl) albumDisplayEl.textContent = 'Album: ' + albumDisplay;
                 hideAutocomplete();
             };
 
@@ -218,11 +227,13 @@
                 }
 
                 try {
+                    const albumValue = ((document.getElementById('selected_item_album') && document.getElementById('selected_item_album').value) || '').trim() || 'unknown';
                     const params = new URLSearchParams({
                         item_id: itemId,
                         n: n,
                         eliminate_duplicates: eliminateDuplicates, // Always send true or false
-                        radius_similarity: radiusSimilarity
+                        radius_similarity: radiusSimilarity,
+                        album: albumValue
                         // mood_similarity intentionally omitted
                     });
                     const response = await fetch(`{{ url_for('voyager_bp.get_similar_tracks_endpoint') }}?${params}`);
@@ -282,12 +293,12 @@
 
                     currentTrackIds = [itemId, ...data.map(track => track.item_id)];
 
-                    currentTracks = [{id: itemId, title: titleInput.value, author: artistInput.value}, ...data.map(track => ({id: track.item_id, title: track.title, author: track.author}))];
+                    currentTracks = [{id: itemId, title: titleInput.value, author: artistInput.value, album: (document.getElementById('selected_item_album') && document.getElementById('selected_item_album').value) ? document.getElementById('selected_item_album').value : 'Unknown'}, ...data.map(track => ({id: track.item_id, title: track.title, author: track.author, album: track.album || 'Unknown'}))];
 
                     // Graph visualization removed: skipping map fetch and chart rendering.
 
                     statusDiv.textContent = 'Found ' + data.length + ' similar tracks.';
-                    const tableHTML = '<table><thead><tr><th>Title</th><th>Artist</th><th>Distance</th></tr></thead><tbody>' + data.map(track => '<tr><td>' + (track.title || 'N/A') + '</td><td>' + (track.author || 'N/A') + '</td><td>' + track.distance.toFixed(4) + '</td></tr>').join('') + '</tbody></table>';
+                    const tableHTML = '<table><thead><tr><th>Title</th><th>Artist</th><th>Album</th><th>Distance</th></tr></thead><tbody>' + data.map(track => '<tr><td>' + (track.title || 'N/A') + '</td><td>' + (track.author || 'N/A') + '</td><td>' + (track.album || 'Unknown') + '</td><td>' + track.distance.toFixed(4) + '</td></tr>').join('') + '</tbody></table>';
                     resultsTableWrapper.innerHTML = tableHTML;
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';

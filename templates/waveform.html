@@ -101,6 +101,7 @@
     <div id="track-info" class="track-info">
         <h3 id="track-title">Track Title</h3>
         <p id="track-artist">Artist Name</p>
+        <p id="track-album" style="margin-top:0.5rem;color:#2563EB;font-weight:500;"></p>
     </div>
     <canvas id="waveform-canvas" class="waveform-canvas"></canvas>
     <div id="status"></div>
@@ -121,6 +122,7 @@
             const waveformCanvas = document.getElementById('waveform-canvas');
             const trackTitle = document.getElementById('track-title');
             const trackArtist = document.getElementById('track-artist');
+            const trackAlbum = document.getElementById('track-album');
             const statusDiv = document.getElementById('status');
 
             // --- Autocomplete Logic ---
@@ -155,7 +157,10 @@
                     tracks.forEach(track => {
                         const itemDiv = document.createElement('div');
                         itemDiv.className = 'autocomplete-item';
-                        itemDiv.innerHTML = '<div class="title">' + track.title + '</div><div class="artist">' + track.author + '</div>';
+                        itemDiv.innerHTML =
+                            '<div class="title">' + track.title + '</div>' +
+                            '<div class="artist">' + track.author + '</div>' +
+                            (track.album ? '<div class="album">Album: <span>' + track.album + '</span></div>' : '');
                         itemDiv.addEventListener('click', () => selectTrack(track));
                         autocompleteResults.appendChild(itemDiv);
                     });
@@ -171,6 +176,8 @@
                 artistInput.value = track.author;
                 titleInput.value = track.title;
                 selectedItemIdInput.value = track.item_id;
+                // Store album for later use
+                selectedItemIdInput.dataset.album = track.album || '';
                 hideAutocomplete();
             };
 
@@ -365,6 +372,8 @@
                     // Update track info
                     trackTitle.textContent = data.title || 'Unknown Title';
                     trackArtist.textContent = data.author || 'Unknown Artist';
+                    if (!trackAlbum) trackAlbum = document.getElementById('track-album');
+                    trackAlbum.textContent = data.album ? `Album: ${data.album}` : '';
 
                     // Draw waveform
                     drawWaveform(data.peaks);

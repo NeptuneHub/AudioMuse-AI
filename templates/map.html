@@ -584,7 +584,7 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
             const div = document.createElement('div');
             div.className = 'autocomplete-item';
             div.style.padding = '6px'; div.style.cursor = 'pointer'; div.style.borderBottom = '1px solid #f3f4f6';
-            div.innerHTML = `<div style="font-weight:600">${t.title || '(unknown)'}</div><div style="font-size:12px;color:#6b7280">${t.author || ''}</div>`;
+            div.innerHTML = `<div style="font-weight:600">${t.title || '(unknown)'}</div><div style="font-size:12px;color:#6b7280">${t.author || ''}</div><div style="font-size:12px;color:#888">${t.album ? t.album : ''}</div>`;
             div.addEventListener('click', ()=>{
                 // When an item is selected from either artist or title list, fill both fields and set the single selectedItemId
                 selectedItemId = t.item_id;

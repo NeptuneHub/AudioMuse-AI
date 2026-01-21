@@ -720,32 +720,27 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             def get_existing_track_ids(track_ids):
                 if not track_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
-                    # MODIFIED: Cast the integer track IDs to TEXT for the database query.
                     track_ids_as_strings = [str(id) for id in track_ids]
                     cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL", (tuple(track_ids_as_strings),))
                     return {row[0] for row in cur.fetchall()}
 
             def get_missing_clap_track_ids(track_ids):
-                """Returns set of track IDs that need CLAP analysis (missing from clap_embedding table)."""
                 if not track_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
                     track_ids_as_strings = [str(id) for id in track_ids]
                     cur.execute("SELECT item_id FROM clap_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
                     existing_clap_ids = {row[0] for row in cur.fetchall()}
-                    # Return tracks that DON'T have CLAP embeddings yet
                     return set(track_ids_as_strings) - existing_clap_ids
 
             def get_missing_mulan_track_ids(track_ids):
-                """Returns set of track IDs that need MuLan analysis (missing from mulan_embedding table)."""
                 if not track_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
                     track_ids_as_strings = [str(id) for id in track_ids]
                     cur.execute("SELECT item_id FROM mulan_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
                     existing_mulan_ids = {row[0] for row in cur.fetchall()}
-                    # Return tracks that DON'T have MuLan embeddings yet
                     return set(track_ids_as_strings) - existing_mulan_ids
 
-            existing_track_ids_set = get_existing_track_ids( [str(t['Id']) for t in tracks])
+            existing_track_ids_set = get_existing_track_ids([str(t['Id']) for t in tracks])
             missing_clap_ids_set = get_missing_clap_track_ids([str(t['Id']) for t in tracks]) if is_clap_available() else set()
             missing_mulan_ids_set = get_missing_mulan_track_ids([str(t['Id']) for t in tracks]) if MULAN_ENABLED else set()
             total_tracks_in_album = len(tracks)
@@ -781,11 +776,18 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 needs_musicnn = track_id_str not in existing_track_ids_set
                 needs_clap = track_id_str in missing_clap_ids_set
                 needs_mulan = track_id_str in missing_mulan_ids_set
-                
-                # Skip if ALL enabled analyses are already done
+
+                # Album name update now handled in main analysis task. If needed, uncomment below:
+                # try:
+                #     with get_db() as conn, conn.cursor() as cur:
+                #         cur.execute("UPDATE score SET album = %s WHERE item_id = %s", (album_name, track_id_str))
+                #         conn.commit()
+                #     logger.info(f"Updated album name for track '{track_name_full}' to '{album_name}'")
+                # except Exception as e:
+                #     logger.warning(f"Failed to update album name for '{track_name_full}': {e}")
+
                 if not needs_musicnn and not needs_clap and not needs_mulan:
                     tracks_skipped_count += 1
-                    # Build dynamic status message based on enabled features
                     status_parts = ["MusiCNN: ✓"]
                     if is_clap_available():
                         status_parts.append("CLAP: ✓")
@@ -909,7 +911,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         logger.info(f"  - Top Moods: {top_moods}")
                         logger.info(f"  - Other Features: {other_features}")
                         
-                        save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding, energy=analysis['energy'], other_features=other_features)
+                        save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding, energy=analysis['energy'], other_features=other_features, album=item.get('Album', None))
                         track_processed = True
                         
                         # Increment session recycler counter after successful analysis
@@ -1257,6 +1259,16 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
                 # Skip ONLY if all tracks have MusiCNN AND CLAP (if enabled) AND MuLan (if enabled)
                 if existing_count >= len(tracks) and not needs_clap_analysis and not needs_mulan_analysis:
+                    # Always update album name for all tracks, even if already analyzed
+                    for item in tracks:
+                        track_id_str = str(item['Id'])
+                        try:
+                            with get_db() as conn, conn.cursor() as cur:
+                                cur.execute("UPDATE score SET album = %s WHERE item_id = %s", (album.get('Name'), track_id_str))
+                                conn.commit()
+                            logger.info(f"[MainAnalysisTask] Updated album name for track '{item['Name']}' to '{album.get('Name')}' (main task)")
+                        except Exception as e:
+                            logger.warning(f"[MainAnalysisTask] Failed to update album name for '{item['Name']}': {e}")
                     albums_skipped += 1
                     checked_album_ids.add(album['Id'])
                     # Build dynamic status message based on enabled features

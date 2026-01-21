@@ -36,7 +36,19 @@
             <input id="clustering-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 2 * * 6)">
             <div style="margin-top:.5rem;"><input id="clustering-enabled" type="checkbox"> Enable</div>
 
-            <p style="margin-top:.5rem;font-size:0.9rem;color:#555;">Defaults are disabled. Analysis default: each night (2:00) except Saturday. Clustering default: Saturday at 2:00.</p>
+            <hr style="margin:1rem 0;">
+
+            <label style="display:block;margin-bottom:.5rem;" class="label-with-tooltip">
+                Sonic Fingerprint
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon"></span>
+                    <span class="tooltip-text">Schedule automatic generation of the Sonic Fingerprint playlist. Uses cron notation: 5 fields (minute hour day month weekday). Example: "0 1 * * 6" = 1:00 AM every Saturday. Uses default parameters.</span>
+                </span>
+            </label>
+            <input id="sonic-fingerprint-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 1 * * 6)">
+            <div style="margin-top:.5rem;"><input id="sonic-fingerprint-enabled" type="checkbox"> Enable</div>
+
+            <p style="margin-top:.5rem;font-size:0.9rem;color:#555;">Defaults are disabled. Analysis default: each night (2:00) except Saturday. Clustering default: Saturday at 2:00. Sonic Fingerprint default: Saturday at 1:00.</p>
 
             <div style="margin-top:1rem;">
                 <button id="save-btn" class="btn btn-primary" style="width:100%;">Save Schedules</button>
@@ -67,10 +79,13 @@
                 // find entries
                 const a = rows.find(r=>r.task_type==='analysis');
                 const c = rows.find(r=>r.task_type==='clustering');
+                const s = rows.find(r=>r.task_type==='sonic_fingerprint');
                 if(a){ document.getElementById('analysis-cron').value = a.cron_expr; document.getElementById('analysis-enabled').checked = a.enabled }
                 else { document.getElementById('analysis-cron').value = '0 2 * * 0-5'; document.getElementById('analysis-enabled').checked = false }
                 if(c){ document.getElementById('clustering-cron').value = c.cron_expr; document.getElementById('clustering-enabled').checked = c.enabled }
                 else { document.getElementById('clustering-cron').value = '0 2 * * 6'; document.getElementById('clustering-enabled').checked = false }
+                if(s){ document.getElementById('sonic-fingerprint-cron').value = s.cron_expr; document.getElementById('sonic-fingerprint-enabled').checked = s.enabled }
+                else { document.getElementById('sonic-fingerprint-cron').value = '0 1 * * 6'; document.getElementById('sonic-fingerprint-enabled').checked = false }
             }catch(e){ console.error(e) }
         }
 
@@ -87,6 +102,7 @@
             const rows = window.cronRows || [];
             const an = rows.find(r=>r.task_type==='analysis');
             const cn = rows.find(r=>r.task_type==='clustering');
+            const sn = rows.find(r=>r.task_type==='sonic_fingerprint');
 
             try{
                 if (an) {
@@ -99,6 +115,14 @@
                     saveCron({id:cn.id, name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen})
                 } else {
                     saveCron({name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen})
+                }
+
+                const sexpr = document.getElementById('sonic-fingerprint-cron').value;
+                const sen = document.getElementById('sonic-fingerprint-enabled').checked;
+                if (sn) {
+                    saveCron({id:sn.id, name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen})
+                } else {
+                    saveCron({name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen})
                 }
 
                 // refresh cached rows after saving

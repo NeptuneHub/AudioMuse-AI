@@ -115,7 +115,16 @@ def _create_path_from_ids(path_ids):
 
     path_details = get_tracks_by_ids(unique_path_ids)
     details_map = {d['item_id']: d for d in path_details}
-    
+
+    # Ensure album field is present in each song dict
+    for song in details_map.values():
+        # Try to get album from song dict, fallback to 'Unknown Album' if not found or empty
+        album = song.get('album')
+        if not album:
+            # Try to get from other possible keys (e.g. 'album_name')
+            album = song.get('album_name')
+        song['album'] = album if album else 'Unknown'
+
     ordered_path_details = [details_map[song_id] for song_id in unique_path_ids if song_id in details_map]
     return ordered_path_details
 

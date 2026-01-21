@@ -26,6 +26,7 @@ class TestSaveTrackStringSanitization:
         item_id = "test_id"
         title = "Song\x00Title"
         author = "Artist\x00Name"
+        album = "Album\x00Name"
         key = "C\x00"
         scale = "major\x00"
         other_features = "feature1:0.5\x00,feature2:0.8"
@@ -35,7 +36,7 @@ class TestSaveTrackStringSanitization:
         # Call the function
         save_track_analysis_and_embedding(
             item_id, title, author, 120.0, key, scale, 
-            moods, embedding, energy=0.5, other_features=other_features
+            moods, embedding, energy=0.5, other_features=other_features, album=album
         )
         
         # Verify that NUL bytes were removed from the database call
@@ -47,10 +48,12 @@ class TestSaveTrackStringSanitization:
         assert "\x00" not in values[4]  # key
         assert "\x00" not in values[5]  # scale
         assert "\x00" not in values[8]  # other_features
+        assert "\x00" not in values[9]  # album
         
         # Verify the sanitized values
         assert values[1] == "SongTitle"
         assert values[2] == "ArtistName"
+        assert values[9] == "AlbumName"
     
     @patch('app_helper.get_db')
     def test_sanitize_removes_control_characters(self, mock_get_db):

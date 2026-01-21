@@ -68,6 +68,9 @@ def search_tracks_endpoint():
                     type: string
                   author:
                     type: string
+                  album:
+                    type: string
+                    description: Album name or 'unknown' if missing
     """
     title_query = request.args.get('title', '', type=str)
     artist_query = request.args.get('artist', '', type=str)
@@ -79,7 +82,20 @@ def search_tracks_endpoint():
         return jsonify([])
 
     try:
-        results = search_tracks_by_title_and_artist(title_query, artist_query)
+        raw_results = search_tracks_by_title_and_artist(title_query, artist_query)
+        results = []
+        for r in raw_results:
+            # Be defensive in case the source returns non-dict entries
+            if isinstance(r, dict):
+                album = (r.get('album') or '').strip() or 'unknown'
+                results.append({
+                    'item_id': r.get('item_id'),
+                    'title': r.get('title'),
+                    'author': r.get('author'),
+                    'album': album
+                })
+            else:
+                results.append({'item_id': None, 'title': None, 'author': None, 'album': 'unknown'})
         return jsonify(results)
     except Exception as e:
         logger.error(f"Error during track search: {e}", exc_info=True)
@@ -143,6 +159,9 @@ def get_similar_tracks_endpoint():
                     type: string
                   author:
                     type: string
+                  album:
+                    type: string
+                    description: Album name or 'unknown' if missing
                   distance:
                     type: number
       400:
@@ -215,6 +234,7 @@ def get_similar_tracks_endpoint():
                     "item_id": track_info['item_id'],
                     "title": track_info['title'],
                     "author": track_info['author'],
+                    "album": (track_info.get('album') or 'unknown'),
                     "distance": distance_map[neighbor_id]
                 })
 
@@ -256,7 +276,7 @@ def get_track_endpoint():
   """
   Fetch basic track metadata (title, author) for a given item_id.
   Query param: item_id (required)
-  Response: { "item_id": str, "title": str, "author": str } or 404
+  Response: { "item_id": str, "title": str, "author": str, "album": str } or 404
   """
   item_id = request.args.get('item_id')
   if not item_id:
@@ -269,7 +289,12 @@ def get_track_endpoint():
       return jsonify({"error": f"Item '{item_id}' not found."}), 404
     # Return only the basic fields
     d = details[0]
-    return jsonify({"item_id": d.get('item_id'), "title": d.get('title'), "author": d.get('author')}), 200
+    return jsonify({
+        "item_id": d.get('item_id'),
+        "title": d.get('title'),
+        "author": d.get('author'),
+        "album": (d.get('album') or 'unknown')
+    }), 200
   except Exception as e:
     logger.error(f"Unexpected error fetching track {item_id}: {e}", exc_info=True)
     return jsonify({"error": "An unexpected error occurred."}), 500
