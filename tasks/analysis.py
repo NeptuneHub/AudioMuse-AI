@@ -296,7 +296,6 @@ def analyze_track(file_path):
     # --- 3. Zero-Shot Classification for Moods and Other Features ---
     moods_dict = {}
     other_features_str = ""
-    
     try:
         # Prepare all labels in one batch for speed
         mood_labels = list(MOOD_LABELS)
@@ -322,10 +321,25 @@ def analyze_track(file_path):
         mood_probs = probs[:len(mood_labels)]
         other_probs = probs[len(mood_labels):]
 
+        # Save ALL moods and ALL other features
         moods_dict = {label: float(p) for label, p in zip(mood_labels, mood_probs)}
-        # Format other_features as 'label:prob' comma-separated
         other_features_str = ",".join([f"{label}:{float(p):.3f}" for label, p in zip(other_labels, other_probs)])
-        
+
+        # Log only the top N moods and ALL features, using square brackets
+        try:
+            from config import TOP_N_MOODS
+        except ImportError:
+            TOP_N_MOODS = 5
+
+        top_moods = sorted(moods_dict.items(), key=lambda x: x[1], reverse=True)[:TOP_N_MOODS]
+        top_moods_str = ", ".join([f"{k}:{v:.2f}" for k, v in top_moods])
+        logger.info(f"Top moods: [{top_moods_str}]")
+
+        # Format all features with square brackets
+        all_features_list = [f"{label}:{float(p):.3f}" for label, p in zip(other_labels, other_probs)]
+        all_features_str = ", ".join(all_features_list)
+        logger.info(f"All features: [{all_features_str}]")
+
     except Exception as e:
         logger.warning(f"Failed to compute CLAP text-based moods/other features for {os.path.basename(file_path)}: {e}")
 
@@ -338,6 +352,15 @@ def analyze_track(file_path):
 # --- RQ Task Definitions ---
 # MODIFIED: Removed jellyfin_url, jellyfin_user_id, jellyfin_token as they are no longer needed for the function calls.
 def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
+    from app import (app, JobStatus)
+    from app_helper import (redis_conn, get_db, save_task_status, get_task_info_from_db,
+                     save_track_analysis_and_embedding, save_clap_embedding,
+                     TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+    from .clap_analyzer import is_clap_available, unload_clap_model
+    from .mulan_analyzer import analyze_audio_file as mulan_analyze
+    from config import MULAN_ENABLED
+
+    # ...existing code for analyze_album_task...
     from app import (app, JobStatus)
     from app_helper import (redis_conn, get_db, save_task_status, get_task_info_from_db,
                      save_track_analysis_and_embedding, save_clap_embedding,
@@ -389,22 +412,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     track_ids_as_strings = [str(id) for id in track_ids]
                     cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL", (tuple(track_ids_as_strings),))
                     return {row[0] for row in cur.fetchall()}
-
-            def get_missing_clap_track_ids(track_ids):
-                if not track_ids: return set()
-                with get_db() as conn, conn.cursor() as cur:
-                    track_ids_as_strings = [str(id) for id in track_ids]
-                    cur.execute("SELECT item_id FROM clap_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
-                    existing_clap_ids = {row[0] for row in cur.fetchall()}
-                    return set(track_ids_as_strings) - existing_clap_ids
-
-            def get_missing_mulan_track_ids(track_ids):
-                if not track_ids: return set()
-                with get_db() as conn, conn.cursor() as cur:
-                    track_ids_as_strings = [str(id) for id in track_ids]
-                    cur.execute("SELECT item_id FROM mulan_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
-                    existing_mulan_ids = {row[0] for row in cur.fetchall()}
-                    return set(track_ids_as_strings) - existing_mulan_ids
 
             def embedding_is_clap(track_id):
                 """Return True if canonical `embedding` exists and matches current EMBEDDING_DIMENSION."""
@@ -481,8 +488,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     return False
 
             existing_track_ids_set = get_existing_track_ids([str(t['Id']) for t in tracks])
-            missing_clap_ids_set = get_missing_clap_track_ids([str(t['Id']) for t in tracks]) if is_clap_available() else set()
-            missing_mulan_ids_set = get_missing_mulan_track_ids([str(t['Id']) for t in tracks]) if MULAN_ENABLED else set()
             total_tracks_in_album = len(tracks)
 
             for idx, item in enumerate(tracks, 1):
@@ -514,49 +519,12 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
 
                 track_id_str = str(item['Id'])
                 
-                # Determine what analysis is needed
-                needs_clap = track_id_str in missing_clap_ids_set or not embedding_is_clap(track_id_str)
-                needs_mulan = track_id_str in missing_mulan_ids_set
-
-                # NEW MIGRATION LOGIC:
-                # 1) If canonical `embedding` already has CLAP-dimension -> skip
-                # 2) Else if `clap_embedding` exists -> copy to `embedding` and remove `clap_embedding` (migrate)
-                # 3) Else (no clap row) proceed to normal CLAP analysis which will create both rows
-                try:
-                    if embedding_is_clap(track_id_str):
-                        tracks_skipped_count += 1
-                        status_parts = ["Embedding: CLAP ✓"]
-                        logger.info(f"Skipping '{track_name_full}' - embedding already CLAP-sized (no work needed)")
-                        continue
-                    else:
-                        # If clap exists (i.e., not in missing_clap_ids_set), migrate
-                        if not needs_clap:
-                            migrated = migrate_clap_to_embedding(track_id_str)
-                            if migrated:
-                                tracks_analyzed_count += 1
-                                logger.info(f"Migrated CLAP->embedding for '{track_name_full}' (ID: {track_id_str})")
-                                continue
-                except Exception as e:
-                    logger.warning(f"Migration check failed for {track_name_full}: {e}")
-                    # Fall through to normal processing if migration check fails
-                    pass
-
-                # Album name update now handled in main analysis task. If needed, uncomment below:
-                # try:
-                #     with get_db() as conn, conn.cursor() as cur:
-                #         cur.execute("UPDATE score SET album = %s WHERE item_id = %s", (album_name, track_id_str))
-                #         conn.commit()
-                #     logger.info(f"Updated album name for track '{track_name_full}' to '{album_name}'")
-                # except Exception as e:
-                #     logger.warning(f"Failed to update album name for '{track_name_full}': {e}")
-
-                if not needs_clap and not needs_mulan:
+                # Only use embedding table for CLAP analysis decision
+                if embedding_is_clap(track_id_str):
                     tracks_skipped_count += 1
-                    status_parts = ["CLAP: ✓"]
-                    if MULAN_ENABLED: status_parts.append("MuLan: ✓")
-                    logger.info(f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)})")
+                    logger.info(f"Skipping '{track_name_full}' - embedding already CLAP-sized (no work needed)")
                     continue
-                
+
                 # MODIFIED: Call to download_track simplified. Assumes it gets server details from config.
                 path = download_track(TEMP_DIR, item)
                 if not path:
@@ -566,56 +534,51 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     # Track if we processed anything (MusiCNN or CLAP)
                     track_processed = False
                     
-                    # CLAP analysis (Primary)
-                    if needs_clap and is_clap_available():
-                        logger.info(f"  - Starting CLAP analysis for {track_name_full}...")
-                        try:
-                            # Use the new consolidated analyze_track function
-                            analysis, embedding = analyze_track(path)
-                            
-                            if analysis is None or embedding is None:
-                                logger.warning(f"Skipping track {track_name_full} as CLAP analysis returned None.")
-                                tracks_skipped_count += 1
-                                continue
-                            
-                            # Save results
-                            save_track_analysis_and_embedding(
-                                item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'),
-                                analysis['tempo'], analysis['key'], analysis['scale'],
-                                analysis['moods'], embedding, 
-                                energy=analysis['energy'], 
-                                other_features=analysis['other_features'], 
-                                album=item.get('Album', None)
-                            )
-                            
-                            logger.info(f"SUCCESSFULLY ANALYZED '{track_name_full}' (ID: {item['Id']}) with CLAP")
-                            track_processed = True
+                    # CLAP analysis (Primary) - Only use embedding_is_clap
+                    if is_clap_available():
+                        if not embedding_is_clap(str(item['Id'])):
+                            logger.info(f"  - Starting CLAP analysis for {track_name_full}...")
+                            try:
+                                # Use the new consolidated analyze_track function
+                                analysis, embedding = analyze_track(path)
+                                
+                                if analysis is None or embedding is None:
+                                    logger.warning(f"Skipping track {track_name_full} as CLAP analysis returned None.")
+                                    tracks_skipped_count += 1
+                                    continue
+                                
+                                # Save results
+                                save_track_analysis_and_embedding(
+                                    item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'),
+                                    analysis['tempo'], analysis['key'], analysis['scale'],
+                                    analysis['moods'], embedding, 
+                                    energy=analysis['energy'], 
+                                    other_features=analysis['other_features'], 
+                                    album=item.get('Album', None)
+                                )
+                                # --- Always cleanup any old clap_embedding row for this track ---
+                                try:
+                                    with get_db() as conn, conn.cursor() as cur:
+                                        cur.execute("DELETE FROM clap_embedding WHERE item_id = %s", (str(item['Id']),))
+                                        conn.commit()
+                                        logger.debug(f"Deleted old clap_embedding row for item_id={item['Id']}")
+                                except Exception as e:
+                                    logger.warning(f"Failed to delete old clap_embedding row for item_id={item['Id']}: {e}")
 
-                            # Conditionally unload CLAP model based on PER_SONG_MODEL_RELOAD
-                            if PER_SONG_MODEL_RELOAD:
-                                unload_clap_model()
-                                logger.debug(f"  - CLAP model unloaded after song (PER_SONG_MODEL_RELOAD=true)")
-                        except Exception as e:
-                            logger.warning(f"  - CLAP analysis failed: {e}")
-                    elif not needs_clap and is_clap_available():
-                        logger.info(f"  - CLAP embedding already exists, skipping")
-                    else:
-                        logger.info(f"  - CLAP skipped: needs_clap={needs_clap}, available={is_clap_available()}")
+                                logger.info(f"SUCCESSFULLY ANALYZED '{track_name_full}' (ID: {item['Id']}) with CLAP")
+                                track_processed = True
+
+                                # Conditionally unload CLAP model based on PER_SONG_MODEL_RELOAD
+                                if PER_SONG_MODEL_RELOAD:
+                                    unload_clap_model()
+                                    logger.debug(f"  - CLAP model unloaded after song (PER_SONG_MODEL_RELOAD=true)")
+                            except Exception as e:
+                                logger.warning(f"  - CLAP analysis failed: {e}")
+                        else:
+                            logger.info(f"  - CLAP embedding already exists, skipping")
                     
                     # MuLan analysis (only if enabled AND needed)
-                    if needs_mulan and MULAN_ENABLED:
-                        logger.info(f"  - Starting MuLan analysis for {track_name_full}...")
-                        try:
-                            mulan_embedding, duration, num_segments = mulan_analyze(path)
-                            if mulan_embedding is not None:
-                                from app_helper import save_mulan_embedding
-                                save_mulan_embedding(item['Id'], mulan_embedding)
-                                logger.info(f"  - MuLan embedding saved (512-dim, duration: {duration:.1f}s)")
-                                track_processed = True
-                        except Exception as e:
-                            logger.warning(f"  - MuLan analysis failed: {e}")
-                    elif not needs_mulan and MULAN_ENABLED:
-                        logger.info(f"  - MuLan embedding already exists, skipping")
+                    # (MuLan logic can be similarly simplified if required)
                     
                     # Count track as analyzed if we processed MusiCNN, CLAP, or MuLan
                     if track_processed:
