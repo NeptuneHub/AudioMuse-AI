@@ -49,6 +49,42 @@ To check instead which configuration of input you used for a checkpoint you can 
 PYTHONPATH=.. python -c "import torch; m=torch.load('student_clap/checkpoints/CHECKPOINT-NAME-HERE.pth', map_location='cpu'); print({k: v for k, v in m['config']['model'].items() if k.startswith('phinet_')})"
 ```
 
+To force the algorithm to read LR from config.yaml after a stop, instead of reading from the scheduler:
+```
+python3 - <<'PY'
+import torch, glob
+for p in glob.glob('student_clap/checkpoints/checkpoint_epoch_*.pth'):
+    ckpt = torch.load(p, map_location='cpu')
+    ckpt.pop('optimizer_state_dict', None)
+    ckpt.pop('scheduler_state_dict', None)
+    torch.save(ckpt, p)
+    print("Stripped optimizer/scheduler from", p)
+PY
+```
+
+To force the algorithm to read the weight decay value from config.yaml after a stop, instead of reading from schedule:
+```
+python3 - <<'PY'
+import torch, glob, shutil
+paths = glob.glob('student_clap/checkpoints/checkpoint_epoch_*.pth') + ['student_clap/checkpoints/latest.pth']
+for p in paths:
+    try:
+        shutil.copy(p, p + '.bak')
+        ckpt = torch.load(p, map_location='cpu')
+        changed = False
+        for k in ('scheduler_state_dict','optimizer_state_dict'):
+            if ckpt.pop(k, None) is not None:
+                changed = True
+        if changed:
+            torch.save(ckpt, p)
+            print('Cleaned', p)
+        else:
+            print('No optimizer/scheduler state in', p)
+    except Exception as e:
+        print('Skipped', p, ':', e)
+PY
+```
+
 ## Training
 
 ## Training - Songs
