@@ -219,7 +219,7 @@ RUN set -eux; \
     base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
     arch=$(uname -m); \
     echo "Architecture detected: $arch - Downloading CLAP split ONNX models..."; \
-    \
+    mkdir -p /app/model; \
     # Download audio model (~268MB) \
     audio_model="clap_audio_model.onnx"; \
     n=0; \
@@ -238,7 +238,6 @@ RUN set -eux; \
         echo "ERROR: Failed to download CLAP audio model after 5 attempts"; \
         exit 1; \
     fi; \
-    \
     # Download text model (~478MB) \
     text_model="clap_text_model.onnx"; \
     n=0; \
@@ -257,7 +256,6 @@ RUN set -eux; \
         echo "ERROR: Failed to download CLAP text model after 5 attempts"; \
         exit 1; \
     fi; \
-    \
     # Verify audio model \
     if [ ! -f "/app/model/$audio_model" ]; then \
         echo "ERROR: CLAP audio model file not created"; \
@@ -268,7 +266,6 @@ RUN set -eux; \
         echo "ERROR: CLAP audio model file is too small (expected ~268MB, got $file_size bytes)"; \
         exit 1; \
     fi; \
-    \
     # Verify text model \
     if [ ! -f "/app/model/$text_model" ]; then \
         echo "ERROR: CLAP text model file not created"; \
@@ -279,7 +276,6 @@ RUN set -eux; \
         echo "ERROR: CLAP text model file is too small (expected ~478MB, got $file_size bytes)"; \
         exit 1; \
     fi; \
-    \
     echo "✓ CLAP split models downloaded successfully (arch: $arch)"; \
     ls -lh "/app/model/$audio_model" "/app/model/$text_model"
 
