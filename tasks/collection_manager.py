@@ -104,147 +104,117 @@ def sync_album_batch_task(parent_task_id, album_batch, pocketbase_url, pocketbas
             return
 
         try:
+
             pb_client = PocketBaseClient(base_url=pocketbase_url, token=pocketbase_token, log_prefix=log_prefix)
-            
             unique_songs = {}
             for album in album_batch:
                 tracks = get_tracks_from_album(album.get('Id'))
                 for track in tracks:
-                    # Sanitize artist and title immediately to prevent issues downstream
                     artist_raw = track.get('AlbumArtist', 'Unknown Artist')
                     title_raw = track.get('Name', 'Unknown Title')
-                    
+                    album_name = album.get('Name', 'Unknown Album')
                     artist = artist_raw.replace('\x00', '') if artist_raw else 'Unknown Artist'
                     title = title_raw.replace('\x00', '') if title_raw else 'Unknown Title'
-
-                    # Update the track object itself to use the sanitized version everywhere
                     track['AlbumArtist'] = artist
                     track['Name'] = title
-
-                    unique_songs[(artist.strip().lower(), title.strip().lower())] = track
+                    unique_songs[(artist.strip().lower(), title.strip().lower())] = {
+                        'track': track,
+                        'album': album_name
+                    }
 
             if not unique_songs:
                 logger.info(f"{log_prefix} No unique songs found in this batch. Task successful.")
                 save_task_status(task_id, "album_batch_sync", TASK_STATUS_SUCCESS, parent_task_id=parent_task_id, sub_type_identifier=lock_id, progress=100, details={"message": "No songs to process."})
                 return
 
-            unique_artists = list(set(t.get('AlbumArtist') for t in unique_songs.values()))
-            
-            try:
-                logger.info(f"{log_prefix} Fetching remote records for {len(unique_artists)} artists.")
-                
-                ARTIST_CHUNK_SIZE = 2
-                remote_embeddings = []
-                remote_scores = []
 
-                for i in range(0, len(unique_artists), ARTIST_CHUNK_SIZE):
-                    artist_chunk = unique_artists[i:i + ARTIST_CHUNK_SIZE]
-                    logger.info(f"{log_prefix} Fetching data for artist chunk {i//ARTIST_CHUNK_SIZE + 1}/{(len(unique_artists) + 1)//ARTIST_CHUNK_SIZE}...")
-                    remote_embeddings.extend(pb_client.get_records_by_artists(artist_chunk, collection='embedding'))
-                    remote_scores.extend(pb_client.get_records_by_artists(artist_chunk, collection='score'))
-
-            except requests.exceptions.ConnectTimeout as e:
-                logger.error(f"{log_prefix} CRITICAL: Connection to PocketBase timed out while fetching records. This task will be retried. Error: {e}")
-                raise  # Re-raise to trigger RQ's retry mechanism
-            
-            remote_embedding_map = {(r['artist'].strip().lower(), r['title'].strip().lower()): r for r in remote_embeddings}
-            remote_score_map = {(r['artist'].strip().lower(), r['title'].strip().lower()): r for r in remote_scores}
-
-            all_track_ids = [t['Id'] for t in unique_songs.values()]
+            all_track_ids = [v['track']['Id'] for v in unique_songs.values()]
             local_tracks_data = get_tracks_by_ids(all_track_ids)
             local_tracks_map = {t['item_id']: t for t in local_tracks_data}
 
+            # --- Compute neighbors for each track using Voyager index ---
+            from tasks.voyager_manager import find_nearest_neighbors_by_id
+            NEIGHBOR_COUNT = 10
+            # Attach neighbors to each local_tracks_data entry
+            for t in local_tracks_data:
+                embedding_vector = t.get('embedding_vector')
+                if embedding_vector is not None and hasattr(embedding_vector, 'size') and embedding_vector.size > 0:
+                    try:
+                        neighbors = find_nearest_neighbors_by_id(t['item_id'], n=NEIGHBOR_COUNT)
+                        # Each neighbor: {"item_id": ..., "distance": ...}
+                        # For each neighbor, fetch embedding_vector for hash
+                        neighbor_tracks = [local_tracks_map.get(n['item_id']) for n in neighbors]
+                        neighbor_dicts = []
+                        for n, neighbor_track in zip(neighbors, neighbor_tracks):
+                            if neighbor_track and neighbor_track.get('embedding_vector') is not None and hasattr(neighbor_track.get('embedding_vector'), 'size') and neighbor_track.get('embedding_vector').size > 0:
+                                neighbor_dicts.append({
+                                    'embedding_vector': neighbor_track.get('embedding_vector'),
+                                    'distance': n['distance'],
+                                    'item_id': n['item_id']
+                                })
+                        t['neighbors'] = neighbor_dicts
+                    except Exception as e:
+                        t['neighbors'] = []
+                        logger.warning(f"Failed to compute neighbors for track {t['item_id']}: {e}")
+                else:
+                    t['neighbors'] = []
+
             batch_requests_to_upload = []
 
-            for remote_key, track in unique_songs.items():
+            # SONGS table upload
+            for key, val in unique_songs.items():
+                track = val['track']
+                album_name = val['album']
                 track_id = track['Id']
                 artist = track.get('AlbumArtist', 'Unknown Artist')
                 title = track.get('Name')
-                
                 local_track_data = local_tracks_map.get(track_id)
-                is_present_locally = local_track_data and local_track_data.get('embedding_vector') is not None and local_track_data['embedding_vector'].size > 0
-                is_present_remotely = remote_key in remote_embedding_map
-
-                if is_present_locally and not is_present_remotely:
-                    embedding_body = {
-                        "artist": artist, "title": title,
-                        "embedding": json.dumps(local_track_data['embedding_vector'].tolist())
+                embedding_vector = local_track_data.get('embedding_vector') if local_track_data else None
+                if embedding_vector is not None and hasattr(embedding_vector, 'size') and embedding_vector.size > 0:
+                    global_id = hashlib.sha256(embedding_vector.tobytes()).hexdigest()
+                    song_body = {
+                        "global_id": global_id,
+                        "title": title,
+                        "artist": artist,
+                        "album": album_name,
+                        "report_count": 1
                     }
                     batch_requests_to_upload.append({
                         "method": "POST",
-                        "url": "/api/collections/embedding/records",
-                        "body": embedding_body
+                        "url": "/api/collections/songs/records",
+                        "body": song_body
                     })
 
-                    score_body = {
-                        "title": title, "artist": artist,
-                        "tempo": local_track_data.get('tempo'), "key": local_track_data.get('key'),
-                        "scale": local_track_data.get('scale'), "mood_vector": local_track_data.get('mood_vector'),
-                        "energy": local_track_data.get('energy'), "other_features": local_track_data.get('other_features')
-                    }
-                    batch_requests_to_upload.append({
-                        "method": "POST",
-                        "url": "/api/collections/score/records",
-                        "body": score_body
-                    })
-                    logger.info(f"{log_prefix} Queued for atomic upload: '{title}' by '{artist}'.")
-
-                elif not is_present_locally and is_present_remotely:
-                    remote_embedding_record = remote_embedding_map.get(remote_key)
-                    remote_score_record = remote_score_map.get(remote_key)
-
-                    if remote_embedding_record and remote_score_record:
-                        try:
-                            # Parse score data
-                            moods_str = remote_score_record.get('mood_vector', '')
-                            moods = {p.split(':')[0]: float(p.split(':')[1]) for p in moods_str.split(',') if ':' in p} if moods_str else {}
-                            
-                            # Parse embedding data
-                            embedding_data = remote_embedding_record.get('embedding')
-                            embedding_list = []
-                            if isinstance(embedding_data, str) and embedding_data:
-                                embedding_list = json.loads(embedding_data)
-                            elif isinstance(embedding_data, list):
-                                embedding_list = embedding_data
-                            
-                            embedding_vector = np.array(embedding_list).astype(np.float32)
-
-                            if embedding_vector.size == 0:
-                                logger.warning(f"{log_prefix} Embedding data from remote for '{title}' was empty. Skipping sync-down.")
-                                continue
-
-                            # Save analysis and embedding in a single transaction
-                            save_track_analysis_and_embedding(
-                                item_id=track_id,
-                                title=title,
-                                author=artist,
-                                tempo=remote_score_record.get('tempo'),
-                                key=remote_score_record.get('key'),
-                                scale=remote_score_record.get('scale'),
-                                moods=moods,
-                                embedding_vector=embedding_vector,
-                                energy=remote_score_record.get('energy'),
-                                other_features=remote_score_record.get('other_features')
-                            )
-                            logger.info(f"{log_prefix} Synced down from remote: '{title}' by '{artist}'.")
-                        except (json.JSONDecodeError, TypeError) as e:
-                            logger.warning(f"{log_prefix} Could not parse/process remote record for '{title}'. Skipping sync-down. Error: {e}")
-                        except Exception as e:
-                            logger.error(f"{log_prefix} Failed to save synced-down data for '{title}'. Error: {e}")
-                
-                else:
-                    logger.debug(f"{log_prefix} No action needed for '{title}' by '{artist}' (State: Local={is_present_locally}, Remote={is_present_remotely}).")
+            # SIMILARITIES table upload
+            for t in local_tracks_data:
+                embedding_vector = t.get('embedding_vector')
+                if embedding_vector is not None and hasattr(embedding_vector, 'size') and embedding_vector.size > 0:
+                    source_id = hashlib.sha256(embedding_vector.tobytes()).hexdigest()
+                    neighbors = t.get('neighbors', [])
+                    for neighbor in neighbors:
+                        neighbor_vec = neighbor.get('embedding_vector')
+                        if neighbor_vec is not None and hasattr(neighbor_vec, 'size') and neighbor_vec.size > 0:
+                            target_id = hashlib.sha256(neighbor_vec.tobytes()).hexdigest()
+                            avg_distance = float(neighbor.get('distance', 0.0))
+                            similarity_body = {
+                                "source_id": source_id,
+                                "target_id": target_id,
+                                "avg_distance": avg_distance,
+                                "vote_weight": 1
+                            }
+                            batch_requests_to_upload.append({
+                                "method": "POST",
+                                "url": "/api/collections/similarities/records",
+                                "body": similarity_body
+                            })
 
             if batch_requests_to_upload:
-                REQUEST_CHUNK_SIZE = 50 
+                REQUEST_CHUNK_SIZE = 50
                 request_chunks = [batch_requests_to_upload[i:i + REQUEST_CHUNK_SIZE] for i in range(0, len(batch_requests_to_upload), REQUEST_CHUNK_SIZE)]
-                
                 logger.info(f"{log_prefix} Total requests to upload: {len(batch_requests_to_upload)}. Split into {len(request_chunks)} chunks.")
-
                 for i, chunk in enumerate(request_chunks):
                     try:
-                        num_songs_in_chunk = len(chunk) // 2
-                        logger.info(f"{log_prefix} Atomically uploading chunk {i+1}/{len(request_chunks)} with {num_songs_in_chunk} songs...")
+                        logger.info(f"{log_prefix} Atomically uploading chunk {i+1}/{len(request_chunks)} with {len(chunk)} records...")
                         pb_client.submit_batch_request(chunk)
                     except requests.exceptions.HTTPError as e:
                         logger.warning(f"{log_prefix} Atomic batch upload for chunk {i+1} failed and was rolled back. Details: {e.response.text if e.response else str(e)}")
