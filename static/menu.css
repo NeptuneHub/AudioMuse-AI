@@ -5,17 +5,18 @@
 
 .sidebar {
     width: 250px;
-    background-color: #111827;
-    color: white;
+    background-color: var(--bg-card);
+    color: var(--text-main);
     padding: 1.5rem;
     height: 100vh;
     position: fixed;
     top: 0;
     left: 0;
-    transition: transform 0.3s ease-in-out;
+    transition: transform 0.3s ease-in-out, background-color 0.3s, color 0.3s;
     z-index: 1000;
     /* Start off-screen by default */
     transform: translateX(-100%);
+    border-right: 1px solid var(--border-color);
 }
 
 /* When the .open class is added by JS, slide the menu in */
@@ -34,12 +35,13 @@
     font-size: 1.5rem;
     font-weight: 600;
     white-space: nowrap;
+    color: var(--text-title);
 }
 
 .menu-toggle {
     background: none;
     border: none;
-    color: #1F2937; /* Default color is dark, for when menu is closed */
+    color: var(--text-main); /* Default color matches theme text */
     font-size: 1.5rem;
     cursor: pointer;
     position: fixed;
@@ -49,9 +51,9 @@
     transition: color 0.3s;
 }
 
-/* When the sidebar is open, make the button light */
+/* When the sidebar is open, make the button color match the sidebar text (which might be same as main, but safe to keep var) */
 .sidebar.open + .main-content .menu-toggle {
-    color: white;
+    color: var(--text-main);
 }
 
 .sidebar-nav {
@@ -61,25 +63,40 @@
     margin-top: 4rem;
 }
 
-.sidebar-nav li a {
+.sidebar-nav li a,
+.sidebar-nav li button {
     display: block;
-    color: #d1d5db;
+    color: var(--text-sub);
     text-decoration: none;
     padding: 0.75rem 0;
     font-size: 1rem;
     white-space: nowrap;
     transition: background-color 0.2s, color 0.2s;
+    border-radius: 0.375rem;
+    padding-left: 0.5rem;
 }
 
-.sidebar-nav li a:hover {
-    color: #ffffff;
-    background-color: #374151;
+.sidebar-nav li a:hover,
+.sidebar-nav li button:hover {
+    color: var(--text-title);
+    background-color: var(--bg-body);
 }
 
 .sidebar-nav li a.active {
-    color: #ffffff;
+    color: #FFFFFF;
     font-weight: 600;
-    background-color: #2563EB;
+    background-color: var(--color-primary);
+}
+
+/* Dark mode toggle button styling */
+#dark-mode-toggle {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    width: 100%;
 }
 
 .main-content {

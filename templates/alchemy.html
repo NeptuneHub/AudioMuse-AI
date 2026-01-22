@@ -85,7 +85,7 @@
                         </span>
                     </label>
                     <input id="temperature" name="temperature" type="number" step="0.1" min="0" max="10" value="1.0" />
-                    <div style="font-size:0.85rem;color:#6B7280;margin-top:6px;">Lower = more deterministic, Higher = more random</div>
+                    <div style="font-size:0.85rem;color:var(--text-muted);margin-top:6px;">Lower = more deterministic, Higher = more random</div>
                 </div>
                 <div>
                     <label for="subtract_distance" class="label-with-tooltip">
@@ -116,7 +116,7 @@
     <h2>Results</h2>
     <div style="position: relative; width: 100%; max-width: 800px; margin: 0 auto 1.5rem auto;">
         <canvas id="alchemy-plot"></canvas>
-        <div id="projection-label" style="text-align: center; font-size:0.9rem; color:#6B7280; margin-top:0.5rem; text-transform: capitalize;"></div>
+        <div id="projection-label" style="text-align: center; font-size:0.9rem; color:var(--text-muted); margin-top:0.5rem; text-transform: capitalize;"></div>
     </div>
     <div id="results-table-wrapper">
         <table id="results-table">
@@ -143,7 +143,7 @@
                 <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., My Alchemy Mix">
             </div>
         </div>
-        <button type="submit" style="background-color: #16A34A;">Create Playlist on Media Server</button>
+        <button type="submit" style="background-color: var(--color-success);">Create Playlist on Media Server</button>
     </form>
     <div id="playlist-status"></div>
 </section>
@@ -162,6 +162,11 @@
             if (cfg.alchemy_default_n_results) defaultN = cfg.alchemy_default_n_results;
             if (cfg.alchemy_max_n_results) maxN = cfg.alchemy_max_n_results;
         } catch (e) { console.warn('Failed to fetch config for alchemy, using defaults', e); }
+
+        // Dark mode helper for chart colors
+        const getChartGridColor = () => document.body.classList.contains('dark-mode')
+            ? 'rgba(75, 85, 99, 0.5)'
+            : 'rgba(229, 231, 235, 0.5)';
 
         // Autocomplete plumbing
         let searchTimeout;
@@ -644,12 +649,12 @@
                                     scales: {
                                         x: {
                                             title: { display: true, text: xLabel, font: { size: 14 } },
-                                            grid: { color: 'rgba(229, 231, 235, 0.5)'},
+                                            grid: { color: getChartGridColor() },
                                             ticks: { font: { size: 12 } }
                                         },
                                         y: {
                                             title: { display: true, text: yLabel, font: { size: 14 } },
-                                            grid: { color: 'rgba(229, 231, 235, 0.5)'},
+                                            grid: { color: getChartGridColor() },
                                             ticks: { font: { size: 12 } }
                                         }
                                     },
@@ -821,12 +826,12 @@
                                     scales: {
                                         x: {
                                             title: { display: true, text: xLabel, font: { size: 14 } },
-                                            grid: { color: 'rgba(229, 231, 235, 0.5)'},
+                                            grid: { color: getChartGridColor() },
                                             ticks: { font: { size: 12 } }
                                         },
                                         y: {
                                             title: { display: true, text: yLabel, font: { size: 14 } },
-                                            grid: { color: 'rgba(229, 231, 235, 0.5)'},
+                                            grid: { color: getChartGridColor() },
                                             ticks: { font: { size: 12 } }
                                         }
                                     },
@@ -855,8 +860,8 @@
             const messageBox = document.createElement('div');
             messageBox.id = boxId;
             // Using styles from style.css for consistency where possible, with inline for positioning
-            messageBox.style.cssText = 'position: fixed; top: 20px; right: 20px; background-color: #fff; color: #1F2937; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; border: 1px solid #E5E7EB; max-width: 400px; text-align: left;';
-            messageBox.innerHTML = `<h3 style="font-weight: 600; margin-top:0; margin-bottom: 10px; color: #111827;">${title}</h3><p style="margin:0;">${message}</p><button style="position: absolute; top: 10px; right: 10px; background: none; border: none; font-size: 1.5rem; color: #9CA3AF; cursor: pointer;" onclick="this.parentNode.remove()">&times;</button>`;
+            messageBox.style.cssText = 'position: fixed; top: 20px; right: 20px; background-color: var(--bg-card); color: var(--text-main); padding: 20px; border-radius: 8px; box-shadow: var(--shadow-card); z-index: 1000; border: 1px solid var(--border-color); max-width: 400px; text-align: left;';
+            messageBox.innerHTML = `<h3 style="font-weight: 600; margin-top:0; margin-bottom: 10px; color: var(--text-title);">${title}</h3><p style="margin:0;">${message}</p><button style="position: absolute; top: 10px; right: 10px; background: none; border: none; font-size: 1.5rem; color: var(--text-muted); cursor: pointer;" onclick="this.parentNode.remove()">&times;</button>`;
             document.body.appendChild(messageBox);
             setTimeout(() => messageBox.remove(), 5000);
         }
