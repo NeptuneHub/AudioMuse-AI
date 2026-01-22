@@ -363,17 +363,22 @@ class StudentCLAPTrainer:
     then exports to ONNX for production deployment.
     """
 
+
     def __init__(self, config: Dict):
         self.config = config
 
-        if torch.backends.mps.is_available():
-            self.device = torch.device('mps')
-        elif torch.cuda.is_available():
+        # --- Device and precision autodetection ---
+        if torch.cuda.is_available():
             self.device = torch.device('cuda')
+            self.dtype = torch.bfloat16
+        elif torch.backends.mps.is_available():
+            self.device = torch.device('mps')
+            self.dtype = torch.float16
         else:
             self.device = torch.device('cpu')
+            self.dtype = torch.float32
 
-        self.model = StudentCLAPAudio(config).to(self.device).float()
+        self.model = StudentCLAPAudio(config).to(self.device, dtype=self.dtype)
 
         # Support configurable optimizer: 'adam' (default) or 'adamw'
         optimizer_type = config['training'].get('optimizer', 'adam').lower()
@@ -412,9 +417,13 @@ class StudentCLAPTrainer:
             logger.info("🔒 STAGE 2: Freezing encoder, training projection head only")
             self._freeze_encoder()
 
-        logger.info(f"Initialized Student CLAP trainer on {self.device}")
+        logger.info(f"Initialized Student CLAP trainer on {self.device} (precision: {self.dtype})")
         logger.info(f"Model parameters: {self.model.count_parameters()}")
         logger.info(f"Training strategy: {self.training_strategy}")
+
+    @property
+    def device_dtype(self):
+        return self.device, self.dtype
 
     def _freeze_encoder(self):
         """Freeze encoder layers, keep only projection head trainable (Stage 2)."""

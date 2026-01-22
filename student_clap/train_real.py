@@ -89,7 +89,11 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
     Returns:
         Dict with epoch metrics
     """
-    logger.info(f"🚀 REAL ONNX TRAINING - Epoch {epoch}/{config['training']['epochs']}")
+    # Print device, precision, LR, WD at epoch start
+    device, dtype = trainer.device_dtype if hasattr(trainer, 'device_dtype') else (trainer.device, getattr(trainer, 'dtype', 'float32'))
+    lr = trainer.optimizer.param_groups[0]['lr']
+    wd = trainer.optimizer.param_groups[0].get('weight_decay', None)
+    logger.info(f"🚀 REAL ONNX TRAINING - Epoch {epoch}/{config['training']['epochs']} | Device: {device} | Precision: {dtype} | LR: {lr} | WD: {wd}")
     
     batch_size = config['training']['batch_size']
     
