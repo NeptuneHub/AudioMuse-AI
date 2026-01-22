@@ -511,10 +511,23 @@ class StudentCLAPTrainer:
             batch.get('teacher_segment_embeddings', [None] * len(batch['audio_segments']))
         )):
 
+            # Platform-aware device/dtype handling
+            is_mps = str(self.device) == 'mps'
+            tensor_dtype = torch.float32 if is_mps else self.dtype
+
+            # Move mel_segments to correct device/dtype
             if not isinstance(mel_segments, torch.Tensor):
-                mel_segments = torch.from_numpy(mel_segments).to(dtype=torch.float32, device=self.device)
-            else:
-                mel_segments = mel_segments.to(dtype=torch.float32, device=self.device)
+                mel_segments = torch.from_numpy(mel_segments)
+            mel_segments = mel_segments.to(device=self.device, dtype=tensor_dtype)
+
+            # Move teacher_emb and teacher_segment_embs to correct device/dtype if tensor
+            if isinstance(teacher_emb, np.ndarray):
+                teacher_emb = torch.from_numpy(teacher_emb)
+            if isinstance(teacher_emb, torch.Tensor):
+                teacher_emb = teacher_emb.to(device=self.device, dtype=tensor_dtype)
+            if teacher_segment_embs is not None:
+                teacher_segment_embs = [torch.from_numpy(e) if isinstance(e, np.ndarray) else e for e in teacher_segment_embs]
+                teacher_segment_embs = [e.to(device=self.device, dtype=tensor_dtype) if isinstance(e, torch.Tensor) else e for e in teacher_segment_embs]
 
             if mel_segments.shape[0] < 2:
                 logger.warning(f"⚠️ Skipping song {batch['song_ids'][i]} - only {mel_segments.shape[0]} segment (BatchNorm needs ≥2)")
@@ -583,8 +596,15 @@ class StudentCLAPTrainer:
             else:
                 raise ValueError(f"Unknown training_strategy: {self.training_strategy}")
 
+
+
         student_embeddings = torch.cat(student_embeddings, dim=0)
-        teacher_embeddings = np.stack(teacher_embeddings)
+        # teacher_embeddings: list of tensors, ensure all are tensors and on correct device/dtype
+        is_mps = str(self.device) == 'mps'
+        tensor_dtype = torch.float32 if is_mps else self.dtype
+        teacher_embeddings = [torch.from_numpy(e) if isinstance(e, np.ndarray) else e for e in teacher_embeddings]
+        teacher_embeddings = [e.to(device=self.device, dtype=tensor_dtype) if isinstance(e, torch.Tensor) else e for e in teacher_embeddings]
+        teacher_embeddings = torch.cat([e.unsqueeze(0) if e.dim() == 1 else e for e in teacher_embeddings], dim=0)
 
         loss, loss_dict = self.compute_loss(student_embeddings, teacher_embeddings)
 
