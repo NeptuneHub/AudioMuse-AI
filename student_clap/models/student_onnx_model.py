@@ -356,11 +356,21 @@ class StudentCLAPAudio(nn.Module):
         }
 
 class StudentCLAPTrainer:
-    def _cast_batchnorm_to_dtype(self, dtype):
+    def _cast_batchnorm_to_float32(self):
         """Cast all BatchNorm layers in the model to float32 for all platforms (CUDA, Mac MPS, CPU)."""
         for module in self.model.modules():
             if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
                 module.to(dtype=torch.float32)
+
+    def _cast_nonbatchnorm_to_dtype(self, dtype):
+        """Cast all non-BatchNorm layers in the model to the given dtype."""
+        for module in self.model.modules():
+            if not isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+                if hasattr(module, 'to'):
+                    try:
+                        module.to(dtype=dtype)
+                    except Exception:
+                        pass
     """
     ONNX-compatible trainer for Student CLAP using PyTorch.
 
@@ -504,16 +514,19 @@ class StudentCLAPTrainer:
         Single training step on a batch.
 
         if torch.cuda.is_available() and str(self.device) == 'cuda':
-            self.model.to(self.device, dtype=torch.bfloat16)
-            self._cast_batchnorm_to_dtype(torch.bfloat16)
+            self.model.to(self.device)
+            self._cast_nonbatchnorm_to_dtype(torch.bfloat16)
+            self._cast_batchnorm_to_float32()
             tensor_dtype = torch.bfloat16
         elif torch.backends.mps.is_available() and str(self.device) == 'mps':
-            self.model.to(self.device, dtype=torch.bfloat16)
-            self._cast_batchnorm_to_dtype(torch.bfloat16)
+            self.model.to(self.device)
+            self._cast_nonbatchnorm_to_dtype(torch.bfloat16)
+            self._cast_batchnorm_to_float32()
             tensor_dtype = torch.bfloat16
         else:
-            self.model.to(self.device, dtype=torch.float32)
-            self._cast_batchnorm_to_dtype(torch.float32)
+            self.model.to(self.device)
+            self._cast_nonbatchnorm_to_dtype(torch.float32)
+            self._cast_batchnorm_to_float32()
             tensor_dtype = torch.float32
         self.model.train()
             step_metrics: Dictionary with loss and performance metrics
