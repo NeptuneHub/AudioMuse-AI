@@ -279,7 +279,16 @@ def validate_real(trainer: StudentCLAPTrainer,
     logger.info(f"🔍 Running REAL validation (Epoch {epoch})...")
     
     trainer.model.eval()
-    trainer.model.float()  # Ensure model is in float32 mode
+    # Set model to correct dtype for platform (match training)
+    if torch.cuda.is_available() and str(trainer.device) == 'cuda':
+        trainer.model.to(trainer.device, dtype=torch.bfloat16)
+        tensor_dtype = torch.bfloat16
+    elif torch.backends.mps.is_available() and str(trainer.device) == 'mps':
+        trainer.model.to(trainer.device, dtype=torch.float16)
+        tensor_dtype = torch.float16
+    else:
+        trainer.model.to(trainer.device, dtype=torch.float32)
+        tensor_dtype = torch.float32
     
     # Collect embeddings
     student_embeddings_list = []
@@ -299,6 +308,10 @@ def validate_real(trainer: StudentCLAPTrainer,
             
             for item in batch_data:
                 audio_segments = item['audio_segments']
+                # Move to correct device/dtype
+                if not isinstance(audio_segments, torch.Tensor):
+                    audio_segments = torch.from_numpy(audio_segments)
+                audio_segments = audio_segments.to(device=trainer.device, dtype=tensor_dtype)
                 batch['audio_segments'].append(audio_segments)
                 batch['teacher_embeddings'].append(item['teacher_embedding'])
                 batch['song_ids'].append(item['item_id'])
