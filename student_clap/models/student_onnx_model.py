@@ -459,12 +459,23 @@ class StudentCLAPTrainer:
             loss_dict: Individual loss components for logging
         """
 
-        if not isinstance(teacher_embeddings, torch.Tensor):
-            teacher_embeddings = torch.from_numpy(teacher_embeddings).to(dtype=torch.float32, device=self.device)
+        # Always cast both tensors to the same dtype as the model/device
+        target_dtype = self.dtype
+        if torch.cuda.is_available() and str(self.device) == 'cuda':
+            target_dtype = torch.bfloat16
+        elif torch.backends.mps.is_available() and str(self.device) == 'mps':
+            target_dtype = torch.float16
         else:
-            teacher_embeddings = teacher_embeddings.to(dtype=torch.float32, device=self.device)
+            target_dtype = torch.float32
+
+        if not isinstance(teacher_embeddings, torch.Tensor):
+            teacher_embeddings = torch.from_numpy(teacher_embeddings).to(dtype=target_dtype, device=self.device)
+        else:
+            teacher_embeddings = teacher_embeddings.to(dtype=target_dtype, device=self.device)
+        student_embeddings = student_embeddings.to(dtype=target_dtype, device=self.device)
 
         teacher_embeddings = F.normalize(teacher_embeddings, p=2, dim=1)
+        student_embeddings = F.normalize(student_embeddings, p=2, dim=1)
 
         cosine_sim = F.cosine_similarity(student_embeddings, teacher_embeddings, dim=1)
         total_loss = -cosine_sim.mean()
@@ -496,8 +507,15 @@ class StudentCLAPTrainer:
         Returns:
             step_metrics: Dictionary with loss and performance metrics
         """
+
+        # Only patch CUDA: force bfloat16, otherwise use autodetected self.dtype (float16 for MPS, float32 for CPU)
+        if torch.cuda.is_available() and str(self.device) == 'cuda':
+            self.model.to(self.device, dtype=torch.bfloat16)
+            tensor_dtype = torch.bfloat16
+        else:
+            self.model.to(self.device, dtype=self.dtype)
+            tensor_dtype = self.dtype
         self.model.train()
-        self.model.float()
 
         if self.accumulation_counter == 0:
             self.optimizer.zero_grad()
@@ -511,10 +529,7 @@ class StudentCLAPTrainer:
             batch.get('teacher_segment_embeddings', [None] * len(batch['audio_segments']))
         )):
 
-            # Platform-aware device/dtype handling
-            is_mps = str(self.device) == 'mps'
-            tensor_dtype = torch.float32 if is_mps else self.dtype
-
+            # Only use bfloat16 for CUDA, float32 everywhere else
             # Move mel_segments to correct device/dtype
             if not isinstance(mel_segments, torch.Tensor):
                 mel_segments = torch.from_numpy(mel_segments)
@@ -540,6 +555,8 @@ class StudentCLAPTrainer:
                 for chunk_start in range(0, mel_segments.shape[0], chunk_size):
                     chunk_end = min(chunk_start + chunk_size, mel_segments.shape[0])
                     chunk = mel_segments[chunk_start:chunk_end]
+                    # Ensure chunk is on correct device/dtype
+                    chunk = chunk.to(device=self.device, dtype=tensor_dtype)
                     chunk_embeddings = self.model.forward(chunk)
                     segment_embeddings_list.append(chunk_embeddings)
                 
@@ -559,6 +576,7 @@ class StudentCLAPTrainer:
                 for chunk_start in range(0, mel_segments.shape[0], chunk_size):
                     chunk_end = min(chunk_start + chunk_size, mel_segments.shape[0])
                     chunk = mel_segments[chunk_start:chunk_end]
+                    chunk = chunk.to(device=self.device, dtype=tensor_dtype)
                     chunk_embeddings = self.model.forward(chunk)
                     segment_embeddings_list.append(chunk_embeddings)
                 
@@ -576,6 +594,7 @@ class StudentCLAPTrainer:
                 for chunk_start in range(0, mel_segments.shape[0], chunk_size):
                     chunk_end = min(chunk_start + chunk_size, mel_segments.shape[0])
                     chunk = mel_segments[chunk_start:chunk_end]
+                    chunk = chunk.to(device=self.device, dtype=tensor_dtype)
                     chunk_embeddings = self.model.forward(chunk)
                     segment_embeddings_list.append(chunk_embeddings)
                 
@@ -598,13 +617,29 @@ class StudentCLAPTrainer:
 
 
 
-        student_embeddings = torch.cat(student_embeddings, dim=0)
-        # teacher_embeddings: list of tensors, ensure all are tensors and on correct device/dtype
-        is_mps = str(self.device) == 'mps'
-        tensor_dtype = torch.float32 if is_mps else self.dtype
+
+        if len(student_embeddings) == 0 or len(teacher_embeddings) == 0:
+            logger.warning("⚠️ Skipping batch: no valid samples (all skipped, e.g. only 1 segment)")
+            return {
+                'loss': None,
+                'total_loss': None,
+                'mse_loss': None,
+                'cosine_loss': None,
+                'mean_cosine_sim': None,
+                'min_cosine_sim': None,
+                'max_cosine_sim': None,
+                'cosine_similarity': None,
+                'num_training_pairs': 0,
+                'num_training_samples': 0,
+                'accumulation_step': self.accumulation_counter,
+                'will_update': False,
+            }
+
+        # Concatenate and ensure all embeddings are on correct device/dtype
+        student_embeddings = torch.cat(student_embeddings, dim=0).to(device=self.device, dtype=tensor_dtype)
         teacher_embeddings = [torch.from_numpy(e) if isinstance(e, np.ndarray) else e for e in teacher_embeddings]
         teacher_embeddings = [e.to(device=self.device, dtype=tensor_dtype) if isinstance(e, torch.Tensor) else e for e in teacher_embeddings]
-        teacher_embeddings = torch.cat([e.unsqueeze(0) if e.dim() == 1 else e for e in teacher_embeddings], dim=0)
+        teacher_embeddings = torch.cat([e.unsqueeze(0) if e.dim() == 1 else e for e in teacher_embeddings], dim=0).to(device=self.device, dtype=tensor_dtype)
 
         loss, loss_dict = self.compute_loss(student_embeddings, teacher_embeddings)
 
