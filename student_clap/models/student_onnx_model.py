@@ -375,23 +375,34 @@ class StudentCLAPTrainer:
 
         self.model = StudentCLAPAudio(config).to(self.device).float()
 
-        self.optimizer = torch.optim.Adam(
-            self.model.parameters(),
-            lr=config['training']['learning_rate'],
-            weight_decay=config['training']['weight_decay']
-        )
+        # Support configurable optimizer: 'adam' (default) or 'adamw'
+        optimizer_type = config['training'].get('optimizer', 'adam').lower()
+        if optimizer_type == 'adamw':
+            self.optimizer = torch.optim.AdamW(
+                self.model.parameters(),
+                lr=config['training']['learning_rate'],
+                weight_decay=config['training']['weight_decay']
+            )
+            logger.info("🔧 Using AdamW optimizer")
+        else:
+            self.optimizer = torch.optim.Adam(
+                self.model.parameters(),
+                lr=config['training']['learning_rate'],
+                weight_decay=config['training']['weight_decay']
+            )
 
         self.gradient_accumulation_steps = config['training'].get('gradient_accumulation_steps', 1)
         self.accumulation_counter = 0
 
+        # Use validation-driven scheduler (mode='max' because we maximize cosine similarity)
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
-            mode='min',
+            mode='max',
             factor=0.1,
             patience=10,
             min_lr=1e-6
         )
-        logger.info(f"📉 LR Scheduler: ReduceLROnPlateau (factor=0.1, patience=10)")
+        logger.info(f"📉 LR Scheduler: ReduceLROnPlateau (factor=0.1, patience=10, mode=max)")
 
         self.training_strategy = config['training'].get('training_strategy', 'averaged')
         self.segment_batch_size = config['model'].get('segment_batch_size', 10)

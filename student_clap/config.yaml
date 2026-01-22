@@ -13,11 +13,13 @@ audio:
 
 model:
   embedding_dim: 512
-  # PhiNet 3 configuration (tinyCLAP: alpha=3.0, beta=0.75, t0=4, N=7 → 6.2M params)
+  # PhiNet 3 configuration (tinyCLAP: alpha=3.0, beta=0.75, t0=4, N=7 → 4M+ params)
+  # PhiNet NEW1 configuration (tinyCLAP: alpha=3.0, beta=0.75, t0=6, N=8 → 8M+ params)
+
   phinet_alpha: 3.0
   phinet_beta: 0.75
-  phinet_t0: 6
-  phinet_N: 8
+  phinet_t0: 4
+  phinet_N: 7
   hidden_dim: 256
   dropout: 0.1
   use_gradient_checkpointing: true
@@ -32,13 +34,13 @@ model_text:
 training:
   batch_size: 1
   gradient_accumulation_steps: 8
-  learning_rate: 0.003
+  learning_rate: 0.0003
   epochs: 100
   stage2_epochs: 10
-  stage2_learning_rate: 0.001
+  stage2_learning_rate: 0.0001
   projection_only: false
-  optimizer: "adam"
-  weight_decay: 0.0
+  optimizer: "adamw"
+  weight_decay: 0.0001
   grad_clip: 5.0
   training_strategy: "both"
   save_every: 1

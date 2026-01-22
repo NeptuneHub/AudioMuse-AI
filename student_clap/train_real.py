@@ -218,9 +218,8 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
     avg_mse = total_mse / num_batches if num_batches > 0 else 0.0
     avg_cosine_sim = total_cosine_sim / num_batches if num_batches > 0 else 0.0
     
-    # Update learning rate scheduler with loss (ReduceLROnPlateau monitors performance)
-    # Pass NEGATIVE cosine similarity as loss (we want to maximize similarity = minimize negative)
-    trainer.scheduler.step(-avg_cosine_sim)  # Use negative because we maximize cosine sim
+    # Scheduler stepping is handled after validation (we want to monitor validation cosine for generalization).
+    # Do not step scheduler here on training metric to avoid reducing LR based on training improvements.
     current_lr = trainer.optimizer.param_groups[0]['lr']
     
     epoch_time = time.time() - epoch_start_time
@@ -465,26 +464,62 @@ def train(config_path: str, resume: str = None):
             logger.info(f"📂 Loading audio checkpoint: {audio_resume_path}")
             checkpoint = torch.load(audio_resume_path, map_location=trainer.device)
             trainer.model.load_state_dict(checkpoint['model_state_dict'])
-            trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            try:
-                trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-                logger.info(f"✅ Scheduler state restored")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not restore scheduler state (scheduler type changed): {e}")
-                logger.warning(f"   Creating new scheduler with patience=3, threshold=0.005, threshold_mode='rel'")
+
+            # Attempt to restore optimizer state; if missing or failing, keep fresh optimizer and apply config LR/WD
+            if 'optimizer_state_dict' in checkpoint:
+                try:
+                    trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                    # Ensure LR and weight_decay align with config (override to config values)
+                    new_lr = config['training']['learning_rate']
+                    new_wd = config['training']['weight_decay']
+                    for pg in trainer.optimizer.param_groups:
+                        pg['lr'] = new_lr
+                        pg['weight_decay'] = new_wd
+                    logger.info(f"✓ Optimizer restored from checkpoint and LR/WD overridden to config (lr={new_lr}, wd={new_wd})")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not restore optimizer state cleanly: {e}; using fresh optimizer with config values")
+                    for pg in trainer.optimizer.param_groups:
+                        pg['lr'] = config['training']['learning_rate']
+                        pg['weight_decay'] = config['training']['weight_decay']
+            else:
+                logger.info("No optimizer state in checkpoint — using fresh optimizer (config LR/WD applied)")
+                for pg in trainer.optimizer.param_groups:
+                    pg['lr'] = config['training']['learning_rate']
+                    pg['weight_decay'] = config['training']['weight_decay']
+
+            # Attempt to restore scheduler; if missing or failing, create a new one driven by validation (mode='max')
+            if 'scheduler_state_dict' in checkpoint:
+                try:
+                    trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                    logger.info("✓ Scheduler restored from checkpoint")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not restore scheduler state: {e}")
+                    trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                        trainer.optimizer,
+                        mode='max',
+                        factor=0.1,
+                        patience=3,
+                        threshold=0.005,
+                        threshold_mode='rel',
+                        min_lr=1e-6
+                    )
+                    logger.info("✓ Created new scheduler (mode=max) due to restore failure")
+            else:
                 trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                     trainer.optimizer,
-                    mode='min',
+                    mode='max',
                     factor=0.1,
                     patience=3,
                     threshold=0.005,
                     threshold_mode='rel',
                     min_lr=1e-6
                 )
-            start_epoch = checkpoint['epoch'] + 1
+                logger.info("No scheduler state in checkpoint — created fresh scheduler (mode=max)")
+
+            start_epoch = checkpoint.get('epoch', 0) + 1
             best_val_cosine = checkpoint.get('best_val_cosine', 0.0)
             patience_counter = checkpoint.get('patience_counter', 0)
-            logger.info(f"✅ Successfully resumed audio from epoch {checkpoint['epoch']}")
+            logger.info(f"✅ Successfully resumed audio from epoch {checkpoint.get('epoch', 'N/A')}")
             logger.info(f"   📈 Best cosine similarity so far: {best_val_cosine:.4f}")
             logger.info(f"   ⏰ Patience counter: {patience_counter}/{config['training']['early_stopping_patience']}")
             logger.info(f"   🎯 Will continue from epoch {start_epoch}")
@@ -690,7 +725,7 @@ def train(config_path: str, resume: str = None):
 
             trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 trainer.optimizer,
-                mode='min',
+                mode='max',
                 factor=0.1,
                 patience=3,
                 threshold=0.005,
@@ -803,6 +838,13 @@ def train(config_path: str, resume: str = None):
                 logger.info(f"✅ Updated epoch checkpoint with validation metrics: {epoch_checkpoint_path}")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to update epoch checkpoint with validation metrics: {e}")
+
+            # Step scheduler on validation metric (we monitor cosine similarity - higher is better)
+            try:
+                trainer.scheduler.step(val_cosine)
+                logger.info(f"Scheduler stepped using validation cosine: {val_cosine:.4f}")
+            except Exception as e:
+                logger.warning(f"Failed to step scheduler on validation metric: {e}")
 
             # Check for improvement (use cosine similarity as main metric)
             if val_cosine > best_val_cosine:
