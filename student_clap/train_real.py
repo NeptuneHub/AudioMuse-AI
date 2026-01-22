@@ -281,16 +281,19 @@ def validate_real(trainer: StudentCLAPTrainer,
     trainer.model.eval()
     # Set model to correct dtype for platform (match training)
     if torch.cuda.is_available() and str(trainer.device) == 'cuda':
-        trainer.model.to(trainer.device, dtype=torch.bfloat16)
-        trainer._cast_batchnorm_to_dtype(torch.bfloat16)
+        trainer.model.to(trainer.device)
+        trainer._cast_nonbatchnorm_to_dtype(torch.bfloat16)
+        trainer._cast_batchnorm_to_float32()
         tensor_dtype = torch.bfloat16
     elif torch.backends.mps.is_available() and str(trainer.device) == 'mps':
-        trainer.model.to(trainer.device, dtype=torch.bfloat16)
-        trainer._cast_batchnorm_to_dtype(torch.bfloat16)
+        trainer.model.to(trainer.device)
+        trainer._cast_nonbatchnorm_to_dtype(torch.bfloat16)
+        trainer._cast_batchnorm_to_float32()
         tensor_dtype = torch.bfloat16
     else:
-        trainer.model.to(trainer.device, dtype=torch.float32)
-        trainer._cast_batchnorm_to_dtype(torch.float32)
+        trainer.model.to(trainer.device)
+        trainer._cast_nonbatchnorm_to_dtype(torch.float32)
+        trainer._cast_batchnorm_to_float32()
         tensor_dtype = torch.float32
     
     # Collect embeddings
@@ -326,10 +329,8 @@ def validate_real(trainer: StudentCLAPTrainer,
             for i, audio_segments in enumerate(batch['audio_segments']):
                 # audio_segments are PRE-COMPUTED mel spectrograms! (num_segments, 1, 128, time)
                 if not isinstance(audio_segments, torch.Tensor):
-                    audio_segments = torch.from_numpy(audio_segments).to(dtype=torch.float32, device=trainer.device)
-                else:
-                    audio_segments = audio_segments.to(dtype=torch.float32, device=trainer.device)
-                
+                    audio_segments = torch.from_numpy(audio_segments)
+                audio_segments = audio_segments.to(dtype=tensor_dtype, device=trainer.device)
                 # ⚠️ SKIP SONGS WITH ONLY 1 SEGMENT (BatchNorm requires at least 2 samples)
                 if audio_segments.shape[0] < 2:
                     logger.warning(f"⚠️ Skipping song {batch['song_ids'][i]} in validation - only {audio_segments.shape[0]} segment")
