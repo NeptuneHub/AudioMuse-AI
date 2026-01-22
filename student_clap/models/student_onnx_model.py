@@ -357,10 +357,10 @@ class StudentCLAPAudio(nn.Module):
 
 class StudentCLAPTrainer:
     def _cast_batchnorm_to_dtype(self, dtype):
-        """Cast all BatchNorm layers in the model to the given dtype."""
+        """Cast all BatchNorm layers in the model to float32 for all platforms (CUDA, Mac MPS, CPU)."""
         for module in self.model.modules():
             if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
-                module.to(dtype=dtype)
+                module.to(dtype=torch.float32)
     """
     ONNX-compatible trainer for Student CLAP using PyTorch.
 
