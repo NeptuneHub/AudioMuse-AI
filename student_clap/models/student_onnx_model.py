@@ -373,7 +373,7 @@ class StudentCLAPTrainer:
             self.dtype = torch.bfloat16
         elif torch.backends.mps.is_available():
             self.device = torch.device('mps')
-            self.dtype = torch.float16
+            self.dtype = torch.bfloat16  # Use bfloat16 for Mac (MPS)
         else:
             self.device = torch.device('cpu')
             self.dtype = torch.float32

@@ -284,8 +284,8 @@ def validate_real(trainer: StudentCLAPTrainer,
         trainer.model.to(trainer.device, dtype=torch.bfloat16)
         tensor_dtype = torch.bfloat16
     elif torch.backends.mps.is_available() and str(trainer.device) == 'mps':
-        trainer.model.to(trainer.device, dtype=torch.float16)
-        tensor_dtype = torch.float16
+        trainer.model.to(trainer.device, dtype=torch.bfloat16)
+        tensor_dtype = torch.bfloat16
     else:
         trainer.model.to(trainer.device, dtype=torch.float32)
         tensor_dtype = torch.float32
