@@ -126,12 +126,12 @@ docker compose -f deployment/docker-compose.yaml down
 
 AudioMuse-AI has been tested on:
 * **Intel**: HP Mini PC with Intel i5-6500, 16 GB RAM and NVMe SSD
-* **ARM**: Raspberry Pi 5, 8 GB RAM and NVMe SSD
+* **ARM**: Raspberry Pi 5, 8 GB RAM and NVMe SSD / Mac Mini M4 16GB / Amphere based VM with 4core 8GB ram
 
 Suggested requirements:
-* A 4-core Intel or ARM CPU (produced in 2015 or later) with AVX support
+* CPU: 4-core Intel with AVX2 support (usually produced in 2015 or later) or ARM
 * 8 GB RAM
-* SSD storage
+* NVME SSD storage
 
 You can check the [Tested Hardware and Configuration](docs/HARDWARE.md) notes to see which hardware has already been validated.
 
