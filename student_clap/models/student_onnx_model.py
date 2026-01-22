@@ -498,13 +498,19 @@ class StudentCLAPTrainer:
         """
         Single training step on a batch.
 
-        Args:
-            batch: Dictionary with:
-                - 'audio_segments': List of audio segment tensors per song
-                - 'teacher_embeddings': Teacher embeddings from database
-                - 'song_ids': Song IDs for logging
-
-        Returns:
+        if torch.cuda.is_available() and str(self.device) == 'cuda':
+            self.model.to(self.device, dtype=torch.bfloat16)
+            self._cast_batchnorm_to_dtype(torch.bfloat16)
+            tensor_dtype = torch.bfloat16
+        elif torch.backends.mps.is_available() and str(self.device) == 'mps':
+            self.model.to(self.device, dtype=torch.bfloat16)
+            self._cast_batchnorm_to_dtype(torch.bfloat16)
+            tensor_dtype = torch.bfloat16
+        else:
+            self.model.to(self.device, dtype=torch.float32)
+            self._cast_batchnorm_to_dtype(torch.float32)
+            tensor_dtype = torch.float32
+        self.model.train()
             step_metrics: Dictionary with loss and performance metrics
         """
 

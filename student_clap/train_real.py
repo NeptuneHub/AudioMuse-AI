@@ -282,12 +282,15 @@ def validate_real(trainer: StudentCLAPTrainer,
     # Set model to correct dtype for platform (match training)
     if torch.cuda.is_available() and str(trainer.device) == 'cuda':
         trainer.model.to(trainer.device, dtype=torch.bfloat16)
+        trainer._cast_batchnorm_to_dtype(torch.bfloat16)
         tensor_dtype = torch.bfloat16
     elif torch.backends.mps.is_available() and str(trainer.device) == 'mps':
         trainer.model.to(trainer.device, dtype=torch.bfloat16)
+        trainer._cast_batchnorm_to_dtype(torch.bfloat16)
         tensor_dtype = torch.bfloat16
     else:
         trainer.model.to(trainer.device, dtype=torch.float32)
+        trainer._cast_batchnorm_to_dtype(torch.float32)
         tensor_dtype = torch.float32
     
     # Collect embeddings
