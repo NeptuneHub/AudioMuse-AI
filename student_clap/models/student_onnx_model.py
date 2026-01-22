@@ -356,6 +356,11 @@ class StudentCLAPAudio(nn.Module):
         }
 
 class StudentCLAPTrainer:
+    def _cast_batchnorm_to_dtype(self, dtype):
+        """Cast all BatchNorm layers in the model to the given dtype."""
+        for module in self.model.modules():
+            if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+                module.to(dtype=dtype)
     """
     ONNX-compatible trainer for Student CLAP using PyTorch.
 
