@@ -330,7 +330,7 @@ class StudentCLAPAudio(nn.Module):
         """
 
         model_device = next(self.parameters()).device
-        audio_segments = audio_segments.to(model_device, dtype=torch.float32)
+        audio_segments = audio_segments.to(model_device)
 
         mel_specs = self.compute_mel_spectrogram(audio_segments)
 
@@ -356,21 +356,6 @@ class StudentCLAPAudio(nn.Module):
         }
 
 class StudentCLAPTrainer:
-    def _cast_batchnorm_to_float32(self):
-        """Cast all BatchNorm layers in the model to float32 for all platforms (CUDA, Mac MPS, CPU)."""
-        for module in self.model.modules():
-            if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
-                module.to(dtype=torch.float32)
-
-    def _cast_nonbatchnorm_to_dtype(self, dtype):
-        """Cast all non-BatchNorm layers in the model to the given dtype."""
-        for module in self.model.modules():
-            if not isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
-                if hasattr(module, 'to'):
-                    try:
-                        module.to(dtype=dtype)
-                    except Exception:
-                        pass
     """
     ONNX-compatible trainer for Student CLAP using PyTorch.
 
@@ -382,18 +367,15 @@ class StudentCLAPTrainer:
     def __init__(self, config: Dict):
         self.config = config
 
-        # --- Device and precision autodetection ---
+        # --- Device autodetection, always use float32 ---
         if torch.cuda.is_available():
             self.device = torch.device('cuda')
-            self.dtype = torch.bfloat16
         elif torch.backends.mps.is_available():
             self.device = torch.device('mps')
-            self.dtype = torch.bfloat16  # Use bfloat16 for Mac (MPS)
         else:
             self.device = torch.device('cpu')
-            self.dtype = torch.float32
 
-        self.model = StudentCLAPAudio(config).to(self.device, dtype=self.dtype)
+        self.model = StudentCLAPAudio(config).to(self.device)
 
         # Support configurable optimizer: 'adam' (default) or 'adamw'
         optimizer_type = config['training'].get('optimizer', 'adam').lower()
@@ -432,13 +414,11 @@ class StudentCLAPTrainer:
             logger.info("🔒 STAGE 2: Freezing encoder, training projection head only")
             self._freeze_encoder()
 
-        logger.info(f"Initialized Student CLAP trainer on {self.device} (precision: {self.dtype})")
+        logger.info(f"Initialized Student CLAP trainer on {self.device}")
         logger.info(f"Model parameters: {self.model.count_parameters()}")
         logger.info(f"Training strategy: {self.training_strategy}")
 
-    @property
-    def device_dtype(self):
-        return self.device, self.dtype
+    #
 
     def _freeze_encoder(self):
         """Freeze encoder layers, keep only projection head trainable (Stage 2)."""
@@ -474,20 +454,12 @@ class StudentCLAPTrainer:
             loss_dict: Individual loss components for logging
         """
 
-        # Always cast both tensors to the same dtype as the model/device
-        target_dtype = self.dtype
-        if torch.cuda.is_available() and str(self.device) == 'cuda':
-            target_dtype = torch.bfloat16
-        elif torch.backends.mps.is_available() and str(self.device) == 'mps':
-            target_dtype = torch.float16
-        else:
-            target_dtype = torch.float32
-
+        # Always use default float32 for all tensors
         if not isinstance(teacher_embeddings, torch.Tensor):
-            teacher_embeddings = torch.from_numpy(teacher_embeddings).to(dtype=target_dtype, device=self.device)
+            teacher_embeddings = torch.from_numpy(teacher_embeddings).to(self.device)
         else:
-            teacher_embeddings = teacher_embeddings.to(dtype=target_dtype, device=self.device)
-        student_embeddings = student_embeddings.to(dtype=target_dtype, device=self.device)
+            teacher_embeddings = teacher_embeddings.to(self.device)
+        student_embeddings = student_embeddings.to(self.device)
 
         teacher_embeddings = F.normalize(teacher_embeddings, p=2, dim=1)
         student_embeddings = F.normalize(student_embeddings, p=2, dim=1)
@@ -513,32 +485,13 @@ class StudentCLAPTrainer:
         """
         Single training step on a batch.
 
-        if torch.cuda.is_available() and str(self.device) == 'cuda':
-            self.model.to(self.device)
-            self._cast_nonbatchnorm_to_dtype(torch.bfloat16)
-            self._cast_batchnorm_to_float32()
-            tensor_dtype = torch.bfloat16
-        elif torch.backends.mps.is_available() and str(self.device) == 'mps':
-            self.model.to(self.device)
-            self._cast_nonbatchnorm_to_dtype(torch.bfloat16)
-            self._cast_batchnorm_to_float32()
-            tensor_dtype = torch.bfloat16
-        else:
-            self.model.to(self.device)
-            self._cast_nonbatchnorm_to_dtype(torch.float32)
-            self._cast_batchnorm_to_float32()
-            tensor_dtype = torch.float32
+        # Always use default float32 for training
+        self.model.to(self.device)
         self.model.train()
             step_metrics: Dictionary with loss and performance metrics
         """
 
-        # Only patch CUDA: force bfloat16, otherwise use autodetected self.dtype (float16 for MPS, float32 for CPU)
-        if torch.cuda.is_available() and str(self.device) == 'cuda':
-            self.model.to(self.device, dtype=torch.bfloat16)
-            tensor_dtype = torch.bfloat16
-        else:
-            self.model.to(self.device, dtype=self.dtype)
-            tensor_dtype = self.dtype
+        self.model.to(self.device)
         self.model.train()
 
         if self.accumulation_counter == 0:
@@ -553,20 +506,19 @@ class StudentCLAPTrainer:
             batch.get('teacher_segment_embeddings', [None] * len(batch['audio_segments']))
         )):
 
-            # Only use bfloat16 for CUDA, float32 everywhere else
-            # Move mel_segments to correct device/dtype
+            # Always use default float32 for all input tensors
             if not isinstance(mel_segments, torch.Tensor):
                 mel_segments = torch.from_numpy(mel_segments)
-            mel_segments = mel_segments.to(device=self.device, dtype=tensor_dtype)
+            mel_segments = mel_segments.to(self.device)
 
             # Move teacher_emb and teacher_segment_embs to correct device/dtype if tensor
             if isinstance(teacher_emb, np.ndarray):
                 teacher_emb = torch.from_numpy(teacher_emb)
             if isinstance(teacher_emb, torch.Tensor):
-                teacher_emb = teacher_emb.to(device=self.device, dtype=tensor_dtype)
+                teacher_emb = teacher_emb.to(self.device)
             if teacher_segment_embs is not None:
                 teacher_segment_embs = [torch.from_numpy(e) if isinstance(e, np.ndarray) else e for e in teacher_segment_embs]
-                teacher_segment_embs = [e.to(device=self.device, dtype=tensor_dtype) if isinstance(e, torch.Tensor) else e for e in teacher_segment_embs]
+                teacher_segment_embs = [e.to(self.device) if isinstance(e, torch.Tensor) else e for e in teacher_segment_embs]
 
             if mel_segments.shape[0] < 2:
                 logger.warning(f"⚠️ Skipping song {batch['song_ids'][i]} - only {mel_segments.shape[0]} segment (BatchNorm needs ≥2)")
@@ -580,7 +532,7 @@ class StudentCLAPTrainer:
                     chunk_end = min(chunk_start + chunk_size, mel_segments.shape[0])
                     chunk = mel_segments[chunk_start:chunk_end]
                     # Ensure chunk is on correct device/dtype
-                    chunk = chunk.to(device=self.device, dtype=tensor_dtype)
+                    chunk = chunk.to(self.device)
                     chunk_embeddings = self.model.forward(chunk)
                     segment_embeddings_list.append(chunk_embeddings)
                 
@@ -600,7 +552,7 @@ class StudentCLAPTrainer:
                 for chunk_start in range(0, mel_segments.shape[0], chunk_size):
                     chunk_end = min(chunk_start + chunk_size, mel_segments.shape[0])
                     chunk = mel_segments[chunk_start:chunk_end]
-                    chunk = chunk.to(device=self.device, dtype=tensor_dtype)
+                    chunk = chunk.to(self.device)
                     chunk_embeddings = self.model.forward(chunk)
                     segment_embeddings_list.append(chunk_embeddings)
                 
@@ -618,7 +570,7 @@ class StudentCLAPTrainer:
                 for chunk_start in range(0, mel_segments.shape[0], chunk_size):
                     chunk_end = min(chunk_start + chunk_size, mel_segments.shape[0])
                     chunk = mel_segments[chunk_start:chunk_end]
-                    chunk = chunk.to(device=self.device, dtype=tensor_dtype)
+                    chunk = chunk.to(self.device)
                     chunk_embeddings = self.model.forward(chunk)
                     segment_embeddings_list.append(chunk_embeddings)
                 
@@ -660,10 +612,10 @@ class StudentCLAPTrainer:
             }
 
         # Concatenate and ensure all embeddings are on correct device/dtype
-        student_embeddings = torch.cat(student_embeddings, dim=0).to(device=self.device, dtype=tensor_dtype)
+        student_embeddings = torch.cat(student_embeddings, dim=0).to(self.device)
         teacher_embeddings = [torch.from_numpy(e) if isinstance(e, np.ndarray) else e for e in teacher_embeddings]
-        teacher_embeddings = [e.to(device=self.device, dtype=tensor_dtype) if isinstance(e, torch.Tensor) else e for e in teacher_embeddings]
-        teacher_embeddings = torch.cat([e.unsqueeze(0) if e.dim() == 1 else e for e in teacher_embeddings], dim=0).to(device=self.device, dtype=tensor_dtype)
+        teacher_embeddings = [e.to(self.device) if isinstance(e, torch.Tensor) else e for e in teacher_embeddings]
+        teacher_embeddings = torch.cat([e.unsqueeze(0) if e.dim() == 1 else e for e in teacher_embeddings], dim=0).to(self.device)
 
         loss, loss_dict = self.compute_loss(student_embeddings, teacher_embeddings)
 

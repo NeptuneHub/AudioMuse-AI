@@ -90,10 +90,10 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
         Dict with epoch metrics
     """
     # Print device, precision, LR, WD at epoch start
-    device, dtype = trainer.device_dtype if hasattr(trainer, 'device_dtype') else (trainer.device, getattr(trainer, 'dtype', 'float32'))
+    device = trainer.device
     lr = trainer.optimizer.param_groups[0]['lr']
     wd = trainer.optimizer.param_groups[0].get('weight_decay', None)
-    logger.info(f"🚀 REAL ONNX TRAINING - Epoch {epoch}/{config['training']['epochs']} | Device: {device} | Precision: {dtype} | LR: {lr} | WD: {wd}")
+    logger.info(f"🚀 REAL ONNX TRAINING - Epoch {epoch}/{config['training']['epochs']} | Device: {device} | LR: {lr} | WD: {wd}")
     
     batch_size = config['training']['batch_size']
     
@@ -279,22 +279,7 @@ def validate_real(trainer: StudentCLAPTrainer,
     logger.info(f"🔍 Running REAL validation (Epoch {epoch})...")
     
     trainer.model.eval()
-    # Set model to correct dtype for platform (match training)
-    if torch.cuda.is_available() and str(trainer.device) == 'cuda':
-        trainer.model.to(trainer.device)
-        trainer._cast_nonbatchnorm_to_dtype(torch.bfloat16)
-        trainer._cast_batchnorm_to_float32()
-        tensor_dtype = torch.bfloat16
-    elif torch.backends.mps.is_available() and str(trainer.device) == 'mps':
-        trainer.model.to(trainer.device)
-        trainer._cast_nonbatchnorm_to_dtype(torch.bfloat16)
-        trainer._cast_batchnorm_to_float32()
-        tensor_dtype = torch.bfloat16
-    else:
-        trainer.model.to(trainer.device)
-        trainer._cast_nonbatchnorm_to_dtype(torch.float32)
-        trainer._cast_batchnorm_to_float32()
-        tensor_dtype = torch.float32
+    trainer.model.to(trainer.device)
     
     # Collect embeddings
     student_embeddings_list = []
@@ -314,10 +299,9 @@ def validate_real(trainer: StudentCLAPTrainer,
             
             for item in batch_data:
                 audio_segments = item['audio_segments']
-                # Move to correct device/dtype
                 if not isinstance(audio_segments, torch.Tensor):
                     audio_segments = torch.from_numpy(audio_segments)
-                audio_segments = audio_segments.to(device=trainer.device, dtype=tensor_dtype)
+                audio_segments = audio_segments.to(device=trainer.device)
                 batch['audio_segments'].append(audio_segments)
                 batch['teacher_embeddings'].append(item['teacher_embedding'])
                 batch['song_ids'].append(item['item_id'])
@@ -330,7 +314,7 @@ def validate_real(trainer: StudentCLAPTrainer,
                 # audio_segments are PRE-COMPUTED mel spectrograms! (num_segments, 1, 128, time)
                 if not isinstance(audio_segments, torch.Tensor):
                     audio_segments = torch.from_numpy(audio_segments)
-                audio_segments = audio_segments.to(dtype=tensor_dtype, device=trainer.device)
+                audio_segments = audio_segments.to(device=trainer.device)
                 # ⚠️ SKIP SONGS WITH ONLY 1 SEGMENT (BatchNorm requires at least 2 samples)
                 if audio_segments.shape[0] < 2:
                     logger.warning(f"⚠️ Skipping song {batch['song_ids'][i]} in validation - only {audio_segments.shape[0]} segment")
