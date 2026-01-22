@@ -846,8 +846,8 @@ def train(config_path: str, resume: str = None):
             student_text_model.export_to_onnx(str(text_onnx_path), device=device)
             logger.info(f"[TEXT] Exported ONNX: {text_onnx_path}")
         
-        # Validate every few epochs (only if audio distillation is enabled)
-        if audio_enabled and (epoch % 5 == 0 or epoch == 1):
+        # Validate every epoch (only if audio distillation is enabled)
+        if audio_enabled:
             val_metrics = validate_real(trainer, val_dataset, config, epoch)
             val_cosine = val_metrics['cosine_similarity']['mean']
             last_val_cosine = val_cosine
