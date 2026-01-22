@@ -20,7 +20,8 @@
 }
 
 /* When the .open class is added by JS, slide the menu in */
-.sidebar.open {
+.sidebar.open,
+html.sidebar-open .sidebar {
     transform: translateX(0);
 }
 
@@ -109,6 +110,7 @@
 }
 
 /* When the .sidebar-open class is added by JS, push the content over */
-.main-content.sidebar-open {
+.main-content.sidebar-open,
+html.sidebar-open .main-content {
     margin-left: 250px;
 }

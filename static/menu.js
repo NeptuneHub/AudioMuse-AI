@@ -10,13 +10,23 @@ document.addEventListener('DOMContentLoaded', function() {
     const openMenu = () => {
         sidebar.classList.add('open');
         mainContent.classList.add('sidebar-open');
+        document.documentElement.classList.add('sidebar-open');
+        localStorage.setItem('menuOpen', 'true');
     };
 
     // Function to close the menu
     const closeMenu = () => {
         sidebar.classList.remove('open');
         mainContent.classList.remove('sidebar-open');
+        document.documentElement.classList.remove('sidebar-open');
+        localStorage.setItem('menuOpen', 'false');
     };
+
+    // Sync classes if menu was opened by FOUC prevention script
+    if (document.documentElement.classList.contains('sidebar-open')) {
+        sidebar.classList.add('open');
+        mainContent.classList.add('sidebar-open');
+    }
 
     // Event listener for the menu toggle button
     if (menuToggle) {
@@ -79,7 +89,9 @@ document.addEventListener('DOMContentLoaded', function() {
     if (darkModeToggle) {
         darkModeToggle.addEventListener('click', (e) => {
             e.preventDefault();
+            e.stopPropagation();
             body.classList.toggle('dark-mode');
+            document.documentElement.classList.toggle('dark-mode');
             const isDark = body.classList.contains('dark-mode');
             localStorage.setItem('theme', isDark ? 'dark' : 'light');
             updateToggleUI(isDark);
