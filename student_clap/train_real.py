@@ -412,9 +412,10 @@ def train(config_path: str, resume: str = None):
     logger.info("\n🏗️ Building Student CLAP model...")
     trainer = StudentCLAPTrainer(config)
 
-    # Log initial learning rate for stage 1
+    # Log initial learning rate and weight decay for stage 1 optimizer
     initial_lr = trainer.optimizer.param_groups[0]['lr']
-    logger.info(f"🔧 Stage 1 initial learning rate: {initial_lr:.6f}")
+    initial_wd = trainer.optimizer.param_groups[0].get('weight_decay', None)
+    logger.info(f"🔧 Stage 1 initial learning rate: {initial_lr:.6f} | weight_decay: {initial_wd}")
 
     # Print model info
     model_info = trainer.model.count_parameters()
@@ -523,6 +524,12 @@ def train(config_path: str, resume: str = None):
             logger.info(f"   📈 Best cosine similarity so far: {best_val_cosine:.4f}")
             logger.info(f"   ⏰ Patience counter: {patience_counter}/{config['training']['early_stopping_patience']}")
             logger.info(f"   🎯 Will continue from epoch {start_epoch}")
+            # Confirm optimizer param groups (LR & weight_decay) after resume
+            try:
+                pg = trainer.optimizer.param_groups[0]
+                logger.info(f"   🔧 Optimizer after resume: lr={pg.get('lr')} | weight_decay={pg.get('weight_decay')}")
+            except Exception:
+                pass
             if start_epoch > (config['training']['epochs'] + config['training'].get('stage2_epochs', 0)):
                 logger.info(f"🎉 Audio training already completed! (reached {config['training']['epochs'] + config['training'].get('stage2_epochs', 0)} epochs)")
                 final_onnx_path = Path(config['paths']['final_model'])
