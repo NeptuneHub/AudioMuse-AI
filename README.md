@@ -129,9 +129,9 @@ AudioMuse-AI has been tested on:
 * **ARM**: Raspberry Pi 5, 8 GB RAM and NVMe SSD
 
 Suggested requirements:
-* A 4-core Intel or ARM CPU (produced in 2015 or later) with AVX support
+* CPU: 4-core Intel with AVX2 support (usually produced in 2015 or later) or ARM (tested on Raspebbery PI 5, Mac Mini M4 and Amphere VM)
 * 8 GB RAM
-* SSD storage
+* NVME SSD storage
 
 You can check the [Tested Hardware and Configuration](docs/HARDWARE.md) notes to see which hardware has already been validated.
 
