@@ -100,7 +100,7 @@ PY
 - Stage 1: Distillation from CLAP teacher (epochs 1-100), train all layers
 - Stage 2: Encoder frozen, finetune projection head only (epochs 101-110)
 - Learning rate warmup (epoch 1: LR linearly increases from 0 to target)
-- LR scheduler: ReduceLROnPlateau (monitors val loss, reduces LR on plateau)
+- LR scheduler: ReduceLROnPlateau (monitors validation cosine similarity, reduces LR on plateau). Scheduler parameters can be controlled in `config.yaml` under `training.lr_scheduler` (e.g., `patience`, `factor`, `threshold`).
 - Spectrogram augmentation (random gain, all epochs)
 
 **Segmentation:** 10-sec segments, 50% overlap, process 10 segments/batch → train on "both" (individuals + averaged)

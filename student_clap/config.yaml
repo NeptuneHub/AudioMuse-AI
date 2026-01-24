@@ -46,6 +46,14 @@ training:
   save_every: 1
   early_stopping_patience: 10
   validation_split: 0.15
+  lr_scheduler:
+    mode: 'max'             # monitor metric to maximize (we monitor validation cosine)
+    factor: 0.1             # LR reduction factor
+    patience: 3             # Number of epochs with no improvement before reducing LR
+    threshold: 0.005       # Minimum relative improvement to be considered as improvement
+    threshold_mode: 'rel'   # 'rel' or 'abs'
+    min_lr: 1e-6            # Minimum LR
+
 
 paths:
   teacher_model: "../model/clap_audio_model.onnx"

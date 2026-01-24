@@ -653,6 +653,23 @@ def train(config_path: str, resume: str = None):
     
     audio_enabled = config.get('distillation', {}).get('audio_enabled', True)
     for epoch in range(start_epoch, total_epochs + 1):
+        # Log scheduler settings at start of epoch
+        try:
+            sched = trainer.scheduler
+            sched_mode = getattr(sched, 'mode', 'N/A')
+            sched_factor = getattr(sched, 'factor', 'N/A')
+            sched_patience = getattr(sched, 'patience', 'N/A')
+            sched_threshold = getattr(sched, 'threshold', 'N/A')
+            sched_threshold_mode = getattr(sched, 'threshold_mode', 'N/A')
+            sched_min_lr = getattr(sched, 'min_lrs', None)
+            if sched_min_lr is not None:
+                # min_lrs can be a list
+                sched_min_lr = sched_min_lr[0] if isinstance(sched_min_lr, (list, tuple)) else sched_min_lr
+            curr_lr = trainer.optimizer.param_groups[0]['lr'] if hasattr(trainer, 'optimizer') else 'N/A'
+            logger.info(f"📊 Scheduler @ epoch {epoch}: mode={sched_mode}, factor={sched_factor}, patience={sched_patience}, threshold={sched_threshold}, threshold_mode={sched_threshold_mode}, min_lr={sched_min_lr}, current_lr={curr_lr}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not read scheduler settings: {e}")
+
         # === TEXT DISTILLATION EPOCH ===
         if text_enabled:
             logger.info(f"\n=== TEXT DISTILLATION: Epoch {epoch} ===")
@@ -735,16 +752,24 @@ def train(config_path: str, resume: str = None):
                 weight_decay=config['training']['weight_decay']
             )
 
+            stage2_sched_cfg = config['training'].get('stage2_lr_scheduler', {})
+            s2_mode = stage2_sched_cfg.get('mode', 'max')
+            s2_factor = stage2_sched_cfg.get('factor', 0.1)
+            s2_patience = stage2_sched_cfg.get('patience', 3)
+            s2_threshold = stage2_sched_cfg.get('threshold', 0.005)
+            s2_threshold_mode = stage2_sched_cfg.get('threshold_mode', 'rel')
+            s2_min = stage2_sched_cfg.get('min_lr', 1e-6)
+
             trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 trainer.optimizer,
-                mode='max',
-                factor=0.1,
-                patience=3,
-                threshold=0.005,
-                threshold_mode='rel',
-                min_lr=1e-6
+                mode=s2_mode,
+                factor=s2_factor,
+                patience=s2_patience,
+                threshold=s2_threshold,
+                threshold_mode=s2_threshold_mode,
+                min_lr=s2_min
             )
-            logger.info(f"📉 Stage 2 LR Scheduler reset: ReduceLROnPlateau (factor=0.1, patience=3, threshold=0.005)")
+            logger.info(f"📉 Stage 2 LR Scheduler reset: ReduceLROnPlateau (factor={s2_factor}, patience={s2_patience}, threshold={s2_threshold})")
             logger.info(f"   📈 Stage 2 learning rate: {stage2_lr:.2e}")
             logger.info(f"   📊 Training {sum(p.numel() for p in trainer.model.parameters() if p.requires_grad):,} parameters (projection head only)")
             logger.info("   🎯 This refines the embedding alignment while keeping learned features intact")
@@ -842,12 +867,14 @@ def train(config_path: str, resume: str = None):
 
             # Update the per-epoch checkpoint to include the last validation cosine so files reflect validation results
             try:
+                # Store validation result under both keys to ensure downstream tools/scripts find it
                 epoch_checkpoint_data['last_val_cosine'] = last_val_cosine
+                epoch_checkpoint_data['val_cosine_sim'] = last_val_cosine
                 torch.save(epoch_checkpoint_data, epoch_checkpoint_path)
                 if latest_checkpoint_path.exists() or latest_checkpoint_path.is_symlink():
                     latest_checkpoint_path.unlink()
                 torch.save(epoch_checkpoint_data, latest_checkpoint_path)
-                logger.info(f"✅ Updated epoch checkpoint with validation metrics: {epoch_checkpoint_path}")
+                logger.info(f"✅ Updated epoch checkpoint with validation metrics: {epoch_checkpoint_path} (val_cosine={last_val_cosine:.6f})")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to update epoch checkpoint with validation metrics: {e}")
 
@@ -896,6 +923,7 @@ def train(config_path: str, resume: str = None):
                 'train_metrics': train_metrics,
                 'best_val_cosine': best_val_cosine,
                 'last_val_cosine': last_val_cosine,
+                'val_cosine_sim': last_val_cosine,
                 'patience_counter': patience_counter,
                 'config': config,
                 'timestamp': time.time()

@@ -397,14 +397,24 @@ class StudentCLAPTrainer:
         self.accumulation_counter = 0
 
         # Use validation-driven scheduler (mode='max' because we maximize cosine similarity)
+        lr_sched_cfg = config['training'].get('lr_scheduler', {})
+        lr_mode = lr_sched_cfg.get('mode', 'max')
+        lr_factor = lr_sched_cfg.get('factor', 0.1)
+        lr_patience = lr_sched_cfg.get('patience', config['training'].get('early_stopping_patience', 10))
+        lr_threshold = lr_sched_cfg.get('threshold', 1e-4)
+        lr_threshold_mode = lr_sched_cfg.get('threshold_mode', 'rel')
+        lr_min = lr_sched_cfg.get('min_lr', 1e-6)
+
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
-            mode='max',
-            factor=0.1,
-            patience=10,
-            min_lr=1e-6
+            mode=lr_mode,
+            factor=lr_factor,
+            patience=lr_patience,
+            threshold=lr_threshold,
+            threshold_mode=lr_threshold_mode,
+            min_lr=lr_min
         )
-        logger.info(f"📉 LR Scheduler: ReduceLROnPlateau (factor=0.1, patience=10, mode=max)")
+        logger.info(f"📉 LR Scheduler: ReduceLROnPlateau (factor={lr_factor}, patience={lr_patience}, threshold={lr_threshold}, mode={lr_mode})")
 
         self.training_strategy = config['training'].get('training_strategy', 'averaged')
         self.segment_batch_size = config['model'].get('segment_batch_size', 10)
