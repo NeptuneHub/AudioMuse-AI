@@ -356,7 +356,14 @@ def validate_real(trainer: StudentCLAPTrainer,
     # Evaluate
     metrics = evaluate_embeddings(student_all, teacher_all)
     metrics['num_songs'] = len(song_ids)
-    
+
+    # Restore model to training mode to avoid surprising downstream code
+    try:
+        trainer.model.train()
+        logger.info("🔁 Restored model to train mode after validation")
+    except Exception:
+        pass
+
     return metrics
 
 
