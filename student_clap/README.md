@@ -33,9 +33,9 @@ python3 train_real.py --config config.yaml
 
 You can check how the average cosine similarity (training and validation) is going for each epoch with this one line command:
 ```
- for f in student_clap/checkpoints/checkpoint_epoch_*.pth; do \
+for f in student_clap/checkpoints/checkpoint_epoch_*.pth; do \
   echo -n "$f: "; \
-  python3 -c "import torch; ckpt=torch.load('$f', map_location='cpu'); m=ckpt['train_metrics']; val=ckpt.get('val_cosine_sim', ckpt.get('best_val_cosine', 'N/A')); print(f'cosine={m[\"avg_cosine_sim\"]}, val_cosine={val}, lr={m[\"learning_rate\"]}')"; \
+  python3 -c 'import torch,sys; ckpt=torch.load(sys.argv[1], map_location="cpu"); m=ckpt.get("train_metrics",{}); avg=m.get("avg_cosine_sim","null"); lr=m.get("learning_rate","null"); val=ckpt.get("last_val_cosine", ckpt.get("val_cosine_sim", ckpt.get("best_val_cosine", "null"))); print(f"cosine={avg}, val_cosine={val}, lr={lr}")' "$f"; \
 done
 ```
 
