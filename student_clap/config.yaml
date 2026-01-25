@@ -75,7 +75,7 @@ paths:
 
 dataset:
   fma_path: "/Users/guidocolangiuli/Music/FMA"
-  sample_size: 10
+  sample_size: 0
 
 logging:
   level: "INFO"

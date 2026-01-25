@@ -501,7 +501,8 @@ class StudentCLAPTrainer:
         if getattr(self, 'use_logit_scale', False):
             scale = self.model.logit_scale.exp()
             scaled = cosine_sim * scale
-            scale_value = float(self.model.logit_scale.detach().cpu().item())
+            # Log the *effective* multiplier (exp of the stored logit_scale parameter)
+            scale_value = float(scale.detach().cpu().item())
         else:
             scaled = cosine_sim / float(self.loss_temperature)
             scale_value = float(self.loss_temperature)
