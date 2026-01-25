@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1
 # AudioMuse-AI Dockerfile
-# Supports both CPU (ubuntu:24.04) and GPU (nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04) builds
+# Supports CPU, NVIDIA CUDA, and AMD ROCm builds
 #
 # Build examples:
-#   CPU:  docker build -t audiomuse-ai .
-#   GPU:  docker build --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 -t audiomuse-ai-gpu .
+#   CPU:   docker build -t audiomuse-ai .
+#   NVIDIA: docker build --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 -t audiomuse-ai-nvidia .
+#   ROCm:  docker build --build-arg BASE_IMAGE=rocm/dev-ubuntu-24.04:6.2.4 -t audiomuse-ai-rocm .
 
 ARG BASE_IMAGE=ubuntu:24.04
 
@@ -123,12 +124,17 @@ WORKDIR /app
 COPY requirements/ /app/requirements/
 
 # Install Python packages with uv (combined in single layer for efficiency)
-# GPU builds: cupy, cuml, onnxruntime-gpu, voyager, torch (CUDA)
+# NVIDIA builds: cupy, cuml, onnxruntime-gpu, voyager, torch (CUDA)
+# ROCm builds: onnxruntime-rocm, torch (ROCm) - no cuML/cupy (NVIDIA-only)
 # CPU builds: onnxruntime (CPU only), torch (CPU)
 # Note: --index-strategy unsafe-best-match resolves conflicts between pypi.nvidia.com and pypi.org
 RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
         echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager, torch+cuda)"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
+    elif [[ "$BASE_IMAGE" =~ ^rocm/ ]]; then \
+        echo "ROCm base image detected: installing ROCm packages (onnxruntime-rocm, torch+rocm)"; \
+        echo "Note: cuML/cupy not available for ROCm - GPU clustering will use sklearn fallback"; \
+        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/rocm.txt -r /app/requirements/common.txt || exit 1; \
     else \
         echo "CPU base image: installing all packages together for dependency resolution"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/cpu.txt -r /app/requirements/common.txt || exit 1; \

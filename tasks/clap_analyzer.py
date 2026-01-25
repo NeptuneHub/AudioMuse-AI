@@ -31,6 +31,7 @@ try:
 except Exception:
     AUDIO_LOAD_TIMEOUT = None
 from tasks.memory_utils import cleanup_cuda_memory, handle_onnx_memory_error, comprehensive_memory_cleanup
+from tasks.gpu_utils import get_onnx_providers, get_onnx_provider_names, get_onnx_provider_options, get_active_provider_name
 
 logger = logging.getLogger(__name__)
 
@@ -71,40 +72,28 @@ def _load_audio_model():
         sess_options.inter_op_num_threads = 1  # Single-threaded ONNX operations
         logger.info("CLAP Audio: Using Python threading (auto-calculated threads), ONNX single-threaded")
     
-    # GPU support: ONNX Runtime handles CUDA availability internally
+    # GPU support: Use centralized provider selection (supports CUDA, ROCm, CPU)
     session = None
-    
-    # Configure provider options with GPU memory management
-    available_providers = ort.get_available_providers()
-    if 'CUDAExecutionProvider' in available_providers:
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
-    else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
-    
+
+    # Get providers from gpu_utils (handles CUDA, ROCm, and CPU automatically)
+    provider_names = get_onnx_provider_names()
+    provider_options = get_onnx_provider_options()
+    backend_name = get_active_provider_name()
+
+    logger.info(f"CLAP audio model: Using {backend_name} backend with providers: {provider_names}")
+
     # Create session
     try:
         session = ort.InferenceSession(
             model_path,
             sess_options=sess_options,
-            providers=[p[0] for p in provider_options],
-            provider_options=[p[1] for p in provider_options]
+            providers=provider_names,
+            provider_options=provider_options
         )
-        
+
         active_provider = session.get_providers()[0]
-        logger.info(f"✓ CLAP audio model loaded successfully (~268MB)")
-            
+        logger.info(f"✓ CLAP audio model loaded successfully (~268MB, provider: {active_provider})")
+
     except Exception as e:
         logger.warning(f"Failed to load with preferred providers: {e}")
         logger.info("Attempting final CPU-only fallback...")
@@ -118,10 +107,10 @@ def _load_audio_model():
         except Exception as cpu_error:
             logger.error(f"Failed to load ONNX audio model even with CPU: {cpu_error}")
             raise
-    
+
     if session is None:
         raise RuntimeError("Failed to create audio ONNX session")
-    
+
     gc.collect()
     return session
 
@@ -146,39 +135,28 @@ def _load_text_model():
         sess_options.inter_op_num_threads = 1
         logger.info("CLAP Text: Using Python threading, ONNX single-threaded")
     
-    # Text model typically runs on CPU in Flask containers
+    # GPU support: Use centralized provider selection (supports CUDA, ROCm, CPU)
     session = None
-    available_providers = ort.get_available_providers()
-    
-    if 'CUDAExecutionProvider' in available_providers:
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
-    else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
-    
+
+    # Get providers from gpu_utils (handles CUDA, ROCm, and CPU automatically)
+    provider_names = get_onnx_provider_names()
+    provider_options = get_onnx_provider_options()
+    backend_name = get_active_provider_name()
+
+    logger.info(f"CLAP text model: Using {backend_name} backend with providers: {provider_names}")
+
     # Create session
     try:
         session = ort.InferenceSession(
             model_path,
             sess_options=sess_options,
-            providers=[p[0] for p in provider_options],
-            provider_options=[p[1] for p in provider_options]
+            providers=provider_names,
+            provider_options=provider_options
         )
-        
+
         active_provider = session.get_providers()[0]
-        logger.info(f"✓ CLAP text model loaded successfully (~478MB)")
-            
+        logger.info(f"✓ CLAP text model loaded successfully (~478MB, provider: {active_provider})")
+
     except Exception as e:
         logger.warning(f"Failed to load with preferred providers: {e}")
         logger.info("Attempting final CPU-only fallback...")
@@ -192,10 +170,10 @@ def _load_text_model():
         except Exception as cpu_error:
             logger.error(f"Failed to load ONNX text model even with CPU: {cpu_error}")
             raise
-    
+
     if session is None:
         raise RuntimeError("Failed to create text ONNX session")
-    
+
     gc.collect()
     return session
 
@@ -231,44 +209,28 @@ def _load_onnx_model():
         sess_options.inter_op_num_threads = 1  # Single-threaded ONNX operations
         logger.info("CLAP: Using Python threading (auto-calculated threads), ONNX single-threaded")
     
-    # GPU support: ONNX Runtime handles CUDA availability internally
-    # If CUDA fails, it automatically falls back to CPU
+    # GPU support: Use centralized provider selection (supports CUDA, ROCm, CPU)
     session = None
-    
-    # Configure provider options with GPU memory management
-    available_providers = ort.get_available_providers()
-    if 'CUDAExecutionProvider' in available_providers:
-        # Get GPU device ID from environment or default to 0
-        # Docker sets NVIDIA_VISIBLE_DEVICES, CUDA runtime uses CUDA_VISIBLE_DEVICES
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            # If CUDA_VISIBLE_DEVICES is set, use first device (already mapped to 0)
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
-    else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
-    
+
+    # Get providers from gpu_utils (handles CUDA, ROCm, and CPU automatically)
+    provider_names = get_onnx_provider_names()
+    provider_options = get_onnx_provider_options()
+    backend_name = get_active_provider_name()
+
+    logger.info(f"CLAP combined model: Using {backend_name} backend with providers: {provider_names}")
+
     # Create session with determined providers
     try:
         session = ort.InferenceSession(
             config.CLAP_MODEL_PATH,
             sess_options=sess_options,
-            providers=[p[0] for p in provider_options],
-            provider_options=[p[1] for p in provider_options]
+            providers=provider_names,
+            provider_options=provider_options
         )
-        
+
         active_provider = session.get_providers()[0]
-        logger.info(f"✓ CLAP ONNX model loaded successfully")
-            
+        logger.info(f"✓ CLAP ONNX model loaded successfully (provider: {active_provider})")
+
     except Exception as e:
         # Final fallback: force CPU-only
         logger.warning(f"Failed to load with preferred providers: {e}")
@@ -283,10 +245,10 @@ def _load_onnx_model():
         except Exception as cpu_error:
             logger.error(f"Failed to load ONNX model even with CPU: {cpu_error}")
             raise
-    
+
     if session is None:
         raise RuntimeError("Failed to create ONNX session")
-    
+
     gc.collect()
     return session
 

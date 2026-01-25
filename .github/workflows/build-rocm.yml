@@ -1,0 +1,97 @@
+name: Build and Push AudioMuse AI Docker Image with ROCm support
+
+on:
+  push:
+    # Trigger on version tags for stable releases
+    tags:
+      - 'v*.*.*'
+    # Trigger on pushes to devel branch for development releases
+    branches:
+      - devel
+  # Allow manual runs from the Actions UI
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Version tag (e.g., v0.7.12-beta)'
+        required: true
+        type: string
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          swap-storage: false
+          large-packages: true
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          docker-images: true
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine Docker image tags
+        id: docker_tags
+        run: |
+          REPO_NAME_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          ALL_TAGS=""
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            # When compiling from a version tag, create both the versioned tag and latest-rocm
+            VERSION_TAG=$(echo "${GITHUB_REF}" | sed -e 's|refs/tags/v||g')
+            VERSIONED_TAG="ghcr.io/$REPO_NAME_LOWER:${VERSION_TAG}-rocm"
+            LATEST_TAG="ghcr.io/$REPO_NAME_LOWER:latest-rocm"
+            ALL_TAGS="${VERSIONED_TAG},${LATEST_TAG}"
+            echo "Building versioned tag: $VERSIONED_TAG"
+            echo "Also tagging as latest: $LATEST_TAG"
+          elif [[ "${GITHUB_REF}" == refs/heads/devel ]]; then
+            # When compiling from devel branch, create devel-rocm tag
+            DEVEL_TAG="ghcr.io/$REPO_NAME_LOWER:devel-rocm"
+            ALL_TAGS="${DEVEL_TAG}"
+            echo "Building devel tag: $DEVEL_TAG"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual run with version input
+            VERSION_TAG=$(echo "${{ inputs.version_tag }}" | sed -e 's|^v||g')
+            VERSIONED_TAG="ghcr.io/$REPO_NAME_LOWER:${VERSION_TAG}-rocm"
+            LATEST_TAG="ghcr.io/$REPO_NAME_LOWER:latest-rocm"
+            ALL_TAGS="${VERSIONED_TAG},${LATEST_TAG}"
+            echo "Building manual version tag: $VERSIONED_TAG"
+            echo "Also tagging as latest: $LATEST_TAG"
+          else
+            echo "This workflow is intended to run on tag pushes (refs/tags/v*), devel branch, or manual dispatch. Exiting."
+            exit 1
+          fi
+
+          # Export the tags for subsequent steps (comma-separated)
+          echo "docker_tags=$ALL_TAGS" >> "$GITHUB_OUTPUT"
+
+      - name: Build and Push AudioMuse AI Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.docker_tags.outputs.docker_tags }}
+          build-args: |
+            BASE_IMAGE=rocm/dev-ubuntu-24.04:6.2.4
+          cache-from: type=gha,scope=rocm
+          cache-to: type=gha,scope=rocm,mode=max

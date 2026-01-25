@@ -63,65 +63,69 @@ def sanitize_string_for_db(value: Optional[str]) -> Optional[str]:
 
 def cleanup_cuda_memory(force: bool = False) -> bool:
     """
-    Force CUDA cache clearing and garbage collection to free GPU memory.
-    
-    ONNX Runtime with CUDA can accumulate memory fragmentation over many inferences,
-    leading to BFCArena allocation failures. This function forces cleanup.
-    
+    Force GPU cache clearing and garbage collection to free GPU memory.
+
+    Supports both NVIDIA CUDA and AMD ROCm via PyTorch's unified cuda API.
+    ONNX Runtime with GPU can accumulate memory fragmentation over many inferences,
+    leading to allocation failures. This function forces cleanup.
+
     Args:
         force: If True, performs aggressive cleanup including cache emptying
-        
+
     Returns:
-        True if CUDA cleanup was performed, False if CUDA not available
-        
+        True if GPU cleanup was performed, False if GPU not available
+
     Note:
         This is a heavy operation and should be used strategically:
         - After completing analysis of a batch of tracks
         - After an allocation error occurs
         - Between albums or at periodic intervals
     """
-    cuda_cleanup_performed = False
-    
+    gpu_cleanup_performed = False
+
     # Try PyTorch cleanup first (if available)
+    # PyTorch ROCm uses the same torch.cuda API as CUDA
     try:
         import torch
         if torch.cuda.is_available():
             if force:
                 # Aggressive cleanup: empty cache completely
                 torch.cuda.empty_cache()
-                logger.debug("PyTorch CUDA cache emptied")
+                logger.debug("PyTorch GPU cache emptied (CUDA/ROCm)")
             else:
                 # Standard cleanup: synchronize and collect
                 torch.cuda.synchronize()
-                logger.debug("PyTorch CUDA synchronize completed")
-            cuda_cleanup_performed = True
+                logger.debug("PyTorch GPU synchronize completed (CUDA/ROCm)")
+            gpu_cleanup_performed = True
     except ImportError:
         # PyTorch not available, try alternative methods
         pass
     except Exception as e:
-        logger.warning(f"Error during PyTorch CUDA cleanup: {e}")
-    
+        logger.warning(f"Error during PyTorch GPU cleanup: {e}")
+
     # Try CuPy cleanup if PyTorch failed/unavailable
-    if not cuda_cleanup_performed:
+    # Note: CuPy is NVIDIA CUDA-only, not available for ROCm
+    if not gpu_cleanup_performed:
         try:
             import cupy
             if force:
                 cupy.get_default_memory_pool().free_all_blocks()
                 cupy.get_default_pinned_memory_pool().free_all_blocks()
-                logger.debug("CuPy memory pool cleared")
-            cuda_cleanup_performed = True
+                logger.debug("CuPy memory pool cleared (CUDA only)")
+            gpu_cleanup_performed = True
         except ImportError:
+            # CuPy not installed (expected for ROCm builds)
             pass
         except Exception as e:
             logger.warning(f"Error during CuPy CUDA cleanup: {e}")
-    
+
     # Always run garbage collection
     gc.collect()
-    
-    if not cuda_cleanup_performed:
-        logger.debug("No CUDA cleanup libraries available (PyTorch/CuPy)")
-    
-    return cuda_cleanup_performed
+
+    if not gpu_cleanup_performed:
+        logger.debug("No GPU cleanup libraries available (PyTorch/CuPy)")
+
+    return gpu_cleanup_performed
 
 
 def cleanup_onnx_session(session, name: str = "session") -> None:
@@ -194,31 +198,36 @@ def cleanup_tensors(*tensor_vars) -> None:
 def reset_onnx_memory_pool() -> bool:
     """
     Reset ONNX Runtime memory pool to clear accumulated allocations.
-    
-    ONNX Runtime's memory allocators (BFCArena for GPU, default for CPU) can accumulate 
-    memory fragmentation over many inferences. This function attempts to reset the 
+
+    ONNX Runtime's memory allocators (BFCArena for GPU, default for CPU) can accumulate
+    memory fragmentation over many inferences. This function attempts to reset the
     memory pool by triggering internal cleanup for both CPU and GPU providers.
-    
+
+    Supports CUDA, ROCm, and CPU providers.
+
     Returns:
         True if reset was attempted, False if not supported
-        
+
     Note:
         This is an experimental function that uses internal ONNX Runtime mechanisms.
         Results may vary across ONNX Runtime versions.
     """
     try:
         import onnxruntime as ort
-        
+
         # Force garbage collection first
         gc.collect()
-        
-        # Determine available providers
+
+        # Determine available providers (CUDA, ROCm, or CPU)
         providers = ort.get_available_providers()
         preferred_provider = None
-        
+
         if 'CUDAExecutionProvider' in providers:
             preferred_provider = 'CUDAExecutionProvider'
             logger.debug("Using CUDA provider for ONNX memory pool reset")
+        elif 'ROCmExecutionProvider' in providers:
+            preferred_provider = 'ROCmExecutionProvider'
+            logger.debug("Using ROCm provider for ONNX memory pool reset")
         elif 'CPUExecutionProvider' in providers:
             preferred_provider = 'CPUExecutionProvider'
             logger.debug("Using CPU provider for ONNX memory pool reset")

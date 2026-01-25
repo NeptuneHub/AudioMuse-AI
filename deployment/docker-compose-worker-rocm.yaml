@@ -1,0 +1,57 @@
+# AudioMuse-AI ROCm (AMD GPU) Worker Deployment Configuration
+#
+# WORKER TEMPLATE - Run this for heavy GPU tasks like analysis, connected to a
+# lightweight server with Jellyfin and AudioMuse-AI Flask application and databases.
+# This configuration is intended for deployment on a server with AMD GPU support via ROCm.
+#
+# Requirements:
+# - AMD GPU with ROCm support (RX 5000/6000/7000 series, Radeon Pro, Instinct)
+# - ROCm driver installed on host
+# - Docker with --device access to /dev/kfd and /dev/dri
+#
+# Note: GPU clustering (cuML) is not available for ROCm - will use sklearn fallback.
+# ONNX model inference is GPU-accelerated via ROCmExecutionProvider.
+
+version: '3.8'
+services:
+  # AudioMuse-AI Worker service (ROCm GPU-accelerated)
+  audiomuse-ai-worker:
+    image: ghcr.io/neptunehub/audiomuse-ai:latest-rocm
+    container_name: audiomuse-ai-worker-instance
+    ports:
+      - "${WORKER_PORT:-8029}:8000"
+    environment:
+      SERVICE_TYPE: "worker"
+      MEDIASERVER_TYPE: "jellyfin"
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
+      JELLYFIN_URL: "${JELLYFIN_URL}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+      POSTGRES_HOST: "${WORKER_POSTGRES_HOST:-postgres}"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${WORKER_REDIS_URL:-redis://redis:6379/0}"
+      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      OPENAI_SERVER_URL: "${OPENAI_SERVER_URL}"
+      OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
+      CLAP_ENABLED: "${CLAP_ENABLED:-true}"
+      GPU_BACKEND: "rocm"
+      # GPU clustering unavailable for ROCm - force sklearn fallback
+      USE_GPU_CLUSTERING: "false"
+      TEMP_DIR: "/app/temp_audio"
+    volumes:
+      - temp-audio-worker:/app/temp_audio
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    restart: unless-stopped
+
+volumes:
+  temp-audio-worker:

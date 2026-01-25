@@ -11,11 +11,14 @@ Supports:
 - PCA (cuML)
 - GaussianMixture (CPU fallback - no GPU version in cuML)
 - SpectralClustering (CPU fallback - no GPU version in cuML)
+
+Note: cuML is NVIDIA CUDA-only. ROCm users automatically get sklearn fallback.
 """
 
 import logging
 import numpy as np
 from config import GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS
+from tasks.gpu_utils import detect_gpu_backend, is_gpu_clustering_available, GPUBackend
 
 logger = logging.getLogger(__name__)
 
@@ -23,46 +26,37 @@ logger = logging.getLogger(__name__)
 _GPU_AVAILABLE = None
 _GPU_CHECK_DONE = False
 
-def _check_cuda_driver_available():
-    """
-    Check if CUDA driver is available using low-level libcuda.so.
-    This MUST be called before importing cupy/cuml to avoid corrupting CUDA state.
-    """
-    try:
-        import ctypes
-        cuda = ctypes.CDLL('libcuda.so.1')
-        # Must initialize CUDA driver first
-        init_result = cuda.cuInit(0)
-        if init_result != 0:
-            return False
-        # Then get device count
-        device_count = ctypes.c_int()
-        result = cuda.cuDeviceGetCount(ctypes.byref(device_count))
-        return result == 0 and device_count.value > 0
-    except Exception:
-        return False
 
 def check_gpu_available():
     """
     Check if GPU and cuML are available.
     This is cached after the first check.
 
-    IMPORTANT: We first check if CUDA driver is accessible using low-level API
-    before importing cupy/cuml, because their import can corrupt CUDA state
-    for other libraries (like ONNX Runtime) if it fails.
+    IMPORTANT: cuML (RAPIDS) is only available for NVIDIA CUDA.
+    ROCm users will automatically get sklearn fallback.
     """
     global _GPU_AVAILABLE, _GPU_CHECK_DONE
 
     if _GPU_CHECK_DONE:
         return _GPU_AVAILABLE
 
-    # First check if CUDA driver is available at all
-    if not _check_cuda_driver_available():
+    # Use centralized GPU detection
+    backend = detect_gpu_backend()
+
+    # cuML is only available for CUDA
+    if backend == GPUBackend.ROCM:
         _GPU_AVAILABLE = False
         _GPU_CHECK_DONE = True
-        logger.info("GPU acceleration not available for clustering: CUDA driver not accessible")
+        logger.info("GPU clustering not available: cuML (RAPIDS) is NVIDIA-only. ROCm detected - using sklearn fallback.")
         return _GPU_AVAILABLE
 
+    if backend == GPUBackend.NONE:
+        _GPU_AVAILABLE = False
+        _GPU_CHECK_DONE = True
+        logger.info("GPU acceleration not available for clustering: no GPU driver detected")
+        return _GPU_AVAILABLE
+
+    # CUDA detected - try to import cuML
     try:
         import cupy as cp
         import cuml

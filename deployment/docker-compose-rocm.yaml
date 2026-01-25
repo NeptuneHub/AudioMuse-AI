@@ -1,0 +1,124 @@
+# AudioMuse-AI ROCm (AMD GPU) Deployment Configuration
+#
+# FULL STACK - Run this for a complete AudioMuse-AI deployment with AMD GPU acceleration.
+# This configuration includes Redis, PostgreSQL, Flask app, and Worker with ROCm support.
+#
+# Requirements:
+# - AMD GPU with ROCm support (RX 5000/6000/7000 series, Radeon Pro, Instinct)
+# - ROCm driver installed on host
+# - Docker with --device access to /dev/kfd and /dev/dri
+#
+# Note: GPU clustering (cuML) is not available for ROCm - will use sklearn fallback.
+# ONNX model inference is GPU-accelerated via ROCmExecutionProvider.
+
+version: '3.8'
+services:
+  # Redis service for RQ (task queue)
+  redis:
+    image: redis:7-alpine
+    container_name: audiomuse-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  # PostgreSQL database service
+  postgres:
+    image: postgres:15-alpine
+    container_name: audiomuse-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # AudioMuse-AI Flask application service
+  audiomuse-ai-flask:
+    image: ghcr.io/neptunehub/audiomuse-ai:latest-rocm
+    container_name: audiomuse-ai-flask-app
+    ports:
+      - "${FRONTEND_PORT:-8000}:8000"
+    environment:
+      SERVICE_TYPE: "flask"
+      MEDIASERVER_TYPE: "jellyfin"
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
+      JELLYFIN_URL: "${JELLYFIN_URL}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      OPENAI_SERVER_URL: "${OPENAI_SERVER_URL}"
+      OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
+      CLAP_ENABLED: "${CLAP_ENABLED:-true}"
+      GPU_BACKEND: "rocm"
+      TEMP_DIR: "/app/temp_audio"
+    volumes:
+      - temp-audio-flask:/app/temp_audio
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  # AudioMuse-AI RQ Worker service
+  audiomuse-ai-worker:
+    image: ghcr.io/neptunehub/audiomuse-ai:latest-rocm
+    container_name: audiomuse-ai-worker-instance
+    environment:
+      SERVICE_TYPE: "worker"
+      MEDIASERVER_TYPE: "jellyfin"
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
+      JELLYFIN_URL: "${JELLYFIN_URL}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      OPENAI_SERVER_URL: "${OPENAI_SERVER_URL}"
+      OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
+      CLAP_ENABLED: "${CLAP_ENABLED:-true}"
+      GPU_BACKEND: "rocm"
+      # GPU clustering unavailable for ROCm - force sklearn fallback
+      USE_GPU_CLUSTERING: "false"
+      TEMP_DIR: "/app/temp_audio"
+    volumes:
+      - temp-audio-worker:/app/temp_audio
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  postgres-data:
+  temp-audio-flask:
+  temp-audio-worker:

@@ -1,0 +1,5 @@
+--extra-index-url https://download.pytorch.org/whl/rocm6.2
+torch==2.5.1+rocm6.2
+onnxruntime-rocm==1.19.0
+# Note: cuML (RAPIDS) is not available for ROCm - GPU clustering will use sklearn fallback
+# CuPy is also not available for ROCm
