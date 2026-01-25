@@ -429,6 +429,15 @@ def train(config_path: str, resume: str = None):
     initial_wd = trainer.optimizer.param_groups[0].get('weight_decay', None)
     logger.info(f"🔧 Stage 1 initial learning rate: {initial_lr:.6f} | weight_decay: {initial_wd}")
 
+    # Log loss settings (temperature / logit_scale / focal weighting)
+    try:
+        logit = None
+        if getattr(trainer, 'use_logit_scale', False) and hasattr(trainer.model, 'logit_scale'):
+            logit = float(trainer.model.logit_scale.detach().cpu().item())
+        logger.info(f"🎚️ Loss settings: temperature={trainer.loss_temperature}, use_logit_scale={trainer.use_logit_scale}, init_logit_scale={logit}, focal_gamma={trainer.focal_gamma}, focal_low={trainer.focal_low}, focal_high={trainer.focal_high}")
+    except Exception:
+        logger.info("🎚️ Loss settings: (unavailable)")
+
     # Print model info
     model_info = trainer.model.count_parameters()
     logger.info(f"\n📊 Model Architecture:")

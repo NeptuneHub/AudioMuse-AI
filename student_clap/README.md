@@ -107,6 +107,12 @@ PY
 
 **Loss:** Negative cosine similarity
 
+**Loss scaling options (configurable in `config.yaml` under `training`):**
+
+- `loss_temperature` (float, default 1.0): static temperature applied to the cosine similarity (cosine / temperature).
+- `use_logit_scale` (bool, default false): if true, a learnable `logit_scale` parameter (stored as `model.logit_scale`) is used and applied as `cosine * exp(logit_scale)`.
+- `init_logit_scale` (float, default 1.0): initial value for the learnable logit_scale.
+
 ## Training - Text
 
 **Architecture:**

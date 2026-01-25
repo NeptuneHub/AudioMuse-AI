@@ -34,10 +34,10 @@ model_text:
 training:
   batch_size: 1
   gradient_accumulation_steps: 8
-  learning_rate: 0.0003 # Original: 0.003
+  learning_rate: 0.00003 # Original: 0.003
   epochs: 100
   stage2_epochs: 10
-  stage2_learning_rate: 0.00003
+  stage2_learning_rate: 0.000003
   projection_only: false
   optimizer: "adamw"
   weight_decay: 0.1
@@ -46,6 +46,14 @@ training:
   save_every: 1
   early_stopping_patience: 10
   validation_split: 0.15
+  # Loss scaling options
+  loss_temperature: 1.5       # Static temperature (divide cosine by this value). If using logit scale, set use_logit_scale=True
+  use_logit_scale: false      # If true, use a learnable logit_scale (exp(logit_scale) applied to cosine)
+  init_logit_scale: 1.0       # Initial value for learnable logit_scale (only used if use_logit_scale=True)
+  # Focal-style weighting for cosine (set gamma>0 to enable)
+  loss_focal_gamma: 2.0       # gamma > 0 focuses gradients on hard (low-cosine) samples
+  loss_focal_low_threshold: 0.35  # cosine <= low -> full weight
+  loss_focal_high_threshold: 0.60 # cosine >= high -> zero weight; interpolate between low and high
   lr_scheduler:
     mode: 'max'             # monitor metric to maximize (we monitor validation cosine)
     factor: 0.1             # LR reduction factor
@@ -67,7 +75,7 @@ paths:
 
 dataset:
   fma_path: "/Users/guidocolangiuli/Music/FMA"
-  sample_size: 0
+  sample_size: 10
 
 logging:
   level: "INFO"

@@ -377,6 +377,27 @@ class StudentCLAPTrainer:
 
         self.model = StudentCLAPAudio(config).to(self.device)
 
+        # --- Loss scaling options (temperature or learnable logit_scale) ---
+        self.use_logit_scale = bool(config['training'].get('use_logit_scale', False))
+        self.loss_temperature = float(config['training'].get('loss_temperature', 1.0))
+        # Focal-weighting params
+        self.focal_gamma = float(config['training'].get('loss_focal_gamma', 0.0))
+        self.focal_low = float(config['training'].get('loss_focal_low_threshold', 0.4))
+        self.focal_high = float(config['training'].get('loss_focal_high_threshold', 0.5))
+
+        if self.use_logit_scale:
+            init_val = float(config['training'].get('init_logit_scale', 1.0))
+            # Attach learnable logit_scale to model so it is saved in model_state_dict
+            self.model.logit_scale = nn.Parameter(torch.tensor(float(init_val)))
+            logger.info(f"🔧 Using learnable logit_scale (init={init_val})")
+        else:
+            logger.info(f"🔧 Using static temperature for loss: {self.loss_temperature}")
+
+        if self.focal_gamma > 0.0:
+            logger.info(f"🎯 Using focal weighting on cosine (gamma={self.focal_gamma}, low={self.focal_low}, high={self.focal_high})")
+        else:
+            logger.info("🎯 No focal weighting (gamma=0)")
+
         # Support configurable optimizer: 'adam' (default) or 'adamw'
         optimizer_type = config['training'].get('optimizer', 'adam').lower()
         if optimizer_type == 'adamw':
@@ -475,7 +496,39 @@ class StudentCLAPTrainer:
         student_embeddings = F.normalize(student_embeddings, p=2, dim=1)
 
         cosine_sim = F.cosine_similarity(student_embeddings, teacher_embeddings, dim=1)
-        total_loss = -cosine_sim.mean()
+
+        # Apply temperature or learnable logit_scale (scaling applied to loss logits)
+        if getattr(self, 'use_logit_scale', False):
+            scale = self.model.logit_scale.exp()
+            scaled = cosine_sim * scale
+            scale_value = float(self.model.logit_scale.detach().cpu().item())
+        else:
+            scaled = cosine_sim / float(self.loss_temperature)
+            scale_value = float(self.loss_temperature)
+
+        # Focal-style weighting (based on raw cosine_sim)
+        if self.focal_gamma > 0.0:
+            # base weight (emphasize low-cosine examples)
+            weights = (1.0 - cosine_sim).clamp(min=0.0) ** float(self.focal_gamma)
+            # apply triangular window: full weight for <= low, zero for >= high, linear interp between
+            low = float(self.focal_low)
+            high = float(self.focal_high)
+            if high > low:
+                interp = torch.clamp((high - cosine_sim) / (high - low), min=0.0, max=1.0)
+            else:
+                interp = torch.ones_like(cosine_sim)
+            weights = weights * interp
+            # normalize weights to keep loss scale comparable
+            weights_sum = weights.sum()
+            if weights_sum.item() > 0:
+                weights = weights / weights_sum * weights.numel()
+        else:
+            weights = torch.ones_like(cosine_sim)
+
+        # Per-sample loss and weighted average (avoid divide-by-zero)
+        per_sample_loss = -scaled
+        denom = weights.sum().clamp_min(1e-6)
+        total_loss = (per_sample_loss * weights).sum() / denom
 
         with torch.no_grad():
             mse_loss = F.mse_loss(student_embeddings, teacher_embeddings)
@@ -486,7 +539,10 @@ class StudentCLAPTrainer:
             'cosine_loss': -total_loss.item(),
             'mean_cosine_sim': cosine_sim.mean().item(),
             'min_cosine_sim': cosine_sim.min().item(),
-            'max_cosine_sim': cosine_sim.max().item()
+            'max_cosine_sim': cosine_sim.max().item(),
+            'loss_scale': scale_value,
+            'focal_gamma': float(self.focal_gamma),
+            'focal_weighted_samples': int((weights > 0).sum().item())
         }
 
         return total_loss, loss_dict
