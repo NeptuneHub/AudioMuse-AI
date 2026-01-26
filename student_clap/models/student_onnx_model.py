@@ -452,16 +452,61 @@ class StudentCLAPTrainer:
     #
 
     def _freeze_encoder(self):
-        """Freeze encoder layers, keep only projection head trainable (Stage 2)."""
+        """Freeze encoder layers, keep only projection head trainable (Stage 2).
 
-        for param in self.model.cnn_stem.parameters():
+        This implementation is robust to different student architectures: it
+        disables gradients for all parameters, then enables them back for the
+        projection head (and optional `logit_scale` if present). It also places
+        the encoder in `eval()` so BatchNorm uses running stats collected in
+        Stage 1, which stabilizes outputs when the encoder is frozen.
+        """
+
+        # First, disable gradients everywhere
+        for param in self.model.parameters():
             param.requires_grad = False
 
-        for param in self.model.transformer.parameters():
-            param.requires_grad = False
+        # Enable only projection head params
+        if hasattr(self.model, 'projection_head') and self.model.projection_head is not None:
+            for param in self.model.projection_head.parameters():
+                param.requires_grad = True
+            # Ensure projection head is in training mode (we will update it)
+            try:
+                self.model.projection_head.train()
+            except Exception:
+                pass
+        else:
+            logger.warning("⚠️ projection_head not found on model when attempting to freeze encoder")
 
-        for param in self.model.projection_head.parameters():
-            param.requires_grad = True
+        # If using learnable logit_scale, allow it to be trained during stage 2
+        if hasattr(self.model, 'logit_scale') and isinstance(getattr(self.model, 'logit_scale'), torch.nn.Parameter):
+            self.model.logit_scale.requires_grad = True
+
+        # Set encoder to eval() to use running BatchNorm stats collected during Stage 1
+        encoder_flag_set = False
+        if hasattr(self.model, 'phinet'):
+            try:
+                self.model.phinet.eval()
+                encoder_flag_set = True
+                logger.info("🔒 Encoder (phinet) set to eval() for Stage 2")
+            except Exception:
+                pass
+        elif hasattr(self.model, 'base'):
+            try:
+                self.model.base.eval()
+                encoder_flag_set = True
+                logger.info("🔒 Encoder (base) set to eval() for Stage 2")
+            except Exception:
+                pass
+
+        if not encoder_flag_set:
+            # Fallback: set whole model to eval but re-enable projector training
+            self.model.eval()
+            logger.warning("⚠️ Could not find encoder module by name; set entire model to eval() as fallback")
+            if hasattr(self.model, 'projection_head'):
+                try:
+                    self.model.projection_head.train()
+                except Exception:
+                    pass
 
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         total_params = sum(p.numel() for p in self.model.parameters())
