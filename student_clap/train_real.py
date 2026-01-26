@@ -134,7 +134,14 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             batch['song_ids'].append(item['item_id'])
         
         # 🧠 REAL TRAINING STEP
-        logger.info(f"🔥 BATCH {num_batches + 1}/{total_batches} (EPOCH {epoch}/{config['training']['epochs']}): Training on {len(batch_data)} songs...")
+        # Include STAGE and current LR in batch log so resume/stage behavior is visible in a single line
+        try:
+            curr_lr = trainer.optimizer.param_groups[0]['lr']
+            lr_str = f"{curr_lr:.1e}"
+        except Exception:
+            lr_str = "N/A"
+        stage_num = config.get('current_stage', 1)
+        logger.info(f"🔥 BATCH {num_batches + 1}/{total_batches} (EPOCH {epoch}/{config['training']['epochs']}) [STAGE {stage_num}, LR {lr_str}]: Training on {len(batch_data)} songs...")
         
         try:
             # --- Linear LR warmup for epoch 1 ---
@@ -491,13 +498,7 @@ def train(config_path: str, resume: str = None):
             if 'optimizer_state_dict' in checkpoint:
                 try:
                     trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-                    # Ensure LR and weight_decay align with config (override to config values)
-                    new_lr = config['training']['learning_rate']
-                    new_wd = config['training']['weight_decay']
-                    for pg in trainer.optimizer.param_groups:
-                        pg['lr'] = new_lr
-                        pg['weight_decay'] = new_wd
-                    logger.info(f"✓ Optimizer restored from checkpoint and LR/WD overridden to config (lr={new_lr}, wd={new_wd})")
+                    logger.info("✓ Optimizer restored from checkpoint (will be reconciled with config values below)")
                 except Exception as e:
                     logger.warning(f"⚠️ Could not restore optimizer state cleanly: {e}; using fresh optimizer with config values")
                     for pg in trainer.optimizer.param_groups:
@@ -551,6 +552,73 @@ def train(config_path: str, resume: str = None):
                 logger.info(f"   🔧 Optimizer after resume: lr={pg.get('lr')} | weight_decay={pg.get('weight_decay')}")
             except Exception:
                 pass
+
+            # If resuming inside Stage 2 (i.e., start_epoch > stage1), enforce Stage 2 state using the
+            # idempotent helper below which reads all params from config. This ensures we always follow
+            # the values in config.yaml when restarting.
+            try:
+                # Ensure stage match config and epoch
+                def ensure_stage_for_epoch(epoch_val):
+                    try:
+                        s1 = config['training']['epochs']
+                        if epoch_val > s1:
+                            logger.info("🔁 Resuming inside Stage 2 (post-stage1). Enforcing Stage 2 state from config...")
+                            try:
+                                trainer._freeze_encoder()
+                            except Exception as e:
+                                logger.warning(f"⚠️ Could not call trainer._freeze_encoder(): {e}")
+                            # Build projection-only optimizer with values from config
+                            try:
+                                trainer.optimizer = torch.optim.Adam(
+                                    filter(lambda p: p.requires_grad, trainer.model.parameters()),
+                                    lr=config['training'].get('stage2_learning_rate', 0.000003),
+                                    weight_decay=config['training']['weight_decay']
+                                )
+                                trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                                    trainer.optimizer,
+                                    mode='max',
+                                    factor=0.1,
+                                    patience=3,
+                                    threshold=0.005,
+                                    threshold_mode='rel',
+                                    min_lr=1e-6
+                                )
+                                logger.info("✅ Rebuilt projection-only optimizer and scheduler for Stage 2 resume (values taken from config.yaml).")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Could not rebuild projection-only optimizer: {e}")
+
+                            # Big visible stage header
+                            logger.info("\n" + "="*60)
+                            logger.info(f"===========================STAGE 2==========================")
+                            logger.info("="*60 + "\n")
+                        else:
+                            # Ensure a full-model optimizer is present with config values for LR and WD
+                            try:
+                                logger.info("🔁 Resuming inside Stage 1 or before stage cutoff. Enforcing Stage 1 optimizer from config...")
+                                trainer.optimizer = torch.optim.Adam(
+                                    trainer.model.parameters(),
+                                    lr=config['training']['learning_rate'],
+                                    weight_decay=config['training']['weight_decay']
+                                )
+                                trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                                    trainer.optimizer,
+                                    mode='max',
+                                    factor=0.1,
+                                    patience=3,
+                                    threshold=0.005,
+                                    threshold_mode='rel',
+                                    min_lr=1e-6
+                                )
+                                logger.info("✅ Rebuilt full-model optimizer and scheduler from config.yaml.")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Could not rebuild full-model optimizer: {e}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Error in ensure_stage_for_epoch: {e}")
+
+                ensure_stage_for_epoch(start_epoch)
+            except Exception as e:
+                logger.warning(f"⚠️ Error enforcing stage from epoch on resume: {e}")
+
             if start_epoch > (config['training']['epochs'] + config['training'].get('stage2_epochs', 0)):
                 logger.info(f"🎉 Audio training already completed! (reached {config['training']['epochs'] + config['training'].get('stage2_epochs', 0)} epochs)")
                 final_onnx_path = Path(config['paths']['final_model'])
@@ -665,7 +733,6 @@ def train(config_path: str, resume: str = None):
     best_val_cosine = 0.0
     patience_counter = 0
     training_start_time = time.time()
-    stage2_triggered = False
     
     audio_enabled = config.get('distillation', {}).get('audio_enabled', True)
     for epoch in range(start_epoch, total_epochs + 1):
@@ -685,6 +752,15 @@ def train(config_path: str, resume: str = None):
             logger.info(f"📊 Scheduler @ epoch {epoch}: mode={sched_mode}, factor={sched_factor}, patience={sched_patience}, threshold={sched_threshold}, threshold_mode={sched_threshold_mode}, min_lr={sched_min_lr}, current_lr={curr_lr}")
         except Exception as e:
             logger.warning(f"⚠️ Could not read scheduler settings: {e}")
+
+        # Big visible stage header for humans
+        try:
+            current_stage = 1 if epoch <= config['training']['epochs'] else 2
+            logger.info("\n" + "="*60)
+            logger.info(f"===========================STAGE {current_stage}==========================")
+            logger.info("="*60 + "\n")
+        except Exception:
+            pass
 
         # === TEXT DISTILLATION EPOCH ===
         if text_enabled:
@@ -742,7 +818,7 @@ def train(config_path: str, resume: str = None):
             logger.info(f"[TEXT] Saved checkpoint: {text_ckpt_path}")
             logger.info(f"[TEXT] Updated last_text.pth: {last_text_ckpt_path}")
         # STAGE 2: Switch to projection-only training after stage1_epochs (audio only)
-        if audio_enabled and epoch == stage1_epochs + 1 and not stage2_triggered:
+        if audio_enabled and epoch == stage1_epochs + 1:
             logger.info("\n" + "=" * 60)
             logger.info("🔄 SWITCHING TO STAGE 2: Projection-only refinement")
             logger.info("=" * 60)
@@ -797,7 +873,7 @@ def train(config_path: str, resume: str = None):
                 # Step with a high loss to force reduction
                 trainer.scheduler.step(1.0)
 
-            stage2_triggered = True
+
 
         # --- LOG LR REDUCTION EVENT ---
         if hasattr(trainer.scheduler, '_last_lr') and hasattr(trainer.scheduler, 'last_epoch'):
