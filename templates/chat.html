@@ -5,47 +5,47 @@
     .suggestion-btn {
         padding: 0.15rem 0.25rem !important;
         font-size: 0.88rem !important;
-        border: 1px solid #E5E7EB !important;
+        border: 1px solid var(--border-color) !important;
         border-radius: 0.2rem !important;
-        background-color: white !important;
+        background-color: var(--bg-card) !important;
         cursor: pointer !important;
         transition: all 0.15s ease !important;
-        color: #6B7280 !important;
+        color: var(--text-muted) !important;
         font-weight: 400 !important;
         white-space: nowrap !important;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05) !important;
+        box-shadow: var(--shadow-input) !important;
         line-height: 1 !important;
         display: inline-block !important;
         margin: 0 !important;
     }
-    
+
     .suggestion-btn:hover {
-        background-color: #F3F4F6 !important;
-        border-color: #9CA3AF !important;
-        color: #374151 !important;
+        background-color: var(--bg-code) !important;
+        border-color: var(--border-color-darker) !important;
+        color: var(--text-sub) !important;
     }
-    
+
     .suggestion-btn:active {
         transform: scale(0.98) !important;
     }
-    
+
     .suggestions-container {
         margin-top: 0.5rem !important;
         padding: 0.25rem !important;
-        background-color: #F9FAFB !important;
+        background-color: var(--bg-body) !important;
         border-radius: 0.375rem !important;
-        border: 1px dashed #D1D5DB !important;
+        border: 1px dashed var(--border-color-darker) !important;
         display: grid !important;
         grid-template-columns: repeat(5, 1fr) !important;
         gap: 0.2rem !important;
     }
-    
+
     @media (max-width: 768px) {
         .suggestions-container {
             grid-template-columns: repeat(3, 1fr) !important;
         }
     }
-    
+
     @media (max-width: 480px) {
         .suggestions-container {
             grid-template-columns: repeat(2, 1fr) !important;

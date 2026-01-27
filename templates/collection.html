@@ -6,31 +6,31 @@
     <style>
         /* Custom styles for login/logout buttons */
         #github-login-btn {
-            background-color: #22c55e; /* Green */
+            background-color: var(--color-success);
             color: white;
-            border: 1px solid #16a34a;
+            border: 1px solid var(--color-success-hover);
             transition: background-color 0.2s ease-in-out;
         }
         #github-login-btn:hover {
-            background-color: #16a34a;
+            background-color: var(--color-success-hover);
         }
         #github-login-btn:disabled {
-            background-color: #9ca3af;
-            border-color: #9ca3af;
+            background-color: var(--text-muted);
+            border-color: var(--text-muted);
             cursor: not-allowed;
-            color: #e5e7eb;
+            color: var(--border-color);
         }
 
         #logout-btn {
-            background-color: #ef4444; /* Red */
+            background-color: var(--color-danger);
             color: white;
-            border: 1px solid #dc2626;
+            border: 1px solid var(--color-danger-hover);
             /* Sizing properties removed to inherit from main button style */
             transition: background-color 0.2s ease-in-out;
             cursor: pointer;
         }
         #logout-btn:hover {
-            background-color: #dc2626;
+            background-color: var(--color-danger-hover);
         }
 
         /* Styles for the privacy policy checkbox area */
@@ -41,7 +41,7 @@
             align-items: center;
             justify-content: center;
             font-size: 0.875rem;
-            color: #4b5563;
+            color: var(--text-muted);
         }
         .privacy-ack-group input[type="checkbox"] {
             margin-right: 0.5rem;
@@ -49,7 +49,7 @@
             width: 1rem;
         }
         .privacy-ack-group a {
-            color: #3b82f6;
+            color: var(--color-primary);
             text-decoration: underline;
         }
     </style>

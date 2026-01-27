@@ -8,6 +8,19 @@
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon-32x32.ico') }}" sizes="32x32">
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon-96x96.ico') }}" sizes="96x96">
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon-128x128.ico') }}" sizes="128x128">
+    <!-- Prevent Flash of Unstyled Content (FOUC) for dark mode and menu state -->
+    <script>
+        (function() {
+            var theme = localStorage.getItem('theme');
+            var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+            if (theme === 'dark' || (!theme && prefersDark)) {
+                document.documentElement.classList.add('dark-mode');
+            }
+            if (localStorage.getItem('menuOpen') === 'true') {
+                document.documentElement.classList.add('sidebar-open');
+            }
+        })();
+    </script>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
 

@@ -4,97 +4,97 @@
 <style>
     /* Artist-specific styling */
     .artist-row.selected {
-        background-color: #f0f0f0 !important;
+        background-color: var(--bg-body) !important;
     }
-    
+
     .track-list-container {
-        background-color: #ffffff !important;
+        background-color: var(--bg-card) !important;
     }
-    
+
     .track-list {
-        background-color: #ffffff;
+        background-color: var(--bg-card);
         padding: 1rem;
         margin: 0.5rem 0;
-        border: 1px solid #ddd;
+        border: 1px solid var(--border-color);
         border-radius: 4px;
     }
-    
+
     .track-list h4 {
-        color: #0f0f1e;
+        color: var(--text-title);
         margin-top: 0;
         margin-bottom: 0.75rem;
     }
-    
+
     .track-list-item {
         padding: 0.5rem;
-        border-bottom: 1px solid #e0e0e0;
-        color: #0f0f1e;
+        border-bottom: 1px solid var(--border-color);
+        color: var(--text-title);
     }
-    
+
     .track-list-item:last-child {
         border-bottom: none;
     }
-    
+
     .component-match {
         font-size: 0.85rem;
         margin: 0.2rem 0;
         padding: 0.3rem;
-        background-color: #f8f8f8;
-        border-left: 3px solid #4CAF50;
+        background-color: var(--bg-body);
+        border-left: 3px solid var(--color-success);
         border-radius: 2px;
     }
-    
+
     .component-match strong {
-        color: #2196F3;
+        color: var(--color-primary);
     }
-    
+
     .component-distance {
-        color: #666;
+        color: var(--text-muted);
         font-style: italic;
     }
-    
+
     .component-songs {
         margin-top: 0.3rem;
         font-size: 0.8rem;
         padding-left: 1rem;
     }
-    
+
     .component-songs-title {
         font-weight: bold;
-        color: #555;
+        color: var(--text-sub);
         margin-top: 0.2rem;
     }
-    
+
     .song-item {
-        color: #333;
+        color: var(--text-main);
         padding: 0.1rem 0;
     }
-    
+
     .song-item::before {
         content: "♫ ";
-        color: #4CAF50;
+        color: var(--color-success);
     }
-    
+
     .expand-actions {
         display: flex;
         gap: 0.5rem;
     }
-    
+
     .expand-actions button {
         padding: 0.3rem 0.6rem;
         font-size: 0.85rem;
     }
-    
+
     .component-match-songs {
-        background-color: #e8f5e9;
-        border-left: 3px solid #4CAF50;
+        background-color: var(--status-success-bg);
+        border-left: 3px solid var(--color-success);
         padding: 0.5rem;
         margin: 0.3rem 0;
     }
-    
+
     .component-match-header {
         font-weight: bold;
-        color: #2e7d32;
+        color: var(--color-success);
         margin-bottom: 0.3rem;
     }
     
@@ -433,7 +433,7 @@
                             `).join('')}
                         </tbody>
                     </table>
-                    <p style="margin-top: 1rem; color: #888; font-size: 0.9rem;">
+                    <p style="margin-top: 1rem; color: var(--text-muted); font-size: 0.9rem;">
                         Click "Show All Songs" to view all tracks, or "Show Matches" to see component match songs from both artists.
                     </p>
                 `;

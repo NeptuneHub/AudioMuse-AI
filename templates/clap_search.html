@@ -58,48 +58,48 @@
         display: inline-block;
         padding: 0.4rem 0.8rem;
         margin: 0.3rem;
-        background: white;
-        border: 1px solid var(--border-color, #ddd);
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
         border-radius: 20px;
         cursor: pointer;
         transition: all 0.2s;
         font-size: 0.9rem;
     }
-    
+
     .example-tag:hover {
-        background: var(--primary-color, #007bff);
+        background: var(--color-primary);
         color: white;
-        border-color: var(--primary-color, #007bff);
+        border-color: var(--color-primary);
     }
-    
+
     #search-form button {
         width: 100%;
         padding: 0.75rem 1.5rem;
         font-size: 1rem;
         font-weight: 600;
-        background-color: #2563EB;
+        background-color: var(--color-primary);
         color: white;
         border: none;
         border-radius: 8px;
         cursor: pointer;
         transition: background-color 0.2s;
     }
-    
+
     #search-form button:hover {
-        background-color: #1D4ED8;
+        background-color: var(--color-primary-hover);
     }
-    
+
     #search-form button:disabled {
-        background-color: #9CA3AF;
+        background-color: var(--text-muted);
         cursor: not-allowed;
     }
-    
+
     #playlist-form button {
-        background-color: #16A34A !important;
+        background-color: var(--color-success) !important;
     }
-    
+
     #playlist-form button:hover {
-        background-color: #15803D !important;
+        background-color: var(--color-success-hover) !important;
     }
     
     .result-item {
@@ -223,7 +223,7 @@
         <div class="example-queries">
             <h3>💡 Top Recommended Searches:</h3>
             <div id="top-queries-container">
-                <span style="color: #666;">Loading recommendations...</span>
+                <span style="color: var(--text-muted);">Loading recommendations...</span>
             </div>
         </div>
     </div>

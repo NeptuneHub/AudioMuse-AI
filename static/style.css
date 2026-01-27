@@ -1,11 +1,95 @@
+/* --- Variables --- */
+:root {
+    /* Light Mode (Default) */
+    --bg-body: #F9FAFB;
+    --bg-card: #FFFFFF;
+    --bg-input: #FFFFFF;
+    --text-main: #1F2937;
+    --text-title: #111827;
+    --text-muted: #4B5563;
+    --text-sub: #374151;
+    --border-color: #E5E7EB;
+    --border-color-darker: #D1D5DB;
+    --color-primary: #2563EB;
+    --color-primary-hover: #1D4ED8;
+    --color-danger: #DC2626;
+    --color-danger-hover: #B91C1C;
+    --color-success: #16A34A;
+    --color-success-hover: #15803D;
+    --shadow-card: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    --shadow-input: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+
+    /* Status colors */
+    --status-idle-bg: #E5E7EB;
+    --status-idle-text: #374151;
+    --status-pending-bg: #FEF0C7;
+    --status-pending-text: #9A3412;
+    --status-success-bg: #D1FAE5;
+    --status-success-text: #166534;
+    --status-failure-bg: #FEE2E2;
+    --status-failure-text: #991B1B;
+
+    /* Code/Pre blocks */
+    --bg-code: #F3F4F6;
+
+    /* Table */
+    --bg-table-header: #F3F4F6;
+    --bg-table-hover: #F3F4F6;
+
+    /* Alchemy specific */
+    --alchemy-border-default: #E5E7EB;
+}
+
+/* Dark mode - applied via body.dark-mode or html.dark-mode (for FOUC prevention) */
+body.dark-mode,
+html.dark-mode body {
+    /* Dark Mode Overrides */
+    --bg-body: #111827; /* Gray 900 */
+    --bg-card: #1F2937; /* Gray 800 */
+    --bg-input: #374151; /* Gray 700 */
+    --text-main: #F3F4F6; /* Gray 100 */
+    --text-title: #F9FAFB; /* Gray 50 */
+    --text-muted: #9CA3AF; /* Gray 400 */
+    --text-sub: #D1D5DB; /* Gray 300 */
+    --border-color: #374151; /* Gray 700 */
+    --border-color-darker: #4B5563; /* Gray 600 */
+    --color-primary: #3B82F6; /* Blue 500 */
+    --color-primary-hover: #2563EB; /* Blue 600 */
+    /* Danger/Success can often stay the same or slightly lighter */
+    --color-danger: #EF4444; /* Red 500 */
+    --color-danger-hover: #DC2626; /* Red 600 */
+    --color-success: #22C55E; /* Green 500 */
+    --color-success-hover: #16A34A; /* Green 600 */
+
+    --shadow-card: 0 4px 6px -1px rgb(0 0 0 / 0.3), 0 2px 4px -2px rgb(0 0 0 / 0.3);
+    --shadow-input: none;
+
+    --status-idle-bg: #374151;
+    --status-idle-text: #D1D5DB;
+    --status-pending-bg: #78350F; /* Amber 900 */
+    --status-pending-text: #FDE68A; /* Amber 200 */
+    --status-success-bg: #064E3B; /* Emerald 900 */
+    --status-success-text: #A7F3D0; /* Emerald 200 */
+    --status-failure-bg: #7F1D1D; /* Red 900 */
+    --status-failure-text: #FECACA; /* Red 200 */
+
+    --bg-code: #374151;
+
+    --bg-table-header: #374151;
+    --bg-table-hover: #374151;
+
+    --alchemy-border-default: #374151;
+}
+
 /* --- Base & Typography --- */
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
     margin: 0;
-    background-color: #F9FAFB; /* Light mode background */
-    color: #1F2937; /* Default text color */
+    background-color: var(--bg-body);
+    color: var(--text-main);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    transition: background-color 0.3s, color 0.3s;
 }
 
 /* --- Main Container --- */
@@ -20,21 +104,21 @@ body {
 /* --- Headers --- */
 h1 {
     font-size: 1.875rem; /* text-3xl equivalent */
-    color: #111827; /* Darker text for titles */
+    color: var(--text-title);
     font-weight: 700;
 }
 
 h2 {
     font-size: 1.5rem;
-    color: #111827;
+    color: var(--text-title);
     margin: 0;
     font-weight: 600;
     padding-bottom: 1rem;
-    border-bottom: 1px solid #E5E7EB;
+    border-bottom: 1px solid var(--border-color);
 }
 
 h3 {
-    color: #1F2937;
+    color: var(--text-main);
     font-size: 1.25rem;
     font-weight: 600;
     margin-bottom: 0.5rem;
@@ -42,7 +126,7 @@ h3 {
 
 h4 {
     font-size: 1.125rem;
-    color: #374151;
+    color: var(--text-sub);
     font-weight: 600;
     margin-bottom: 0.5rem;
 }
@@ -51,17 +135,17 @@ h4 {
 section {
     margin-bottom: 2rem;
     padding: 1.5rem;
-    background-color: #FFFFFF; /* White background for sections */
+    background-color: var(--bg-card);
     border-radius: 1rem; /* Softer, larger radius */
-    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); /* Subtle shadow */
-    border: 1px solid #E5E7EB;
+    box-shadow: var(--shadow-card);
+    border: 1px solid var(--border-color);
 }
 
 /* --- Configuration Header & View Switcher (for index.html) --- */
 #config-header {
     margin-bottom: 1.5rem;
     padding-bottom: 1.5rem;
-    border-bottom: 1px solid #E5E7EB;
+    border-bottom: 1px solid var(--border-color);
 }
 
 .config-title-group {
@@ -71,7 +155,7 @@ section {
 
 .config-title-group .subtitle {
     margin-top: 0;
-    color: #4B5563;
+    color: var(--text-muted);
 }
 
 #config-header h1 {
@@ -86,9 +170,9 @@ section {
 }
 
 .view-switcher button {
-    background-color: #FFFFFF;
-    color: #374151;
-    border: 1px solid #D1D5DB;
+    background-color: var(--bg-card);
+    color: var(--text-sub);
+    border: 1px solid var(--border-color-darker);
     padding: 0.5rem 1rem;
     border-radius: 0.375rem;
     cursor: pointer;
@@ -97,29 +181,29 @@ section {
 }
 
 .view-switcher button.active {
-    background-color: #2563EB;
+    background-color: var(--color-primary);
     color: #FFFFFF;
-    border-color: #2563EB;
+    border-color: var(--color-primary);
 }
 
 .view-switcher button:not(.active):hover {
-    background-color: #F9FAFB;
+    background-color: var(--bg-body);
 }
 
 /* --- Form Styling --- */
 form {
-    color: #374151;
+    color: var(--text-sub);
 }
 
 fieldset {
-    border: 1px solid #D1D5DB;
+    border: 1px solid var(--border-color-darker);
     border-radius: 0.5rem;
     padding: 1.5rem;
     margin-bottom: 2rem;
 }
 
 legend {
-    color: #111827;
+    color: var(--text-title);
     font-size: 1.25rem;
     font-weight: 500;
     padding: 0 0.5rem;
@@ -134,7 +218,7 @@ legend {
 label {
     display: block;
     font-size: 0.875rem;
-    color: #4B5563;
+    color: var(--text-muted);
     margin-bottom: 0.5rem;
     font-weight: 500;
 }
@@ -148,11 +232,11 @@ textarea {
     width: 100%;
     padding: 0.75rem;
     border-radius: 0.375rem;
-    background-color: #FFFFFF;
-    border: 1px solid #D1D5DB;
-    color: #111827;
+    background-color: var(--bg-input);
+    border: 1px solid var(--border-color-darker);
+    color: var(--text-title);
     box-sizing: border-box;
-    box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    box-shadow: var(--shadow-input);
     transition: border-color 0.2s, box-shadow 0.2s;
     font-size: 1rem; /* Ensure consistent font size */
 }
@@ -164,7 +248,7 @@ input[type="email"]:focus,
 select:focus,
 textarea:focus {
     outline: none;
-    border-color: #2563EB;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
 }
 
@@ -177,11 +261,11 @@ textarea {
 #ollama-config-group,
 #gemini-config-group,
 #mistral-config-group {
-    border: 1px solid #E5E7EB;
+    border: 1px solid var(--border-color);
     border-radius: 0.5rem;
     padding: 1.5rem;
     margin-top: 1rem;
-    background-color: #F9FAFB;
+    background-color: var(--bg-body);
 }
 
 /* --- Buttons --- */
@@ -212,20 +296,20 @@ textarea {
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* Primary blue button (matches existing primary selectors) */
-.btn-primary { background-color: #2563EB; }
-.btn-primary:hover { background-color: #1D4ED8; }
+.btn-primary { background-color: var(--color-primary); }
+.btn-primary:hover { background-color: var(--color-primary-hover); }
 
 /* Danger/red button */
-.btn-danger { background-color: #DC2626; }
-.btn-danger:hover { background-color: #B91C1C; }
+.btn-danger { background-color: var(--color-danger); }
+.btn-danger:hover { background-color: var(--color-danger-hover); }
 
 /* Ghost / outline button for secondary actions */
 .btn-ghost {
     background: transparent;
-    color: #374151;
-    border: 1px solid #D1D5DB;
+    color: var(--text-sub);
+    border: 1px solid var(--border-color-darker);
 }
-.btn-ghost:hover { background: #F9FAFB; }
+.btn-ghost:hover { background: var(--bg-body); }
 
 /* Small variant */
 .btn-sm { padding: 0.35rem 0.6rem; font-size: 0.875rem; }
@@ -236,7 +320,7 @@ textarea {
     justify-content: space-between;
     align-items: center;
     padding: 6px 0;
-    border-bottom: 1px solid #eee;
+    border-bottom: 1px solid var(--border-color); /* slightly lighter than pure #eee in dark mode */
 }
 
 /* Controls row for map page: allow wrapping on small screens */
@@ -294,7 +378,7 @@ textarea {
 #artist-similarity-form button,
 #find-artists-btn,
 #create-artist-playlist-btn {
-    background-color: #2563EB;
+    background-color: var(--color-primary);
 }
 
 #start-analysis-btn:hover,
@@ -307,56 +391,67 @@ textarea {
 #artist-similarity-form button:hover,
 #find-artists-btn:hover,
 #create-artist-playlist-btn:hover {
-    background-color: #1D4ED8;
+    background-color: var(--color-primary-hover);
 }
 
 #createPlaylistForm button,
 #playlist-form button[style*="background-color: #16A34A"] {
-    background-color: #16A34A !important; /* Green */
+    background-color: var(--color-success) !important; /* Green */
 }
 #createPlaylistForm button:hover,
 #playlist-form button[style*="background-color: #16A34A"]:hover {
-    background-color: #15803D !important;
+    background-color: var(--color-success-hover) !important;
 }
 
 
 #cancel-task-btn,
 #cancel-sync-btn {
-    background-color: #DC2626;
+    background-color: var(--color-danger);
 }
 #cancel-task-btn:hover,
 #cancel-sync-btn:hover {
-    background-color: #B91C1C;
+    background-color: var(--color-danger-hover);
 }
 
 button:disabled,
 #cancel-task-btn:disabled,
 #cancel-sync-btn:disabled {
-    background-color: #93C5FD !important;
+    background-color: #93C5FD !important; /* Light blue - maybe needs var too? */
     cursor: not-allowed !important;
-    opacity: 1 !important;
+    opacity: 0.7 !important; /* Changed from 1 to 0.7 for better visual indication */
 }
+body.dark-mode button:disabled,
+body.dark-mode #cancel-task-btn:disabled,
+body.dark-mode #cancel-sync-btn:disabled {
+    background-color: #1E3A8A !important; /* Darker blue for disabled in dark mode */
+    color: #9CA3AF !important;
+}
+
 #cancel-task-btn:disabled,
 #cancel-sync-btn:disabled {
-    background-color: #FCA5A5 !important;
+    background-color: #FCA5A5 !important; /* Light red */
+}
+body.dark-mode #cancel-task-btn:disabled,
+body.dark-mode #cancel-sync-btn:disabled {
+    background-color: #7F1D1D !important; /* Dark red */
 }
 
 
 /* --- Task Status --- */
 #task-status-display {
-    background-color: #F3F4F6;
+    background-color: var(--bg-code);
     padding: 1rem;
     border-radius: 0.5rem;
 }
 
 #task-status-display p {
     margin: 0.5rem 0;
-    color: #4B5563;
+    color: var(--text-muted);
     word-break: break-all;
 }
 
 #task-status-display .status-label {
-    color: #1F2937;
+    color: var(--text-main);
     font-weight: 500;
 }
 
@@ -369,25 +464,25 @@ button:disabled,
 }
 
 .status-idle {
-    color: #374151;
-    background-color: #E5E7EB;
+    color: var(--status-idle-text);
+    background-color: var(--status-idle-bg);
 }
 .status-pending {
-    color: #9A3412;
-    background-color: #FEF0C7;
+    color: var(--status-pending-text);
+    background-color: var(--status-pending-bg);
 }
 .status-success {
-    color: #166534;
-    background-color: #D1FAE5;
+    color: var(--status-success-text);
+    background-color: var(--status-success-bg);
 }
 .status-failure {
-    color: #991B1B;
-    background-color: #FEE2E2;
+    color: var(--status-failure-text);
+    background-color: var(--status-failure-bg);
 }
 
 .progress-bar-container {
     width: 100%;
-    background-color: #E5E7EB;
+    background-color: var(--border-color);
     border-radius: 9999px;
     height: 0.625rem;
     margin-top: 0.5rem;
@@ -395,7 +490,7 @@ button:disabled,
 }
 
 #progress-bar {
-    background-color: #2563EB;
+    background-color: var(--color-primary);
     height: 100%;
     border-radius: 9999px;
     width: 0%;
@@ -403,15 +498,186 @@ button:disabled,
 }
 
 #status-details {
-    background-color: #E5E7EB;
+    background-color: var(--bg-code);
     padding: 1rem;
     border-radius: 0.375rem;
     font-size: 0.875rem;
     overflow: auto;
     max-height: 15rem;
-    color: #1F2937;
+    color: var(--text-main);
     white-space: pre-wrap;
-    margin-top: 1rem;
+    margin-top: 0;
+    border: 1px solid var(--border-color);
+}
+
+/* --- Task Status Card --- */
+.task-status-card {
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    padding: 1.25rem;
+}
+
+.task-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.task-type-badge {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-title);
+    text-transform: uppercase;
+    letter-spacing: 0.025em;
+}
+
+.status-badge {
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.status-progress {
+    background-color: var(--color-primary);
+    color: white;
+}
+
+.progress-section {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+}
+
+.progress-section .progress-bar-container {
+    flex-grow: 1;
+    margin-top: 0;
+}
+
+.progress-percentage {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-title);
+    min-width: 3rem;
+    text-align: right;
+}
+
+/* --- Task Breakdown --- */
+.status-breakdown {
+    background-color: var(--bg-body);
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.breakdown-row {
+    display: grid;
+    grid-template-columns: 1.5rem 1fr 3rem 1fr;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.breakdown-row:last-child {
+    border-bottom: none;
+}
+
+.breakdown-icon {
+    font-size: 1rem;
+    text-align: center;
+}
+
+.breakdown-row.completed .breakdown-icon { color: var(--color-success); }
+.breakdown-row.in-progress .breakdown-icon { color: var(--color-primary); }
+.breakdown-row.queued .breakdown-icon { color: var(--text-muted); }
+.breakdown-row.skipped .breakdown-icon { color: var(--text-muted); }
+.breakdown-row.failed .breakdown-icon { color: var(--color-danger); }
+
+.breakdown-label {
+    font-size: 0.875rem;
+    color: var(--text-main);
+}
+
+.breakdown-count {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-title);
+    text-align: right;
+}
+
+.mini-bar {
+    height: 0.5rem;
+    background-color: var(--border-color);
+    border-radius: 9999px;
+    overflow: hidden;
+}
+
+.mini-bar-fill {
+    height: 100%;
+    border-radius: 9999px;
+    transition: width 0.3s ease-in-out;
+}
+
+.breakdown-row.completed .mini-bar-fill { background-color: var(--color-success); }
+.breakdown-row.in-progress .mini-bar-fill { background-color: var(--color-primary); }
+.breakdown-row.queued .mini-bar-fill { background-color: var(--text-muted); }
+.breakdown-row.skipped .mini-bar-fill { background-color: var(--border-color-darker); }
+.breakdown-row.failed .mini-bar-fill { background-color: var(--color-danger); }
+
+/* --- Task Meta --- */
+.task-meta {
+    margin-bottom: 1rem;
+}
+
+.task-meta p {
+    margin: 0.25rem 0;
+    font-size: 0.875rem;
+}
+
+.meta-label {
+    color: var(--text-muted);
+}
+
+.task-id-text {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+/* --- Log Details Collapsible --- */
+.log-details {
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    overflow: hidden;
+}
+
+.log-details summary {
+    padding: 0.75rem 1rem;
+    background-color: var(--bg-body);
+    cursor: pointer;
+    font-weight: 500;
+    color: var(--text-main);
+    user-select: none;
+}
+
+.log-details summary:hover {
+    background-color: var(--bg-table-hover);
+}
+
+.log-details[open] summary {
+    border-bottom: 1px solid var(--border-color);
+}
+
+.log-details #status-details {
+    border: none;
+    border-radius: 0;
+    margin: 0;
 }
 
 /* --- Playlists Section --- */
@@ -420,12 +686,12 @@ button:disabled,
 }
 
 #playlists-container {
-    color: #374151;
+    color: var(--text-sub);
 }
 
 .playlist-item {
-    background-color: #FFFFFF;
-    border: 1px solid #E5E7EB;
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
     border-radius: 0.5rem;
     padding: 1rem;
     margin-bottom: 1rem;
@@ -440,18 +706,18 @@ button:disabled,
 }
 
 .playlist-name {
-    color: #111827;
+    color: var(--text-title);
     font-weight: 600;
 }
 
 .playlist-song-count {
-    color: #4B5563;
+    color: var(--text-muted);
     font-size: 0.875rem;
 }
 
 .show-songs-btn {
     margin-left: auto;
-    background-color: #3b82f6;
+    background-color: var(--color-primary);
     color: white;
     border: none;
     padding: 0.25rem 0.5rem;
@@ -465,7 +731,7 @@ button:disabled,
     margin-top: 0.75rem;
     list-style-type: decimal;
     padding-left: 1.5rem;
-    color: #4B5563;
+    color: var(--text-muted);
 }
 
 /* --- App Version in Sidebar --- */
@@ -491,7 +757,7 @@ button:disabled,
     text-align: center;
     padding-bottom: 1.5rem;
     margin-bottom: 1.5rem;
-    border-bottom: 1px solid #E5E7EB;
+    border-bottom: 1px solid var(--border-color);
 }
 
 .page-header h1 {
@@ -499,38 +765,38 @@ button:disabled,
 }
 
 .page-header p {
-    color: #4B5563;
+    color: var(--text-muted);
     margin-top: 0;
 }
 
 /* Chat page specific */
 #responseArea {
-    background-color: #F3F4F6;
+    background-color: var(--bg-code);
     padding: 1.5rem;
     border-radius: 0.5rem;
     min-height: 100px;
-    color: #374151;
+    color: var(--text-sub);
     white-space: pre-wrap;
     word-wrap: break-word;
     margin-top: 1rem;
 }
 
 #responseArea .italic {
-    color: #6B7280;
+    color: var(--text-muted);
     font-style: italic;
 }
 
 #responseArea .text-red-600 {
-    color: #DC2626;
+    color: var(--color-danger);
     font-weight: 600;
 }
 
 #createPlaylistSection {
     margin-top: 1.5rem;
     padding: 1.5rem;
-    border: 1px solid #E5E7EB;
+    border: 1px solid var(--border-color);
     border-radius: 0.5rem;
-    background-color: #F9FAFB;
+    background-color: var(--bg-body);
 }
 
 /* Similarity page specific */
@@ -543,14 +809,14 @@ button:disabled,
     top: 100%;
     left: 0;
     right: 0;
-    background-color: white;
-    border: 1px solid #D1D5DB;
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color-darker);
     border-top: none;
     border-radius: 0 0 0.5rem 0.5rem;
     max-height: 200px;
     overflow-y: auto;
     z-index: 10;
-    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    box-shadow: var(--shadow-card);
 }
 
 .autocomplete-item {
@@ -559,24 +825,25 @@ button:disabled,
 }
 
 .autocomplete-item:hover, .autocomplete-item.active {
-    background-color: #F3F4F6;
+    background-color: var(--bg-code);
 }
 
 .autocomplete-item .title {
     font-weight: 600;
-    color: #111827;
+    color: var(--text-title);
 }
 
 .autocomplete-item .artist {
     font-size: 0.875rem;
-    color: #4B5563;
+    color: var(--text-muted);
 }
 
 #results-table-wrapper {
-    background-color: #F9FAFB;
+    background-color: var(--bg-body);
     padding: 0; /* Remove padding to let table be full width */
     border-radius: 0.5rem;
     overflow-x: auto; /* For responsive tables */
+    border: 1px solid var(--border-color);
 }
 
 table {
@@ -587,15 +854,15 @@ table {
 th, td {
     text-align: left;
     padding: 0.75rem 1rem;
-    border-bottom: 1px solid #E5E7EB;
+    border-bottom: 1px solid var(--border-color);
     white-space: nowrap; /* Prevent text wrapping */
     font-size: 0.9rem; /* Slightly smaller font */
 }
 
 th {
-    background-color: #F3F4F6;
+    background-color: var(--bg-table-header);
     font-weight: 600;
-    color: #374151;
+    color: var(--text-sub);
     font-size: 0.875rem;
 }
 
@@ -604,7 +871,7 @@ tbody tr:last-child td {
 }
 
 tbody tr:hover {
-    background-color: #f3f4f6;
+    background-color: var(--bg-table-hover);
 }
 
 /* Artist Similarity Table - Responsive adjustments */
@@ -627,20 +894,20 @@ tbody tr:hover {
         padding: 0.5rem;
         font-size: 0.8rem;
     }
-    
+
     .results-table td:first-child {
         max-width: 120px;
         overflow: hidden;
         text-overflow: ellipsis;
     }
-    
+
     .results-table .btn-sm {
         padding: 0.25rem 0.4rem;
         font-size: 0.75rem;
         white-space: normal;
         line-height: 1.2;
     }
-    
+
     .results-table th:nth-child(2),
     .results-table td:nth-child(2) {
         font-size: 0.75rem;
@@ -652,13 +919,13 @@ tbody tr:hover {
     .results-table {
         font-size: 0.75rem;
     }
-    
+
     .results-table th,
     .results-table td {
         padding: 0.4rem 0.3rem;
         font-size: 0.75rem;
     }
-    
+
     .results-table td:first-child {
         max-width: 90px;
         font-size: 0.8rem;
@@ -666,13 +933,13 @@ tbody tr:hover {
         overflow: hidden;
         text-overflow: ellipsis;
     }
-    
+
     .results-table .btn-sm {
         padding: 0.2rem 0.3rem;
         font-size: 0.65rem;
         min-width: auto;
     }
-    
+
     .results-table th:nth-child(3),
     .results-table th:nth-child(4) {
         font-size: 0.7rem;
@@ -682,9 +949,9 @@ tbody tr:hover {
 #playlist-creator {
     margin-top: 1.5rem;
     padding: 1.5rem;
-    border: 1px solid #E5E7EB;
+    border: 1px solid var(--border-color);
     border-radius: 0.5rem;
-    background-color: #F9FAFB;
+    background-color: var(--bg-body);
 }
 
 /* Status messages */
@@ -697,13 +964,13 @@ tbody tr:hover {
 }
 
 #jellyfinResponseArea.text-green-600, .status-success {
-    color: #166534;
-    background-color: #D1FAE5;
+    color: var(--status-success-text);
+    background-color: var(--status-success-bg);
 }
 
 #jellyfinResponseArea.text-red-600, .status-error {
-    color: #991B1B;
-    background-color: #FEE2E2;
+    color: var(--status-failure-text);
+    background-color: var(--status-failure-bg);
 }
 
 
@@ -718,7 +985,7 @@ tbody tr:hover {
     .container {
         padding: 0 0.5rem;
     }
-    
+
     section, fieldset {
         padding: 1rem;
     }
@@ -763,37 +1030,37 @@ tbody tr:hover {
 
 /* Make both buttons in this container primary buttons */
 .alchemy-controls.task-buttons button {
-    background-color: #2563EB;
+    background-color: var(--color-primary);
     color: white;
     border: none;
 }
 .alchemy-controls.task-buttons button:hover {
-    background-color: #1D4ED8;
+    background-color: var(--color-primary-hover);
 }
 
 /* Card base styles */
 .alchemy-card {
-    background-color: #FFFFFF;
-    border: 1px solid #E5E7EB;
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
     border-radius: 0.75rem;
     padding: 1.5rem;
-    box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    box-shadow: var(--shadow-input);
     display: flex;
     flex-direction: column;
     gap: 1rem; /* Increased gap for better spacing */
     width: 100%;
     transition: border-color 0.3s ease-in-out;
     border-left-width: 4px;
-    border-left-color: #E5E7EB; /* Default border */
+    border-left-color: var(--alchemy-border-default); /* Default border */
     box-sizing: border-box; /* FIX: Prevents padding from causing overflow */
 }
 
 .alchemy-card.op-add-active {
-    border-left-color: #16A34A; /* Green for ADD */
+    border-left-color: var(--color-success); /* Green for ADD */
 }
 
 .alchemy-card.op-subtract-active {
-    border-left-color: #DC2626; /* Red for SUBTRACT */
+    border-left-color: var(--color-danger); /* Red for SUBTRACT */
 }
 
 .alchemy-card-header {
@@ -821,14 +1088,14 @@ tbody tr:hover {
 
 .song-details-wrapper .song-number {
     font-weight: 600;
-    color: #111827;
+    color: var(--text-title);
     font-size: 1.05rem;
     line-height: 1.2;
 }
 
 .song-details-wrapper .selected-song-name {
     font-size: 0.9rem;
-    color: #4B5563;
+    color: var(--text-muted);
     line-height: 1.4;
     word-break: break-word; /* Ensure long titles wrap */
     white-space: normal;
@@ -843,29 +1110,30 @@ tbody tr:hover {
 .op-btn {
     font-size: 0.875rem;
     padding: 0.4rem 0.8rem;
-    border: 1px solid #D1D5DB;
-    background-color: #FFFFFF;
+    border: 1px solid var(--border-color-darker);
+    background-color: var(--bg-card);
     cursor: pointer;
     font-weight: 600;
     border-radius: 0.375rem;
     white-space: nowrap;
+    color: var(--text-main);
 }
 
 .op-btn.op-add.active {
-    background-color: #16A34A; /* Green */
-    border-color: #15803d;
+    background-color: var(--color-success); /* Green */
+    border-color: var(--color-success-hover);
     color: white;
 }
 .op-btn.op-sub.active {
-    background-color: #DC2626; /* Red */
-    border-color: #b91c1c;
+    background-color: var(--color-danger); /* Red */
+    border-color: var(--color-danger-hover);
     color: white;
 }
 
 .card-close {
     background: transparent;
     border: none;
-    color: #666;
+    color: var(--text-muted);
     font-size: 1.25rem;
     line-height: 1;
     cursor: pointer;
@@ -874,8 +1142,8 @@ tbody tr:hover {
     flex-shrink: 0; /* Prevent close button from shrinking */
 }
 .card-close:hover {
-    background: rgba(0,0,0,0.06);
-    color: #000;
+    background: var(--bg-code);
+    color: var(--text-title);
 }
 
 /* Constrain alchemy plot so it doesn't grow the page height excessively */
@@ -905,7 +1173,7 @@ tbody tr:hover {
 }
 .param-help {
     font-size: 0.8rem;
-    color: #6B7280;
+    color: var(--text-muted);
     width: 100%;
     margin-top: -0.25rem;
 }
@@ -935,7 +1203,7 @@ tbody tr:hover {
     width: 18px;
     height: 18px;
     border-radius: 50%;
-    background-color: #3B82F6;
+    background-color: #3B82F6; /* Keep standard blue for icon */
     color: white;
     font-size: 13px;
     font-weight: 600;
@@ -954,7 +1222,7 @@ tbody tr:hover {
 
 .info-tooltip:hover .info-icon,
 .info-tooltip:focus .info-icon {
-    background-color: #2563EB;
+    background-color: var(--color-primary);
 }
 
 /* Tooltip text */
@@ -962,7 +1230,7 @@ tbody tr:hover {
     visibility: hidden;
     opacity: 0;
     width: 280px;
-    background-color: #1F2937;
+    background-color: #1F2937; /* Always dark for tooltips */
     color: #F9FAFB;
     text-align: left;
     border-radius: 6px;
@@ -1007,7 +1275,7 @@ tbody tr:hover {
         bottom: auto;
         top: 125%;
     }
-    
+
     .tooltip-text::after {
         top: auto;
         bottom: 100%;
@@ -1020,4 +1288,44 @@ tbody tr:hover {
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
+}
+
+/* --- Chat page summary styles (for JavaScript-assigned colors) --- */
+.summary-header { background-color: var(--bg-code); }
+.summary-content { background-color: var(--bg-body); }
+.processing-summary { background-color: var(--status-pending-bg); }
+.attempt-success { background-color: var(--status-success-bg); }
+.attempt-error { background-color: var(--status-failure-bg); }
+.attempt-content { background-color: var(--bg-body); }
+
+/* --- Message box styles (for dynamically created message boxes) --- */
+.message-box {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background-color: var(--bg-card);
+    color: var(--text-main);
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: var(--shadow-card);
+    border: 1px solid var(--border-color);
+    max-width: 400px;
+    z-index: 1000;
+}
+.message-box h3 {
+    color: var(--text-title);
+    margin: 0 0 10px 0;
+}
+.message-box .close-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: none;
+    border: none;
+    font-size: 1.5rem;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.message-box .close-btn:hover {
+    color: var(--text-title);
 }
