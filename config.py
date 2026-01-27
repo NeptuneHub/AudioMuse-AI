@@ -258,7 +258,7 @@ MOOD_LABELS = [
     'heavy metal', 'Progressive rock', '60s', 'rnb', 'indie pop', 'sad', 'House', 'happy'
 ]
 
-TOP_N_MOODS = 5
+TOP_N_MOODS = int(os.environ.get("TOP_N_MOODS", "5"))  # Number of top moods to consider (configurable via env)
 TOP_N_OTHER_FEATURES = int(os.environ.get("TOP_N_OTHER_FEATURES", "2")) # Number of top "other features" to consider for clustering vector
 EMBEDDING_MODEL_PATH = "/app/model/msd-musicnn-1.onnx"
 PREDICTION_MODEL_PATH = "/app/model/msd-msd-musicnn-1.onnx"
