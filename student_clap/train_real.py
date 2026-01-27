@@ -140,12 +140,19 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             lr_str = f"{curr_lr:.1e}"
         except Exception:
             lr_str = "N/A"
+        # Get current logit_scale (temperature) if using learnable scale
+        temp_str = ""
+        if getattr(trainer, 'use_logit_scale', False) and hasattr(trainer.model, 'logit_scale'):
+            import math
+            logit_val = trainer.model.logit_scale.detach().cpu().item()
+            temp_multiplier = math.exp(logit_val)
+            temp_str = f", T={temp_multiplier:.2f}"
         stage_num = config.get('current_stage', 1)
-        logger.info(f"🔥 BATCH {num_batches + 1}/{total_batches} (EPOCH {epoch}/{config['training']['epochs']}) [STAGE {stage_num}, LR {lr_str}]: Training on {len(batch_data)} songs...")
+        logger.info(f"🔥 BATCH {num_batches + 1}/{total_batches} (EPOCH {epoch}/{config['training']['epochs']}) [STAGE {stage_num}, LR {lr_str}{temp_str}]: Training on {len(batch_data)} songs...")
         
         try:
-            # --- Linear LR warmup for epoch 1 ---
-            if epoch == 1:
+            # --- Linear LR warmup for epoch 1 (if enabled) ---
+            if epoch == 1 and config['training'].get('warmup_enabled', True):
                 warmup_lr = (batch_idx + 1) / total_batches * config['training']['learning_rate']
                 for param_group in trainer.optimizer.param_groups:
                     param_group['lr'] = warmup_lr
@@ -517,27 +524,29 @@ def train(config_path: str, resume: str = None):
                     logger.info("✓ Scheduler restored from checkpoint")
                 except Exception as e:
                     logger.warning(f"⚠️ Could not restore scheduler state: {e}")
+                    lr_cfg = config['training'].get('lr_scheduler', {})
                     trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                         trainer.optimizer,
-                        mode='max',
-                        factor=0.1,
-                        patience=3,
-                        threshold=0.005,
-                        threshold_mode='rel',
-                        min_lr=1e-6
+                        mode=lr_cfg.get('mode', 'max'),
+                        factor=lr_cfg.get('factor', 0.1),
+                        patience=lr_cfg.get('patience', 10),
+                        threshold=lr_cfg.get('threshold', 0.005),
+                        threshold_mode=lr_cfg.get('threshold_mode', 'rel'),
+                        min_lr=lr_cfg.get('min_lr', 1e-6)
                     )
-                    logger.info("✓ Created new scheduler (mode=max) due to restore failure")
+                    logger.info(f"✓ Created new scheduler from config (patience={lr_cfg.get('patience', 10)}) due to restore failure")
             else:
+                lr_cfg = config['training'].get('lr_scheduler', {})
                 trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                     trainer.optimizer,
-                    mode='max',
-                    factor=0.1,
-                    patience=3,
-                    threshold=0.005,
-                    threshold_mode='rel',
-                    min_lr=1e-6
+                    mode=lr_cfg.get('mode', 'max'),
+                    factor=lr_cfg.get('factor', 0.1),
+                    patience=lr_cfg.get('patience', 10),
+                    threshold=lr_cfg.get('threshold', 0.005),
+                    threshold_mode=lr_cfg.get('threshold_mode', 'rel'),
+                    min_lr=lr_cfg.get('min_lr', 1e-6)
                 )
-                logger.info("No scheduler state in checkpoint — created fresh scheduler (mode=max)")
+                logger.info(f"No scheduler state in checkpoint — created fresh scheduler from config (patience={lr_cfg.get('patience', 10)})")
 
             start_epoch = checkpoint.get('epoch', 0) + 1
             best_val_cosine = checkpoint.get('best_val_cosine', 0.0)
@@ -574,16 +583,17 @@ def train(config_path: str, resume: str = None):
                                     lr=config['training'].get('stage2_learning_rate', 0.000003),
                                     weight_decay=config['training']['weight_decay']
                                 )
+                                lr_cfg = config['training'].get('lr_scheduler', {})
                                 trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                                     trainer.optimizer,
-                                    mode='max',
-                                    factor=0.1,
-                                    patience=3,
-                                    threshold=0.005,
-                                    threshold_mode='rel',
-                                    min_lr=1e-6
+                                    mode=lr_cfg.get('mode', 'max'),
+                                    factor=lr_cfg.get('factor', 0.1),
+                                    patience=lr_cfg.get('patience', 10),
+                                    threshold=lr_cfg.get('threshold', 0.005),
+                                    threshold_mode=lr_cfg.get('threshold_mode', 'rel'),
+                                    min_lr=lr_cfg.get('min_lr', 1e-6)
                                 )
-                                logger.info("✅ Rebuilt projection-only optimizer and scheduler for Stage 2 resume (values taken from config.yaml).")
+                                logger.info(f"✅ Rebuilt projection-only optimizer and scheduler for Stage 2 resume (patience={lr_cfg.get('patience', 10)})")
                             except Exception as e:
                                 logger.warning(f"⚠️ Could not rebuild projection-only optimizer: {e}")
 
@@ -600,16 +610,17 @@ def train(config_path: str, resume: str = None):
                                     lr=config['training']['learning_rate'],
                                     weight_decay=config['training']['weight_decay']
                                 )
+                                lr_cfg = config['training'].get('lr_scheduler', {})
                                 trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                                     trainer.optimizer,
-                                    mode='max',
-                                    factor=0.1,
-                                    patience=3,
-                                    threshold=0.005,
-                                    threshold_mode='rel',
-                                    min_lr=1e-6
+                                    mode=lr_cfg.get('mode', 'max'),
+                                    factor=lr_cfg.get('factor', 0.1),
+                                    patience=lr_cfg.get('patience', 10),
+                                    threshold=lr_cfg.get('threshold', 0.005),
+                                    threshold_mode=lr_cfg.get('threshold_mode', 'rel'),
+                                    min_lr=lr_cfg.get('min_lr', 1e-6)
                                 )
-                                logger.info("✅ Rebuilt full-model optimizer and scheduler from config.yaml.")
+                                logger.info(f"✅ Rebuilt full-model optimizer and scheduler from config (patience={lr_cfg.get('patience', 10)})")
                             except Exception as e:
                                 logger.warning(f"⚠️ Could not rebuild full-model optimizer: {e}")
                     except Exception as e:
