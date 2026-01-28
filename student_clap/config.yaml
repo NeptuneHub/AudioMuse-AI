@@ -32,32 +32,33 @@ model_text:
   nhead: 4
 
 training:
-  batch_size: 1
-  gradient_accumulation_steps: 8
-  learning_rate: 0.00003 # Original: 0.003
+  batch_size: 64
+  gradient_accumulation_steps: 1
+  learning_rate: 0.012 # Original: 0.003
+  warmup_enabled: false  # Linear LR warmup during epoch 1 (from 0 to learning_rate)
   epochs: 100
   stage2_epochs: 10
-  stage2_learning_rate: 0.000003
+  stage2_learning_rate: 0.012
   projection_only: false
   optimizer: "adamw"
-  weight_decay: 0.1
+  weight_decay: 0
   grad_clip: 1.0
   training_strategy: "both"
   save_every: 1
   early_stopping_patience: 10
   validation_split: 0.15
   # Loss scaling options
-  loss_temperature: 1.5       # Static temperature (divide cosine by this value). If using logit scale, set use_logit_scale=True
-  use_logit_scale: false      # If true, use a learnable logit_scale (exp(logit_scale) applied to cosine)
-  init_logit_scale: 1.0       # Initial value for learnable logit_scale (only used if use_logit_scale=True)
+  loss_temperature: 0.7       # Static temperature (divide cosine by this value). If using logit scale, set use_logit_scale=True
+  use_logit_scale: true       # If true, use a learnable logit_scale (exp(logit_scale) applied to cosine)
+  init_logit_scale: 2.6592    # Initial value = ln(1/0.07) matching TinyCLAP initialization
   # Focal-style weighting for cosine (set gamma>0 to enable)
-  loss_focal_gamma: 2.0       # gamma > 0 focuses gradients on hard (low-cosine) samples
+  loss_focal_gamma: 0       # gamma > 0 focuses gradients on hard (low-cosine) samples
   loss_focal_low_threshold: 0.35  # cosine <= low -> full weight
   loss_focal_high_threshold: 0.60 # cosine >= high -> zero weight; interpolate between low and high
   lr_scheduler:
     mode: 'max'             # monitor metric to maximize (we monitor validation cosine)
     factor: 0.1             # LR reduction factor
-    patience: 3             # Number of epochs with no improvement before reducing LR
+    patience: 10            # Number of epochs with no improvement before reducing LR (TinyCLAP default)
     threshold: 0.005       # Minimum relative improvement to be considered as improvement
     threshold_mode: 'rel'   # 'rel' or 'abs'
     min_lr: 1e-6            # Minimum LR
