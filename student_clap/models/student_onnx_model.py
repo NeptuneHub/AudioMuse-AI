@@ -544,10 +544,10 @@ class StudentCLAPTrainer:
 
         # Apply temperature or learnable logit_scale (scaling applied to loss logits)
         if getattr(self, 'use_logit_scale', False):
-            # Clamp logit_scale to [0, ln(100)] to prevent runaway growth (like OpenAI CLIP)
-            # This keeps T (temperature multiplier) in range [1, 100]
+            # Clamp logit_scale to [0, ln(50)] to prevent runaway growth (like OpenAI CLIP)
+            # This keeps T (temperature multiplier) in range [1, 50]
             import math
-            max_logit_scale = math.log(100)  # ~4.605
+            max_logit_scale = math.log(50)  # ~3.912
             with torch.no_grad():
                 self.model.logit_scale.clamp_(0, max_logit_scale)
             scale = self.model.logit_scale.exp()
