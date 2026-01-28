@@ -84,6 +84,16 @@ for p in paths:
         print('Skipped', p, ':', e)
 PY
 ```
+Reset logit scale to initial value:
+```
+python3 -c "
+import torch
+ckpt = torch.load('student_clap/checkpoints/latest.pth', map_location='cpu')
+ckpt['model_state_dict']['logit_scale'] = torch.tensor(2.6592)  # Reset to init
+torch.save(ckpt, 'student_clap/checkpoints/latest.pth')
+print('Reset logit_scale to 2.6592')
+"
+```
 
 ## Training
 
