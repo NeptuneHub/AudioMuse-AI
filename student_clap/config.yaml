@@ -17,7 +17,8 @@ model:
   # Available models: mn01_as, mn02_as, mn04_as, mn05_as, mn10_as, mn20_as, mn30_as, mn40_as
   # You can also use the dynamic MobileNet variants 'dymn04', 'dymn10', 'dymn20' as prefixes
   # e.g. 'dymn10_as' will map to width_mult=1.0 and use the corresponding AudioSet pre-trained weights
-  efficientat_model: "dymn10_as"
+  # Default uses the canonical pretrained key so there is no ambiguity (pass 'dymn10_as' is still accepted)
+  efficientat_model: "mn10_as"
   use_pretrained: true  # Use AudioSet pretrained weights
   use_gradient_checkpointing: true
   segment_batch_size: 5  # Process N segments at a time to reduce memory
@@ -29,7 +30,7 @@ model_text:
   nhead: 4
 
 training:
-  batch_size: 2
+  batch_size: 64
   gradient_accumulation_steps: 1
   learning_rate: 0.012 # Original: 0.003
   warmup_enabled: false  # Linear LR warmup during epoch 1 (from 0 to learning_rate)

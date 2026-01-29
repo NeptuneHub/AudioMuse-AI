@@ -359,6 +359,7 @@ def get_model(num_classes: int = 527, pretrained_name: str = None, width_mult: f
     # Normalize `pretrained_name` if user passed a descriptive name such as 'dymn10_as'
     # - If a width-style prefix is present (e.g. 'mn10' or 'dymn10') prefer to infer `width_mult`
     # - Map dynamic prefixes 'dymn' to the existing 'mn' pretrained keys when possible
+    requested_name = pretrained_name
     if pretrained_name:
         base = pretrained_name.split('_')[0]
         try:
@@ -370,10 +371,15 @@ def get_model(num_classes: int = 527, pretrained_name: str = None, width_mult: f
             else:
                 lookup = pretrained_name
             if lookup in pretrained_models:
+                if lookup != pretrained_name:
+                    logger.info(f"Requested pretrained '{requested_name}' maps to available pretrained '{lookup}'. Using '{lookup}'.")
                 pretrained_name = lookup
+            else:
+                # No exact pretrained available for the dynamic name; we'll fall back to the provided args
+                logger.info(f"Requested pretrained '{requested_name}' has no exact pretrained file. Will attempt to use model configuration (width_mult={width_mult}).")
         except Exception:
             # Fall back to provided args
-            pass
+            logger.warning(f"Could not infer width from requested pretrained '{requested_name}'. Using provided arguments.")
 
     dim_map = {'c': 1, 'f': 2, 't': 3}
     assert len(se_dims) <= 3 and all([s in dim_map.keys() for s in se_dims]) or se_dims == 'none'
@@ -388,5 +394,12 @@ def get_model(num_classes: int = 527, pretrained_name: str = None, width_mult: f
                      head_type=head_type, multihead_attention_heads=multihead_attention_heads,
                      input_dims=input_dims, se_conf=se_conf
                      )
+
+    # Preserve and expose information about what was requested vs what was actually loaded
+    m._requested_pretrained = requested_name
+    m._loaded_pretrained = pretrained_name if (pretrained_name and pretrained_name in pretrained_models) else None
+    if m._requested_pretrained != m._loaded_pretrained:
+        logger.info(f"Pretrained mapping: requested='{m._requested_pretrained}' -> loaded='{m._loaded_pretrained}'")
+
     logger.info(m)
     return m

@@ -95,7 +95,7 @@ class StudentCLAPAudio(nn.Module):
         knowledge distillation, providing excellent audio representations.
         """
         logger.info(f"Building EfficientAT model:")
-        logger.info(f"  Model: {self.pretrained_name}")
+        logger.info(f"  Model (requested): {self.pretrained_name}")
         logger.info(f"  Use pretrained: {self.use_pretrained}")
         logger.info(f"  n_mels: {self.n_mels}")
 
@@ -118,6 +118,10 @@ class StudentCLAPAudio(nn.Module):
         self.base = self.backbone
         self.phinet = self.backbone
 
+        # Expose what pretrained was actually loaded by the backbone (if any)
+        loaded = getattr(self.backbone, '_loaded_pretrained', None)
+        logger.info(f"  Loaded pretrained (backbone): {loaded}")
+
         # Determine backbone output dimension by running a dummy forward pass
         with torch.no_grad():
             # EfficientAT expects (batch, 1, n_mels, time) input
@@ -135,9 +139,13 @@ class StudentCLAPAudio(nn.Module):
         backbone_params = sum(p.numel() for p in self.backbone.parameters())
         projection_params = sum(p.numel() for p in self.projection_head.parameters())
 
+        # Expose loaded pretrained name for clarity in logs
+        loaded_pretrained = getattr(self.backbone, '_loaded_pretrained', None)
+        self.loaded_pretrained = loaded_pretrained
+
         logger.info(f"Built Student CLAP model with EfficientAT:")
         logger.info(f"  Total parameters: {total_params:,} ({total_params/1e6:.2f}M)")
-        logger.info(f"  Backbone ({self.pretrained_name}): {backbone_params:,} ({backbone_params/1e6:.2f}M)")
+        logger.info(f"  Backbone (requested={self.pretrained_name}, loaded={loaded_pretrained}): {backbone_params:,} ({backbone_params/1e6:.2f}M)")
         logger.info(f"  Projection head: {projection_params:,}")
         logger.info(f"  Output embedding dim: {self.embedding_dim}")
 
