@@ -1039,8 +1039,25 @@ def train(config_path: str, resume: str = None):
 
             # Step scheduler on validation metric (we monitor cosine similarity - higher is better)
             try:
-                trainer.scheduler.step(val_cosine)
-                logger.info(f"Scheduler stepped using validation cosine: {val_cosine:.4f}")
+                sched = trainer.scheduler
+                sched_cls = sched.__class__.__name__
+                # ReduceLROnPlateau expects the validation metric as argument
+                if sched_cls == 'ReduceLROnPlateau':
+                    sched.step(val_cosine)
+                    logger.info(f"Scheduler (ReduceLROnPlateau) stepped using validation cosine: {val_cosine:.4f}")
+                elif sched_cls == 'CosineAnnealingLR':
+                    # For Stage 2 we drive CosineAnnealingLR per-batch during training and
+                    # must NOT call step(val) here (it would reset epoch/state). If we are in
+                    # Stage 2, skip validation-time stepping to preserve continuous decay.
+                    if current_stage == 2:
+                        logger.debug("Skipping validation-time scheduler.step() for CosineAnnealingLR in Stage 2 (per-batch stepping active)")
+                    else:
+                        sched.step()
+                        logger.info(f"Scheduler (CosineAnnealingLR) stepped (per-epoch)")
+                else:
+                    # Generic fallback: step once per epoch
+                    sched.step()
+                    logger.info(f"Scheduler ({sched_cls}) stepped (per-epoch)")
             except Exception as e:
                 logger.warning(f"Failed to step scheduler on validation metric: {e}")
 
