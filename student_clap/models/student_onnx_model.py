@@ -1,16 +1,14 @@
 """
 Student CLAP ONNX Model Implementation
 
-Implements student CLAP audio encoder using PhiNet mobile-optimized architecture with PyTorch training
-and export to pure ONNX for inference. PhiNet uses inverted residual blocks with depthwise separable
-convolutions and squeeze-and-excitation modules for efficient mobile deployment.
+Implements student CLAP audio encoder using EfficientAT MobileNet architecture with PyTorch training
+and export to pure ONNX for inference. EfficientAT uses efficient CNNs trained via Transformer-to-CNN
+knowledge distillation for superior audio tagging performance.
 
 Architecture:
-- PhiNet: 5 PhiBlocks with inverted residuals and SE modules
-- Channels: [16, 24, 32, 64, 96]
-- Transformer: 2 layers for temporal modeling
-- Projection: 384 -> 256 -> 512 dimensional embedding space
-- Model size: ~10-15 MB (2-3M parameters)
+- EfficientAT MobileNet: Pre-trained on AudioSet
+- Projection: backbone_dim -> 512 dimensional embedding space
+- Model size: ~5-15 MB depending on width multiplier
 """
 
 import torch
@@ -22,43 +20,18 @@ import onnxruntime as ort
 import numpy as np
 from typing import Dict, Tuple, Optional
 import logging
-from micromind.networks import PhiNet as MicromindPhiNet
+
+# Import EfficientAT MobileNet
+import warnings
+# Silently ignore the torchvision ConvNormActivation deprecation message here (module-level warning)
+warnings.filterwarnings("ignore", message="Don't use ConvNormActivation directly")
+from models.efficientat import get_model as get_efficientat_model
 
 logger = logging.getLogger(__name__)
 
-class PhiNet(MicromindPhiNet):
-
-    def __init__(self, embedding_dim=2048, n_mels=64, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        self.bn0 = nn.BatchNorm2d(n_mels)
-
-        if embedding_dim is not None:
-            in_channels_next = self._layers[-1]._layers[-2].weight.shape[0]
-            self.pn_block = nn.Conv2d(
-                in_channels_next,
-                embedding_dim,
-                kernel_size=1,
-                stride=2,
-            )
-
-    def forward(self, x):
-        if x.dim() == 3:
-            x = x[:, None]
-
-        x = x.transpose(1, 3)
-        x = self.bn0(x)
-        x = x.transpose(1, 3)
-
-        x = super().forward(x)
-        embedding = x
-
-        x = self.pn_block(x)
-        x = x.mean((-1, -2))
-
-        return {"embedding": (x, embedding), "clipwise_output": x}
 
 class Projection(nn.Module):
+    """Projection head to map backbone features to embedding space."""
 
     def __init__(self, d_in: int, d_out: int, p: float = 0.5) -> None:
         super().__init__()
@@ -73,113 +46,22 @@ class Projection(nn.Module):
         embeds = self.layer_norm(embed1 + embed2)
         return embeds
 
-class SEBlock(nn.Module):
-    """Squeeze-and-Excitation block for channel attention."""
-
-    def __init__(self, channels: int, reduction: int = 24):
-        super().__init__()
-        self.squeeze = nn.AdaptiveAvgPool2d(1)
-        self.excitation = nn.Sequential(
-            nn.Linear(channels, channels // reduction, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(channels // reduction, channels, bias=False),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        b, c, _, _ = x.size()
-        y = self.squeeze(x).view(b, c)
-        y = self.excitation(y).view(b, c, 1, 1)
-        return x * y.expand_as(x)
-
-class PhiBlock(nn.Module):
-    """
-    PhiNet inverted residual block with depthwise separable convolution and SE module.
-
-    Implements the parameterized design from PhiNet paper (Francesco Paissan et al., 2022).
-    Uses expansion factor calculated from network width multipliers alpha and beta.
-    """
-
-    def __init__(self, in_channels: int, out_channels: int, stride: int = 2,
-                 expansion: int = 6, use_se: bool = True):
-        super().__init__()
-        hidden_dim = in_channels * expansion
-        self.use_residual = (stride == 1 and in_channels == out_channels)
-        self.use_se = use_se
-
-        if expansion != 1:
-            self.expand = nn.Sequential(
-                nn.Conv2d(in_channels, hidden_dim, 1, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                nn.ReLU6(inplace=True)
-            )
-        else:
-            self.expand = nn.Identity()
-
-        self.depthwise = nn.Sequential(
-            nn.Conv2d(hidden_dim, hidden_dim, 3, stride=stride, padding=1, groups=hidden_dim, bias=False),
-            nn.BatchNorm2d(hidden_dim),
-            nn.ReLU6(inplace=True)
-        )
-
-        if use_se:
-            self.se = SEBlock(hidden_dim)
-
-        self.project = nn.Sequential(
-            nn.Conv2d(hidden_dim, out_channels, 1, bias=False),
-            nn.BatchNorm2d(out_channels)
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        identity = x
-
-        out = self.expand(x)
-
-        out = self.depthwise(out)
-
-        if self.use_se:
-            out = self.se(out)
-
-        out = self.project(out)
-
-        if self.use_residual:
-            out = out + identity
-
-        return out
-
-class ConvBlock(nn.Module):
-    """Standard convolutional block (kept for compatibility, not used in PhiNet)."""
-
-    def __init__(self, in_channels: int, out_channels: int):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = F.avg_pool2d(x, kernel_size=2, stride=2)
-        return x
 
 class StudentCLAPAudio(nn.Module):
     """
-    Student CLAP audio encoder using parameterized PhiNet architecture.
+    Student CLAP audio encoder using EfficientAT MobileNet architecture.
 
-    Follows tinyCLAP's design (NO TRANSFORMER):
-    - Parameterized PhiNet with N inverted residual blocks
-    - 1x1 convolution to intermediate dimension (2048)
-    - Global average pooling
-    - MLP projection: 2048 -> 256 -> 512
-
-    tinyCLAP's successful configuration (6.2M parameters):
-    - alpha=3.00, beta=0.75, t0=4, N=7
+    Uses EfficientAT (Transformer-to-CNN Knowledge Distillation) for efficient
+    audio encoding with AudioSet pre-trained weights.
 
     Architecture:
-    - PhiNet: Depthwise separable convolutions + Squeeze-and-Excitation
-    - NO TRANSFORMER (unlike our previous implementation)
-    - Simple global pooling + MLP projection
+    - EfficientAT MobileNet: Pre-trained on AudioSet
+    - Projection head: backbone_dim -> 512 dimensional embedding space
+
+    Available models (pretrained on AudioSet):
+    - mn10_as: 4.88M params (width_mult=1.0)
+    - mn05_as: ~2.5M params (width_mult=0.5)
+    - mn20_as: ~15M params (width_mult=2.0)
 
     Designed to match the teacher CLAP's 512-dimensional embedding space.
     """
@@ -188,6 +70,7 @@ class StudentCLAPAudio(nn.Module):
         super().__init__()
         self.config = config
 
+        # Audio preprocessing params
         self.sample_rate = config['audio']['sample_rate']
         self.n_mels = config['audio']['n_mels']
         self.n_fft = config['audio']['n_fft']
@@ -195,12 +78,10 @@ class StudentCLAPAudio(nn.Module):
         self.fmin = config['audio']['fmin']
         self.fmax = config['audio']['fmax']
 
+        # Model params
         self.embedding_dim = config['model']['embedding_dim']
-        self.phinet_alpha = config['model']['phinet_alpha']
-        self.phinet_beta = config['model']['phinet_beta']
-        self.phinet_t0 = config['model']['phinet_t0']
-        self.phinet_N = config['model']['phinet_N']
-        self.hidden_dim = config['model']['hidden_dim']
+        self.pretrained_name = config['model'].get('efficientat_model', 'mn10_as')
+        self.use_pretrained = config['model'].get('use_pretrained', True)
         self.use_gradient_checkpointing = config['model'].get('use_gradient_checkpointing', False)
         self.segment_batch_size = config['model'].get('segment_batch_size', 10)
 
@@ -208,79 +89,81 @@ class StudentCLAPAudio(nn.Module):
 
     def build_model(self):
         """
-        Build the student model architecture using micromind PhiNet (EXACT tinyCLAP implementation).
+        Build the student model architecture using EfficientAT MobileNet.
 
-        Uses micromind.PhiNet library like tinyCLAP does:
-        - alpha: Width multiplier for all layers
-        - beta: Shape multiplier (controls block configuration)
-        - t_zero: Initial resolution divisor (t0)
-        - num_layers: Number of PhiNet blocks (N)
-
-        tinyCLAP's successful configs:
-        - PhiNet 3: alpha=3.0, beta=0.75, t0=4, N=7 (6.2M params)
-        - PhiNet 4: alpha=1.5, beta=0.75, t0=4, N=7 (4.4M params)
-        - PhiNet 5: alpha=0.75, beta=0.75, t0=4, N=7 (3.5M params)
+        EfficientAT models are pre-trained on AudioSet via Transformer-to-CNN
+        knowledge distillation, providing excellent audio representations.
         """
-        alpha = self.phinet_alpha
-        beta = self.phinet_beta
-        t0 = self.phinet_t0
-        N = self.phinet_N
+        logger.info(f"Building EfficientAT model:")
+        logger.info(f"  Model: {self.pretrained_name}")
+        logger.info(f"  Use pretrained: {self.use_pretrained}")
+        logger.info(f"  n_mels: {self.n_mels}")
 
-        logger.info(f"Building tinyCLAP custom PhiNet with:")
-        logger.info(f"  alpha={alpha}, beta={beta}, t_zero={t0}, num_layers={N}")
-        logger.info(f"  input_shape=(1, 640, {self.n_mels})")
-        logger.info(f"  embedding_dim=2048 (tinyCLAP architecture)")
+        # Load EfficientAT MobileNet
+        # Note: EfficientAT expects input_dim_f (frequency) and input_dim_t (time)
+        # We'll compute these based on our mel spectrogram settings
+        pretrained = self.pretrained_name if self.use_pretrained else None
 
-        self.phinet = PhiNet(
-            input_shape=(1, 640, self.n_mels),
-            embedding_dim=2048,
-            n_mels=self.n_mels,
-            alpha=alpha,
-            beta=beta,
-            t_zero=t0,
-            num_layers=N,
-            compatibility=True
+        self.backbone = get_efficientat_model(
+            num_classes=527,  # AudioSet classes (will be ignored, we use features)
+            pretrained_name=pretrained,
+            head_type="mlp",
+            se_dims="c",  # Channel-wise squeeze-excitation
+            input_dim_f=self.n_mels,
+            input_dim_t=1000,  # Will be dynamically handled
         )
 
+        # Backwards compatibility aliases used in older code/checkpoints
+        # Keep `base` and `phinet` pointing to the same backbone reference
+        self.base = self.backbone
+        self.phinet = self.backbone
+
+        # Determine backbone output dimension by running a dummy forward pass
         with torch.no_grad():
-            dummy_input = torch.randn(1, 640, self.n_mels)
-            dummy_output = self.phinet(dummy_input)
-            phinet_output_dim = dummy_output["embedding"][0].shape[1]
-            
-        logger.info(f"  PhiNet output channels: {phinet_output_dim}")
+            # EfficientAT expects (batch, 1, n_mels, time) input
+            dummy_input = torch.randn(1, 1, self.n_mels, 1000)
+            _, features = self.backbone(dummy_input)
+            backbone_dim = features.shape[-1]
 
-        self.projection_head = Projection(phinet_output_dim, self.embedding_dim, p=0.5)
+        logger.info(f"  Backbone output dim: {backbone_dim}")
 
+        # Projection head to map backbone features to embedding space
+        self.projection_head = Projection(backbone_dim, self.embedding_dim, p=0.5)
+
+        # Log model stats
         total_params = sum(p.numel() for p in self.parameters())
-        logger.info(f"Built Student CLAP model with tinyCLAP custom PhiNet (EXACT):")
+        backbone_params = sum(p.numel() for p in self.backbone.parameters())
+        projection_params = sum(p.numel() for p in self.projection_head.parameters())
+
+        logger.info(f"Built Student CLAP model with EfficientAT:")
         logger.info(f"  Total parameters: {total_params:,} ({total_params/1e6:.2f}M)")
-        logger.info(f"  PhiNet: {N} layers, output channels: {phinet_output_dim}")
+        logger.info(f"  Backbone ({self.pretrained_name}): {backbone_params:,} ({backbone_params/1e6:.2f}M)")
+        logger.info(f"  Projection head: {projection_params:,}")
         logger.info(f"  Output embedding dim: {self.embedding_dim}")
 
     def forward(self, mel_spec: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass through student model (EXACT tinyCLAP architecture).
+        Forward pass through student model.
 
         Args:
-            mel_spec: Mel-spectrogram of shape (batch, 1, n_mels, time)
-                     where n_mels=64, time varies by segment length
+            mel_spec: Mel-spectrogram of shape (batch, 1, n_mels, time) or (batch, n_mels, time)
 
         Returns:
             embeddings: L2-normalized embeddings of shape (batch, 512)
         """
+        # Ensure correct input shape: (batch, 1, n_mels, time)
+        if mel_spec.dim() == 3:
+            mel_spec = mel_spec.unsqueeze(1)  # Add channel dimension
 
-        if mel_spec.dim() == 4:
-            mel_spec = mel_spec.squeeze(1)
-        mel_spec = mel_spec.transpose(1, 2)
-        
+        # EfficientAT forward returns (logits, features)
         if self.training and self.use_gradient_checkpointing:
-            def phinet_forward(x):
-                return self.phinet(x)
-            out_dict = torch.utils.checkpoint.checkpoint(phinet_forward, mel_spec, use_reentrant=False)
+            def backbone_forward(x):
+                return self.backbone(x)
+            _, audio_features = torch.utils.checkpoint.checkpoint(
+                backbone_forward, mel_spec, use_reentrant=False
+            )
         else:
-            out_dict = self.phinet(mel_spec)
-            
-        audio_features = out_dict["embedding"][0]
+            _, audio_features = self.backbone(mel_spec)
         embeddings = self.projection_head(audio_features)
         embeddings = F.normalize(embeddings, p=2, dim=1)
 
@@ -483,20 +366,16 @@ class StudentCLAPTrainer:
 
         # Set encoder to eval() to use running BatchNorm stats collected during Stage 1
         encoder_flag_set = False
-        if hasattr(self.model, 'phinet'):
-            try:
-                self.model.phinet.eval()
-                encoder_flag_set = True
-                logger.info("🔒 Encoder (phinet) set to eval() for Stage 2")
-            except Exception:
-                pass
-        elif hasattr(self.model, 'base'):
-            try:
-                self.model.base.eval()
-                encoder_flag_set = True
-                logger.info("🔒 Encoder (base) set to eval() for Stage 2")
-            except Exception:
-                pass
+        # Prefer explicit `backbone` attribute (EfficientAT), then older names 'base' or 'phinet'
+        for attr_name in ('backbone', 'base', 'phinet'):
+            if hasattr(self.model, attr_name):
+                try:
+                    getattr(self.model, attr_name).eval()
+                    encoder_flag_set = True
+                    logger.info(f"🔒 Encoder ({attr_name}) set to eval() for Stage 2")
+                    break
+                except Exception:
+                    pass
 
         if not encoder_flag_set:
             # Fallback: set whole model to eval but re-enable projector training

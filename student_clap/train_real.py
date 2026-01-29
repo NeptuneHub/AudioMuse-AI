@@ -308,6 +308,7 @@ def validate_real(trainer: StudentCLAPTrainer,
             batch = {
                 'audio_segments': [],
                 'teacher_embeddings': [],
+                'teacher_segment_embeddings': [],
                 'song_ids': []
             }
             
@@ -318,22 +319,24 @@ def validate_real(trainer: StudentCLAPTrainer,
                 audio_segments = audio_segments.to(device=trainer.device)
                 batch['audio_segments'].append(audio_segments)
                 batch['teacher_embeddings'].append(item['teacher_embedding'])
+                batch['teacher_segment_embeddings'].append(item.get('teacher_segment_embeddings'))
                 batch['song_ids'].append(item['item_id'])
             
             # Forward pass without gradients
             student_embeddings = []
-            teacher_embeddings_batch = []  # Only include teachers for processed students
+            teacher_embeddings_batch = []  # Will include per-segment and averaged teachers
             
             for i, audio_segments in enumerate(batch['audio_segments']):
                 # audio_segments are PRE-COMPUTED mel spectrograms! (num_segments, 1, 128, time)
                 if not isinstance(audio_segments, torch.Tensor):
                     audio_segments = torch.from_numpy(audio_segments)
                 audio_segments = audio_segments.to(device=trainer.device)
-                # ⚠️ SKIP SONGS WITH ONLY 1 SEGMENT (BatchNorm requires at least 2 samples)
+
+                # ⚠️ SKIP SONGS WITH ONLY 1 SEGMENT - consistent with training behavior
                 if audio_segments.shape[0] < 2:
                     logger.warning(f"⚠️ Skipping song {batch['song_ids'][i]} in validation - only {audio_segments.shape[0]} segment")
                     continue
-                
+
                 # Process segments in chunks to reduce memory usage
                 chunk_size = config['model'].get('segment_batch_size', 10)
                 segment_embeddings_list = []
@@ -344,15 +347,39 @@ def validate_real(trainer: StudentCLAPTrainer,
                     segment_embeddings_list.append(chunk_embeddings)
                 
                 segment_embeddings = torch.cat(segment_embeddings_list, dim=0)  # (num_segments, 512)
+                segment_embeddings = torch.nn.functional.normalize(segment_embeddings, p=2, dim=1)
                 
-                # Average across segments to get single embedding per song (same as training!)
-                avg_embedding = torch.mean(segment_embeddings, dim=0, keepdim=True)  # (1, 512)
-                
-                # Re-normalize after averaging
-                avg_embedding = torch.nn.functional.normalize(avg_embedding, p=2, dim=1)
-                
-                student_embeddings.append(avg_embedding.cpu().numpy())
-                teacher_embeddings_batch.append(batch['teacher_embeddings'][i])  # Only add teacher if student was processed
+                # Convert to numpy once
+                segment_embeddings_np = segment_embeddings.cpu().numpy()
+                num_segs = segment_embeddings_np.shape[0]
+
+                # Get teacher segment embeddings if available
+                teacher_seg_embs = batch['teacher_segment_embeddings'][i]
+                teacher_song_emb = batch['teacher_embeddings'][i]
+
+                # For each student segment, compare to corresponding teacher segment embedding if available,
+                # otherwise compare to the song-level teacher embedding (mirrors training behavior)
+                if teacher_seg_embs is not None and len(teacher_seg_embs) >= 1:
+                    # Ensure teacher segment embeddings are numpy arrays
+                    tseg = [ (e.numpy() if hasattr(e, 'numpy') else e) for e in teacher_seg_embs ]
+                    for s_idx in range(num_segs):
+                        student_embeddings.append(segment_embeddings_np[s_idx])
+                        if s_idx < len(tseg):
+                            teacher_embeddings_batch.append(tseg[s_idx])
+                        else:
+                            teacher_embeddings_batch.append(teacher_song_emb)
+                else:
+                    for s_idx in range(num_segs):
+                        student_embeddings.append(segment_embeddings_np[s_idx])
+                        teacher_embeddings_batch.append(teacher_song_emb)
+
+                # Also include the averaged embedding for this song (same as training)
+                avg_embedding = np.mean(segment_embeddings_np, axis=0)
+                avg_embedding = avg_embedding / (np.linalg.norm(avg_embedding) + 1e-8)
+                student_embeddings.append(avg_embedding)
+                teacher_embeddings_batch.append(teacher_song_emb)
+
+                logger.info(f"   🔎 Validation: song {batch['song_ids'][i]} -> segments={num_segs}, pairs_added={num_segs + 1}")
             
             # Stack and store (only if we have valid embeddings)
             if student_embeddings:
@@ -370,6 +397,23 @@ def validate_real(trainer: StudentCLAPTrainer,
     # Evaluate
     metrics = evaluate_embeddings(student_all, teacher_all)
     metrics['num_songs'] = len(song_ids)
+
+    # Additional per-song diagnostics for better visibility
+    try:
+        # Compute per-song cosine similarities (normalized dot product)
+        s_norm = student_all / (np.linalg.norm(student_all, axis=1, keepdims=True) + 1e-8)
+        t_norm = teacher_all / (np.linalg.norm(teacher_all, axis=1, keepdims=True) + 1e-8)
+        per_song_cosines = np.sum(s_norm * t_norm, axis=1)
+        # Summary stats
+        p10, p50, p90 = np.percentile(per_song_cosines, [10, 50, 90])
+        logger.info(f"🔬 Validation per-song cosine (n={len(per_song_cosines)}): mean={metrics['cosine_similarity']['mean']:.4f}, p10={p10:.4f}, median={p50:.4f}, p90={p90:.4f}")
+        # Warn if validation set is very small — results will be noisy and perhaps misleading
+        if len(per_song_cosines) < 10:
+            logger.warning("⚠️ Validation set is small (<10 songs). Validation metrics will be noisy and may not reflect generalization.")
+        # Attach per-song values to metrics for optional post-analysis
+        metrics['per_song_cosines'] = per_song_cosines.tolist()
+    except Exception as e:
+        logger.warning(f"⚠️ Could not compute detailed validation diagnostics: {e}")
 
     # Restore model to training mode to avoid surprising downstream code
     try:
@@ -1043,6 +1087,14 @@ def train(config_path: str, resume: str = None):
                 latest_path.unlink()
             torch.save(checkpoint_data, latest_path)
             logger.info(f"🔗 Updated latest checkpoint: {latest_path}")
+            # Optionally export ONNX for every epoch (can be slow)
+            try:
+                if config['training'].get('export_onnx_every_epoch', False):
+                    onnx_epoch_path = checkpoint_dir / f"model_epoch_{epoch}.onnx"
+                    trainer.export_to_onnx(str(onnx_epoch_path))
+                    logger.info(f"✅ Exported ONNX for epoch {epoch}: {onnx_epoch_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to export ONNX for epoch {epoch}: {e}")
             # Save additional checkpoint every 5 epochs (backup)
             if epoch % 5 == 0:
                 backup_path = checkpoint_dir / f"backup_epoch_{epoch}.pth"

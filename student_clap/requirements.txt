@@ -9,7 +9,11 @@ torchaudio>=2.0.0
 # ONNX (for CLAP model inference)
 onnx>=1.14.0
 onnxruntime>=1.17.0
-onnxruntime-gpu>=1.16.0  # CUDA support for ONNX Runtime
+onnxruntime-gpu>=1.16.0; sys_platform != "darwin"  # CUDA support (Linux/Windows only)
+# On macOS prefer the CPU runtime or the Apple Metal accelerated package on Apple Silicon
+onnxruntime-metal; sys_platform == "darwin" and platform_machine == "arm64" and python_version >= "3.10"  # Apple Silicon only; requires Python >= 3.10
+# If you are on macOS Intel use the plain `onnxruntime` (already listed above)
+# For older Python (<3.10) either upgrade Python or install a compatible runtime manually (e.g. via conda)
 onnxscript>=0.1.0  # Required for torch.onnx.export
 coremltools>=7.0  # macOS GPU acceleration for ONNX
 
@@ -32,8 +36,8 @@ scikit-learn>=1.3.0
 # System utilities
 psutil
 
-# PhiNet architecture
-micromind
+# EfficientAT MobileNet (Conv utilities come from torchvision)
+torchvision>=0.15.0
 importlib_metadata
 
 # Missing

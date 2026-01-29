@@ -13,15 +13,12 @@ audio:
 
 model:
   embedding_dim: 512
-  # PhiNet 3 configuration (tinyCLAP: alpha=3.0, beta=0.75, t0=4, N=7 → 4M+ params)
-  # PhiNet NEW1 configuration (tinyCLAP: alpha=3.0, beta=0.75, t0=6, N=8 → 8M+ params)
-
-  phinet_alpha: 3.0
-  phinet_beta: 0.75
-  phinet_t0: 4
-  phinet_N: 7
-  hidden_dim: 256
-  dropout: 0.1
+  # EfficientAT configuration
+  # Available models: mn01_as, mn02_as, mn04_as, mn05_as, mn10_as, mn20_as, mn30_as, mn40_as
+  # You can also use the dynamic MobileNet variants 'dymn04', 'dymn10', 'dymn20' as prefixes
+  # e.g. 'dymn10_as' will map to width_mult=1.0 and use the corresponding AudioSet pre-trained weights
+  efficientat_model: "dymn10_as"
+  use_pretrained: true  # Use AudioSet pretrained weights
   use_gradient_checkpointing: true
   segment_batch_size: 5  # Process N segments at a time to reduce memory
 
@@ -32,20 +29,21 @@ model_text:
   nhead: 4
 
 training:
-  batch_size: 64
+  batch_size: 2
   gradient_accumulation_steps: 1
-  learning_rate: 0.0012 # Original: 0.003
+  learning_rate: 0.012 # Original: 0.003
   warmup_enabled: false  # Linear LR warmup during epoch 1 (from 0 to learning_rate)
-  epochs: 100
-  stage2_epochs: 10
-  stage2_learning_rate: 0.012 # Original: 0.001
+  epochs: 15
+  stage2_epochs: 3
+  stage2_learning_rate: 0.0012 # Original: 0.001
   projection_only: false
   optimizer: "adamw"
-  weight_decay: 0
+  weight_decay: 0.1
   grad_clip: 1.0
   training_strategy: "both"
   save_every: 1
   validation_split: 0.15
+  export_onnx_every_epoch: true  # If true, export audio ONNX model after every epoch (can be slow)
   # Loss scaling options
   loss_temperature: 0.7       # Static temperature (divide cosine by this value). If using logit scale, set use_logit_scale=True
   use_logit_scale: true       # If true, use a learnable logit_scale (exp(logit_scale) applied to cosine)
@@ -75,7 +73,7 @@ paths:
 
 dataset:
   fma_path: "/Users/guidocolangiuli/Music/FMA"
-  sample_size: 0
+  sample_size: 100
 
 logging:
   level: "INFO"

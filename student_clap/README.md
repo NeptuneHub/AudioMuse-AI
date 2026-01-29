@@ -46,7 +46,7 @@ PYTHONPATH=.. python -c "import yaml; from student_clap.models.student_onnx_mode
 
 To check instead which configuration of input you used for a checkpoint you can use this command:
 ```
-PYTHONPATH=.. python -c "import torch; m=torch.load('student_clap/checkpoints/CHECKPOINT-NAME-HERE.pth', map_location='cpu'); print({k: v for k, v in m['config']['model'].items() if k.startswith('phinet_')})"
+PYTHONPATH=.. python -c "import torch; m=torch.load('student_clap/checkpoints/CHECKPOINT-NAME-HERE.pth', map_location='cpu'); print({k: v for k, v in m['config']['model'].items() if k.startswith('efficientat_') or k=='efficientat_model'})"
 ```
 
 To force the algorithm to read LR from config.yaml after a stop, instead of reading from the scheduler:
@@ -118,11 +118,11 @@ for line in sys.stdin:
 ## Training - Songs
 
 **Architecture:**
-- Custom PhiNet (micromind.PhiNet + BatchNorm2d + Conv2d projection)
-- Parameters: alpha, beta, t0, N (configurable in config.yaml)
+- EfficientAT MobileNet (Transformer-to-CNN distillation backbone)
+- Pretrained variants available (e.g. `dymn10_as` / `mn10_as`) - default: `dymn10_as`
 - n_mels=128, embedding_dim=512 (configurable)
 - Projection: Residual (embed1+embed2), bias=False, dropout configurable
-- Model size: 2-3M params (depends on config)
+- Model size: depends on width multiplier (e.g. `mn10_as` ≈ 4.9M params)
 
 **Strategy:**
 - Stage 1: Distillation from CLAP teacher (epochs 1-100), train all layers
