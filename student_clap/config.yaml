@@ -33,8 +33,8 @@ training:
   gradient_accumulation_steps: 1
   learning_rate: 0.012 # Original: 0.003
   warmup_enabled: false  # Linear LR warmup during epoch 1 (from 0 to learning_rate)
-  epochs: 15
-  stage2_epochs: 3
+  epochs: 100
+  stage2_epochs: 10
   stage2_learning_rate: 0.0012 # Original: 0.001
   projection_only: false
   optimizer: "adamw"
@@ -73,7 +73,7 @@ paths:
 
 dataset:
   fma_path: "/Users/guidocolangiuli/Music/FMA"
-  sample_size: 100
+  sample_size: 0
 
 logging:
   level: "INFO"
