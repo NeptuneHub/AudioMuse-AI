@@ -549,7 +549,7 @@ def train(config_path: str, resume: str = None):
             if 'optimizer_state_dict' in checkpoint:
                 try:
                     trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-                    logger.info("✓ Optimizer restored from checkpoint (will be reconciled with config values below)")
+                    logger.info("✓ Optimizer state restored from checkpoint (LR/WD preserved from checkpoint)")
                 except Exception as e:
                     logger.warning(f"⚠️ Could not restore optimizer state cleanly: {e}; using fresh optimizer with config values")
                     for pg in trainer.optimizer.param_groups:
@@ -907,26 +907,22 @@ def train(config_path: str, resume: str = None):
             s2_threshold_mode = stage2_sched_cfg.get('threshold_mode', 'rel')
             s2_min = stage2_sched_cfg.get('min_lr', 1e-6)
 
-            trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            # Use CosineAnnealingLR for stage 2 for smooth decay over stage2_epochs
+            trainer.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 trainer.optimizer,
-                mode=s2_mode,
-                factor=s2_factor,
-                patience=s2_patience,
-                threshold=s2_threshold,
-                threshold_mode=s2_threshold_mode,
-                min_lr=s2_min
+                T_max=stage2_sched_cfg.get('t_max', stage2_epochs),
+                eta_min=s2_min
             )
-            logger.info(f"📉 Stage 2 LR Scheduler reset: ReduceLROnPlateau (factor={s2_factor}, patience={s2_patience}, threshold={s2_threshold})")
+            logger.info(f"📉 Stage 2 LR Scheduler reset: CosineAnnealingLR (T_max={stage2_sched_cfg.get('t_max', stage2_epochs)}, eta_min={s2_min})")
             logger.info(f"   📈 Stage 2 learning rate: {stage2_lr:.2e}")
             logger.info(f"   📊 Training {sum(p.numel() for p in trainer.model.parameters() if p.requires_grad):,} parameters (projection head only)")
             logger.info("   🎯 This refines the embedding alignment while keeping learned features intact")
             logger.info("=" * 60 + "\n")
 
-            # If stage1_lr < 0.001, trigger scheduler step to reduce LR immediately
+            # If stage1_lr < default_stage2_lr, advance cosine schedule once to nudge LR downwards
             if trigger_reduction:
-                logger.info(f"   🚨 Triggering immediate LR reduction in stage 2 (ReduceLROnPlateau.step)")
-                # Step with a high loss to force reduction
-                trainer.scheduler.step(1.0)
+                logger.info(f"   🚨 Triggering immediate scheduler step in stage 2 (CosineAnnealingLR.step)")
+                trainer.scheduler.step()
 
 
 
@@ -1100,11 +1096,6 @@ def train(config_path: str, resume: str = None):
                 backup_path = checkpoint_dir / f"backup_epoch_{epoch}.pth"
                 torch.save(checkpoint_data, backup_path)
                 logger.info(f"📦 Backup checkpoint: {backup_path}")
-        
-        # Early stopping
-        if patience_counter >= config['training'].get('lr_scheduler', {}).get('patience', 10):
-            logger.info(f"\n⏹️ Early stopping triggered after {epoch} epochs")
-            break
     
     # Training complete
     total_training_time = time.time() - training_start_time
