@@ -229,6 +229,14 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             logger.error(f"❌ Training failed on batch {num_batches + 1}: {e}")
             continue
         
+        # Step Stage 2 CosineAnnealingLR per-batch for smooth per-batch decay
+        try:
+            if config.get('current_stage', 1) == 2 and hasattr(trainer, 'scheduler') and isinstance(trainer.scheduler, torch.optim.lr_scheduler.CosineAnnealingLR):
+                trainer.scheduler.step()
+                logger.debug("🔁 Stage 2 per-batch scheduler step (CosineAnnealingLR)")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to step per-batch scheduler: {e}")
+        
         logger.info(f"─" * 60)
     
     # Compute averages BEFORE updating scheduler (ReduceLROnPlateau needs the metric)
@@ -907,13 +915,21 @@ def train(config_path: str, resume: str = None):
             s2_threshold_mode = stage2_sched_cfg.get('threshold_mode', 'rel')
             s2_min = stage2_sched_cfg.get('min_lr', 1e-6)
 
-            # Use CosineAnnealingLR for stage 2 for smooth decay over stage2_epochs
+            # Compute batches per epoch and default t_max as stage2_epochs * batches_per_epoch for per-batch stepping
+            try:
+                batch_size = config['training'].get('batch_size', 1)
+                batches_per_epoch = (len(train_dataset) + batch_size - 1) // batch_size
+            except Exception:
+                batches_per_epoch = 1
+            default_t_max = stage2_sched_cfg.get('t_max', stage2_epochs * batches_per_epoch)
+
+            # Use CosineAnnealingLR for stage 2 for smooth decay over the total number of stage2 steps
             trainer.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 trainer.optimizer,
-                T_max=stage2_sched_cfg.get('t_max', stage2_epochs),
+                T_max=default_t_max,
                 eta_min=s2_min
             )
-            logger.info(f"📉 Stage 2 LR Scheduler reset: CosineAnnealingLR (T_max={stage2_sched_cfg.get('t_max', stage2_epochs)}, eta_min={s2_min})")
+            logger.info(f"📉 Stage 2 LR Scheduler reset: CosineAnnealingLR (T_max={default_t_max}, eta_min={s2_min})")
             logger.info(f"   📈 Stage 2 learning rate: {stage2_lr:.2e}")
             logger.info(f"   📊 Training {sum(p.numel() for p in trainer.model.parameters() if p.requires_grad):,} parameters (projection head only)")
             logger.info("   🎯 This refines the embedding alignment while keeping learned features intact")
