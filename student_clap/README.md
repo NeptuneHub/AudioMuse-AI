@@ -95,6 +95,24 @@ print('Reset logit_scale to 2.6592')
 "
 ```
 
+Check the cosine and val cosine also in subfolder:
+```
+find student_clap/checkpoints -name "checkpoint_epoch_*.pth" | sort -V | python3 -c '
+import torch, sys
+for line in sys.stdin:
+    f = line.strip()
+    try:
+        ckpt = torch.load(f, map_location="cpu", weights_only=False)
+        m = ckpt.get("train_metrics", {})
+        avg = m.get("avg_cosine_sim", "null")
+        lr = m.get("learning_rate", "null")
+        val = ckpt.get("last_val_cosine", ckpt.get("val_cosine_sim", ckpt.get("best_val_cosine", "null")))
+        print(f"{f}: cosine={avg}, val_cosine={val}, lr={lr}")
+    except Exception as e:
+        print(f"{f}: ERROR - {e}")
+'
+```
+
 ## Training
 
 ## Training - Songs

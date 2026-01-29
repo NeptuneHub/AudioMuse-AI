@@ -421,7 +421,7 @@ class StudentCLAPTrainer:
         lr_sched_cfg = config['training'].get('lr_scheduler', {})
         lr_mode = lr_sched_cfg.get('mode', 'max')
         lr_factor = lr_sched_cfg.get('factor', 0.1)
-        lr_patience = lr_sched_cfg.get('patience', config['training'].get('early_stopping_patience', 10))
+        lr_patience = lr_sched_cfg.get('patience', 10)
         lr_threshold = lr_sched_cfg.get('threshold', 1e-4)
         lr_threshold_mode = lr_sched_cfg.get('threshold_mode', 'rel')
         lr_min = lr_sched_cfg.get('min_lr', 1e-6)

@@ -553,7 +553,7 @@ def train(config_path: str, resume: str = None):
             patience_counter = checkpoint.get('patience_counter', 0)
             logger.info(f"✅ Successfully resumed audio from epoch {checkpoint.get('epoch', 'N/A')}")
             logger.info(f"   📈 Best cosine similarity so far: {best_val_cosine:.4f}")
-            logger.info(f"   ⏰ Patience counter: {patience_counter}/{config['training']['early_stopping_patience']}")
+            logger.info(f"   ⏰ Patience counter: {patience_counter}/{config['training'].get('lr_scheduler', {}).get('patience', 10)}")
             logger.info(f"   🎯 Will continue from epoch {start_epoch}")
             # Confirm optimizer param groups (LR & weight_decay) after resume
             try:
@@ -1013,7 +1013,7 @@ def train(config_path: str, resume: str = None):
                 trainer.export_to_onnx(str(onnx_path))
             else:
                 patience_counter += 1
-                logger.info(f"No improvement ({patience_counter}/{config['training']['early_stopping_patience']})")
+                logger.info(f"No improvement ({patience_counter}/{config['training'].get('lr_scheduler', {}).get('patience', 10)})")
         
         if audio_enabled:
             # Save checkpoint after EVERY epoch (crash recovery)
@@ -1050,7 +1050,7 @@ def train(config_path: str, resume: str = None):
                 logger.info(f"📦 Backup checkpoint: {backup_path}")
         
         # Early stopping
-        if patience_counter >= config['training']['early_stopping_patience']:
+        if patience_counter >= config['training'].get('lr_scheduler', {}).get('patience', 10):
             logger.info(f"\n⏹️ Early stopping triggered after {epoch} epochs")
             break
     

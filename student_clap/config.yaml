@@ -34,18 +34,17 @@ model_text:
 training:
   batch_size: 64
   gradient_accumulation_steps: 1
-  learning_rate: 0.012 # Original: 0.003
+  learning_rate: 0.0012 # Original: 0.003
   warmup_enabled: false  # Linear LR warmup during epoch 1 (from 0 to learning_rate)
   epochs: 100
   stage2_epochs: 10
-  stage2_learning_rate: 0.012
+  stage2_learning_rate: 0.012 # Original: 0.001
   projection_only: false
   optimizer: "adamw"
   weight_decay: 0
   grad_clip: 1.0
   training_strategy: "both"
   save_every: 1
-  early_stopping_patience: 10
   validation_split: 0.15
   # Loss scaling options
   loss_temperature: 0.7       # Static temperature (divide cosine by this value). If using logit scale, set use_logit_scale=True
@@ -58,7 +57,7 @@ training:
   lr_scheduler:
     mode: 'max'             # monitor metric to maximize (we monitor validation cosine)
     factor: 0.1             # LR reduction factor
-    patience: 10            # Number of epochs with no improvement before reducing LR (TinyCLAP default)
+    patience: 3             # Number of epochs with no improvement before reducing LR
     threshold: 0.005       # Minimum relative improvement to be considered as improvement
     threshold_mode: 'rel'   # 'rel' or 'abs'
     min_lr: 1e-6            # Minimum LR
