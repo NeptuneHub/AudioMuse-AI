@@ -23,8 +23,14 @@ from .helpers_utils import NAME_TO_WIDTH
 
 # points to github releases
 model_url = "https://github.com/fschmid56/EfficientAT/releases/download/v0.0.1/"
-# folder to store downloaded models to
-model_dir = "resources"
+# folder to store downloaded models to (package-local by default)
+import os
+pkg_dir = os.path.dirname(__file__)
+# Use package root `student_clap/resources` (two levels up from this file)
+model_dir = os.path.normpath(os.path.join(pkg_dir, "..", "..", "resources"))
+# Ensure the folder exists so downloads are deterministic regardless of CWD
+os.makedirs(model_dir, exist_ok=True)
+logger.info(f"EfficientAT pretrained files will be stored in: {model_dir}")
 
 
 pretrained_models = {
