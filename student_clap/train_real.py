@@ -395,6 +395,17 @@ def validate_real(trainer: StudentCLAPTrainer,
                 segment_embeddings_np = segment_embeddings.cpu().numpy()
                 num_segs = segment_embeddings_np.shape[0]
 
+                # Sanitize NaNs/Infs if any (minimal fix to avoid validation producing NaN metrics)
+                if np.isnan(segment_embeddings_np).any() or np.isinf(segment_embeddings_np).any():
+                    logger.warning(f"⚠️ NaN/Inf detected in segment embeddings for song {batch['song_ids'][i]}; sanitizing")
+                    # Replace NaN/Inf with zeros
+                    segment_embeddings_np = np.nan_to_num(segment_embeddings_np, nan=0.0, posinf=0.0, neginf=0.0)
+                    # Renormalize per-vector safely
+                    norms = np.linalg.norm(segment_embeddings_np, axis=1, keepdims=True)
+                    norms[norms == 0] = 1.0
+                    segment_embeddings_np = segment_embeddings_np / norms
+
+
                 # Get teacher segment embeddings if available
                 teacher_seg_embs = batch['teacher_segment_embeddings'][i]
                 teacher_song_emb = batch['teacher_embeddings'][i]
