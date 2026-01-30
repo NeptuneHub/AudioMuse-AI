@@ -125,13 +125,24 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             'song_ids': []
         }
         
+        skipped_songs = []
         for item in batch_data:
             # Get audio segments for this song (already segmented by dataset)
             audio_segments = item['audio_segments']
+            if audio_segments is None or len(audio_segments) < 2:
+                # BatchNorm and other batch-level ops need >=2 segments; skip short songs during training
+                skipped_songs.append(item['item_id'])
+                continue
             batch['audio_segments'].append(audio_segments)
             batch['teacher_embeddings'].append(item['teacher_embedding'])
             batch['teacher_segment_embeddings'].append(item.get('teacher_segment_embeddings'))
             batch['song_ids'].append(item['item_id'])
+        if skipped_songs:
+            logger.warning(f"⚠️ Skipping {len(skipped_songs)} short songs in batch because they have <2 segments: {skipped_songs}")
+        # If all songs were skipped, skip this batch to avoid numerical issues
+        if len(batch['audio_segments']) == 0:
+            logger.warning(f"⚠️ All songs in this batch have <2 segments. Skipping batch {batch_idx + 1}.")
+            continue
         
         # 🧠 REAL TRAINING STEP
         # Include STAGE and current LR in batch log so resume/stage behavior is visible in a single line
@@ -159,7 +170,30 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                 print(f"[LR WARMUP] Epoch 1, Batch {batch_idx+1}/{total_batches}: LR set to {warmup_lr:.6f}")
             # Forward pass, loss computation, and backward pass
             step_metrics = trainer.train_step(batch)
-            
+
+            # Guard against NaN/Inf values in returned metrics (numerical instability / bad batch)
+            def _is_finite(x):
+                try:
+                    import math
+                    return math.isfinite(float(x))
+                except Exception:
+                    return False
+
+            bad_metric = False
+            for key in ['total_loss', 'mse_loss', 'cosine_loss', 'mean_cosine_sim']:
+                if key in step_metrics and not _is_finite(step_metrics[key]):
+                    bad_metric = True
+                    logger.error(f"❌ Non-finite metric '{key}' in batch {batch_idx + 1}: {step_metrics.get(key)}")
+
+            if bad_metric:
+                # Attempt safe cleanup: zero gradients, skip this batch and continue training
+                try:
+                    trainer.optimizer.zero_grad()
+                except Exception:
+                    pass
+                logger.warning(f"⚠️ Skipping batch {batch_idx + 1} due to non-finite training metrics")
+                continue
+
             # Log detailed metrics
             accumulation_info = f" [acc {step_metrics['accumulation_step']}/{trainer.gradient_accumulation_steps}]"
             update_info = " 🔄 WEIGHTS UPDATED!" if step_metrics['will_update'] else ""

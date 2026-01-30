@@ -18,7 +18,7 @@ model:
   # You can also use the dynamic MobileNet variants 'dymn04', 'dymn10', 'dymn20' as prefixes
   # e.g. 'dymn10_as' will map to width_mult=1.0 and use the corresponding AudioSet pre-trained weights
   # Default uses the canonical pretrained key so there is no ambiguity (pass 'dymn10_as' is still accepted)
-  efficientat_model: "mn10_as"
+  efficientat_model: "dymn10_as"
   use_pretrained: true  # Use AudioSet pretrained weights
   use_gradient_checkpointing: true
   segment_batch_size: 5  # Process N segments at a time to reduce memory
@@ -32,11 +32,11 @@ model_text:
 training:
   batch_size: 64
   gradient_accumulation_steps: 1
-  learning_rate: 0.012 # Original: 0.003
+  learning_rate: 0.003 # Original: 0.003
   warmup_enabled: false  # Linear LR warmup during epoch 1 (from 0 to learning_rate)
-  epochs: 5
+  epochs: 100
   stage2_epochs: 20
-  stage2_learning_rate: 0.00005 # Original: 0.001
+  stage2_learning_rate: 0.001 # Original: 0.001
   # Stage 2 scheduler options
   stage2_lr_scheduler:
     # If true, Stage 2 will reuse the Stage 1 scheduler (ReduceLROnPlateau) instead of

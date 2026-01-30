@@ -120,6 +120,7 @@ for line in sys.stdin:
 **Architecture:**
 - EfficientAT MobileNet (Transformer-to-CNN distillation backbone)
 - Pretrained variants available (e.g. `dymn10_as` / `mn10_as`) - default: `dymn10_as`
+- **Dynamic backbone reconstruction (strict)**: when a checkpoint uses alternative naming (e.g., `layers.*`) the loader will attempt to infer and reconstruct a matching backbone configuration so the checkpoint can be loaded with exact parity. If an exact reconstruction cannot be determined, the load will abort (no fallbacks, no permissive mapping). The projection head is preserved or replaced to ensure CLAP-compatible projection.
 - n_mels=128, embedding_dim=512 (configurable)
 - Projection: Residual (embed1+embed2), bias=False, dropout configurable
 - Model size: depends on width multiplier (e.g. `mn10_as` ≈ 4.9M params)
