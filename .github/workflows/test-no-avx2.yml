@@ -2,9 +2,6 @@ name: Test absence of AVX2
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*.*.*"
 
 jobs:
   avx2-scan-and-import-test:
