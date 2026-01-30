@@ -34,9 +34,18 @@ training:
   gradient_accumulation_steps: 1
   learning_rate: 0.012 # Original: 0.003
   warmup_enabled: false  # Linear LR warmup during epoch 1 (from 0 to learning_rate)
-  epochs: 100
-  stage2_epochs: 10
-  stage2_learning_rate: 0.0012 # Original: 0.001
+  epochs: 5
+  stage2_epochs: 20
+  stage2_learning_rate: 0.00005 # Original: 0.001
+  # Stage 2 scheduler options
+  stage2_lr_scheduler:
+    # If true, Stage 2 will reuse the Stage 1 scheduler (ReduceLROnPlateau) instead of
+    # CosineAnnealingLR. This is useful when you want identical scheduler behavior across stages.
+    use_stage1_scheduler: true
+    # Optional: custom t_max (number of steps) for CosineAnnealingLR; if null we compute
+    # a sensible default as stage2_epochs * batches_per_epoch.
+    t_max: null
+    min_lr: 1e-6
   projection_only: false
   optimizer: "adamw"
   weight_decay: 0.1

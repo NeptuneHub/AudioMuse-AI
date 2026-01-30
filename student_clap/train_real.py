@@ -573,6 +573,7 @@ def train(config_path: str, resume: str = None):
             if 'scheduler_state_dict' in checkpoint:
                 try:
                     trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                    trainer._scheduler_restored = True
                     logger.info("✓ Scheduler restored from checkpoint")
                 except Exception as e:
                     logger.warning(f"⚠️ Could not restore scheduler state: {e}")
@@ -635,23 +636,28 @@ def train(config_path: str, resume: str = None):
                                     lr=config['training'].get('stage2_learning_rate', 0.000003),
                                     weight_decay=config['training']['weight_decay']
                                 )
-                                lr_cfg = config['training'].get('lr_scheduler', {})
-                                trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                                    trainer.optimizer,
-                                    mode=lr_cfg.get('mode', 'max'),
-                                    factor=lr_cfg.get('factor', 0.1),
-                                    patience=lr_cfg.get('patience', 10),
-                                    threshold=lr_cfg.get('threshold', 0.005),
-                                    threshold_mode=lr_cfg.get('threshold_mode', 'rel'),
-                                    min_lr=lr_cfg.get('min_lr', 1e-6)
-                                )
-                                logger.info(f"✅ Rebuilt projection-only optimizer and scheduler for Stage 2 resume (patience={lr_cfg.get('patience', 10)})")
+                                # If a scheduler was restored from checkpoint, preserve it instead of rebuilding
+                                if getattr(trainer, '_scheduler_restored', False):
+                                    logger.info("✓ Preserving restored scheduler from checkpoint for Stage 2 (not rebuilding from config)")
+                                else:
+                                    lr_cfg = config['training'].get('lr_scheduler', {})
+                                    trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                                        trainer.optimizer,
+                                        mode=lr_cfg.get('mode', 'max'),
+                                        factor=lr_cfg.get('factor', 0.1),
+                                        patience=lr_cfg.get('patience', 10),
+                                        threshold=lr_cfg.get('threshold', 0.005),
+                                        threshold_mode=lr_cfg.get('threshold_mode', 'rel'),
+                                        min_lr=lr_cfg.get('min_lr', 1e-6)
+                                    )
+                                    logger.info(f"✅ Rebuilt projection-only optimizer and scheduler for Stage 2 resume (patience={lr_cfg.get('patience', 10)})")
                             except Exception as e:
                                 logger.warning(f"⚠️ Could not rebuild projection-only optimizer: {e}")
 
-                            # Big visible stage header
+                            # Big visible stage header (include selected scheduler name)
+                            sched_name = trainer.scheduler.__class__.__name__ if hasattr(trainer, 'scheduler') else 'N/A'
                             logger.info("\n" + "="*60)
-                            logger.info(f"===========================STAGE 2==========================")
+                            logger.info(f"===========================STAGE 2 - {sched_name}==========================")
                             logger.info("="*60 + "\n")
                         else:
                             # Ensure a full-model optimizer is present with config values for LR and WD
@@ -915,30 +921,49 @@ def train(config_path: str, resume: str = None):
             s2_threshold_mode = stage2_sched_cfg.get('threshold_mode', 'rel')
             s2_min = stage2_sched_cfg.get('min_lr', 1e-6)
 
-            # Compute batches per epoch and default t_max as stage2_epochs * batches_per_epoch for per-batch stepping
-            try:
-                batch_size = config['training'].get('batch_size', 1)
-                batches_per_epoch = (len(train_dataset) + batch_size - 1) // batch_size
-            except Exception:
-                batches_per_epoch = 1
-            default_t_max = stage2_sched_cfg.get('t_max', stage2_epochs * batches_per_epoch)
+            # If configured to reuse Stage 1 scheduler, create ReduceLROnPlateau here.
+            if stage2_sched_cfg.get('use_stage1_scheduler', False):
+                lr_cfg = config['training'].get('lr_scheduler', {})
+                trainer.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    trainer.optimizer,
+                    mode=lr_cfg.get('mode', 'max'),
+                    factor=lr_cfg.get('factor', 0.1),
+                    patience=lr_cfg.get('patience', 10),
+                    threshold=lr_cfg.get('threshold', 0.005),
+                    threshold_mode=lr_cfg.get('threshold_mode', 'rel'),
+                    min_lr=lr_cfg.get('min_lr', 1e-6)
+                )
+                logger.info(f"📉 Stage 2 LR Scheduler reset: ReduceLROnPlateau (reusing Stage 1 settings)")
+            else:
+                # Compute batches per epoch and default t_max as stage2_epochs * batches_per_epoch for per-batch stepping
+                try:
+                    batch_size = config['training'].get('batch_size', 1)
+                    batches_per_epoch = (len(train_dataset) + batch_size - 1) // batch_size
+                except Exception:
+                    batches_per_epoch = 1
+                default_t_max = stage2_sched_cfg.get('t_max', stage2_epochs * batches_per_epoch)
 
-            # Use CosineAnnealingLR for stage 2 for smooth decay over the total number of stage2 steps
-            trainer.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                trainer.optimizer,
-                T_max=default_t_max,
-                eta_min=s2_min
-            )
-            logger.info(f"📉 Stage 2 LR Scheduler reset: CosineAnnealingLR (T_max={default_t_max}, eta_min={s2_min})")
+                # Use CosineAnnealingLR for stage 2 for smooth decay over the total number of stage2 steps
+                trainer.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    trainer.optimizer,
+                    T_max=default_t_max,
+                    eta_min=s2_min
+                )
+                logger.info(f"📉 Stage 2 LR Scheduler reset: CosineAnnealingLR (T_max={default_t_max}, eta_min={s2_min})")
             logger.info(f"   📈 Stage 2 learning rate: {stage2_lr:.2e}")
             logger.info(f"   📊 Training {sum(p.numel() for p in trainer.model.parameters() if p.requires_grad):,} parameters (projection head only)")
             logger.info("   🎯 This refines the embedding alignment while keeping learned features intact")
-            logger.info("=" * 60 + "\n")
+            sched_name = trainer.scheduler.__class__.__name__ if hasattr(trainer, 'scheduler') else 'N/A'
+            logger.info("\n" + "="*60)
+            logger.info(f"===========================STAGE 2 - {sched_name}==========================")
 
-            # If stage1_lr < default_stage2_lr, advance cosine schedule once to nudge LR downwards
+            # If stage1_lr < default_stage2_lr, advance scheduler once to nudge LR downwards
             if trigger_reduction:
-                logger.info(f"   🚨 Triggering immediate scheduler step in stage 2 (CosineAnnealingLR.step)")
-                trainer.scheduler.step()
+                logger.info(f"   🚨 Triggering immediate scheduler step in stage 2")
+                try:
+                    trainer.scheduler.step()
+                except Exception:
+                    pass
 
 
 
