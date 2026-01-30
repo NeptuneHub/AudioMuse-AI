@@ -1,0 +1,71 @@
+name: Test absence of AVX2
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  qemu-no-avx2-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ github.workspace }}
+          file: Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: test-noavx2:latest
+
+      - name: Extract rootfs from Docker image
+        run: |
+          container_id=$(docker create test-noavx2:latest)
+          docker export $container_id -o rootfs.tar
+          docker rm $container_id
+          mkdir rootfs
+          tar -xf rootfs.tar -C rootfs
+
+      - name: Create minimal /init script for QEMU boot
+        run: |
+          echo '#!/bin/sh' > rootfs/init
+          echo "echo 'QEMU booted on emulated SandyBridge (no AVX2)!'" >> rootfs/init
+          echo "python3 -c 'import sys; print(\"Python:\", sys.version_info)'" >> rootfs/init
+          echo "python3 -c 'import numpy; import onnxruntime; print(\"numpy/onnxruntime: OK\")'" >> rootfs/init
+          echo 'poweroff -f' >> rootfs/init
+          chmod +x rootfs/init
+
+      - name: Make an ext4 image from rootfs for QEMU
+        run: |
+          sudo apt-get update && sudo apt-get install -y e2fsprogs
+          dd if=/dev/zero of=rootfs.img bs=1M count=2048
+          mkfs.ext4 rootfs.img
+          sudo mkdir /mnt/tmpmnt
+          sudo mount -o loop rootfs.img /mnt/tmpmnt
+          sudo cp -a rootfs/. /mnt/tmpmnt/
+          sudo umount /mnt/tmpmnt
+
+      - name: Download Ubuntu 24.04 Noble minimal kernel and initrd
+        run: |
+          wget https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/vmlinuz
+          wget https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/initrd
+
+      - name: Run QEMU (-cpu SandyBridge, AVX2 masked OUT) and run test
+        run: |
+          sudo apt-get install -y qemu-system-x86
+          set -eux
+          timeout 120 \
+            sudo qemu-system-x86_64 \
+              -m 1024 \
+              -cpu SandyBridge \
+              -kernel vmlinuz \
+              -initrd initrd \
+              -append "root=/dev/vda rw console=ttyS0 init=/init" \
+              -drive file=rootfs.img,format=raw,if=virtio \
+              -nographic
