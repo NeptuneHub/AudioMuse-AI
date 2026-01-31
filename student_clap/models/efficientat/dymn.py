@@ -113,7 +113,7 @@ class DyReLUB(nn.Module):
     2 branches (4 coefficients per channel: slope1, intercept1, slope2, intercept2).
     """
 
-    def __init__(self, channels: int, context_dim: int, max_coef: float = 10.0):
+    def __init__(self, channels: int, context_dim: int, max_coef: float = 10.0, max_activation: float = 1e4):
         super().__init__()
         self.channels = channels
         self.coef_net = nn.Sequential(
@@ -123,6 +123,8 @@ class DyReLUB(nn.Module):
         self.init_v = nn.Parameter(torch.zeros(4))
         # Maximum absolute value for generated coefficients (robustness)
         self.max_coef = float(max_coef)
+        # Maximum activation value after DyReLUB (prevent explosion)
+        self.max_activation = float(max_activation)
 
     def forward(self, x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
         """
@@ -161,6 +163,9 @@ class DyReLUB(nn.Module):
         branch1 = a1 * x_unsq + b1
         branch2 = a2 * x_unsq + b2
         out = torch.max(branch1, branch2)  # (B, 1, C, F, T)
+
+        # Smoothly clamp extreme activation values to avoid numerical explosions
+        out = torch.tanh(out / (self.max_activation + 1e-12)) * self.max_activation
 
         return out.squeeze(1)  # (B, C, F, T)
 
