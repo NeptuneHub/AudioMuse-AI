@@ -201,8 +201,15 @@ class DyMNBlock(nn.Module):
 
     def _apply_dynamic_1x1(self, x: torch.Tensor, flat_w: torch.Tensor,
                            in_c: int, out_c: int) -> torch.Tensor:
-        """Apply per-sample 1x1 convolution using grouped conv trick."""
+        """Apply per-sample 1x1 convolution using grouped conv trick.
+
+        Ensure dimensions are Python ints before constructing reshape shapes so that
+        TorchScript/ONNX export does not create tensor-valued shape elements which
+        can lead to unsupported ONNX ops (reshape with tensor shape for conv kernels).
+        """
         B, C, H, W = x.shape
+        # Force Python ints (important for tracing/ONNX export)
+        B = int(B); C = int(C); H = int(H); W = int(W)
         # Reshape: merge batch into channels for grouped conv
         x_grouped = x.reshape(1, B * C, H, W)
         w = flat_w.reshape(B * out_c, in_c, 1, 1)
@@ -211,13 +218,20 @@ class DyMNBlock(nn.Module):
 
     def _apply_dynamic_dw(self, x: torch.Tensor, flat_w: torch.Tensor,
                           channels: int, kernel_size: int, stride: int) -> torch.Tensor:
-        """Apply per-sample depthwise convolution using grouped conv trick."""
+        """Apply per-sample depthwise convolution using grouped conv trick.
+
+        Force shape dims to Python ints to avoid creating tensor-valued shape
+        inputs in the TorchScript graph (which breaks ONNX export of convs).
+        """
         B, C, H, W = x.shape
+        B = int(B); C = int(C); H = int(H); W = int(W)
         padding = (kernel_size - 1) // 2
         x_grouped = x.reshape(1, B * C, H, W)
         w = flat_w.reshape(B * channels, 1, kernel_size, kernel_size)
         out = F.conv2d(x_grouped, w, padding=padding, stride=stride, groups=B * channels)
-        return out.reshape(B, channels, out.size(2), out.size(3))
+        out_h = int(out.size(2))
+        out_w = int(out.size(3))
+        return out.reshape(B, channels, out_h, out_w)
 
     def forward(self, x: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
         identity = x
