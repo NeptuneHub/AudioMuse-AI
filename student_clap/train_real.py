@@ -596,15 +596,26 @@ def train(config_path: str, resume: str = None):
         try:
             logger.info(f"📂 Loading audio checkpoint: {audio_resume_path}")
             checkpoint = torch.load(audio_resume_path, map_location=trainer.device)
-            try:
-                res = trainer.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
-                if getattr(res, 'missing_keys', None) or getattr(res, 'unexpected_keys', None):
-                    logger.warning(f"⚠️ Model state loaded with mismatched keys: missing={res.missing_keys}, unexpected={res.unexpected_keys}")
-                else:
-                    logger.info("✓ Model state loaded (non-strict) with all keys matched")
-            except Exception as e:
-                logger.exception(f"❌ Failed to load model state from checkpoint: {e}")
-                raise
+            # Allow checkpoints to be flexible: try strict load first, fall back to non-strict if needed
+            state_dict = checkpoint.get('model_state_dict', checkpoint.get('state_dict', None))
+            if state_dict is None:
+                logger.warning("⚠️ No model_state_dict found in checkpoint — skipping model load")
+            else:
+                try:
+                    # Attempt strict load first to catch big mismatches early
+                    trainer.model.load_state_dict(state_dict, strict=True)
+                    logger.info("✓ Model state loaded (strict match)")
+                except Exception as e_strict:
+                    logger.warning(f"⚠️ Strict load failed: {e_strict}; falling back to non-strict")
+                    try:
+                        res = trainer.model.load_state_dict(state_dict, strict=False)
+                        if getattr(res, 'missing_keys', None) or getattr(res, 'unexpected_keys', None):
+                            logger.warning(f"⚠️ Model state loaded with mismatched keys: missing={res.missing_keys}, unexpected={res.unexpected_keys}")
+                        else:
+                            logger.info("✓ Model state loaded (non-strict) with all keys matched")
+                    except Exception as e_non_strict:
+                        logger.exception(f"❌ Failed to load model state even in non-strict mode: {e_non_strict}")
+                        raise
 
             # Attempt to restore optimizer state; if missing or failing, keep fresh optimizer and apply config LR/WD
             if 'optimizer_state_dict' in checkpoint:
