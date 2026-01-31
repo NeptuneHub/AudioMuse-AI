@@ -21,7 +21,7 @@ from config import MAX_SONGS_PER_ARTIST
 logger = logging.getLogger(__name__)
 
 # small shared thread pool in case of parallel vector fetch needs
-_PATH_THREAD_POOL = ThreadPoolExecutor(max_workers=min(4, (os.cpu_count() or 1)), thread_name_prefix="path")
+_PATH_THREAD_POOL = ThreadPoolExecutor(max_workers=max(1, (os.cpu_count() or 1) - 1), thread_name_prefix="path")
 
 
 def get_euclidean_distance(v1, v2):
