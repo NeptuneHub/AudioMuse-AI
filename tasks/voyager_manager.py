@@ -49,7 +49,7 @@ _thread_pool = None
 _thread_pool_lock = threading.Lock()
 
 # --- Configuration for parallel processing ---
-MAX_WORKER_THREADS = min(4, (os.cpu_count() or 1))  # Use up to 4 threads or available cores
+MAX_WORKER_THREADS = max(1, (os.cpu_count() or 1) - 1)  # Use cpu_count - 1, minimum 1
 BATCH_SIZE_VECTOR_OPS = 50  # Process vectors in batches
 BATCH_SIZE_DB_OPS = 100     # Process database operations in batches
 
