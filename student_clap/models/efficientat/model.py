@@ -618,15 +618,26 @@ def get_model(num_classes: int = 527, pretrained_name: str = None, width_mult: f
                 state_dict = {k: v for k, v in state_dict.items() if not k.startswith('classifier')}
                 m.load_state_dict(state_dict, strict=False)
             else:
-                m.load_state_dict(state_dict, strict=True)
-            logger.info(f"Loaded DyMN pretrained weights from {local_path} (strict=True)")
+                # Attempt strict load first; if it fails (e.g., new params added), fall back to non-strict
+                try:
+                    m.load_state_dict(state_dict, strict=True)
+                    logger.info(f"Loaded DyMN pretrained weights from {local_path} (strict=True)")
+                except Exception as e:
+                    logger.warning(f"Could not strictly load DyMN pretrained weights: {e}; falling back to non-strict load")
+                    res = m.load_state_dict(state_dict, strict=False)
+                    logger.info(f"Loaded DyMN pretrained weights from {local_path} (non-strict). missing={res.missing_keys}, unexpected={res.unexpected_keys}")
         else:
             # Try downloading from GitHub releases
             candidate_url = urllib.parse.urljoin(model_url, f"{pretrained_name}.pt")
             try:
                 state_dict = load_state_dict_from_url(candidate_url, model_dir=model_dir, map_location="cpu")
-                m.load_state_dict(state_dict, strict=True)
-                logger.info(f"Downloaded and loaded DyMN pretrained weights: {pretrained_name}")
+                try:
+                    m.load_state_dict(state_dict, strict=True)
+                    logger.info(f"Downloaded and loaded DyMN pretrained weights: {pretrained_name}")
+                except Exception as e:
+                    logger.warning(f"Could not strictly load downloaded DyMN pretrained weights: {e}; falling back to non-strict load")
+                    res = m.load_state_dict(state_dict, strict=False)
+                    logger.info(f"Downloaded and loaded DyMN pretrained weights (non-strict): {pretrained_name}; missing={res.missing_keys}, unexpected={res.unexpected_keys}")
             except Exception as e:
                 logger.warning(f"Could not load DyMN pretrained '{pretrained_name}': {e}")
 

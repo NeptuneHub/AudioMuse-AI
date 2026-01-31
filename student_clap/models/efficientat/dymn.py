@@ -119,6 +119,8 @@ class DyReLUB(nn.Module):
         self.coef_net = nn.Sequential(
             nn.Linear(context_dim, 4 * channels)
         )
+        # LayerNorm to stabilize context before coef_net (robustness)
+        self.coef_norm = nn.LayerNorm(context_dim)
         self.lambdas = nn.Parameter(torch.ones(4))
         self.init_v = nn.Parameter(torch.zeros(4))
         # Maximum absolute value for generated coefficients (robustness)
@@ -136,6 +138,9 @@ class DyReLUB(nn.Module):
         """
         B = x.size(0)
 
+        # Normalize context to stabilize coef_net inputs
+        context = self.coef_norm(context)
+
         # Generate per-channel, per-sample coefficients
         coefs = self.coef_net(context)  # (B, 4*C)
         coefs = coefs.view(B, 4, self.channels)  # (B, 4, C)
@@ -145,6 +150,9 @@ class DyReLUB(nn.Module):
         lam = self.lambdas.view(1, 4, 1)
         iv = self.init_v.view(1, 4, 1)
         activations = lam * coefs + iv  # (B, 4, C)
+
+        # Use tanh scaling to keep coefficients bounded in [-2, 2]
+        activations = 2.0 * torch.tanh(activations)
 
         # Reshape for broadcasting: (B, 4, C, 1, 1)
         activations = activations.unsqueeze(3).unsqueeze(4)
