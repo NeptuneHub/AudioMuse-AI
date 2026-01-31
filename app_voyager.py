@@ -92,7 +92,8 @@ def search_tracks_endpoint():
                     'item_id': r.get('item_id'),
                     'title': r.get('title'),
                     'author': r.get('author'),
-                    'album': album
+                    'album': album,
+                    'album_artist': (r.get('album_artist') or '').strip() or 'unknown'
                 })
             else:
                 results.append({'item_id': None, 'title': None, 'author': None, 'album': 'unknown'})
@@ -235,6 +236,7 @@ def get_similar_tracks_endpoint():
                     "title": track_info['title'],
                     "author": track_info['author'],
                     "album": (track_info.get('album') or 'unknown'),
+                    "album_artist": (track_info.get('album_artist') or 'unknown'),
                     "distance": distance_map[neighbor_id]
                 })
 
@@ -293,7 +295,8 @@ def get_track_endpoint():
         "item_id": d.get('item_id'),
         "title": d.get('title'),
         "author": d.get('author'),
-        "album": (d.get('album') or 'unknown')
+        "album": (d.get('album') or 'unknown'),
+        "album_artist": (d.get('album_artist') or 'unknown')
     }), 200
   except Exception as e:
     logger.error(f"Unexpected error fetching track {item_id}: {e}", exc_info=True)

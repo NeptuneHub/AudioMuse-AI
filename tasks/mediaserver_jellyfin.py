@@ -197,11 +197,12 @@ def get_tracks_from_album(album_id):
         
         # Apply artist field prioritization to each track
         for item in items:
+            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
             title = item.get('Name', 'Unknown')
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
-        
+
         return items
     except Exception as e:
         logger.error(f"Jellyfin get_tracks_from_album failed for album {album_id}: {e}", exc_info=True)
@@ -277,11 +278,12 @@ def get_all_songs():
         
         # Apply artist field prioritization to each item
         for item in items:
+            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
             title = item.get('Name', 'Unknown')
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
-        
+
         return items
     except Exception as e:
         logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)
@@ -350,11 +352,12 @@ def get_top_played_songs(limit, user_creds=None):
         
         # Apply artist field prioritization to each item
         for item in items:
+            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
             title = item.get('Name', 'Unknown')
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
-        
+
         return items
     except Exception as e:
         logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)

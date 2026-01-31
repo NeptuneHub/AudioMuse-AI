@@ -748,10 +748,11 @@ def get_all_songs():
                 used_field = 'fallback'
             
             mapped_song = {
-                'Id': song.get('id'), 
-                'Name': song.get('title'), 
-                'AlbumArtist': track_artist, 
-                'Path': song.get('url'), 
+                'Id': song.get('id'),
+                'Name': song.get('title'),
+                'AlbumArtist': track_artist,
+                'OriginalAlbumArtist': song.get('albumartist'),
+                'Path': song.get('url'),
                 'url': song.get('url')
             }
             all_songs.append(mapped_song)
@@ -1031,7 +1032,7 @@ def get_tracks_from_album(album_id):
             used_field = 'fallback'
         
         path = s.get('url') or s.get('Path') or s.get('path') or ''
-        mapped.append({'Id': id_val, 'Name': title, 'AlbumArtist': artist, 'Path': path, 'url': path})
+        mapped.append({'Id': id_val, 'Name': title, 'AlbumArtist': artist, 'OriginalAlbumArtist': s.get('albumartist'), 'Path': path, 'url': path})
 
     return mapped
 
@@ -1075,10 +1076,11 @@ def get_top_played_songs(limit):
                 used_field = 'fallback'
             
             mapped_songs.append({
-                'Id': s.get('id'), 
-                'Name': title, 
-                'AlbumArtist': track_artist, 
-                'Path': s.get('url'), 
+                'Id': s.get('id'),
+                'Name': title,
+                'AlbumArtist': track_artist,
+                'OriginalAlbumArtist': s.get('albumartist'),
+                'Path': s.get('url'),
                 'url': s.get('url')
             })
         return mapped_songs

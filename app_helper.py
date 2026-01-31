@@ -84,7 +84,7 @@ def init_db():
     db = get_db()
     with db.cursor() as cur:
         # Create 'score' table
-        cur.execute("CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)")
+        cur.execute("CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)")
         # Add 'energy' column if not exists
         cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'energy')")
         if not cur.fetchone()[0]:
@@ -100,6 +100,11 @@ def init_db():
         if not cur.fetchone()[0]:
             logger.info("Adding 'album' column to 'score' table.")
             cur.execute("ALTER TABLE score ADD COLUMN album TEXT")
+        # Add 'album_artist' column if not exists
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album_artist')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'album_artist' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN album_artist TEXT")
         # Create 'playlist' table
         cur.execute("CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))")
         # Create 'task_status' table
@@ -427,7 +432,7 @@ def track_exists(item_id):
     cur.close()
     return row is not None
 
-def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None):
+def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, album_artist=None):
     """Saves track analysis and embedding in a single transaction."""
     
     def _sanitize_string(s, max_length=1000, field_name="field"):
@@ -465,6 +470,7 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     title = _sanitize_string(title, max_length=500, field_name="title")
     author = _sanitize_string(author, max_length=200, field_name="author")
     album = _sanitize_string(album, max_length=200, field_name="album")
+    album_artist = _sanitize_string(album_artist, max_length=200, field_name="album_artist")
     key = _sanitize_string(key, max_length=10, field_name="key")
     scale = _sanitize_string(scale, max_length=10, field_name="scale")
     other_features = _sanitize_string(other_features, max_length=2000, field_name="other_features")
@@ -476,8 +482,8 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     try:
         # Save analysis to score table
         cur.execute("""
-            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 author = EXCLUDED.author,
@@ -487,8 +493,9 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
                 mood_vector = EXCLUDED.mood_vector,
                 energy = EXCLUDED.energy,
                 other_features = EXCLUDED.other_features,
-                album = EXCLUDED.album
-        """, (item_id, title, author, tempo, key, scale, mood_str, energy, other_features, album))
+                album = EXCLUDED.album,
+                album_artist = EXCLUDED.album_artist
+        """, (item_id, title, author, tempo, key, scale, mood_str, energy, other_features, album, album_artist))
 
         # Save embedding
         if isinstance(embedding_vector, np.ndarray) and embedding_vector.size > 0:
@@ -585,7 +592,7 @@ def get_tracks_by_ids(item_ids_list):
     item_ids_str = [str(item_id) for item_id in item_ids_list]
     
     query = """
-        SELECT s.item_id, s.title, s.author, s.album, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, e.embedding
+        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, e.embedding
         FROM score s
         LEFT JOIN embedding e ON s.item_id = e.item_id
         WHERE s.item_id IN %s
@@ -613,7 +620,7 @@ def get_score_data_by_ids(item_ids_list):
     conn = get_db() # This now calls the function within this file
     cur = conn.cursor(cursor_factory=DictCursor)
     query = """
-        SELECT s.item_id, s.title, s.author, s.album, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features
+        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features
         FROM score s
         WHERE s.item_id IN %s
     """

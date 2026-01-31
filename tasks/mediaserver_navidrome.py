@@ -284,10 +284,11 @@ def get_all_songs():
                     # artistId in search3 response refers to the album artist
                     artist_id = s.get('artistId')
                     all_songs.append({
-                        'Id': s.get('id'), 
-                        'Name': title, 
+                        'Id': s.get('id'),
+                        'Name': title,
                         'AlbumArtist': artist_name,
                         'ArtistId': artist_id,
+                        'OriginalAlbumArtist': s.get('albumArtist'),
                         'Path': s.get('path')
                     })
                 
@@ -444,11 +445,12 @@ def get_tracks_from_album(album_id, user_creds=None):
             artist, artist_id = _select_best_artist(s, title)
             logger.debug(f"getAlbum track '{title}': artist='{artist}', artist_id='{artist_id}', raw_artistId='{s.get('artistId')}', raw_albumArtistId='{s.get('albumArtistId')}'")
             result.append({
-                **s, 
-                'Id': s.get('id'), 
-                'Name': title, 
+                **s,
+                'Id': s.get('id'),
+                'Name': title,
                 'AlbumArtist': artist,
                 'ArtistId': artist_id,
+                'OriginalAlbumArtist': s.get('albumArtist'),
                 'Path': s.get('path')
             })
         return result

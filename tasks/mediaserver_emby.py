@@ -260,6 +260,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
 
     # Apply artist field prioritization to standalone tracks
     for track in all_tracks:
+        track['OriginalAlbumArtist'] = track.get('AlbumArtist')
         title = track.get('Name', 'Unknown')
         artist_name, artist_id = _select_best_artist(track, title)
         track['AlbumArtist'] = artist_name
@@ -423,8 +424,11 @@ def get_tracks_from_album(album_id, user_creds=None):
             track_item = r.json()
             
             # Apply artist field prioritization
+            track_item['OriginalAlbumArtist'] = track_item.get('AlbumArtist')
             title = track_item.get('Name', 'Unknown')
-            track_item['AlbumArtist'] = _select_best_artist(track_item, title)
+            artist_name, artist_id = _select_best_artist(track_item, title)
+            track_item['AlbumArtist'] = artist_name
+            track_item['ArtistId'] = artist_id
             
             return [track_item]  # Return as single-item list to maintain compatibility
         except Exception as e:
@@ -441,11 +445,12 @@ def get_tracks_from_album(album_id, user_creds=None):
         
         # Apply artist field prioritization to each track
         for item in items:
+            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
             title = item.get('Name', 'Unknown')
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
-        
+
         return items
     except Exception as e:
         logger.error(f"Emby get_tracks_from_album failed for album {album_id}: {e}", exc_info=True)
@@ -537,6 +542,7 @@ def get_all_songs(user_creds=None):
             
             # Apply artist field prioritization
             for item in items:
+                item['OriginalAlbumArtist'] = item.get('AlbumArtist')
                 title = item.get('Name', 'Unknown')
                 artist_name, artist_id = _select_best_artist(item, title)
                 item['AlbumArtist'] = artist_name
@@ -689,11 +695,12 @@ def get_top_played_songs(limit, user_creds=None):
         
         # Apply artist field prioritization to each track
         for item in items:
+            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
             title = item.get('Name', 'Unknown')
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
-        
+
         return items
     except Exception as e:
         logger.error(f"Emby get_top_played_songs failed for user {user_id}: {e}", exc_info=True)
