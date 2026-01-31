@@ -151,8 +151,9 @@ class DyReLUB(nn.Module):
         iv = self.init_v.view(1, 4, 1)
         activations = lam * coefs + iv  # (B, 4, C)
 
-        # Use tanh scaling to keep coefficients bounded in [-2, 2]
-        activations = 2.0 * torch.tanh(activations)
+        # Smooth clamp coefficients to [-max_coef, max_coef] using tanh scaling.
+        # Gradients remain usable while bounding values.
+        activations = torch.tanh(activations / (self.max_coef + 1e-12)) * self.max_coef
 
         # Reshape for broadcasting: (B, 4, C, 1, 1)
         activations = activations.unsqueeze(3).unsqueeze(4)
@@ -162,10 +163,6 @@ class DyReLUB(nn.Module):
         b1 = activations[:, 1:2]  # (B, 1, C, 1, 1) - intercept 1
         a2 = activations[:, 2:3]  # (B, 1, C, 1, 1) - slope 2
         b2 = activations[:, 3:4]  # (B, 1, C, 1, 1) - intercept 2
-
-        # Robustness: limit coefficient magnitudes to prevent explosion (smooth clamp)
-        # Use tanh scaling so gradients remain usable while bounding values.
-        activations = torch.tanh(activations / (self.max_coef + 1e-12)) * self.max_coef
 
         x_unsq = x.unsqueeze(1)  # (B, 1, C, F, T)
         branch1 = a1 * x_unsq + b1
@@ -399,8 +396,9 @@ class DyMN(nn.Module):
         x = self.in_c(x)
 
         # Pass through dynamic blocks
+        temperature = getattr(self, '_temperature', 1.0)
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, temperature)
 
         x = self.out_c(x)
 
