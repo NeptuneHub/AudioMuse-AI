@@ -17,6 +17,7 @@ import json
 import pickle
 import tempfile
 import io
+import hashlib
 import numpy as np
 import threading
 from typing import Dict, List, Tuple, Optional
@@ -418,43 +419,80 @@ def build_and_store_artist_index(db_conn=None):
     cur = db_conn.cursor()
     
     try:
+        # Step 0: Load existing GMM params for incremental rebuild
+        existing_gmm_params = None
+        try:
+            cur.execute("""
+                SELECT gmm_params_json
+                FROM artist_index_data
+                WHERE index_name = %s
+            """, (ARTIST_INDEX_NAME,))
+            row = cur.fetchone()
+            if row and row[0]:
+                existing_gmm_params = json.loads(row[0])
+                logger.info(f"Loaded existing GMM params for {len(existing_gmm_params)} artists (incremental mode)")
+        except Exception as e:
+            logger.warning(f"Could not load existing GMM params, will do full rebuild: {e}")
+            existing_gmm_params = None
+
         # Step 1: Get all artists and their tracks
         logger.info("Fetching artists and tracks from database...")
-        
+
         cur.execute("""
             SELECT DISTINCT author, item_id, title
             FROM score
             WHERE author IS NOT NULL AND author != ''
             ORDER BY author, title
         """)
-        
+
         rows = cur.fetchall()
-        
+
         if not rows:
             logger.warning("No tracks found in database for artist index building")
             return
-        
+
         # Group tracks by artist
         artist_tracks = defaultdict(list)
         for author, item_id, title in rows:
             artist_tracks[author].append({'item_id': item_id, 'title': title})
-        
+
         logger.info(f"Found {len(artist_tracks)} artists with tracks")
-        
-        # Step 2: Fetch embeddings and fit GMMs
+
+        # Step 1.5: Compute per-artist track hashes for change detection
+        artist_track_hashes = {}
+        for artist_name, tracks in artist_tracks.items():
+            sorted_ids = sorted(track['item_id'] for track in tracks)
+            hash_input = ','.join(sorted_ids)
+            artist_track_hashes[artist_name] = hashlib.md5(hash_input.encode()).hexdigest()
+
+        # Step 2: Fetch embeddings and fit GMMs (incremental: skip unchanged artists)
         logger.info("Fetching embeddings and fitting GMMs...")
-        
+
         artist_gmms = {}
         artist_names_list = []
-        
+        reused_count = 0
+        refitted_count = 0
+
         for idx, (artist_name, tracks) in enumerate(artist_tracks.items(), 1):
             if idx % 50 == 0:
                 logger.info(f"Processing artist {idx}/{len(artist_tracks)}: {artist_name}")
-            
-            # Fetch embeddings for all tracks by this artist
+
+            current_hash = artist_track_hashes[artist_name]
+
+            # Check if we can reuse existing GMM (same tracks_hash means no change)
+            if (existing_gmm_params is not None
+                    and artist_name in existing_gmm_params
+                    and existing_gmm_params[artist_name].get('tracks_hash') == current_hash):
+                # Artist unchanged - reuse stored GMM
+                artist_gmms[artist_name] = existing_gmm_params[artist_name]
+                artist_names_list.append(artist_name)
+                reused_count += 1
+                continue
+
+            # Artist is new or changed - fetch embeddings and refit GMM
             track_embeddings = []
             item_ids = [track['item_id'] for track in tracks]
-            
+
             try:
                 # Batch fetch embeddings from database
                 cur.execute("""
@@ -462,28 +500,31 @@ def build_and_store_artist_index(db_conn=None):
                     FROM embedding
                     WHERE item_id = ANY(%s) AND embedding IS NOT NULL
                 """, (item_ids,))
-                
+
                 embedding_rows = cur.fetchall()
-                
+
                 for item_id, embedding_bytes in embedding_rows:
                     if embedding_bytes:
                         # Deserialize embedding vector
                         embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
                         track_embeddings.append(embedding)
-                
+
             except Exception as e:
                 logger.error(f"Failed to fetch embeddings for artist {artist_name}: {e}")
                 continue
-            
+
             # Fit GMM for this artist
             if len(track_embeddings) >= MIN_TRACKS_PER_ARTIST:
                 gmm_params = fit_artist_gmm(artist_name, track_embeddings)
-                
+
                 if gmm_params is not None:
+                    # Store the tracks_hash alongside GMM params for future incremental rebuilds
+                    gmm_params['tracks_hash'] = current_hash
                     artist_gmms[artist_name] = gmm_params
                     artist_names_list.append(artist_name)
-        
-        logger.info(f"Successfully fitted GMMs for {len(artist_gmms)} artists")
+                    refitted_count += 1
+
+        logger.info(f"GMM fitting complete: {refitted_count} refitted, {reused_count} reused (unchanged), {len(artist_gmms)} total")
         
         if len(artist_gmms) == 0:
             logger.warning("No valid GMMs created, skipping index build")

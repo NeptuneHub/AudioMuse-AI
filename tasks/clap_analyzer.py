@@ -55,16 +55,11 @@ def _load_audio_model():
     sess_options.log_severity_level = 3  # 0=Verbose, 1=Info, 2=Warning, 3=Error, 4=Fatal
     
     # Threading configuration based on CLAP_PYTHON_MULTITHREADS:
-    # - False (default): Use half of logical cores to avoid starving other processes
+    # - False (default): Let ONNX Runtime decide thread counts automatically
     # - True: Disable ONNX threading (set to 1), use Python ThreadPoolExecutor instead
     if not config.CLAP_PYTHON_MULTITHREADS:
-        # Use half of available cores (including hyperthreading) to leave room for other processes
-        import psutil
-        logical_cores = psutil.cpu_count(logical=True) or 4
-        num_threads = max(1, logical_cores // 2)
-        sess_options.intra_op_num_threads = num_threads
-        sess_options.inter_op_num_threads = num_threads
-        logger.info(f"CLAP Audio: Using {num_threads} threads (half of {logical_cores} logical cores)")
+        # Let ONNX Runtime handle threading (default automatic behaviour)
+        logger.info("CLAP Audio: Using ONNX Runtime automatic thread management")
     else:
         # Python ThreadPoolExecutor will handle threading - disable ONNX threading
         sess_options.intra_op_num_threads = 1  # Single-threaded ONNX operations
@@ -720,11 +715,8 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
                         sess_options.log_severity_level = 3
                         
                         if not config.CLAP_PYTHON_MULTITHREADS:
-                            import psutil
-                            logical_cores = psutil.cpu_count(logical=True) or 4
-                            num_threads = max(1, logical_cores // 2)
-                            sess_options.intra_op_num_threads = num_threads
-                            sess_options.inter_op_num_threads = num_threads
+                            # Let ONNX Runtime handle threading (default automatic behaviour)
+                            logger.info("CLAP Audio CPU fallback: Using ONNX Runtime automatic thread management")
                         else:
                             sess_options.intra_op_num_threads = 1
                             sess_options.inter_op_num_threads = 1

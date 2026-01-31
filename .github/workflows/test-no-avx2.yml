@@ -1,0 +1,48 @@
+name: Test absence of AVX2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  avx2-scan-and-import-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ github.workspace }}
+          file: Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: test-noavx2:latest
+
+      - name: Scan for AVX2 in ELF binaries in image
+        run: |
+          mkdir -p containerfs
+          container_id=$(docker create test-noavx2:latest)
+          docker export $container_id | tar -C ./containerfs -xvf -
+          docker rm $container_id
+          found=0
+          for f in $(find ./containerfs -type f); do
+            if file "$f" | grep -qi elf; then
+              if strings "$f" | grep -q -i avx2; then
+                echo "❌ Found AVX2 in: $f"
+                found=1
+              fi
+            fi
+          done
+          if [ "$found" = "1" ]; then
+            echo "::error ::AVX2 found in one or more binaries - image NOT safe for non-AVX2 CPUs!"
+            exit 1
+          else
+            echo "✅ No AVX2 found in any binaries."
+          fi
+
+      - name: Run Python import test (smoke test)
+        run: |
+          docker run --rm test-noavx2:latest python3 -c "import numpy; import onnxruntime; print('Imports OK')"

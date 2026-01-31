@@ -12,7 +12,9 @@ from config import (
     TOP_N_PLAYLISTS, MIN_SONGS_PER_GENRE_FOR_STRATIFICATION, STRATIFIED_SAMPLING_TARGET_PERCENTILE,
     SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_SILHOUETTE, SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ,
     SCORE_WEIGHT_PURITY, SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY, SCORE_WEIGHT_OTHER_FEATURE_PURITY,
-    AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME,
+    AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME,
+    OPENAI_SERVER_URL, OPENAI_MODEL_NAME, OPENAI_API_KEY,
+    GEMINI_API_KEY, GEMINI_MODEL_NAME,
     MISTRAL_API_KEY, MISTRAL_MODEL_NAME, ENABLE_CLUSTERING_EMBEDDINGS
 )
 
@@ -157,6 +159,9 @@ def run_due_cron_jobs():
                         "ai_model_provider_param": AI_MODEL_PROVIDER,
                         "ollama_server_url_param": OLLAMA_SERVER_URL,
                         "ollama_model_name_param": OLLAMA_MODEL_NAME,
+                        "openai_server_url_param": OPENAI_SERVER_URL,
+                        "openai_model_name_param": OPENAI_MODEL_NAME,
+                        "openai_api_key_param": OPENAI_API_KEY,
                         "gemini_api_key_param": GEMINI_API_KEY,
                         "gemini_model_name_param": GEMINI_MODEL_NAME,
                         "mistral_api_key_param": MISTRAL_API_KEY,

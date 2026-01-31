@@ -22,8 +22,7 @@ from app_helper import get_db
 logger = logging.getLogger(__name__)
 
 # Thread pool for parallel processing
-# Allow up to 4 concurrent waveform generations
-_waveform_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="waveform")
+_waveform_executor = ThreadPoolExecutor(max_workers=max(1, (os.cpu_count() or 1) - 1), thread_name_prefix="waveform")
 
 # Create a Blueprint for waveform related routes
 waveform_bp = Blueprint('waveform_bp', __name__, template_folder='templates')
