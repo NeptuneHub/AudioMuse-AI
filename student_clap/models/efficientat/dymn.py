@@ -119,8 +119,7 @@ class DyReLUB(nn.Module):
         self.coef_net = nn.Sequential(
             nn.Linear(context_dim, 4 * channels)
         )
-        # LayerNorm to stabilize context before coef_net (robustness)
-        self.coef_norm = nn.LayerNorm(context_dim)
+        # No LayerNorm - use raw context to preserve original dynamics
         self.lambdas = nn.Parameter(torch.ones(4))
         self.init_v = nn.Parameter(torch.zeros(4))
         # Maximum absolute value for generated coefficients (robustness)
@@ -138,8 +137,7 @@ class DyReLUB(nn.Module):
         """
         B = x.size(0)
 
-        # Normalize context to stabilize coef_net inputs
-        context = self.coef_norm(context)
+        # No normalization here to preserve original dynamics (raw context)
 
         # Generate per-channel, per-sample coefficients
         coefs = self.coef_net(context)  # (B, 4*C)
@@ -151,9 +149,8 @@ class DyReLUB(nn.Module):
         iv = self.init_v.view(1, 4, 1)
         activations = lam * coefs + iv  # (B, 4, C)
 
-        # Smooth clamp coefficients to [-max_coef, max_coef] using tanh scaling.
-        # Gradients remain usable while bounding values.
-        activations = torch.tanh(activations / (self.max_coef + 1e-12)) * self.max_coef
+        # Hard clamp coefficients to [-max_coef, max_coef]
+        activations = torch.clamp(activations, -self.max_coef, self.max_coef)
 
         # Reshape for broadcasting: (B, 4, C, 1, 1)
         activations = activations.unsqueeze(3).unsqueeze(4)
@@ -169,8 +166,8 @@ class DyReLUB(nn.Module):
         branch2 = a2 * x_unsq + b2
         out = torch.max(branch1, branch2)  # (B, 1, C, F, T)
 
-        # Smoothly clamp extreme activation values to avoid numerical explosions
-        out = torch.tanh(out / (self.max_activation + 1e-12)) * self.max_activation
+        # Minimal clamp for numerical safety
+        out = torch.clamp(out, -100.0, 100.0)
 
         return out.squeeze(1)  # (B, C, F, T)
 
