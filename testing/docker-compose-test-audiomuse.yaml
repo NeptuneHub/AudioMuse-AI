@@ -333,7 +333,7 @@ services:
       <<: *env-common
       SERVICE_TYPE: flask
       MEDIASERVER_TYPE: lyrion
-      LYRION_URL: http://test-lyrion:9010
+      LYRION_URL: http://test-lyrion:9000
       POSTGRES_USER: audiomuse
       POSTGRES_PASSWORD: audiomusepassword
       POSTGRES_DB: audiomusedb
@@ -356,7 +356,7 @@ services:
       <<: *env-common
       SERVICE_TYPE: worker
       MEDIASERVER_TYPE: lyrion
-      LYRION_URL: http://test-lyrion:9010
+      LYRION_URL: http://test-lyrion:9000
       POSTGRES_USER: audiomuse
       POSTGRES_PASSWORD: audiomusepassword
       POSTGRES_DB: audiomusedb
