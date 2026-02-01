@@ -288,7 +288,7 @@ def get_all_songs():
                         'Name': title,
                         'AlbumArtist': artist_name,
                         'ArtistId': artist_id,
-                        'OriginalAlbumArtist': s.get('albumArtist'),
+                        'OriginalAlbumArtist': s.get('displayAlbumArtist') or s.get('albumArtist'),
                         'Path': s.get('path')
                     })
                 
@@ -334,10 +334,11 @@ def get_all_songs():
             for song in album_songs:
                 # Convert to the expected format
                 all_songs.append({
-                    'Id': song.get('Id'), 
-                    'Name': song.get('Name'), 
+                    'Id': song.get('Id'),
+                    'Name': song.get('Name'),
                     'AlbumArtist': song.get('AlbumArtist'),
                     'ArtistId': song.get('ArtistId'),
+                    'OriginalAlbumArtist': song.get('OriginalAlbumArtist'),
                     'Path': song.get('Path')
                 })
 
@@ -450,7 +451,7 @@ def get_tracks_from_album(album_id, user_creds=None):
                 'Name': title,
                 'AlbumArtist': artist,
                 'ArtistId': artist_id,
-                'OriginalAlbumArtist': s.get('albumArtist'),
+                'OriginalAlbumArtist': s.get('displayAlbumArtist') or s.get('albumArtist'),
                 'Path': s.get('path')
             })
         return result

@@ -719,7 +719,7 @@ def get_all_songs():
     
     # Fetch all songs without filtering
     logger.info("Fetching all songs from Lyrion")
-    response = _jsonrpc_request("titles", [0, 999999])
+    response = _jsonrpc_request("titles", [0, 999999, "tags:galduA"])
     
     all_songs = []
     if response and "titles_loop" in response:
@@ -940,7 +940,7 @@ def get_tracks_from_album(album_id):
     # The 'titles' command with a filter is the correct way to get songs for an album.
     # We now fetch all songs and filter them by the album ID.
     try:
-        response = _jsonrpc_request("titles", [0, 999999, f"album_id:{album_id}", "tags:galdu"])
+        response = _jsonrpc_request("titles", [0, 999999, f"album_id:{album_id}", "tags:galduA"])
         logger.debug(f"Lyrion API Raw Track Response for Album {album_id}: {response}")
     except Exception as e:
         logger.error(f"Lyrion API call for album {album_id} failed: {e}", exc_info=True)
@@ -1047,7 +1047,7 @@ def get_playlist_by_name(playlist_name):
 
 def get_top_played_songs(limit):
     """Fetches the top N most played songs from Lyrion for a specific user using JSON-RPC."""
-    response = _jsonrpc_request("titles", [0, limit, "sort:popular"])
+    response = _jsonrpc_request("titles", [0, limit, "sort:popular", "tags:galduA"])
     if response and "titles_loop" in response:
         songs = response["titles_loop"]
         # Map Lyrion API keys to our standard format.
