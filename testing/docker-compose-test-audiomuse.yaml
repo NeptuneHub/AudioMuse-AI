@@ -21,7 +21,7 @@
 # ============================================================================
 
 x-audiomuse-common: &audiomuse-common
-  image: audiomuse-ai:test-nvidia
+  image: audiomuse-ai:local-nvidia
   pull_policy: never          # always use the locally built image
   restart: unless-stopped
   deploy:
@@ -333,7 +333,7 @@ services:
       <<: *env-common
       SERVICE_TYPE: flask
       MEDIASERVER_TYPE: lyrion
-      LYRION_URL: http://test-lyrion:9000
+      LYRION_URL: http://test-lyrion:9010
       POSTGRES_USER: audiomuse
       POSTGRES_PASSWORD: audiomusepassword
       POSTGRES_DB: audiomusedb
@@ -356,7 +356,7 @@ services:
       <<: *env-common
       SERVICE_TYPE: worker
       MEDIASERVER_TYPE: lyrion
-      LYRION_URL: http://test-lyrion:9000
+      LYRION_URL: http://test-lyrion:9010
       POSTGRES_USER: audiomuse
       POSTGRES_PASSWORD: audiomusepassword
       POSTGRES_DB: audiomusedb

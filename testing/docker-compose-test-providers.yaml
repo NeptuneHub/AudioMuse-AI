@@ -77,7 +77,7 @@ services:
     image: lmscommunity/lyrionmusicserver:latest
     container_name: test-lyrion
     ports:
-      - "9000:9000"
+      - "9010:9000"
       - "9090:9090"
     volumes:
       - ./providers/lyrion/config:/config

@@ -12,7 +12,7 @@ Testing the `album_artist` column addition across all providers (Jellyfin, Emby,
 │                                                              │
 │  ┌─── docker-compose-test-providers.yaml ──────────────────┐ │
 │  │  Jellyfin :8096   Emby :8097                            │ │
-│  │  Navidrome :4533  Lyrion :9000                          │ │
+│  │  Navidrome :4533  Lyrion :9010                          │ │
 │  │         ▲ all mount TEST_MUSIC_PATH read-only           │ │
 │  └─────────┼───────────────────────────────────────────────┘ │
 │            │  shared network: audiomuse-test-net              │
@@ -31,7 +31,7 @@ Testing the `album_artist` column addition across all providers (Jellyfin, Emby,
 | **Jellyfin AM**   | localhost:8001 | 5433          | 8096          |
 | **Emby AM**       | localhost:8002 | 5434          | 8097          |
 | **Navidrome AM**  | localhost:8003 | 5435          | 4533          |
-| **Lyrion AM**     | localhost:8004 | 5436          | 9000          |
+| **Lyrion AM**     | localhost:8004 | 5436          | 9010          |
 
 ---
 
@@ -108,10 +108,8 @@ docker compose -f docker-compose-test-providers.yaml --env-file .env.test ps
    - Finish and wait for the scan.
 3. **Get your User ID:**
    - Go to **Settings → Users → click your user**.
-   - The URL contains the user ID, or use the Emby API:
-     ```bash
-     curl "http://localhost:8097/emby/Users?api_key=<TOKEN>" | python3 -m json.tool
-     ```
+   - The URL contains the user ID:
+     `http://localhost:8097/web/index.html?#!/users/user?userId=<USER_ID>`
 4. **Get your API token:**
    - Go to **Settings → Advanced → API Keys → New API Key**.
    - Name it `audiomuse-test`, copy the key.
@@ -135,13 +133,13 @@ docker compose -f docker-compose-test-providers.yaml --env-file .env.test ps
    NAVIDROME_PASSWORD=admin
    ```
 
-### 2D. Lyrion Music Server (http://localhost:9000)
+### 2D. Lyrion Music Server (http://localhost:9010)
 
-1. Open `http://localhost:9000`.
+1. Open `http://localhost:9010`.
 2. On first run, it may prompt for a music folder — confirm `/music`.
 3. Go to **Settings → Basic Settings → Media Folders** and verify `/music` is listed.
 4. Trigger a rescan: **Settings → Basic Settings → Rescan**.
-5. **Lyrion requires no API key.** The AudioMuse compose already points to `http://test-lyrion:9000`.
+5. **Lyrion requires no API key.** The AudioMuse compose already points to `http://test-lyrion:9010`.
 6. No changes needed in `.env.test` for Lyrion.
 
 ---
