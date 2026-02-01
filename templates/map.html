@@ -10,7 +10,7 @@
     .map-search-row { display:flex; gap:8px; align-items:flex-end; margin-left:12px; flex-wrap:wrap; }
     .map-search-row .map-search-col { display:flex; flex-direction:column; min-width:0; }
     .map-search-row .map-search-col.button-col { align-items:flex-start; }
-    .map-search-input { width:220px; padding:4px; border-radius:4px; border:1px solid #d1d5db; box-sizing:border-box; }
+    .map-search-input { width:220px; padding:4px; border-radius:4px; border:1px solid var(--border-color-darker); box-sizing:border-box; background-color: var(--bg-input); color: var(--text-main); }
     @media (max-width:600px) {
         .map-search-row { gap:6px; }
         .map-search-row .map-search-col { width:100%; }
@@ -45,18 +45,18 @@
         <button id="refresh-map" type="button" class="btn btn-ghost" title="Refresh map (clear overlays)" style="margin-left:6px;">Refresh</button>
 
 
-        <div id="map-status" style="margin-left:12px;color:#6B7280"></div>
+        <div id="map-status" style="margin-left:12px;color:var(--text-muted)"></div>
         <!-- Minimal search UI: Artist and Title (autocomplete + highlight) -->
         <div class="map-search-row">
             <div class="map-search-col">
-                <label for="artist_search_map" style="font-size:12px;color:#374151">Artist</label>
+                <label for="artist_search_map" style="font-size:12px;color:var(--text-sub)">Artist</label>
                 <input id="artist_search_map" class="map-search-input" type="text" placeholder="Artist name..." autocomplete="off">
-                <div id="artist_autocomplete_results" class="autocomplete-results hidden" style="background:#fff;border:1px solid #e5e7eb;max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
+                <div id="artist_autocomplete_results" class="autocomplete-results hidden" style="background:var(--bg-card);border:1px solid var(--border-color);max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
             </div>
             <div class="map-search-col">
-                <label for="title_search_map" style="font-size:12px;color:#374151">Title</label>
+                <label for="title_search_map" style="font-size:12px;color:var(--text-sub)">Title</label>
                 <input id="title_search_map" class="map-search-input" type="text" placeholder="Track title..." autocomplete="off">
-                <div id="title_autocomplete_results" class="autocomplete-results hidden" style="background:#fff;border:1px solid #e5e7eb;max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
+                <div id="title_autocomplete_results" class="autocomplete-results hidden" style="background:var(--bg-card);border:1px solid var(--border-color);max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
             </div>
             <div class="map-search-col button-col">
                 <label style="font-size:12px;color:transparent">&nbsp;</label>
@@ -69,37 +69,37 @@
     <!-- overlay toggles: small icons (search highlight, path line, path points) placed below the map and above the legend -->
     <div id="overlay-controls" style="text-align:center;margin-top:8px;">
         <span class="overlay-item" style="display:inline-flex;align-items:center;margin-right:12px;">
-            <a href="#" id="overlay-toggle-search" title="Toggle searched song" style="display:inline-flex;align-items:center;color:#111;text-decoration:none;font-size:14px;cursor:pointer;">
+            <a href="#" id="overlay-toggle-search" title="Toggle searched song" style="display:inline-flex;align-items:center;color:var(--text-title);text-decoration:none;font-size:14px;cursor:pointer;">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;flex:0 0 auto;">
                     <circle cx="12" cy="12" r="6" fill="rgba(255,235,59,0.9)" stroke="#000" stroke-width="1.5" />
                 </svg>
-                <span class="overlay-label" style="font-size:14px;margin-left:6px;color:#374151;vertical-align:middle">search</span>
+                <span class="overlay-label" style="font-size:14px;margin-left:6px;color:var(--text-sub);vertical-align:middle">search</span>
             </a>
         </span>
 
         <span class="overlay-item" style="display:inline-flex;align-items:center;margin-right:12px;">
-            <a href="#" id="overlay-toggle-path" title="Toggle path line" style="display:inline-flex;align-items:center;color:#111;text-decoration:none;font-size:14px;cursor:pointer;">
+            <a href="#" id="overlay-toggle-path" title="Toggle path line" style="display:inline-flex;align-items:center;color:var(--text-title);text-decoration:none;font-size:14px;cursor:pointer;">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;flex:0 0 auto;">
                     <path d="M2 12 L8 8 L14 16 L22 10" stroke="#000" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" />
                 </svg>
-                <span class="overlay-label" style="font-size:14px;margin-left:6px;color:#374151;vertical-align:middle">path</span>
+                <span class="overlay-label" style="font-size:14px;margin-left:6px;color:var(--text-sub);vertical-align:middle">path</span>
             </a>
         </span>
 
         <span class="overlay-item" style="display:inline-flex;align-items:center;margin-right:12px;">
-            <a href="#" id="overlay-toggle-points" title="Toggle path points" style="display:inline-flex;align-items:center;color:#111;text-decoration:none;font-size:14px;cursor:pointer;">
+            <a href="#" id="overlay-toggle-points" title="Toggle path points" style="display:inline-flex;align-items:center;color:var(--text-title);text-decoration:none;font-size:14px;cursor:pointer;">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;flex:0 0 auto;">
                     <circle cx="6" cy="12" r="2" fill="#333" />
                     <circle cx="12" cy="8" r="2" fill="#333" />
                     <circle cx="18" cy="14" r="2" fill="#333" />
                 </svg>
-                <span class="overlay-label" style="font-size:14px;margin-left:6px;color:#374151;vertical-align:middle">pts</span>
+                <span class="overlay-label" style="font-size:14px;margin-left:6px;color:var(--text-sub);vertical-align:middle">pts</span>
             </a>
         </span>
     </div>
-    <div id="map-projection-label" style="text-align:center;color:#6B7280;margin-top:8px"></div>
+    <div id="map-projection-label" style="text-align:center;color:var(--text-muted);margin-top:8px"></div>
     <!-- inline selection panel replaces debug panel -->
-    <div id="selection-panel-inline" style="display:block; margin-top:8px; background:#fff; color:#111; border:1px solid #e6eef8; padding:8px; border-radius:6px; font-size:14px;">
+    <div id="selection-panel-inline" style="display:block; margin-top:8px; background:var(--bg-card); color:var(--text-main); border:1px solid var(--border-color); padding:8px; border-radius:6px; font-size:14px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px">
             <strong>Selected songs</strong>
             <div>
@@ -143,13 +143,72 @@ function topGenre(mood_vector) {
 }
 
 function colorPaletteFor(genres) {
-    const base = ['#ff6b6b','#4ecdc4','#ffe66d','#a8e6cf','#ff8b94','#ffaaa5','#88d8b0','#ffd93d','#6c5ce7','#fdcb6e','#636e72','#00b894','#0984e3','#e84393','#00cec9'];
+    const isDark = document.body.classList.contains('dark-mode') ||
+                   document.documentElement.classList.contains('dark-mode');
+    const base = isDark
+        ? ['#ff6b6b','#5eead4','#fde047','#86efac','#fda4af','#fca5a5','#6ee7b7','#fde047','#a78bfa','#fcd34d','#9ca3af','#34d399','#60a5fa','#f472b6','#22d3ee']
+        : ['#ff6b6b','#4ecdc4','#ffe66d','#a8e6cf','#ff8b94','#ffaaa5','#88d8b0','#ffd93d','#6c5ce7','#fdcb6e','#636e72','#00b894','#0984e3','#e84393','#00cec9'];
     const map = {};
     let i=0;
     for (const g of genres) { map[g] = base[i % base.length]; i++; }
-    map['unknown'] = '#888888';
+    map['unknown'] = isDark ? '#9ca3af' : '#888888';
     return map;
 }
+
+function applyPlotlyTheme() {
+    const gd = document.getElementById('plot');
+    if (!gd || !gd.data) return;
+    const isDark = document.body.classList.contains('dark-mode') ||
+                   document.documentElement.classList.contains('dark-mode');
+    const update = isDark ? {
+        plot_bgcolor: '#111827',
+        paper_bgcolor: '#111827',
+        font: { color: '#F3F4F6' },
+        xaxis: { gridcolor: '#374151', zerolinecolor: '#374151' },
+        yaxis: { gridcolor: '#374151', zerolinecolor: '#374151' }
+    } : {
+        plot_bgcolor: '#FFFFFF',
+        paper_bgcolor: '#FFFFFF',
+        font: { color: '#1F2937' },
+        xaxis: { gridcolor: '#E5E7EB', zerolinecolor: '#E5E7EB' },
+        yaxis: { gridcolor: '#E5E7EB', zerolinecolor: '#E5E7EB' }
+    };
+    Plotly.relayout(gd, update).catch(() => {});
+}
+
+// Watch for dark mode class changes to update Plotly theme and legend palette dynamically
+(function() {
+    const observer = new MutationObserver(function(mutations) {
+        for (const m of mutations) {
+            if (m.attributeName === 'class') {
+                applyPlotlyTheme();
+                // Regenerate color palette for the new theme and re-render
+                if (window._genreList && window._genreList.length > 0) {
+                    window._colorMap = colorPaletteFor(window._genreList);
+                    // Rebuild legend HTML with updated swatch colors
+                    var legendDiv = document.getElementById('map-projection-label');
+                    if (legendDiv) {
+                        var colorMap = window._colorMap;
+                        var genreList = window._genreList;
+                        var controlsHtml = '<span style="margin-right:12px;font-size:14px;color:var(--text-muted)"><a href="#" onclick="hideAllGenres();return false;" style="color:var(--color-primary)">Hide all</a> &nbsp;|&nbsp; <a href="#" onclick="showAllGenres();return false;" style="color:var(--color-primary)">Show all</a></span>';
+                        var genreHtml = genreList.slice(0,50).map(function(g) {
+                            var enc = encodeURIComponent(g);
+                            var swatch = '<span style="display:inline-block;width:12px;height:12px;background:' + colorMap[g] + ';margin-right:6px;vertical-align:middle;border-radius:2px"></span>';
+                            var hidden = (window._hiddenGenres && window._hiddenGenres.has(g)) ? 'text-decoration:line-through' : '';
+                            return '<span class="genre-item" data-genre="' + enc + '" onclick="toggleGenre(\'' + enc + '\')" style="margin-right:8px;cursor:pointer;color:var(--text-main);' + hidden + '">' + swatch + g + '</span>';
+                        }).join('');
+                        legendDiv.innerHTML = controlsHtml + genreHtml;
+                        applyLegendStyles();
+                    }
+                    applyGenreFilterAndRerender();
+                }
+                return;
+            }
+        }
+    });
+    observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+})();
 
 async function loadAndPlot(n_or_pct) {
     document.getElementById('map-status').textContent = 'Loading...';
@@ -218,13 +277,13 @@ async function loadAndPlot(n_or_pct) {
     const legendDiv = document.getElementById('map-projection-label');
     // Build a small control set (Hide all / Show all) and the genre items. Each genre span includes a data-genre attribute
     // so we can update its style when hidden.
-    const controlsHtml = `<span style="margin-right:12px;font-size:14px;color:#6B7280"><a href="#" onclick="hideAllGenres();return false;">Hide all</a> &nbsp;|&nbsp; <a href="#" onclick="showAllGenres();return false;">Show all</a></span>`;
+    const controlsHtml = `<span style="margin-right:12px;font-size:14px;color:var(--text-muted)"><a href="#" onclick="hideAllGenres();return false;" style="color:var(--color-primary)">Hide all</a> &nbsp;|&nbsp; <a href="#" onclick="showAllGenres();return false;" style="color:var(--color-primary)">Show all</a></span>`;
     const genreHtml = genreList.slice(0,50).map(g => {
         const enc = encodeURIComponent(g);
         const swatch = `<span style=\"display:inline-block;width:12px;height:12px;background:${colorMap[g]};margin-right:6px;vertical-align:middle;border-radius:2px\"></span>`;
         // allow initial hidden state styling
         const hidden = (window._hiddenGenres && window._hiddenGenres.has(g)) ? 'text-decoration:line-through' : '';
-        return `<span class=\"genre-item\" data-genre=\"${enc}\" onclick=\"toggleGenre('${enc}')\" style=\"margin-right:8px;cursor:pointer;${hidden}\">${swatch}${g}</span>`;
+        return `<span class=\"genre-item\" data-genre=\"${enc}\" onclick=\"toggleGenre('${enc}')\" style=\"margin-right:8px;cursor:pointer;color:var(--text-main);${hidden}\">${swatch}${g}</span>`;
     }).join('');
     legendDiv.innerHTML = controlsHtml + genreHtml;
     // Apply final legend styles in case window._hiddenGenres was set
@@ -274,6 +333,7 @@ async function loadAndPlot(n_or_pct) {
             // ensure dragmode is select/lasso so user can box/lasso select without changing toolbar
             try { Plotly.relayout(gd, {dragmode: 'lasso'}); } catch(e) {}
             attachPlotHandlers(gd);
+            applyPlotlyTheme();
             // update status with customdata info
             try {
                 const cdlen = (gd.data && gd.data[0] && gd.data[0].customdata) ? gd.data[0].customdata.length : 0;
@@ -398,12 +458,12 @@ function applyGenreFilterAndRerender() {
             Plotly.newPlot('plot', [trace], baseLayout, {responsive:true}).then(() => {
                 // restore shape overlays after main plot is ready
                 try { if (preservedShapes.length) Plotly.relayout(gd, { shapes: preservedShapes }); } catch(e) {}
-                attachPlotHandlers(gd); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`;
+                attachPlotHandlers(gd); applyPlotlyTheme(); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`;
             });
         } else {
             Plotly.react('plot', [trace], baseLayout, {responsive:true}).then(() => {
                 try { if (preservedShapes.length) Plotly.relayout(gd, { shapes: preservedShapes }); } catch(e) {}
-                attachPlotHandlers(gd); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`;
+                attachPlotHandlers(gd); applyPlotlyTheme(); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`;
             });
         }
     } catch (e) { console.warn('applyGenreFilterAndRerender failed', e); }
@@ -442,14 +502,14 @@ function renderSelectionPanel() {
     const sel = Array.from(new Set(window._plotSelection || []));
     list.innerHTML = '';
     if (sel.length === 0) {
-        list.innerHTML = '<div style="color:#666">No songs selected.</div>';
+        list.innerHTML = '<div style="color:var(--text-muted)">No songs selected.</div>';
     } else {
         for (const id of sel) {
             const p = findPointById(id) || { id: id, genre: 'unknown', title: '(unknown)', artist: '' };
             const row = document.createElement('div');
             row.className = 'selection-list-item';
             const left = document.createElement('div');
-            left.innerHTML = `<span style="color:#666;margin-right:6px">[${p.genre}]</span> ${p.title} - ${p.artist}`;
+            left.innerHTML = `<span style="color:var(--text-muted);margin-right:6px">[${p.genre}]</span> ${p.title} - ${p.artist}`;
             const btn = document.createElement('button'); btn.className = 'btn btn-danger btn-sm'; btn.textContent = 'REMOVE'; btn.style.marginLeft = '8px'; btn.onclick = (()=>{
                 return function() { removeFromSelection(id); };
             })();
@@ -579,12 +639,12 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
         const c = document.getElementById(containerId);
         if (!c) return;
         c.innerHTML = '';
-        if (!list || list.length === 0){ c.innerHTML = '<div style="padding:6px;color:#666">No results</div>'; c.classList.remove('hidden'); return; }
+        if (!list || list.length === 0){ c.innerHTML = '<div style="padding:6px;color:var(--text-muted)">No results</div>'; c.classList.remove('hidden'); return; }
         for (const t of list.slice(0,50)){
             const div = document.createElement('div');
             div.className = 'autocomplete-item';
-            div.style.padding = '6px'; div.style.cursor = 'pointer'; div.style.borderBottom = '1px solid #f3f4f6';
-            div.innerHTML = `<div style="font-weight:600">${t.title || '(unknown)'}</div><div style="font-size:12px;color:#6b7280">${t.author || ''}</div><div style="font-size:12px;color:#888">${t.album ? t.album : ''}</div>`;
+            div.style.padding = '6px'; div.style.cursor = 'pointer'; div.style.borderBottom = '1px solid var(--border-color)';
+            div.innerHTML = `<div style="font-weight:600">${t.title || '(unknown)'}</div><div style="font-size:12px;color:var(--text-muted)">${t.author || ''}</div><div style="font-size:12px;color:var(--text-muted)">${t.album ? t.album : ''}</div>`;
             div.addEventListener('click', ()=>{
                 // When an item is selected from either artist or title list, fill both fields and set the single selectedItemId
                 selectedItemId = t.item_id;
