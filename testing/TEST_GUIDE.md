@@ -1,6 +1,4 @@
-# AudioMuse-AI — album_artist Branch Test Guide
-
-Testing the `album_artist` column addition across all providers (Jellyfin, Emby, Navidrome, Lyrion).
+# AudioMuse-AI — Provider Test Guide
 
 ---
 
@@ -39,8 +37,7 @@ Testing the `album_artist` column addition across all providers (Jellyfin, Emby,
 
 - Docker & Docker Compose v2+
 - NVIDIA Container Toolkit (`nvidia-ctk`)
-- `psql` client (for the validation script)
-- A directory of test music files (FLAC/MP3/etc.) with proper ID3/Vorbis tags including **Album Artist**
+- A directory of test music files (FLAC/MP3/etc.)
 
 ---
 
@@ -51,10 +48,10 @@ cd AudioMuse-AI/testing/
 cp .env.test.example .env.test
 ```
 
-Edit `.env.test` and set **`TEST_MUSIC_PATH`** to your music directory:
+Edit `.env.test` and set **`TEST_MUSIC_PATH`** to your test music directory:
 
 ```
-TEST_MUSIC_PATH=/mnt/data/test_music
+TEST_MUSIC_PATH=./providers/test_music
 ```
 
 Leave the provider credential fields blank for now — you will fill them in during setup.
@@ -205,90 +202,6 @@ For **each** AudioMuse instance, trigger a full library analysis:
 
 ---
 
-## Step 5 — Validate album_artist
-
-Run the validation script from the host:
-
-```bash
-cd AudioMuse-AI/testing/
-./validate_album_artist.sh
-```
-
-The script connects to each Postgres instance and checks:
-- Column existence
-- Population rate
-- Sample data
-- `Unknown` fallback ratio
-- album_artist vs author (track artist) mismatch count
-
-A passing result means `album_artist` is being stored correctly for that provider.
-
----
-
-## Step 6 — Manual spot-check via psql
-
-You can also query any instance directly:
-
-```bash
-# Jellyfin instance
-PGPASSWORD=audiomusepassword psql -h localhost -p 5433 -U audiomuse -d audiomusedb
-
-# Then run:
-SELECT title, author, album, album_artist FROM score LIMIT 20;
-```
-
-Repeat with ports 5434 (Emby), 5435 (Navidrome), 5436 (Lyrion).
-
----
-
-## Test Checklist
-
-### Infrastructure
-- [ ] All 4 providers start and show their web UI
-- [ ] All providers scanned the test music library
-- [ ] All 16 AudioMuse containers start without errors
-- [ ] GPU is accessible from flask and worker containers
-
-### Provider Setup
-- [ ] Jellyfin: library created, API key + user ID obtained
-- [ ] Emby: library created, API key + user ID obtained
-- [ ] Navidrome: admin created, library scanned
-- [ ] Lyrion: music folder configured, rescan complete
-
-### Analysis
-- [ ] Jellyfin AM (`:8001`): analysis completes successfully
-- [ ] Emby AM (`:8002`): analysis completes successfully
-- [ ] Navidrome AM (`:8003`): analysis completes successfully
-- [ ] Lyrion AM (`:8004`): analysis completes successfully
-
-### album_artist Validation (run `validate_album_artist.sh`)
-- [ ] Jellyfin: `album_artist` column exists
-- [ ] Jellyfin: `album_artist` populated for >0 tracks
-- [ ] Jellyfin: sample data looks correct (not all `Unknown`)
-- [ ] Emby: `album_artist` column exists
-- [ ] Emby: `album_artist` populated for >0 tracks
-- [ ] Emby: sample data looks correct
-- [ ] Navidrome: `album_artist` column exists
-- [ ] Navidrome: `album_artist` populated for >0 tracks
-- [ ] Navidrome: sample data looks correct
-- [ ] Lyrion: `album_artist` column exists
-- [ ] Lyrion: `album_artist` populated for >0 tracks
-- [ ] Lyrion: sample data looks correct
-
-### Functional Smoke Tests (per instance)
-- [ ] Similarity search returns results with no errors
-- [ ] Song Alchemy returns results (album_artist used internally)
-- [ ] CLAP text search works (if CLAP_ENABLED=true)
-- [ ] Path finder returns a valid path
-- [ ] Clustering completes without errors
-
-### Edge Cases
-- [ ] Compilation albums: `album_artist` ≠ `author` (track artist)
-- [ ] Single-artist albums: `album_artist` = `author`
-- [ ] Tracks missing album_artist metadata in source: stored as `NULL` (not crash)
-
----
-
 ## Teardown
 
 ```bash
@@ -300,17 +213,3 @@ docker compose -f docker-compose-test-providers.yaml --env-file .env.test down -
 ```
 
 The `-v` flag removes named volumes (database data, configs). Omit it to preserve state between runs.
-
----
-
-## Troubleshooting
-
-| Symptom | Fix |
-| --- | --- |
-| `Cannot connect to Postgres on port X` | Check `docker compose ps` — is the postgres container up? |
-| `album_artist column NOT found` | The Flask app creates the column on startup. Check flask container logs. |
-| `0 tracks in score table` | Analysis hasn't run yet. Trigger it from the UI. |
-| `100% Unknown album_artist` | Provider isn't returning the field. Check worker logs for the `OriginalAlbumArtist` value. |
-| Flask can't reach provider | Both stacks must share `audiomuse-test-net`. Run `docker network inspect audiomuse-test-net`. |
-| GPU not available | Run `nvidia-smi` on host. Check `nvidia-container-toolkit` is installed. |
-| Emby won't start on :8097 | Emby internally uses 8096; the host mapping is 8097→8096. Ensure no port conflict. |
