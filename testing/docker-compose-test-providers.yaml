@@ -21,8 +21,8 @@ services:
     ports:
       - "8096:8096"
     volumes:
-      - jellyfin-config:/config
-      - jellyfin-cache:/cache
+      - ./providers/jellyfin/config:/config
+      - ./providers/jellyfin/cache:/cache
       - ${TEST_MUSIC_PATH:?Set TEST_MUSIC_PATH in .env.test}:/media/music:ro
     environment:
       TZ: ${TZ:-UTC}
@@ -39,7 +39,7 @@ services:
     ports:
       - "8097:8096"
     volumes:
-      - emby-config:/config
+      - ./providers/emby/config:/config
       - ${TEST_MUSIC_PATH}:/media/music:ro
     environment:
       TZ: ${TZ:-UTC}
@@ -58,7 +58,7 @@ services:
     ports:
       - "4533:4533"
     volumes:
-      - navidrome-data:/data
+      - ./providers/navidrome/data:/data
       - ${TEST_MUSIC_PATH}:/music:ro
     environment:
       TZ: ${TZ:-UTC}
@@ -80,7 +80,7 @@ services:
       - "9000:9000"
       - "9090:9090"
     volumes:
-      - lyrion-config:/config
+      - ./providers/lyrion/config:/config
       - ${TEST_MUSIC_PATH}:/music:ro
     environment:
       TZ: ${TZ:-UTC}
@@ -92,10 +92,3 @@ networks:
   test-providers:
     name: audiomuse-test-net
     driver: bridge
-
-volumes:
-  jellyfin-config:
-  jellyfin-cache:
-  emby-config:
-  navidrome-data:
-  lyrion-config:
