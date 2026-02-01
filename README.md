@@ -140,22 +140,28 @@ For more information about the GPU deployment requirements have a look to the [G
 
 ## **Docker Image Tagging Strategy**
 
-Our GitHub Actions workflow automatically builds and pushes Docker images. Here's how our tags work:
+Our GitHub Actions workflow automatically builds and publishes Docker images with the following tags:
 
-* :**latest**  
-  * Builds from the **main branch**.  
-  * Represents the latest stable release.  
-  * **Recommended for most users.**  
-* :**devel**  
-  * Builds from the **devel branch**.  
-  * Contains features still in development, not fully tested, and they could not work.  
-  * **Use only for development.**  
-* :**vX.Y.Z** (e.g., :v0.1.4-alpha, :v1.0.0)  
-  * Immutable tags created from **specific Git releases/tags**.  
-  * Ensures you're running a precise, versioned build.  
-  * **Use for reproducible deployments or locking to a specific version.**
- 
-**IMPORTANT:** the `-nvidia` images are experimental. Try them if you want to help us improve the support, but we do not recommend using them for daily production use.
+* **`:latest`**
+  Stable build from the **main** branch.
+  **Recommended for most users.**
+
+* **`:devel`**
+  Development build from the **devel** branch.
+  May be unstable — **for testing and development only.**
+
+* **`:vX.Y.Z`** (e.g. `:v1.0.0`, `:v0.1.4-alpha`)
+  Immutable images built from **Git release tags**.
+  **Ideal for reproducible or pinned deployments.**
+
+* **`-noavx2`** variants
+  Experimental images for CPUs **without AVX2 support**, using legacy dependencies.
+  **Not recommended** unless required for compatibility.
+
+* **`-nvidia`** variants
+  Images that support the use of GPU for both Analysis and Clustering.
+  **Not recommended** for old GPU.
+
 
 ## **Key Technologies**
 

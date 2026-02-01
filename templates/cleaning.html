@@ -3,38 +3,38 @@
 {% block headAdditions %}
 <style>
     .cleaning-summary {
-        background-color: #e7f3ff;
-        border: 1px solid #b3d9ff;
+        background-color: var(--status-pending-bg);
+        border: 1px solid var(--border-color);
         border-radius: 8px;
         padding: 1rem;
         margin-bottom: 1.5rem;
     }
     .active-button {
-        background-color: #2563EB !important;
-        border-color: #2563EB !important;
+        background-color: var(--color-primary) !important;
+        border-color: var(--color-primary) !important;
         color: white !important;
     }
     .active-button:hover {
-        background-color: #1D4ED8 !important;
-        border-color: #1D4ED8 !important;
+        background-color: var(--color-primary-hover) !important;
+        border-color: var(--color-primary-hover) !important;
     }
     .active-button:disabled {
-        background-color: #6c757d !important;
-        border-color: #6c757d !important;
+        background-color: var(--text-muted) !important;
+        border-color: var(--text-muted) !important;
         cursor: not-allowed;
     }
     .danger-button {
-        background-color: #dc3545 !important;
-        border-color: #dc3545 !important;
+        background-color: var(--color-danger) !important;
+        border-color: var(--color-danger) !important;
         color: white !important;
     }
     .danger-button:hover {
-        background-color: #c82333 !important;
-        border-color: #bd2130 !important;
+        background-color: var(--color-danger-hover) !important;
+        border-color: var(--color-danger-hover) !important;
     }
     .danger-button:disabled {
-        background-color: #6c757d !important;
-        border-color: #6c757d !important;
+        background-color: var(--text-muted) !important;
+        border-color: var(--text-muted) !important;
         cursor: not-allowed;
     }
 </style>
@@ -459,7 +459,7 @@
                     <p><strong>Orphaned tracks deleted:</strong> ${data.deleted_count}</p>
                     ${data.failed_deletions && data.failed_deletions.length > 0 ?
                         `<p><strong>Failed deletions:</strong> ${data.failed_deletions.length}</p>` : ''}
-                    <p style="color: #28a745; font-weight: bold;">Database cleaned successfully! ${data.deleted_count} orphaned tracks removed.</p>
+                    <p style="color: var(--color-success); font-weight: bold;">Database cleaned successfully! ${data.deleted_count} orphaned tracks removed.</p>
                 `;
             } else {
                 summaryDiv.innerHTML = `
@@ -467,7 +467,7 @@
                     <p><strong>Total albums on media server:</strong> ${data.total_media_server_albums}</p>
                     <p><strong>Total tracks on media server:</strong> ${data.total_media_server_tracks}</p>
                     <p><strong>Total tracks in database:</strong> ${data.total_database_tracks}</p>
-                    <p style="color: #28a745; font-weight: bold;">No orphaned tracks found. Your database is already clean!</p>
+                    <p style="color: var(--color-success); font-weight: bold;">No orphaned tracks found. Your database is already clean!</p>
                 `;
             }
         }

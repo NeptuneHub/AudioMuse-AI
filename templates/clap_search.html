@@ -20,17 +20,17 @@
         width: 100%;
         padding: 0.5rem;
         font-size: 1rem;
-        border: 2px solid var(--border-color, #ddd);
+        border: 2px solid var(--border-color);
         border-radius: 8px;
     }
     
     .search-box:focus {
         outline: none;
-        border-color: var(--primary-color, #007bff);
+        border-color: var(--color-primary);
     }
     
     .cache-stats {
-        background: var(--info-bg, #e7f3ff);
+        background: var(--bg-code);
         padding: 1rem;
         border-radius: 8px;
         margin-bottom: 1.5rem;
@@ -38,11 +38,11 @@
     }
     
     .cache-stats strong {
-        color: var(--primary-color, #007bff);
+        color: var(--color-primary);
     }
     
     .example-queries {
-        background: var(--light-bg, #f8f9fa);
+        background: var(--bg-code);
         padding: 1rem;
         border-radius: 8px;
         margin-bottom: 1.5rem;
@@ -51,67 +51,67 @@
     .example-queries h3 {
         margin-top: 0;
         font-size: 1rem;
-        color: var(--text-secondary, #666);
+        color: var(--text-muted);
     }
-    
+
     .example-tag {
         display: inline-block;
         padding: 0.4rem 0.8rem;
         margin: 0.3rem;
-        background: white;
-        border: 1px solid var(--border-color, #ddd);
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
         border-radius: 20px;
         cursor: pointer;
         transition: all 0.2s;
         font-size: 0.9rem;
     }
-    
+
     .example-tag:hover {
-        background: var(--primary-color, #007bff);
+        background: var(--color-primary);
         color: white;
-        border-color: var(--primary-color, #007bff);
+        border-color: var(--color-primary);
     }
-    
+
     #search-form button {
         width: 100%;
         padding: 0.75rem 1.5rem;
         font-size: 1rem;
         font-weight: 600;
-        background-color: #2563EB;
+        background-color: var(--color-primary);
         color: white;
         border: none;
         border-radius: 8px;
         cursor: pointer;
         transition: background-color 0.2s;
     }
-    
+
     #search-form button:hover {
-        background-color: #1D4ED8;
+        background-color: var(--color-primary-hover);
     }
-    
+
     #search-form button:disabled {
-        background-color: #9CA3AF;
+        background-color: var(--text-muted);
         cursor: not-allowed;
     }
-    
+
     #playlist-form button {
-        background-color: #16A34A !important;
+        background-color: var(--color-success) !important;
     }
-    
+
     #playlist-form button:hover {
-        background-color: #15803D !important;
+        background-color: var(--color-success-hover) !important;
     }
     
     .result-item {
         padding: 1rem;
-        border-bottom: 1px solid var(--border-color, #eee);
+        border-bottom: 1px solid var(--border-color);
         display: flex;
         justify-content: space-between;
         align-items: center;
     }
     
     .result-item:hover {
-        background: var(--hover-bg, #f8f9fa);
+        background: var(--bg-body);
     }
     
     .result-info {
@@ -125,29 +125,40 @@
     }
     
     .result-artist {
-        color: var(--text-secondary, #666);
+        color: var(--text-muted);
         font-size: 0.9rem;
     }
-    
+
     .similarity-badge {
-        background: var(--success-bg, #28a745);
         color: white;
         padding: 0.4rem 0.8rem;
         border-radius: 20px;
         font-weight: 600;
         font-size: 0.9rem;
     }
-    
+
+    .similarity-badge.badge-high {
+        background: var(--color-success);
+    }
+
+    .similarity-badge.badge-medium {
+        background: #d97706;
+    }
+
+    .similarity-badge.badge-low {
+        background: var(--text-muted);
+    }
+
     .loading-spinner {
         text-align: center;
         padding: 2rem;
         font-size: 1.2rem;
-        color: var(--text-secondary, #666);
+        color: var(--text-muted);
     }
-    
+
     .error-message {
-        background: var(--error-bg, #f8d7da);
-        color: var(--error-text, #721c24);
+        background: var(--status-failure-bg);
+        color: var(--status-failure-text);
         padding: 1rem;
         border-radius: 8px;
         margin-top: 1rem;
@@ -223,7 +234,7 @@
         <div class="example-queries">
             <h3>💡 Top Recommended Searches:</h3>
             <div id="top-queries-container">
-                <span style="color: #666;">Loading recommendations...</span>
+                <span style="color: var(--text-muted);">Loading recommendations...</span>
             </div>
         </div>
     </div>
@@ -305,15 +316,15 @@ document.addEventListener('DOMContentLoaded', function() {
                 });
             } else if (response.ok && !data.ready) {
                 // Still computing in background
-                topQueriesContainer.innerHTML = '<span style="color: #999;">Loading recommendations...</span>';
+                topQueriesContainer.innerHTML = '<span style="color: var(--text-muted);">Loading recommendations...</span>';
                 // Retry after 5 seconds
                 setTimeout(loadTopQueries, 5000);
             } else {
-                topQueriesContainer.innerHTML = '<span style="color: #999;">No recommendations available</span>';
+                topQueriesContainer.innerHTML = '<span style="color: var(--text-muted);">No recommendations available</span>';
             }
         } catch (error) {
             console.error('Failed to load top queries:', error);
-            topQueriesContainer.innerHTML = '<span style="color: #999;">Failed to load recommendations</span>';
+            topQueriesContainer.innerHTML = '<span style="color: var(--text-muted);">Failed to load recommendations</span>';
         }
     }
     
@@ -373,19 +384,19 @@ document.addEventListener('DOMContentLoaded', function() {
         
         resultCount.textContent = `Found ${results.length} matches for "${query}"`;
         
-        let html = '<div style="border: 1px solid var(--border-color, #ddd); border-radius: 8px; overflow: hidden;">';
-        
+        let html = '<div style="border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden;">';
+
         results.forEach((result, index) => {
             const similarityPercent = Math.round(result.similarity * 100);
-            const badgeColor = similarityPercent > 70 ? '#28a745' : similarityPercent > 50 ? '#ffc107' : '#6c757d';
-            
+            const badgeClass = similarityPercent > 70 ? 'badge-high' : similarityPercent > 50 ? 'badge-medium' : 'badge-low';
+
             html += `
                 <div class="result-item">
                     <div class="result-info">
                         <div class="result-title">${index + 1}. ${escapeHtml(result.title)}</div>
                         <div class="result-artist">${escapeHtml(result.author)}</div>
                     </div>
-                    <div class="similarity-badge" style="background: ${badgeColor};">
+                    <div class="similarity-badge ${badgeClass}">
                         ${similarityPercent}%
                     </div>
                 </div>

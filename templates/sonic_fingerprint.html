@@ -14,10 +14,10 @@
             width: 100%;
             font-size: 1rem;
             margin-top: 1rem;
-            background-color: #2563EB;
+            background-color: var(--color-primary);
         }
         #fingerprint-form button:hover {
-            background-color: #1D4ED8;
+            background-color: var(--color-primary-hover);
         }
 </style>
 {% endblock %}
@@ -33,7 +33,7 @@
 
         <fieldset>
             <legend>Your Credentials</legend>
-            <p style="font-size: 0.875rem; color: #4B5563; margin-top: -0.5rem; margin-bottom: 1rem;">
+            <p style="font-size: 0.875rem; color: var(--text-muted); margin-top: -0.5rem; margin-bottom: 1rem;">
                 Enter your personal credentials to generate a fingerprint from your listening history.
             </p>
             <div class="param-group">
@@ -120,7 +120,7 @@
                 <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., My Sonic Mix">
             </div>
         </div>
-        <button type="submit" style="background-color: #16A34A;">
+        <button type="submit" style="background-color: var(--color-success);">
             Create Playlist on Media Server
         </button>
     </form>
