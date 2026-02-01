@@ -9,9 +9,9 @@
 #   2. Fill in API keys / credentials in .env.test
 #   3. NVIDIA Container Toolkit installed
 #
-# Usage:
+# Build & run:
 #   cd testing/
-#   docker compose -f docker-compose-test-audiomuse.yaml --env-file .env.test up -d
+#   docker compose -f docker-compose-test-audiomuse.yaml --env-file .env.test up -d --build
 #
 # Port map:
 #   Jellyfin  AudioMuse  → http://localhost:8001   Postgres 5433
@@ -21,7 +21,8 @@
 # ============================================================================
 
 x-audiomuse-common: &audiomuse-common
-  image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
+  image: audiomuse-ai:test-nvidia
+  pull_policy: never          # always use the locally built image
   restart: unless-stopped
   deploy:
     resources:
@@ -71,9 +72,14 @@ services:
     networks:
       - am-jellyfin
 
-  # -- app -------------------------------------------------------------------
+  # -- app  (builds the shared image; all other services reuse it) ----------
   flask-jellyfin:
     <<: *audiomuse-common
+    build:
+      context: ../              # project root (one level up from testing/)
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
     container_name: test-am-flask-jellyfin
     ports:
       - "8001:8000"

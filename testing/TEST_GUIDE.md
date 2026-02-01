@@ -146,11 +146,24 @@ docker compose -f docker-compose-test-providers.yaml --env-file .env.test ps
 
 ---
 
-## Step 3 — Start the AudioMuse instances
+## Step 3 — Build and start the AudioMuse instances
+
+The compose file builds the NVIDIA image **locally** from the repo's `Dockerfile`
+(using `nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04` as the base).  The image is
+built once by the `flask-jellyfin` service and reused by all other services via the
+shared tag `audiomuse-ai:test-nvidia`.
 
 After filling in all credentials in `.env.test`:
 
 ```bash
+# Build the image and start everything (first run will take a while)
+docker compose -f docker-compose-test-audiomuse.yaml --env-file .env.test up -d --build
+```
+
+On subsequent runs (code changes), rebuild with:
+
+```bash
+docker compose -f docker-compose-test-audiomuse.yaml --env-file .env.test build
 docker compose -f docker-compose-test-audiomuse.yaml --env-file .env.test up -d
 ```
 
