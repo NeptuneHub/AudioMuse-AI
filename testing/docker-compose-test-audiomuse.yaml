@@ -1,0 +1,411 @@
+# ============================================================================
+# AudioMuse-AI Test Stack: One NVIDIA AudioMuse Instance Per Provider
+# ============================================================================
+# Launches 4 independent AudioMuse stacks (flask + worker + redis + postgres),
+# each configured for a different media server provider.
+#
+# Prerequisites:
+#   1. Providers must be running (docker-compose-test-providers.yaml)
+#   2. Fill in API keys / credentials in .env.test
+#   3. NVIDIA Container Toolkit installed
+#
+# Build & run:
+#   cd testing/
+#   docker compose -f docker-compose-test-audiomuse.yaml --env-file .env.test up -d --build
+#
+# Port map:
+#   Jellyfin  AudioMuse  → http://localhost:8001   Postgres 5433
+#   Emby      AudioMuse  → http://localhost:8002   Postgres 5434
+#   Navidrome AudioMuse  → http://localhost:8003   Postgres 5435
+#   Lyrion    AudioMuse  → http://localhost:8004   Postgres 5436
+# ============================================================================
+
+x-audiomuse-common: &audiomuse-common
+  image: audiomuse-ai:test-nvidia
+  pull_policy: never          # always use the locally built image
+  restart: unless-stopped
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["0"]
+            capabilities: [gpu]
+
+x-env-common: &env-common
+  TZ: ${TZ:-UTC}
+  AI_MODEL_PROVIDER: ${AI_MODEL_PROVIDER:-NONE}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_SERVER_URL: ${OPENAI_SERVER_URL:-}
+  OPENAI_MODEL_NAME: ${OPENAI_MODEL_NAME:-}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+  CLAP_ENABLED: ${CLAP_ENABLED:-true}
+  TEMP_DIR: /app/temp_audio
+
+# ============================================================================
+#  JELLYFIN  AUDIOMUSE  (port 8001)
+# ============================================================================
+services:
+
+  # -- infrastructure --------------------------------------------------------
+  redis-jellyfin:
+    image: redis:7-alpine
+    container_name: test-am-redis-jellyfin
+    volumes:
+      - redis-jellyfin:/data
+    restart: unless-stopped
+    networks:
+      - am-jellyfin
+  postgres-jellyfin:
+    image: postgres:15-alpine
+    container_name: test-am-pg-jellyfin
+    environment:
+      POSTGRES_USER: audiomuse
+      POSTGRES_PASSWORD: audiomusepassword
+      POSTGRES_DB: audiomusedb
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg-jellyfin:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - am-jellyfin
+
+  # -- app  (builds the shared image; all other services reuse it) ----------
+  flask-jellyfin:
+    <<: *audiomuse-common
+    build:
+      context: ../              # project root (one level up from testing/)
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+    container_name: test-am-flask-jellyfin
+    ports:
+      - "8001:8000"
+    environment:
+      <<: *env-common
+      SERVICE_TYPE: flask
+      MEDIASERVER_TYPE: jellyfin
+      JELLYFIN_URL: http://test-jellyfin:8096
+      JELLYFIN_USER_ID: ${JELLYFIN_USER_ID}
+      JELLYFIN_TOKEN: ${JELLYFIN_TOKEN}
+      POSTGRES_USER: audiomuse
+      POSTGRES_PASSWORD: audiomusepassword
+      POSTGRES_DB: audiomusedb
+      POSTGRES_HOST: postgres-jellyfin
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://redis-jellyfin:6379/0
+    volumes:
+      - temp-flask-jf:/app/temp_audio
+    depends_on:
+      - redis-jellyfin
+      - postgres-jellyfin
+    networks:
+      - am-jellyfin
+      - providers
+
+  worker-jellyfin:
+    <<: *audiomuse-common
+    container_name: test-am-worker-jellyfin
+    environment:
+      <<: *env-common
+      SERVICE_TYPE: worker
+      MEDIASERVER_TYPE: jellyfin
+      JELLYFIN_URL: http://test-jellyfin:8096
+      JELLYFIN_USER_ID: ${JELLYFIN_USER_ID}
+      JELLYFIN_TOKEN: ${JELLYFIN_TOKEN}
+      POSTGRES_USER: audiomuse
+      POSTGRES_PASSWORD: audiomusepassword
+      POSTGRES_DB: audiomusedb
+      POSTGRES_HOST: postgres-jellyfin
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://redis-jellyfin:6379/0
+      USE_GPU_CLUSTERING: "true"
+    volumes:
+      - temp-worker-jf:/app/temp_audio
+    depends_on:
+      - redis-jellyfin
+      - postgres-jellyfin
+    networks:
+      - am-jellyfin
+      - providers
+
+# ============================================================================
+#  EMBY  AUDIOMUSE  (port 8002)
+# ============================================================================
+
+  # -- infrastructure --------------------------------------------------------
+  redis-emby:
+    image: redis:7-alpine
+    container_name: test-am-redis-emby
+    volumes:
+      - redis-emby:/data
+    restart: unless-stopped
+    networks:
+      - am-emby
+  postgres-emby:
+    image: postgres:15-alpine
+    container_name: test-am-pg-emby
+    environment:
+      POSTGRES_USER: audiomuse
+      POSTGRES_PASSWORD: audiomusepassword
+      POSTGRES_DB: audiomusedb
+    ports:
+      - "5434:5432"
+    volumes:
+      - pg-emby:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - am-emby
+
+  # -- app -------------------------------------------------------------------
+  flask-emby:
+    <<: *audiomuse-common
+    container_name: test-am-flask-emby
+    ports:
+      - "8002:8000"
+    environment:
+      <<: *env-common
+      SERVICE_TYPE: flask
+      MEDIASERVER_TYPE: emby
+      EMBY_URL: http://test-emby:8096
+      EMBY_USER_ID: ${EMBY_USER_ID}
+      EMBY_TOKEN: ${EMBY_TOKEN}
+      POSTGRES_USER: audiomuse
+      POSTGRES_PASSWORD: audiomusepassword
+      POSTGRES_DB: audiomusedb
+      POSTGRES_HOST: postgres-emby
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://redis-emby:6379/0
+    volumes:
+      - temp-flask-emby:/app/temp_audio
+    depends_on:
+      - redis-emby
+      - postgres-emby
+    networks:
+      - am-emby
+      - providers
+
+  worker-emby:
+    <<: *audiomuse-common
+    container_name: test-am-worker-emby
+    environment:
+      <<: *env-common
+      SERVICE_TYPE: worker
+      MEDIASERVER_TYPE: emby
+      EMBY_URL: http://test-emby:8096
+      EMBY_USER_ID: ${EMBY_USER_ID}
+      EMBY_TOKEN: ${EMBY_TOKEN}
+      POSTGRES_USER: audiomuse
+      POSTGRES_PASSWORD: audiomusepassword
+      POSTGRES_DB: audiomusedb
+      POSTGRES_HOST: postgres-emby
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://redis-emby:6379/0
+      USE_GPU_CLUSTERING: "true"
+    volumes:
+      - temp-worker-emby:/app/temp_audio
+    depends_on:
+      - redis-emby
+      - postgres-emby
+    networks:
+      - am-emby
+      - providers
+
+# ============================================================================
+#  NAVIDROME  AUDIOMUSE  (port 8003)
+# ============================================================================
+
+  # -- infrastructure --------------------------------------------------------
+  redis-navidrome:
+    image: redis:7-alpine
+    container_name: test-am-redis-navidrome
+    volumes:
+      - redis-navidrome:/data
+    restart: unless-stopped
+    networks:
+      - am-navidrome
+  postgres-navidrome:
+    image: postgres:15-alpine
+    container_name: test-am-pg-navidrome
+    environment:
+      POSTGRES_USER: audiomuse
+      POSTGRES_PASSWORD: audiomusepassword
+      POSTGRES_DB: audiomusedb
+    ports:
+      - "5435:5432"
+    volumes:
+      - pg-navidrome:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - am-navidrome
+
+  # -- app -------------------------------------------------------------------
+  flask-navidrome:
+    <<: *audiomuse-common
+    container_name: test-am-flask-navidrome
+    ports:
+      - "8003:8000"
+    environment:
+      <<: *env-common
+      SERVICE_TYPE: flask
+      MEDIASERVER_TYPE: navidrome
+      NAVIDROME_URL: http://test-navidrome:4533
+      NAVIDROME_USER: ${NAVIDROME_USER}
+      NAVIDROME_PASSWORD: ${NAVIDROME_PASSWORD}
+      POSTGRES_USER: audiomuse
+      POSTGRES_PASSWORD: audiomusepassword
+      POSTGRES_DB: audiomusedb
+      POSTGRES_HOST: postgres-navidrome
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://redis-navidrome:6379/0
+    volumes:
+      - temp-flask-nav:/app/temp_audio
+    depends_on:
+      - redis-navidrome
+      - postgres-navidrome
+    networks:
+      - am-navidrome
+      - providers
+
+  worker-navidrome:
+    <<: *audiomuse-common
+    container_name: test-am-worker-navidrome
+    environment:
+      <<: *env-common
+      SERVICE_TYPE: worker
+      MEDIASERVER_TYPE: navidrome
+      NAVIDROME_URL: http://test-navidrome:4533
+      NAVIDROME_USER: ${NAVIDROME_USER}
+      NAVIDROME_PASSWORD: ${NAVIDROME_PASSWORD}
+      POSTGRES_USER: audiomuse
+      POSTGRES_PASSWORD: audiomusepassword
+      POSTGRES_DB: audiomusedb
+      POSTGRES_HOST: postgres-navidrome
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://redis-navidrome:6379/0
+      USE_GPU_CLUSTERING: "true"
+    volumes:
+      - temp-worker-nav:/app/temp_audio
+    depends_on:
+      - redis-navidrome
+      - postgres-navidrome
+    networks:
+      - am-navidrome
+      - providers
+
+# ============================================================================
+#  LYRION  AUDIOMUSE  (port 8004)
+# ============================================================================
+
+  # -- infrastructure --------------------------------------------------------
+  redis-lyrion:
+    image: redis:7-alpine
+    container_name: test-am-redis-lyrion
+    volumes:
+      - redis-lyrion:/data
+    restart: unless-stopped
+    networks:
+      - am-lyrion
+  postgres-lyrion:
+    image: postgres:15-alpine
+    container_name: test-am-pg-lyrion
+    environment:
+      POSTGRES_USER: audiomuse
+      POSTGRES_PASSWORD: audiomusepassword
+      POSTGRES_DB: audiomusedb
+    ports:
+      - "5436:5432"
+    volumes:
+      - pg-lyrion:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - am-lyrion
+
+  # -- app -------------------------------------------------------------------
+  flask-lyrion:
+    <<: *audiomuse-common
+    container_name: test-am-flask-lyrion
+    ports:
+      - "8004:8000"
+    environment:
+      <<: *env-common
+      SERVICE_TYPE: flask
+      MEDIASERVER_TYPE: lyrion
+      LYRION_URL: http://test-lyrion:9000
+      POSTGRES_USER: audiomuse
+      POSTGRES_PASSWORD: audiomusepassword
+      POSTGRES_DB: audiomusedb
+      POSTGRES_HOST: postgres-lyrion
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://redis-lyrion:6379/0
+    volumes:
+      - temp-flask-lyr:/app/temp_audio
+    depends_on:
+      - redis-lyrion
+      - postgres-lyrion
+    networks:
+      - am-lyrion
+      - providers
+
+  worker-lyrion:
+    <<: *audiomuse-common
+    container_name: test-am-worker-lyrion
+    environment:
+      <<: *env-common
+      SERVICE_TYPE: worker
+      MEDIASERVER_TYPE: lyrion
+      LYRION_URL: http://test-lyrion:9000
+      POSTGRES_USER: audiomuse
+      POSTGRES_PASSWORD: audiomusepassword
+      POSTGRES_DB: audiomusedb
+      POSTGRES_HOST: postgres-lyrion
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://redis-lyrion:6379/0
+      USE_GPU_CLUSTERING: "true"
+    volumes:
+      - temp-worker-lyr:/app/temp_audio
+    depends_on:
+      - redis-lyrion
+      - postgres-lyrion
+    networks:
+      - am-lyrion
+      - providers
+
+# ============================================================================
+#  Networks
+# ============================================================================
+networks:
+  am-jellyfin:
+  am-emby:
+  am-navidrome:
+  am-lyrion:
+  providers:
+    external: true
+    name: audiomuse-test-net
+
+# ============================================================================
+#  Volumes
+# ============================================================================
+volumes:
+  # Jellyfin
+  redis-jellyfin:
+  pg-jellyfin:
+  temp-flask-jf:
+  temp-worker-jf:
+  # Emby
+  redis-emby:
+  pg-emby:
+  temp-flask-emby:
+  temp-worker-emby:
+  # Navidrome
+  redis-navidrome:
+  pg-navidrome:
+  temp-flask-nav:
+  temp-worker-nav:
+  # Lyrion
+  redis-lyrion:
+  pg-lyrion:
+  temp-flask-lyr:
+  temp-worker-lyr:

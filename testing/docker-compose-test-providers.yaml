@@ -1,0 +1,94 @@
+# ============================================================================
+# AudioMuse-AI Test Stack: Media Server Providers
+# ============================================================================
+# All 4 providers (Jellyfin, Emby, Navidrome, Lyrion) sharing one music library.
+# Mount your test music directory to TEST_MUSIC_PATH in .env.test before starting.
+#
+# Usage:
+#   cd testing/
+#   cp .env.test.example .env.test
+#   docker compose -f docker-compose-test-providers.yaml --env-file .env.test up -d
+# ============================================================================
+
+services:
+
+  # --------------------------------------------------------------------------
+  # Jellyfin  –  http://localhost:8096
+  # --------------------------------------------------------------------------
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: test-jellyfin
+    ports:
+      - "8096:8096"
+    volumes:
+      - ./providers/jellyfin/config:/config
+      - ./providers/jellyfin/cache:/cache
+      - ${TEST_MUSIC_PATH:?Set TEST_MUSIC_PATH in .env.test}:/media/music:ro
+    environment:
+      TZ: ${TZ:-UTC}
+    restart: unless-stopped
+    networks:
+      - test-providers
+
+  # --------------------------------------------------------------------------
+  # Emby  –  http://localhost:8097
+  # --------------------------------------------------------------------------
+  emby:
+    image: emby/embyserver:latest
+    container_name: test-emby
+    ports:
+      - "8097:8096"
+    volumes:
+      - ./providers/emby/config:/config
+      - ${TEST_MUSIC_PATH}:/media/music:ro
+    environment:
+      TZ: ${TZ:-UTC}
+      UID: 1000
+      GID: 1000
+    restart: unless-stopped
+    networks:
+      - test-providers
+
+  # --------------------------------------------------------------------------
+  # Navidrome  –  http://localhost:4533
+  # --------------------------------------------------------------------------
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: test-navidrome
+    ports:
+      - "4533:4533"
+    volumes:
+      - ./providers/navidrome/data:/data
+      - ${TEST_MUSIC_PATH}:/music:ro
+    environment:
+      TZ: ${TZ:-UTC}
+      ND_SCANSCHEDULE: "1h"
+      ND_LOGLEVEL: info
+      ND_SESSIONTIMEOUT: 24h
+      ND_ENABLETRANSCODINGCONFIG: "true"
+    restart: unless-stopped
+    networks:
+      - test-providers
+
+  # --------------------------------------------------------------------------
+  # Lyrion Music Server (LMS)  –  http://localhost:9000
+  # --------------------------------------------------------------------------
+  lyrion:
+    image: lmscommunity/lyrionmusicserver:latest
+    container_name: test-lyrion
+    ports:
+      - "9000:9000"
+      - "9090:9090"
+    volumes:
+      - ./providers/lyrion/config:/config
+      - ${TEST_MUSIC_PATH}:/music:ro
+    environment:
+      TZ: ${TZ:-UTC}
+    restart: unless-stopped
+    networks:
+      - test-providers
+
+networks:
+  test-providers:
+    name: audiomuse-test-net
+    driver: bridge
