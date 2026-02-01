@@ -2,7 +2,7 @@
 
 NVidia GPU **EXPERIMENTAL** support is available for analysis task in the worker process. This can significantly speed up processing of tracks.
 
-With the new CLAP model used in Text Search functionality, GPU VRAM is used more. If you experience VRAM OutOFMemory error (that are handled by switching to GPU) we suggest to have a look to `PER_SONG_MODEL_RELOAD` env variable. By default is TRUE and clean the memory by entirely reloading the model each time, on the other side it slow the analysis process.
+We suggest **8GB VRAM** on GPU, with less you can experience the NON BLOCKING OutOFMemory error (that are handled by switching to CPU). The `PER_SONG_MODEL_RELOAD` env variable, that by default is TRUE, help cleaning the memory by entirely reloading the model each time, on the other side it slow the analysis process.
 
 
 **NEW:** GPU-accelerated clustering is now available using RAPIDS cuML. This can provide **10-30x speedup** for clustering tasks.
