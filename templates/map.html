@@ -143,11 +143,15 @@ function topGenre(mood_vector) {
 }
 
 function colorPaletteFor(genres) {
-    const base = ['#ff6b6b','#4ecdc4','#ffe66d','#a8e6cf','#ff8b94','#ffaaa5','#88d8b0','#ffd93d','#6c5ce7','#fdcb6e','#636e72','#00b894','#0984e3','#e84393','#00cec9'];
+    const isDark = document.body.classList.contains('dark-mode') ||
+                   document.documentElement.classList.contains('dark-mode');
+    const base = isDark
+        ? ['#ff6b6b','#5eead4','#fde047','#86efac','#fda4af','#fca5a5','#6ee7b7','#fde047','#a78bfa','#fcd34d','#9ca3af','#34d399','#60a5fa','#f472b6','#22d3ee']
+        : ['#ff6b6b','#4ecdc4','#ffe66d','#a8e6cf','#ff8b94','#ffaaa5','#88d8b0','#ffd93d','#6c5ce7','#fdcb6e','#636e72','#00b894','#0984e3','#e84393','#00cec9'];
     const map = {};
     let i=0;
     for (const g of genres) { map[g] = base[i % base.length]; i++; }
-    map['unknown'] = '#888888';
+    map['unknown'] = isDark ? '#9ca3af' : '#888888';
     return map;
 }
 
@@ -172,12 +176,32 @@ function applyPlotlyTheme() {
     Plotly.relayout(gd, update).catch(() => {});
 }
 
-// Watch for dark mode class changes to update Plotly theme dynamically
+// Watch for dark mode class changes to update Plotly theme and legend palette dynamically
 (function() {
     const observer = new MutationObserver(function(mutations) {
         for (const m of mutations) {
             if (m.attributeName === 'class') {
                 applyPlotlyTheme();
+                // Regenerate color palette for the new theme and re-render
+                if (window._genreList && window._genreList.length > 0) {
+                    window._colorMap = colorPaletteFor(window._genreList);
+                    // Rebuild legend HTML with updated swatch colors
+                    var legendDiv = document.getElementById('map-projection-label');
+                    if (legendDiv) {
+                        var colorMap = window._colorMap;
+                        var genreList = window._genreList;
+                        var controlsHtml = '<span style="margin-right:12px;font-size:14px;color:var(--text-muted)"><a href="#" onclick="hideAllGenres();return false;" style="color:var(--color-primary)">Hide all</a> &nbsp;|&nbsp; <a href="#" onclick="showAllGenres();return false;" style="color:var(--color-primary)">Show all</a></span>';
+                        var genreHtml = genreList.slice(0,50).map(function(g) {
+                            var enc = encodeURIComponent(g);
+                            var swatch = '<span style="display:inline-block;width:12px;height:12px;background:' + colorMap[g] + ';margin-right:6px;vertical-align:middle;border-radius:2px"></span>';
+                            var hidden = (window._hiddenGenres && window._hiddenGenres.has(g)) ? 'text-decoration:line-through' : '';
+                            return '<span class="genre-item" data-genre="' + enc + '" onclick="toggleGenre(\'' + enc + '\')" style="margin-right:8px;cursor:pointer;color:var(--text-main);' + hidden + '">' + swatch + g + '</span>';
+                        }).join('');
+                        legendDiv.innerHTML = controlsHtml + genreHtml;
+                        applyLegendStyles();
+                    }
+                    applyGenreFilterAndRerender();
+                }
                 return;
             }
         }
@@ -253,13 +277,13 @@ async function loadAndPlot(n_or_pct) {
     const legendDiv = document.getElementById('map-projection-label');
     // Build a small control set (Hide all / Show all) and the genre items. Each genre span includes a data-genre attribute
     // so we can update its style when hidden.
-    const controlsHtml = `<span style="margin-right:12px;font-size:14px;color:var(--text-muted)"><a href="#" onclick="hideAllGenres();return false;">Hide all</a> &nbsp;|&nbsp; <a href="#" onclick="showAllGenres();return false;">Show all</a></span>`;
+    const controlsHtml = `<span style="margin-right:12px;font-size:14px;color:var(--text-muted)"><a href="#" onclick="hideAllGenres();return false;" style="color:var(--color-primary)">Hide all</a> &nbsp;|&nbsp; <a href="#" onclick="showAllGenres();return false;" style="color:var(--color-primary)">Show all</a></span>`;
     const genreHtml = genreList.slice(0,50).map(g => {
         const enc = encodeURIComponent(g);
         const swatch = `<span style=\"display:inline-block;width:12px;height:12px;background:${colorMap[g]};margin-right:6px;vertical-align:middle;border-radius:2px\"></span>`;
         // allow initial hidden state styling
         const hidden = (window._hiddenGenres && window._hiddenGenres.has(g)) ? 'text-decoration:line-through' : '';
-        return `<span class=\"genre-item\" data-genre=\"${enc}\" onclick=\"toggleGenre('${enc}')\" style=\"margin-right:8px;cursor:pointer;${hidden}\">${swatch}${g}</span>`;
+        return `<span class=\"genre-item\" data-genre=\"${enc}\" onclick=\"toggleGenre('${enc}')\" style=\"margin-right:8px;cursor:pointer;color:var(--text-main);${hidden}\">${swatch}${g}</span>`;
     }).join('');
     legendDiv.innerHTML = controlsHtml + genreHtml;
     // Apply final legend styles in case window._hiddenGenres was set
