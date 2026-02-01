@@ -5,8 +5,8 @@
 
 .sidebar {
     width: 250px;
-    background-color: var(--bg-card);
-    color: var(--text-main);
+    background-color: #111827;
+    color: white;
     padding: 1.5rem;
     height: 100vh;
     position: fixed;
@@ -16,7 +16,6 @@
     z-index: 1000;
     /* Start off-screen by default */
     transform: translateX(-100%);
-    border-right: 1px solid var(--border-color);
 }
 
 /* When the .open class is added by JS, slide the menu in */
@@ -36,7 +35,7 @@ html.sidebar-open .sidebar {
     font-size: 1.5rem;
     font-weight: 600;
     white-space: nowrap;
-    color: var(--text-title);
+    color: white;
 }
 
 .menu-toggle {
@@ -52,9 +51,9 @@ html.sidebar-open .sidebar {
     transition: color 0.3s;
 }
 
-/* When the sidebar is open, make the button color match the sidebar text (which might be same as main, but safe to keep var) */
+/* When the sidebar is open, make the button color match the sidebar text */
 .sidebar.open + .main-content .menu-toggle {
-    color: var(--text-main);
+    color: white;
 }
 
 .sidebar-nav {
@@ -67,7 +66,7 @@ html.sidebar-open .sidebar {
 .sidebar-nav li a,
 .sidebar-nav li button {
     display: block;
-    color: var(--text-sub);
+    color: #d1d5db;
     text-decoration: none;
     padding: 0.75rem 0;
     font-size: 1rem;
@@ -79,14 +78,14 @@ html.sidebar-open .sidebar {
 
 .sidebar-nav li a:hover,
 .sidebar-nav li button:hover {
-    color: var(--text-title);
-    background-color: var(--bg-body);
+    color: #ffffff;
+    background-color: #374151;
 }
 
 .sidebar-nav li a.active {
     color: #FFFFFF;
     font-weight: 600;
-    background-color: var(--color-primary);
+    background-color: #2563EB;
 }
 
 /* Dark mode toggle button styling */
@@ -113,4 +112,43 @@ html.sidebar-open .sidebar {
 .main-content.sidebar-open,
 html.sidebar-open .main-content {
     margin-left: 250px;
+}
+
+/* Dark mode sidebar adjustments */
+body.dark-mode .sidebar,
+html.dark-mode .sidebar {
+    background-color: var(--bg-card);
+    color: var(--text-main);
+    border-right: 1px solid var(--border-color);
+}
+
+body.dark-mode .sidebar-title,
+html.dark-mode .sidebar-title {
+    color: var(--text-title);
+}
+
+body.dark-mode .sidebar-nav li a,
+body.dark-mode .sidebar-nav li button,
+html.dark-mode .sidebar-nav li a,
+html.dark-mode .sidebar-nav li button {
+    color: var(--text-sub);
+}
+
+body.dark-mode .sidebar-nav li a:hover,
+body.dark-mode .sidebar-nav li button:hover,
+html.dark-mode .sidebar-nav li a:hover,
+html.dark-mode .sidebar-nav li button:hover {
+    color: var(--text-title);
+    background-color: var(--bg-body);
+}
+
+body.dark-mode .sidebar-nav li a.active,
+html.dark-mode .sidebar-nav li a.active {
+    color: #FFFFFF;
+    background-color: var(--color-primary);
+}
+
+body.dark-mode .sidebar.open + .main-content .menu-toggle,
+html.dark-mode .sidebar.open + .main-content .menu-toggle {
+    color: var(--text-main);
 }

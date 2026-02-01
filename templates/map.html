@@ -151,6 +151,41 @@ function colorPaletteFor(genres) {
     return map;
 }
 
+function applyPlotlyTheme() {
+    const gd = document.getElementById('plot');
+    if (!gd || !gd.data) return;
+    const isDark = document.body.classList.contains('dark-mode') ||
+                   document.documentElement.classList.contains('dark-mode');
+    const update = isDark ? {
+        plot_bgcolor: '#111827',
+        paper_bgcolor: '#111827',
+        font: { color: '#F3F4F6' },
+        xaxis: { gridcolor: '#374151', zerolinecolor: '#374151' },
+        yaxis: { gridcolor: '#374151', zerolinecolor: '#374151' }
+    } : {
+        plot_bgcolor: '#FFFFFF',
+        paper_bgcolor: '#FFFFFF',
+        font: { color: '#1F2937' },
+        xaxis: { gridcolor: '#E5E7EB', zerolinecolor: '#E5E7EB' },
+        yaxis: { gridcolor: '#E5E7EB', zerolinecolor: '#E5E7EB' }
+    };
+    Plotly.relayout(gd, update).catch(() => {});
+}
+
+// Watch for dark mode class changes to update Plotly theme dynamically
+(function() {
+    const observer = new MutationObserver(function(mutations) {
+        for (const m of mutations) {
+            if (m.attributeName === 'class') {
+                applyPlotlyTheme();
+                return;
+            }
+        }
+    });
+    observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+})();
+
 async function loadAndPlot(n_or_pct) {
     document.getElementById('map-status').textContent = 'Loading...';
     try {
@@ -274,6 +309,7 @@ async function loadAndPlot(n_or_pct) {
             // ensure dragmode is select/lasso so user can box/lasso select without changing toolbar
             try { Plotly.relayout(gd, {dragmode: 'lasso'}); } catch(e) {}
             attachPlotHandlers(gd);
+            applyPlotlyTheme();
             // update status with customdata info
             try {
                 const cdlen = (gd.data && gd.data[0] && gd.data[0].customdata) ? gd.data[0].customdata.length : 0;
@@ -398,12 +434,12 @@ function applyGenreFilterAndRerender() {
             Plotly.newPlot('plot', [trace], baseLayout, {responsive:true}).then(() => {
                 // restore shape overlays after main plot is ready
                 try { if (preservedShapes.length) Plotly.relayout(gd, { shapes: preservedShapes }); } catch(e) {}
-                attachPlotHandlers(gd); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`;
+                attachPlotHandlers(gd); applyPlotlyTheme(); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`;
             });
         } else {
             Plotly.react('plot', [trace], baseLayout, {responsive:true}).then(() => {
                 try { if (preservedShapes.length) Plotly.relayout(gd, { shapes: preservedShapes }); } catch(e) {}
-                attachPlotHandlers(gd); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`;
+                attachPlotHandlers(gd); applyPlotlyTheme(); window._plotPoints = pts; document.getElementById('map-status').textContent = `Showing ${pts.length} songs (filtered)`;
             });
         }
     } catch (e) { console.warn('applyGenreFilterAndRerender failed', e); }
