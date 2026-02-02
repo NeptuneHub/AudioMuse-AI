@@ -1251,7 +1251,8 @@ Database Schema:
 - mood_vector (text, format: 'pop:0.8,rock:0.3')
 - other_features (text, format: 'danceable:0.7,party:0.6')
 - energy (numeric 0-0.15, higher = more energetic)
-- **NOTE: NO YEAR OR DATE COLUMN EXISTS**
+- year (integer, e.g. 2005, NULL if unknown)
+- rating (integer 0-100, NULL if unrated)
 
 **PROGRESSIVE FILTERING STRATEGY - CRITICAL:**
 The goal is to return EXACTLY {target_count} songs. Start with minimal filters and add more ONLY if needed.

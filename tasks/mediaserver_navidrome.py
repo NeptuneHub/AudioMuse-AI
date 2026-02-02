@@ -289,7 +289,10 @@ def get_all_songs():
                         'AlbumArtist': artist_name,
                         'ArtistId': artist_id,
                         'OriginalAlbumArtist': s.get('displayAlbumArtist') or s.get('albumArtist'),
-                        'Path': s.get('path')
+                        'Path': s.get('path'),
+                        'Year': s.get('year'),
+                        'Rating': (s.get('userRating') or 0) * 20 if s.get('userRating') else None,
+                        'FilePath': s.get('path'),
                     })
                 
                 offset += len(songs)
@@ -339,7 +342,10 @@ def get_all_songs():
                     'AlbumArtist': song.get('AlbumArtist'),
                     'ArtistId': song.get('ArtistId'),
                     'OriginalAlbumArtist': song.get('OriginalAlbumArtist'),
-                    'Path': song.get('Path')
+                    'Path': song.get('Path'),
+                    'Year': song.get('Year'),
+                    'Rating': song.get('Rating'),
+                    'FilePath': song.get('FilePath'),
                 })
 
     return all_songs
@@ -452,7 +458,10 @@ def get_tracks_from_album(album_id, user_creds=None):
                 'AlbumArtist': artist,
                 'ArtistId': artist_id,
                 'OriginalAlbumArtist': s.get('displayAlbumArtist') or s.get('albumArtist'),
-                'Path': s.get('path')
+                'Path': s.get('path'),
+                'Year': s.get('year'),
+                'Rating': (s.get('userRating') or 0) * 20 if s.get('userRating') else None,
+                'FilePath': s.get('path'),
             })
         return result
     return []

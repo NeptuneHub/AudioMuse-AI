@@ -189,12 +189,12 @@ def get_recent_albums(limit):
 def get_tracks_from_album(album_id):
     """Fetches all audio tracks for a given album ID from Jellyfin using admin credentials."""
     url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
-    params = {"ParentId": album_id, "IncludeItemTypes": "Audio"}
+    params = {"ParentId": album_id, "IncludeItemTypes": "Audio", "Fields": "Path"}
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         items = r.json().get("Items", [])
-        
+
         # Apply artist field prioritization to each track
         for item in items:
             item['OriginalAlbumArtist'] = item.get('AlbumArtist')
@@ -202,6 +202,8 @@ def get_tracks_from_album(album_id):
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
+            item['Year'] = item.get('ProductionYear')
+            item['FilePath'] = item.get('Path')
 
         return items
     except Exception as e:
@@ -270,12 +272,12 @@ def _select_best_artist(item, title="Unknown"):
 def get_all_songs():
     """Fetches all songs from Jellyfin using admin credentials."""
     url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
-    params = {"IncludeItemTypes": "Audio", "Recursive": True}
+    params = {"IncludeItemTypes": "Audio", "Recursive": True, "Fields": "Path"}
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         items = r.json().get("Items", [])
-        
+
         # Apply artist field prioritization to each item
         for item in items:
             item['OriginalAlbumArtist'] = item.get('AlbumArtist')
@@ -283,6 +285,8 @@ def get_all_songs():
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
+            item['Year'] = item.get('ProductionYear')
+            item['FilePath'] = item.get('Path')
 
         return items
     except Exception as e:
@@ -344,12 +348,12 @@ def get_top_played_songs(limit, user_creds=None):
 
     url = f"{config.JELLYFIN_URL}/Users/{user_id}/Items"
     headers = {"X-Emby-Token": token}
-    params = {"IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path"}
+    params = {"IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path,ProductionYear"}
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         items = r.json().get("Items", [])
-        
+
         # Apply artist field prioritization to each item
         for item in items:
             item['OriginalAlbumArtist'] = item.get('AlbumArtist')
@@ -357,6 +361,8 @@ def get_top_played_songs(limit, user_creds=None):
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
+            item['Year'] = item.get('ProductionYear')
+            item['FilePath'] = item.get('Path')
 
         return items
     except Exception as e:

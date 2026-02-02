@@ -418,18 +418,21 @@ def get_tracks_from_album(album_id, user_creds=None):
         
         # Get the track directly by its ID
         url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items/{real_track_id}"
+        params = {"Fields": "Path,ProductionYear"}
         try:
-            r = requests.get(url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
+            r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
             r.raise_for_status()
             track_item = r.json()
-            
+
             # Apply artist field prioritization
             track_item['OriginalAlbumArtist'] = track_item.get('AlbumArtist')
             title = track_item.get('Name', 'Unknown')
             artist_name, artist_id = _select_best_artist(track_item, title)
             track_item['AlbumArtist'] = artist_name
             track_item['ArtistId'] = artist_id
-            
+            track_item['Year'] = track_item.get('ProductionYear')
+            track_item['FilePath'] = track_item.get('Path')
+
             return [track_item]  # Return as single-item list to maintain compatibility
         except Exception as e:
             logger.error(f"Emby get_tracks_from_album failed for standalone track {real_track_id}: {e}", exc_info=True)
@@ -437,12 +440,12 @@ def get_tracks_from_album(album_id, user_creds=None):
     
     # Normal album handling
     url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
-    params = {"ParentId": album_id, "IncludeItemTypes": "Audio"}
+    params = {"ParentId": album_id, "IncludeItemTypes": "Audio", "Fields": "Path,ProductionYear"}
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         items = r.json().get("Items", [])
-        
+
         # Apply artist field prioritization to each track
         for item in items:
             item['OriginalAlbumArtist'] = item.get('AlbumArtist')
@@ -450,6 +453,8 @@ def get_tracks_from_album(album_id, user_creds=None):
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
+            item['Year'] = item.get('ProductionYear')
+            item['FilePath'] = item.get('Path')
 
         return items
     except Exception as e:
@@ -533,13 +538,13 @@ def get_all_songs(user_creds=None):
             "Recursive": True,
             "StartIndex": start_index,
             "Limit": limit,
-            "Fields": "UserData,Path"
+            "Fields": "UserData,Path,ProductionYear"
         }
         try:
             r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
             r.raise_for_status()
             items = r.json().get("Items", [])
-            
+
             # Apply artist field prioritization
             for item in items:
                 item['OriginalAlbumArtist'] = item.get('AlbumArtist')
@@ -547,6 +552,8 @@ def get_all_songs(user_creds=None):
                 artist_name, artist_id = _select_best_artist(item, title)
                 item['AlbumArtist'] = artist_name
                 item['ArtistId'] = artist_id
+                item['Year'] = item.get('ProductionYear')
+                item['FilePath'] = item.get('Path')
 
             all_items.extend(items)
 
@@ -687,12 +694,12 @@ def get_top_played_songs(limit, user_creds=None):
     # this Endpoint is compatble with Emby. no need to change
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     headers = {"X-Emby-Token": token}
-    params = {"IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path"}
+    params = {"IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path,ProductionYear"}
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         items = r.json().get("Items", [])
-        
+
         # Apply artist field prioritization to each track
         for item in items:
             item['OriginalAlbumArtist'] = item.get('AlbumArtist')
@@ -700,6 +707,8 @@ def get_top_played_songs(limit, user_creds=None):
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
+            item['Year'] = item.get('ProductionYear')
+            item['FilePath'] = item.get('Path')
 
         return items
     except Exception as e:
