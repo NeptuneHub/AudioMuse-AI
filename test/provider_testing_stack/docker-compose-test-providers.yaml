@@ -66,6 +66,7 @@ services:
       ND_LOGLEVEL: info
       ND_SESSIONTIMEOUT: 24h
       ND_ENABLETRANSCODINGCONFIG: "true"
+      ND_DEFAULTREPORTREALPATH: "true" 
     restart: unless-stopped
     networks:
       - test-providers
