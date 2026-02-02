@@ -132,7 +132,57 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             batch['teacher_embeddings'].append(item['teacher_embedding'])
             batch['teacher_segment_embeddings'].append(item.get('teacher_segment_embeddings'))
             batch['song_ids'].append(item['item_id'])
-        
+
+        # --- Minimal Mixup augmentation (cache-only) ---
+        # Strategy: mix cached teacher embeddings and corresponding audio segments
+        # for paired samples in the in-memory batch. This keeps the teacher OFF.
+        mixup_alpha = config['training'].get('mixup_alpha', 0.0)
+        if mixup_alpha and mixup_alpha > 0 and len(batch['audio_segments']) > 1 and dataset.split == 'train':
+            lam = float(np.random.beta(mixup_alpha, mixup_alpha))
+            bsz = len(batch['audio_segments'])
+            idx = np.random.permutation(bsz)
+            # Ensure no self-mix (roll if any fixed points)
+            if np.any(idx == np.arange(bsz)):
+                idx = np.roll(idx, 1)
+            mixed_audio = []
+            mixed_teacher = []
+            mixed_teacher_segment_embs = []
+            mixed_song_ids = []
+            for i in range(bsz):
+                j = int(idx[i])
+                A = batch['audio_segments'][i]
+                B = batch['audio_segments'][j]
+                # Convert to numpy if tensor
+                A_np = A.cpu().numpy() if isinstance(A, torch.Tensor) else A
+                B_np = B.cpu().numpy() if isinstance(B, torch.Tensor) else B
+                # Mix corresponding segments up to min length
+                min_seg = min(A_np.shape[0], B_np.shape[0]) if A_np.shape[0] and B_np.shape[0] else 0
+                if min_seg == 0:
+                    mixed_seg = A_np  # fallback
+                else:
+                    mixed_seg = lam * A_np[:min_seg] + (1.0 - lam) * B_np[:min_seg]
+                    # Ensure at least 2 segments (trainer warns/skips <2)
+                    if mixed_seg.shape[0] == 1:
+                        mixed_seg = np.concatenate([mixed_seg, mixed_seg], axis=0)
+                mixed_audio.append(mixed_seg)
+                embA = batch['teacher_embeddings'][i]
+                embB = batch['teacher_embeddings'][j]
+                mixed_teacher.append(lam * embA + (1.0 - lam) * embB)
+                tsegA = batch['teacher_segment_embeddings'][i]
+                tsegB = batch['teacher_segment_embeddings'][j]
+                if tsegA is not None and tsegB is not None:
+                    min_emb_seg = min(len(tsegA), len(tsegB))
+                    mixed_tsegs = [lam * tsegA[k] + (1.0 - lam) * tsegB[k] for k in range(min_emb_seg)]
+                    mixed_teacher_segment_embs.append(mixed_tsegs)
+                else:
+                    mixed_teacher_segment_embs.append(None)
+                mixed_song_ids.append(f"{batch['song_ids'][i]}+{batch['song_ids'][j]}")
+            batch['audio_segments'] = mixed_audio
+            batch['teacher_embeddings'] = mixed_teacher
+            batch['teacher_segment_embeddings'] = mixed_teacher_segment_embs
+            batch['song_ids'] = mixed_song_ids
+            logger.info(f"[MIXUP] Applied Mixup: alpha={mixup_alpha}, lam={lam:.4f}")
+
         # 🧠 REAL TRAINING STEP
         # Include STAGE and current LR in batch log so resume/stage behavior is visible in a single line
         try:
@@ -182,7 +232,6 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             
             # 🧹 AGGRESSIVE MEMORY CLEANUP (prevent 15GB buildup)
             import gc
-            import torch
             
             # Clear only the large tensors, keep variables we need
             if 'batch' in locals():
