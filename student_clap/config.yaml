@@ -13,6 +13,7 @@ audio:
 
 model:
   embedding_dim: 512
+  dropout: 0.3  # Dropout probability for projection head
   # EfficientAT configuration
   # Available models: mn01_as, mn02_as, mn04_as, mn05_as, mn10_as, mn20_as, mn30_as, mn40_as
   # You can also use the dynamic MobileNet variants 'dymn04', 'dymn10', 'dymn20' as prefixes
