@@ -78,7 +78,7 @@ def get_navidrome_auth_params(username=None, password=None):
         logger.warning("Navidrome User or Password is not configured.")
         return {}
     hex_encoded_password = auth_pass.encode('utf-8').hex()
-    return {"u": auth_user, "p": f"enc:{hex_encoded_password}", "v": "1.16.1", "c": config.APP_VERSION, "f": "json"}
+    return {"u": auth_user, "p": f"enc:{hex_encoded_password}", "v": "1.16.1", "c": "AudioMuse", "f": "json"}
 
 def _navidrome_request(endpoint, params=None, method='get', stream=False, user_creds=None):
     """
