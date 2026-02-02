@@ -80,6 +80,7 @@ class StudentCLAPAudio(nn.Module):
 
         # Model params
         self.embedding_dim = config['model']['embedding_dim']
+        self.dropout = config['model'].get('dropout', 0.3)
         self.pretrained_name = config['model'].get('efficientat_model', 'mn10_as')
         self.use_pretrained = config['model'].get('use_pretrained', True)
         self.use_gradient_checkpointing = config['model'].get('use_gradient_checkpointing', False)
@@ -98,6 +99,7 @@ class StudentCLAPAudio(nn.Module):
         logger.info(f"  Model (requested): {self.pretrained_name}")
         logger.info(f"  Use pretrained: {self.use_pretrained}")
         logger.info(f"  n_mels: {self.n_mels}")
+        logger.info(f"  Dropout: {self.dropout}")
 
         # Load EfficientAT MobileNet
         # Note: EfficientAT expects input_dim_f (frequency) and input_dim_t (time)
@@ -132,7 +134,7 @@ class StudentCLAPAudio(nn.Module):
         logger.info(f"  Backbone output dim: {backbone_dim}")
 
         # Projection head to map backbone features to embedding space
-        self.projection_head = Projection(backbone_dim, self.embedding_dim, p=0.5)
+        self.projection_head = Projection(backbone_dim, self.embedding_dim, p=self.dropout)
 
         # Log model stats
         total_params = sum(p.numel() for p in self.parameters())
