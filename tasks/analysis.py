@@ -655,11 +655,16 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
     from app_helper import (redis_conn, get_db, save_task_status, get_task_info_from_db,
                      save_track_analysis_and_embedding, save_clap_embedding,
                      TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
-    from .clap_analyzer import analyze_audio_file as clap_analyze, is_clap_available
+    from .clap_analyzer import analyze_audio_file as clap_analyze, is_clap_available, unload_clap_model
     from .mulan_analyzer import analyze_audio_file as mulan_analyze
-    from config import MULAN_ENABLED
-    
-    current_job = get_current_job(redis_conn)
+    from config import MULAN_ENABLED, DEPLOYMENT_MODE
+
+    # In standalone mode, use the thread-local job proxy instead of RQ's get_current_job
+    if DEPLOYMENT_MODE == 'standalone':
+        from selfcontained.queue_adapter import get_standalone_current_job
+        current_job = get_standalone_current_job()
+    else:
+        current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
 
     with app.app_context():
@@ -804,6 +809,53 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 try:
                     # Track if we processed anything (MusiCNN or CLAP)
                     track_processed = False
+
+                    # mac / standalone: if MusiCNN is NOT needed but CLAP is required,
+                    # use the consolidated analyze_track() path (returns full analysis + embedding)
+                    if not needs_musicnn and needs_clap:
+                        analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths)
+
+                        if analysis is None or embedding is None:
+                            logger.warning(f"Skipping track {track_name_full} as analysis returned None.")
+                            tracks_skipped_count += 1
+                            continue
+
+                        # Ensure a valid album name
+                        album_name_val = item.get('Album')
+                        if not album_name_val or not isinstance(album_name_val, str) or not album_name_val.strip():
+                            album_name_val = 'Unknown'
+
+                        # Save only the top N moods
+                        top_moods = dict(sorted(analysis['moods'].items(), key=lambda x: x[1], reverse=True)[:top_n_moods])
+
+                        save_track_analysis_and_embedding(
+                            item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'),
+                            analysis['tempo'], analysis['key'], analysis['scale'],
+                            top_moods, embedding,
+                            energy=analysis.get('energy'),
+                            other_features=analysis.get('other_features'),
+                            album=album_name_val
+                        )
+
+                        # --- Always cleanup any old clap_embedding row for this track ---
+                        try:
+                            with get_db() as conn, conn.cursor() as cur:
+                                cur.execute("DELETE FROM clap_embedding WHERE item_id = %s", (str(item['Id']),))
+                                logger.debug(f"Deleted old clap_embedding row for item_id={item['Id']}")
+                        except Exception as e:
+                            logger.warning(f"Failed to delete old clap_embedding row for item_id={item['Id']}: {e}")
+
+                        logger.info(f"SUCCESSFULLY ANALYZED '{track_name_full}' (ID: {item['Id']}) with CLAP")
+                        track_processed = True
+
+                        # Conditionally unload CLAP model based on PER_SONG_MODEL_RELOAD
+                        if PER_SONG_MODEL_RELOAD:
+                            from .clap_analyzer import unload_clap_model
+                            unload_clap_model()
+                            logger.debug(f"  - CLAP model unloaded after song (PER_SONG_MODEL_RELOAD=true)")
+
+                        # Skip the normal MusiCNN/CLAP flow for this track since it's handled
+                        continue
                     
                     # MusiCNN analysis (only if needed)
                     if needs_musicnn:
@@ -1050,7 +1102,12 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
     MULAN_ENABLED = getattr(config, 'MULAN_ENABLED', False)  # Get MULAN_ENABLED from config
 
-    current_job = get_current_job(redis_conn)
+    # In standalone mode, use the thread-local job proxy instead of RQ's get_current_job
+    if config.DEPLOYMENT_MODE == 'standalone':
+        from selfcontained.queue_adapter import get_standalone_current_job
+        current_job = get_standalone_current_job()
+    else:
+        current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())    
 
     with app.app_context():

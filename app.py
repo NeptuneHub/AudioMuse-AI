@@ -606,7 +606,139 @@ app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
 app.register_blueprint(mulan_search_bp)
 
-if __name__ == '__main__':
+
+# --- Setup Routes for Standalone Mode ---
+@app.route('/setup', methods=['GET'])
+def setup_page():
+    """
+    Configuration page for standalone mode.
+    Allows users to configure their media server connection.
+    ---
+    tags:
+      - Configuration
+    responses:
+      200:
+        description: Setup configuration page
+      403:
+        description: Setup only available in standalone mode
+    """
+    from config import DEPLOYMENT_MODE
+    if DEPLOYMENT_MODE != 'standalone':
+        return jsonify({'error': 'Setup only available in standalone mode'}), 403
+    
+    from selfcontained.config_manager import is_configured, get_current_config
+    
+    return render_template('setup.html',
+                         is_configured=is_configured(),
+                         current_config=get_current_config(),
+                         message=request.args.get('message'),
+                         message_type=request.args.get('message_type', 'info'))
+
+
+@app.route('/save_setup', methods=['POST'])
+def save_setup():
+    """
+    Save media server configuration in standalone mode.
+    Creates a config.ini file with the media server settings.
+    ---
+    tags:
+      - Configuration
+    parameters:
+      - name: mediaserver_type
+        in: formData
+        required: true
+        schema:
+          type: string
+          enum: [jellyfin, navidrome, lyrion, emby]
+      - name: jellyfin_url
+        in: formData
+        schema:
+          type: string
+      - name: jellyfin_user_id
+        in: formData
+        schema:
+          type: string
+      - name: jellyfin_token
+        in: formData
+        schema:
+          type: string
+      - name: navidrome_url
+        in: formData
+        schema:
+          type: string
+      - name: navidrome_user
+        in: formData
+        schema:
+          type: string
+      - name: navidrome_password
+        in: formData
+        schema:
+          type: string
+      - name: lyrion_url
+        in: formData
+        schema:
+          type: string
+      - name: emby_url
+        in: formData
+        schema:
+          type: string
+      - name: emby_user_id
+        in: formData
+        schema:
+          type: string
+      - name: emby_token
+        in: formData
+        schema:
+          type: string
+      - name: music_libraries
+        in: formData
+        schema:
+          type: string
+    responses:
+      302:
+        description: Redirect to setup page with success/error message
+      403:
+        description: Setup only available in standalone mode
+    """
+    from config import DEPLOYMENT_MODE
+    if DEPLOYMENT_MODE != 'standalone':
+        return jsonify({'error': 'Setup only available in standalone mode'}), 403
+    
+    from selfcontained.config_manager import write_config, apply_config_to_environment
+    from flask import redirect, url_for
+    
+    config_data = {
+        'mediaserver_type': request.form.get('mediaserver_type'),
+        'jellyfin_url': request.form.get('jellyfin_url', ''),
+        'jellyfin_user_id': request.form.get('jellyfin_user_id', ''),
+        'jellyfin_token': request.form.get('jellyfin_token', ''),
+        'navidrome_url': request.form.get('navidrome_url', ''),
+        'navidrome_user': request.form.get('navidrome_user', ''),
+        'navidrome_password': request.form.get('navidrome_password', ''),
+        'lyrion_url': request.form.get('lyrion_url', ''),
+        'emby_url': request.form.get('emby_url', ''),
+        'emby_user_id': request.form.get('emby_user_id', ''),
+        'emby_token': request.form.get('emby_token', ''),
+        'music_libraries': request.form.get('music_libraries', '')
+    }
+    
+    if write_config(config_data):
+        apply_config_to_environment()
+        logger.info(f"Configuration saved for {config_data['mediaserver_type']}")
+        return redirect(url_for('setup_page', message='Configuration saved successfully! You can now start using AudioMuse-AI.', message_type='success'))
+    else:
+        logger.error("Failed to save configuration")
+        return redirect(url_for('setup_page', message='Failed to save configuration. Please check the logs.', message_type='error'))
+
+
+def initialize_app():
+  """Initialize all in-memory caches, indexes, and background threads.
+
+  Called by both `app.py __main__` (Docker) and `selfcontained/launcher.py` (standalone).
+  This MUST be called before the Flask server starts accepting requests.
+  """
+  from config import DEPLOYMENT_MODE
+
   os.makedirs(TEMP_DIR, exist_ok=True)
 
   with app.app_context():
@@ -643,7 +775,7 @@ if __name__ == '__main__':
         if load_clap_cache_from_db():
           logger.info("CLAP text search cache loaded at startup (embeddings only).")
           logger.info("CLAP model will lazy-load on first text search (~1-2s delay, saves 3GB RAM).")
-          
+
           # Load top queries from database (default queries only, no computation)
           has_existing = load_top_queries_from_db()
           if has_existing:
@@ -661,7 +793,7 @@ if __name__ == '__main__':
         if load_mulan_cache_from_db():
           logger.info("MuLan text search cache loaded at startup (embeddings only).")
           logger.info("MuLan models will lazy-load on first text search.")
-          
+
           # Load top queries from database
           has_existing = load_mulan_top_queries_from_db()
           if has_existing:
@@ -686,9 +818,68 @@ if __name__ == '__main__':
     t = threading.Thread(target=_start_map_init_background, daemon=True)
     t.start()
 
-  # --- Start Background Listener Thread ---
-  listener_thread = threading.Thread(target=listen_for_index_reloads, daemon=True)
-  listener_thread.start()
+  # --- Start Background Index Reload Listener ---
+  if DEPLOYMENT_MODE == 'standalone':
+    # In standalone mode, use a polling thread instead of Redis pubsub.
+    # After analysis completes, the worker calls redis_conn.publish() which is a no-op,
+    # so we poll the DB for changes and reload indexes periodically.
+    def _standalone_index_reload_loop():
+      """Periodically reload indexes from DB after analysis tasks complete."""
+      import time as _time
+      last_check_time = _time.time()
+      while True:
+        try:
+          _time.sleep(15)  # Check every 15 seconds
+          with app.app_context():
+            from app_helper import get_db
+            from psycopg2.extras import DictCursor
+            conn = get_db()
+            cur = conn.cursor(cursor_factory=DictCursor)
+            # Check if any main analysis task completed since last check
+            cur.execute(
+              "SELECT task_id, end_time FROM task_status WHERE task_type = 'main_analysis' AND status = 'SUCCESS' AND end_time > %s ORDER BY end_time DESC LIMIT 1",
+              (last_check_time,)
+            )
+            row = cur.fetchone()
+            cur.close()
+            if row:
+              last_check_time = row['end_time']
+              logger.info(f"Detected completed analysis task {row['task_id']}, reloading indexes...")
+              try:
+                from tasks.voyager_manager import load_voyager_index_for_querying
+                load_voyager_index_for_querying(force_reload=True)
+                from tasks.artist_gmm_manager import load_artist_index_for_querying
+                load_artist_index_for_querying(force_reload=True)
+                from app_helper import load_map_projection, load_artist_projection
+                load_map_projection('main_map', force_reload=True)
+                load_artist_projection('artist_map', force_reload=True)
+                from app_map import build_map_cache
+                build_map_cache()
+                # Reload CLAP cache
+                try:
+                  from tasks.clap_text_search import refresh_clap_cache
+                  refresh_clap_cache()
+                except Exception as e:
+                  logger.warning(f"CLAP cache reload failed: {e}")
+                # Reload MuLan cache
+                try:
+                  from tasks.mulan_text_search import refresh_mulan_cache
+                  refresh_mulan_cache()
+                except Exception as e:
+                  logger.warning(f"MuLan cache reload failed: {e}")
+                logger.info("Index reload complete after analysis.")
+              except Exception as e:
+                logger.error(f"Error reloading indexes: {e}", exc_info=True)
+        except Exception as e:
+          logger.debug(f"Standalone index reload check error: {e}")
+
+    reload_thread = threading.Thread(target=_standalone_index_reload_loop, daemon=True)
+    reload_thread.start()
+    logger.info("Standalone index reload polling thread started (checks every 15s).")
+  else:
+    # Docker mode: use Redis pubsub listener
+    listener_thread = threading.Thread(target=listen_for_index_reloads, daemon=True)
+    listener_thread.start()
 
   # Start a cron manager thread that checks enabled cron entries every 60 seconds
   def _cron_manager_loop():
@@ -707,4 +898,7 @@ if __name__ == '__main__':
   cron_thread = threading.Thread(target=_cron_manager_loop, daemon=True)
   cron_thread.start()
 
+
+if __name__ == '__main__':
+  initialize_app()
   app.run(debug=False, host='0.0.0.0', port=8000)

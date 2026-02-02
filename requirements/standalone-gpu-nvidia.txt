@@ -1,0 +1,31 @@
+# requirements/standalone-gpu-nvidia.txt
+# Standalone mode with NVIDIA GPU acceleration
+# Use this for building Windows/Linux installers with CUDA support
+
+# Base standalone requirements
+SQLAlchemy>=2.0.0
+huey>=2.5.0
+-r common.txt
+
+# ============================================================================
+# NVIDIA GPU ACCELERATION
+# ============================================================================
+--extra-index-url https://pypi.nvidia.com
+
+# ONNX Runtime with CUDA support
+onnxruntime-gpu==1.19.2
+
+# Optional: CUDA libraries for advanced features
+cupy-cuda12x
+cuml-cu12==24.12.*
+
+# PyTorch with CUDA (if needed for student_clap or other features)
+torch==2.5.1
+
+# ============================================================================
+# NOTES:
+# ============================================================================
+# - Requires NVIDIA GPU with CUDA 12.x
+# - Larger package size (~2-3GB due to CUDA libraries)
+# - Best performance for ML inference
+# - Use for Windows/Linux installers targeting gaming PCs or workstations

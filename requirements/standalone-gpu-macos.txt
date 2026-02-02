@@ -1,0 +1,44 @@
+# requirements/standalone-gpu-macos.txt
+# Standalone mode with Apple Silicon GPU acceleration (CoreML/Metal)
+# Use this for building macOS installers for M1/M2/M3/M4 Macs
+
+# Base standalone requirements (without CPU onnxruntime)
+SQLAlchemy>=2.0.0
+huey>=2.5.0
+-r common.txt
+
+# ============================================================================
+# APPLE SILICON GPU ACCELERATION
+# ============================================================================
+
+# ONNX Runtime with CoreML support (Apple GPU acceleration)
+# Note: On Apple Silicon, standard onnxruntime includes Metal/CoreML support
+onnxruntime==1.19.2
+
+# PyTorch with Apple Silicon (MPS) support
+# This version is optimized for M1/M2/M3/M4 chips
+torch==2.5.1
+
+# ============================================================================
+# OPTIONAL: Additional Apple Silicon optimizations
+# ============================================================================
+# Uncomment if you want to use Apple's native ML frameworks
+
+# Core ML Tools for model conversion
+# coremltools>=7.0
+
+# Metal Performance Shaders acceleration
+# Note: Built into macOS, no additional package needed
+
+# ============================================================================
+# NOTES:
+# ============================================================================
+# - Optimized for Apple Silicon (M1/M2/M3/M4)
+# - Uses Metal GPU acceleration
+# - Smaller package size than NVIDIA (no CUDA needed)
+# - onnxruntime automatically uses CoreML when available
+# - torch uses MPS (Metal Performance Shaders) backend
+# 
+# To enable Apple GPU in code:
+# - ONNX: Set providers=['CoreMLExecutionProvider', 'CPUExecutionProvider']
+# - PyTorch: Use device='mps' or torch.backends.mps.is_available()

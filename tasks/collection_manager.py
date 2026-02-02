@@ -74,9 +74,14 @@ def sync_album_batch_task(parent_task_id, album_batch, pocketbase_url, pocketbas
                      get_task_info_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
                      TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
 
-    current_job = get_current_job()
+    from config import DEPLOYMENT_MODE
+    if DEPLOYMENT_MODE == 'standalone':
+        from selfcontained.queue_adapter import get_standalone_current_job
+        current_job = get_standalone_current_job()
+    else:
+        current_job = get_current_job()
     task_id = current_job.id if current_job else str(uuid.uuid4())
-    
+
     batch_album_names = ", ".join([a.get('Name', 'N/A') for a in album_batch])
     batch_name_short = album_batch[0].get('Name', 'UnknownAlbum') if album_batch else 'EmptyBatch'
     log_prefix = f"{main_task_log_prefix} -> [SubTask-{task_id[:8]}-{batch_name_short}]"
@@ -277,7 +282,12 @@ def sync_collections_task(url, token, num_albums):
     from app_helper import (redis_conn, rq_queue_default, get_db, save_task_status, get_task_info_from_db, get_child_tasks_from_db,
                      TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
 
-    current_job = get_current_job()
+    from config import DEPLOYMENT_MODE
+    if DEPLOYMENT_MODE == 'standalone':
+        from selfcontained.queue_adapter import get_standalone_current_job
+        current_job = get_standalone_current_job()
+    else:
+        current_job = get_current_job()
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
     log_prefix = f"[MainSyncTask-{current_task_id}]"
 

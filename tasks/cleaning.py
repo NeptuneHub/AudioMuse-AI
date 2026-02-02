@@ -36,12 +36,17 @@ def identify_and_clean_orphaned_albums_task():
     from app import app
     from app_helper import (redis_conn, get_db, save_task_status, get_task_info_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
 
-    current_job = get_current_job(redis_conn)
+    from config import DEPLOYMENT_MODE
+    if DEPLOYMENT_MODE == 'standalone':
+        from selfcontained.queue_adapter import get_standalone_current_job
+        current_job = get_standalone_current_job()
+    else:
+        current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
 
     with app.app_context():
         initial_details = {
-            "message": "Starting orphaned album identification...", 
+            "message": "Starting orphaned album identification...",
             "log": [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Orphaned album identification task started."]
         }
         save_task_status(current_task_id, "cleaning", TASK_STATUS_STARTED, progress=0, details=initial_details)

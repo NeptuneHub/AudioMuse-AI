@@ -3,10 +3,14 @@ import json
 import logging
 import os
 import time
+import threading
 import psycopg2
 from psycopg2.extras import DictCursor
 import numpy as np
 from flask import g
+
+# Thread-local storage for database connections in worker threads
+_thread_local = threading.local()
 
 # RQ imports
 from redis import Redis
@@ -19,7 +23,7 @@ from rq.exceptions import NoSuchJobError
 # Note: get_db, redis_conn will now be defined *in this file*.
 
 # Import configuration
-from config import DATABASE_URL, REDIS_URL
+from config import DATABASE_URL, REDIS_URL, DEPLOYMENT_MODE
 
 # Import RQ specifics
 from rq.command import send_stop_job_command
@@ -38,47 +42,91 @@ ARTIST_PROJECTION_CACHE = None
 # --- Constants ---
 MAX_LOG_ENTRIES_STORED = 10 # Max number of recent log entries to store in the database per task
 
-# --- RQ Setup ---
-# Enhanced Redis connection settings for remote server stability:
-# - socket_connect_timeout: max time to establish connection
-# - socket_timeout: max time for socket operations (read/write)
-# - socket_keepalive: enables TCP keepalive to prevent idle connection drops
-# - health_check_interval: seconds between health checks on idle connections
-# - retry_on_timeout: automatically retry on timeout errors
-redis_conn = Redis.from_url(
-    REDIS_URL, 
-    socket_connect_timeout=30,
-    socket_timeout=60,
-    socket_keepalive=True,
-    health_check_interval=30,
-    retry_on_timeout=True
-)
-# FIX: result_ttl removed - caused jobs to disappear from Redis before monitor_and_clear_jobs could track them
-# This was breaking the throttle mechanism causing all jobs to launch at once
-rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1) # High priority for main tasks
-rq_queue_default = Queue('default', connection=redis_conn, default_timeout=-1) # Default queue for sub-tasks
+# --- Queue Setup (RQ for server mode, Huey for standalone) ---
+if DEPLOYMENT_MODE == 'standalone':
+    # Standalone mode: use Huey queue adapter
+    from selfcontained.queue_adapter import get_queue_adapter
+    _queue_adapter = get_queue_adapter()
+    rq_queue_high = _queue_adapter.queue_high
+    rq_queue_default = _queue_adapter.queue_default
+    redis_conn = _queue_adapter.connection  # DummyConnection for compatibility
+    logger.info("Queue adapter initialized: HueyQueueWrapper from module selfcontained.queue_adapter")
+else:
+    # Server mode: use Redis + RQ
+    # Enhanced Redis connection settings for remote server stability:
+    redis_conn = Redis.from_url(
+        REDIS_URL, 
+        socket_connect_timeout=30,
+        socket_timeout=60,
+        socket_keepalive=True,
+        health_check_interval=30,
+        retry_on_timeout=True
+    )
+    rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1)
+    rq_queue_default = Queue('default', connection=redis_conn, default_timeout=-1)
+    logger.info("Using Redis RQ queues")
 
-# --- Database Setup (PostgreSQL) ---
+# --- Database Setup (PostgreSQL or DuckDB) ---
 def get_db():
-    if 'db' not in g:
+    """Get database connection - uses DuckDB in standalone mode, PostgreSQL otherwise
+    
+    Works in both Flask request context (uses g) and worker threads (uses thread-local storage).
+    """
+    # Try to use Flask's g if available (in request context)
+    use_flask_g = False
+    storage = _thread_local
+    
+    try:
+        from flask import g as flask_g
+        # Test if we're actually in a request context by trying to access g
+        _ = flask_g.get('_test_context', None)
+        storage = flask_g
+        use_flask_g = True
+    except (ImportError, RuntimeError, AttributeError):
+        # No Flask context (worker thread) - use thread-local storage
+        pass
+    
+    if not hasattr(storage, 'db') or storage.db is None:
         try:
-            g.db = psycopg2.connect(
-                DATABASE_URL,
-                connect_timeout=30,        # Time to establish connection (increased from 15)
-                keepalives_idle=600,       # Start keepalives after 10 min idle
-                keepalives_interval=30,    # Send keepalive every 30 sec
-                keepalives_count=3,        # 3 failed keepalives = dead connection
-                options='-c statement_timeout=300000'  # 5 min query timeout (300 seconds)
-            )
-        except psycopg2.OperationalError as e:
+            if DEPLOYMENT_MODE == 'standalone':
+                # Use DuckDB with psycopg2-compatible interface
+                from selfcontained.duckdb_psycopg2_compat import connect_duckdb
+                from config import SQLITE_DATABASE_PATH
+                storage.db = connect_duckdb(SQLITE_DATABASE_PATH)
+                logger.info(f"Connected to DuckDB: {SQLITE_DATABASE_PATH} (flask_g={use_flask_g})")
+            else:
+                # Use PostgreSQL
+                storage.db = psycopg2.connect(
+                    DATABASE_URL,
+                    connect_timeout=30,
+                    keepalives_idle=600,
+                    keepalives_interval=30,
+                    keepalives_count=3,
+                    options='-c statement_timeout=300000'
+                )
+                logger.info("Connected to PostgreSQL")
+        except Exception as e:
             logger.error(f"Failed to connect to database: {e}")
-            raise # Re-raise to ensure the operation that needed the DB fails clearly
-    return g.db
+            raise
+    return storage.db
 
 def close_db(e=None):
-    db = g.pop('db', None)
+    """Close database connection for the current context (Flask g or thread-local)."""
+    # Try Flask g first
+    try:
+        from flask import g as flask_g
+        db = flask_g.pop('db', None)
+        if db is not None:
+            db.close()
+            return
+    except (ImportError, RuntimeError, AttributeError):
+        pass
+    
+    # Try thread-local storage
+    db = getattr(_thread_local, 'db', None)
     if db is not None:
         db.close()
+        _thread_local.db = None
 
 def init_db():
     db = get_db()
@@ -471,9 +519,7 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
 
     mood_str = ','.join(f"{k}:{v:.3f}" for k, v in moods.items())
     
-    conn = get_db() # This now calls the function within this file
-    cur = conn.cursor()
-    try:
+    with get_db() as conn, conn.cursor() as cur:
         # Save analysis to score table
         cur.execute("""
             INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album)
@@ -493,39 +539,33 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
         # Save embedding
         if isinstance(embedding_vector, np.ndarray) and embedding_vector.size > 0:
             embedding_blob = embedding_vector.astype(np.float32).tobytes()
-            cur.execute("""
-                INSERT INTO embedding (item_id, embedding) VALUES (%s, %s)
-                ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
-            """, (item_id, psycopg2.Binary(embedding_blob)))
-
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        logger.error("Error saving track analysis and embedding for %s: %s", item_id, e)
-        raise
-    finally:
-        cur.close()
+            # DuckDB uses raw bytes, PostgreSQL needs psycopg2.Binary wrapper
+            if DEPLOYMENT_MODE == 'standalone':
+                cur.execute("""
+                    INSERT INTO embedding (item_id, embedding) VALUES (%s, %s)
+                    ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
+                """, (item_id, embedding_blob))
+            else:
+                cur.execute("""
+                    INSERT INTO embedding (item_id, embedding) VALUES (%s, %s)
+                    ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
+                """, (item_id, psycopg2.Binary(embedding_blob)))
+        # Context manager auto-commits on success, auto-rollbacks on exception
 
 def save_clap_embedding(item_id, clap_embedding_vector):
     """Saves CLAP embedding for a track."""
     if clap_embedding_vector is None or (isinstance(clap_embedding_vector, np.ndarray) and clap_embedding_vector.size == 0):
         return
     
-    conn = get_db()
-    cur = conn.cursor()
-    try:
+    with get_db() as conn, conn.cursor() as cur:
         embedding_blob = clap_embedding_vector.astype(np.float32).tobytes()
+        # DuckDB uses raw bytes, PostgreSQL needs Binary wrapper
+        blob_param = embedding_blob if DEPLOYMENT_MODE == 'standalone' else psycopg2.Binary(embedding_blob)
         cur.execute("""
             INSERT INTO clap_embedding (item_id, embedding) VALUES (%s, %s)
             ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
-        """, (item_id, psycopg2.Binary(embedding_blob)))
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"Error saving CLAP embedding for {item_id}: {e}")
-        raise
-    finally:
-        cur.close()
+        """, (item_id, blob_param))
+        # Context manager handles commit/rollback
 
 
 def save_mulan_embedding(item_id, mulan_embedding_vector):
@@ -533,21 +573,15 @@ def save_mulan_embedding(item_id, mulan_embedding_vector):
     if mulan_embedding_vector is None or (isinstance(mulan_embedding_vector, np.ndarray) and mulan_embedding_vector.size == 0):
         return
     
-    conn = get_db()
-    cur = conn.cursor()
-    try:
+    with get_db() as conn, conn.cursor() as cur:
         embedding_blob = mulan_embedding_vector.astype(np.float32).tobytes()
+        # DuckDB uses raw bytes, PostgreSQL needs Binary wrapper
+        blob_param = embedding_blob if DEPLOYMENT_MODE == 'standalone' else psycopg2.Binary(embedding_blob)
         cur.execute("""
             INSERT INTO mulan_embedding (item_id, embedding) VALUES (%s, %s)
             ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
-        """, (item_id, psycopg2.Binary(embedding_blob)))
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"Error saving MuLan embedding for {item_id}: {e}")
-        raise
-    finally:
-        cur.close()
+        """, (item_id, blob_param))
+        # Context manager handles commit/rollback
 
 def get_all_tracks():
     """Fetches all tracks and their embeddings from the database."""
@@ -643,7 +677,7 @@ def save_map_projection(index_name, id_map, projection_array):
             INSERT INTO map_projection_data (index_name, projection_data, id_map_json, embedding_dimension)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (index_name) DO UPDATE SET projection_data = EXCLUDED.projection_data, id_map_json = EXCLUDED.id_map_json, embedding_dimension = EXCLUDED.embedding_dimension, created_at = NOW()
-        """, (index_name, psycopg2.Binary(blob), id_map_json, projection_array.shape[1] if projection_array.ndim == 2 else 0))
+        """, (index_name, blob if DEPLOYMENT_MODE == 'standalone' else psycopg2.Binary(blob), id_map_json, projection_array.shape[1] if projection_array.ndim == 2 else 0))
         conn.commit()
         try:
             size_bytes = len(blob)
