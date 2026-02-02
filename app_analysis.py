@@ -82,6 +82,9 @@ def start_analysis_endpoint():
     """
     # Local imports to prevent circular dependency at startup
     from app_helper import rq_queue_high, clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING
+    
+    # DEBUG: Log what queue we got
+    logger.info(f"DEBUG: rq_queue_high type = {type(rq_queue_high).__name__} from {type(rq_queue_high).__module__}")
 
     data = request.json or {}
     # MODIFIED: Removed jellyfin_url, jellyfin_user_id, and jellyfin_token as they are no longer passed to the task.

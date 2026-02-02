@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AudioMuse-AI Setup</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 32px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 16px;
+        }
+        
+        .form-group {
+            margin-bottom: 25px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        
+        select, input[type="text"], input[type="password"] {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        
+        select:focus, input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .dynamic-fields {
+            display: none;
+            animation: fadeIn 0.3s;
+        }
+        
+        .dynamic-fields.active {
+            display: block;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .help-text {
+            font-size: 12px;
+            color: #999;
+            margin-top: 5px;
+        }
+        
+        .btn-group {
+            display: flex;
+            gap: 12px;
+            margin-top: 30px;
+        }
+        
+        button {
+            flex: 1;
+            padding: 14px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-secondary {
+            background: #f5f5f5;
+            color: #333;
+        }
+        
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+        
+        .alert {
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .alert-warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        
+        .status-configured {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status-not-configured {
+            background: #f8d7da;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎵 AudioMuse-AI Setup</h1>
+        <p class="subtitle">Configure your media server connection</p>
+        
+        {% if message %}
+        <div class="alert alert-{{ message_type }}">
+            {{ message }}
+        </div>
+        {% endif %}
+        
+        {% if not is_configured %}
+        <div class="alert alert-warning">
+            ⚠️ Media server not configured. Please complete the setup below.
+        </div>
+        {% else %}
+        <div class="alert alert-success">
+            ✅ Media server configured. You can update your settings below.
+        </div>
+        {% endif %}
+        
+        <form method="POST" action="/save_setup">
+            <div class="form-group">
+                <label for="mediaserver_type">Media Server Type</label>
+                <select id="mediaserver_type" name="mediaserver_type" required>
+                    <option value="jellyfin" {{ 'selected' if current_config.get('mediaserver_type') == 'jellyfin' else '' }}>Jellyfin</option>
+                    <option value="navidrome" {{ 'selected' if current_config.get('mediaserver_type') == 'navidrome' else '' }}>Navidrome</option>
+                    <option value="lyrion" {{ 'selected' if current_config.get('mediaserver_type') == 'lyrion' else '' }}>Lyrion (LMS)</option>
+                    <option value="emby" {{ 'selected' if current_config.get('mediaserver_type') == 'emby' else '' }}>Emby</option>
+                </select>
+            </div>
+            
+            <!-- Jellyfin Configuration -->
+            <div id="jellyfin-fields" class="dynamic-fields">
+                <div class="form-group">
+                    <label for="jellyfin_url">Jellyfin URL</label>
+                    <input type="text" id="jellyfin_url" name="jellyfin_url" 
+                           placeholder="http://localhost:8096" 
+                           value="{{ current_config.get('jellyfin_url', '') }}">
+                    <div class="help-text">The URL of your Jellyfin server</div>
+                </div>
+                <div class="form-group">
+                    <label for="jellyfin_user_id">User ID</label>
+                    <input type="text" id="jellyfin_user_id" name="jellyfin_user_id"
+                           placeholder="a1b2c3d4e5f6..."
+                           value="{{ current_config.get('jellyfin_user_id', '') }}">
+                    <div class="help-text">Found in Jellyfin Dashboard → Users → [Your User]</div>
+                </div>
+                <div class="form-group">
+                    <label for="jellyfin_token">API Token</label>
+                    <input type="password" id="jellyfin_token" name="jellyfin_token"
+                           placeholder="********************************"
+                           value="{{ current_config.get('jellyfin_token', '') }}">
+                    <div class="help-text">Found in Jellyfin Dashboard → API Keys</div>
+                </div>
+            </div>
+            
+            <!-- Navidrome Configuration -->
+            <div id="navidrome-fields" class="dynamic-fields">
+                <div class="form-group">
+                    <label for="navidrome_url">Navidrome URL</label>
+                    <input type="text" id="navidrome_url" name="navidrome_url"
+                           placeholder="http://localhost:4533"
+                           value="{{ current_config.get('navidrome_url', '') }}">
+                    <div class="help-text">The URL of your Navidrome server</div>
+                </div>
+                <div class="form-group">
+                    <label for="navidrome_user">Username</label>
+                    <input type="text" id="navidrome_user" name="navidrome_user"
+                           placeholder="admin"
+                           value="{{ current_config.get('navidrome_user', '') }}">
+                </div>
+                <div class="form-group">
+                    <label for="navidrome_password">Password</label>
+                    <input type="password" id="navidrome_password" name="navidrome_password"
+                           placeholder="••••••••"
+                           value="{{ current_config.get('navidrome_password', '') }}">
+                </div>
+            </div>
+            
+            <!-- Lyrion Configuration -->
+            <div id="lyrion-fields" class="dynamic-fields">
+                <div class="form-group">
+                    <label for="lyrion_url">Lyrion URL</label>
+                    <input type="text" id="lyrion_url" name="lyrion_url"
+                           placeholder="http://localhost:9000"
+                           value="{{ current_config.get('lyrion_url', '') }}">
+                    <div class="help-text">The URL of your Lyrion Media Server (LMS)</div>
+                </div>
+            </div>
+            
+            <!-- Emby Configuration -->
+            <div id="emby-fields" class="dynamic-fields">
+                <div class="form-group">
+                    <label for="emby_url">Emby URL</label>
+                    <input type="text" id="emby_url" name="emby_url"
+                           placeholder="http://localhost:8096"
+                           value="{{ current_config.get('emby_url', '') }}">
+                    <div class="help-text">The URL of your Emby server</div>
+                </div>
+                <div class="form-group">
+                    <label for="emby_user_id">User ID</label>
+                    <input type="text" id="emby_user_id" name="emby_user_id"
+                           placeholder="a1b2c3d4e5f6..."
+                           value="{{ current_config.get('emby_user_id', '') }}">
+                    <div class="help-text">Found in Emby Dashboard → Users</div>
+                </div>
+                <div class="form-group">
+                    <label for="emby_token">API Token</label>
+                    <input type="password" id="emby_token" name="emby_token"
+                           placeholder="********************************"
+                           value="{{ current_config.get('emby_token', '') }}">
+                    <div class="help-text">Found in Emby Dashboard → API Keys</div>
+                </div>
+            </div>
+            
+            <!-- Optional: Music Libraries -->
+            <div class="form-group">
+                <label for="music_libraries">Music Libraries (Optional)</label>
+                <input type="text" id="music_libraries" name="music_libraries"
+                       placeholder="Music, Classical, Jazz"
+                       value="{{ current_config.get('music_libraries', '') }}">
+                <div class="help-text">Comma-separated list of library names to scan (leave empty for all)</div>
+            </div>
+            
+            <div class="btn-group">
+                <button type="button" class="btn-secondary" onclick="window.location.href='/'">Cancel</button>
+                <button type="submit" class="btn-primary">Save Configuration</button>
+            </div>
+        </form>
+    </div>
+    
+    <script>
+        // Show/hide fields based on media server selection
+        const mediaServerType = document.getElementById('mediaserver_type');
+        const allFields = document.querySelectorAll('.dynamic-fields');
+        
+        function updateFields() {
+            const selected = mediaServerType.value;
+            allFields.forEach(field => {
+                field.classList.remove('active');
+            });
+            document.getElementById(`${selected}-fields`).classList.add('active');
+        }
+        
+        mediaServerType.addEventListener('change', updateFields);
+        
+        // Initialize on page load
+        updateFields();
+    </script>
+</body>
+</html>

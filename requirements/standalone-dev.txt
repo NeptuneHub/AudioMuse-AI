@@ -1,0 +1,56 @@
+# requirements/standalone-dev.txt
+# Development environment with support for ALL platforms
+# Use this for development/testing on any platform
+
+# Base standalone requirements
+SQLAlchemy>=2.0.0
+huey>=2.5.0
+-r common.txt
+
+# ============================================================================
+# MULTI-PLATFORM ONNX RUNTIME
+# ============================================================================
+# Install CPU version by default (works everywhere)
+onnxruntime==1.19.2
+
+# For GPU testing, install the appropriate version:
+# - NVIDIA GPU: pip install onnxruntime-gpu==1.19.2
+# - Apple Silicon: already included in base onnxruntime
+
+# ============================================================================
+# DEVELOPMENT TOOLS
+# ============================================================================
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
+
+# Code quality
+black>=23.7.0
+flake8>=6.1.0
+mypy>=1.5.0
+
+# ============================================================================
+# BUILD TOOLS
+# ============================================================================
+# PyInstaller for creating standalone executables
+pyinstaller>=6.0.0
+setuptools>=68.0.0
+wheel>=0.41.0
+
+# Platform-specific packaging tools
+# briefcase>=0.3.15  # Cross-platform installer creation
+# cx_Freeze>=6.15.0  # Alternative to PyInstaller
+
+# Documentation
+mkdocs>=1.5.0
+mkdocs-material>=9.1.0
+
+# ============================================================================
+# NOTES:
+# ============================================================================
+# This is for DEVELOPMENT ONLY
+# For building installers, use:
+# - standalone.txt (CPU)
+# - standalone-gpu-nvidia.txt (NVIDIA GPU)  
+# - standalone-gpu-macos.txt (Apple Silicon)

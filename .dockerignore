@@ -56,3 +56,18 @@ CLAMP3/*.npy
 mulan_model_export/
 .cache/
 *.tar.gz
+
+# macOS build artifacts (PyInstaller)
+build/
+dist/
+*.dmg
+*.app
+icon.icns
+icon.iconset/
+audiomuse_macos.spec
+selfcontained/prepare_macos_build.sh
+selfcontained/build_macos_installer.sh
+selfcontained/pyinstaller_hook.py
+BUILD_INSTRUCTIONS.md
+MACOS_PACKAGING_STATUS.md
+COMPLETE_SUMMARY.md

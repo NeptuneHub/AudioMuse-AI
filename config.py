@@ -19,10 +19,18 @@ EMBY_TOKEN = os.environ.get("EMBY_TOKEN", "your_default_token")  # Replace with 
 
 # NEW: Allow specifying music libraries/folders for analysis across all media servers.
 # Comma-separated list of library/folder names or paths. If empty, all music libraries/folders are scanned.
-# For Lyrion: Use folder paths like "/music/myfolder"  
+# For Lyrion: Use folder paths like "/music/myfolder"
 # For Jellyfin/Navidrome: Use library/folder names
 MUSIC_LIBRARIES = os.environ.get("MUSIC_LIBRARIES", "") 
-TEMP_DIR = "/app/temp_audio"  # Always use /app/temp_audio
+
+# Temp directory for audio processing - use system temp in standalone mode
+if os.environ.get('DEPLOYMENT_MODE', 'server').lower() == 'standalone':
+    import tempfile
+    from pathlib import Path
+    TEMP_DIR = str(Path.home() / '.audiomuse' / 'temp_audio')
+else:
+    TEMP_DIR = "/app/temp_audio"  # Docker path for server mode
+
 HEADERS = {"X-Emby-Token": JELLYFIN_TOKEN}
 
 if MEDIASERVER_TYPE == "jellyfin":
@@ -225,6 +233,15 @@ MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 AI_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "300"))
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 
+# --- Deployment Mode Configuration ---
+# Possible values: 'standalone', 'server' (default)
+# In 'standalone' mode, uses DuckDB instead of PostgreSQL
+DEPLOYMENT_MODE = os.environ.get('DEPLOYMENT_MODE', 'server').lower()
+SQLITE_DATABASE_PATH = os.environ.get('SQLITE_DATABASE_PATH', 'audiomuse.duckdb')
+# Standalone worker count: default 2 workers can handle different task types
+# CLAP semaphore limits concurrent CLAP analyses to 1 (prevents crashes)
+STANDALONE_WORKER_COUNT = int(os.environ.get('STANDALONE_WORKER_COUNT', '2'))
+
 # Construct DATABASE_URL from individual components for better security in K8s
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "audiomuse")
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "audiomusepassword")
@@ -260,17 +277,20 @@ MOOD_LABELS = [
 
 TOP_N_MOODS = int(os.environ.get("TOP_N_MOODS", "5"))  # Number of top moods to consider (configurable via env)
 TOP_N_OTHER_FEATURES = int(os.environ.get("TOP_N_OTHER_FEATURES", "2")) # Number of top "other features" to consider for clustering vector
-EMBEDDING_MODEL_PATH = "/app/model/msd-musicnn-1.onnx"
-PREDICTION_MODEL_PATH = "/app/model/msd-msd-musicnn-1.onnx"
+
+# Model directory: use MODEL_DIR env if set (standalone), otherwise /app/model (server)
+_MODEL_DIR_BASE = os.environ.get("MODEL_DIR", "/app/model")
+EMBEDDING_MODEL_PATH = os.path.join(_MODEL_DIR_BASE, "msd-musicnn-1.onnx")
+PREDICTION_MODEL_PATH = os.path.join(_MODEL_DIR_BASE, "msd-msd-musicnn-1.onnx")
 EMBEDDING_DIMENSION = 200
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # Split CLAP models: audio model for analysis, text model for search
-CLAP_AUDIO_MODEL_PATH = os.environ.get("CLAP_AUDIO_MODEL_PATH", "/app/model/clap_audio_model.onnx")
-CLAP_TEXT_MODEL_PATH = os.environ.get("CLAP_TEXT_MODEL_PATH", "/app/model/clap_text_model.onnx")
+CLAP_AUDIO_MODEL_PATH = os.environ.get("CLAP_AUDIO_MODEL_PATH", os.path.join(_MODEL_DIR_BASE, "clap_audio_model.onnx"))
+CLAP_TEXT_MODEL_PATH = os.environ.get("CLAP_TEXT_MODEL_PATH", os.path.join(_MODEL_DIR_BASE, "clap_text_model.onnx"))
 # Legacy path for backward compatibility (unused with split models)
-CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", "/app/model/clap_model.onnx")
+CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", os.path.join(_MODEL_DIR_BASE, "clap_model.onnx"))
 CLAP_EMBEDDING_DIMENSION = 512
 # CPU threading for CLAP analysis:
 # - False (default): Use ONNX internal threading (auto-detects all CPU cores, recommended)

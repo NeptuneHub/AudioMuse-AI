@@ -358,18 +358,14 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                      TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import is_clap_available, unload_clap_model
     from .mulan_analyzer import analyze_audio_file as mulan_analyze
-    from config import MULAN_ENABLED
+    from config import MULAN_ENABLED, DEPLOYMENT_MODE
 
-    # ...existing code for analyze_album_task...
-    from app import (app, JobStatus)
-    from app_helper import (redis_conn, get_db, save_task_status, get_task_info_from_db,
-                     save_track_analysis_and_embedding, save_clap_embedding,
-                     TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
-    from .clap_analyzer import is_clap_available, unload_clap_model
-    from .mulan_analyzer import analyze_audio_file as mulan_analyze
-    from config import MULAN_ENABLED
-    
-    current_job = get_current_job(redis_conn)
+    # In standalone mode, use the thread-local job proxy instead of RQ's get_current_job
+    if DEPLOYMENT_MODE == 'standalone':
+        from selfcontained.queue_adapter import get_standalone_current_job
+        current_job = get_standalone_current_job()
+    else:
+        current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
 
     with app.app_context():
@@ -571,7 +567,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                 try:
                                     with get_db() as conn, conn.cursor() as cur:
                                         cur.execute("DELETE FROM clap_embedding WHERE item_id = %s", (str(item['Id']),))
-                                        conn.commit()
+                                        # Context manager auto-commits
                                         logger.debug(f"Deleted old clap_embedding row for item_id={item['Id']}")
                                 except Exception as e:
                                     logger.warning(f"Failed to delete old clap_embedding row for item_id={item['Id']}: {e}")
@@ -664,7 +660,12 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
     MULAN_ENABLED = getattr(config, 'MULAN_ENABLED', False)  # Get MULAN_ENABLED from config
 
-    current_job = get_current_job(redis_conn)
+    # In standalone mode, use the thread-local job proxy instead of RQ's get_current_job
+    if config.DEPLOYMENT_MODE == 'standalone':
+        from selfcontained.queue_adapter import get_standalone_current_job
+        current_job = get_standalone_current_job()
+    else:
+        current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())    
 
     with app.app_context():

@@ -139,7 +139,12 @@ def run_clustering_batch_task(
                      TASK_STATUS_PROGRESS, TASK_STATUS_REVOKED, TASK_STATUS_FAILURE,
                      TASK_STATUS_SUCCESS)
 
-    current_job = get_current_job(redis_conn)
+    from config import DEPLOYMENT_MODE
+    if DEPLOYMENT_MODE == 'standalone':
+        from selfcontained.queue_adapter import get_standalone_current_job
+        current_job = get_standalone_current_job()
+    else:
+        current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
     logger.info(f"Starting clustering batch task {current_task_id} (Batch: {batch_id_str})")
 
@@ -281,7 +286,12 @@ def run_clustering_task(
                      TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
                      TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
 
-    current_job = get_current_job(redis_conn)
+    from config import DEPLOYMENT_MODE
+    if DEPLOYMENT_MODE == 'standalone':
+        from selfcontained.queue_adapter import get_standalone_current_job
+        current_job = get_standalone_current_job()
+    else:
+        current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
     logger.info(f"Starting main clustering task {current_task_id}")
 
