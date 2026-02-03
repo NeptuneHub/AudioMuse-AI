@@ -197,10 +197,50 @@ def main():
         
     except KeyboardInterrupt:
         logger.info("\nShutting down...")
-        sys.exit(0)
+        cleanup_and_exit(0)
     except Exception as e:
         logger.error(f"Error starting application: {e}", exc_info=True)
-        sys.exit(1)
+        cleanup_and_exit(1)
+
+
+def cleanup_and_exit(exit_code=0):
+    """Cleanup resources and exit gracefully"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Stop Huey workers if running
+        if os.environ.get('DEPLOYMENT_MODE') == 'standalone':
+            try:
+                from selfcontained.queue_adapter import get_queue_adapter
+                adapter = get_queue_adapter()
+                if hasattr(adapter, 'stop_workers'):
+                    adapter.stop_workers()
+                    logger.info("✓ Huey workers stopped")
+            except Exception as e:
+                logger.debug(f"Error stopping workers: {e}")
+        
+        # Give threads time to cleanup
+        import time
+        time.sleep(0.5)
+        
+    except Exception as e:
+        logger.debug(f"Error during cleanup: {e}")
+    finally:
+        sys.exit(exit_code)
+
+
+# Register signal handlers for graceful shutdown
+import signal
+
+def signal_handler(signum, frame):
+    """Handle termination signals gracefully"""
+    logger = logging.getLogger(__name__)
+    logger.info(f"\nReceived signal {signum}, shutting down gracefully...")
+    cleanup_and_exit(0)
+
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
 
 
 if __name__ == '__main__':

@@ -35,6 +35,7 @@ rq
 
 # HTTP and utilities
 requests
+certifi  # SSL certificate verification
 pyyaml
 six
 rapidfuzz

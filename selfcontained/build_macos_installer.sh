@@ -39,6 +39,30 @@ echo "1️⃣ Installing build dependencies..."
 $VENV_PYTHON -m pip install -q --upgrade pip
 $VENV_PYTHON -m pip install -q pyinstaller pillow rumps
 
+# Step 1.4: Download ffmpeg binary for macOS
+echo "1.4️⃣ Downloading ffmpeg binary..."
+FFMPEG_DIR="ffmpeg_bin"
+mkdir -p "$FFMPEG_DIR"
+
+if [ ! -f "$FFMPEG_DIR/ffmpeg" ]; then
+    # Download static ffmpeg build for macOS
+    FFMPEG_URL="https://evermeet.cx/ffmpeg/ffmpeg-7.1.zip"
+    echo "  Downloading from $FFMPEG_URL..."
+    curl -L "$FFMPEG_URL" -o "$FFMPEG_DIR/ffmpeg.zip" --progress-bar
+    
+    if [ -f "$FFMPEG_DIR/ffmpeg.zip" ]; then
+        unzip -q "$FFMPEG_DIR/ffmpeg.zip" -d "$FFMPEG_DIR"
+        rm "$FFMPEG_DIR/ffmpeg.zip"
+        chmod +x "$FFMPEG_DIR/ffmpeg"
+        echo "  ✓ ffmpeg binary downloaded"
+    else
+        echo "  ⚠️  Failed to download ffmpeg, continuing without it..."
+    fi
+else
+    echo "  ✓ ffmpeg binary already downloaded"
+fi
+echo ""
+
 # Step 1.5: Create icon from PNG
 echo "1.5️⃣ Creating macOS icon..."
 ICON_SOURCE="screenshot/audiomuseai.png"
@@ -100,6 +124,7 @@ a = Analysis(
         ('app.py', '.'),
         ('app_*.py', '.'),
         ('ai.py', '.'),
+        ('ffmpeg_bin/ffmpeg', '.'),  # Bundle ffmpeg binary
         # Don't bundle models - they'll be downloaded on first run
     ],
     hiddenimports=[

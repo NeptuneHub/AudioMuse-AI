@@ -84,6 +84,19 @@ class AudioMuseMenuBarApp(rumps.App):
     
     def quit_app(self, _):
         """Quit the application"""
+        import sys
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        try:
+            # Close all database connections
+            from selfcontained.duckdb_psycopg2_compat import close_all_connections
+            close_all_connections()
+            logger.info("Database connections closed")
+        except Exception as e:
+            logger.debug(f"Error closing connections: {e}")
+        
+        # Quit the app
         rumps.quit_application()
 
 

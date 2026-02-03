@@ -7,11 +7,20 @@ Auto-downloads required ML models on first run
 import os
 import sys
 import urllib.request
+import ssl
 import logging
 from pathlib import Path
 from typing import List, Dict
 
 logger = logging.getLogger(__name__)
+
+# Create SSL context with proper certificate verification
+try:
+    import certifi
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    # Fallback to default context if certifi not available
+    ssl_context = ssl.create_default_context()
 
 # Model download URLs from GitHub releases
 GITHUB_RELEASE_BASE = "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"
@@ -102,6 +111,9 @@ def download_file(url: str, destination: Path, expected_size: int = None) -> boo
                     if block_num % 100 == 0:  # Update every 100 blocks
                         logger.info(f"  Progress: {percent}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)")
             
+            # Create an opener with SSL context
+            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl_context))
+            urllib.request.install_opener(opener)
             urllib.request.urlretrieve(url, destination, reporthook=progress_hook)
             
             # Validate size
@@ -235,31 +247,95 @@ def check_and_download_models(model_dir: Path, cache_dir: Path, include_optional
 
 def check_system_dependencies():
     """Check if required system dependencies are available."""
-    missing = []
+    import shutil
+    import subprocess
+    import platform
+    import os
+    import sys
+    
+    # For frozen apps, add bundled ffmpeg to PATH
+    if getattr(sys, 'frozen', False):
+        bundle_dir = os.path.dirname(sys.executable)
+        bundled_ffmpeg = os.path.join(bundle_dir, 'ffmpeg')
+        if os.path.exists(bundled_ffmpeg):
+            # Add bundle dir to PATH so ffmpeg is found
+            os.environ['PATH'] = f"{bundle_dir}:{os.environ.get('PATH', '')}"
+            logger.info(f"✓ Using bundled ffmpeg: {bundled_ffmpeg}")
+            return True
+    
+    # Add common Homebrew paths to PATH
+    if platform.system() == 'Darwin':
+        homebrew_paths = [
+            '/opt/homebrew/bin',  # Apple Silicon
+            '/usr/local/bin',     # Intel Mac
+        ]
+        current_path = os.environ.get('PATH', '')
+        for hb_path in homebrew_paths:
+            if hb_path not in current_path and os.path.exists(hb_path):
+                os.environ['PATH'] = f"{hb_path}:{current_path}"
     
     # Check for ffmpeg
-    import shutil
     if not shutil.which('ffmpeg'):
-        missing.append('ffmpeg')
-    
-    if missing:
-        logger.warning(f"")
-        logger.warning(f"╔══════════════════════════════════════════════════════════╗")
-        logger.warning(f"║  WARNING: Missing system dependencies                    ║")
-        logger.warning(f"╚══════════════════════════════════════════════════════════╝")
-        logger.warning(f"")
-        logger.warning(f"The following system tools are required but not found:")
-        for dep in missing:
-            logger.warning(f"  - {dep}")
-        logger.warning(f"")
-        logger.warning(f"Install instructions:")
-        logger.warning(f"  macOS:   brew install ffmpeg")
-        logger.warning(f"  Ubuntu:  sudo apt install ffmpeg")
-        logger.warning(f"  Windows: Download from https://ffmpeg.org/download.html")
-        logger.warning(f"")
-        
-        # Don't fail, just warn
-        return True
+        # Try to auto-install on macOS
+        if platform.system() == 'Darwin':
+            logger.info(f"")
+            logger.info(f"╔══════════════════════════════════════════════════════════╗")
+            logger.info(f"║  Installing ffmpeg via Homebrew...                       ║")
+            logger.info(f"╚══════════════════════════════════════════════════════════╝")
+            logger.info(f"")
+            
+            try:
+                # Check if Homebrew is installed
+                if not shutil.which('brew'):
+                    logger.warning(f"Homebrew not found. Please install ffmpeg manually:")
+                    logger.warning(f"  Option 1: Install Homebrew first: https://brew.sh")
+                    logger.warning(f"  Option 2: Download ffmpeg from https://ffmpeg.org/download.html")
+                    logger.warning(f"")
+                    return True
+                
+                # Install ffmpeg via Homebrew
+                logger.info(f"Running: brew install ffmpeg")
+                logger.info(f"This may take a few minutes...")
+                result = subprocess.run(
+                    ['brew', 'install', 'ffmpeg'],
+                    capture_output=True,
+                    text=True,
+                    timeout=600  # 10 minute timeout
+                )
+                
+                if result.returncode == 0:
+                    logger.info(f"✓ ffmpeg installed successfully!")
+                    logger.info(f"")
+                    return True
+                else:
+                    logger.warning(f"Failed to install ffmpeg automatically.")
+                    logger.warning(f"Please install manually: brew install ffmpeg")
+                    logger.warning(f"")
+                    return True
+                    
+            except subprocess.TimeoutExpired:
+                logger.warning(f"ffmpeg installation timed out.")
+                logger.warning(f"Please install manually: brew install ffmpeg")
+                logger.warning(f"")
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to auto-install ffmpeg: {e}")
+                logger.warning(f"Please install manually: brew install ffmpeg")
+                logger.warning(f"")
+                return True
+        else:
+            # Non-macOS: just show instructions
+            logger.warning(f"")
+            logger.warning(f"╔══════════════════════════════════════════════════════════╗")
+            logger.warning(f"║  WARNING: Missing system dependencies                    ║")
+            logger.warning(f"╚══════════════════════════════════════════════════════════╝")
+            logger.warning(f"")
+            logger.warning(f"ffmpeg is required but not found.")
+            logger.warning(f"")
+            logger.warning(f"Install instructions:")
+            logger.warning(f"  Ubuntu:  sudo apt install ffmpeg")
+            logger.warning(f"  Windows: Download from https://ffmpeg.org/download.html")
+            logger.warning(f"")
     
     return True
 

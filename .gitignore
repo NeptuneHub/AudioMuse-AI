@@ -69,3 +69,4 @@ icon.icns
 icon.iconset/
 audiomuse_macos.spec
 *.app
+ffmpeg_bin/ffmpeg

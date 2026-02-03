@@ -243,6 +243,10 @@ class DuckDBConnection:
     def __init__(self, db_path: str):
         self._conn = duckdb.connect(db_path, read_only=False)
         logger.info(f"DuckDB connection established: {db_path}")
+        
+        # Track this connection for cleanup
+        global _all_connections
+        _all_connections.append(self)
 
     def cursor(self, cursor_factory=None):
         """Return appropriate cursor type"""
@@ -293,3 +297,19 @@ def connect_duckdb(db_path: str) -> DuckDBConnection:
         rows = cur.fetchall()
     """
     return DuckDBConnection(db_path)
+
+
+# Track all connections for cleanup
+_all_connections = []
+
+def close_all_connections():
+    """Close all open DuckDB connections to release locks."""
+    global _all_connections
+    for conn in _all_connections:
+        try:
+            if hasattr(conn, '_conn') and conn._conn:
+                conn._conn.close()
+        except Exception:
+            pass
+    _all_connections.clear()
+
