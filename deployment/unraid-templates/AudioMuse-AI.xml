@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>AudioMuse-AI</Name>
+  <Repository>ghcr.io/neptunehub/audiomuse-ai:latest</Repository>
+  <Registry>https://github.com/NeptuneHub/AudioMuse-AI</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/NeptuneHub/AudioMuse-AI/discussions</Support>
+  <Project>https://github.com/NeptuneHub/AudioMuse-AI</Project>
+  <Overview>AudioMuse-AI is an open-source environment that brings automatic playlist generation to Jellyfin, Navidrome, LMS, Lyrion and Emby. Using Librosa and ONNX, it performs sonic analysis on your audio files locally, allowing you to curate playlists for any mood without external APIs.&#xD;
+&#xD;
+Features: Clustering, Instant Playlists, Music Map, Similar Songs, Song Paths, Sonic Fingerprint, Song Alchemy, Text Search.&#xD;
+&#xD;
+IMPORTANT: Requires Redis and PostgreSQL containers. Install AudioMuse-AI-Redis and AudioMuse-AI-PostgreSQL first.</Overview>
+  <Category>MediaApp:Music Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8000]</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/NeptuneHub/AudioMuse-AI/main/static/audiomuse-ai-logo.png</Icon>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText>Support AudioMuse-AI</DonateText>
+  <DonateLink>https://github.com/NeptuneHub/AudioMuse-AI</DonateLink>
+  <Requires>AudioMuse-AI-Redis, AudioMuse-AI-PostgreSQL</Requires>
+  <Config Name="WebUI Port" Target="8000" Default="8000" Mode="tcp" Description="Web interface port" Type="Port" Display="always" Required="true" Mask="false">8000</Config>
+  <Config Name="Media Server Type" Target="MEDIASERVER_TYPE" Default="jellyfin" Mode="" Description="Type of media server: jellyfin, navidrome, lyrion, or emby" Type="Variable" Display="always" Required="true" Mask="false">jellyfin</Config>
+  <Config Name="Jellyfin URL" Target="JELLYFIN_URL" Default="http://YOUR_JELLYFIN_IP:8096" Mode="" Description="Full URL to your Jellyfin server" Type="Variable" Display="always" Required="false" Mask="false">http://YOUR_JELLYFIN_IP:8096</Config>
+  <Config Name="Jellyfin User ID" Target="JELLYFIN_USER_ID" Default="" Mode="" Description="Jellyfin User ID (found in Dashboard → Users → URL)" Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Jellyfin API Token" Target="JELLYFIN_TOKEN" Default="" Mode="" Description="Jellyfin API Token (Dashboard → API Keys)" Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Navidrome URL" Target="NAVIDROME_URL" Default="" Mode="" Description="Full URL to your Navidrome server" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Navidrome User" Target="NAVIDROME_USER" Default="" Mode="" Description="Navidrome username" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Navidrome Password" Target="NAVIDROME_PASSWORD" Default="" Mode="" Description="Navidrome password" Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Lyrion URL" Target="LYRION_URL" Default="" Mode="" Description="Full URL to your Lyrion server" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Emby URL" Target="EMBY_URL" Default="" Mode="" Description="Full URL to your Emby server" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Emby User ID" Target="EMBY_USER_ID" Default="" Mode="" Description="Emby User ID" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Emby Token" Target="EMBY_TOKEN" Default="" Mode="" Description="Emby API Token" Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="PostgreSQL Host" Target="POSTGRES_HOST" Default="" Mode="" Description="PostgreSQL hostname or IP (use Unraid IP if running locally)" Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="PostgreSQL Port" Target="POSTGRES_PORT" Default="5435" Mode="" Description="PostgreSQL port" Type="Variable" Display="always" Required="true" Mask="false">5435</Config>
+  <Config Name="PostgreSQL User" Target="POSTGRES_USER" Default="audiomuse" Mode="" Description="PostgreSQL username" Type="Variable" Display="always" Required="true" Mask="false">audiomuse</Config>
+  <Config Name="PostgreSQL Password" Target="POSTGRES_PASSWORD" Default="" Mode="" Description="PostgreSQL password (must match PostgreSQL container)" Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="PostgreSQL Database" Target="POSTGRES_DB" Default="audiomuse" Mode="" Description="PostgreSQL database name" Type="Variable" Display="always" Required="true" Mask="false">audiomuse</Config>
+  <Config Name="Redis URL" Target="REDIS_URL" Default="redis://YOUR_UNRAID_IP:6380/0" Mode="" Description="Redis connection URL" Type="Variable" Display="always" Required="true" Mask="false">redis://YOUR_UNRAID_IP:6380/0</Config>
+  <Config Name="AI Model Provider" Target="AI_MODEL_PROVIDER" Default="NONE" Mode="" Description="AI provider for playlist naming: OLLAMA, GEMINI, MISTRAL, OPENAI, or NONE" Type="Variable" Display="always" Required="false" Mask="false">NONE</Config>
+  <Config Name="Ollama Server URL" Target="OLLAMA_SERVER_URL" Default="" Mode="" Description="URL for Ollama API (if using OLLAMA provider)" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Ollama Model Name" Target="OLLAMA_MODEL_NAME" Default="mistral:7b" Mode="" Description="Ollama model to use" Type="Variable" Display="advanced" Required="false" Mask="false">mistral:7b</Config>
+  <Config Name="Gemini API Key" Target="GEMINI_API_KEY" Default="" Mode="" Description="Google Gemini API Key (if using GEMINI provider)" Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Mistral API Key" Target="MISTRAL_API_KEY" Default="" Mode="" Description="Mistral API Key (if using MISTRAL provider)" Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="OpenAI API Key" Target="OPENAI_API_KEY" Default="" Mode="" Description="OpenAI/OpenRouter API Key (if using OPENAI provider)" Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Music Libraries" Target="MUSIC_LIBRARIES" Default="" Mode="" Description="Comma-separated list of music libraries to analyze. Leave empty for all." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Temp Directory" Target="TEMP_DIR" Default="/app/temp_audio" Mode="" Description="Temporary directory for audio processing" Type="Variable" Display="advanced" Required="false" Mask="false">/app/temp_audio</Config>
+  <Config Name="Temp Audio Storage" Target="/app/temp_audio" Default="/mnt/user/appdata/audiomuse-ai/temp" Mode="rw" Description="Temporary audio storage path" Type="Path" Display="advanced" Required="true" Mask="false">/mnt/user/appdata/audiomuse-ai/temp</Config>
+  <Config Name="App Data" Target="/app/data" Default="/mnt/user/appdata/audiomuse-ai/data" Mode="rw" Description="Persistent data storage" Type="Path" Display="advanced" Required="true" Mask="false">/mnt/user/appdata/audiomuse-ai/data</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+</Container>
