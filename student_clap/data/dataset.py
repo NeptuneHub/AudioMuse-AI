@@ -31,23 +31,21 @@ logger = logging.getLogger(__name__)
 class StudentCLAPDataset:
     """Dataset for training student CLAP model using local FMA files."""
     
-    def __init__(self, 
+    def __init__(self,
                  config: dict,
                  split: str = 'train',
-                 validation_split: float = 0.15,
-                 epoch: int = 1):
+                 epoch: int = 1,
+                 **kwargs):
         """
         Initialize dataset.
-        
+
         Args:
             config: Full configuration dict
-            split: 'train' or 'val'
-            validation_split: Fraction of data for validation
+            split: 'train' or 'val' (loads from fma_path or validation_path respectively)
             epoch: Current epoch number (1 = cache building, 2+ = cache reuse only)
         """
         self.config = config
         self.split = split
-        self.validation_split = validation_split
         self.epoch = epoch
         
         # Extract configs
@@ -55,35 +53,38 @@ class StudentCLAPDataset:
         self.paths_config = config['paths']
         self.dataset_config = config.get('dataset', {})
         
-        # Initialize local song loader (replaces database + Jellyfin)
-        fma_path = self.dataset_config['fma_path']
-        self.song_loader = LocalSongLoader(fma_path)
-        
+        # Initialize local song loader from the appropriate directory
+        if split == 'train':
+            data_path = self.dataset_config['fma_path']
+        else:
+            data_path = self.dataset_config['validation_path']
+        self.song_loader = LocalSongLoader(data_path)
+
         # Initialize CLAP embedder for teacher embeddings
         teacher_model_path = self.paths_config['teacher_model']
         self.clap_embedder = CLAPEmbedder(teacher_model_path)
-        
+
         # Initialize mel spectrogram cache (stores both mel specs and embeddings)
         mel_cache_path = self.paths_config.get('mel_cache', './cache/mel_spectrograms.db')
         self.mel_cache = MelSpectrogramCache(mel_cache_path)
         logger.info(f"🔧 MEL CACHE PATH: {mel_cache_path}")
         logger.info(f"🔧 MEL CACHE: No size limit - will cache all songs")
-        
-        # Load songs from local FMA directory
-        logger.info("Loading songs from local FMA directory...")
+
+        # Load songs from directory
+        logger.info(f"Loading songs for '{split}' from {data_path}...")
         sample_size = self.dataset_config.get('sample_size')
-        all_songs = self.song_loader.load_songs(limit=sample_size)
-        
+        self.items = self.song_loader.load_songs(limit=sample_size)
+
         # Show big label with song count
         logger.info("="*80)
         logger.info("="*80)
         if sample_size == 0 or sample_size is None:
-            logger.info(f"🎵 LOADING ALL SONGS: {len(all_songs)} AUDIO FILES FOUND 🎵")
+            logger.info(f"🎵 [{split.upper()}] LOADING ALL SONGS: {len(self.items)} AUDIO FILES FOUND 🎵")
         else:
-            logger.info(f"🎵 LOADING SAMPLE: {len(all_songs)} AUDIO FILES (limited from dataset) 🎵")
+            logger.info(f"🎵 [{split.upper()}] LOADING SAMPLE: {len(self.items)} AUDIO FILES (limited from dataset) 🎵")
         logger.info("="*80)
         logger.info("="*80)
-        
+
         # Check cache size without loading all IDs into memory (memory optimization!)
         cache_size_gb = self.mel_cache.get_cache_size_gb()
         if cache_size_gb > 0:
@@ -91,18 +92,8 @@ class StudentCLAPDataset:
             cursor = self.mel_cache.conn.execute("SELECT COUNT(*) FROM mel_spectrograms")
             cached_count = cursor.fetchone()[0]
             logger.info(f"📦 Found existing mel cache: {cached_count} songs, {cache_size_gb:.1f}GB")
-        
-        # Split into train/val
-        np.random.seed(42)  # Reproducible split
-        indices = np.random.permutation(len(all_songs))
-        split_idx = int(len(all_songs) * (1 - validation_split))
-        
-        if split == 'train':
-            self.items = [all_songs[i] for i in indices[:split_idx]]
-        else:
-            self.items = [all_songs[i] for i in indices[split_idx:]]
-            
-        logger.info(f"Dataset split '{split}': {len(self.items)} items")
+
+        logger.info(f"Dataset '{split}': {len(self.items)} items from {data_path}")
         
     def __len__(self) -> int:
         """Return number of items in dataset."""

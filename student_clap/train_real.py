@@ -280,9 +280,25 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                 if 'audio_segments' in batch:
                     del batch['audio_segments']  # This is the heavy data
                 del batch
-            if 'step_metrics' in locals():
-                del step_metrics
             
+            # Step CosineAnnealingLR per-batch for smooth decay (both Stage 1 and Stage 2),
+            # but only when the optimizer actually updated parameters (accounts for gradient accumulation).
+            try:
+                if hasattr(trainer, 'scheduler'):
+                    sched = trainer.scheduler
+                    if isinstance(sched, torch.optim.lr_scheduler.CosineAnnealingLR):
+                        if 'step_metrics' in locals() and step_metrics.get('will_update', False):
+                            sched.step()
+                            new_lr = trainer.optimizer.param_groups[0]['lr']
+                            last_epoch = getattr(sched, 'last_epoch', 'N/A')
+                            logger.info(f"🔁 CosineAnnealingLR step → LR={new_lr:.6e} (last_epoch={last_epoch})")
+                        else:
+                            logger.info("CosineAnnealingLR not stepped this batch (optimizer update not performed due to accumulation)")
+                    else:
+                        logger.info(f"Scheduler is {sched.__class__.__name__}; per-batch Cosine step skipped")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to step per-batch scheduler: {e}")
+
             # Force garbage collection
             gc.collect()
             
@@ -292,6 +308,10 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             
+            # Clean up temporary metrics object
+            if 'step_metrics' in locals():
+                del step_metrics
+
             logger.info(f"   🧹 Memory cleaned after batch")
             
             # 📊 Log memory usage (Mac Mini has 16GB)
@@ -319,14 +339,6 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
         except Exception as e:
             logger.error(f"❌ Training failed on batch {num_batches + 1}: {e}")
             continue
-        
-        # Step Stage 2 CosineAnnealingLR per-batch for smooth per-batch decay
-        try:
-            if config.get('current_stage', 1) == 2 and hasattr(trainer, 'scheduler') and isinstance(trainer.scheduler, torch.optim.lr_scheduler.CosineAnnealingLR):
-                trainer.scheduler.step()
-                logger.debug("🔁 Stage 2 per-batch scheduler step (CosineAnnealingLR)")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to step per-batch scheduler: {e}")
         
         logger.info(f"─" * 60)
     
@@ -828,12 +840,8 @@ def train(config_path: str, resume: str = None):
         logger.info("   Note: Mel cache will be automatically restored from this if needed")
         logger.info("   (The dataset class handles cache restoration automatically)")
     
-    train_dataset = StudentCLAPDataset(config, split='train', 
-                                       validation_split=config['training']['validation_split'],
-                                       epoch=start_epoch)
-    val_dataset = StudentCLAPDataset(config, split='val',
-                                     validation_split=config['training']['validation_split'],
-                                     epoch=start_epoch)
+    train_dataset = StudentCLAPDataset(config, split='train', epoch=start_epoch)
+    val_dataset = StudentCLAPDataset(config, split='val', epoch=start_epoch)
     
     logger.info(f"  Train: {len(train_dataset)} samples")
     logger.info(f"  Val:   {len(val_dataset)} samples")
@@ -848,6 +856,19 @@ def train(config_path: str, resume: str = None):
     stage1_epochs = config['training']['epochs']  # 15 epochs
     stage2_epochs = config['training'].get('stage2_epochs', 5)  # 5 additional epochs
     total_epochs = stage1_epochs + stage2_epochs  # 20 total
+
+    # If Stage 1 uses CosineAnnealingLR, (re)create scheduler with actual dataset size for per-batch stepping.
+    # We check config (not isinstance) because checkpoint resume may have overwritten the scheduler.
+    lr_sched_cfg = config['training'].get('lr_scheduler', {})
+    if lr_sched_cfg.get('use_cosine_annealing', False):
+        lr_min = float(lr_sched_cfg.get('min_lr', 1e-6))
+        batch_size = int(config['training'].get('batch_size', 1))
+        batches_per_epoch = (len(train_dataset) + batch_size - 1) // batch_size
+        t_max = int(stage1_epochs) * batches_per_epoch
+        trainer.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            trainer.optimizer, T_max=t_max, eta_min=lr_min
+        )
+        logger.info(f"📉 Stage 1 CosineAnnealingLR initialized with T_max={t_max} ({stage1_epochs} epochs × {batches_per_epoch} batches)")
     
     # Training loop
     logger.info("\n" + "=" * 60)
@@ -909,7 +930,13 @@ def train(config_path: str, resume: str = None):
                 # min_lrs can be a list
                 sched_min_lr = sched_min_lr[0] if isinstance(sched_min_lr, (list, tuple)) else sched_min_lr
             curr_lr = trainer.optimizer.param_groups[0]['lr'] if hasattr(trainer, 'optimizer') else 'N/A'
-            logger.info(f"📊 Scheduler @ epoch {epoch}: mode={sched_mode}, factor={sched_factor}, patience={sched_patience}, threshold={sched_threshold}, threshold_mode={sched_threshold_mode}, min_lr={sched_min_lr}, current_lr={curr_lr}")
+
+            # Additional diagnostics: scheduler class, T_max (if Cosine) and last_epoch
+            sched_name = sched.__class__.__name__ if hasattr(sched, '__class__') else str(type(sched))
+            t_max = getattr(sched, 'T_max', getattr(sched, 't_max', 'N/A'))
+            last_epoch = getattr(sched, 'last_epoch', 'N/A')
+
+            logger.info(f"📊 Scheduler @ epoch {epoch}: class={sched_name}, T_max={t_max}, last_epoch={last_epoch}, mode={sched_mode}, factor={sched_factor}, patience={sched_patience}, threshold={sched_threshold}, threshold_mode={sched_threshold_mode}, min_lr={sched_min_lr}, current_lr={curr_lr}")
         except Exception as e:
             logger.warning(f"⚠️ Could not read scheduler settings: {e}")
 
@@ -1010,7 +1037,7 @@ def train(config_path: str, resume: str = None):
             s2_patience = stage2_sched_cfg.get('patience', 3)
             s2_threshold = stage2_sched_cfg.get('threshold', 0.005)
             s2_threshold_mode = stage2_sched_cfg.get('threshold_mode', 'rel')
-            s2_min = stage2_sched_cfg.get('min_lr', 1e-6)
+            s2_min = float(stage2_sched_cfg.get('min_lr', 1e-6))
 
             # If configured to reuse Stage 1 scheduler, create ReduceLROnPlateau here.
             if stage2_sched_cfg.get('use_stage1_scheduler', False):
@@ -1022,25 +1049,22 @@ def train(config_path: str, resume: str = None):
                     patience=lr_cfg.get('patience', 10),
                     threshold=lr_cfg.get('threshold', 0.005),
                     threshold_mode=lr_cfg.get('threshold_mode', 'rel'),
-                    min_lr=lr_cfg.get('min_lr', 1e-6)
+                    min_lr=float(lr_cfg.get('min_lr', 1e-6))
                 )
                 logger.info(f"📉 Stage 2 LR Scheduler reset: ReduceLROnPlateau (reusing Stage 1 settings)")
             else:
-                # Compute batches per epoch and default t_max as stage2_epochs * batches_per_epoch for per-batch stepping
-                try:
-                    batch_size = config['training'].get('batch_size', 1)
-                    batches_per_epoch = (len(train_dataset) + batch_size - 1) // batch_size
-                except Exception:
-                    batches_per_epoch = 1
-                default_t_max = stage2_sched_cfg.get('t_max', stage2_epochs * batches_per_epoch)
+                # Compute t_max = stage2_epochs * batches_per_epoch for per-batch stepping
+                batch_size = config['training'].get('batch_size', 1)
+                batches_per_epoch = (len(train_dataset) + batch_size - 1) // batch_size
+                t_max = stage2_epochs * batches_per_epoch
 
                 # Use CosineAnnealingLR for stage 2 for smooth decay over the total number of stage2 steps
                 trainer.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                     trainer.optimizer,
-                    T_max=default_t_max,
+                    T_max=t_max,
                     eta_min=s2_min
                 )
-                logger.info(f"📉 Stage 2 LR Scheduler reset: CosineAnnealingLR (T_max={default_t_max}, eta_min={s2_min})")
+                logger.info(f"📉 Stage 2 LR Scheduler reset: CosineAnnealingLR (T_max={t_max}, eta_min={s2_min})")
             logger.info(f"   📈 Stage 2 learning rate: {stage2_lr:.2e}")
             logger.info(f"   📊 Training {sum(p.numel() for p in trainer.model.parameters() if p.requires_grad):,} parameters (projection head only)")
             logger.info("   🎯 This refines the embedding alignment while keeping learned features intact")
@@ -1162,14 +1186,9 @@ def train(config_path: str, resume: str = None):
                     sched.step(val_cosine)
                     logger.info(f"Scheduler (ReduceLROnPlateau) stepped using validation cosine: {val_cosine:.4f}")
                 elif sched_cls == 'CosineAnnealingLR':
-                    # For Stage 2 we drive CosineAnnealingLR per-batch during training and
-                    # must NOT call step(val) here (it would reset epoch/state). If we are in
-                    # Stage 2, skip validation-time stepping to preserve continuous decay.
-                    if current_stage == 2:
-                        logger.debug("Skipping validation-time scheduler.step() for CosineAnnealingLR in Stage 2 (per-batch stepping active)")
-                    else:
-                        sched.step()
-                        logger.info(f"Scheduler (CosineAnnealingLR) stepped (per-epoch)")
+                    # CosineAnnealingLR is driven per-batch during training; do NOT call
+                    # step() here at validation time as it would double-count steps.
+                    logger.debug("Skipping validation-time scheduler.step() for CosineAnnealingLR (per-batch stepping active)")
                 else:
                     # Generic fallback: step once per epoch
                     sched.step()

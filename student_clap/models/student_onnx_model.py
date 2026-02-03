@@ -317,18 +317,25 @@ class StudentCLAPTrainer:
         lr_patience = lr_sched_cfg.get('patience', 10)
         lr_threshold = lr_sched_cfg.get('threshold', 1e-4)
         lr_threshold_mode = lr_sched_cfg.get('threshold_mode', 'rel')
-        lr_min = lr_sched_cfg.get('min_lr', 1e-6)
+        lr_min = float(lr_sched_cfg.get('min_lr', 1e-6))
 
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer,
-            mode=lr_mode,
-            factor=lr_factor,
-            patience=lr_patience,
-            threshold=lr_threshold,
-            threshold_mode=lr_threshold_mode,
-            min_lr=lr_min
-        )
-        logger.info(f"📉 LR Scheduler: ReduceLROnPlateau (factor={lr_factor}, patience={lr_patience}, threshold={lr_threshold}, mode={lr_mode})")
+        if lr_sched_cfg.get('use_cosine_annealing', False):
+            # Placeholder T_max=1; will be re-initialized in train_real.py once dataset size is known
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=1, eta_min=lr_min
+            )
+            logger.info(f"📉 LR Scheduler: CosineAnnealingLR (placeholder, will be re-initialized with actual T_max)")
+        else:
+            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode=lr_mode,
+                factor=lr_factor,
+                patience=lr_patience,
+                threshold=lr_threshold,
+                threshold_mode=lr_threshold_mode,
+                min_lr=lr_min
+            )
+            logger.info(f"📉 LR Scheduler: ReduceLROnPlateau (factor={lr_factor}, patience={lr_patience}, threshold={lr_threshold}, mode={lr_mode})")
 
         self.training_strategy = config['training'].get('training_strategy', 'averaged')
         self.segment_batch_size = config['model'].get('segment_batch_size', 10)
