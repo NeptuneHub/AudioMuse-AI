@@ -9,6 +9,10 @@ by using as teacher the pretrained model:
 and following the tinyCLAP distillation approch for the AUDIO part:
 - https://github.com/fpaissan/tinyCLAP
 
+but using the efficentat model (mn10_as):
+https://github.com/fschmid56/EfficientAT
+
+
 It also try to distill a text model, in `config.yaml` you can decide if train audio, text or both:
 
 ```yaml
@@ -164,8 +168,10 @@ for line in sys.stdin:
 All source code in this repository and the resulting trained model weights are licensed under the AGPL-3.0 License like all the project.
 
 ### Training Data
-The distillation process utilized a curated dataset of 2000+ songs:
+The distillation process utilized a curated dataset of songs:
 
 - [Free Music Archive](https://freemusicarchive.org/): Songs used are under various Creative Commons licenses. Detailed attribution and specific license types for each track can be found in [student_clap/models/FMA_SONGS_LICENSE.md](student_clap/models/FMA_SONGS_LICENSE.md)
+
+- [MTG-Jamendo](https://github.com/MTG/mtg-jamendo-dataset): Songs used are under various Creative Commons licenses. Detailed attribution and specific license types for each track can be found in [student_clap/models/MTG_JAMENDO_SONGS_LICENSE.md](student_clap/models/FMA_SONGS_LICENSE.md)
 
 - Public Domain: Additional tracks were sourced from CC0 1.0 sources.
