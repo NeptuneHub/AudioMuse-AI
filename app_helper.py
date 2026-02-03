@@ -490,20 +490,63 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     scale = _sanitize_string(scale, max_length=10, field_name="scale")
     other_features = _sanitize_string(other_features, max_length=2000, field_name="other_features")
 
-    # year: validate as integer, reasonable range
-    if year is not None:
-        try:
-            year = int(year)
-            if year < 1000 or year > 2100:
-                year = None
-        except (ValueError, TypeError):
-            year = None
+    # year: parse from various date formats and validate
+    def _parse_year_from_date(year_value):
+        """
+        Parse year from various date formats.
+        Supports: YYYY, YYYY-MM-DD, MM-DD-YYYY, DD-MM-YYYY (with - or / separators)
+        """
+        if year_value is None:
+            return None
 
-    # rating: validate as integer 0-100
+        year_str = str(year_value).strip()
+        if not year_str:
+            return None
+
+        # Try parsing as pure integer first (YYYY)
+        try:
+            year = int(year_str)
+            if 1000 <= year <= 2100:
+                return year
+        except (ValueError, TypeError):
+            pass
+
+        # Normalize separators
+        normalized = year_str.replace('/', '-')
+        parts = normalized.split('-')
+
+        if len(parts) == 3:
+            try:
+                # YYYY-MM-DD format
+                if len(parts[0]) == 4:
+                    year = int(parts[0])
+                    if 1000 <= year <= 2100:
+                        return year
+
+                # MM-DD-YYYY or DD-MM-YYYY format
+                if len(parts[2]) == 4:
+                    year = int(parts[2])
+                    if 1000 <= year <= 2100:
+                        return year
+
+                # 2-digit year (MM-DD-YY)
+                if len(parts[2]) == 2:
+                    year = int(parts[2])
+                    year += 2000 if year < 30 else 1900
+                    if 1000 <= year <= 2100:
+                        return year
+            except (ValueError, TypeError, IndexError):
+                pass
+
+        return None
+
+    year = _parse_year_from_date(year)
+
+    # rating: validate as integer 0-5 (5-star rating system)
     if rating is not None:
         try:
             rating = int(rating)
-            if rating < 0 or rating > 100:
+            if rating < 0 or rating > 5:
                 rating = None
         except (ValueError, TypeError):
             rating = None

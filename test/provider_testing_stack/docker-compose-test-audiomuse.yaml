@@ -76,7 +76,7 @@ services:
   flask-jellyfin:
     <<: *audiomuse-common
     build:
-      context: ../              # project root (one level up from testing/)
+      context: ../../              # project root (one level up from testing/)
       dockerfile: Dockerfile
       args:
         BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04

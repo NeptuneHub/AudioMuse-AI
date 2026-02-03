@@ -761,10 +761,11 @@ def get_all_songs():
                 'Name': song.get('title'),
                 'AlbumArtist': track_artist,
                 'OriginalAlbumArtist': song.get('albumartist'),
+                'Album': song.get('album'),
                 'Path': song.get('url'),
                 'url': song.get('url'),
                 'Year': int(song.get('year')) if song.get('year') else None,
-                'Rating': int(song.get('rating')) if song.get('rating') else None,
+                'Rating': int(int(song.get('rating')) / 20) if song.get('rating') else None,
                 'FilePath': _decode_lyrion_url(song.get('url')),
             }
             all_songs.append(mapped_song)
@@ -1046,9 +1047,10 @@ def get_tracks_from_album(album_id):
         path = s.get('url') or s.get('Path') or s.get('path') or ''
         mapped.append({
             'Id': id_val, 'Name': title, 'AlbumArtist': artist, 'OriginalAlbumArtist': s.get('albumartist'),
+            'Album': s.get('album'),
             'Path': path, 'url': path,
             'Year': int(s.get('year')) if s.get('year') else None,
-            'Rating': int(s.get('rating')) if s.get('rating') else None,
+            'Rating': int(int(s.get('rating')) / 20) if s.get('rating') else None,
             'FilePath': _decode_lyrion_url(s.get('url')),
         })
 
@@ -1098,10 +1100,11 @@ def get_top_played_songs(limit):
                 'Name': title,
                 'AlbumArtist': track_artist,
                 'OriginalAlbumArtist': s.get('albumartist'),
+                'Album': s.get('album'),
                 'Path': s.get('url'),
                 'url': s.get('url'),
                 'Year': int(s.get('year')) if s.get('year') else None,
-                'Rating': int(s.get('rating')) if s.get('rating') else None,
+                'Rating': int(int(s.get('rating')) / 20) if s.get('rating') else None,
                 'FilePath': _decode_lyrion_url(s.get('url')),
             })
         return mapped_songs

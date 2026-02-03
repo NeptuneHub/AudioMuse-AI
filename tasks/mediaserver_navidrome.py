@@ -289,9 +289,10 @@ def get_all_songs():
                         'AlbumArtist': artist_name,
                         'ArtistId': artist_id,
                         'OriginalAlbumArtist': s.get('displayAlbumArtist') or s.get('albumArtist'),
+                        'Album': s.get('album'),
                         'Path': s.get('path'),
                         'Year': s.get('year'),
-                        'Rating': (s.get('userRating') or 0) * 20 if s.get('userRating') else None,
+                        'Rating': s.get('userRating') if s.get('userRating') else None,
                         'FilePath': s.get('path'),
                     })
                 
@@ -342,6 +343,7 @@ def get_all_songs():
                     'AlbumArtist': song.get('AlbumArtist'),
                     'ArtistId': song.get('ArtistId'),
                     'OriginalAlbumArtist': song.get('OriginalAlbumArtist'),
+                    'Album': song.get('Album'),
                     'Path': song.get('Path'),
                     'Year': song.get('Year'),
                     'Rating': song.get('Rating'),
@@ -458,9 +460,10 @@ def get_tracks_from_album(album_id, user_creds=None):
                 'AlbumArtist': artist,
                 'ArtistId': artist_id,
                 'OriginalAlbumArtist': s.get('displayAlbumArtist') or s.get('albumArtist'),
+                'Album': s.get('album'),
                 'Path': s.get('path'),
                 'Year': s.get('year'),
-                'Rating': (s.get('userRating') or 0) * 20 if s.get('userRating') else None,
+                'Rating': s.get('userRating') if s.get('userRating') else None,
                 'FilePath': s.get('path'),
             })
         return result
