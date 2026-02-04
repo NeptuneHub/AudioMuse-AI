@@ -278,6 +278,12 @@ def setup_page():
     return render_template('setup.html', title='AudioMuse-AI - Setup', active='setup')
 
 
+@setup_bp.route('/settings')
+def settings_page():
+    """Render the settings page."""
+    return render_template('settings.html', title='AudioMuse-AI - Settings', active='settings')
+
+
 @setup_bp.route('/api/setup/status', methods=['GET'])
 def get_setup_status():
     """

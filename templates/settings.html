@@ -1,0 +1,1184 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    .settings-page {
+        max-width: 900px;
+        margin: 0 auto;
+    }
+
+    .settings-header {
+        margin-bottom: 2rem;
+    }
+
+    .settings-header h1 {
+        font-size: 1.8rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .settings-header .subtitle {
+        color: var(--text-muted);
+    }
+
+    /* Settings Sections */
+    .settings-section {
+        background: var(--bg-secondary);
+        border-radius: 8px;
+        margin-bottom: 1.5rem;
+        overflow: hidden;
+    }
+
+    .section-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 1rem 1.5rem;
+        cursor: pointer;
+        user-select: none;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .section-header:hover {
+        background: rgba(var(--primary-rgb), 0.05);
+    }
+
+    .section-header h2 {
+        font-size: 1.1rem;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .section-header .section-icon {
+        font-size: 1.2rem;
+    }
+
+    .section-header .toggle-icon {
+        transition: transform 0.2s ease;
+    }
+
+    .section-header.collapsed .toggle-icon {
+        transform: rotate(-90deg);
+    }
+
+    .section-content {
+        padding: 1.5rem;
+    }
+
+    .section-content.collapsed {
+        display: none;
+    }
+
+    .section-description {
+        color: var(--text-muted);
+        margin-bottom: 1.5rem;
+        font-size: 0.95rem;
+    }
+
+    /* Form Fields */
+    .field-group {
+        margin-bottom: 1.25rem;
+    }
+
+    .field-group:last-child {
+        margin-bottom: 0;
+    }
+
+    .field-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+
+    .field-group .field-help {
+        font-size: 0.85rem;
+        color: var(--text-muted);
+        margin-top: 0.25rem;
+    }
+
+    .field-group input[type="text"],
+    .field-group input[type="password"],
+    .field-group input[type="number"],
+    .field-group select {
+        width: 100%;
+        max-width: 400px;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        background: var(--bg-primary);
+        color: var(--text-color);
+        font-size: 0.95rem;
+    }
+
+    .field-group input:focus,
+    .field-group select:focus {
+        outline: none;
+        border-color: var(--primary-color);
+    }
+
+    .field-group .checkbox-label {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        cursor: pointer;
+    }
+
+    .field-group .checkbox-label input {
+        width: auto;
+    }
+
+    /* Option Cards (for deployment/hardware) */
+    .option-cards {
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+
+    .option-card {
+        flex: 1;
+        min-width: 200px;
+        max-width: 280px;
+        padding: 1rem;
+        border: 2px solid var(--border-color);
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        text-align: center;
+    }
+
+    .option-card:hover {
+        border-color: var(--primary-color);
+    }
+
+    .option-card.selected {
+        border-color: var(--primary-color);
+        background: rgba(var(--primary-rgb), 0.1);
+    }
+
+    .option-card .card-icon {
+        font-size: 1.5rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .option-card .card-title {
+        font-weight: bold;
+        margin-bottom: 0.25rem;
+    }
+
+    .option-card .card-desc {
+        font-size: 0.85rem;
+        color: var(--text-muted);
+    }
+
+    /* Provider List */
+    .provider-list {
+        margin-top: 1rem;
+    }
+
+    .provider-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 1rem;
+        background: var(--bg-primary);
+        border-radius: 8px;
+        margin-bottom: 0.5rem;
+    }
+
+    .provider-item .provider-info {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+
+    .provider-item .provider-name {
+        font-weight: 500;
+    }
+
+    .provider-item .provider-type {
+        font-size: 0.85rem;
+        color: var(--text-muted);
+    }
+
+    .provider-item .provider-badges {
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .badge {
+        padding: 0.2rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 500;
+    }
+
+    .badge-primary {
+        background: rgba(var(--primary-rgb), 0.2);
+        color: var(--primary-color);
+    }
+
+    .badge-enabled {
+        background: rgba(40, 167, 69, 0.2);
+        color: #28a745;
+    }
+
+    .badge-disabled {
+        background: rgba(108, 117, 125, 0.2);
+        color: #6c757d;
+    }
+
+    .provider-item .provider-actions {
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .provider-item .provider-actions button {
+        padding: 0.4rem 0.75rem;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        background: var(--bg-secondary);
+        cursor: pointer;
+        font-size: 0.85rem;
+    }
+
+    .provider-item .provider-actions button:hover {
+        background: var(--bg-primary);
+    }
+
+    .provider-item .provider-actions button.btn-danger {
+        border-color: #dc3545;
+        color: #dc3545;
+    }
+
+    .provider-item .provider-actions button.btn-danger:hover {
+        background: rgba(220, 53, 69, 0.1);
+    }
+
+    .add-provider-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        width: 100%;
+        padding: 1rem;
+        border: 2px dashed var(--border-color);
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+        margin-top: 1rem;
+        font-size: 0.95rem;
+    }
+
+    .add-provider-btn:hover {
+        border-color: var(--primary-color);
+        color: var(--primary-color);
+    }
+
+    /* Worker Connection Info */
+    .connection-info {
+        background: var(--bg-primary);
+        padding: 1rem;
+        border-radius: 8px;
+        margin-top: 1rem;
+    }
+
+    .connection-info .info-row {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .connection-info .info-row:last-child {
+        margin-bottom: 0;
+    }
+
+    .connection-info .info-label {
+        min-width: 150px;
+        font-weight: 500;
+        font-size: 0.9rem;
+    }
+
+    .connection-info .info-value {
+        flex: 1;
+        font-family: monospace;
+        background: var(--bg-secondary);
+        padding: 0.5rem 0.75rem;
+        border-radius: 4px;
+        font-size: 0.9rem;
+    }
+
+    .connection-info .copy-btn {
+        padding: 0.4rem 0.75rem;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        background: var(--bg-secondary);
+        cursor: pointer;
+        font-size: 0.8rem;
+    }
+
+    .connection-info .copy-btn:hover {
+        background: var(--bg-primary);
+    }
+
+    .connection-info .copy-btn.copied {
+        background: rgba(40, 167, 69, 0.2);
+        border-color: #28a745;
+        color: #28a745;
+    }
+
+    /* Save Button */
+    .save-bar {
+        position: sticky;
+        bottom: 0;
+        background: var(--bg-secondary);
+        padding: 1rem 1.5rem;
+        margin: 2rem -1rem -1rem -1rem;
+        border-top: 1px solid var(--border-color);
+        display: flex;
+        justify-content: flex-end;
+        gap: 1rem;
+    }
+
+    .save-bar button {
+        padding: 0.6rem 1.5rem;
+        border-radius: 4px;
+        font-weight: 500;
+        cursor: pointer;
+    }
+
+    .btn-save {
+        background: var(--primary-color);
+        border: none;
+        color: white;
+    }
+
+    .btn-save:hover {
+        opacity: 0.9;
+    }
+
+    .btn-save:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    /* Modal */
+    .modal-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .modal-overlay.visible {
+        display: flex;
+    }
+
+    .modal {
+        background: var(--bg-secondary);
+        border-radius: 8px;
+        max-width: 500px;
+        width: 90%;
+        max-height: 80vh;
+        overflow-y: auto;
+    }
+
+    .modal-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .modal-header h3 {
+        margin: 0;
+    }
+
+    .modal-header .close-btn {
+        background: none;
+        border: none;
+        font-size: 1.5rem;
+        cursor: pointer;
+        color: var(--text-muted);
+    }
+
+    .modal-body {
+        padding: 1.5rem;
+    }
+
+    .modal-footer {
+        padding: 1rem 1.5rem;
+        border-top: 1px solid var(--border-color);
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.75rem;
+    }
+
+    .modal-footer button {
+        padding: 0.5rem 1rem;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+
+    .modal-footer .btn-cancel {
+        background: var(--bg-primary);
+        border: 1px solid var(--border-color);
+    }
+
+    .modal-footer .btn-primary {
+        background: var(--primary-color);
+        border: none;
+        color: white;
+    }
+
+    /* Toast notifications */
+    .toast {
+        position: fixed;
+        bottom: 2rem;
+        right: 2rem;
+        padding: 1rem 1.5rem;
+        border-radius: 8px;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        z-index: 1001;
+        display: none;
+    }
+
+    .toast.visible {
+        display: block;
+        animation: slideIn 0.3s ease;
+    }
+
+    .toast.success {
+        border-color: #28a745;
+    }
+
+    .toast.error {
+        border-color: #dc3545;
+    }
+
+    @keyframes slideIn {
+        from { transform: translateY(20px); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+    }
+
+    /* Test result */
+    .test-result {
+        margin-top: 0.5rem;
+        padding: 0.5rem 0.75rem;
+        border-radius: 4px;
+        font-size: 0.9rem;
+    }
+
+    .test-result.success {
+        background: rgba(40, 167, 69, 0.2);
+        color: #28a745;
+    }
+
+    .test-result.error {
+        background: rgba(220, 53, 69, 0.2);
+        color: #dc3545;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="settings-page">
+    <div class="settings-header">
+        <h1>Settings</h1>
+        <p class="subtitle">Configure AudioMuse-AI settings and manage providers</p>
+    </div>
+
+    <!-- Providers Section -->
+    <div class="settings-section">
+        <div class="section-header" onclick="toggleSection(this)">
+            <h2><span class="section-icon">&#128230;</span> Media Providers</h2>
+            <span class="toggle-icon">&#9660;</span>
+        </div>
+        <div class="section-content">
+            <p class="section-description">
+                Configure your music library sources. Multiple providers can share analysis data through file path linking.
+            </p>
+
+            <div class="field-group">
+                <label for="primary-provider">Primary Provider</label>
+                <select id="primary-provider" onchange="markDirty()">
+                    <option value="">-- Select Primary --</option>
+                </select>
+                <div class="field-help">Used by default for API calls without provider specification</div>
+            </div>
+
+            <div class="provider-list" id="provider-list">
+                <!-- Populated by JS -->
+            </div>
+
+            <button class="add-provider-btn" onclick="showAddProviderModal()">
+                <span>+</span> Add Provider
+            </button>
+        </div>
+    </div>
+
+    <!-- Deployment Section -->
+    <div class="settings-section">
+        <div class="section-header" onclick="toggleSection(this)">
+            <h2><span class="section-icon">&#9881;</span> Deployment</h2>
+            <span class="toggle-icon">&#9660;</span>
+        </div>
+        <div class="section-content">
+            <p class="section-description">
+                Configure how AudioMuse-AI is deployed across your infrastructure.
+            </p>
+
+            <div class="field-group">
+                <label>Deployment Mode</label>
+                <div class="option-cards">
+                    <div class="option-card selected" data-value="unified" onclick="selectOption(this, 'deployment')">
+                        <div class="card-icon">&#128230;</div>
+                        <div class="card-title">Unified</div>
+                        <div class="card-desc">Server and worker on same machine</div>
+                    </div>
+                    <div class="option-card" data-value="split" onclick="selectOption(this, 'deployment')">
+                        <div class="card-icon">&#128423;</div>
+                        <div class="card-title">Split</div>
+                        <div class="card-desc">Workers on separate machines</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="field-group">
+                <label>Hardware Type</label>
+                <div class="option-cards">
+                    <div class="option-card selected" data-value="cpu" onclick="selectOption(this, 'hardware')">
+                        <div class="card-icon">&#128187;</div>
+                        <div class="card-title">CPU Only</div>
+                        <div class="card-desc">Standard processing</div>
+                    </div>
+                    <div class="option-card" data-value="nvidia" onclick="selectOption(this, 'hardware')">
+                        <div class="card-icon">&#9889;</div>
+                        <div class="card-title">NVIDIA GPU</div>
+                        <div class="card-desc">CUDA acceleration</div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="worker-info" style="display: none;">
+                <div class="field-group">
+                    <label>Worker Connection Info</label>
+                    <div class="field-help">Use these settings when configuring remote workers</div>
+                    <div class="connection-info">
+                        <div class="info-row">
+                            <span class="info-label">Redis URL:</span>
+                            <span class="info-value" id="worker-redis-url">redis://localhost:6379/0</span>
+                            <button class="copy-btn" onclick="copyValue('worker-redis-url')">Copy</button>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">PostgreSQL Host:</span>
+                            <span class="info-value" id="worker-postgres-host">localhost</span>
+                            <button class="copy-btn" onclick="copyValue('worker-postgres-host')">Copy</button>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Compose File:</span>
+                            <span class="info-value" id="worker-compose-file">docker-compose-worker-cpu.yaml</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Analysis Section -->
+    <div class="settings-section">
+        <div class="section-header" onclick="toggleSection(this)">
+            <h2><span class="section-icon">&#128202;</span> Analysis</h2>
+            <span class="toggle-icon">&#9660;</span>
+        </div>
+        <div class="section-content">
+            <p class="section-description">
+                Configure music analysis features and performance options.
+            </p>
+
+            <div class="field-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="clap-enabled" checked onchange="markDirty()">
+                    <span>Enable CLAP Text Search</span>
+                </label>
+                <div class="field-help">Search music using natural language. Uses ~750MB additional memory.</div>
+            </div>
+
+            <div class="field-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="gpu-clustering" onchange="markDirty()">
+                    <span>Use GPU for Clustering</span>
+                </label>
+                <div class="field-help">Accelerate clustering with NVIDIA RAPIDS cuML. Requires NVIDIA GPU.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI Section -->
+    <div class="settings-section">
+        <div class="section-header" onclick="toggleSection(this)">
+            <h2><span class="section-icon">&#129302;</span> AI Integration</h2>
+            <span class="toggle-icon">&#9660;</span>
+        </div>
+        <div class="section-content">
+            <p class="section-description">
+                Configure AI providers for creative playlist naming and other features.
+            </p>
+
+            <div class="field-group">
+                <label for="ai-provider">AI Provider</label>
+                <select id="ai-provider" onchange="markDirty()">
+                    <option value="NONE">None (Use Default Names)</option>
+                    <option value="OLLAMA">Ollama (Local)</option>
+                    <option value="OPENAI">OpenAI / OpenRouter</option>
+                    <option value="GEMINI">Google Gemini</option>
+                    <option value="MISTRAL">Mistral AI</option>
+                </select>
+                <div class="field-help">AI service for generating creative playlist names</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Save Bar -->
+    <div class="save-bar">
+        <button class="btn-save" id="save-btn" onclick="saveSettings()" disabled>Save Changes</button>
+    </div>
+</div>
+
+<!-- Add/Edit Provider Modal -->
+<div class="modal-overlay" id="provider-modal">
+    <div class="modal">
+        <div class="modal-header">
+            <h3 id="modal-title">Add Provider</h3>
+            <button class="close-btn" onclick="closeProviderModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="field-group">
+                <label for="provider-type">Provider Type</label>
+                <select id="provider-type" onchange="updateProviderFields()">
+                    <!-- Populated by JS -->
+                </select>
+            </div>
+            <div id="provider-fields">
+                <!-- Populated based on provider type -->
+            </div>
+            <div id="provider-test-result" class="test-result" style="display: none;"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-cancel" onclick="closeProviderModal()">Cancel</button>
+            <button class="btn-cancel" onclick="testProviderConnection()">Test Connection</button>
+            <button class="btn-primary" onclick="saveProvider()">Save Provider</button>
+        </div>
+    </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+{% endblock %}
+
+{% block bodyAdditions %}
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+<script>
+    // State
+    let providers = [];
+    let providerTypes = [];
+    let settings = {};
+    let serverInfo = {};
+    let isDirty = false;
+    let editingProviderId = null;
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', async function() {
+        await Promise.all([
+            loadProviders(),
+            loadProviderTypes(),
+            loadSettings(),
+            loadServerInfo()
+        ]);
+        renderProviders();
+        applySettings();
+        updateWorkerInfo();
+    });
+
+    // Data loading
+    async function loadProviders() {
+        try {
+            const response = await fetch('/api/setup/providers');
+            providers = await response.json();
+        } catch (err) {
+            console.error('Error loading providers:', err);
+        }
+    }
+
+    async function loadProviderTypes() {
+        try {
+            const response = await fetch('/api/setup/providers/types');
+            providerTypes = await response.json();
+        } catch (err) {
+            console.error('Error loading provider types:', err);
+        }
+    }
+
+    async function loadSettings() {
+        try {
+            const response = await fetch('/api/setup/settings');
+            settings = await response.json();
+        } catch (err) {
+            console.error('Error loading settings:', err);
+        }
+    }
+
+    async function loadServerInfo() {
+        try {
+            const response = await fetch('/api/setup/server-info');
+            serverInfo = await response.json();
+        } catch (err) {
+            console.error('Error loading server info:', err);
+        }
+    }
+
+    // Rendering
+    function renderProviders() {
+        const list = document.getElementById('provider-list');
+        const primarySelect = document.getElementById('primary-provider');
+
+        list.innerHTML = '';
+        primarySelect.innerHTML = '<option value="">-- Select Primary --</option>';
+
+        providers.forEach(p => {
+            const typeInfo = providerTypes.find(t => t.type === p.provider_type) || {};
+            const isPrimary = settings.primary_provider_id === p.id;
+
+            const item = document.createElement('div');
+            item.className = 'provider-item';
+            item.innerHTML = `
+                <div class="provider-info">
+                    <div>
+                        <div class="provider-name">${p.name || typeInfo.name || p.provider_type}</div>
+                        <div class="provider-type">${typeInfo.name || p.provider_type}</div>
+                    </div>
+                    <div class="provider-badges">
+                        ${isPrimary ? '<span class="badge badge-primary">Primary</span>' : ''}
+                        <span class="badge ${p.enabled ? 'badge-enabled' : 'badge-disabled'}">${p.enabled ? 'Enabled' : 'Disabled'}</span>
+                    </div>
+                </div>
+                <div class="provider-actions">
+                    <button onclick="editProvider(${p.id})">Edit</button>
+                    <button onclick="toggleProvider(${p.id}, ${!p.enabled})">${p.enabled ? 'Disable' : 'Enable'}</button>
+                    <button class="btn-danger" onclick="deleteProvider(${p.id})">Delete</button>
+                </div>
+            `;
+            list.appendChild(item);
+
+            // Add to primary select
+            const option = document.createElement('option');
+            option.value = p.id;
+            option.textContent = p.name || typeInfo.name || p.provider_type;
+            if (isPrimary) option.selected = true;
+            primarySelect.appendChild(option);
+        });
+
+        if (providers.length === 0) {
+            list.innerHTML = '<p style="color: var(--text-muted); text-align: center; padding: 2rem;">No providers configured. Add one to get started.</p>';
+        }
+    }
+
+    function applySettings() {
+        // Deployment
+        document.querySelectorAll('.option-card[data-value]').forEach(card => {
+            const parent = card.parentElement;
+            const isDeployment = parent.previousElementSibling?.textContent.includes('Deployment');
+            const isHardware = parent.previousElementSibling?.textContent.includes('Hardware');
+
+            if (isDeployment && settings.deployment_type === card.dataset.value) {
+                selectOption(card, 'deployment', false);
+            } else if (isHardware && settings.hardware_type === card.dataset.value) {
+                selectOption(card, 'hardware', false);
+            }
+        });
+
+        // Analysis
+        document.getElementById('clap-enabled').checked = settings.clap_enabled !== false;
+        document.getElementById('gpu-clustering').checked = settings.gpu_clustering === true;
+
+        // AI
+        const aiProvider = document.getElementById('ai-provider');
+        if (settings.ai_provider) {
+            aiProvider.value = settings.ai_provider;
+        }
+
+        // Update GPU clustering availability
+        updateGpuClusteringState();
+    }
+
+    function updateWorkerInfo() {
+        const workerInfo = document.getElementById('worker-info');
+        const deploymentCards = document.querySelectorAll('.option-card[data-value="unified"], .option-card[data-value="split"]');
+        let selectedDeployment = 'unified';
+        deploymentCards.forEach(card => {
+            if (card.classList.contains('selected')) {
+                selectedDeployment = card.dataset.value;
+            }
+        });
+
+        workerInfo.style.display = selectedDeployment === 'split' ? 'block' : 'none';
+
+        if (selectedDeployment === 'split') {
+            const serverIp = serverInfo.host || window.location.hostname;
+            const redisPort = serverInfo.redis_port || '6379';
+
+            document.getElementById('worker-redis-url').textContent = `redis://${serverIp}:${redisPort}/0`;
+            document.getElementById('worker-postgres-host').textContent = serverIp;
+
+            // Update compose file based on hardware
+            const hardwareCards = document.querySelectorAll('.option-card[data-value="cpu"], .option-card[data-value="nvidia"]');
+            let selectedHardware = 'cpu';
+            hardwareCards.forEach(card => {
+                if (card.classList.contains('selected') && (card.dataset.value === 'cpu' || card.dataset.value === 'nvidia')) {
+                    selectedHardware = card.dataset.value;
+                }
+            });
+
+            const composeFile = selectedHardware === 'nvidia'
+                ? 'docker-compose-worker-nvidia.yaml'
+                : 'docker-compose-worker-cpu.yaml';
+            document.getElementById('worker-compose-file').textContent = composeFile;
+        }
+    }
+
+    function updateGpuClusteringState() {
+        const gpuClustering = document.getElementById('gpu-clustering');
+        const hardwareCards = document.querySelectorAll('.option-card[data-value="cpu"], .option-card[data-value="nvidia"]');
+        let selectedHardware = 'cpu';
+        hardwareCards.forEach(card => {
+            if (card.classList.contains('selected') && (card.dataset.value === 'cpu' || card.dataset.value === 'nvidia')) {
+                selectedHardware = card.dataset.value;
+            }
+        });
+
+        if (selectedHardware !== 'nvidia') {
+            gpuClustering.checked = false;
+            gpuClustering.disabled = true;
+        } else {
+            gpuClustering.disabled = false;
+        }
+    }
+
+    // UI interactions
+    function toggleSection(header) {
+        header.classList.toggle('collapsed');
+        header.nextElementSibling.classList.toggle('collapsed');
+    }
+
+    function selectOption(card, type, markAsDirty = true) {
+        const parent = card.parentElement;
+        parent.querySelectorAll('.option-card').forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
+
+        if (markAsDirty) markDirty();
+
+        if (type === 'deployment') {
+            updateWorkerInfo();
+        } else if (type === 'hardware') {
+            updateGpuClusteringState();
+            updateWorkerInfo();
+        }
+    }
+
+    function markDirty() {
+        isDirty = true;
+        document.getElementById('save-btn').disabled = false;
+    }
+
+    function copyValue(elementId) {
+        const element = document.getElementById(elementId);
+        navigator.clipboard.writeText(element.textContent).then(() => {
+            const btn = element.nextElementSibling;
+            btn.textContent = 'Copied!';
+            btn.classList.add('copied');
+            setTimeout(() => {
+                btn.textContent = 'Copy';
+                btn.classList.remove('copied');
+            }, 2000);
+        });
+    }
+
+    // Provider modal
+    function showAddProviderModal() {
+        editingProviderId = null;
+        document.getElementById('modal-title').textContent = 'Add Provider';
+
+        const typeSelect = document.getElementById('provider-type');
+        typeSelect.innerHTML = '';
+        providerTypes.forEach(t => {
+            const option = document.createElement('option');
+            option.value = t.type;
+            option.textContent = t.name;
+            typeSelect.appendChild(option);
+        });
+
+        updateProviderFields();
+        document.getElementById('provider-test-result').style.display = 'none';
+        document.getElementById('provider-modal').classList.add('visible');
+    }
+
+    function editProvider(id) {
+        editingProviderId = id;
+        const provider = providers.find(p => p.id === id);
+        if (!provider) return;
+
+        document.getElementById('modal-title').textContent = 'Edit Provider';
+
+        const typeSelect = document.getElementById('provider-type');
+        typeSelect.innerHTML = '';
+        providerTypes.forEach(t => {
+            const option = document.createElement('option');
+            option.value = t.type;
+            option.textContent = t.name;
+            if (t.type === provider.provider_type) option.selected = true;
+            typeSelect.appendChild(option);
+        });
+        typeSelect.disabled = true; // Can't change type when editing
+
+        updateProviderFields(provider.config);
+        document.getElementById('provider-test-result').style.display = 'none';
+        document.getElementById('provider-modal').classList.add('visible');
+    }
+
+    function closeProviderModal() {
+        document.getElementById('provider-modal').classList.remove('visible');
+        document.getElementById('provider-type').disabled = false;
+        editingProviderId = null;
+    }
+
+    function updateProviderFields(existingConfig = {}) {
+        const type = document.getElementById('provider-type').value;
+        const typeInfo = providerTypes.find(t => t.type === type);
+        if (!typeInfo) return;
+
+        const container = document.getElementById('provider-fields');
+        container.innerHTML = '';
+
+        typeInfo.config_fields.forEach(field => {
+            const div = document.createElement('div');
+            div.className = 'field-group';
+
+            const value = existingConfig[field.name] || field.default || '';
+
+            let inputHtml = '';
+            if (field.type === 'password') {
+                inputHtml = `<input type="password" id="field-${field.name}" value="${value}" placeholder="${field.default || ''}">`;
+            } else if (field.type === 'boolean') {
+                inputHtml = `<label class="checkbox-label"><input type="checkbox" id="field-${field.name}" ${value ? 'checked' : ''}><span>${field.label}</span></label>`;
+            } else if (field.type === 'number') {
+                inputHtml = `<input type="number" id="field-${field.name}" value="${value}">`;
+            } else {
+                inputHtml = `<input type="text" id="field-${field.name}" value="${value}" placeholder="${field.default || ''}">`;
+            }
+
+            div.innerHTML = `
+                ${field.type !== 'boolean' ? `<label for="field-${field.name}">${field.label}${field.required ? ' *' : ''}</label>` : ''}
+                ${inputHtml}
+                ${field.description ? `<div class="field-help">${field.description}</div>` : ''}
+            `;
+            container.appendChild(div);
+        });
+    }
+
+    function collectProviderConfig() {
+        const type = document.getElementById('provider-type').value;
+        const typeInfo = providerTypes.find(t => t.type === type);
+        if (!typeInfo) return {};
+
+        const config = {};
+        typeInfo.config_fields.forEach(field => {
+            const input = document.getElementById(`field-${field.name}`);
+            if (input) {
+                if (field.type === 'boolean') {
+                    config[field.name] = input.checked;
+                } else {
+                    config[field.name] = input.value;
+                }
+            }
+        });
+        return config;
+    }
+
+    async function testProviderConnection() {
+        const type = document.getElementById('provider-type').value;
+        const config = collectProviderConfig();
+        const resultDiv = document.getElementById('provider-test-result');
+
+        resultDiv.style.display = 'block';
+        resultDiv.className = 'test-result';
+        resultDiv.textContent = 'Testing connection...';
+
+        try {
+            const response = await fetch('/api/setup/providers/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider_type: type, config })
+            });
+            const data = await response.json();
+            resultDiv.className = `test-result ${data.success ? 'success' : 'error'}`;
+            resultDiv.textContent = data.message;
+        } catch (err) {
+            resultDiv.className = 'test-result error';
+            resultDiv.textContent = 'Connection test failed: ' + err.message;
+        }
+    }
+
+    async function saveProvider() {
+        const type = document.getElementById('provider-type').value;
+        const typeInfo = providerTypes.find(t => t.type === type);
+        const config = collectProviderConfig();
+
+        try {
+            let response;
+            if (editingProviderId) {
+                response = await fetch(`/api/setup/providers/${editingProviderId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config })
+                });
+            } else {
+                response = await fetch('/api/setup/providers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        provider_type: type,
+                        name: typeInfo?.name || type,
+                        config,
+                        enabled: true
+                    })
+                });
+            }
+
+            if (response.ok) {
+                closeProviderModal();
+                await loadProviders();
+                renderProviders();
+                showToast('Provider saved successfully', 'success');
+            } else {
+                const data = await response.json();
+                showToast(data.error || 'Failed to save provider', 'error');
+            }
+        } catch (err) {
+            showToast('Error saving provider: ' + err.message, 'error');
+        }
+    }
+
+    async function toggleProvider(id, enabled) {
+        try {
+            const response = await fetch(`/api/setup/providers/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled })
+            });
+            if (response.ok) {
+                await loadProviders();
+                renderProviders();
+                showToast(`Provider ${enabled ? 'enabled' : 'disabled'}`, 'success');
+            }
+        } catch (err) {
+            showToast('Error updating provider', 'error');
+        }
+    }
+
+    async function deleteProvider(id) {
+        if (!confirm('Are you sure you want to delete this provider?')) return;
+
+        try {
+            const response = await fetch(`/api/setup/providers/${id}`, {
+                method: 'DELETE'
+            });
+            if (response.ok) {
+                await loadProviders();
+                renderProviders();
+                showToast('Provider deleted', 'success');
+            }
+        } catch (err) {
+            showToast('Error deleting provider', 'error');
+        }
+    }
+
+    // Save settings
+    async function saveSettings() {
+        // Collect current values
+        const deploymentCards = document.querySelectorAll('.option-card[data-value="unified"], .option-card[data-value="split"]');
+        let deploymentType = 'unified';
+        deploymentCards.forEach(card => {
+            if (card.classList.contains('selected')) {
+                deploymentType = card.dataset.value;
+            }
+        });
+
+        const hardwareCards = document.querySelectorAll('.option-card[data-value="cpu"], .option-card[data-value="nvidia"]');
+        let hardwareType = 'cpu';
+        hardwareCards.forEach(card => {
+            if (card.classList.contains('selected') && (card.dataset.value === 'cpu' || card.dataset.value === 'nvidia')) {
+                hardwareType = card.dataset.value;
+            }
+        });
+
+        const settingsData = {
+            deployment_type: deploymentType,
+            hardware_type: hardwareType,
+            clap_enabled: document.getElementById('clap-enabled').checked,
+            gpu_clustering: document.getElementById('gpu-clustering').checked,
+            ai_provider: document.getElementById('ai-provider').value
+        };
+
+        try {
+            // Save settings
+            const settingsResponse = await fetch('/api/setup/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settingsData)
+            });
+
+            // Save primary provider
+            const primaryProviderId = document.getElementById('primary-provider').value;
+            if (primaryProviderId) {
+                await fetch('/api/setup/primary-provider', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ provider_id: parseInt(primaryProviderId) })
+                });
+            }
+
+            if (settingsResponse.ok) {
+                isDirty = false;
+                document.getElementById('save-btn').disabled = true;
+                settings = { ...settings, ...settingsData };
+                showToast('Settings saved successfully', 'success');
+            } else {
+                showToast('Failed to save settings', 'error');
+            }
+        } catch (err) {
+            showToast('Error saving settings: ' + err.message, 'error');
+        }
+    }
+
+    // Toast notifications
+    function showToast(message, type = 'info') {
+        const toast = document.getElementById('toast');
+        toast.textContent = message;
+        toast.className = `toast visible ${type}`;
+        setTimeout(() => {
+            toast.classList.remove('visible');
+        }, 3000);
+    }
+</script>
+{% endblock %}
