@@ -1773,15 +1773,16 @@ def get_all_provider_item_ids_for_track(track_id):
         ]
 
 
-def find_existing_analysis_by_file_path(file_path):
+def find_existing_analysis_by_file_path(file_path, provider_id=None):
     """
-    Find existing analysis data for a file path.
+    Find existing analysis data for a file path using cross-provider matching.
 
     This is used to check if a track has already been analyzed under a different
-    provider's item_id, allowing reuse of analysis data.
+    provider's item_id, allowing reuse of analysis data in multi-provider setups.
 
     Args:
         file_path: Full or relative path to the audio file
+        provider_id: Optional provider ID for provider-specific path normalization
 
     Returns:
         dict with item_id and analysis status, or None if not found
@@ -1789,7 +1790,7 @@ def find_existing_analysis_by_file_path(file_path):
     if not file_path:
         return None
 
-    file_path_hash = _compute_file_path_hash(file_path)
+    file_path_hash = _compute_file_path_hash(file_path, provider_id)
     if not file_path_hash:
         return None
 
@@ -1839,6 +1840,82 @@ def find_existing_analysis_by_file_path(file_path):
             }
 
         return None
+
+
+def copy_analysis_to_new_item(source_item_id, target_item_id, file_path=None, provider_id=None):
+    """
+    Copy analysis data from one item_id to another.
+
+    This is used in multi-provider setups when a track has already been analyzed
+    under a different provider's item_id. Instead of re-analyzing, we copy the
+    existing analysis to the new provider's item_id.
+
+    Args:
+        source_item_id: The item_id that has existing analysis
+        target_item_id: The new item_id to copy analysis to
+        file_path: Optional file path for track linking
+        provider_id: Optional provider ID for track linking
+
+    Returns:
+        True if analysis was copied successfully, False otherwise
+    """
+    if not source_item_id or not target_item_id:
+        return False
+
+    if source_item_id == target_item_id:
+        return True  # Nothing to copy
+
+    db = get_db()
+    try:
+        with db.cursor() as cur:
+            # Copy score data
+            cur.execute("""
+                INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector,
+                                   energy, other_features, album, album_artist, year, rating, file_path, track_id)
+                SELECT %s, title, author, tempo, key, scale, mood_vector,
+                       energy, other_features, album, album_artist, year, rating, file_path, track_id
+                FROM score WHERE item_id = %s
+                ON CONFLICT (item_id) DO NOTHING
+            """, (target_item_id, source_item_id))
+
+            # Copy embedding
+            cur.execute("""
+                INSERT INTO embedding (item_id, embedding)
+                SELECT %s, embedding FROM embedding WHERE item_id = %s
+                ON CONFLICT (item_id) DO NOTHING
+            """, (target_item_id, source_item_id))
+
+            # Copy CLAP embedding if exists
+            cur.execute("""
+                INSERT INTO clap_embedding (item_id, embedding)
+                SELECT %s, embedding FROM clap_embedding WHERE item_id = %s
+                ON CONFLICT (item_id) DO NOTHING
+            """, (target_item_id, source_item_id))
+
+            # Copy MuLan embedding if exists
+            cur.execute("""
+                INSERT INTO mulan_embedding (item_id, embedding)
+                SELECT %s, embedding FROM mulan_embedding WHERE item_id = %s
+                ON CONFLICT (item_id) DO NOTHING
+            """, (target_item_id, source_item_id))
+
+            db.commit()
+
+            # Create track linking for the new item
+            if file_path:
+                track_id = get_or_create_track(file_path, provider_id=provider_id)
+                if track_id:
+                    update_score_track_id(target_item_id, track_id)
+                    if provider_id is not None:
+                        link_provider_track(provider_id, track_id, target_item_id)
+
+            logger.info(f"Copied analysis from {source_item_id} to {target_item_id}")
+            return True
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to copy analysis from {source_item_id} to {target_item_id}: {e}")
+        return False
 
 
 def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None):

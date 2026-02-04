@@ -654,7 +654,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
     from app import (app, JobStatus)
     from app_helper import (redis_conn, get_db, save_task_status, get_task_info_from_db,
                      save_track_analysis_and_embedding, save_clap_embedding,
-                     get_primary_provider_id,
+                     get_primary_provider_id, find_existing_analysis_by_file_path,
+                     copy_analysis_to_new_item,
                      TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import analyze_audio_file as clap_analyze, is_clap_available
     from .mulan_analyzer import analyze_audio_file as mulan_analyze
@@ -780,6 +781,23 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
                 needs_musicnn = track_id_str not in existing_track_ids_set
                 needs_clap = track_id_str in missing_clap_ids_set
                 needs_mulan = track_id_str in missing_mulan_ids_set
+
+                # Multi-provider: Check if this track was already analyzed under a different provider's item_id
+                # If so, copy the analysis instead of re-analyzing (saves significant compute time)
+                item_file_path = item.get('Path') or item.get('FilePath')
+                if needs_musicnn and item_file_path:
+                    existing_analysis = find_existing_analysis_by_file_path(item_file_path, active_provider_id)
+                    if existing_analysis and existing_analysis.get('has_musicnn'):
+                        # Found existing analysis from another provider - copy it
+                        source_item_id = existing_analysis.get('item_id')
+                        if source_item_id and source_item_id != track_id_str:
+                            if copy_analysis_to_new_item(source_item_id, track_id_str, item_file_path, active_provider_id):
+                                logger.info(f"Copied existing analysis for '{track_name_full}' from provider item {source_item_id}")
+                                needs_musicnn = False
+                                # Also check if CLAP/MuLan can be copied
+                                if needs_clap and existing_analysis.get('has_clap'):
+                                    needs_clap = False
+                                    logger.info(f"  - Also copied CLAP embedding")
 
                 # Album name update now handled in main analysis task. If needed, uncomment below:
                 # try:
