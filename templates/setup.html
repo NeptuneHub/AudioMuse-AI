@@ -452,6 +452,47 @@
         font-size: 0.85rem;
         cursor: pointer;
     }
+
+    /* Worker Connection Info */
+    .connection-info-box {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        background: var(--bg-primary);
+        padding: 0.75rem;
+        border-radius: 4px;
+        border: 1px solid var(--border-color);
+    }
+
+    .connection-info-box code {
+        flex: 1;
+        font-family: monospace;
+        font-size: 0.95rem;
+        word-break: break-all;
+    }
+
+    .copy-btn {
+        padding: 0.25rem 0.75rem;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        background: var(--bg-secondary);
+        cursor: pointer;
+        font-size: 0.85rem;
+    }
+
+    .copy-btn:hover {
+        background: var(--bg-primary);
+    }
+
+    .copy-btn.copied {
+        background: rgba(40, 167, 69, 0.2);
+        border-color: #28a745;
+        color: #28a745;
+    }
+
+    .worker-connection-info .config-field {
+        margin-bottom: 1.25rem;
+    }
 </style>
 {% endblock %}
 
@@ -493,6 +534,26 @@
 
             <div id="existing-install-info" style="display: none;">
                 <!-- Populated by JS if existing installation detected -->
+            </div>
+        </div>
+
+        <div class="step-section">
+            <h3>Select Deployment Mode</h3>
+            <p class="description">
+                Choose how you want to deploy AudioMuse-AI.
+            </p>
+
+            <div class="hardware-options">
+                <div class="hardware-option selected" data-deployment="unified">
+                    <div class="option-icon">&#128230;</div>
+                    <div class="option-name">Unified</div>
+                    <div class="option-desc">Server and worker on the same machine. Best for most users.</div>
+                </div>
+                <div class="hardware-option" data-deployment="split">
+                    <div class="option-icon">&#128423;</div>
+                    <div class="option-name">Split</div>
+                    <div class="option-desc">Run workers on separate machines. For distributed setups or dedicated GPU servers.</div>
+                </div>
             </div>
         </div>
 
@@ -588,6 +649,53 @@
             </div>
         </div>
 
+        <div class="step-section" id="worker-config-section" style="display: none;">
+            <h3>Worker Connection Info</h3>
+            <p class="description">
+                Use these settings when configuring remote workers. Copy them to the worker machine's .env file.
+            </p>
+
+            <div class="worker-connection-info">
+                <div class="config-field">
+                    <label>Redis URL for Workers</label>
+                    <div class="connection-info-box">
+                        <code id="worker-redis-url">redis://&lt;THIS_SERVER_IP&gt;:6379/0</code>
+                        <button class="copy-btn" onclick="copyToClipboard('worker-redis-url')">Copy</button>
+                    </div>
+                    <div class="field-help">Set WORKER_REDIS_URL in worker's .env to this value</div>
+                </div>
+
+                <div class="config-field">
+                    <label>PostgreSQL Host for Workers</label>
+                    <div class="connection-info-box">
+                        <code id="worker-postgres-host">&lt;THIS_SERVER_IP&gt;</code>
+                        <button class="copy-btn" onclick="copyToClipboard('worker-postgres-host')">Copy</button>
+                    </div>
+                    <div class="field-help">Set WORKER_POSTGRES_HOST in worker's .env to this value</div>
+                </div>
+
+                <div class="config-field">
+                    <label>Recommended Docker Compose File</label>
+                    <div class="connection-info-box">
+                        <code id="worker-compose-file">docker-compose-worker-cpu.yaml</code>
+                    </div>
+                    <div class="field-help" id="worker-compose-help">
+                        Run on worker machine: <code>docker-compose -f docker-compose-worker-cpu.yaml up -d</code>
+                    </div>
+                </div>
+            </div>
+
+            <div class="step-section" style="margin-top: 1rem; padding: 1rem; background: rgba(var(--primary-rgb), 0.1); border-radius: 8px;">
+                <h4 style="margin-top: 0;">Quick Setup for Workers</h4>
+                <ol style="margin: 0.5rem 0 0 1.5rem; padding: 0;">
+                    <li>Copy .env.example to the worker machine</li>
+                    <li>Set WORKER_REDIS_URL and WORKER_POSTGRES_HOST as shown above</li>
+                    <li>Copy your media server credentials (same as this server)</li>
+                    <li>Run the appropriate docker-compose file</li>
+                </ol>
+            </div>
+        </div>
+
         <div class="advanced-toggle" onclick="toggleAdvanced()">
             <span id="advanced-arrow">&#9654;</span>
             <span>Advanced Settings</span>
@@ -676,17 +784,21 @@
     // State
     let currentStep = 1;
     let selectedHardware = 'cpu';
+    let selectedDeployment = 'unified';
     let selectedProviders = [];
     let providerConfigs = {};
     let providerTypes = [];
     let existingProviders = [];
+    let serverInfo = { host: window.location.hostname, port: window.location.port || '8000' };
 
     // Initialize
     document.addEventListener('DOMContentLoaded', async function() {
         await loadSetupStatus();
         await loadProviderTypes();
+        await loadServerInfo();
         renderProviderGrid();
         setupHardwareOptions();
+        setupDeploymentOptions();
     });
 
     async function loadSetupStatus() {
@@ -882,9 +994,9 @@
     }
 
     function setupHardwareOptions() {
-        document.querySelectorAll('.hardware-option').forEach(option => {
+        document.querySelectorAll('.hardware-option[data-hardware]').forEach(option => {
             option.onclick = function() {
-                document.querySelectorAll('.hardware-option').forEach(o => o.classList.remove('selected'));
+                document.querySelectorAll('.hardware-option[data-hardware]').forEach(o => o.classList.remove('selected'));
                 this.classList.add('selected');
                 selectedHardware = this.dataset.hardware;
 
@@ -896,7 +1008,82 @@
                     gpuClustering.disabled = true;
                     gpuClustering.checked = false;
                 }
+
+                // Update worker compose file recommendation
+                updateWorkerComposeRecommendation();
             };
+        });
+    }
+
+    function setupDeploymentOptions() {
+        document.querySelectorAll('.hardware-option[data-deployment]').forEach(option => {
+            option.onclick = function() {
+                document.querySelectorAll('.hardware-option[data-deployment]').forEach(o => o.classList.remove('selected'));
+                this.classList.add('selected');
+                selectedDeployment = this.dataset.deployment;
+
+                // Show/hide worker config section
+                updateWorkerConfigVisibility();
+            };
+        });
+    }
+
+    async function loadServerInfo() {
+        try {
+            const response = await fetch('/api/setup/server-info');
+            if (response.ok) {
+                const data = await response.json();
+                serverInfo = data;
+            }
+        } catch (err) {
+            console.log('Could not load server info, using defaults');
+        }
+        updateWorkerConnectionInfo();
+    }
+
+    function updateWorkerConfigVisibility() {
+        const workerSection = document.getElementById('worker-config-section');
+        if (selectedDeployment === 'split') {
+            workerSection.style.display = 'block';
+            updateWorkerConnectionInfo();
+        } else {
+            workerSection.style.display = 'none';
+        }
+    }
+
+    function updateWorkerConnectionInfo() {
+        const serverIp = serverInfo.host || window.location.hostname;
+        const redisPort = serverInfo.redis_port || '6379';
+        const postgresPort = serverInfo.postgres_port || '5432';
+
+        document.getElementById('worker-redis-url').textContent = `redis://${serverIp}:${redisPort}/0`;
+        document.getElementById('worker-postgres-host').textContent = serverIp;
+        updateWorkerComposeRecommendation();
+    }
+
+    function updateWorkerComposeRecommendation() {
+        const composeFile = selectedHardware === 'nvidia'
+            ? 'docker-compose-worker-nvidia.yaml'
+            : 'docker-compose-worker-cpu.yaml';
+        document.getElementById('worker-compose-file').textContent = composeFile;
+        document.getElementById('worker-compose-help').innerHTML =
+            `Run on worker machine: <code>docker-compose -f ${composeFile} up -d</code>`;
+    }
+
+    function copyToClipboard(elementId) {
+        const element = document.getElementById(elementId);
+        const text = element.textContent;
+
+        navigator.clipboard.writeText(text).then(() => {
+            const btn = element.parentElement.querySelector('.copy-btn');
+            btn.textContent = 'Copied!';
+            btn.classList.add('copied');
+            setTimeout(() => {
+                btn.textContent = 'Copy';
+                btn.classList.remove('copied');
+            }, 2000);
+        }).catch(err => {
+            console.error('Failed to copy:', err);
         });
     }
 
@@ -958,7 +1145,15 @@
             return p ? p.name : type;
         }).join(', ');
 
+        let deploymentInfo = selectedDeployment === 'unified'
+            ? 'Unified (server + worker on same machine)'
+            : 'Split (workers on separate machines)';
+
         summary.innerHTML = `
+            <div class="summary-item">
+                <span class="summary-label">Deployment Mode</span>
+                <span class="summary-value">${deploymentInfo}</span>
+            </div>
             <div class="summary-item">
                 <span class="summary-label">Hardware</span>
                 <span class="summary-value">${selectedHardware === 'nvidia' ? 'NVIDIA GPU' : 'CPU Only'}</span>
@@ -1005,6 +1200,7 @@
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
+                    deployment_type: selectedDeployment,
                     hardware_type: selectedHardware,
                     clap_enabled: document.getElementById('setting-clap-enabled').checked,
                     gpu_clustering: document.getElementById('setting-gpu-clustering').checked,

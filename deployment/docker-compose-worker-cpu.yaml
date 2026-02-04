@@ -1,16 +1,15 @@
-# AudioMuse-AI Worker-Only Docker Compose (NVIDIA GPU)
+# AudioMuse-AI Worker-Only Docker Compose (CPU)
 # =============================================================================
-# WORKER TEMPLATE - Runs RQ workers only with GPU acceleration
+# WORKER TEMPLATE - Runs RQ workers only, connects to remote server
 #
 # Use this for split deployments where:
 #   - Server (Flask + Redis + PostgreSQL) runs on separate machine
-#   - This worker handles GPU-accelerated ML analysis tasks
+#   - This worker handles CPU-intensive ML analysis tasks
 #
 # Prerequisites:
 #   - Server running docker-compose-server.yaml on another machine
 #   - Network connectivity to server (ports 6379 Redis, 5432 PostgreSQL)
 #   - Access to same music files (via media server API or shared storage)
-#   - NVIDIA GPU with docker nvidia-runtime installed
 #
 # Quick Start:
 #   1. Copy .env.example to .env on this worker machine
@@ -18,7 +17,7 @@
 #        WORKER_REDIS_URL=redis://SERVER_IP:6379/0
 #        WORKER_POSTGRES_HOST=SERVER_IP
 #   3. Copy media server credentials from server's .env
-#   4. Run: docker-compose -f docker-compose-worker-nvidia.yaml up -d
+#   4. Run: docker-compose -f docker-compose-worker-cpu.yaml up -d
 #
 # Scaling:
 #   - Run multiple workers on different machines
@@ -30,11 +29,11 @@ version: '3.8'
 
 services:
   # ---------------------------------------------------------------------------
-  # AudioMuse-AI Worker (NVIDIA GPU, connects to remote server)
+  # AudioMuse-AI Worker (CPU-only, connects to remote server)
   # ---------------------------------------------------------------------------
   audiomuse-ai-worker:
-    image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
-    container_name: audiomuse-ai-worker-nvidia
+    image: ghcr.io/neptunehub/audiomuse-ai:latest
+    container_name: audiomuse-ai-worker-cpu
     environment:
       SERVICE_TYPE: "worker"
       TZ: "${TZ:-UTC}"
@@ -83,36 +82,32 @@ services:
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY:-}"
       # =======================================================================
-      # WORKER FEATURES (GPU-enabled)
+      # WORKER FEATURES
       # =======================================================================
       # CLAP text search - uses ~750MB RAM
       CLAP_ENABLED: "${CLAP_ENABLED:-true}"
-      # GPU clustering - enabled for NVIDIA worker
-      USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
+      # GPU clustering - disabled for CPU worker
+      USE_GPU_CLUSTERING: "false"
       # Worker tuning
       RQ_MAX_JOBS: "${RQ_MAX_JOBS:-50}"
       RQ_MAX_JOBS_HIGH: "${RQ_MAX_JOBS_HIGH:-100}"
       RQ_LOGGING_LEVEL: "${RQ_LOGGING_LEVEL:-INFO}"
       TEMP_DIR: "/app/temp_audio"
-      # NVIDIA GPU settings
-      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_GPU_ID:-0}"
-      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
     volumes:
       - temp-audio-worker:/app/temp_audio
       # Mount music directory if using local files provider
       - ${MUSIC_PATH:-./music}:/music:ro
     restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["${NVIDIA_GPU_ID:-0}"]
-              capabilities: [gpu]
+    # Optional: Limit CPU usage
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '4'
+    #       memory: 8G
 
 # =============================================================================
 # Volumes
 # =============================================================================
 volumes:
   temp-audio-worker:
-    name: audiomuse-temp-worker-nvidia
+    name: audiomuse-temp-worker-cpu

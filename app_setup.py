@@ -680,3 +680,46 @@ def set_primary_provider():
         'message': 'Primary provider set',
         'primary_provider_id': provider_id
     })
+
+
+@setup_bp.route('/api/setup/server-info', methods=['GET'])
+def get_server_info():
+    """
+    Get server connection information for configuring remote workers.
+    ---
+    tags:
+      - Setup
+    responses:
+      200:
+        description: Server connection information
+    """
+    import socket
+    import os
+
+    # Try to get the server's IP address
+    try:
+        # Get the hostname and try to resolve it
+        hostname = socket.gethostname()
+        host_ip = socket.gethostbyname(hostname)
+        # If we get a loopback address, try to get a better one
+        if host_ip.startswith('127.'):
+            # Try to connect to a public DNS to get our real IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(('8.8.8.8', 80))
+                host_ip = s.getsockname()[0]
+            except Exception:
+                host_ip = hostname  # Fall back to hostname
+            finally:
+                s.close()
+    except Exception:
+        host_ip = 'localhost'
+
+    return jsonify({
+        'host': host_ip,
+        'hostname': socket.gethostname() if hasattr(socket, 'gethostname') else 'unknown',
+        'redis_port': os.environ.get('REDIS_PORT', '6379'),
+        'postgres_port': os.environ.get('POSTGRES_PORT', '5432'),
+        'postgres_host': os.environ.get('POSTGRES_HOST', 'postgres'),
+        'redis_url': os.environ.get('REDIS_URL', 'redis://redis:6379/0'),
+    })
