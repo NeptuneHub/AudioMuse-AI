@@ -650,14 +650,18 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
 
 # --- RQ Task Definitions ---
 # MODIFIED: Removed jellyfin_url, jellyfin_user_id, jellyfin_token as they are no longer needed for the function calls.
-def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
+def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provider_id=None):
     from app import (app, JobStatus)
     from app_helper import (redis_conn, get_db, save_task_status, get_task_info_from_db,
                      save_track_analysis_and_embedding, save_clap_embedding,
+                     get_primary_provider_id,
                      TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import analyze_audio_file as clap_analyze, is_clap_available
     from .mulan_analyzer import analyze_audio_file as mulan_analyze
     from config import MULAN_ENABLED
+
+    # Get provider_id for track linking (use passed value or get primary provider)
+    active_provider_id = provider_id if provider_id is not None else get_primary_provider_id()
     
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -921,7 +925,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             album_artist=item.get('OriginalAlbumArtist', None),
                             year=item.get('Year'),
                             rating=item.get('Rating'),
-                            file_path=item.get('Path') or item.get('FilePath')  # For multi-provider track linking
+                            file_path=item.get('Path') or item.get('FilePath'),  # For multi-provider track linking
+                            provider_id=active_provider_id  # Link to provider for multi-provider support
                         )
                         track_processed = True
                         

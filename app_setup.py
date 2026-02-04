@@ -95,15 +95,27 @@ def is_multi_provider_enabled():
 # PROVIDER MANAGEMENT
 # ##############################################################################
 
-def get_providers():
-    """Get all configured providers."""
+def get_providers(enabled_only=False):
+    """Get all configured providers.
+
+    Args:
+        enabled_only: If True, only return enabled providers
+    """
     db = get_db()
     with db.cursor() as cur:
-        cur.execute("""
-            SELECT id, provider_type, name, config, enabled, priority, created_at, updated_at
-            FROM provider
-            ORDER BY priority DESC, created_at ASC
-        """)
+        if enabled_only:
+            cur.execute("""
+                SELECT id, provider_type, name, config, enabled, priority, created_at, updated_at
+                FROM provider
+                WHERE enabled = TRUE
+                ORDER BY priority DESC, created_at ASC
+            """)
+        else:
+            cur.execute("""
+                SELECT id, provider_type, name, config, enabled, priority, created_at, updated_at
+                FROM provider
+                ORDER BY priority DESC, created_at ASC
+            """)
         rows = cur.fetchall()
         providers = []
         for row in rows:

@@ -540,8 +540,10 @@ def track_exists(item_id):
     cur.close()
     return row is not None
 
-def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, album_artist=None, year=None, rating=None, file_path=None):
+def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, album_artist=None, year=None, rating=None, file_path=None, provider_id=None):
     """Saves track analysis and embedding in a single transaction.
+
+    Also creates/updates track linking for multi-provider support when file_path is provided.
 
     Args:
         item_id: Provider-specific track identifier
@@ -559,6 +561,7 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
         year: Release year
         rating: User rating
         file_path: Full path to the audio file (for multi-provider track linking)
+        provider_id: Optional provider ID for creating provider_track link
     """
 
     def _sanitize_string(s, max_length=1000, field_name="field"):
@@ -705,6 +708,22 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
         raise
     finally:
         cur.close()
+
+    # Create track linking for multi-provider support (after main transaction commits)
+    if file_path:
+        try:
+            # Get or create track record based on file path
+            track_id = get_or_create_track(file_path)
+            if track_id:
+                # Link score to track
+                update_score_track_id(item_id, track_id)
+
+                # Create provider_track link if provider_id is specified
+                if provider_id:
+                    link_provider_track(provider_id, track_id, item_id, title, author, album)
+        except Exception as e:
+            # Log but don't fail - track linking is supplementary
+            logger.warning("Failed to create track linking for %s: %s", item_id, e)
 
 def save_clap_embedding(item_id, clap_embedding_vector):
     """Saves CLAP embedding for a track."""
@@ -1412,3 +1431,308 @@ def set_primary_provider(provider_id):
                 updated_at = NOW()
         """, (str(provider_id) if provider_id is not None else 'null',))
         db.commit()
+
+
+# ##############################################################################
+# TRACK LINKING FUNCTIONS - For multi-provider track identity
+# ##############################################################################
+
+def _compute_file_path_hash(file_path):
+    """
+    Compute SHA-256 hash of normalized file path for track identity.
+
+    Normalizes path to handle different provider path formats:
+    - Strips leading slashes and 'music/' prefixes
+    - Converts to lowercase for case-insensitive matching
+    - Uses forward slashes consistently
+    """
+    import hashlib
+    from pathlib import PurePosixPath
+
+    if not file_path:
+        return None
+
+    # Normalize path: convert to POSIX style, strip common prefixes
+    normalized = file_path.replace('\\', '/')
+
+    # Strip common music library prefixes
+    prefixes_to_strip = ['/music/', 'music/', '/data/', 'data/', '/mnt/']
+    lower_path = normalized.lower()
+    for prefix in prefixes_to_strip:
+        if lower_path.startswith(prefix):
+            normalized = normalized[len(prefix):]
+            break
+
+    # Remove leading slashes
+    normalized = normalized.lstrip('/')
+
+    # Compute hash
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+
+
+def get_or_create_track(file_path, file_size=None, file_modified=None):
+    """
+    Get or create a track record based on file path.
+
+    The track table provides stable identity across providers based on file path.
+
+    Args:
+        file_path: Full or relative path to the audio file
+        file_size: Optional file size in bytes
+        file_modified: Optional file modification timestamp
+
+    Returns:
+        track_id (int) or None if file_path is empty
+    """
+    if not file_path:
+        return None
+
+    file_path_hash = _compute_file_path_hash(file_path)
+    if not file_path_hash:
+        return None
+
+    db = get_db()
+    with db.cursor() as cur:
+        # Try to get existing track
+        cur.execute("SELECT id FROM track WHERE file_path_hash = %s", (file_path_hash,))
+        row = cur.fetchone()
+
+        if row:
+            track_id = row[0]
+            # Update file info if provided
+            if file_size is not None or file_modified is not None:
+                updates = ["updated_at = NOW()"]
+                values = []
+                if file_size is not None:
+                    updates.append("file_size = %s")
+                    values.append(file_size)
+                if file_modified is not None:
+                    updates.append("file_modified = %s")
+                    values.append(file_modified)
+                values.append(track_id)
+                cur.execute(f"UPDATE track SET {', '.join(updates)} WHERE id = %s", values)
+                db.commit()
+            return track_id
+
+        # Create new track
+        cur.execute("""
+            INSERT INTO track (file_path_hash, file_path, file_size, file_modified)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
+        """, (file_path_hash, file_path, file_size, file_modified))
+        track_id = cur.fetchone()[0]
+        db.commit()
+        return track_id
+
+
+def link_provider_track(provider_id, track_id, item_id, title=None, artist=None, album=None):
+    """
+    Link a provider's item_id to a track.
+
+    Creates or updates the provider_track mapping that links a provider's
+    native item_id to the stable track identity.
+
+    Args:
+        provider_id: ID of the provider
+        track_id: ID of the track in the track table
+        item_id: Provider's native item identifier
+        title: Track title from this provider
+        artist: Artist name from this provider
+        album: Album name from this provider
+
+    Returns:
+        provider_track id or None on failure
+    """
+    if not provider_id or not track_id or not item_id:
+        return None
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            INSERT INTO provider_track (provider_id, track_id, item_id, title, artist, album, last_synced)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (provider_id, item_id) DO UPDATE SET
+                track_id = EXCLUDED.track_id,
+                title = COALESCE(EXCLUDED.title, provider_track.title),
+                artist = COALESCE(EXCLUDED.artist, provider_track.artist),
+                album = COALESCE(EXCLUDED.album, provider_track.album),
+                last_synced = NOW()
+            RETURNING id
+        """, (provider_id, track_id, item_id, title, artist, album))
+        result = cur.fetchone()
+        db.commit()
+        return result[0] if result else None
+
+
+def update_score_track_id(item_id, track_id):
+    """
+    Update the track_id reference in the score table.
+
+    This links the analysis data to the stable track identity.
+
+    Args:
+        item_id: The item_id in the score table
+        track_id: The track_id to link to
+    """
+    if not item_id or not track_id:
+        return
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            UPDATE score SET track_id = %s WHERE item_id = %s AND (track_id IS NULL OR track_id != %s)
+        """, (track_id, item_id, track_id))
+        db.commit()
+
+
+def get_track_by_file_path(file_path):
+    """
+    Get track info by file path.
+
+    Args:
+        file_path: Full or relative path to the audio file
+
+    Returns:
+        dict with track info or None if not found
+    """
+    if not file_path:
+        return None
+
+    file_path_hash = _compute_file_path_hash(file_path)
+    if not file_path_hash:
+        return None
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT t.id, t.file_path, t.file_path_hash, t.file_size, t.file_modified,
+                   s.item_id, s.title, s.author, s.album, s.tempo, s.key, s.scale,
+                   s.mood_vector, s.energy, s.other_features
+            FROM track t
+            LEFT JOIN score s ON s.track_id = t.id
+            WHERE t.file_path_hash = %s
+        """, (file_path_hash,))
+        row = cur.fetchone()
+        if row:
+            return {
+                'track_id': row[0],
+                'file_path': row[1],
+                'file_path_hash': row[2],
+                'file_size': row[3],
+                'file_modified': row[4],
+                'item_id': row[5],
+                'title': row[6],
+                'author': row[7],
+                'album': row[8],
+                'tempo': row[9],
+                'key': row[10],
+                'scale': row[11],
+                'mood_vector': row[12],
+                'energy': row[13],
+                'other_features': row[14],
+            }
+        return None
+
+
+def get_all_provider_item_ids_for_track(track_id):
+    """
+    Get all provider item_ids linked to a track.
+
+    Args:
+        track_id: The track ID
+
+    Returns:
+        List of dicts with provider_id, item_id, title, artist, album
+    """
+    if not track_id:
+        return []
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT pt.provider_id, pt.item_id, pt.title, pt.artist, pt.album,
+                   p.provider_type, p.name as provider_name
+            FROM provider_track pt
+            JOIN provider p ON p.id = pt.provider_id
+            WHERE pt.track_id = %s
+        """, (track_id,))
+        return [
+            {
+                'provider_id': row[0],
+                'item_id': row[1],
+                'title': row[2],
+                'artist': row[3],
+                'album': row[4],
+                'provider_type': row[5],
+                'provider_name': row[6],
+            }
+            for row in cur.fetchall()
+        ]
+
+
+def find_existing_analysis_by_file_path(file_path):
+    """
+    Find existing analysis data for a file path.
+
+    This is used to check if a track has already been analyzed under a different
+    provider's item_id, allowing reuse of analysis data.
+
+    Args:
+        file_path: Full or relative path to the audio file
+
+    Returns:
+        dict with item_id and analysis status, or None if not found
+    """
+    if not file_path:
+        return None
+
+    file_path_hash = _compute_file_path_hash(file_path)
+    if not file_path_hash:
+        return None
+
+    db = get_db()
+    with db.cursor() as cur:
+        # First try via track table (proper linking)
+        cur.execute("""
+            SELECT s.item_id, s.title, s.author,
+                   (s.tempo IS NOT NULL) as has_musicnn,
+                   EXISTS(SELECT 1 FROM embedding e WHERE e.item_id = s.item_id) as has_embedding,
+                   EXISTS(SELECT 1 FROM clap_embedding ce WHERE ce.item_id = s.item_id) as has_clap
+            FROM track t
+            JOIN score s ON s.track_id = t.id
+            WHERE t.file_path_hash = %s
+        """, (file_path_hash,))
+        row = cur.fetchone()
+        if row:
+            return {
+                'item_id': row[0],
+                'title': row[1],
+                'author': row[2],
+                'has_musicnn': row[3],
+                'has_embedding': row[4],
+                'has_clap': row[5],
+                'source': 'track_table'
+            }
+
+        # Fall back to checking score.file_path directly (for legacy data)
+        cur.execute("""
+            SELECT s.item_id, s.title, s.author,
+                   (s.tempo IS NOT NULL) as has_musicnn,
+                   EXISTS(SELECT 1 FROM embedding e WHERE e.item_id = s.item_id) as has_embedding,
+                   EXISTS(SELECT 1 FROM clap_embedding ce WHERE ce.item_id = s.item_id) as has_clap
+            FROM score s
+            WHERE s.file_path = %s
+        """, (file_path,))
+        row = cur.fetchone()
+        if row:
+            return {
+                'item_id': row[0],
+                'title': row[1],
+                'author': row[2],
+                'has_musicnn': row[3],
+                'has_embedding': row[4],
+                'has_clap': row[5],
+                'source': 'score_file_path'
+            }
+
+        return None
