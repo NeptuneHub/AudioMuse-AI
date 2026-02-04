@@ -7,6 +7,7 @@ Standalone implementation that calculates CLAP embeddings directly using ONNX mo
 import os
 import logging
 import numpy as np
+import soundfile as sf
 import librosa
 import onnxruntime as ort
 from typing import Tuple, Optional
@@ -120,6 +121,13 @@ class CLAPEmbedder:
             Returns (None, 0, 0, None) if analysis fails
         """
         try:
+            # Pre-check: skip files that PySoundFile can't read (avoids slow audioread fallback)
+            try:
+                sf.info(audio_path)
+            except Exception:
+                logger.warning(f"⚠️ Skipping {audio_path} — not readable by soundfile (would trigger slow audioread fallback)")
+                return None, 0, 0, None
+
             # Load audio at 48kHz
             audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True)
             
