@@ -524,6 +524,15 @@ def get_provider_info(provider_type: str):
 
 def _get_provider_config_fields(provider_type: str):
     """Get configuration fields for a provider type."""
+    # Common field for path normalization in multi-provider setups
+    music_path_prefix_field = {
+        'name': 'music_path_prefix',
+        'label': 'Music Path Prefix',
+        'type': 'text',
+        'required': False,
+        'description': 'Folder prefix to strip for cross-provider matching (e.g., "MyLibrary" if paths include library name). Leave empty if provider paths start directly with artist folders.',
+    }
+
     fields = {
         'jellyfin': [
             {'name': 'url', 'label': 'Server URL', 'type': 'url', 'required': True,
@@ -532,6 +541,7 @@ def _get_provider_config_fields(provider_type: str):
              'description': 'Jellyfin user ID (found in dashboard)'},
             {'name': 'token', 'label': 'API Token', 'type': 'password', 'required': True,
              'description': 'API key from Jellyfin settings'},
+            music_path_prefix_field,
         ],
         'navidrome': [
             {'name': 'url', 'label': 'Server URL', 'type': 'url', 'required': True,
@@ -540,10 +550,12 @@ def _get_provider_config_fields(provider_type: str):
              'description': 'Navidrome username'},
             {'name': 'password', 'label': 'Password', 'type': 'password', 'required': True,
              'description': 'Navidrome password'},
+            music_path_prefix_field,
         ],
         'lyrion': [
             {'name': 'url', 'label': 'Server URL', 'type': 'url', 'required': True,
              'description': 'Lyrion server URL (e.g., http://192.168.1.100:9000)'},
+            music_path_prefix_field,
         ],
         'mpd': [
             {'name': 'host', 'label': 'Host', 'type': 'text', 'required': True,
@@ -554,6 +566,7 @@ def _get_provider_config_fields(provider_type: str):
              'description': 'MPD password (if configured)'},
             {'name': 'music_directory', 'label': 'Music Directory', 'type': 'path', 'required': True,
              'description': 'Path to music files on the MPD server'},
+            music_path_prefix_field,
         ],
         'emby': [
             {'name': 'url', 'label': 'Server URL', 'type': 'url', 'required': True,
@@ -562,6 +575,7 @@ def _get_provider_config_fields(provider_type: str):
              'description': 'Emby user ID'},
             {'name': 'token', 'label': 'API Token', 'type': 'password', 'required': True,
              'description': 'API key from Emby settings'},
+            music_path_prefix_field,
         ],
     }
     return fields.get(provider_type, [])

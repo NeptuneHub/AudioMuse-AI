@@ -599,6 +599,13 @@ def get_provider_info() -> Dict:
                 'required': False,
                 'description': 'Where to save generated M3U playlists',
                 'default': '/music/playlists'
+            },
+            {
+                'name': 'music_path_prefix',
+                'label': 'Music Path Prefix',
+                'type': 'text',
+                'required': False,
+                'description': 'Folder prefix to strip for cross-provider matching. Leave empty if paths start directly with artist folders.'
             }
         ]
     }
