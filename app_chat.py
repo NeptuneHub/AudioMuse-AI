@@ -750,7 +750,7 @@ def create_media_server_playlist_api():
     API endpoint to create a playlist on the configured media server.
     """
     # Local import to break circular dependency at startup
-    from tasks.mediaserver import create_instant_playlist
+    from tasks.voyager_manager import create_playlist_from_ids
 
     data = request.get_json()
     if not data or 'playlist_name' not in data or 'item_ids' not in data:
@@ -758,6 +758,7 @@ def create_media_server_playlist_api():
 
     user_playlist_name = data.get('playlist_name')
     item_ids = data.get('item_ids') # This will be a list of strings
+    provider_ids = data.get('provider_ids')  # Can be 'all', int, or list of ints
 
     if not user_playlist_name.strip():
         return jsonify({"message": "Error: Playlist name cannot be empty."}), 400
@@ -765,14 +766,21 @@ def create_media_server_playlist_api():
         return jsonify({"message": "Error: No songs provided to create the playlist."}), 400
 
     try:
-        # MODIFIED: Call the simplified create_instant_playlist function
-        created_playlist_info = create_instant_playlist(user_playlist_name, item_ids)
-        
-        if not created_playlist_info:
-            raise Exception("Media server did not return playlist information after creation.")
-            
-        # The created_playlist_info is the full JSON response from the media server
-        return jsonify({"message": f"Successfully created playlist '{user_playlist_name}' on the media server with ID: {created_playlist_info.get('Id')}"}), 200
+        # Use the voyager_manager function that supports multi-provider
+        result = create_playlist_from_ids(user_playlist_name, item_ids, provider_ids=provider_ids)
+
+        # Handle multi-provider result (dict) vs single provider result (string)
+        if isinstance(result, dict):
+            # Multi-provider response
+            success_count = sum(1 for r in result.values() if r.get('success'))
+            total_count = len(result)
+            return jsonify({
+                "message": f"Playlist '{user_playlist_name}' created on {success_count}/{total_count} provider(s).",
+                "results": result
+            }), 200
+        else:
+            # Single provider response
+            return jsonify({"message": f"Successfully created playlist '{user_playlist_name}' on the media server with ID: {result}"}), 200
 
     except Exception as e:
         # Log detailed error on the server

@@ -1647,15 +1647,46 @@ def search_tracks_by_title_and_artist(title_query: str, artist_query: str, limit
     return results
 
 
-def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: dict = None):
+def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: dict = None, provider_ids=None):
     """
-    Creates a new playlist on the configured media server with the provided name and track IDs.
+    Creates a new playlist on the configured media server(s) with the provided name and track IDs.
+
+    Args:
+        playlist_name: Name of the playlist
+        track_ids: List of track IDs
+        user_creds: Optional user credentials
+        provider_ids: Provider(s) to create playlist on:
+                     - None: Use primary provider or default config
+                     - 'all': Create on all enabled providers
+                     - int: Single provider ID
+                     - list[int]: Multiple provider IDs
+
+    Returns:
+        If single provider: playlist_id (str)
+        If multiple providers: dict of {provider_id: {'success': bool, 'playlist_id': str, 'error': str}}
     """
     try:
-        # Use the mediaserver dispatcher (imported at module top) to create the playlist.
-        # This avoids importing app_external which may not export the helper.
+        from tasks.mediaserver import create_playlist_multi_provider
+
+        # Use multi-provider function if provider_ids is specified as 'all' or a list
+        if provider_ids == 'all' or isinstance(provider_ids, (list, tuple)):
+            return create_playlist_multi_provider(playlist_name, track_ids, provider_ids, user_creds)
+
+        # Single provider specified
+        if provider_ids is not None:
+            results = create_playlist_multi_provider(playlist_name, track_ids, provider_ids, user_creds)
+            # Extract single result
+            if results:
+                result = list(results.values())[0]
+                if result.get('success'):
+                    return result.get('playlist_id')
+                else:
+                    raise Exception(result.get('error', 'Playlist creation failed'))
+            raise Exception("No provider found")
+
+        # Default: use existing single-provider logic for backward compatibility
         created_playlist = create_instant_playlist(playlist_name, track_ids, user_creds=user_creds)
-        
+
         if not created_playlist:
             raise Exception("Playlist creation failed. The media server did not return a playlist object.")
 

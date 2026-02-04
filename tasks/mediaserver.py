@@ -566,3 +566,188 @@ def _get_provider_config_fields(provider_type: str):
     }
     return fields.get(provider_type, [])
 
+
+# ##############################################################################
+# MULTI-PROVIDER PLAYLIST FUNCTIONS
+# ##############################################################################
+
+def get_all_playlists_multi_provider(provider_ids=None):
+    """
+    Get playlists from multiple providers with deduplication.
+
+    Args:
+        provider_ids: List of provider IDs to query, or None for all enabled providers
+
+    Returns:
+        List of playlists with provider info, deduplicated by name
+    """
+    from app_helper import get_providers, get_provider_by_id
+
+    all_playlists = []
+    seen_names = {}  # Track playlist names to detect duplicates
+
+    # Get providers to query
+    if provider_ids is None:
+        providers = get_providers(enabled_only=True)
+    else:
+        providers = [get_provider_by_id(pid) for pid in provider_ids if get_provider_by_id(pid)]
+
+    for provider in providers:
+        try:
+            provider_type = provider['provider_type']
+            playlists = _get_playlists_for_provider_type(provider_type)
+
+            for playlist in playlists:
+                playlist_name = playlist.get('Name') or playlist.get('name', '')
+                playlist_id = playlist.get('Id') or playlist.get('id', '')
+
+                # Add provider info to playlist
+                playlist['provider_id'] = provider['id']
+                playlist['provider_type'] = provider_type
+                playlist['provider_name'] = provider.get('name', provider_type)
+
+                # Check for duplicates by name
+                if playlist_name in seen_names:
+                    # Mark as duplicate
+                    playlist['is_duplicate'] = True
+                    playlist['duplicate_of_provider'] = seen_names[playlist_name]
+                else:
+                    playlist['is_duplicate'] = False
+                    seen_names[playlist_name] = provider['id']
+
+                all_playlists.append(playlist)
+
+        except Exception as e:
+            logger.warning(f"Failed to get playlists from provider {provider.get('name', 'unknown')}: {e}")
+            continue
+
+    return all_playlists
+
+
+def _get_playlists_for_provider_type(provider_type):
+    """Get playlists for a specific provider type using current config."""
+    if provider_type == 'jellyfin':
+        return jellyfin_get_all_playlists()
+    elif provider_type == 'navidrome':
+        return navidrome_get_all_playlists()
+    elif provider_type == 'lyrion':
+        return lyrion_get_all_playlists()
+    elif provider_type == 'mpd':
+        return mpd_get_all_playlists()
+    elif provider_type == 'emby':
+        return emby_get_all_playlists()
+    elif provider_type == 'localfiles':
+        return localfiles_get_all_playlists()
+    return []
+
+
+def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, user_creds=None):
+    """
+    Create a playlist on one or more providers.
+
+    Args:
+        playlist_name: Name of the playlist to create
+        item_ids: List of track IDs to add
+        provider_ids: List of provider IDs to create playlist on,
+                     'all' for all enabled providers,
+                     or None for the primary/default provider
+        user_creds: Optional user credentials for providers that support them
+
+    Returns:
+        Dict with results for each provider: {provider_id: {'success': bool, 'playlist_id': str, 'error': str}}
+    """
+    from app_helper import get_providers, get_provider_by_id, get_primary_provider_id
+
+    if not playlist_name:
+        raise ValueError("Playlist name is required")
+    if not item_ids:
+        raise ValueError("Track IDs are required")
+
+    results = {}
+
+    # Determine which providers to use
+    if provider_ids == 'all':
+        providers = get_providers(enabled_only=True)
+    elif provider_ids is None:
+        # Use primary provider or fall back to current config
+        primary_id = get_primary_provider_id()
+        if primary_id:
+            provider = get_provider_by_id(primary_id)
+            providers = [provider] if provider else []
+        else:
+            # Fall back to creating on current configured provider
+            try:
+                created = create_instant_playlist(playlist_name, item_ids, user_creds=user_creds)
+                return {'default': {'success': True, 'playlist_id': created.get('Id') if created else None}}
+            except Exception as e:
+                return {'default': {'success': False, 'error': str(e)}}
+    else:
+        # Specific provider IDs
+        if isinstance(provider_ids, (list, tuple)):
+            providers = [get_provider_by_id(pid) for pid in provider_ids if get_provider_by_id(pid)]
+        else:
+            provider = get_provider_by_id(provider_ids)
+            providers = [provider] if provider else []
+
+    # Create playlist on each provider
+    for provider in providers:
+        provider_id = provider['id']
+        provider_type = provider['provider_type']
+
+        try:
+            # For now, use the dispatcher which uses current config
+            # In the future, we may want provider-specific config
+            created = _create_playlist_for_provider_type(provider_type, playlist_name, item_ids, user_creds)
+
+            results[provider_id] = {
+                'success': True,
+                'playlist_id': created.get('Id') or created.get('id') if created else None,
+                'provider_name': provider.get('name', provider_type)
+            }
+        except Exception as e:
+            logger.error(f"Failed to create playlist on provider {provider.get('name')}: {e}")
+            results[provider_id] = {
+                'success': False,
+                'error': str(e),
+                'provider_name': provider.get('name', provider_type)
+            }
+
+    return results
+
+
+def _create_playlist_for_provider_type(provider_type, playlist_name, item_ids, user_creds=None):
+    """Create playlist on a specific provider type."""
+    if provider_type == 'jellyfin':
+        return jellyfin_create_instant_playlist(playlist_name, item_ids, user_creds)
+    elif provider_type == 'navidrome':
+        return navidrome_create_instant_playlist(playlist_name, item_ids, user_creds)
+    elif provider_type == 'lyrion':
+        return lyrion_create_instant_playlist(playlist_name, item_ids)
+    elif provider_type == 'mpd':
+        return mpd_create_instant_playlist(playlist_name, item_ids, user_creds)
+    elif provider_type == 'emby':
+        return emby_create_instant_playlist(playlist_name, item_ids, user_creds)
+    elif provider_type == 'localfiles':
+        return localfiles_create_instant_playlist(playlist_name, item_ids, user_creds)
+    else:
+        raise ValueError(f"Unknown provider type: {provider_type}")
+
+
+def get_enabled_providers_for_playlists():
+    """
+    Get list of enabled providers for use in playlist dropdowns.
+
+    Returns:
+        List of dicts with 'id', 'name', 'type' for each enabled provider
+    """
+    from app_helper import get_providers
+
+    providers = get_providers(enabled_only=True)
+    return [
+        {
+            'id': p['id'],
+            'name': p.get('name') or p['provider_type'],
+            'type': p['provider_type']
+        }
+        for p in providers
+    ]
