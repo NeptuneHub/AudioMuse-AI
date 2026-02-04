@@ -713,7 +713,8 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     if file_path:
         try:
             # Get or create track record based on file path
-            track_id = get_or_create_track(file_path)
+            # Pass provider_id for provider-specific path normalization (music_path_prefix)
+            track_id = get_or_create_track(file_path, provider_id=provider_id)
             if track_id:
                 # Link score to track
                 update_score_track_id(item_id, track_id)
@@ -1437,24 +1438,30 @@ def set_primary_provider(provider_id):
 # TRACK LINKING FUNCTIONS - For multi-provider track identity
 # ##############################################################################
 
-def _compute_file_path_hash(file_path):
+def normalize_provider_path(file_path, provider_id=None):
     """
-    Compute SHA-256 hash of normalized file path for track identity.
+    Normalize a file path for cross-provider matching.
 
-    Normalizes paths to handle different provider formats:
+    Handles different provider path formats:
     - Jellyfin: /media/music/Library/Artist/Album/song.mp3
-    - Navidrome: Library/Artist/Album/song.mp3 or /music/Library/Artist/Album/song.mp3
+    - Navidrome: Artist/Album/song.mp3 (no library folder)
     - Lyrion: file:///music/Artist/Album/song.mp3
     - Local: /music/Artist/Album/song.mp3
 
-    Normalization:
-    - Strips file:// URL prefix
-    - Strips common mount points (/media/music, /music, /data, /mnt/*, etc.)
-    - Converts backslashes to forward slashes
-    - Removes leading slashes to get relative path
-    - Does NOT convert to lowercase (preserves case for accurate matching)
+    Normalization steps:
+    1. Strip file:// URL prefix and URL-decode
+    2. Strip common mount points (/media/music, /music, etc.)
+    3. Strip provider-specific music_path_prefix from config (e.g., "MyLibrary/")
+    4. Convert backslashes to forward slashes
+    5. Remove leading slashes
+
+    Args:
+        file_path: The file path to normalize
+        provider_id: Optional provider ID to get provider-specific path prefix
+
+    Returns:
+        Normalized relative path (e.g., "Artist/Album/song.mp3")
     """
-    import hashlib
     from urllib.parse import unquote
 
     if not file_path:
@@ -1465,14 +1472,12 @@ def _compute_file_path_hash(file_path):
     # Handle file:// URLs (Lyrion/LMS style)
     if normalized.startswith('file://'):
         normalized = normalized[7:]  # Remove 'file://'
-        # URL-decode the path (handles %20 for spaces, etc.)
-        normalized = unquote(normalized)
+        normalized = unquote(normalized)  # URL-decode
 
     # Convert Windows backslashes to forward slashes
     normalized = normalized.replace('\\', '/')
 
     # List of common mount point prefixes to strip (order matters - longer first)
-    # These are typical Docker volume mounts and media server paths
     prefixes_to_strip = [
         '/media/music/',      # Common Jellyfin mount
         '/media/Media/',      # Alternate Jellyfin
@@ -1492,7 +1497,7 @@ def _compute_file_path_hash(file_path):
         '/volume1/',          # Synology style
     ]
 
-    # Try to strip prefixes (case-insensitive check, preserve original case in result)
+    # Strip mount point prefixes (case-insensitive)
     lower_normalized = normalized.lower()
     for prefix in prefixes_to_strip:
         if lower_normalized.startswith(prefix.lower()):
@@ -1502,33 +1507,68 @@ def _compute_file_path_hash(file_path):
     # Remove any remaining leading slashes
     normalized = normalized.lstrip('/')
 
-    # If path still looks absolute (starts with drive letter on Windows),
-    # try to extract just the relative part after common folder names
+    # Handle Windows absolute paths
     if len(normalized) > 1 and normalized[1] == ':':
-        # Windows absolute path - try to find music folder
         for marker in ['/music/', '/Music/', '/media/', '/Media/']:
             idx = normalized.find(marker)
             if idx != -1:
                 normalized = normalized[idx + len(marker):]
                 break
 
+    # Strip provider-specific music_path_prefix if configured
+    # This handles cases like Jellyfin including "MyLibrary/" but Navidrome not
+    if provider_id:
+        try:
+            from app_setup import get_provider_by_id
+            provider = get_provider_by_id(provider_id)
+            if provider and provider.get('config'):
+                music_prefix = provider['config'].get('music_path_prefix', '')
+                if music_prefix:
+                    music_prefix = music_prefix.replace('\\', '/').strip('/')
+                    if music_prefix and normalized.lower().startswith(music_prefix.lower()):
+                        # Strip the prefix plus any following slash
+                        prefix_len = len(music_prefix)
+                        if len(normalized) > prefix_len and normalized[prefix_len] == '/':
+                            prefix_len += 1
+                        normalized = normalized[prefix_len:]
+        except Exception:
+            pass  # Ignore errors - continue with standard normalization
+
+    return normalized.lstrip('/') if normalized else None
+
+
+def _compute_file_path_hash(file_path, provider_id=None):
+    """
+    Compute SHA-256 hash of normalized file path for track identity.
+
+    Args:
+        file_path: The file path to hash
+        provider_id: Optional provider ID for provider-specific normalization
+
+    Returns:
+        SHA-256 hash string or None if path is empty
+    """
+    import hashlib
+
+    normalized = normalize_provider_path(file_path, provider_id)
     if not normalized:
         return None
 
-    # Compute hash of normalized path
     return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
 
-def get_or_create_track(file_path, file_size=None, file_modified=None):
+def get_or_create_track(file_path, file_size=None, file_modified=None, provider_id=None):
     """
     Get or create a track record based on file path.
 
     The track table provides stable identity across providers based on file path.
+    Uses provider-specific path normalization if provider_id is given.
 
     Args:
         file_path: Full or relative path to the audio file
         file_size: Optional file size in bytes
         file_modified: Optional file modification timestamp
+        provider_id: Optional provider ID for path normalization (uses music_path_prefix from config)
 
     Returns:
         track_id (int) or None if file_path is empty
@@ -1536,7 +1576,7 @@ def get_or_create_track(file_path, file_size=None, file_modified=None):
     if not file_path:
         return None
 
-    file_path_hash = _compute_file_path_hash(file_path)
+    file_path_hash = _compute_file_path_hash(file_path, provider_id)
     if not file_path_hash:
         return None
 
