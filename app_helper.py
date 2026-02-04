@@ -1441,32 +1441,81 @@ def _compute_file_path_hash(file_path):
     """
     Compute SHA-256 hash of normalized file path for track identity.
 
-    Normalizes path to handle different provider path formats:
-    - Strips leading slashes and 'music/' prefixes
-    - Converts to lowercase for case-insensitive matching
-    - Uses forward slashes consistently
+    Normalizes paths to handle different provider formats:
+    - Jellyfin: /media/music/Library/Artist/Album/song.mp3
+    - Navidrome: Library/Artist/Album/song.mp3 or /music/Library/Artist/Album/song.mp3
+    - Lyrion: file:///music/Artist/Album/song.mp3
+    - Local: /music/Artist/Album/song.mp3
+
+    Normalization:
+    - Strips file:// URL prefix
+    - Strips common mount points (/media/music, /music, /data, /mnt/*, etc.)
+    - Converts backslashes to forward slashes
+    - Removes leading slashes to get relative path
+    - Does NOT convert to lowercase (preserves case for accurate matching)
     """
     import hashlib
-    from pathlib import PurePosixPath
+    from urllib.parse import unquote
 
     if not file_path:
         return None
 
-    # Normalize path: convert to POSIX style, strip common prefixes
-    normalized = file_path.replace('\\', '/')
+    normalized = file_path
 
-    # Strip common music library prefixes
-    prefixes_to_strip = ['/music/', 'music/', '/data/', 'data/', '/mnt/']
-    lower_path = normalized.lower()
+    # Handle file:// URLs (Lyrion/LMS style)
+    if normalized.startswith('file://'):
+        normalized = normalized[7:]  # Remove 'file://'
+        # URL-decode the path (handles %20 for spaces, etc.)
+        normalized = unquote(normalized)
+
+    # Convert Windows backslashes to forward slashes
+    normalized = normalized.replace('\\', '/')
+
+    # List of common mount point prefixes to strip (order matters - longer first)
+    # These are typical Docker volume mounts and media server paths
+    prefixes_to_strip = [
+        '/media/music/',      # Common Jellyfin mount
+        '/media/Media/',      # Alternate Jellyfin
+        '/media/',            # Generic media mount
+        '/mnt/media/music/',  # Mount point style
+        '/mnt/media/',        # Mount point style
+        '/mnt/music/',        # Mount point style
+        '/mnt/data/music/',   # Data volume style
+        '/mnt/data/',         # Data volume style
+        '/mnt/',              # Generic mount
+        '/data/music/',       # Data volume style
+        '/data/',             # Data volume style
+        '/music/',            # Direct music mount
+        '/share/music/',      # NAS style
+        '/share/',            # NAS style
+        '/volume1/music/',    # Synology style
+        '/volume1/',          # Synology style
+    ]
+
+    # Try to strip prefixes (case-insensitive check, preserve original case in result)
+    lower_normalized = normalized.lower()
     for prefix in prefixes_to_strip:
-        if lower_path.startswith(prefix):
+        if lower_normalized.startswith(prefix.lower()):
             normalized = normalized[len(prefix):]
             break
 
-    # Remove leading slashes
+    # Remove any remaining leading slashes
     normalized = normalized.lstrip('/')
 
-    # Compute hash
+    # If path still looks absolute (starts with drive letter on Windows),
+    # try to extract just the relative part after common folder names
+    if len(normalized) > 1 and normalized[1] == ':':
+        # Windows absolute path - try to find music folder
+        for marker in ['/music/', '/Music/', '/media/', '/Media/']:
+            idx = normalized.find(marker)
+            if idx != -1:
+                normalized = normalized[idx + len(marker):]
+                break
+
+    if not normalized:
+        return None
+
+    # Compute hash of normalized path
     return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
 
