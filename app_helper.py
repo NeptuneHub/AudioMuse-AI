@@ -1076,5 +1076,249 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
         if child_db_info and child_db_info.get('status') not in [TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]:
              logger.info(f"Recursively cancelling child job: {child_job_id}")
              cancelled_count += cancel_job_and_children_recursive(child_job_id, reason="Cancelled due to parent task revocation.")
-        
+
     return cancelled_count
+
+
+# ##############################################################################
+# MULTI-PROVIDER HELPER FUNCTIONS
+# ##############################################################################
+
+def get_primary_provider_id():
+    """Get the primary provider ID from app_settings."""
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT value FROM app_settings WHERE key = 'primary_provider_id'")
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            try:
+                # Value is stored as JSONB, could be int or null
+                val = row[0]
+                if isinstance(val, int):
+                    return val
+                if val is None or val == 'null':
+                    return None
+                return int(val)
+            except (ValueError, TypeError):
+                return None
+        return None
+
+
+def get_enabled_provider_ids():
+    """Get list of enabled provider IDs ordered by priority (highest first)."""
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT id FROM provider
+            WHERE enabled = TRUE
+            ORDER BY priority DESC, created_at ASC
+        """)
+        return [row[0] for row in cur.fetchall()]
+
+
+def get_track_by_item_id(item_id, provider_id=None):
+    """
+    Look up a track by item_id with provider fallback logic.
+
+    If provider_id is specified:
+        - Look up in provider_track for that provider first
+        - Fall back to score table if not in provider_track
+
+    If provider_id is NOT specified (backward compatible mode):
+        1. Try the primary provider first
+        2. Try other enabled providers in priority order
+        3. Fall back to direct score table lookup (legacy mode)
+
+    Returns:
+        dict with track info or None if not found
+    """
+    db = get_db()
+
+    def lookup_in_score(item_id):
+        """Direct lookup in score table (legacy mode)."""
+        with db.cursor() as cur:
+            cur.execute("""
+                SELECT item_id, title, author, album, tempo, key, scale,
+                       mood_vector, energy, other_features, file_path, track_id
+                FROM score WHERE item_id = %s
+            """, (item_id,))
+            row = cur.fetchone()
+            if row:
+                return {
+                    'item_id': row[0],
+                    'title': row[1],
+                    'author': row[2],
+                    'album': row[3],
+                    'tempo': row[4],
+                    'key': row[5],
+                    'scale': row[6],
+                    'mood_vector': row[7],
+                    'energy': row[8],
+                    'other_features': row[9],
+                    'file_path': row[10],
+                    'track_id': row[11],
+                    'provider_id': None  # Unknown provider in legacy mode
+                }
+        return None
+
+    def lookup_via_provider(item_id, prov_id):
+        """Look up via provider_track table."""
+        with db.cursor() as cur:
+            # First check provider_track
+            cur.execute("""
+                SELECT pt.item_id, pt.title, pt.artist, pt.album, pt.track_id,
+                       s.tempo, s.key, s.scale, s.mood_vector, s.energy,
+                       s.other_features, s.file_path
+                FROM provider_track pt
+                LEFT JOIN score s ON (
+                    pt.item_id = s.item_id OR
+                    (pt.track_id IS NOT NULL AND pt.track_id = s.track_id)
+                )
+                WHERE pt.provider_id = %s AND pt.item_id = %s
+            """, (prov_id, item_id))
+            row = cur.fetchone()
+            if row:
+                return {
+                    'item_id': row[0],
+                    'title': row[1],
+                    'author': row[2],
+                    'album': row[3],
+                    'track_id': row[4],
+                    'tempo': row[5],
+                    'key': row[6],
+                    'scale': row[7],
+                    'mood_vector': row[8],
+                    'energy': row[9],
+                    'other_features': row[10],
+                    'file_path': row[11],
+                    'provider_id': prov_id
+                }
+        return None
+
+    # If provider_id specified, try that provider first then fall back
+    if provider_id is not None:
+        result = lookup_via_provider(item_id, provider_id)
+        if result:
+            return result
+        # Fall back to direct score lookup
+        return lookup_in_score(item_id)
+
+    # No provider specified - use fallback logic
+    # 1. Try primary provider first
+    primary_id = get_primary_provider_id()
+    if primary_id:
+        result = lookup_via_provider(item_id, primary_id)
+        if result:
+            return result
+
+    # 2. Try other enabled providers in priority order
+    enabled_ids = get_enabled_provider_ids()
+    for prov_id in enabled_ids:
+        if prov_id == primary_id:
+            continue  # Already tried
+        result = lookup_via_provider(item_id, prov_id)
+        if result:
+            return result
+
+    # 3. Fall back to direct score table lookup (legacy/backward compatible)
+    return lookup_in_score(item_id)
+
+
+def get_tracks_by_item_ids(item_ids, provider_id=None):
+    """
+    Look up multiple tracks by item_ids with provider fallback logic.
+
+    Args:
+        item_ids: List of item IDs to look up
+        provider_id: Optional provider ID to scope the lookup
+
+    Returns:
+        dict mapping item_id to track info
+    """
+    if not item_ids:
+        return {}
+
+    results = {}
+    for item_id in item_ids:
+        track = get_track_by_item_id(item_id, provider_id)
+        if track:
+            results[item_id] = track
+
+    return results
+
+
+def resolve_item_id_to_provider(item_id):
+    """
+    Resolve which provider(s) know about a given item_id.
+
+    Returns:
+        List of provider_ids that have this item_id,
+        or empty list if only in score table (legacy)
+    """
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT provider_id FROM provider_track
+            WHERE item_id = %s
+        """, (item_id,))
+        return [row[0] for row in cur.fetchall()]
+
+
+def get_item_id_for_provider(file_path_or_track_id, provider_id):
+    """
+    Get the provider-specific item_id for a track.
+
+    Useful when you have analysis data linked to one provider
+    and need to find the equivalent track in another provider.
+
+    Args:
+        file_path_or_track_id: Either file path (str) or track_id (int)
+        provider_id: The provider to look up in
+
+    Returns:
+        The item_id for that provider, or None if not found
+    """
+    db = get_db()
+    with db.cursor() as cur:
+        if isinstance(file_path_or_track_id, int):
+            # Lookup by track_id
+            cur.execute("""
+                SELECT item_id FROM provider_track
+                WHERE provider_id = %s AND track_id = %s
+            """, (provider_id, file_path_or_track_id))
+        else:
+            # Lookup by file path - need to join through track table
+            cur.execute("""
+                SELECT pt.item_id FROM provider_track pt
+                JOIN track t ON pt.track_id = t.id
+                WHERE pt.provider_id = %s AND t.file_path = %s
+            """, (provider_id, file_path_or_track_id))
+
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def is_multi_provider_mode():
+    """Check if multi-provider mode is enabled."""
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT value FROM app_settings WHERE key = 'multi_provider_enabled'")
+        row = cur.fetchone()
+        if row:
+            val = row[0]
+            return val is True or val == True or val == 'true'
+        return False
+
+
+def set_primary_provider(provider_id):
+    """Set the primary provider ID."""
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            INSERT INTO app_settings (key, value, category, description, updated_at)
+            VALUES ('primary_provider_id', %s, 'providers', 'ID of the primary provider', NOW())
+            ON CONFLICT (key) DO UPDATE SET
+                value = EXCLUDED.value,
+                updated_at = NOW()
+        """, (str(provider_id) if provider_id is not None else 'null',))
+        db.commit()
