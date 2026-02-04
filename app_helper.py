@@ -212,7 +212,100 @@ def init_db():
                 """, (query, 1.0, rank))
             
             logger.info(f"Inserted {len(default_queries)} default CLAP search queries")
-        
+
+        # =================================================================
+        # MULTI-PROVIDER SUPPORT TABLES
+        # =================================================================
+
+        # Create 'provider' table - Registry of configured media providers
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS provider (
+                id SERIAL PRIMARY KEY,
+                provider_type VARCHAR(50) NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                config JSONB NOT NULL DEFAULT '{}',
+                enabled BOOLEAN DEFAULT TRUE,
+                priority INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(provider_type, name)
+            )
+        """)
+
+        # Create 'track' table - Stable track identity based on file path
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS track (
+                id SERIAL PRIMARY KEY,
+                file_path_hash VARCHAR(64) NOT NULL UNIQUE,
+                file_path TEXT NOT NULL,
+                file_size BIGINT,
+                file_modified TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_track_file_path_hash ON track(file_path_hash)")
+
+        # Create 'provider_track' table - Links provider item_ids to tracks
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS provider_track (
+                id SERIAL PRIMARY KEY,
+                provider_id INTEGER NOT NULL REFERENCES provider(id) ON DELETE CASCADE,
+                track_id INTEGER NOT NULL REFERENCES track(id) ON DELETE CASCADE,
+                item_id TEXT NOT NULL,
+                title TEXT,
+                artist TEXT,
+                album TEXT,
+                last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(provider_id, item_id),
+                UNIQUE(provider_id, track_id)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_provider_track_item_id ON provider_track(item_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_provider_track_track_id ON provider_track(track_id)")
+
+        # Create 'app_settings' table - Application configuration storage
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key VARCHAR(255) PRIMARY KEY,
+                value JSONB NOT NULL,
+                category VARCHAR(100),
+                description TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Add 'track_id' column to 'score' table if not exists (for multi-provider linking)
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'track_id')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'track_id' column to 'score' table for multi-provider support.")
+            cur.execute("ALTER TABLE score ADD COLUMN track_id INTEGER REFERENCES track(id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_score_track_id ON score(track_id)")
+
+        # Add 'file_path' column to 'score' table if not exists (for file identification)
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'file_path')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'file_path' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_score_file_path ON score(file_path)")
+
+        # Insert default settings if app_settings is empty
+        cur.execute("SELECT COUNT(*) FROM app_settings")
+        if cur.fetchone()[0] == 0:
+            default_settings = [
+                ('setup_completed', 'false', 'system', 'Whether the setup wizard has been completed'),
+                ('setup_version', '"1.0"', 'system', 'Version of the setup wizard last completed'),
+                ('multi_provider_enabled', 'false', 'providers', 'Whether multi-provider mode is enabled'),
+                ('primary_provider_id', 'null', 'providers', 'ID of the primary provider for playlist creation'),
+            ]
+            for key, value, category, description in default_settings:
+                cur.execute("""
+                    INSERT INTO app_settings (key, value, category, description)
+                    VALUES (%s, %s::jsonb, %s, %s)
+                    ON CONFLICT (key) DO NOTHING
+                """, (key, value, category, description))
+            logger.info("Inserted default app settings")
+
         db.commit()
 
 # --- Status Constants ---
@@ -427,14 +520,29 @@ def track_exists(item_id):
     cur.close()
     return row is not None
 
-def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None):
-    """Saves track analysis and embedding in a single transaction."""
-    
+def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, file_path=None):
+    """Saves track analysis and embedding in a single transaction.
+
+    Args:
+        item_id: Provider-specific track identifier
+        title: Track title
+        author: Artist name
+        tempo: BPM
+        key: Musical key
+        scale: Major/Minor scale
+        moods: Dict of mood labels and scores
+        embedding_vector: numpy array of embeddings
+        energy: Energy level (0.01-0.15)
+        other_features: JSON string of additional features
+        album: Album name
+        file_path: Full path to the audio file (for multi-provider track linking)
+    """
+
     def _sanitize_string(s, max_length=1000, field_name="field"):
         """Sanitize string for PostgreSQL insertion."""
         if s is None:
             return None
-        
+
         # Ensure it's a string
         if not isinstance(s, str):
             try:
@@ -442,25 +550,25 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
             except Exception:
                 logger.warning(f"Could not convert {field_name} to string, using empty string")
                 return ""
-        
+
         # Remove problematic characters
         # NUL byte (0x00) - PostgreSQL cannot store
         s = s.replace('\x00', '')
-        
+
         # Remove other control characters that could cause issues
         # Keep only printable ASCII, space, tab, newline, and common Unicode
         s = ''.join(char for char in s if char.isprintable() or char in '\n\t ')
-        
+
         # Truncate to max length to prevent overly long strings
         if len(s) > max_length:
             logger.warning(f"{field_name} truncated from {len(s)} to {max_length} characters")
             s = s[:max_length]
-        
+
         # Strip leading/trailing whitespace
         s = s.strip()
-        
+
         return s
-    
+
     # Sanitize all string inputs with field-specific limits
     title = _sanitize_string(title, max_length=500, field_name="title")
     author = _sanitize_string(author, max_length=200, field_name="author")
@@ -468,16 +576,17 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     key = _sanitize_string(key, max_length=10, field_name="key")
     scale = _sanitize_string(scale, max_length=10, field_name="scale")
     other_features = _sanitize_string(other_features, max_length=2000, field_name="other_features")
+    file_path = _sanitize_string(file_path, max_length=2000, field_name="file_path")
 
     mood_str = ','.join(f"{k}:{v:.3f}" for k, v in moods.items())
-    
+
     conn = get_db() # This now calls the function within this file
     cur = conn.cursor()
     try:
-        # Save analysis to score table
+        # Save analysis to score table (includes file_path for multi-provider linking)
         cur.execute("""
-            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, file_path)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 author = EXCLUDED.author,
@@ -487,8 +596,9 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
                 mood_vector = EXCLUDED.mood_vector,
                 energy = EXCLUDED.energy,
                 other_features = EXCLUDED.other_features,
-                album = EXCLUDED.album
-        """, (item_id, title, author, tempo, key, scale, mood_str, energy, other_features, album))
+                album = EXCLUDED.album,
+                file_path = EXCLUDED.file_path
+        """, (item_id, title, author, tempo, key, scale, mood_str, energy, other_features, album, file_path))
 
         # Save embedding
         if isinstance(embedding_vector, np.ndarray) and embedding_vector.size > 0:

@@ -598,6 +598,7 @@ from app_waveform import waveform_bp
 from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
 from app_mulan_search import mulan_search_bp
+from app_setup import setup_bp  # Setup wizard and provider configuration
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -614,6 +615,7 @@ app.register_blueprint(waveform_bp)
 app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
 app.register_blueprint(mulan_search_bp)
+app.register_blueprint(setup_bp)  # Setup wizard
 
 if __name__ == '__main__':
   os.makedirs(TEMP_DIR, exist_ok=True)

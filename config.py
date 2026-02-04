@@ -2,7 +2,7 @@
 import os
 
 # --- Media Server Type ---
-MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, mpd, emby
+MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, mpd, emby, localfiles
 
 # --- Jellyfin and DB Constants (Read from Environment Variables first) ---
 
@@ -48,6 +48,14 @@ MPD_HOST = os.environ.get("MPD_HOST", "localhost")
 MPD_PORT = int(os.environ.get("MPD_PORT", "6600"))
 MPD_PASSWORD = os.environ.get("MPD_PASSWORD", "")  # Optional password, leave empty if none
 MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music")  # Path to MPD's music directory for file access
+
+# --- Local Files Provider Constants ---
+# These are used only if MEDIASERVER_TYPE is "localfiles".
+LOCALFILES_MUSIC_DIRECTORY = os.environ.get("LOCALFILES_MUSIC_DIRECTORY", "/music")  # Path to local music directory
+LOCALFILES_FORMATS = os.environ.get("LOCALFILES_FORMATS", ".mp3,.flac,.ogg,.m4a,.mp4,.wav,.wma,.aac,.opus")  # Supported audio formats
+LOCALFILES_SCAN_SUBDIRS = os.environ.get("LOCALFILES_SCAN_SUBDIRS", "true").lower() == "true"  # Scan subdirectories
+LOCALFILES_USE_METADATA = os.environ.get("LOCALFILES_USE_METADATA", "true").lower() == "true"  # Use embedded metadata
+LOCALFILES_PLAYLIST_DIR = os.environ.get("LOCALFILES_PLAYLIST_DIR", "/music/playlists")  # Where to save M3U playlists
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---

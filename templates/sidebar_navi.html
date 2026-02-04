@@ -12,4 +12,5 @@
 <!-- <li><a href="{{ url_for('collection_bp.collection_page') }}" {% if active == 'collection' %}class="active"{% endif %}">Collection Sync</a></li> -->
 <li><a href="{{ url_for('analysis_bp.cleaning_page') }}" {% if active == 'cleaning' %}class="active"{% endif %}>Cleaning</a></li>
 <li><a href="{{ url_for('cron_bp.cron_page') }}" {% if active == 'cron' %}class="active"{% endif %}>Scheduled Tasks</a></li>
+<li><a href="{{ url_for('setup.setup_page') }}" {% if active == 'setup' %}class="active"{% endif %}>Setup &amp; Providers</a></li>
 <li><button type="button" id="dark-mode-toggle" aria-pressed="false" aria-label="Toggle dark mode">🌙 Dark Mode</button></li>

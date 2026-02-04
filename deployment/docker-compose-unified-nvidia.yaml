@@ -1,0 +1,210 @@
+# AudioMuse-AI Unified Docker Compose - NVIDIA GPU Edition
+# =============================================================================
+# This deployment file includes NVIDIA GPU acceleration support.
+# For CPU-only systems, use docker-compose-unified.yaml
+#
+# Requirements:
+#   - NVIDIA GPU with CUDA support
+#   - NVIDIA Container Toolkit installed
+#   - nvidia-docker2 or Docker 19.03+ with nvidia runtime
+#
+# Quick Start:
+#   1. Copy .env.example to .env and configure your settings
+#   2. Run: docker-compose -f docker-compose-unified-nvidia.yaml up -d
+#   3. Open http://localhost:8000 and complete the setup wizard
+#
+# All provider-specific settings are now configured via the GUI setup wizard
+# or the .env file. No need to use different docker-compose files for different
+# media servers!
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # Redis - Task Queue
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: audiomuse-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL - Database
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: audiomuse-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-audiomuse}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # AudioMuse-AI Flask Application (Web UI & API) - NVIDIA GPU
+  # ---------------------------------------------------------------------------
+  audiomuse-ai-flask:
+    image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
+    container_name: audiomuse-ai-flask-app
+    ports:
+      - "${FRONTEND_PORT:-8000}:8000"
+    environment:
+      SERVICE_TYPE: "flask"
+      TZ: "${TZ:-UTC}"
+      # Media Server Configuration
+      # Configure via GUI setup wizard or set here for legacy support
+      MEDIASERVER_TYPE: "${MEDIASERVER_TYPE:-localfiles}"
+      # Jellyfin (if using)
+      JELLYFIN_URL: "${JELLYFIN_URL:-}"
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID:-}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN:-}"
+      # Navidrome (if using)
+      NAVIDROME_URL: "${NAVIDROME_URL:-}"
+      NAVIDROME_USER: "${NAVIDROME_USER:-}"
+      NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD:-}"
+      # Lyrion (if using)
+      LYRION_URL: "${LYRION_URL:-}"
+      # MPD (if using)
+      MPD_HOST: "${MPD_HOST:-}"
+      MPD_PORT: "${MPD_PORT:-6600}"
+      MPD_PASSWORD: "${MPD_PASSWORD:-}"
+      MPD_MUSIC_DIRECTORY: "${MPD_MUSIC_DIRECTORY:-/music}"
+      # Emby (if using)
+      EMBY_URL: "${EMBY_URL:-}"
+      EMBY_USER_ID: "${EMBY_USER_ID:-}"
+      EMBY_TOKEN: "${EMBY_TOKEN:-}"
+      # Local Files Provider (default)
+      LOCALFILES_MUSIC_DIRECTORY: "${LOCALFILES_MUSIC_DIRECTORY:-/music}"
+      LOCALFILES_PLAYLIST_DIR: "${LOCALFILES_PLAYLIST_DIR:-/music/playlists}"
+      # Database Configuration
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      # AI Configuration
+      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER:-NONE}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_SERVER_URL: "${OPENAI_SERVER_URL:-}"
+      OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      MISTRAL_API_KEY: "${MISTRAL_API_KEY:-}"
+      # Features
+      CLAP_ENABLED: "${CLAP_ENABLED:-true}"
+      TEMP_DIR: "/app/temp_audio"
+    volumes:
+      - temp-audio-flask:/app/temp_audio
+      # Mount music directory for local files provider
+      - ${MUSIC_PATH:-./music}:/music:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${NVIDIA_GPU_ID:-0}"]
+              capabilities: [gpu]
+
+  # ---------------------------------------------------------------------------
+  # AudioMuse-AI Worker (Background Tasks & ML Analysis) - NVIDIA GPU
+  # ---------------------------------------------------------------------------
+  audiomuse-ai-worker:
+    image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
+    container_name: audiomuse-ai-worker-instance
+    environment:
+      SERVICE_TYPE: "worker"
+      TZ: "${TZ:-UTC}"
+      # NVIDIA GPU Settings
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_GPU_ID:-0}"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+      # Media Server Configuration (same as flask service)
+      MEDIASERVER_TYPE: "${MEDIASERVER_TYPE:-localfiles}"
+      JELLYFIN_URL: "${JELLYFIN_URL:-}"
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID:-}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN:-}"
+      NAVIDROME_URL: "${NAVIDROME_URL:-}"
+      NAVIDROME_USER: "${NAVIDROME_USER:-}"
+      NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD:-}"
+      LYRION_URL: "${LYRION_URL:-}"
+      MPD_HOST: "${MPD_HOST:-}"
+      MPD_PORT: "${MPD_PORT:-6600}"
+      MPD_PASSWORD: "${MPD_PASSWORD:-}"
+      MPD_MUSIC_DIRECTORY: "${MPD_MUSIC_DIRECTORY:-/music}"
+      EMBY_URL: "${EMBY_URL:-}"
+      EMBY_USER_ID: "${EMBY_USER_ID:-}"
+      EMBY_TOKEN: "${EMBY_TOKEN:-}"
+      LOCALFILES_MUSIC_DIRECTORY: "${LOCALFILES_MUSIC_DIRECTORY:-/music}"
+      LOCALFILES_PLAYLIST_DIR: "${LOCALFILES_PLAYLIST_DIR:-/music/playlists}"
+      # Database Configuration
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      # AI Configuration
+      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER:-NONE}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_SERVER_URL: "${OPENAI_SERVER_URL:-}"
+      OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      MISTRAL_API_KEY: "${MISTRAL_API_KEY:-}"
+      # Features - Enable GPU clustering for NVIDIA
+      CLAP_ENABLED: "${CLAP_ENABLED:-true}"
+      USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
+      TEMP_DIR: "/app/temp_audio"
+    volumes:
+      - temp-audio-worker:/app/temp_audio
+      # Mount music directory for local files provider
+      - ${MUSIC_PATH:-./music}:/music:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${NVIDIA_GPU_ID:-0}"]
+              capabilities: [gpu]
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  redis-data:
+    name: audiomuse-redis-data
+  postgres-data:
+    name: audiomuse-postgres-data
+  temp-audio-flask:
+    name: audiomuse-temp-flask
+  temp-audio-worker:
+    name: audiomuse-temp-worker

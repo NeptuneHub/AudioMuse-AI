@@ -911,7 +911,15 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         logger.info(f"  - Top Moods: {top_moods}")
                         logger.info(f"  - Other Features: {other_features}")
                         
-                        save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding, energy=analysis['energy'], other_features=other_features, album=item.get('Album', None))
+                        save_track_analysis_and_embedding(
+                            item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'),
+                            analysis['tempo'], analysis['key'], analysis['scale'],
+                            top_moods, embedding,
+                            energy=analysis['energy'],
+                            other_features=other_features,
+                            album=item.get('Album', None),
+                            file_path=item.get('Path')  # For multi-provider track linking
+                        )
                         track_processed = True
                         
                         # Increment session recycler counter after successful analysis

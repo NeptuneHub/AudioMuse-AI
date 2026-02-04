@@ -1,4 +1,24 @@
 # tasks/mediaserver.py
+"""
+Media Server Dispatcher for AudioMuse-AI
+
+This module provides a unified interface to multiple media server providers.
+It dispatches function calls to the appropriate provider implementation based
+on the configured MEDIASERVER_TYPE.
+
+Supported providers:
+- jellyfin: Jellyfin Media Server
+- navidrome: Navidrome (Subsonic API)
+- lyrion: Lyrion Music Server (formerly LMS)
+- mpd: Music Player Daemon
+- emby: Emby Media Server
+- localfiles: Local file system scanner
+
+Multi-provider support:
+When multi_provider_enabled is true in app_settings, multiple providers can be
+configured and used simultaneously. Tracks are linked via file paths, allowing
+analysis data to be shared across providers.
+"""
 
 import logging
 import os
@@ -73,8 +93,72 @@ from tasks.mediaserver_emby import (
     get_top_played_songs as emby_get_top_played_songs,
     get_last_played_time as emby_get_last_played_time,
 )
+from tasks.mediaserver_localfiles import (
+    get_all_playlists as localfiles_get_all_playlists,
+    delete_playlist as localfiles_delete_playlist,
+    get_recent_albums as localfiles_get_recent_albums,
+    get_tracks_from_album as localfiles_get_tracks_from_album,
+    download_track as localfiles_download_track,
+    get_all_songs as localfiles_get_all_songs,
+    get_playlist_by_name as localfiles_get_playlist_by_name,
+    create_playlist as localfiles_create_playlist,
+    create_instant_playlist as localfiles_create_instant_playlist,
+    get_top_played_songs as localfiles_get_top_played_songs,
+    get_last_played_time as localfiles_get_last_played_time,
+    test_connection as localfiles_test_connection,
+    get_provider_info as localfiles_get_provider_info,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# ##############################################################################
+# PROVIDER REGISTRY
+# ##############################################################################
+
+PROVIDER_TYPES = {
+    'jellyfin': {
+        'name': 'Jellyfin',
+        'description': 'Jellyfin Media Server - Open source media solution',
+        'supports_user_auth': True,
+        'supports_play_history': True,
+    },
+    'navidrome': {
+        'name': 'Navidrome',
+        'description': 'Navidrome - Modern music server (Subsonic API)',
+        'supports_user_auth': True,
+        'supports_play_history': True,
+    },
+    'lyrion': {
+        'name': 'Lyrion',
+        'description': 'Lyrion Music Server (formerly Logitech Media Server)',
+        'supports_user_auth': False,
+        'supports_play_history': True,
+    },
+    'mpd': {
+        'name': 'MPD',
+        'description': 'Music Player Daemon - Flexible music server',
+        'supports_user_auth': False,
+        'supports_play_history': False,
+    },
+    'emby': {
+        'name': 'Emby',
+        'description': 'Emby Media Server - Personal media server',
+        'supports_user_auth': True,
+        'supports_play_history': True,
+    },
+    'localfiles': {
+        'name': 'Local Files',
+        'description': 'Scan local directories for audio files',
+        'supports_user_auth': False,
+        'supports_play_history': False,
+    },
+}
+
+
+def get_available_provider_types():
+    """Return information about all available provider types."""
+    return PROVIDER_TYPES.copy()
 
 
 # ##############################################################################
@@ -128,6 +212,7 @@ def get_recent_albums(limit):
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'emby': return emby_get_recent_albums(limit)
+    if config.MEDIASERVER_TYPE == 'localfiles': return localfiles_get_recent_albums(limit)
     return []
 
 def get_recent_music_items(limit):
@@ -156,6 +241,7 @@ def get_tracks_from_album(album_id):
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_tracks_from_album(album_id)
     if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_tracks_from_album(album_id)
     if config.MEDIASERVER_TYPE == 'emby': return emby_get_tracks_from_album(album_id)
+    if config.MEDIASERVER_TYPE == 'localfiles': return localfiles_get_tracks_from_album(album_id)
     return []
 
 def download_track(temp_dir, item):
@@ -167,6 +253,7 @@ def download_track(temp_dir, item):
     elif config.MEDIASERVER_TYPE == 'lyrion': downloaded_path = lyrion_download_track(temp_dir, item)
     elif config.MEDIASERVER_TYPE == 'mpd': downloaded_path = mpd_download_track(temp_dir, item)
     elif config.MEDIASERVER_TYPE == 'emby': downloaded_path = emby_download_track(temp_dir, item)
+    elif config.MEDIASERVER_TYPE == 'localfiles': downloaded_path = localfiles_download_track(temp_dir, item)
     
     # If download failed or returned None, return as is
     if not downloaded_path:
@@ -244,6 +331,7 @@ def get_all_songs():
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_all_songs()
     if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_all_songs()
     if config.MEDIASERVER_TYPE == 'emby': return emby_get_all_songs()
+    if config.MEDIASERVER_TYPE == 'localfiles': return localfiles_get_all_songs()
     return []
 
 def get_playlist_by_name(playlist_name):
@@ -254,6 +342,7 @@ def get_playlist_by_name(playlist_name):
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_playlist_by_name(playlist_name)
     if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_playlist_by_name(playlist_name)
     if config.MEDIASERVER_TYPE == 'emby': return emby_get_playlist_by_name(playlist_name)
+    if config.MEDIASERVER_TYPE == 'localfiles': return localfiles_get_playlist_by_name(playlist_name)
     return None
 
 def create_playlist(base_name, item_ids):
@@ -265,12 +354,13 @@ def create_playlist(base_name, item_ids):
     elif config.MEDIASERVER_TYPE == 'lyrion': lyrion_create_playlist(base_name, item_ids)
     elif config.MEDIASERVER_TYPE == 'mpd': mpd_create_playlist(base_name, item_ids)
     elif config.MEDIASERVER_TYPE == 'emby': emby_create_playlist(base_name, item_ids)
+    elif config.MEDIASERVER_TYPE == 'localfiles': localfiles_create_playlist(base_name, item_ids)
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     """Creates an instant playlist. Uses user_creds if provided, otherwise admin."""
     if not playlist_name: raise ValueError("Playlist name is required.")
     if not item_ids: raise ValueError("Track IDs are required.")
-    
+
     if config.MEDIASERVER_TYPE == 'jellyfin':
         return jellyfin_create_instant_playlist(playlist_name, item_ids, user_creds)
     if config.MEDIASERVER_TYPE == 'navidrome':
@@ -281,6 +371,8 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         return mpd_create_instant_playlist(playlist_name, item_ids, user_creds)
     if config.MEDIASERVER_TYPE == 'emby':
         return emby_create_instant_playlist(playlist_name, item_ids, user_creds)
+    if config.MEDIASERVER_TYPE == 'localfiles':
+        return localfiles_create_instant_playlist(playlist_name, item_ids, user_creds)
     return None
 
 def get_top_played_songs(limit, user_creds=None):
@@ -295,6 +387,8 @@ def get_top_played_songs(limit, user_creds=None):
         return mpd_get_top_played_songs(limit, user_creds)
     if config.MEDIASERVER_TYPE == 'emby':
         return emby_get_top_played_songs(limit, user_creds)
+    if config.MEDIASERVER_TYPE == 'localfiles':
+        return localfiles_get_top_played_songs(limit, user_creds)
     return []
 
 def get_last_played_time(item_id, user_creds=None):
@@ -309,5 +403,166 @@ def get_last_played_time(item_id, user_creds=None):
         return mpd_get_last_played_time(item_id, user_creds)
     if config.MEDIASERVER_TYPE == 'emby':
         return emby_get_last_played_time(item_id, user_creds)
+    if config.MEDIASERVER_TYPE == 'localfiles':
+        return localfiles_get_last_played_time(item_id, user_creds)
     return None
+
+
+# ##############################################################################
+# MULTI-PROVIDER SUPPORT FUNCTIONS
+# ##############################################################################
+
+def test_provider_connection(provider_type: str, config_dict: dict = None):
+    """
+    Test connection to a specific provider.
+
+    Args:
+        provider_type: Type of provider (jellyfin, navidrome, localfiles, etc.)
+        config_dict: Optional configuration dictionary for the provider
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    import requests
+
+    try:
+        if provider_type == 'localfiles':
+            return localfiles_test_connection(config_dict)
+
+        elif provider_type == 'jellyfin':
+            url = config_dict.get('url') if config_dict else config.JELLYFIN_URL
+            token = config_dict.get('token') if config_dict else config.JELLYFIN_TOKEN
+            if not url or not token:
+                return False, "Jellyfin URL and token are required"
+            resp = requests.get(f"{url.rstrip('/')}/System/Info",
+                              headers={"X-Emby-Token": token}, timeout=10)
+            if resp.status_code == 200:
+                return True, f"Connected to Jellyfin at {url}"
+            return False, f"Jellyfin returned status {resp.status_code}"
+
+        elif provider_type == 'navidrome':
+            import hashlib
+            import secrets
+            url = config_dict.get('url') if config_dict else config.NAVIDROME_URL
+            user = config_dict.get('user') if config_dict else config.NAVIDROME_USER
+            password = config_dict.get('password') if config_dict else config.NAVIDROME_PASSWORD
+            if not url or not user or not password:
+                return False, "Navidrome URL, user, and password are required"
+            salt = secrets.token_hex(8)
+            token = hashlib.md5((password + salt).encode()).hexdigest()
+            params = {'u': user, 't': token, 's': salt, 'v': '1.16.1', 'c': 'audiomuse', 'f': 'json'}
+            resp = requests.get(f"{url.rstrip('/')}/rest/ping", params=params, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('subsonic-response', {}).get('status') == 'ok':
+                    return True, f"Connected to Navidrome at {url}"
+                err = data.get('subsonic-response', {}).get('error', {}).get('message', 'Unknown error')
+                return False, f"Navidrome error: {err}"
+            return False, f"Navidrome returned status {resp.status_code}"
+
+        elif provider_type == 'lyrion':
+            url = config_dict.get('url') if config_dict else config.LYRION_URL
+            if not url:
+                return False, "Lyrion URL is required"
+            resp = requests.get(f"{url.rstrip('/')}/status.html", timeout=10)
+            if resp.status_code == 200:
+                return True, f"Connected to Lyrion at {url}"
+            return False, f"Lyrion returned status {resp.status_code}"
+
+        elif provider_type == 'emby':
+            url = config_dict.get('url') if config_dict else config.EMBY_URL
+            token = config_dict.get('token') if config_dict else config.EMBY_TOKEN
+            if not url or not token:
+                return False, "Emby URL and token are required"
+            resp = requests.get(f"{url.rstrip('/')}/System/Info",
+                              headers={"X-Emby-Token": token}, timeout=10)
+            if resp.status_code == 200:
+                return True, f"Connected to Emby at {url}"
+            return False, f"Emby returned status {resp.status_code}"
+
+        elif provider_type == 'mpd':
+            try:
+                from mpd import MPDClient
+                host = config_dict.get('host') if config_dict else config.MPD_HOST
+                port = config_dict.get('port') if config_dict else config.MPD_PORT
+                password = config_dict.get('password') if config_dict else config.MPD_PASSWORD
+                client = MPDClient()
+                client.timeout = 10
+                client.connect(host, int(port))
+                if password:
+                    client.password(password)
+                stats = client.stats()
+                client.close()
+                client.disconnect()
+                return True, f"Connected to MPD at {host}:{port} ({stats.get('songs', 0)} songs)"
+            except Exception as e:
+                return False, f"MPD connection error: {str(e)}"
+
+        else:
+            return False, f"Unknown provider type: {provider_type}"
+
+    except requests.RequestException as e:
+        return False, f"Network error: {str(e)}"
+    except Exception as e:
+        return False, f"Connection test failed: {str(e)}"
+
+
+def get_provider_info(provider_type: str):
+    """Get detailed information about a provider type including config fields."""
+    if provider_type == 'localfiles':
+        return localfiles_get_provider_info()
+
+    # Return basic info for other providers
+    if provider_type in PROVIDER_TYPES:
+        info = PROVIDER_TYPES[provider_type].copy()
+        info['type'] = provider_type
+        info['config_fields'] = _get_provider_config_fields(provider_type)
+        return info
+
+    return None
+
+
+def _get_provider_config_fields(provider_type: str):
+    """Get configuration fields for a provider type."""
+    fields = {
+        'jellyfin': [
+            {'name': 'url', 'label': 'Server URL', 'type': 'url', 'required': True,
+             'description': 'Jellyfin server URL (e.g., http://192.168.1.100:8096)'},
+            {'name': 'user_id', 'label': 'User ID', 'type': 'text', 'required': True,
+             'description': 'Jellyfin user ID (found in dashboard)'},
+            {'name': 'token', 'label': 'API Token', 'type': 'password', 'required': True,
+             'description': 'API key from Jellyfin settings'},
+        ],
+        'navidrome': [
+            {'name': 'url', 'label': 'Server URL', 'type': 'url', 'required': True,
+             'description': 'Navidrome server URL (e.g., http://192.168.1.100:4533)'},
+            {'name': 'user', 'label': 'Username', 'type': 'text', 'required': True,
+             'description': 'Navidrome username'},
+            {'name': 'password', 'label': 'Password', 'type': 'password', 'required': True,
+             'description': 'Navidrome password'},
+        ],
+        'lyrion': [
+            {'name': 'url', 'label': 'Server URL', 'type': 'url', 'required': True,
+             'description': 'Lyrion server URL (e.g., http://192.168.1.100:9000)'},
+        ],
+        'mpd': [
+            {'name': 'host', 'label': 'Host', 'type': 'text', 'required': True,
+             'description': 'MPD server hostname or IP', 'default': 'localhost'},
+            {'name': 'port', 'label': 'Port', 'type': 'number', 'required': True,
+             'description': 'MPD port number', 'default': 6600},
+            {'name': 'password', 'label': 'Password', 'type': 'password', 'required': False,
+             'description': 'MPD password (if configured)'},
+            {'name': 'music_directory', 'label': 'Music Directory', 'type': 'path', 'required': True,
+             'description': 'Path to music files on the MPD server'},
+        ],
+        'emby': [
+            {'name': 'url', 'label': 'Server URL', 'type': 'url', 'required': True,
+             'description': 'Emby server URL (e.g., http://192.168.1.100:8096)'},
+            {'name': 'user_id', 'label': 'User ID', 'type': 'text', 'required': True,
+             'description': 'Emby user ID'},
+            {'name': 'token', 'label': 'API Token', 'type': 'password', 'required': True,
+             'description': 'API key from Emby settings'},
+        ],
+    }
+    return fields.get(provider_type, [])
 
