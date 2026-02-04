@@ -918,7 +918,10 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             energy=analysis['energy'],
                             other_features=other_features,
                             album=item.get('Album', None),
-                            file_path=item.get('Path')  # For multi-provider track linking
+                            album_artist=item.get('OriginalAlbumArtist', None),
+                            year=item.get('Year'),
+                            rating=item.get('Rating'),
+                            file_path=item.get('Path') or item.get('FilePath')  # For multi-provider track linking
                         )
                         track_processed = True
                         
@@ -1272,9 +1275,9 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                         track_id_str = str(item['Id'])
                         try:
                             with get_db() as conn, conn.cursor() as cur:
-                                cur.execute("UPDATE score SET album = %s WHERE item_id = %s", (album.get('Name'), track_id_str))
+                                cur.execute("UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE item_id = %s", (album.get('Name'), item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'), item.get('FilePath'), track_id_str))
                                 conn.commit()
-                            logger.info(f"[MainAnalysisTask] Updated album name for track '{item['Name']}' to '{album.get('Name')}' (main task)")
+                            logger.info(f"[MainAnalysisTask] Updated album/album_artist/year/rating/file_path for track '{item['Name']}' to '{album.get('Name')}' (main task)")
                         except Exception as e:
                             logger.warning(f"[MainAnalysisTask] Failed to update album name for '{item['Name']}': {e}")
                     albums_skipped += 1

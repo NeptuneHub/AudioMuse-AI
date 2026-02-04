@@ -84,7 +84,7 @@ def init_db():
     db = get_db()
     with db.cursor() as cur:
         # Create 'score' table
-        cur.execute("CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)")
+        cur.execute("CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)")
         # Add 'energy' column if not exists
         cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'energy')")
         if not cur.fetchone()[0]:
@@ -100,6 +100,26 @@ def init_db():
         if not cur.fetchone()[0]:
             logger.info("Adding 'album' column to 'score' table.")
             cur.execute("ALTER TABLE score ADD COLUMN album TEXT")
+        # Add 'album_artist' column if not exists
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album_artist')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'album_artist' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN album_artist TEXT")
+        # Add 'year' column if not exists
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'year')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'year' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN year INTEGER")
+        # Add 'rating' column if not exists
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'rating')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'rating' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN rating INTEGER")
+        # Add 'file_path' column if not exists
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'file_path')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'file_path' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
         # Create 'playlist' table
         cur.execute("CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))")
         # Create 'task_status' table
@@ -520,7 +540,7 @@ def track_exists(item_id):
     cur.close()
     return row is not None
 
-def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, file_path=None):
+def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, album_artist=None, year=None, rating=None, file_path=None):
     """Saves track analysis and embedding in a single transaction.
 
     Args:
@@ -535,6 +555,9 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
         energy: Energy level (0.01-0.15)
         other_features: JSON string of additional features
         album: Album name
+        album_artist: Album artist name
+        year: Release year
+        rating: User rating
         file_path: Full path to the audio file (for multi-provider track linking)
     """
 
@@ -573,10 +596,74 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     title = _sanitize_string(title, max_length=500, field_name="title")
     author = _sanitize_string(author, max_length=200, field_name="author")
     album = _sanitize_string(album, max_length=200, field_name="album")
+    album_artist = _sanitize_string(album_artist, max_length=200, field_name="album_artist")
     key = _sanitize_string(key, max_length=10, field_name="key")
     scale = _sanitize_string(scale, max_length=10, field_name="scale")
     other_features = _sanitize_string(other_features, max_length=2000, field_name="other_features")
     file_path = _sanitize_string(file_path, max_length=2000, field_name="file_path")
+
+    # year: parse from various date formats and validate
+    def _parse_year_from_date(year_value):
+        """
+        Parse year from various date formats.
+        Supports: YYYY, YYYY-MM-DD, MM-DD-YYYY, DD-MM-YYYY (with - or / separators)
+        """
+        if year_value is None:
+            return None
+
+        year_str = str(year_value).strip()
+        if not year_str:
+            return None
+
+        # Try parsing as pure integer first (YYYY)
+        try:
+            year = int(year_str)
+            if 1000 <= year <= 2100:
+                return year
+        except (ValueError, TypeError):
+            pass
+
+        # Normalize separators
+        normalized = year_str.replace('/', '-')
+        parts = normalized.split('-')
+
+        if len(parts) == 3:
+            try:
+                # YYYY-MM-DD format
+                if len(parts[0]) == 4:
+                    year = int(parts[0])
+                    if 1000 <= year <= 2100:
+                        return year
+
+                # MM-DD-YYYY or DD-MM-YYYY format
+                if len(parts[2]) == 4:
+                    year = int(parts[2])
+                    if 1000 <= year <= 2100:
+                        return year
+
+                # 2-digit year (MM-DD-YY)
+                if len(parts[2]) == 2:
+                    year = int(parts[2])
+                    year += 2000 if year < 30 else 1900
+                    if 1000 <= year <= 2100:
+                        return year
+            except (ValueError, TypeError, IndexError):
+                pass
+
+        return None
+
+    year = _parse_year_from_date(year)
+
+    # rating: validate as integer 0-5 (5-star rating system)
+    if rating is not None:
+        try:
+            rating = int(rating)
+            if rating < 0 or rating > 5:
+                rating = None
+        except (ValueError, TypeError):
+            rating = None
+
+    file_path = _sanitize_string(file_path, max_length=1000, field_name="file_path")
 
     mood_str = ','.join(f"{k}:{v:.3f}" for k, v in moods.items())
 
@@ -585,8 +672,8 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     try:
         # Save analysis to score table (includes file_path for multi-provider linking)
         cur.execute("""
-            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, file_path)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 author = EXCLUDED.author,
@@ -597,8 +684,11 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
                 energy = EXCLUDED.energy,
                 other_features = EXCLUDED.other_features,
                 album = EXCLUDED.album,
+                album_artist = EXCLUDED.album_artist,
+                year = EXCLUDED.year,
+                rating = EXCLUDED.rating,
                 file_path = EXCLUDED.file_path
-        """, (item_id, title, author, tempo, key, scale, mood_str, energy, other_features, album, file_path))
+        """, (item_id, title, author, tempo, key, scale, mood_str, energy, other_features, album, album_artist, year, rating, file_path))
 
         # Save embedding
         if isinstance(embedding_vector, np.ndarray) and embedding_vector.size > 0:
@@ -664,7 +754,7 @@ def get_all_tracks():
     conn = get_db() # This now calls the function within this file
     cur = conn.cursor(cursor_factory=DictCursor)
     cur.execute("""
-        SELECT s.item_id, s.title, s.author, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, e.embedding
+        SELECT s.item_id, s.title, s.author, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path, e.embedding
         FROM score s
         LEFT JOIN embedding e ON s.item_id = e.item_id
     """)
@@ -695,7 +785,7 @@ def get_tracks_by_ids(item_ids_list):
     item_ids_str = [str(item_id) for item_id in item_ids_list]
     
     query = """
-        SELECT s.item_id, s.title, s.author, s.album, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, e.embedding
+        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path, e.embedding
         FROM score s
         LEFT JOIN embedding e ON s.item_id = e.item_id
         WHERE s.item_id IN %s
@@ -723,7 +813,7 @@ def get_score_data_by_ids(item_ids_list):
     conn = get_db() # This now calls the function within this file
     cur = conn.cursor(cursor_factory=DictCursor)
     query = """
-        SELECT s.item_id, s.title, s.author, s.album, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features
+        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path
         FROM score s
         WHERE s.item_id IN %s
     """

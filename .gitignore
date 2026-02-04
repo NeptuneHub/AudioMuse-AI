@@ -14,6 +14,7 @@ env/
 # IMPORTANT: Never commit your .env file with secrets!
 .env*
 !.env.example
+!.env.test.example
 # You can add an exception for an example file if you create one
 # !.env.example
 
@@ -35,6 +36,7 @@ env/
 # Test artifacts
 .pytest_cache/
 htmlcov/
+nul
 
 # Large model files in query folder
 /query/*.pt
