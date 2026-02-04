@@ -661,13 +661,13 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
     from .mulan_analyzer import analyze_audio_file as mulan_analyze
     from config import MULAN_ENABLED
 
-    # Get provider_id for track linking (use passed value or get primary provider)
-    active_provider_id = provider_id if provider_id is not None else get_primary_provider_id()
-    
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
 
     with app.app_context():
+        # Get provider_id for track linking (use passed value or get primary provider)
+        # Must be inside app.app_context() since get_primary_provider_id() uses get_db()
+        active_provider_id = provider_id if provider_id is not None else get_primary_provider_id()
         initial_details = {"album_name": album_name, "log": [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Album analysis task started."]}
         save_task_status(current_task_id, "album_analysis", TASK_STATUS_STARTED, parent_task_id=parent_task_id, sub_type_identifier=album_id, progress=0, details=initial_details)
         tracks_analyzed_count, tracks_skipped_count, current_progress_val = 0, 0, 0

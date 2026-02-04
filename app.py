@@ -1,7 +1,7 @@
 import os
 import psycopg2
 from psycopg2.extras import DictCursor
-from flask import Flask, jsonify, request, render_template, g
+from flask import Flask, jsonify, request, render_template, redirect, url_for, g
 import json
 import logging
 import threading
@@ -103,6 +103,7 @@ with app.app_context():
 def index():
     """
     Serve the main HTML page.
+    Redirects to setup wizard if initial setup is not completed.
     ---
     tags:
       - UI
@@ -113,7 +114,13 @@ def index():
           text/html:
             schema:
               type: string
+      302:
+        description: Redirect to setup wizard if setup not completed.
     """
+    # Check if setup is completed - redirect to wizard if not
+    from app_setup import is_setup_completed
+    if not is_setup_completed():
+        return redirect(url_for('setup.setup_page'))
     return render_template('index.html', title = 'AudioMuse-AI - Home Page', active='index')
 
 

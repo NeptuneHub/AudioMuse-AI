@@ -491,20 +491,20 @@ def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song
     def fetch_details_batch(id_batch):
         batch_details = {}
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT item_id, title, author, album, album_artist FROM score WHERE item_id = ANY(%s)", (id_batch,))
+            cur.execute("SELECT item_id, title, author, album FROM score WHERE item_id = ANY(%s)", (id_batch,))
             rows = cur.fetchall()
             for row in rows:
-                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album'), 'album_artist': row.get('album_artist')}
+                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
         return batch_details
-    
+
     # Split item_ids into batches for parallel DB queries
     id_batches = [item_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)]
-    
+
     if len(id_batches) > 1:
         # Use parallel DB queries for large datasets
         executor = _get_thread_pool()
         future_to_batch = {executor.submit(fetch_details_batch, batch): batch for batch in id_batches}
-        
+
         for future in as_completed(future_to_batch):
             batch_details = future.result()
             item_details.update(batch_details)
@@ -770,7 +770,7 @@ def _radius_walk_get_candidates(
         # Fetch details in batch (uses app_helper get_score_data_by_ids)
         try:
             track_details_list = get_score_data_by_ids(item_ids_to_fetch)
-            details_map = {d['item_id']: {'title': d.get('title'), 'author': d.get('author'), 'album': d.get('album'), 'album_artist': d.get('album_artist')} for d in track_details_list}
+            details_map = {d['item_id']: {'title': d.get('title'), 'author': d.get('author'), 'album': d.get('album')} for d in track_details_list}
         except Exception:
             details_map = {}
 
@@ -1460,27 +1460,27 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
     def fetch_details_batch(id_batch):
         batch_details = {}
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT item_id, title, author, album, album_artist FROM score WHERE item_id = ANY(%s)", (id_batch,))
+            cur.execute("SELECT item_id, title, author, album FROM score WHERE item_id = ANY(%s)", (id_batch,))
             rows = cur.fetchall()
             for row in rows:
-                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album'), 'album_artist': row.get('album_artist')}
+                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
         return batch_details
-    
+
     # Split item_ids into batches for parallel DB queries
     id_batches = [item_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)]
-    
+
     if len(id_batches) > 1:
         # Use parallel DB queries for large datasets
         executor = _get_thread_pool()
         future_to_batch = {executor.submit(fetch_details_batch, batch): batch for batch in id_batches}
-        
+
         for future in as_completed(future_to_batch):
             batch_details = future.result()
             item_details.update(batch_details)
     else:
         # Use single query for small datasets
         item_details = fetch_details_batch(item_ids)
-            
+
     unique_songs_by_content = []
     added_songs_details = []
     for song in distance_filtered_results:

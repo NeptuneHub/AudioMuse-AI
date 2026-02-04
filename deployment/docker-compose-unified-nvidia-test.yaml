@@ -1,6 +1,9 @@
-# AudioMuse-AI Unified Docker Compose - NVIDIA GPU Edition
+# AudioMuse-AI Unified Docker Compose - NVIDIA GPU Local Build (Testing)
 # =============================================================================
-# This deployment file includes NVIDIA GPU acceleration support.
+# This deployment file builds images locally with NVIDIA GPU acceleration support.
+# Use this for development and testing of local changes.
+#
+# For production with pre-built images, use docker-compose-unified-nvidia.yaml
 # For CPU-only systems, use docker-compose-unified.yaml
 #
 # Requirements:
@@ -10,7 +13,7 @@
 #
 # Quick Start:
 #   1. Copy .env.example to .env and configure your settings
-#   2. Run: docker-compose -f docker-compose-unified-nvidia.yaml up -d
+#   2. Build and run: docker-compose -f docker-compose-unified-nvidia-test.yaml up -d --build
 #   3. Open http://localhost:8000 and complete the setup wizard
 #
 # All provider-specific settings are now configured via the GUI setup wizard
@@ -60,10 +63,15 @@ services:
       retries: 3
 
   # ---------------------------------------------------------------------------
-  # AudioMuse-AI Flask Application (Web UI & API) - NVIDIA GPU
+  # AudioMuse-AI Flask Application (Web UI & API) - NVIDIA GPU LOCAL BUILD
   # ---------------------------------------------------------------------------
   audiomuse-ai-flask:
-    image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+    image: audiomuse-ai:local-unified-nvidia-test
     container_name: audiomuse-ai-flask-app
     ports:
       - "${FRONTEND_PORT:-8000}:8000"
@@ -95,6 +103,8 @@ services:
       # Local Files Provider (default)
       LOCALFILES_MUSIC_DIRECTORY: "${LOCALFILES_MUSIC_DIRECTORY:-/music}"
       LOCALFILES_PLAYLIST_DIR: "${LOCALFILES_PLAYLIST_DIR:-/music/playlists}"
+      LOCALFILES_FORMATS: "${LOCALFILES_FORMATS:-.mp3,.flac,.ogg,.m4a,.wav,.wma,.aac,.opus}"
+      LOCALFILES_SCAN_SUBDIRS: "${LOCALFILES_SCAN_SUBDIRS:-true}"
       # Database Configuration
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
@@ -117,7 +127,7 @@ services:
       # Music directory mount - use MUSIC_PATH env var for bind mount, or named volume by default
       # For local files provider with your own music: set MUSIC_PATH=/path/to/your/music
       # For GUI setup with external providers (Jellyfin, etc.): the default named volume works fine
-      - ${MUSIC_PATH:-music-data}:/music
+      - ../test/provider_testing_stack/providers/test_music:/music
     depends_on:
       redis:
         condition: service_healthy
@@ -133,10 +143,15 @@ services:
               capabilities: [gpu]
 
   # ---------------------------------------------------------------------------
-  # AudioMuse-AI Worker (Background Tasks & ML Analysis) - NVIDIA GPU
+  # AudioMuse-AI Worker (Background Tasks & ML Analysis) - NVIDIA GPU LOCAL BUILD
   # ---------------------------------------------------------------------------
   audiomuse-ai-worker:
-    image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+    image: audiomuse-ai:local-unified-nvidia-test
     container_name: audiomuse-ai-worker-instance
     environment:
       SERVICE_TYPE: "worker"
@@ -162,6 +177,8 @@ services:
       EMBY_TOKEN: "${EMBY_TOKEN:-}"
       LOCALFILES_MUSIC_DIRECTORY: "${LOCALFILES_MUSIC_DIRECTORY:-/music}"
       LOCALFILES_PLAYLIST_DIR: "${LOCALFILES_PLAYLIST_DIR:-/music/playlists}"
+      LOCALFILES_FORMATS: "${LOCALFILES_FORMATS:-.mp3,.flac,.ogg,.m4a,.wav,.wma,.aac,.opus}"
+      LOCALFILES_SCAN_SUBDIRS: "${LOCALFILES_SCAN_SUBDIRS:-true}"
       # Database Configuration
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
@@ -183,7 +200,7 @@ services:
     volumes:
       - temp-audio-worker:/app/temp_audio
       # Music directory mount - same as flask service
-      - ${MUSIC_PATH:-music-data}:/music
+      - ../test/provider_testing_stack/providers/test_music:/music
     depends_on:
       redis:
         condition: service_healthy
@@ -203,14 +220,14 @@ services:
 # =============================================================================
 volumes:
   redis-data:
-    name: audiomuse-redis-data
+    name: audiomuse-redis-data-test
   postgres-data:
-    name: audiomuse-postgres-data
+    name: audiomuse-postgres-data-test
   temp-audio-flask:
-    name: audiomuse-temp-flask
+    name: audiomuse-temp-flask-test
   temp-audio-worker:
-    name: audiomuse-temp-worker
+    name: audiomuse-temp-worker-test
   # Default music volume - only used if MUSIC_PATH env var is not set
   # For local files: set MUSIC_PATH=/your/music/folder in .env or environment
   music-data:
-    name: audiomuse-music-data
+    name: audiomuse-music-data-test

@@ -673,8 +673,6 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
         except (ValueError, TypeError):
             rating = None
 
-    file_path = _sanitize_string(file_path, max_length=1000, field_name="file_path")
-
     mood_str = ','.join(f"{k}:{v:.3f}" for k, v in moods.items())
 
     conn = get_db() # This now calls the function within this file
@@ -1918,7 +1916,7 @@ def copy_analysis_to_new_item(source_item_id, target_item_id, file_path=None, pr
         return False
 
 
-def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None):
+def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None, extra_sample_tracks=None):
     """
     Auto-detect the music_path_prefix for a new provider by comparing paths.
 
@@ -1929,6 +1927,8 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None):
         sample_tracks: List of track dicts with 'title', 'artist', 'file_path' keys
         existing_normalized_paths: Optional dict mapping (title, artist) -> normalized_path
                                    If None, fetches from database
+        extra_sample_tracks: Optional dict mapping provider_type -> list of track dicts
+                            from previously tested providers (for setup wizard flow)
 
     Returns:
         dict with:
@@ -1977,9 +1977,34 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None):
                     if normalized:
                         existing_normalized_paths[key] = normalized
 
+    # Also add paths from extra_sample_tracks (from previously tested providers in setup wizard)
+    if extra_sample_tracks:
+        for provider_type, tracks in extra_sample_tracks.items():
+            for track in tracks:
+                title = track.get('title') or track.get('Name') or track.get('name')
+                artist = track.get('artist') or track.get('Artist') or track.get('AlbumArtist')
+                file_path = track.get('file_path') or track.get('Path') or track.get('path')
+                if title and artist and file_path:
+                    key = (title.lower(), artist.lower())
+                    if key not in existing_normalized_paths:
+                        normalized = normalize_provider_path(file_path, provider_id=None)
+                        if normalized:
+                            existing_normalized_paths[key] = normalized
+
     if not existing_normalized_paths:
         return {'detected_prefix': '', 'confidence': 'none', 'matches_found': 0,
-                'sample_comparisons': [], 'message': 'No existing tracks to compare with'}
+                'sample_comparisons': [], 'message': 'No existing tracks to compare with',
+                'had_existing_tracks': False}
+
+    # Build a secondary index by filename for fallback matching
+    # This helps when title extraction differs between providers (e.g., "01 - Song" vs "Song")
+    existing_by_filename = {}
+    for (title, artist), norm_path in existing_normalized_paths.items():
+        if norm_path:
+            # Extract filename from normalized path
+            filename = norm_path.split('/')[-1].lower() if '/' in norm_path else norm_path.lower()
+            if filename and filename not in existing_by_filename:
+                existing_by_filename[filename] = norm_path
 
     # Normalize the sample paths (basic normalization without provider prefix)
     def basic_normalize(path):
@@ -2009,25 +2034,36 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None):
         artist = track.get('artist') or track.get('Artist') or track.get('AlbumArtist')
         file_path = track.get('file_path') or track.get('Path') or track.get('path')
 
-        if not title or not artist or not file_path:
+        if not file_path:
             continue
 
-        key = (title.lower(), artist.lower())
-        existing_path = existing_normalized_paths.get(key)
+        new_normalized = basic_normalize(file_path)
+        if not new_normalized:
+            continue
+
+        # Try matching by title+artist first
+        existing_path = None
+        if title and artist:
+            key = (title.lower(), artist.lower())
+            existing_path = existing_normalized_paths.get(key)
+
+        # Fallback: match by filename (helps when title extraction differs between providers)
+        if not existing_path:
+            new_filename = new_normalized.split('/')[-1].lower() if '/' in new_normalized else new_normalized.lower()
+            existing_path = existing_by_filename.get(new_filename)
 
         if existing_path:
-            new_normalized = basic_normalize(file_path)
-            if new_normalized:
-                matches.append({
-                    'title': title,
-                    'artist': artist,
-                    'new_path': new_normalized,
-                    'existing_path': existing_path
-                })
+            matches.append({
+                'title': title or '(unknown)',
+                'artist': artist or '(unknown)',
+                'new_path': new_normalized,
+                'existing_path': existing_path
+            })
 
     if not matches:
         return {'detected_prefix': '', 'confidence': 'none', 'matches_found': 0,
-                'sample_comparisons': [], 'message': 'No matching tracks found between providers'}
+                'sample_comparisons': [], 'message': 'No matching tracks found between providers',
+                'had_existing_tracks': True}
 
     # Detect prefix by finding common suffix
     prefix_candidates = {}
@@ -2068,7 +2104,8 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None):
     if not prefix_candidates:
         return {'detected_prefix': '', 'confidence': 'low', 'matches_found': len(matches),
                 'sample_comparisons': sample_comparisons[:5],
-                'message': 'Could not detect consistent prefix pattern'}
+                'message': 'Could not detect consistent prefix pattern',
+                'had_existing_tracks': True}
 
     # Find most common prefix
     most_common_prefix = max(prefix_candidates, key=prefix_candidates.get)
@@ -2090,5 +2127,6 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None):
         'confidence': confidence,
         'matches_found': len(matches),
         'prefix_occurrences': occurrence_count,
-        'sample_comparisons': sample_comparisons[:5]
+        'sample_comparisons': sample_comparisons[:5],
+        'had_existing_tracks': True
     }

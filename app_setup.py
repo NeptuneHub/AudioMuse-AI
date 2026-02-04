@@ -221,6 +221,75 @@ def delete_provider(provider_id):
         return cur.rowcount > 0
 
 
+# ##############################################################################
+# PROVIDER CONFIG VALIDATION
+# ##############################################################################
+
+PROVIDER_SCHEMAS = {
+    'jellyfin': {
+        'required': ['url', 'user_id', 'token'],
+        'optional': ['music_path_prefix'],
+    },
+    'navidrome': {
+        'required': ['url', 'user', 'password'],
+        'optional': ['music_path_prefix'],
+    },
+    'lyrion': {
+        'required': ['url'],
+        'optional': ['music_path_prefix'],
+    },
+    'emby': {
+        'required': ['url', 'user_id', 'token'],
+        'optional': ['music_path_prefix'],
+    },
+    'localfiles': {
+        'required': ['music_directory'],
+        'optional': ['supported_formats', 'scan_subdirectories', 'playlist_directory', 'music_path_prefix'],
+    },
+}
+
+
+def validate_provider_config(provider_type: str, config_data: dict) -> tuple:
+    """
+    Validate provider configuration data.
+
+    Args:
+        provider_type: Type of provider (jellyfin, navidrome, etc.)
+        config_data: Configuration dictionary to validate
+
+    Returns:
+        Tuple of (is_valid: bool, errors: list[str])
+    """
+    errors = []
+
+    if provider_type not in PROVIDER_SCHEMAS:
+        return False, [f"Unknown provider type: {provider_type}"]
+
+    schema = PROVIDER_SCHEMAS[provider_type]
+
+    # Check required fields
+    for field in schema['required']:
+        if not config_data.get(field):
+            errors.append(f"Missing required field: {field}")
+
+    # Validate URL fields
+    url_fields = ['url']
+    for field in url_fields:
+        if field in config_data and config_data[field]:
+            url = config_data[field]
+            if not url.startswith(('http://', 'https://')):
+                errors.append(f"{field} must start with http:// or https://")
+
+    # Validate music_directory for localfiles
+    if provider_type == 'localfiles' and config_data.get('music_directory'):
+        import os
+        music_dir = config_data['music_directory']
+        if not os.path.isabs(music_dir):
+            errors.append("music_directory must be an absolute path")
+
+    return len(errors) == 0, errors
+
+
 def create_default_provider_from_env():
     """
     Create a default provider from environment variables if no providers exist.
@@ -253,13 +322,6 @@ def create_default_provider_from_env():
     elif provider_type == 'lyrion':
         config_data = {
             'url': config.LYRION_URL,
-        }
-    elif provider_type == 'mpd':
-        config_data = {
-            'host': config.MPD_HOST,
-            'port': config.MPD_PORT,
-            'password': config.MPD_PASSWORD,
-            'music_directory': config.MPD_MUSIC_DIRECTORY,
         }
     elif provider_type == 'emby':
         config_data = {
@@ -415,6 +477,11 @@ def create_provider():
     if provider_type not in PROVIDER_TYPES:
         return jsonify({'error': f'Unknown provider type: {provider_type}'}), 400
 
+    # Validate provider configuration
+    is_valid, validation_errors = validate_provider_config(provider_type, config_data)
+    if not is_valid:
+        return jsonify({'error': 'Validation failed', 'details': validation_errors}), 400
+
     try:
         provider_id = add_provider(provider_type, name, config_data, enabled, priority)
         return jsonify({'id': provider_id, 'message': 'Provider created'}), 201
@@ -457,6 +524,12 @@ def update_provider_endpoint(provider_id):
         for key in list(config_data.keys()):
             if config_data[key] == '********':
                 config_data[key] = provider['config'].get(key)
+
+        # Validate the merged config
+        merged_config = {**provider.get('config', {}), **config_data}
+        is_valid, validation_errors = validate_provider_config(provider['provider_type'], merged_config)
+        if not is_valid:
+            return jsonify({'error': 'Validation failed', 'details': validation_errors}), 400
 
     success = update_provider(
         provider_id,
@@ -552,6 +625,9 @@ def test_provider_config():
               detect_prefix:
                 type: boolean
                 description: Whether to auto-detect music_path_prefix (default true)
+              existing_sample_tracks:
+                type: object
+                description: Dict of provider_type -> list of tracks from previously tested providers
     responses:
       200:
         description: Connection test result with optional prefix detection
@@ -563,6 +639,7 @@ def test_provider_config():
     provider_type = data.get('provider_type')
     config_data = data.get('config', {})
     detect_prefix = data.get('detect_prefix', True)
+    existing_sample_tracks = data.get('existing_sample_tracks', {})
 
     if not provider_type:
         return jsonify({'error': 'provider_type is required'}), 400
@@ -582,17 +659,23 @@ def test_provider_config():
             sample_tracks = get_sample_tracks_from_provider(provider_type, config_data, limit=50)
 
             if sample_tracks:
-                # Detect prefix by comparing with existing tracks
-                prefix_result = detect_music_path_prefix(sample_tracks)
+                # Return sample tracks so frontend can cache them for subsequent provider tests
+                result['sample_tracks'] = sample_tracks
+
+                # Detect prefix by comparing with existing tracks (DB + cached tracks from previously tested providers)
+                prefix_result = detect_music_path_prefix(sample_tracks, extra_sample_tracks=existing_sample_tracks)
                 result['prefix_detection'] = prefix_result
 
-                # If we detected a prefix with medium or high confidence, suggest it
-                if prefix_result.get('confidence') in ('high', 'medium'):
+                # If we detected a prefix with any matches, suggest it for auto-fill
+                if prefix_result.get('matches_found', 0) > 0:
                     result['suggested_prefix'] = prefix_result.get('detected_prefix', '')
-                    result['message'] += f" Detected path prefix: '{prefix_result.get('detected_prefix', '')}' ({prefix_result.get('confidence')} confidence)"
-                elif prefix_result.get('matches_found', 0) == 0:
-                    # No matching tracks found - this is likely the first provider
+                    if prefix_result.get('confidence') in ('high', 'medium'):
+                        result['message'] += f" Detected path prefix: '{prefix_result.get('detected_prefix', '')}' ({prefix_result.get('confidence')} confidence)"
+                elif not prefix_result.get('had_existing_tracks', True):
+                    # No existing tracks at all - this is truly the first provider
                     result['prefix_detection']['message'] = 'No existing tracks to compare with (first provider setup)'
+                # If had_existing_tracks is True but matches_found is 0, keep the original message
+                # ("No matching tracks found between providers") which is more accurate
             else:
                 result['prefix_detection'] = {
                     'detected_prefix': '',
@@ -780,4 +863,86 @@ def get_server_info():
         'postgres_port': os.environ.get('POSTGRES_PORT', '5432'),
         'postgres_host': os.environ.get('POSTGRES_HOST', 'postgres'),
         'redis_url': os.environ.get('REDIS_URL', 'redis://redis:6379/0'),
+    })
+
+
+@setup_bp.route('/api/setup/browse-directories', methods=['GET'])
+def browse_directories():
+    """
+    Browse directories on the server for file path selection.
+    ---
+    tags:
+      - Setup
+    parameters:
+      - name: path
+        in: query
+        required: false
+        description: Directory path to list. Defaults to root paths.
+        schema:
+          type: string
+    responses:
+      200:
+        description: List of directories
+    """
+    import os
+
+    requested_path = request.args.get('path', '')
+
+    # Security: prevent path traversal
+    if '..' in requested_path:
+        return jsonify({'error': 'Invalid path'}), 400
+
+    directories = []
+
+    if not requested_path:
+        # Return common root paths for Docker/Linux systems
+        root_paths = ['/music', '/data', '/media', '/mnt', '/home']
+        for path in root_paths:
+            if os.path.isdir(path):
+                directories.append({
+                    'name': path,
+                    'path': path,
+                    'is_root': True
+                })
+        # Also check if there are any mounted volumes at root
+        try:
+            for item in os.listdir('/'):
+                full_path = f'/{item}'
+                if os.path.isdir(full_path) and item not in ['proc', 'sys', 'dev', 'run', 'tmp', 'var', 'etc', 'usr', 'bin', 'sbin', 'lib', 'lib64', 'boot', 'root']:
+                    if full_path not in [d['path'] for d in directories]:
+                        directories.append({
+                            'name': item,
+                            'path': full_path,
+                            'is_root': True
+                        })
+        except PermissionError:
+            pass
+    else:
+        # List contents of the requested path
+        try:
+            if os.path.isdir(requested_path):
+                for item in sorted(os.listdir(requested_path)):
+                    full_path = os.path.join(requested_path, item)
+                    if os.path.isdir(full_path):
+                        # Check if directory is accessible
+                        try:
+                            os.listdir(full_path)
+                            accessible = True
+                        except PermissionError:
+                            accessible = False
+
+                        directories.append({
+                            'name': item,
+                            'path': full_path,
+                            'accessible': accessible
+                        })
+        except PermissionError:
+            return jsonify({'error': 'Permission denied'}), 403
+        except FileNotFoundError:
+            return jsonify({'error': 'Path not found'}), 404
+
+    return jsonify({
+        'current_path': requested_path or '/',
+        'parent_path': os.path.dirname(requested_path) if requested_path else None,
+        'directories': directories
     })

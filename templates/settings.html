@@ -22,7 +22,7 @@
 
     /* Settings Sections */
     .settings-section {
-        background: var(--bg-secondary);
+        background: var(--bg-body);
         border-radius: 8px;
         margin-bottom: 1.5rem;
         overflow: hidden;
@@ -39,7 +39,7 @@
     }
 
     .section-header:hover {
-        background: rgba(var(--primary-rgb), 0.05);
+        background: rgba(37, 99, 235, 0.05);
     }
 
     .section-header h2 {
@@ -106,15 +106,15 @@
         padding: 0.5rem 0.75rem;
         border: 1px solid var(--border-color);
         border-radius: 4px;
-        background: var(--bg-primary);
-        color: var(--text-color);
+        background: var(--bg-card);
+        color: var(--text-main);
         font-size: 0.95rem;
     }
 
     .field-group input:focus,
     .field-group select:focus {
         outline: none;
-        border-color: var(--primary-color);
+        border-color: var(--color-primary);
     }
 
     .field-group .checkbox-label {
@@ -148,12 +148,12 @@
     }
 
     .option-card:hover {
-        border-color: var(--primary-color);
+        border-color: var(--color-primary);
     }
 
     .option-card.selected {
-        border-color: var(--primary-color);
-        background: rgba(var(--primary-rgb), 0.1);
+        border-color: var(--color-primary);
+        background: rgba(37, 99, 235, 0.1);
     }
 
     .option-card .card-icon {
@@ -181,7 +181,7 @@
         align-items: center;
         justify-content: space-between;
         padding: 1rem;
-        background: var(--bg-primary);
+        background: var(--bg-card);
         border-radius: 8px;
         margin-bottom: 0.5rem;
     }
@@ -214,8 +214,8 @@
     }
 
     .badge-primary {
-        background: rgba(var(--primary-rgb), 0.2);
-        color: var(--primary-color);
+        background: rgba(37, 99, 235, 0.2);
+        color: var(--color-primary);
     }
 
     .badge-enabled {
@@ -237,13 +237,13 @@
         padding: 0.4rem 0.75rem;
         border: 1px solid var(--border-color);
         border-radius: 4px;
-        background: var(--bg-secondary);
+        background: var(--bg-body);
         cursor: pointer;
         font-size: 0.85rem;
     }
 
     .provider-item .provider-actions button:hover {
-        background: var(--bg-primary);
+        background: var(--bg-card);
     }
 
     .provider-item .provider-actions button.btn-danger {
@@ -272,13 +272,13 @@
     }
 
     .add-provider-btn:hover {
-        border-color: var(--primary-color);
-        color: var(--primary-color);
+        border-color: var(--color-primary);
+        color: var(--color-primary);
     }
 
     /* Worker Connection Info */
     .connection-info {
-        background: var(--bg-primary);
+        background: var(--bg-card);
         padding: 1rem;
         border-radius: 8px;
         margin-top: 1rem;
@@ -304,7 +304,7 @@
     .connection-info .info-value {
         flex: 1;
         font-family: monospace;
-        background: var(--bg-secondary);
+        background: var(--bg-body);
         padding: 0.5rem 0.75rem;
         border-radius: 4px;
         font-size: 0.9rem;
@@ -314,13 +314,13 @@
         padding: 0.4rem 0.75rem;
         border: 1px solid var(--border-color);
         border-radius: 4px;
-        background: var(--bg-secondary);
+        background: var(--bg-body);
         cursor: pointer;
         font-size: 0.8rem;
     }
 
     .connection-info .copy-btn:hover {
-        background: var(--bg-primary);
+        background: var(--bg-card);
     }
 
     .connection-info .copy-btn.copied {
@@ -333,7 +333,7 @@
     .save-bar {
         position: sticky;
         bottom: 0;
-        background: var(--bg-secondary);
+        background: var(--bg-body);
         padding: 1rem 1.5rem;
         margin: 2rem -1rem -1rem -1rem;
         border-top: 1px solid var(--border-color);
@@ -350,7 +350,7 @@
     }
 
     .btn-save {
-        background: var(--primary-color);
+        background: var(--color-primary);
         border: none;
         color: white;
     }
@@ -383,7 +383,7 @@
     }
 
     .modal {
-        background: var(--bg-secondary);
+        background: var(--bg-body);
         border-radius: 8px;
         max-width: 500px;
         width: 90%;
@@ -430,12 +430,12 @@
     }
 
     .modal-footer .btn-cancel {
-        background: var(--bg-primary);
+        background: var(--bg-card);
         border: 1px solid var(--border-color);
     }
 
     .modal-footer .btn-primary {
-        background: var(--primary-color);
+        background: var(--color-primary);
         border: none;
         color: white;
     }
@@ -447,7 +447,7 @@
         right: 2rem;
         padding: 1rem 1.5rem;
         border-radius: 8px;
-        background: var(--bg-secondary);
+        background: var(--bg-body);
         border: 1px solid var(--border-color);
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
         z-index: 1001;
@@ -795,18 +795,19 @@
     }
 
     function applySettings() {
-        // Deployment
-        document.querySelectorAll('.option-card[data-value]').forEach(card => {
-            const parent = card.parentElement;
-            const isDeployment = parent.previousElementSibling?.textContent.includes('Deployment');
-            const isHardware = parent.previousElementSibling?.textContent.includes('Hardware');
+        // Deployment - directly select by data-value
+        const deploymentValue = settings.deployment_type || 'unified';
+        const deploymentCard = document.querySelector(`.option-card[data-value="${deploymentValue}"][onclick*="deployment"]`);
+        if (deploymentCard) {
+            selectOption(deploymentCard, 'deployment', false);
+        }
 
-            if (isDeployment && settings.deployment_type === card.dataset.value) {
-                selectOption(card, 'deployment', false);
-            } else if (isHardware && settings.hardware_type === card.dataset.value) {
-                selectOption(card, 'hardware', false);
-            }
-        });
+        // Hardware - directly select by data-value
+        const hardwareValue = settings.hardware_type || 'cpu';
+        const hardwareCard = document.querySelector(`.option-card[data-value="${hardwareValue}"][onclick*="hardware"]`);
+        if (hardwareCard) {
+            selectOption(hardwareCard, 'hardware', false);
+        }
 
         // Analysis
         document.getElementById('clap-enabled').checked = settings.clap_enabled !== false;

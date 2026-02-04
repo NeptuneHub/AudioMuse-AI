@@ -2,7 +2,7 @@
 import os
 
 # --- Media Server Type ---
-MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, mpd, emby, localfiles
+MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby, localfiles
 
 # --- Jellyfin and DB Constants (Read from Environment Variables first) ---
 
@@ -41,13 +41,6 @@ NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "your_navidrome_passwo
 # --- Lyrion (LMS) Constants ---
 # These are used only if MEDIASERVER_TYPE is "lyrion".
 LYRION_URL = os.environ.get("LYRION_URL", "http://your_lyrion_url:9000")
-
-# --- MPD (Music Player Daemon) Constants ---
-# These are used only if MEDIASERVER_TYPE is "mpd".
-MPD_HOST = os.environ.get("MPD_HOST", "localhost")
-MPD_PORT = int(os.environ.get("MPD_PORT", "6600"))
-MPD_PASSWORD = os.environ.get("MPD_PASSWORD", "")  # Optional password, leave empty if none
-MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music")  # Path to MPD's music directory for file access
 
 # --- Local Files Provider Constants ---
 # These are used only if MEDIASERVER_TYPE is "localfiles".

@@ -10,7 +10,6 @@ Supported providers:
 - jellyfin: Jellyfin Media Server
 - navidrome: Navidrome (Subsonic API)
 - lyrion: Lyrion Music Server (formerly LMS)
-- mpd: Music Player Daemon
 - emby: Emby Media Server
 - localfiles: Local file system scanner
 
@@ -64,19 +63,6 @@ from tasks.mediaserver_lyrion import (
     create_instant_playlist as lyrion_create_instant_playlist,
     get_top_played_songs as lyrion_get_top_played_songs,
     get_last_played_time as lyrion_get_last_played_time,
-)
-from tasks.mediaserver_mpd import (
-    get_all_playlists as mpd_get_all_playlists,
-    delete_playlist as mpd_delete_playlist,
-    get_recent_albums as mpd_get_recent_albums,
-    get_tracks_from_album as mpd_get_tracks_from_album,
-    download_track as mpd_download_track,
-    get_all_songs as mpd_get_all_songs,
-    get_playlist_by_name as mpd_get_playlist_by_name,
-    create_playlist as mpd_create_playlist,
-    create_instant_playlist as mpd_create_instant_playlist,
-    get_top_played_songs as mpd_get_top_played_songs,
-    get_last_played_time as mpd_get_last_played_time,
 )
 from tasks.mediaserver_emby import (
     resolve_user as emby_resolve_user,
@@ -135,12 +121,6 @@ PROVIDER_TYPES = {
         'supports_user_auth': False,
         'supports_play_history': True,
     },
-    'mpd': {
-        'name': 'MPD',
-        'description': 'Music Player Daemon - Flexible music server',
-        'supports_user_auth': False,
-        'supports_play_history': False,
-    },
     'emby': {
         'name': 'Emby',
         'description': 'Emby Media Server - Personal media server',
@@ -159,6 +139,137 @@ PROVIDER_TYPES = {
 def get_available_provider_types():
     """Return information about all available provider types."""
     return PROVIDER_TYPES.copy()
+
+
+# ##############################################################################
+# PROVIDER FACTORY
+# ##############################################################################
+
+# Provider module mapping for dynamic dispatch
+PROVIDER_MODULES = {
+    'jellyfin': 'tasks.mediaserver_jellyfin',
+    'navidrome': 'tasks.mediaserver_navidrome',
+    'lyrion': 'tasks.mediaserver_lyrion',
+    'emby': 'tasks.mediaserver_emby',
+    'localfiles': 'tasks.mediaserver_localfiles',
+}
+
+# Pre-imported function maps for performance (avoid repeated imports)
+_PROVIDER_FUNCTIONS = {
+    'jellyfin': {
+        'get_all_playlists': jellyfin_get_all_playlists,
+        'delete_playlist': jellyfin_delete_playlist,
+        'get_recent_albums': jellyfin_get_recent_albums,
+        'get_tracks_from_album': jellyfin_get_tracks_from_album,
+        'download_track': jellyfin_download_track,
+        'get_all_songs': jellyfin_get_all_songs,
+        'get_playlist_by_name': jellyfin_get_playlist_by_name,
+        'create_playlist': jellyfin_create_playlist,
+        'create_instant_playlist': jellyfin_create_instant_playlist,
+        'get_top_played_songs': jellyfin_get_top_played_songs,
+        'get_last_played_time': jellyfin_get_last_played_time,
+    },
+    'navidrome': {
+        'get_all_playlists': navidrome_get_all_playlists,
+        'delete_playlist': navidrome_delete_playlist,
+        'get_recent_albums': navidrome_get_recent_albums,
+        'get_tracks_from_album': navidrome_get_tracks_from_album,
+        'download_track': navidrome_download_track,
+        'get_all_songs': navidrome_get_all_songs,
+        'get_playlist_by_name': navidrome_get_playlist_by_name,
+        'create_playlist': navidrome_create_playlist,
+        'create_instant_playlist': navidrome_create_instant_playlist,
+        'get_top_played_songs': navidrome_get_top_played_songs,
+        'get_last_played_time': navidrome_get_last_played_time,
+    },
+    'lyrion': {
+        'get_all_playlists': lyrion_get_all_playlists,
+        'delete_playlist': lyrion_delete_playlist,
+        'get_recent_albums': lyrion_get_recent_albums,
+        'get_tracks_from_album': lyrion_get_tracks_from_album,
+        'download_track': lyrion_download_track,
+        'get_all_songs': lyrion_get_all_songs,
+        'get_playlist_by_name': lyrion_get_playlist_by_name,
+        'create_playlist': lyrion_create_playlist,
+        'create_instant_playlist': lyrion_create_instant_playlist,
+        'get_top_played_songs': lyrion_get_top_played_songs,
+        'get_last_played_time': lyrion_get_last_played_time,
+    },
+    'emby': {
+        'get_all_playlists': emby_get_all_playlists,
+        'delete_playlist': emby_delete_playlist,
+        'get_recent_albums': emby_get_recent_albums,
+        'get_tracks_from_album': emby_get_tracks_from_album,
+        'download_track': emby_download_track,
+        'get_all_songs': emby_get_all_songs,
+        'get_playlist_by_name': emby_get_playlist_by_name,
+        'create_playlist': emby_create_playlist,
+        'create_instant_playlist': emby_create_instant_playlist,
+        'get_top_played_songs': emby_get_top_played_songs,
+        'get_last_played_time': emby_get_last_played_time,
+    },
+    'localfiles': {
+        'get_all_playlists': localfiles_get_all_playlists,
+        'delete_playlist': localfiles_delete_playlist,
+        'get_recent_albums': localfiles_get_recent_albums,
+        'get_tracks_from_album': localfiles_get_tracks_from_album,
+        'download_track': localfiles_download_track,
+        'get_all_songs': localfiles_get_all_songs,
+        'get_playlist_by_name': localfiles_get_playlist_by_name,
+        'create_playlist': localfiles_create_playlist,
+        'create_instant_playlist': localfiles_create_instant_playlist,
+        'get_top_played_songs': localfiles_get_top_played_songs,
+        'get_last_played_time': localfiles_get_last_played_time,
+    },
+}
+
+
+def get_provider_function(provider_type: str, function_name: str):
+    """
+    Get a specific function for a provider type.
+
+    Args:
+        provider_type: Type of provider (jellyfin, navidrome, etc.)
+        function_name: Name of the function to retrieve
+
+    Returns:
+        The provider function, or None if not found
+
+    Usage:
+        get_all_songs = get_provider_function('jellyfin', 'get_all_songs')
+        songs = get_all_songs()
+    """
+    provider_funcs = _PROVIDER_FUNCTIONS.get(provider_type)
+    if not provider_funcs:
+        logger.warning(f"Unknown provider type: {provider_type}")
+        return None
+    return provider_funcs.get(function_name)
+
+
+def dispatch_to_provider(function_name: str, provider_type: str = None, *args, **kwargs):
+    """
+    Dispatch a function call to the appropriate provider.
+
+    Args:
+        function_name: Name of the function to call
+        provider_type: Optional provider type override (defaults to config.MEDIASERVER_TYPE)
+        *args, **kwargs: Arguments to pass to the function
+
+    Returns:
+        Result of the provider function call
+
+    Usage:
+        songs = dispatch_to_provider('get_all_songs')
+        songs = dispatch_to_provider('get_all_songs', provider_type='navidrome')
+    """
+    if provider_type is None:
+        provider_type = config.MEDIASERVER_TYPE
+
+    func = get_provider_function(provider_type, function_name)
+    if func is None:
+        raise ValueError(f"Function '{function_name}' not found for provider '{provider_type}'")
+
+    return func(*args, **kwargs)
 
 
 # ##############################################################################
@@ -189,9 +300,6 @@ def delete_automatic_playlists():
     elif config.MEDIASERVER_TYPE == 'lyrion':
         playlists_to_check = lyrion_get_all_playlists()
         delete_function = lyrion_delete_playlist
-    elif config.MEDIASERVER_TYPE == 'mpd':
-        playlists_to_check = mpd_get_all_playlists()
-        delete_function = mpd_delete_playlist
     elif config.MEDIASERVER_TYPE == 'emby':
         playlists_to_check = emby_get_all_playlists()
         delete_function = emby_delete_playlist
@@ -210,7 +318,6 @@ def get_recent_albums(limit):
     if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_recent_albums(limit)
-    if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'emby': return emby_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'localfiles': return localfiles_get_recent_albums(limit)
     return []
@@ -239,7 +346,6 @@ def get_tracks_from_album(album_id):
     if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_get_tracks_from_album(album_id)
     if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_tracks_from_album(album_id)
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_tracks_from_album(album_id)
-    if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_tracks_from_album(album_id)
     if config.MEDIASERVER_TYPE == 'emby': return emby_get_tracks_from_album(album_id)
     if config.MEDIASERVER_TYPE == 'localfiles': return localfiles_get_tracks_from_album(album_id)
     return []
@@ -251,7 +357,6 @@ def download_track(temp_dir, item):
     if config.MEDIASERVER_TYPE == 'jellyfin': downloaded_path = jellyfin_download_track(temp_dir, item)
     elif config.MEDIASERVER_TYPE == 'navidrome': downloaded_path = navidrome_download_track(temp_dir, item)
     elif config.MEDIASERVER_TYPE == 'lyrion': downloaded_path = lyrion_download_track(temp_dir, item)
-    elif config.MEDIASERVER_TYPE == 'mpd': downloaded_path = mpd_download_track(temp_dir, item)
     elif config.MEDIASERVER_TYPE == 'emby': downloaded_path = emby_download_track(temp_dir, item)
     elif config.MEDIASERVER_TYPE == 'localfiles': downloaded_path = localfiles_download_track(temp_dir, item)
     
@@ -329,7 +434,6 @@ def get_all_songs():
     if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_get_all_songs()
     if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_all_songs()
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_all_songs()
-    if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_all_songs()
     if config.MEDIASERVER_TYPE == 'emby': return emby_get_all_songs()
     if config.MEDIASERVER_TYPE == 'localfiles': return localfiles_get_all_songs()
     return []
@@ -340,7 +444,6 @@ def get_playlist_by_name(playlist_name):
     if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_get_playlist_by_name(playlist_name)
     if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_playlist_by_name(playlist_name)
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_playlist_by_name(playlist_name)
-    if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_playlist_by_name(playlist_name)
     if config.MEDIASERVER_TYPE == 'emby': return emby_get_playlist_by_name(playlist_name)
     if config.MEDIASERVER_TYPE == 'localfiles': return localfiles_get_playlist_by_name(playlist_name)
     return None
@@ -352,7 +455,6 @@ def create_playlist(base_name, item_ids):
     if config.MEDIASERVER_TYPE == 'jellyfin': jellyfin_create_playlist(base_name, item_ids)
     elif config.MEDIASERVER_TYPE == 'navidrome': navidrome_create_playlist(base_name, item_ids)
     elif config.MEDIASERVER_TYPE == 'lyrion': lyrion_create_playlist(base_name, item_ids)
-    elif config.MEDIASERVER_TYPE == 'mpd': mpd_create_playlist(base_name, item_ids)
     elif config.MEDIASERVER_TYPE == 'emby': emby_create_playlist(base_name, item_ids)
     elif config.MEDIASERVER_TYPE == 'localfiles': localfiles_create_playlist(base_name, item_ids)
 
@@ -367,8 +469,6 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         return navidrome_create_instant_playlist(playlist_name, item_ids, user_creds)
     if config.MEDIASERVER_TYPE == 'lyrion':
         return lyrion_create_instant_playlist(playlist_name, item_ids)
-    if config.MEDIASERVER_TYPE == 'mpd':
-        return mpd_create_instant_playlist(playlist_name, item_ids, user_creds)
     if config.MEDIASERVER_TYPE == 'emby':
         return emby_create_instant_playlist(playlist_name, item_ids, user_creds)
     if config.MEDIASERVER_TYPE == 'localfiles':
@@ -383,8 +483,6 @@ def get_top_played_songs(limit, user_creds=None):
         return navidrome_get_top_played_songs(limit, user_creds)
     if config.MEDIASERVER_TYPE == 'lyrion':
         return lyrion_get_top_played_songs(limit)
-    if config.MEDIASERVER_TYPE == 'mpd':
-        return mpd_get_top_played_songs(limit, user_creds)
     if config.MEDIASERVER_TYPE == 'emby':
         return emby_get_top_played_songs(limit, user_creds)
     if config.MEDIASERVER_TYPE == 'localfiles':
@@ -399,8 +497,6 @@ def get_last_played_time(item_id, user_creds=None):
         return navidrome_get_last_played_time(item_id, user_creds)
     if config.MEDIASERVER_TYPE == 'lyrion':
         return lyrion_get_last_played_time(item_id)
-    if config.MEDIASERVER_TYPE == 'mpd':
-        return mpd_get_last_played_time(item_id, user_creds)
     if config.MEDIASERVER_TYPE == 'emby':
         return emby_get_last_played_time(item_id, user_creds)
     if config.MEDIASERVER_TYPE == 'localfiles':
@@ -479,24 +575,6 @@ def test_provider_connection(provider_type: str, config_dict: dict = None):
             if resp.status_code == 200:
                 return True, f"Connected to Emby at {url}"
             return False, f"Emby returned status {resp.status_code}"
-
-        elif provider_type == 'mpd':
-            try:
-                from mpd import MPDClient
-                host = config_dict.get('host') if config_dict else config.MPD_HOST
-                port = config_dict.get('port') if config_dict else config.MPD_PORT
-                password = config_dict.get('password') if config_dict else config.MPD_PASSWORD
-                client = MPDClient()
-                client.timeout = 10
-                client.connect(host, int(port))
-                if password:
-                    client.password(password)
-                stats = client.stats()
-                client.close()
-                client.disconnect()
-                return True, f"Connected to MPD at {host}:{port} ({stats.get('songs', 0)} songs)"
-            except Exception as e:
-                return False, f"MPD connection error: {str(e)}"
 
         else:
             return False, f"Unknown provider type: {provider_type}"
@@ -642,38 +720,6 @@ def get_sample_tracks_from_provider(provider_type: str, config_dict: dict, limit
                 })
             return tracks
 
-        elif provider_type == 'mpd':
-            try:
-                from mpd import MPDClient
-                host = config_dict.get('host', 'localhost')
-                port = int(config_dict.get('port', 6600))
-                password = config_dict.get('password')
-
-                client = MPDClient()
-                client.timeout = 10
-                client.connect(host, port)
-                if password:
-                    client.password(password)
-
-                # List all songs and take a sample
-                all_songs = client.listallinfo()
-                client.close()
-                client.disconnect()
-
-                tracks = []
-                count = 0
-                for song in all_songs:
-                    if song.get('file') and count < limit:
-                        tracks.append({
-                            'title': song.get('title'),
-                            'artist': song.get('artist') or song.get('albumartist'),
-                            'file_path': song.get('file')
-                        })
-                        count += 1
-                return tracks
-            except Exception:
-                return []
-
         elif provider_type == 'localfiles':
             import os
             music_dir = config_dict.get('music_directory')
@@ -766,17 +812,6 @@ def _get_provider_config_fields(provider_type: str):
              'description': 'Lyrion server URL (e.g., http://192.168.1.100:9000)'},
             music_path_prefix_field,
         ],
-        'mpd': [
-            {'name': 'host', 'label': 'Host', 'type': 'text', 'required': True,
-             'description': 'MPD server hostname or IP', 'default': 'localhost'},
-            {'name': 'port', 'label': 'Port', 'type': 'number', 'required': True,
-             'description': 'MPD port number', 'default': 6600},
-            {'name': 'password', 'label': 'Password', 'type': 'password', 'required': False,
-             'description': 'MPD password (if configured)'},
-            {'name': 'music_directory', 'label': 'Music Directory', 'type': 'path', 'required': True,
-             'description': 'Path to music files on the MPD server'},
-            music_path_prefix_field,
-        ],
         'emby': [
             {'name': 'url', 'label': 'Server URL', 'type': 'url', 'required': True,
              'description': 'Emby server URL (e.g., http://192.168.1.100:8096)'},
@@ -785,6 +820,16 @@ def _get_provider_config_fields(provider_type: str):
             {'name': 'token', 'label': 'API Token', 'type': 'password', 'required': True,
              'description': 'API key from Emby settings'},
             music_path_prefix_field,
+        ],
+        'localfiles': [
+            {'name': 'music_directory', 'label': 'Music Directory', 'type': 'path', 'required': True,
+             'description': 'Path to your music library folder (e.g., /music)', 'default': '/music'},
+            {'name': 'playlist_directory', 'label': 'Playlist Directory', 'type': 'path', 'required': False,
+             'description': 'Where to save generated playlists', 'default': '/music/playlists'},
+            {'name': 'formats', 'label': 'Audio Formats', 'type': 'text', 'required': False,
+             'description': 'Comma-separated list of formats to scan', 'default': '.mp3,.flac,.ogg,.m4a,.wav'},
+            {'name': 'scan_subdirs', 'label': 'Scan Subdirectories', 'type': 'boolean', 'required': False,
+             'description': 'Recursively scan subdirectories', 'default': True},
         ],
     }
     return fields.get(provider_type, [])
@@ -849,19 +894,100 @@ def get_all_playlists_multi_provider(provider_ids=None):
 
 def _get_playlists_for_provider_type(provider_type):
     """Get playlists for a specific provider type using current config."""
-    if provider_type == 'jellyfin':
-        return jellyfin_get_all_playlists()
-    elif provider_type == 'navidrome':
-        return navidrome_get_all_playlists()
-    elif provider_type == 'lyrion':
-        return lyrion_get_all_playlists()
-    elif provider_type == 'mpd':
-        return mpd_get_all_playlists()
-    elif provider_type == 'emby':
-        return emby_get_all_playlists()
-    elif provider_type == 'localfiles':
-        return localfiles_get_all_playlists()
+    func = get_provider_function(provider_type, 'get_all_playlists')
+    if func:
+        return func()
     return []
+
+
+def remap_item_ids_for_provider(item_ids: list, source_provider_id: int, target_provider_id: int) -> list:
+    """
+    Remap item IDs from one provider's namespace to another's using file_path as the common key.
+
+    When creating playlists across providers, item_ids from the source provider need to be
+    translated to the target provider's item_ids. This is done by:
+    1. Looking up file_path for each source item_id in the score table
+    2. Finding the matching item_id in the target provider by file_path
+
+    Args:
+        item_ids: List of item IDs from the source provider
+        source_provider_id: ID of the source provider
+        target_provider_id: ID of the target provider
+
+    Returns:
+        List of remapped item IDs for the target provider (preserving order, skipping unmatchable)
+    """
+    if not item_ids:
+        return []
+
+    # If same provider, no remapping needed
+    if source_provider_id == target_provider_id:
+        return item_ids
+
+    from app_helper import get_db
+
+    db = get_db()
+    remapped_ids = []
+
+    try:
+        with db.cursor() as cur:
+            # Get file_paths for source item_ids
+            cur.execute("""
+                SELECT item_id, file_path
+                FROM score
+                WHERE item_id = ANY(%s) AND file_path IS NOT NULL
+            """, (item_ids,))
+            source_id_to_path = {row[0]: row[1] for row in cur.fetchall()}
+
+            if not source_id_to_path:
+                logger.warning(f"No file_paths found for source item_ids (provider {source_provider_id})")
+                return item_ids  # Fall back to original IDs
+
+            # Get the file paths we need to look up
+            paths_to_find = list(source_id_to_path.values())
+
+            # Find matching item_ids in target provider by file_path
+            # The score table has file_path but item_ids are provider-specific
+            # We need to normalize paths and match
+            cur.execute("""
+                SELECT item_id, file_path
+                FROM score
+                WHERE file_path = ANY(%s)
+            """, (paths_to_find,))
+            path_to_ids = {}
+            for row in cur.fetchall():
+                path = row[1]
+                if path not in path_to_ids:
+                    path_to_ids[path] = []
+                path_to_ids[path].append(row[0])
+
+            # Remap in order, preserving the original playlist order
+            for orig_id in item_ids:
+                path = source_id_to_path.get(orig_id)
+                if path and path in path_to_ids:
+                    # Use the first matching ID (there might be multiple if same file analyzed multiple times)
+                    target_ids = path_to_ids[path]
+                    if target_ids:
+                        # Prefer an ID that's different from source if available (for cross-provider)
+                        for tid in target_ids:
+                            if tid != orig_id:
+                                remapped_ids.append(tid)
+                                break
+                        else:
+                            # All IDs are the same, use the first one
+                            remapped_ids.append(target_ids[0])
+                else:
+                    # No match found, keep original ID (might work if providers share IDs)
+                    logger.debug(f"No cross-provider match for item_id {orig_id}, keeping original")
+                    remapped_ids.append(orig_id)
+
+            logger.info(f"Remapped {len(remapped_ids)} of {len(item_ids)} item IDs for cross-provider playlist")
+
+    except Exception as e:
+        logger.error(f"Error remapping item IDs: {e}")
+        return item_ids  # Fall back to original IDs
+
+    return remapped_ids
 
 
 def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, user_creds=None):
@@ -912,20 +1038,41 @@ def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, u
             provider = get_provider_by_id(provider_ids)
             providers = [provider] if provider else []
 
+    # Determine source provider for ID remapping
+    # If we have a primary provider, use its IDs as the source
+    source_provider_id = get_primary_provider_id()
+    if not source_provider_id and providers:
+        source_provider_id = providers[0]['id']
+
     # Create playlist on each provider
     for provider in providers:
         provider_id = provider['id']
         provider_type = provider['provider_type']
 
         try:
-            # For now, use the dispatcher which uses current config
-            # In the future, we may want provider-specific config
-            created = _create_playlist_for_provider_type(provider_type, playlist_name, item_ids, user_creds)
+            # Remap item IDs if creating on a different provider
+            if source_provider_id and provider_id != source_provider_id:
+                remapped_ids = remap_item_ids_for_provider(item_ids, source_provider_id, provider_id)
+                logger.info(f"Cross-provider playlist: remapped {len(item_ids)} IDs for provider {provider.get('name')}")
+            else:
+                remapped_ids = item_ids
+
+            if not remapped_ids:
+                logger.warning(f"No valid track IDs after remapping for provider {provider.get('name')}")
+                results[provider_id] = {
+                    'success': False,
+                    'error': 'No valid track IDs after cross-provider remapping',
+                    'provider_name': provider.get('name', provider_type)
+                }
+                continue
+
+            created = _create_playlist_for_provider_type(provider_type, playlist_name, remapped_ids, user_creds)
 
             results[provider_id] = {
                 'success': True,
                 'playlist_id': created.get('Id') or created.get('id') if created else None,
-                'provider_name': provider.get('name', provider_type)
+                'provider_name': provider.get('name', provider_type),
+                'tracks_added': len(remapped_ids)
             }
         except Exception as e:
             logger.error(f"Failed to create playlist on provider {provider.get('name')}: {e}")
@@ -946,8 +1093,6 @@ def _create_playlist_for_provider_type(provider_type, playlist_name, item_ids, u
         return navidrome_create_instant_playlist(playlist_name, item_ids, user_creds)
     elif provider_type == 'lyrion':
         return lyrion_create_instant_playlist(playlist_name, item_ids)
-    elif provider_type == 'mpd':
-        return mpd_create_instant_playlist(playlist_name, item_ids, user_creds)
     elif provider_type == 'emby':
         return emby_create_instant_playlist(playlist_name, item_ids, user_creds)
     elif provider_type == 'localfiles':

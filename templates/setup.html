@@ -50,14 +50,14 @@
     }
 
     .progress-step.completed:not(:last-child)::after {
-        background: var(--primary-color);
+        background: var(--color-primary);
     }
 
     .step-number {
         width: 32px;
         height: 32px;
         border-radius: 50%;
-        background: var(--bg-secondary);
+        background: var(--bg-body);
         border: 2px solid var(--border-color);
         display: flex;
         align-items: center;
@@ -68,14 +68,14 @@
     }
 
     .progress-step.active .step-number {
-        border-color: var(--primary-color);
-        background: var(--primary-color);
+        border-color: var(--color-primary);
+        background: var(--color-primary);
         color: white;
     }
 
     .progress-step.completed .step-number {
-        border-color: var(--primary-color);
-        background: var(--primary-color);
+        border-color: var(--color-primary);
+        background: var(--color-primary);
         color: white;
     }
 
@@ -86,7 +86,7 @@
     }
 
     .progress-step.active .step-label {
-        color: var(--text-color);
+        color: var(--text-main);
         font-weight: 500;
     }
 
@@ -106,7 +106,7 @@
     }
 
     .step-section {
-        background: var(--bg-secondary);
+        background: var(--bg-body);
         border-radius: 8px;
         padding: 1.5rem;
         margin-bottom: 1.5rem;
@@ -131,7 +131,7 @@
     }
 
     .provider-card {
-        background: var(--bg-primary);
+        background: var(--bg-card);
         border: 2px solid var(--border-color);
         border-radius: 8px;
         padding: 1rem;
@@ -140,12 +140,12 @@
     }
 
     .provider-card:hover {
-        border-color: var(--primary-color);
+        border-color: var(--color-primary);
     }
 
     .provider-card.selected {
-        border-color: var(--primary-color);
-        background: rgba(var(--primary-rgb), 0.1);
+        border-color: var(--color-primary);
+        background: rgba(37, 99, 235, 0.1);
     }
 
     .provider-card .provider-name {
@@ -160,7 +160,7 @@
 
     .provider-card .provider-check {
         display: none;
-        color: var(--primary-color);
+        color: var(--color-primary);
         font-size: 1.2rem;
     }
 
@@ -172,7 +172,7 @@
     .provider-config {
         margin-top: 1.5rem;
         padding: 1rem;
-        background: var(--bg-primary);
+        background: var(--bg-card);
         border-radius: 8px;
         display: none;
     }
@@ -208,19 +208,19 @@
         padding: 0.5rem;
         border: 1px solid var(--border-color);
         border-radius: 4px;
-        background: var(--bg-secondary);
-        color: var(--text-color);
+        background: var(--bg-body);
+        color: var(--text-main);
     }
 
     .config-field input:focus,
     .config-field select:focus {
         outline: none;
-        border-color: var(--primary-color);
+        border-color: var(--color-primary);
     }
 
     /* Test Connection Button */
     .test-connection-btn {
-        background: var(--bg-secondary);
+        background: var(--bg-body);
         border: 1px solid var(--border-color);
         padding: 0.5rem 1rem;
         border-radius: 4px;
@@ -231,7 +231,7 @@
     }
 
     .test-connection-btn:hover {
-        background: var(--bg-primary);
+        background: var(--bg-card);
     }
 
     .test-result {
@@ -249,6 +249,170 @@
     .test-result.error {
         background: rgba(220, 53, 69, 0.2);
         color: #dc3545;
+    }
+
+    /* Browse Input Group */
+    .input-with-browse {
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .input-with-browse input {
+        flex: 1;
+    }
+
+    .browse-btn {
+        padding: 0.5rem 1rem;
+        background: var(--bg-body);
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        cursor: pointer;
+        white-space: nowrap;
+        color: var(--text-main);
+    }
+
+    .browse-btn:hover {
+        background: var(--bg-card);
+        border-color: var(--color-primary);
+    }
+
+    /* Directory Browser Modal */
+    .modal-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .modal-overlay.visible {
+        display: flex;
+    }
+
+    .modal-content {
+        background: var(--bg-card);
+        border-radius: 8px;
+        width: 90%;
+        max-width: 500px;
+        max-height: 80vh;
+        display: flex;
+        flex-direction: column;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    }
+
+    .modal-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .modal-header h3 {
+        margin: 0;
+        font-size: 1.1rem;
+    }
+
+    .modal-close {
+        background: none;
+        border: none;
+        font-size: 1.5rem;
+        cursor: pointer;
+        color: var(--text-muted);
+        padding: 0;
+        line-height: 1;
+    }
+
+    .modal-close:hover {
+        color: var(--text-main);
+    }
+
+    .modal-body {
+        padding: 1rem 1.5rem;
+        overflow-y: auto;
+        flex: 1;
+    }
+
+    .current-path {
+        padding: 0.5rem;
+        background: var(--bg-body);
+        border-radius: 4px;
+        font-family: monospace;
+        font-size: 0.9rem;
+        margin-bottom: 1rem;
+        word-break: break-all;
+    }
+
+    .directory-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+    }
+
+    .directory-item {
+        padding: 0.75rem;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        margin-bottom: 0.5rem;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        transition: all 0.15s ease;
+    }
+
+    .directory-item:hover {
+        background: rgba(37, 99, 235, 0.1);
+        border-color: var(--color-primary);
+    }
+
+    .directory-item.parent {
+        font-style: italic;
+        color: var(--text-muted);
+    }
+
+    .directory-item .folder-icon {
+        font-size: 1.2rem;
+    }
+
+    .directory-item.inaccessible {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    .modal-footer {
+        padding: 1rem 1.5rem;
+        border-top: 1px solid var(--border-color);
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.5rem;
+    }
+
+    .modal-footer button {
+        padding: 0.5rem 1rem;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+
+    .modal-footer .btn-cancel {
+        background: var(--bg-body);
+        border: 1px solid var(--border-color);
+        color: var(--text-main);
+    }
+
+    .modal-footer .btn-select {
+        background: var(--color-primary);
+        border: none;
+        color: white;
+    }
+
+    .modal-footer .btn-select:hover {
+        background: var(--color-primary-hover);
     }
 
     /* Navigation Buttons */
@@ -269,23 +433,23 @@
     }
 
     .btn-prev {
-        background: var(--bg-secondary);
+        background: var(--bg-body);
         border: 1px solid var(--border-color);
-        color: var(--text-color);
+        color: var(--text-main);
     }
 
     .btn-prev:hover {
-        background: var(--bg-primary);
+        background: var(--bg-card);
     }
 
     .btn-next, .btn-complete {
-        background: var(--primary-color);
+        background: var(--color-primary);
         border: none;
         color: white;
     }
 
     .btn-next:hover, .btn-complete:hover {
-        opacity: 0.9;
+        background: var(--color-primary-hover);
     }
 
     .btn-next:disabled, .btn-complete:disabled {
@@ -305,7 +469,7 @@
     }
 
     .advanced-toggle:hover {
-        color: var(--text-color);
+        color: var(--text-main);
     }
 
     .advanced-content {
@@ -335,12 +499,12 @@
     }
 
     .hardware-option:hover {
-        border-color: var(--primary-color);
+        border-color: var(--color-primary);
     }
 
     .hardware-option.selected {
-        border-color: var(--primary-color);
-        background: rgba(var(--primary-rgb), 0.1);
+        border-color: var(--color-primary);
+        background: rgba(37, 99, 235, 0.1);
     }
 
     .hardware-option .option-icon {
@@ -380,8 +544,8 @@
 
     /* Existing Install Banner */
     .existing-install-banner {
-        background: rgba(var(--primary-rgb), 0.1);
-        border: 1px solid var(--primary-color);
+        background: rgba(37, 99, 235, 0.1);
+        border: 1px solid var(--color-primary);
         border-radius: 8px;
         padding: 1rem;
         margin-bottom: 1.5rem;
@@ -404,6 +568,36 @@
         font-size: 0.9rem;
     }
 
+    .existing-providers-list {
+        list-style: none;
+        padding: 0;
+        margin: 0.5rem 0;
+    }
+
+    .existing-providers-list li {
+        padding: 0.4rem 0;
+        font-size: 0.9rem;
+    }
+
+    .provider-badge {
+        display: inline-block;
+        padding: 0.15rem 0.4rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 500;
+        margin-left: 0.5rem;
+    }
+
+    .provider-badge.enabled {
+        background: rgba(40, 167, 69, 0.2);
+        color: #28a745;
+    }
+
+    .provider-badge.disabled {
+        background: rgba(108, 117, 125, 0.2);
+        color: #6c757d;
+    }
+
     /* Provider List */
     .configured-providers {
         margin-top: 1rem;
@@ -414,7 +608,7 @@
         align-items: center;
         justify-content: space-between;
         padding: 1rem;
-        background: var(--bg-primary);
+        background: var(--bg-card);
         border-radius: 8px;
         margin-bottom: 0.5rem;
     }
@@ -458,7 +652,7 @@
         display: flex;
         align-items: center;
         gap: 0.5rem;
-        background: var(--bg-primary);
+        background: var(--bg-card);
         padding: 0.75rem;
         border-radius: 4px;
         border: 1px solid var(--border-color);
@@ -475,13 +669,13 @@
         padding: 0.25rem 0.75rem;
         border: 1px solid var(--border-color);
         border-radius: 4px;
-        background: var(--bg-secondary);
+        background: var(--bg-body);
         cursor: pointer;
         font-size: 0.85rem;
     }
 
     .copy-btn:hover {
-        background: var(--bg-primary);
+        background: var(--bg-card);
     }
 
     .copy-btn.copied {
@@ -685,7 +879,7 @@
                 </div>
             </div>
 
-            <div class="step-section" style="margin-top: 1rem; padding: 1rem; background: rgba(var(--primary-rgb), 0.1); border-radius: 8px;">
+            <div class="step-section" style="margin-top: 1rem; padding: 1rem; background: rgba(37, 99, 235, 0.1); border-radius: 8px;">
                 <h4 style="margin-top: 0;">Quick Setup for Workers</h4>
                 <ol style="margin: 0.5rem 0 0 1.5rem; padding: 0;">
                     <li>Copy .env.example to the worker machine</li>
@@ -693,6 +887,30 @@
                     <li>Copy your media server credentials (same as this server)</li>
                     <li>Run the appropriate docker-compose file</li>
                 </ol>
+            </div>
+        </div>
+
+        <div class="step-section">
+            <h3>AI Integration (Optional)</h3>
+            <p class="description">
+                AudioMuse-AI can use AI to generate creative playlist names based on the songs in each cluster.
+                This is purely cosmetic - it doesn't affect the analysis or clustering, just the names given to playlists.
+            </p>
+
+            <div class="config-field">
+                <label for="setting-ai-provider">AI Provider</label>
+                <select id="setting-ai-provider" onchange="updateAIProviderFields()">
+                    <option value="NONE" selected>None (Use Default Names)</option>
+                    <option value="OLLAMA">Ollama (Local)</option>
+                    <option value="OPENAI">OpenAI / OpenRouter</option>
+                    <option value="GEMINI">Google Gemini</option>
+                    <option value="MISTRAL">Mistral AI</option>
+                </select>
+                <div class="field-help">AI service for generating creative playlist names</div>
+            </div>
+
+            <div id="ai-provider-config" class="provider-config">
+                <!-- Dynamically populated based on selected AI provider -->
             </div>
         </div>
 
@@ -719,25 +937,6 @@
                     <label for="setting-redis-url">Redis URL</label>
                     <input type="text" id="setting-redis-url" value="redis://redis:6379/0" readonly>
                     <div class="field-help">Redis connection URL (set via REDIS_URL env var)</div>
-                </div>
-            </div>
-
-            <div class="step-section">
-                <h3>AI Playlist Naming</h3>
-                <p class="description">
-                    Optionally configure an AI provider for creative playlist names.
-                </p>
-
-                <div class="config-field">
-                    <label for="setting-ai-provider">AI Provider</label>
-                    <select id="setting-ai-provider">
-                        <option value="NONE" selected>None (Use Default Names)</option>
-                        <option value="OLLAMA">Ollama (Local)</option>
-                        <option value="OPENAI">OpenAI / OpenRouter</option>
-                        <option value="GEMINI">Google Gemini</option>
-                        <option value="MISTRAL">Mistral AI</option>
-                    </select>
-                    <div class="field-help">AI service for generating creative playlist names</div>
                 </div>
             </div>
         </div>
@@ -776,6 +975,26 @@
         </div>
     </div>
 </div>
+
+<!-- Directory Browser Modal -->
+<div class="modal-overlay" id="directory-browser-modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>Browse Directories</h3>
+            <button class="modal-close" onclick="closeBrowseModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="current-path" id="browse-current-path">/</div>
+            <ul class="directory-list" id="directory-list">
+                <!-- Populated by JS -->
+            </ul>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-cancel" onclick="closeBrowseModal()">Cancel</button>
+            <button class="btn-select" onclick="selectCurrentDirectory()">Select This Folder</button>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block bodyAdditions %}
@@ -791,14 +1010,24 @@
     let existingProviders = [];
     let serverInfo = { host: window.location.hostname, port: window.location.port || '8000' };
 
+    // Directory browser state
+    let browseCurrentPath = '/';
+    let browseTargetInput = null;
+
+    // Track tested providers for mandatory test connection and cross-provider prefix detection
+    let testedProviders = new Set();  // Track which providers have been successfully tested
+    let testedProviderTracks = {};    // Cache sample tracks: { 'jellyfin': [{title, artist, file_path}, ...], ... }
+
     // Initialize
     document.addEventListener('DOMContentLoaded', async function() {
         await loadSetupStatus();
         await loadProviderTypes();
+        await loadSettings();
         await loadServerInfo();
         renderProviderGrid();
         setupHardwareOptions();
         setupDeploymentOptions();
+        applyExistingSettings();
     });
 
     async function loadSetupStatus() {
@@ -809,7 +1038,15 @@
             existingProviders = data.providers || [];
 
             if (data.setup_completed && existingProviders.length > 0) {
-                // Show existing installation info
+                // Build provider list HTML
+                const providerListHtml = existingProviders.map(p => {
+                    const badges = [];
+                    if (p.enabled) badges.push('<span class="provider-badge enabled">Enabled</span>');
+                    else badges.push('<span class="provider-badge disabled">Disabled</span>');
+                    return `<li><strong>${p.name || p.provider_type}</strong> (${p.provider_type}) ${badges.join(' ')}</li>`;
+                }).join('');
+
+                // Show existing installation info with provider list
                 const info = document.getElementById('existing-install-info');
                 info.style.display = 'block';
                 info.innerHTML = `
@@ -817,8 +1054,11 @@
                         <div class="banner-icon">&#9989;</div>
                         <div class="banner-content">
                             <h4>Existing Installation Detected</h4>
-                            <p>You have ${existingProviders.length} provider(s) configured.
-                               You can modify your settings or add new providers.</p>
+                            <p>You have ${existingProviders.length} provider(s) configured:</p>
+                            <ul class="existing-providers-list">${providerListHtml}</ul>
+                            <p style="margin-top: 0.5rem; color: var(--text-muted);">
+                                <a href="/settings" style="color: var(--color-primary);">Go to Settings</a> to modify existing providers, or continue below to add new ones.
+                            </p>
                         </div>
                     </div>
                 `;
@@ -826,6 +1066,125 @@
         } catch (err) {
             console.error('Error loading setup status:', err);
         }
+    }
+
+    let existingSettings = {};
+
+    async function loadSettings() {
+        try {
+            const response = await fetch('/api/setup/settings');
+            existingSettings = await response.json();
+        } catch (err) {
+            console.error('Error loading settings:', err);
+        }
+    }
+
+    function applyExistingSettings() {
+        // Apply hardware type from saved settings
+        if (existingSettings.hardware_type) {
+            selectedHardware = existingSettings.hardware_type;
+            document.querySelectorAll('.hardware-option[data-hardware]').forEach(option => {
+                option.classList.remove('selected');
+                if (option.dataset.hardware === selectedHardware) {
+                    option.classList.add('selected');
+                }
+            });
+            // Update GPU clustering option state
+            const gpuClustering = document.getElementById('setting-gpu-clustering');
+            if (selectedHardware === 'nvidia') {
+                gpuClustering.disabled = false;
+            } else {
+                gpuClustering.disabled = true;
+                gpuClustering.checked = false;
+            }
+        }
+
+        // Apply deployment type from saved settings
+        if (existingSettings.deployment_type) {
+            selectedDeployment = existingSettings.deployment_type;
+            document.querySelectorAll('.hardware-option[data-deployment]').forEach(option => {
+                option.classList.remove('selected');
+                if (option.dataset.deployment === selectedDeployment) {
+                    option.classList.add('selected');
+                }
+            });
+            updateWorkerConfigVisibility();
+        }
+
+        // Apply other settings
+        if (existingSettings.clap_enabled !== undefined) {
+            document.getElementById('setting-clap-enabled').checked = existingSettings.clap_enabled !== false;
+        }
+        if (existingSettings.gpu_clustering !== undefined) {
+            document.getElementById('setting-gpu-clustering').checked = existingSettings.gpu_clustering === true;
+        }
+        if (existingSettings.ai_provider) {
+            document.getElementById('setting-ai-provider').value = existingSettings.ai_provider;
+            updateAIProviderFields();
+        }
+    }
+
+    // AI Provider configuration fields - names match config.py environment variables
+    const aiProviderFields = {
+        'OLLAMA': [
+            {name: 'ollama_server_url', label: 'Server URL', type: 'url', default: 'http://localhost:11434/api/generate', description: 'URL of your Ollama server'},
+            {name: 'ollama_model_name', label: 'Model Name', type: 'text', default: 'llama3.1:8b', description: 'Ollama model to use for playlist naming'}
+        ],
+        'OPENAI': [
+            {name: 'openai_server_url', label: 'Server URL', type: 'url', default: 'https://api.openai.com/v1', description: 'OpenAI API endpoint (or OpenRouter URL)'},
+            {name: 'openai_model_name', label: 'Model Name', type: 'text', default: 'gpt-4o-mini', description: 'Model to use (e.g., gpt-4o-mini, gpt-4o)'},
+            {name: 'openai_api_key', label: 'API Key', type: 'password', required: true, description: 'Your OpenAI or OpenRouter API key'}
+        ],
+        'GEMINI': [
+            {name: 'gemini_api_key', label: 'API Key', type: 'password', required: true, description: 'Your Google Gemini API key'},
+            {name: 'gemini_model_name', label: 'Model Name', type: 'text', default: 'gemini-2.0-flash', description: 'Gemini model to use'}
+        ],
+        'MISTRAL': [
+            {name: 'mistral_api_key', label: 'API Key', type: 'password', required: true, description: 'Your Mistral AI API key'},
+            {name: 'mistral_model_name', label: 'Model Name', type: 'text', default: 'ministral-3b-latest', description: 'Mistral model to use'}
+        ]
+    };
+
+    function updateAIProviderFields() {
+        const provider = document.getElementById('setting-ai-provider').value;
+        const configDiv = document.getElementById('ai-provider-config');
+
+        if (provider === 'NONE' || !aiProviderFields[provider]) {
+            configDiv.style.display = 'none';
+            configDiv.classList.remove('visible');
+            configDiv.innerHTML = '';
+            return;
+        }
+
+        configDiv.style.display = 'block';
+        configDiv.classList.add('visible');
+
+        const fields = aiProviderFields[provider];
+        let html = `<h4>${provider} Configuration</h4>`;
+
+        fields.forEach(field => {
+            // Check for existing saved value
+            const savedValue = existingSettings[field.name] || '';
+            const displayValue = field.type === 'password' ? '' : (savedValue || field.default || '');
+            const placeholder = field.default || '';
+
+            html += `
+                <div class="config-field">
+                    <label for="ai-config-${field.name}">
+                        ${field.label}${field.required ? ' *' : ''}
+                    </label>
+                    <input type="${field.type === 'password' ? 'password' : 'text'}"
+                           id="ai-config-${field.name}"
+                           value="${displayValue}"
+                           placeholder="${placeholder}"
+                           data-ai-field="${field.name}"
+                           ${field.required ? 'required' : ''}>
+                    <div class="field-help">${field.description || ''}</div>
+                </div>
+            `;
+        });
+
+        configDiv.innerHTML = html;
     }
 
     async function loadProviderTypes() {
@@ -867,6 +1226,9 @@
         if (idx >= 0) {
             selectedProviders.splice(idx, 1);
             delete providerConfigs[type];
+            // Clear tested state when provider is deselected
+            testedProviders.delete(type);
+            delete testedProviderTracks[type];
         } else {
             selectedProviders.push(type);
             providerConfigs[type] = {};
@@ -900,6 +1262,11 @@
                 const fieldDiv = document.createElement('div');
                 fieldDiv.className = 'config-field';
 
+                // Only show browse button for localfiles provider directory fields
+                // (not for music_path_prefix which is just a text prefix, not a browsable path)
+                const isLocalFilesDirectory = (type === 'localfiles') &&
+                    (field.name === 'music_directory' || field.name === 'playlist_directory');
+
                 let inputHtml = '';
                 if (field.type === 'password') {
                     inputHtml = `<input type="password" id="config-${type}-${field.name}"
@@ -913,6 +1280,15 @@
                     inputHtml = `<input type="number" id="config-${type}-${field.name}"
                                  value="${field.default || ''}"
                                  data-provider="${type}" data-field="${field.name}">`;
+                } else if (isLocalFilesDirectory) {
+                    // Path field with browse button (only for localfiles directories)
+                    inputHtml = `<div class="input-with-browse">
+                                    <input type="text" id="config-${type}-${field.name}"
+                                         value="${field.default || ''}"
+                                         placeholder="${field.default || ''}"
+                                         data-provider="${type}" data-field="${field.name}">
+                                    <button type="button" class="browse-btn" onclick="openBrowseModal('config-${type}-${field.name}')">Browse</button>
+                                 </div>`;
                 } else {
                     inputHtml = `<input type="text" id="config-${type}-${field.name}"
                                  value="${field.default || ''}"
@@ -958,10 +1334,15 @@
         resultDiv.textContent = 'Testing connection...';
 
         try {
+            // Include cached sample tracks from previously tested providers for cross-provider prefix detection
             const response = await fetch('/api/setup/providers/test', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ provider_type: type, config })
+                body: JSON.stringify({
+                    provider_type: type,
+                    config,
+                    existing_sample_tracks: testedProviderTracks
+                })
             });
             const data = await response.json();
 
@@ -970,28 +1351,39 @@
             // Build result message with prefix detection info
             let resultHTML = `<strong>${data.success ? 'Success' : 'Failed'}:</strong> ${data.message}`;
 
-            // Handle prefix detection result
-            if (data.success && data.prefix_detection) {
-                const pd = data.prefix_detection;
+            // Handle successful test
+            if (data.success) {
+                // Mark this provider as tested
+                testedProviders.add(type);
 
-                // Auto-fill the music_path_prefix field if prefix detected with confidence
-                if (data.suggested_prefix !== undefined) {
-                    const prefixInput = document.querySelector(`[data-provider="${type}"][data-field="music_path_prefix"]`);
-                    if (prefixInput && !prefixInput.value) {
-                        prefixInput.value = data.suggested_prefix;
-                        resultHTML += `<br><small>Auto-filled path prefix: "${data.suggested_prefix}"</small>`;
-                    }
+                // Cache sample tracks for use when testing subsequent providers
+                if (data.sample_tracks && data.sample_tracks.length > 0) {
+                    testedProviderTracks[type] = data.sample_tracks;
                 }
 
-                // Show prefix detection details
-                if (pd.confidence && pd.confidence !== 'none') {
-                    resultHTML += `<br><small>Path prefix detection: ${pd.confidence} confidence`;
-                    if (pd.matches_found) {
-                        resultHTML += ` (${pd.matches_found} matching tracks found)`;
+                // Handle prefix detection result
+                if (data.prefix_detection) {
+                    const pd = data.prefix_detection;
+
+                    // Auto-fill the music_path_prefix field if prefix detected with confidence
+                    if (data.suggested_prefix !== undefined) {
+                        const prefixInput = document.querySelector(`[data-provider="${type}"][data-field="music_path_prefix"]`);
+                        if (prefixInput && !prefixInput.value) {
+                            prefixInput.value = data.suggested_prefix;
+                            resultHTML += `<br><small>Auto-filled path prefix: "${data.suggested_prefix}"</small>`;
+                        }
                     }
-                    resultHTML += `</small>`;
-                } else if (pd.message) {
-                    resultHTML += `<br><small>${pd.message}</small>`;
+
+                    // Show prefix detection details
+                    if (pd.confidence && pd.confidence !== 'none') {
+                        resultHTML += `<br><small>Path prefix detection: ${pd.confidence} confidence`;
+                        if (pd.matches_found) {
+                            resultHTML += ` (${pd.matches_found} matching tracks found)`;
+                        }
+                        resultHTML += `</small>`;
+                    } else if (pd.message) {
+                        resultHTML += `<br><small>${pd.message}</small>`;
+                    }
                 }
             }
 
@@ -1155,6 +1547,17 @@
                 alert('Please select at least one media provider.');
                 return;
             }
+
+            // Check all selected providers have been tested
+            const untestedProviders = selectedProviders.filter(p => !testedProviders.has(p));
+            if (untestedProviders.length > 0) {
+                const names = untestedProviders.map(p => {
+                    const pt = providerTypes.find(t => t.type === p);
+                    return pt ? pt.name : p;
+                }).join(', ');
+                alert(`Please test connection for: ${names}`);
+                return;
+            }
         }
         if (currentStep < 4) {
             showStep(currentStep + 1);
@@ -1191,6 +1594,20 @@
                 : 'docker-compose-worker-cpu.yaml (workers)');
         }
 
+        // Get AI provider summary
+        const aiProvider = document.getElementById('setting-ai-provider').value;
+        let aiProviderSummary = aiProvider;
+        if (aiProvider !== 'NONE' && aiProviderFields[aiProvider]) {
+            // Get model name if configured
+            const modelField = aiProviderFields[aiProvider].find(f => f.name.includes('_model'));
+            if (modelField) {
+                const modelInput = document.getElementById(`ai-config-${modelField.name}`);
+                if (modelInput && modelInput.value) {
+                    aiProviderSummary += ` (${modelInput.value})`;
+                }
+            }
+        }
+
         summary.innerHTML = `
             <div class="summary-item">
                 <span class="summary-label">Deployment Mode</span>
@@ -1218,9 +1635,27 @@
             </div>
             <div class="summary-item">
                 <span class="summary-label">AI Playlist Naming</span>
-                <span class="summary-value">${document.getElementById('setting-ai-provider').value}</span>
+                <span class="summary-value">${aiProviderSummary}</span>
             </div>
         `;
+    }
+
+    function collectAIProviderSettings() {
+        const provider = document.getElementById('setting-ai-provider').value;
+        const settings = { ai_provider: provider };
+
+        if (provider !== 'NONE' && aiProviderFields[provider]) {
+            // Collect all AI config field values
+            const inputs = document.querySelectorAll('[data-ai-field]');
+            inputs.forEach(input => {
+                const fieldName = input.dataset.aiField;
+                if (input.value) {
+                    settings[fieldName] = input.value;
+                }
+            });
+        }
+
+        return settings;
     }
 
     async function completeSetup() {
@@ -1241,7 +1676,10 @@
                 });
             }
 
-            // Save settings
+            // Collect AI provider settings
+            const aiSettings = collectAIProviderSettings();
+
+            // Save settings (including AI provider config)
             await fetch('/api/setup/settings', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
@@ -1250,7 +1688,7 @@
                     hardware_type: selectedHardware,
                     clap_enabled: document.getElementById('setting-clap-enabled').checked,
                     gpu_clustering: document.getElementById('setting-gpu-clustering').checked,
-                    ai_provider: document.getElementById('setting-ai-provider').value
+                    ...aiSettings
                 })
             });
 
@@ -1265,6 +1703,89 @@
             console.error('Error completing setup:', err);
             alert('Error saving configuration: ' + err.message);
         }
+    }
+
+    // Directory Browser Functions
+    function openBrowseModal(inputId) {
+        browseTargetInput = document.getElementById(inputId);
+        browseCurrentPath = browseTargetInput.value || '/';
+
+        const modal = document.getElementById('directory-browser-modal');
+        modal.classList.add('visible');
+
+        loadDirectories(browseCurrentPath);
+    }
+
+    function closeBrowseModal() {
+        const modal = document.getElementById('directory-browser-modal');
+        modal.classList.remove('visible');
+        browseTargetInput = null;
+    }
+
+    async function loadDirectories(path) {
+        const listEl = document.getElementById('directory-list');
+        const pathEl = document.getElementById('browse-current-path');
+
+        listEl.innerHTML = '<li style="padding: 1rem; color: var(--text-muted);">Loading...</li>';
+        pathEl.textContent = path || '/';
+        browseCurrentPath = path;
+
+        try {
+            const url = path ? `/api/setup/browse-directories?path=${encodeURIComponent(path)}` : '/api/setup/browse-directories';
+            const response = await fetch(url);
+            const data = await response.json();
+
+            if (data.error) {
+                listEl.innerHTML = `<li style="padding: 1rem; color: var(--color-danger);">${data.error}</li>`;
+                return;
+            }
+
+            listEl.innerHTML = '';
+
+            // Add parent directory option if not at root
+            if (data.parent_path !== null) {
+                const parentLi = document.createElement('li');
+                parentLi.className = 'directory-item parent';
+                parentLi.innerHTML = '<span class="folder-icon">📁</span> .. (Parent Directory)';
+                parentLi.onclick = () => loadDirectories(data.parent_path);
+                listEl.appendChild(parentLi);
+            }
+
+            // Add directories
+            if (data.directories.length === 0) {
+                const emptyLi = document.createElement('li');
+                emptyLi.style.padding = '1rem';
+                emptyLi.style.color = 'var(--text-muted)';
+                emptyLi.textContent = 'No subdirectories found';
+                listEl.appendChild(emptyLi);
+            } else {
+                data.directories.forEach(dir => {
+                    const li = document.createElement('li');
+                    li.className = 'directory-item' + (dir.accessible === false ? ' inaccessible' : '');
+                    li.innerHTML = `<span class="folder-icon">📁</span> ${dir.name}`;
+
+                    if (dir.accessible !== false) {
+                        li.onclick = () => loadDirectories(dir.path);
+                    }
+
+                    listEl.appendChild(li);
+                });
+            }
+
+            pathEl.textContent = data.current_path;
+            browseCurrentPath = data.current_path;
+
+        } catch (err) {
+            console.error('Error loading directories:', err);
+            listEl.innerHTML = `<li style="padding: 1rem; color: var(--color-danger);">Error loading directories: ${err.message}</li>`;
+        }
+    }
+
+    function selectCurrentDirectory() {
+        if (browseTargetInput && browseCurrentPath) {
+            browseTargetInput.value = browseCurrentPath;
+        }
+        closeBrowseModal();
     }
 </script>
 {% endblock %}

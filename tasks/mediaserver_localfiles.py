@@ -88,7 +88,7 @@ def extract_metadata(file_path: str) -> Dict:
     """
     Extract metadata from an audio file using mutagen.
 
-    Returns a dict with keys: title, artist, album, album_artist, track_number, year, genre
+    Returns a dict with keys: title, artist, album, album_artist, track_number, year, genre, rating
     """
     metadata = {
         'title': os.path.splitext(os.path.basename(file_path))[0],  # Default to filename
@@ -99,6 +99,7 @@ def extract_metadata(file_path: str) -> Dict:
         'year': None,
         'genre': None,
         'duration': None,
+        'rating': None,
     }
 
     if not MUTAGEN_AVAILABLE:
@@ -176,10 +177,126 @@ def extract_metadata(file_path: str) -> Dict:
                 val = tags['genre']
                 metadata['genre'] = val[0] if isinstance(val, list) else str(val)
 
+        # Extract rating from non-easy tags (requires re-opening without easy=True)
+        metadata['rating'] = _extract_rating(file_path)
+
     except Exception as e:
         logger.warning(f"Error extracting metadata from {file_path}: {e}")
 
     return metadata
+
+
+def _extract_rating(file_path: str) -> Optional[int]:
+    """
+    Extract rating from audio file tags.
+
+    Supports:
+    - ID3 POPM (Popularimeter) frame for MP3 (0-255 scale, converted to 0-5)
+    - ID3 TXXX:RATING frame for MP3
+    - FLAC/OGG Vorbis RATING comment
+    - MP4/M4A rating
+
+    Returns rating on 0-5 scale, or None if not found.
+    """
+    if not MUTAGEN_AVAILABLE:
+        return None
+
+    try:
+        audio = MutagenFile(file_path, easy=False)
+        if audio is None:
+            return None
+
+        ext = os.path.splitext(file_path)[1].lower()
+
+        # MP3 files - check ID3 tags
+        if ext == '.mp3' and audio.tags:
+            # Try POPM (Popularimeter) frame first
+            for key in audio.tags.keys():
+                if key.startswith('POPM'):
+                    popm = audio.tags[key]
+                    if hasattr(popm, 'rating'):
+                        # POPM rating is 0-255, convert to 0-5 scale
+                        # Common mappings: 0=0, 1=1, 64=2, 128=3, 196=4, 255=5
+                        popm_rating = popm.rating
+                        if popm_rating == 0:
+                            return 0
+                        elif popm_rating <= 31:
+                            return 1
+                        elif popm_rating <= 95:
+                            return 2
+                        elif popm_rating <= 159:
+                            return 3
+                        elif popm_rating <= 223:
+                            return 4
+                        else:
+                            return 5
+
+            # Try TXXX:RATING frame
+            for key in audio.tags.keys():
+                if key.startswith('TXXX') and 'RATING' in str(key).upper():
+                    try:
+                        rating_str = str(audio.tags[key].text[0])
+                        rating = int(float(rating_str))
+                        # Normalize to 0-5 if needed
+                        if rating > 5:
+                            rating = min(5, rating // 20)  # Assume 0-100 scale
+                        return max(0, min(5, rating))
+                    except (ValueError, IndexError, AttributeError):
+                        pass
+
+        # FLAC files - check Vorbis comments
+        elif ext == '.flac' and hasattr(audio, 'tags') and audio.tags:
+            for key in ['RATING', 'FMPS_RATING', 'rating']:
+                if key in audio.tags:
+                    try:
+                        rating_str = audio.tags[key][0]
+                        rating = float(rating_str)
+                        # FMPS uses 0-1 scale, convert to 0-5
+                        if rating <= 1:
+                            return round(rating * 5)
+                        # Direct 0-5 scale
+                        return max(0, min(5, int(rating)))
+                    except (ValueError, IndexError):
+                        pass
+
+        # OGG files - similar to FLAC
+        elif ext in ('.ogg', '.opus') and hasattr(audio, 'tags') and audio.tags:
+            for key in ['RATING', 'FMPS_RATING', 'rating']:
+                if key in audio.tags:
+                    try:
+                        rating_str = audio.tags[key][0]
+                        rating = float(rating_str)
+                        if rating <= 1:
+                            return round(rating * 5)
+                        return max(0, min(5, int(rating)))
+                    except (ValueError, IndexError):
+                        pass
+
+        # M4A/MP4 files
+        elif ext in ('.m4a', '.mp4') and hasattr(audio, 'tags') and audio.tags:
+            # iTunes rating stored in 'rtng' atom (0-100) or as custom tag
+            if 'rtng' in audio.tags:
+                try:
+                    rating = audio.tags['rtng'][0]
+                    # iTunes uses 0-100 scale
+                    return max(0, min(5, rating // 20))
+                except (IndexError, TypeError):
+                    pass
+            # Check for custom rating tags
+            for key in audio.tags.keys():
+                if 'rating' in str(key).lower():
+                    try:
+                        rating = int(audio.tags[key][0])
+                        if rating > 5:
+                            rating = min(5, rating // 20)
+                        return max(0, min(5, rating))
+                    except (ValueError, IndexError, TypeError):
+                        pass
+
+    except Exception as e:
+        logger.debug(f"Error extracting rating from {file_path}: {e}")
+
+    return None
 
 
 def _format_song(file_path: str, base_path: str) -> Dict:
@@ -210,6 +327,7 @@ def _format_song(file_path: str, base_path: str) -> Dict:
         'Year': metadata['year'],
         'Genre': metadata['genre'],
         'Duration': metadata['duration'],
+        'Rating': metadata.get('rating'),
         'FileSize': file_size,
         'last-modified': file_modified.isoformat() if file_modified else None,
         # For compatibility with other providers
@@ -495,7 +613,7 @@ def create_playlist(base_name: str, item_ids: List[str]) -> Optional[str]:
         return None
 
     # Write M3U file
-    playlist_name = f"{base_name}_automatic.m3u"
+    playlist_name = f"{base_name}.m3u"
     playlist_path = os.path.join(playlist_dir, playlist_name)
 
     try:

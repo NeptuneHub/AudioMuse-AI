@@ -109,8 +109,10 @@ services:
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio
-      # Mount music directory for local files provider
-      - ${MUSIC_PATH:-./music}:/music:ro
+      # Music directory mount - use MUSIC_PATH env var for bind mount, or named volume by default
+      # For local files provider with your own music: set MUSIC_PATH=/path/to/your/music
+      # For GUI setup with external providers (Jellyfin, etc.): the default named volume works fine
+      - ${MUSIC_PATH:-music-data}:/music
     depends_on:
       redis:
         condition: service_healthy
@@ -165,8 +167,8 @@ services:
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-worker:/app/temp_audio
-      # Mount music directory for local files provider
-      - ${MUSIC_PATH:-./music}:/music:ro
+      # Music directory mount - same as flask service
+      - ${MUSIC_PATH:-music-data}:/music
     depends_on:
       redis:
         condition: service_healthy
@@ -186,3 +188,7 @@ volumes:
     name: audiomuse-temp-flask
   temp-audio-worker:
     name: audiomuse-temp-worker
+  # Default music volume - only used if MUSIC_PATH env var is not set
+  # For local files: set MUSIC_PATH=/your/music/folder in .env or environment
+  music-data:
+    name: audiomuse-music-data
