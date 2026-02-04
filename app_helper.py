@@ -258,6 +258,7 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 file_path_hash VARCHAR(64) NOT NULL UNIQUE,
                 file_path TEXT NOT NULL,
+                normalized_path TEXT,
                 file_size BIGINT,
                 file_modified TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -265,6 +266,12 @@ def init_db():
             )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_track_file_path_hash ON track(file_path_hash)")
+        # Add normalized_path column if it doesn't exist (migration for existing installs)
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'track' AND column_name = 'normalized_path')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'normalized_path' column to 'track' table.")
+            cur.execute("ALTER TABLE track ADD COLUMN normalized_path TEXT")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_track_normalized_path ON track(normalized_path)")
 
         # Create 'provider_track' table - Links provider item_ids to tracks
         cur.execute("""
@@ -1576,39 +1583,46 @@ def get_or_create_track(file_path, file_size=None, file_modified=None, provider_
     if not file_path:
         return None
 
-    file_path_hash = _compute_file_path_hash(file_path, provider_id)
-    if not file_path_hash:
+    # Get normalized path (without provider-specific prefix)
+    normalized_path = normalize_provider_path(file_path, provider_id)
+    if not normalized_path:
         return None
+
+    # Compute hash of the normalized path
+    import hashlib
+    file_path_hash = hashlib.sha256(normalized_path.encode('utf-8')).hexdigest()
 
     db = get_db()
     with db.cursor() as cur:
-        # Try to get existing track
+        # Try to get existing track by normalized path hash
         cur.execute("SELECT id FROM track WHERE file_path_hash = %s", (file_path_hash,))
         row = cur.fetchone()
 
         if row:
             track_id = row[0]
-            # Update file info if provided
-            if file_size is not None or file_modified is not None:
-                updates = ["updated_at = NOW()"]
-                values = []
-                if file_size is not None:
-                    updates.append("file_size = %s")
-                    values.append(file_size)
-                if file_modified is not None:
-                    updates.append("file_modified = %s")
-                    values.append(file_modified)
-                values.append(track_id)
-                cur.execute(f"UPDATE track SET {', '.join(updates)} WHERE id = %s", values)
-                db.commit()
+            # Update file info and normalized_path if provided
+            updates = ["updated_at = NOW()"]
+            values = []
+            if file_size is not None:
+                updates.append("file_size = %s")
+                values.append(file_size)
+            if file_modified is not None:
+                updates.append("file_modified = %s")
+                values.append(file_modified)
+            # Always update normalized_path to latest
+            updates.append("normalized_path = %s")
+            values.append(normalized_path)
+            values.append(track_id)
+            cur.execute(f"UPDATE track SET {', '.join(updates)} WHERE id = %s", values)
+            db.commit()
             return track_id
 
-        # Create new track
+        # Create new track with normalized_path
         cur.execute("""
-            INSERT INTO track (file_path_hash, file_path, file_size, file_modified)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO track (file_path_hash, file_path, normalized_path, file_size, file_modified)
+            VALUES (%s, %s, %s, %s, %s)
             RETURNING id
-        """, (file_path_hash, file_path, file_size, file_modified))
+        """, (file_path_hash, file_path, normalized_path, file_size, file_modified))
         track_id = cur.fetchone()[0]
         db.commit()
         return track_id
@@ -1825,3 +1839,179 @@ def find_existing_analysis_by_file_path(file_path):
             }
 
         return None
+
+
+def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None):
+    """
+    Auto-detect the music_path_prefix for a new provider by comparing paths.
+
+    Takes sample tracks from a new provider and compares their paths with
+    existing normalized paths in the database to find the prefix difference.
+
+    Args:
+        sample_tracks: List of track dicts with 'title', 'artist', 'file_path' keys
+        existing_normalized_paths: Optional dict mapping (title, artist) -> normalized_path
+                                   If None, fetches from database
+
+    Returns:
+        dict with:
+            - detected_prefix: The detected prefix to strip (or empty string)
+            - confidence: 'high', 'medium', 'low', or 'none'
+            - matches_found: Number of matching tracks found
+            - sample_comparisons: List of example path comparisons
+    """
+    from urllib.parse import unquote
+
+    if not sample_tracks:
+        return {'detected_prefix': '', 'confidence': 'none', 'matches_found': 0, 'sample_comparisons': []}
+
+    # Get existing normalized paths from database if not provided
+    if existing_normalized_paths is None:
+        existing_normalized_paths = {}
+        db = get_db()
+        with db.cursor() as cur:
+            # Get normalized paths from track table
+            cur.execute("""
+                SELECT LOWER(pt.title), LOWER(pt.artist), t.normalized_path
+                FROM provider_track pt
+                JOIN track t ON pt.track_id = t.id
+                WHERE t.normalized_path IS NOT NULL
+                  AND pt.title IS NOT NULL
+                  AND pt.artist IS NOT NULL
+            """)
+            for row in cur.fetchall():
+                key = (row[0], row[1])
+                if key not in existing_normalized_paths:
+                    existing_normalized_paths[key] = row[2]
+
+            # Also check score table for legacy data
+            cur.execute("""
+                SELECT LOWER(title), LOWER(author), file_path
+                FROM score
+                WHERE file_path IS NOT NULL
+                  AND title IS NOT NULL
+                  AND author IS NOT NULL
+            """)
+            for row in cur.fetchall():
+                key = (row[0], row[1])
+                if key not in existing_normalized_paths:
+                    # Normalize the legacy path
+                    normalized = normalize_provider_path(row[2], provider_id=None)
+                    if normalized:
+                        existing_normalized_paths[key] = normalized
+
+    if not existing_normalized_paths:
+        return {'detected_prefix': '', 'confidence': 'none', 'matches_found': 0,
+                'sample_comparisons': [], 'message': 'No existing tracks to compare with'}
+
+    # Normalize the sample paths (basic normalization without provider prefix)
+    def basic_normalize(path):
+        """Basic path normalization without provider-specific prefix stripping."""
+        if not path:
+            return None
+        normalized = path
+        # Handle file:// URLs
+        if normalized.startswith('file://'):
+            normalized = normalized[7:]
+            normalized = unquote(normalized)
+        normalized = normalized.replace('\\', '/')
+        # Strip common mount points
+        prefixes = ['/media/music/', '/media/', '/mnt/media/music/', '/mnt/music/',
+                    '/mnt/', '/data/music/', '/data/', '/music/', '/share/', '/volume1/']
+        lower = normalized.lower()
+        for prefix in prefixes:
+            if lower.startswith(prefix.lower()):
+                normalized = normalized[len(prefix):]
+                break
+        return normalized.lstrip('/')
+
+    # Find matches and compare paths
+    matches = []
+    for track in sample_tracks:
+        title = track.get('title') or track.get('Name') or track.get('name')
+        artist = track.get('artist') or track.get('Artist') or track.get('AlbumArtist')
+        file_path = track.get('file_path') or track.get('Path') or track.get('path')
+
+        if not title or not artist or not file_path:
+            continue
+
+        key = (title.lower(), artist.lower())
+        existing_path = existing_normalized_paths.get(key)
+
+        if existing_path:
+            new_normalized = basic_normalize(file_path)
+            if new_normalized:
+                matches.append({
+                    'title': title,
+                    'artist': artist,
+                    'new_path': new_normalized,
+                    'existing_path': existing_path
+                })
+
+    if not matches:
+        return {'detected_prefix': '', 'confidence': 'none', 'matches_found': 0,
+                'sample_comparisons': [], 'message': 'No matching tracks found between providers'}
+
+    # Detect prefix by finding common suffix
+    prefix_candidates = {}
+    sample_comparisons = []
+
+    for match in matches[:20]:  # Limit analysis to first 20 matches
+        new_path = match['new_path']
+        existing_path = match['existing_path']
+
+        # Check if new path ends with existing path (case-insensitive)
+        if new_path.lower().endswith(existing_path.lower()):
+            # The prefix is what's before the existing path
+            prefix_len = len(new_path) - len(existing_path)
+            prefix = new_path[:prefix_len].rstrip('/')
+            if prefix:
+                prefix_candidates[prefix] = prefix_candidates.get(prefix, 0) + 1
+
+            sample_comparisons.append({
+                'title': match['title'],
+                'new_path': new_path,
+                'existing_path': existing_path,
+                'detected_prefix': prefix
+            })
+        elif existing_path.lower().endswith(new_path.lower()):
+            # The existing path has a prefix (new provider doesn't have it)
+            # This means the NEW provider needs no prefix, but existing does
+            prefix_len = len(existing_path) - len(new_path)
+            # In this case, we don't need a prefix for the new provider
+            prefix_candidates[''] = prefix_candidates.get('', 0) + 1
+
+            sample_comparisons.append({
+                'title': match['title'],
+                'new_path': new_path,
+                'existing_path': existing_path,
+                'detected_prefix': '(existing has prefix, new does not)'
+            })
+
+    if not prefix_candidates:
+        return {'detected_prefix': '', 'confidence': 'low', 'matches_found': len(matches),
+                'sample_comparisons': sample_comparisons[:5],
+                'message': 'Could not detect consistent prefix pattern'}
+
+    # Find most common prefix
+    most_common_prefix = max(prefix_candidates, key=prefix_candidates.get)
+    occurrence_count = prefix_candidates[most_common_prefix]
+    total_matches = len(matches)
+
+    # Determine confidence
+    if occurrence_count == total_matches and total_matches >= 3:
+        confidence = 'high'
+    elif occurrence_count >= total_matches * 0.8 and total_matches >= 2:
+        confidence = 'medium'
+    elif occurrence_count >= 1:
+        confidence = 'low'
+    else:
+        confidence = 'none'
+
+    return {
+        'detected_prefix': most_common_prefix,
+        'confidence': confidence,
+        'matches_found': len(matches),
+        'prefix_occurrences': occurrence_count,
+        'sample_comparisons': sample_comparisons[:5]
+    }

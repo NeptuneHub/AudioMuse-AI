@@ -507,6 +507,215 @@ def test_provider_connection(provider_type: str, config_dict: dict = None):
         return False, f"Connection test failed: {str(e)}"
 
 
+def get_sample_tracks_from_provider(provider_type: str, config_dict: dict, limit: int = 50):
+    """
+    Fetch sample tracks from a provider using provided configuration.
+
+    This is used during provider setup to detect the music_path_prefix
+    by comparing track paths with existing data.
+
+    Args:
+        provider_type: Type of provider (jellyfin, navidrome, etc.)
+        config_dict: Configuration dictionary for the provider
+        limit: Maximum number of tracks to fetch
+
+    Returns:
+        List of track dicts with keys: title, artist, file_path
+    """
+    import requests
+
+    try:
+        if provider_type == 'jellyfin':
+            url = config_dict.get('url')
+            user_id = config_dict.get('user_id')
+            token = config_dict.get('token')
+            if not url or not user_id or not token:
+                return []
+
+            api_url = f"{url.rstrip('/')}/Users/{user_id}/Items"
+            headers = {"X-Emby-Token": token}
+            params = {
+                "IncludeItemTypes": "Audio",
+                "Recursive": True,
+                "Fields": "Path",
+                "Limit": limit
+            }
+            r = requests.get(api_url, headers=headers, params=params, timeout=15)
+            if r.status_code != 200:
+                return []
+
+            items = r.json().get("Items", [])
+            tracks = []
+            for item in items:
+                tracks.append({
+                    'title': item.get('Name'),
+                    'artist': item.get('AlbumArtist') or (item.get('Artists', [None])[0] if item.get('Artists') else None),
+                    'file_path': item.get('Path')
+                })
+            return tracks
+
+        elif provider_type == 'navidrome':
+            import hashlib
+            import secrets
+
+            url = config_dict.get('url')
+            user = config_dict.get('user')
+            password = config_dict.get('password')
+            if not url or not user or not password:
+                return []
+
+            salt = secrets.token_hex(8)
+            token = hashlib.md5((password + salt).encode()).hexdigest()
+            params = {
+                'u': user, 't': token, 's': salt,
+                'v': '1.16.1', 'c': 'audiomuse', 'f': 'json',
+                'query': '', 'songCount': limit, 'songOffset': 0
+            }
+            r = requests.get(f"{url.rstrip('/')}/rest/search3", params=params, timeout=15)
+            if r.status_code != 200:
+                return []
+
+            data = r.json()
+            songs = data.get('subsonic-response', {}).get('searchResult3', {}).get('song', [])
+            tracks = []
+            for s in songs:
+                tracks.append({
+                    'title': s.get('title'),
+                    'artist': s.get('artist'),
+                    'file_path': s.get('path')
+                })
+            return tracks
+
+        elif provider_type == 'emby':
+            url = config_dict.get('url')
+            user_id = config_dict.get('user_id')
+            token = config_dict.get('token')
+            if not url or not user_id or not token:
+                return []
+
+            api_url = f"{url.rstrip('/')}/Users/{user_id}/Items"
+            headers = {"X-Emby-Token": token}
+            params = {
+                "IncludeItemTypes": "Audio",
+                "Recursive": True,
+                "Fields": "Path",
+                "Limit": limit
+            }
+            r = requests.get(api_url, headers=headers, params=params, timeout=15)
+            if r.status_code != 200:
+                return []
+
+            items = r.json().get("Items", [])
+            tracks = []
+            for item in items:
+                tracks.append({
+                    'title': item.get('Name'),
+                    'artist': item.get('AlbumArtist') or (item.get('Artists', [None])[0] if item.get('Artists') else None),
+                    'file_path': item.get('Path')
+                })
+            return tracks
+
+        elif provider_type == 'lyrion':
+            url = config_dict.get('url')
+            if not url:
+                return []
+
+            # Lyrion uses JSON-RPC for queries
+            api_url = f"{url.rstrip('/')}/jsonrpc.js"
+            payload = {
+                "id": 1,
+                "method": "slim.request",
+                "params": ["", ["titles", "0", str(limit), "tags:aspu"]]
+            }
+            r = requests.post(api_url, json=payload, timeout=15)
+            if r.status_code != 200:
+                return []
+
+            data = r.json()
+            titles_loop = data.get('result', {}).get('titles_loop', [])
+            tracks = []
+            for t in titles_loop:
+                tracks.append({
+                    'title': t.get('title'),
+                    'artist': t.get('artist'),
+                    'file_path': t.get('url')  # Lyrion uses 'url' for file path
+                })
+            return tracks
+
+        elif provider_type == 'mpd':
+            try:
+                from mpd import MPDClient
+                host = config_dict.get('host', 'localhost')
+                port = int(config_dict.get('port', 6600))
+                password = config_dict.get('password')
+
+                client = MPDClient()
+                client.timeout = 10
+                client.connect(host, port)
+                if password:
+                    client.password(password)
+
+                # List all songs and take a sample
+                all_songs = client.listallinfo()
+                client.close()
+                client.disconnect()
+
+                tracks = []
+                count = 0
+                for song in all_songs:
+                    if song.get('file') and count < limit:
+                        tracks.append({
+                            'title': song.get('title'),
+                            'artist': song.get('artist') or song.get('albumartist'),
+                            'file_path': song.get('file')
+                        })
+                        count += 1
+                return tracks
+            except Exception:
+                return []
+
+        elif provider_type == 'localfiles':
+            import os
+            music_dir = config_dict.get('music_directory')
+            if not music_dir or not os.path.isdir(music_dir):
+                return []
+
+            formats = config_dict.get('supported_formats', '.mp3,.flac,.ogg,.m4a,.wav,.wma,.aac')
+            if isinstance(formats, str):
+                formats = [f.strip().lower() for f in formats.split(',')]
+
+            tracks = []
+            count = 0
+            for root, dirs, files in os.walk(music_dir):
+                for f in files:
+                    if count >= limit:
+                        break
+                    ext = os.path.splitext(f)[1].lower()
+                    if ext in formats or ext.lstrip('.') in [fmt.lstrip('.') for fmt in formats]:
+                        full_path = os.path.join(root, f)
+                        rel_path = os.path.relpath(full_path, music_dir)
+                        # Extract artist/title from path structure (Artist/Album/Track.ext)
+                        parts = rel_path.split(os.sep)
+                        artist = parts[0] if len(parts) > 1 else 'Unknown'
+                        title = os.path.splitext(parts[-1])[0]
+                        tracks.append({
+                            'title': title,
+                            'artist': artist,
+                            'file_path': rel_path
+                        })
+                        count += 1
+                if count >= limit:
+                    break
+            return tracks
+
+        else:
+            return []
+
+    except Exception as e:
+        logger.error(f"Error fetching sample tracks from {provider_type}: {e}")
+        return []
+
+
 def get_provider_info(provider_type: str):
     """Get detailed information about a provider type including config fields."""
     if provider_type == 'localfiles':

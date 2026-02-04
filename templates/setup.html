@@ -966,7 +966,36 @@
             const data = await response.json();
 
             resultDiv.className = `test-result ${data.success ? 'success' : 'error'}`;
-            resultDiv.textContent = data.message;
+
+            // Build result message with prefix detection info
+            let resultHTML = `<strong>${data.success ? 'Success' : 'Failed'}:</strong> ${data.message}`;
+
+            // Handle prefix detection result
+            if (data.success && data.prefix_detection) {
+                const pd = data.prefix_detection;
+
+                // Auto-fill the music_path_prefix field if prefix detected with confidence
+                if (data.suggested_prefix !== undefined) {
+                    const prefixInput = document.querySelector(`[data-provider="${type}"][data-field="music_path_prefix"]`);
+                    if (prefixInput && !prefixInput.value) {
+                        prefixInput.value = data.suggested_prefix;
+                        resultHTML += `<br><small>Auto-filled path prefix: "${data.suggested_prefix}"</small>`;
+                    }
+                }
+
+                // Show prefix detection details
+                if (pd.confidence && pd.confidence !== 'none') {
+                    resultHTML += `<br><small>Path prefix detection: ${pd.confidence} confidence`;
+                    if (pd.matches_found) {
+                        resultHTML += ` (${pd.matches_found} matching tracks found)`;
+                    }
+                    resultHTML += `</small>`;
+                } else if (pd.message) {
+                    resultHTML += `<br><small>${pd.message}</small>`;
+                }
+            }
+
+            resultDiv.innerHTML = resultHTML;
         } catch (err) {
             resultDiv.className = 'test-result error';
             resultDiv.textContent = 'Connection test failed: ' + err.message;

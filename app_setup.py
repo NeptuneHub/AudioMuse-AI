@@ -16,11 +16,12 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request, render_template, redirect, url_for, g
 from functools import wraps
 
-from app_helper import get_db
+from app_helper import get_db, detect_music_path_prefix
 from tasks.mediaserver import (
     get_available_provider_types,
     get_provider_info,
     test_provider_connection,
+    get_sample_tracks_from_provider,
     PROVIDER_TYPES
 )
 import config
@@ -533,6 +534,7 @@ def test_provider_endpoint(provider_id):
 def test_provider_config():
     """
     Test connection with provided configuration (without saving).
+    Also detects the music_path_prefix by comparing sample tracks with existing data.
     ---
     tags:
       - Setup
@@ -547,9 +549,12 @@ def test_provider_config():
                 type: string
               config:
                 type: object
+              detect_prefix:
+                type: boolean
+                description: Whether to auto-detect music_path_prefix (default true)
     responses:
       200:
-        description: Connection test result
+        description: Connection test result with optional prefix detection
     """
     data = request.get_json()
     if not data:
@@ -557,17 +562,52 @@ def test_provider_config():
 
     provider_type = data.get('provider_type')
     config_data = data.get('config', {})
+    detect_prefix = data.get('detect_prefix', True)
 
     if not provider_type:
         return jsonify({'error': 'provider_type is required'}), 400
 
     success, message = test_provider_connection(provider_type, config_data)
 
-    return jsonify({
+    result = {
         'success': success,
         'message': message,
         'provider_type': provider_type,
-    })
+    }
+
+    # If connection succeeded and prefix detection is enabled, try to detect prefix
+    if success and detect_prefix:
+        try:
+            # Fetch sample tracks from the new provider
+            sample_tracks = get_sample_tracks_from_provider(provider_type, config_data, limit=50)
+
+            if sample_tracks:
+                # Detect prefix by comparing with existing tracks
+                prefix_result = detect_music_path_prefix(sample_tracks)
+                result['prefix_detection'] = prefix_result
+
+                # If we detected a prefix with medium or high confidence, suggest it
+                if prefix_result.get('confidence') in ('high', 'medium'):
+                    result['suggested_prefix'] = prefix_result.get('detected_prefix', '')
+                    result['message'] += f" Detected path prefix: '{prefix_result.get('detected_prefix', '')}' ({prefix_result.get('confidence')} confidence)"
+                elif prefix_result.get('matches_found', 0) == 0:
+                    # No matching tracks found - this is likely the first provider
+                    result['prefix_detection']['message'] = 'No existing tracks to compare with (first provider setup)'
+            else:
+                result['prefix_detection'] = {
+                    'detected_prefix': '',
+                    'confidence': 'none',
+                    'message': 'Could not fetch sample tracks for comparison'
+                }
+        except Exception as e:
+            logger.warning(f"Prefix detection failed for {provider_type}: {e}")
+            result['prefix_detection'] = {
+                'detected_prefix': '',
+                'confidence': 'none',
+                'message': f'Prefix detection failed: {str(e)}'
+            }
+
+    return jsonify(result)
 
 
 @setup_bp.route('/api/setup/settings', methods=['GET'])
