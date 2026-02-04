@@ -1149,6 +1149,19 @@
             ? 'Unified (server + worker on same machine)'
             : 'Split (workers on separate machines)';
 
+        // Determine recommended compose files
+        let composeFiles = [];
+        if (selectedDeployment === 'unified') {
+            composeFiles.push(selectedHardware === 'nvidia'
+                ? 'docker-compose-unified-nvidia.yaml'
+                : 'docker-compose-unified.yaml');
+        } else {
+            composeFiles.push('docker-compose-server.yaml (this machine)');
+            composeFiles.push(selectedHardware === 'nvidia'
+                ? 'docker-compose-worker-nvidia.yaml (workers)'
+                : 'docker-compose-worker-cpu.yaml (workers)');
+        }
+
         summary.innerHTML = `
             <div class="summary-item">
                 <span class="summary-label">Deployment Mode</span>
@@ -1157,6 +1170,10 @@
             <div class="summary-item">
                 <span class="summary-label">Hardware</span>
                 <span class="summary-value">${selectedHardware === 'nvidia' ? 'NVIDIA GPU' : 'CPU Only'}</span>
+            </div>
+            <div class="summary-item">
+                <span class="summary-label">Docker Compose Files</span>
+                <span class="summary-value">${composeFiles.join('<br>')}</span>
             </div>
             <div class="summary-item">
                 <span class="summary-label">Providers</span>
