@@ -687,6 +687,71 @@
     .worker-connection-info .config-field {
         margin-bottom: 1.25rem;
     }
+
+    /* Hardware Info Display */
+    .hardware-info-box {
+        display: flex;
+        align-items: flex-start;
+        gap: 1rem;
+        padding: 1.25rem;
+        background: var(--bg-card);
+        border-radius: 8px;
+        border: 2px solid var(--border-color);
+    }
+
+    .hardware-info-box.gpu-detected {
+        border-color: #28a745;
+        background: rgba(40, 167, 69, 0.1);
+    }
+
+    .hardware-info-box .hw-icon {
+        font-size: 2.5rem;
+        line-height: 1;
+    }
+
+    .hardware-info-box .hw-details {
+        flex: 1;
+    }
+
+    .hardware-info-box .hw-title {
+        font-weight: bold;
+        font-size: 1.1rem;
+        margin-bottom: 0.25rem;
+    }
+
+    .hardware-info-box .hw-subtitle {
+        color: var(--text-muted);
+        font-size: 0.9rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .hardware-info-box .hw-description {
+        font-size: 0.9rem;
+        line-height: 1.5;
+    }
+
+    .hardware-benefits {
+        margin-top: 1rem;
+        padding: 1rem;
+        background: rgba(37, 99, 235, 0.1);
+        border-radius: 8px;
+        border-left: 3px solid var(--color-primary);
+    }
+
+    .hardware-benefits h4 {
+        margin: 0 0 0.5rem 0;
+        font-size: 0.95rem;
+    }
+
+    .hardware-benefits ul {
+        margin: 0;
+        padding-left: 1.25rem;
+        font-size: 0.9rem;
+    }
+
+    .hardware-benefits li {
+        margin-bottom: 0.25rem;
+    }
 </style>
 {% endblock %}
 
@@ -751,11 +816,21 @@
             </div>
         </div>
 
-        <div class="step-section">
-            <h3>Select Hardware Configuration</h3>
+        <!-- Hardware Info for Unified Mode (read-only, auto-detected) -->
+        <div class="step-section" id="hardware-info-section">
+            <h3>Current Hardware Configuration</h3>
+            <div id="hardware-info-content">
+                <!-- Populated by JS based on auto-detection -->
+                <p class="description">Detecting hardware...</p>
+            </div>
+        </div>
+
+        <!-- Hardware Selection for Split Mode (selectable for worker config) -->
+        <div class="step-section" id="hardware-select-section" style="display: none;">
+            <h3>Worker Hardware Configuration</h3>
             <p class="description">
-                Choose your hardware setup for music analysis. GPU acceleration significantly speeds up
-                the ML analysis process.
+                Select the hardware configuration for your remote workers. This helps generate the correct
+                docker-compose recommendations.
             </p>
 
             <div class="hardware-options">
@@ -1080,25 +1155,6 @@
     }
 
     function applyExistingSettings() {
-        // Apply hardware type from saved settings
-        if (existingSettings.hardware_type) {
-            selectedHardware = existingSettings.hardware_type;
-            document.querySelectorAll('.hardware-option[data-hardware]').forEach(option => {
-                option.classList.remove('selected');
-                if (option.dataset.hardware === selectedHardware) {
-                    option.classList.add('selected');
-                }
-            });
-            // Update GPU clustering option state
-            const gpuClustering = document.getElementById('setting-gpu-clustering');
-            if (selectedHardware === 'nvidia') {
-                gpuClustering.disabled = false;
-            } else {
-                gpuClustering.disabled = true;
-                gpuClustering.checked = false;
-            }
-        }
-
         // Apply deployment type from saved settings
         if (existingSettings.deployment_type) {
             selectedDeployment = existingSettings.deployment_type;
@@ -1109,6 +1165,19 @@
                 }
             });
             updateWorkerConfigVisibility();
+            updateHardwareSections();
+        }
+
+        // For split mode, apply saved worker hardware selection
+        // For unified mode, hardware is auto-detected from server
+        if (selectedDeployment === 'split' && existingSettings.hardware_type) {
+            selectedHardware = existingSettings.hardware_type;
+            document.querySelectorAll('.hardware-option[data-hardware]').forEach(option => {
+                option.classList.remove('selected');
+                if (option.dataset.hardware === selectedHardware) {
+                    option.classList.add('selected');
+                }
+            });
         }
 
         // Apply other settings
@@ -1443,8 +1512,9 @@
                 this.classList.add('selected');
                 selectedDeployment = this.dataset.deployment;
 
-                // Show/hide worker config section
+                // Show/hide worker config section and hardware sections
                 updateWorkerConfigVisibility();
+                updateHardwareSections();
             };
         });
     }
@@ -1455,11 +1525,93 @@
             if (response.ok) {
                 const data = await response.json();
                 serverInfo = data;
+
+                // Auto-detect hardware based on GPU availability
+                if (data.gpu_available) {
+                    selectedHardware = 'nvidia';
+                } else {
+                    selectedHardware = 'cpu';
+                }
             }
         } catch (err) {
             console.log('Could not load server info, using defaults');
         }
         updateWorkerConnectionInfo();
+        updateHardwareSections();
+        renderHardwareInfo();
+    }
+
+    function updateHardwareSections() {
+        const infoSection = document.getElementById('hardware-info-section');
+        const selectSection = document.getElementById('hardware-select-section');
+
+        if (selectedDeployment === 'unified') {
+            // Unified: Show info (read-only), hide selection
+            infoSection.style.display = 'block';
+            selectSection.style.display = 'none';
+        } else {
+            // Split: Hide info, show selection for worker hardware
+            infoSection.style.display = 'none';
+            selectSection.style.display = 'block';
+        }
+    }
+
+    function renderHardwareInfo() {
+        const container = document.getElementById('hardware-info-content');
+        const gpuAvailable = serverInfo.gpu_available;
+        const gpuName = serverInfo.gpu_name;
+
+        let html = '';
+
+        if (gpuAvailable) {
+            html = `
+                <div class="hardware-info-box gpu-detected">
+                    <div class="hw-icon">&#9889;</div>
+                    <div class="hw-details">
+                        <div class="hw-title">NVIDIA GPU Detected</div>
+                        <div class="hw-subtitle">${gpuName || 'CUDA acceleration enabled'}</div>
+                        <div class="hw-description">
+                            Your system is running with GPU acceleration. Audio analysis will use CUDA
+                            for faster ML inference, significantly reducing processing time.
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else {
+            html = `
+                <div class="hardware-info-box">
+                    <div class="hw-icon">&#128187;</div>
+                    <div class="hw-details">
+                        <div class="hw-title">CPU Mode</div>
+                        <div class="hw-subtitle">Running without GPU acceleration</div>
+                        <div class="hw-description">
+                            Your system is running in CPU-only mode. Audio analysis will work but may be slower
+                            for large libraries.
+                        </div>
+                    </div>
+                </div>
+                <div class="hardware-benefits">
+                    <h4>&#128161; Want faster analysis?</h4>
+                    <ul>
+                        <li><strong>5-10x faster</strong> audio fingerprinting with NVIDIA GPU</li>
+                        <li>Enables GPU-accelerated clustering with RAPIDS cuML</li>
+                        <li>Requires an NVIDIA GPU with CUDA support and the nvidia-container-toolkit</li>
+                        <li>Use <code>docker-compose-unified-nvidia.yaml</code> to enable GPU mode</li>
+                    </ul>
+                </div>
+            `;
+        }
+
+        container.innerHTML = html;
+
+        // Update GPU clustering checkbox based on detected hardware
+        const gpuClustering = document.getElementById('setting-gpu-clustering');
+        if (gpuAvailable) {
+            gpuClustering.disabled = false;
+        } else {
+            gpuClustering.disabled = true;
+            gpuClustering.checked = false;
+        }
     }
 
     function updateWorkerConfigVisibility() {
@@ -1581,12 +1733,24 @@
             ? 'Unified (server + worker on same machine)'
             : 'Split (workers on separate machines)';
 
+        // Hardware info differs by deployment mode
+        let hardwareLabel, hardwareValue;
+        if (selectedDeployment === 'unified') {
+            hardwareLabel = 'Server Hardware (Detected)';
+            hardwareValue = selectedHardware === 'nvidia'
+                ? `NVIDIA GPU${serverInfo.gpu_name ? ' (' + serverInfo.gpu_name + ')' : ''}`
+                : 'CPU Only';
+        } else {
+            hardwareLabel = 'Worker Hardware';
+            hardwareValue = selectedHardware === 'nvidia' ? 'NVIDIA GPU' : 'CPU Only';
+        }
+
         // Determine recommended compose files
         let composeFiles = [];
         if (selectedDeployment === 'unified') {
             composeFiles.push(selectedHardware === 'nvidia'
-                ? 'docker-compose-unified-nvidia.yaml'
-                : 'docker-compose-unified.yaml');
+                ? 'docker-compose-unified-nvidia.yaml (current)'
+                : 'docker-compose-unified.yaml (current)');
         } else {
             composeFiles.push('docker-compose-server.yaml (this machine)');
             composeFiles.push(selectedHardware === 'nvidia'
@@ -1614,8 +1778,8 @@
                 <span class="summary-value">${deploymentInfo}</span>
             </div>
             <div class="summary-item">
-                <span class="summary-label">Hardware</span>
-                <span class="summary-value">${selectedHardware === 'nvidia' ? 'NVIDIA GPU' : 'CPU Only'}</span>
+                <span class="summary-label">${hardwareLabel}</span>
+                <span class="summary-value">${hardwareValue}</span>
             </div>
             <div class="summary-item">
                 <span class="summary-label">Docker Compose Files</span>

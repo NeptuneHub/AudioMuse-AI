@@ -71,6 +71,8 @@ def get_all_settings():
         settings = {}
         for row in rows:
             key, value, category, description = row
+            # Handle None category - use 'general' as default
+            category = category or 'general'
             if category not in settings:
                 settings[category] = {}
             settings[category][key] = {
@@ -483,6 +485,16 @@ def create_provider():
         return jsonify({'error': 'Validation failed', 'details': validation_errors}), 400
 
     try:
+        # Check if provider of this type already exists - upsert to prevent duplicates
+        existing_providers = get_all_providers()
+        existing = next((p for p in existing_providers if p['provider_type'] == provider_type), None)
+
+        if existing:
+            # Update existing provider instead of creating duplicate
+            update_provider(existing['id'], name=name, config_data=config_data, enabled=enabled, priority=priority)
+            logger.info(f"Updated existing provider {existing['id']} ({provider_type}) instead of creating duplicate")
+            return jsonify({'id': existing['id'], 'message': 'Provider updated', 'was_update': True}), 200
+
         provider_id = add_provider(provider_type, name, config_data, enabled, priority)
         return jsonify({'id': provider_id, 'message': 'Provider created'}), 201
     except Exception as e:
@@ -836,6 +848,7 @@ def get_server_info():
     """
     import socket
     import os
+    import subprocess
 
     # Try to get the server's IP address
     try:
@@ -856,6 +869,31 @@ def get_server_info():
     except Exception:
         host_ip = 'localhost'
 
+    # Detect GPU availability
+    gpu_available = False
+    gpu_name = None
+
+    # Method 1: Check if onnxruntime-gpu CUDA provider is available
+    try:
+        import onnxruntime as ort
+        providers = ort.get_available_providers()
+        if 'CUDAExecutionProvider' in providers:
+            gpu_available = True
+    except Exception:
+        pass
+
+    # Method 2: Try nvidia-smi for GPU name (if available)
+    if gpu_available:
+        try:
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader,nounits'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                gpu_name = result.stdout.strip().split('\n')[0]  # First GPU
+        except Exception:
+            pass
+
     return jsonify({
         'host': host_ip,
         'hostname': socket.gethostname() if hasattr(socket, 'gethostname') else 'unknown',
@@ -863,6 +901,8 @@ def get_server_info():
         'postgres_port': os.environ.get('POSTGRES_PORT', '5432'),
         'postgres_host': os.environ.get('POSTGRES_HOST', 'postgres'),
         'redis_url': os.environ.get('REDIS_URL', 'redis://redis:6379/0'),
+        'gpu_available': gpu_available,
+        'gpu_name': gpu_name,
     })
 
 

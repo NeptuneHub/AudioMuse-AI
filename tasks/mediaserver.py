@@ -1108,7 +1108,7 @@ def get_enabled_providers_for_playlists():
     Returns:
         List of dicts with 'id', 'name', 'type' for each enabled provider
     """
-    from app_helper import get_providers
+    from app_setup import get_providers
 
     providers = get_providers(enabled_only=True)
     return [

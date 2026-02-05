@@ -1343,6 +1343,40 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 log_and_update_main(status_message, progress, checked_album_ids=list(checked_album_ids))
                 time.sleep(5)
 
+            # Wait for any album analysis jobs still running on the queue from a previous run.
+            # This handles the case where the main task resumes, finds all albums already checked,
+            # but their album tasks are still executing from the previous run.
+            from rq import Queue
+            default_queue = Queue('default', connection=redis_conn)
+            wait_count = 0
+            while True:
+                # Count album analysis jobs still running or queued
+                pending_album_jobs = 0
+                for job in default_queue.jobs:
+                    if hasattr(job, 'func_name') and 'analyze_album_task' in str(job.func_name):
+                        pending_album_jobs += 1
+
+                # Also check started job registry for running jobs
+                started_registry = default_queue.started_job_registry
+                for job_id in started_registry.get_job_ids():
+                    try:
+                        from rq.job import Job
+                        job = Job.fetch(job_id, connection=redis_conn)
+                        if hasattr(job, 'func_name') and 'analyze_album_task' in str(job.func_name):
+                            pending_album_jobs += 1
+                    except Exception:
+                        pass
+
+                if pending_album_jobs == 0:
+                    break
+
+                wait_count += 1
+                if wait_count == 1:
+                    log_and_update_main(f"Waiting for {pending_album_jobs} album analysis job(s) from previous run to complete...", 90)
+                elif wait_count % 6 == 0:  # Log every 30 seconds
+                    log_and_update_main(f"Still waiting for {pending_album_jobs} album analysis job(s)...", 90)
+                time.sleep(5)
+
             log_and_update_main("Performing final index rebuild...", 95)
             # Build Voyager index (song embeddings)
             build_and_store_voyager_index(get_db())
