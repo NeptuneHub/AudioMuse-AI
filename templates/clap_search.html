@@ -194,7 +194,7 @@
     {% endif %}
     
     <div class="search-container">
-        <form id="search-form">
+        <form id="search-form" onsubmit="return false">
             <div class="param-group">
                 <label for="search-query" class="label-with-tooltip">
                     Search Query:
@@ -313,9 +313,11 @@ document.addEventListener('DOMContentLoaded', function() {
                     tag.className = 'example-tag';
                     tag.setAttribute('data-query', query);
                     tag.textContent = query;
-                    tag.addEventListener('click', function() {
+                    tag.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
                         searchQuery.value = query;
-                        searchForm.dispatchEvent(new Event('submit'));
+                        performSearch();
                     });
                     topQueriesContainer.appendChild(tag);
                 });
@@ -335,49 +337,55 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Example query tags (kept for backwards compatibility, but replaced by loadTopQueries)
     document.querySelectorAll('.example-tag').forEach(tag => {
-        tag.addEventListener('click', function() {
+        tag.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
             const query = this.getAttribute('data-query');
             searchQuery.value = query;
-            searchForm.dispatchEvent(new Event('submit'));
+            performSearch();
         });
     });
     
-    // Search form submission
-    searchForm.addEventListener('submit', async function(e) {
-        e.preventDefault();
-        
+    // Core search logic
+    async function performSearch() {
         const query = searchQuery.value.trim();
         const limit = parseInt(document.getElementById('limit').value);
-        
+
         if (!query || query.length < 3) {
             alert('Please enter at least 3 characters');
             return;
         }
-        
+
         // Show loading
         resultsContainer.classList.remove('hidden');
         resultsList.innerHTML = '<div class="loading-spinner">🔍 Searching...</div>';
         playlistCreator.classList.add('hidden');
-        
+
         try {
             const response = await fetch("{{ url_for('clap_search_bp.clap_search_api') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ query, limit })
             });
-            
+
             const data = await response.json();
-            
+
             if (!response.ok) {
                 throw new Error(data.error || 'Search failed');
             }
-            
+
             currentResults = data.results || [];
             displayResults(currentResults, query);
-            
+
         } catch (error) {
             resultsList.innerHTML = `<div class="error-message">❌ ${error.message}</div>`;
         }
+    }
+
+    // Search form submission
+    searchForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        performSearch();
     });
     
     function displayResults(results, query) {

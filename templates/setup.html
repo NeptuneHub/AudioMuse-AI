@@ -1148,7 +1148,16 @@
     async function loadSettings() {
         try {
             const response = await fetch('/api/setup/settings');
-            existingSettings = await response.json();
+            const raw = await response.json();
+            // Flatten the category-grouped structure into a simple key-value map.
+            // Backend returns: { category: { key: { value, description } } }
+            // Frontend expects: { key: value }
+            existingSettings = {};
+            for (const category of Object.values(raw)) {
+                for (const [key, entry] of Object.entries(category)) {
+                    existingSettings[key] = entry.value !== undefined ? entry.value : entry;
+                }
+            }
         } catch (err) {
             console.error('Error loading settings:', err);
         }

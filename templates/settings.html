@@ -238,6 +238,7 @@
         border: 1px solid var(--border-color);
         border-radius: 4px;
         background: var(--bg-body);
+        color: var(--text-main);
         cursor: pointer;
         font-size: 0.85rem;
     }
@@ -315,6 +316,7 @@
         border: 1px solid var(--border-color);
         border-radius: 4px;
         background: var(--bg-body);
+        color: var(--text-main);
         cursor: pointer;
         font-size: 0.8rem;
     }
@@ -432,6 +434,7 @@
     .modal-footer .btn-cancel {
         background: var(--bg-card);
         border: 1px solid var(--border-color);
+        color: var(--text-main);
     }
 
     .modal-footer .btn-primary {
@@ -733,7 +736,16 @@
     async function loadSettings() {
         try {
             const response = await fetch('/api/setup/settings');
-            settings = await response.json();
+            const raw = await response.json();
+            // Flatten the category-grouped structure into a simple key-value map.
+            // Backend returns: { category: { key: { value, description } } }
+            // Frontend expects: { key: value }
+            settings = {};
+            for (const category of Object.values(raw)) {
+                for (const [key, entry] of Object.entries(category)) {
+                    settings[key] = entry.value !== undefined ? entry.value : entry;
+                }
+            }
         } catch (err) {
             console.error('Error loading settings:', err);
         }
