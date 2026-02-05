@@ -180,8 +180,11 @@ The distillation process utilized a curated dataset of songs:
 
 - [Free Music Archive](https://freemusicarchive.org/): Songs used are under various Creative Commons licenses. Detailed attribution and specific license types for each track can be found in [student_clap/models/FMA_SONGS_LICENSE.md](student_clap/models/FMA_SONGS_LICENSE.md)
 
-- [MTG-Jamendo](https://github.com/MTG/mtg-jamendo-dataset): Songs used are under various Creative Commons licenses. Detailed attribution and specific license types for each track can be found in [student_clap/models/MTG_JAMENDO_SONGS_LICENSE.md](student_clap/models/FMA_SONGS_LICENSE.md)
+- [MTG-Jamendo](https://github.com/MTG/mtg-jamendo-dataset): Songs used are under various Creative Commons licenses. Detailed attribution and specific license types for each track can be found in [student_clap/models/MTG_JAMENDO_SONGS_LICENSE.md](student_clap/models/MTG_JAMENDO_SONGS_LICENSE.md)
 
-- [WIKIMEDIA](https://commons.wikimedia.org/wiki/): Songs used are under various Creative Commons licenses. Detailed attribution and specific license types for each track can be found in [student_clap/models/WIKIMEDIA_SONGS_LICENSE.md](student_clap/models/FMA_SONGS_LICENSE.md)
+- [WIKIMEDIA](https://commons.wikimedia.org/wiki/): Songs used are under various Creative Commons licenses. Detailed attribution and specific license types for each track can be found in [student_clap/models/WIKIMEDIA_SONGS_LICENSE.md](student_clap/models/WIKIMEDIA_SONGS_LICENSE.md)
+
+- [CCMIXTER](https://ccmixter.org/): Songs used are under various Creative Commons licenses. Detailed attribution and specific license types for each track can be found in [student_clap/models/CCMIXTER_SONGS_LICENSE.md](student_clap/models/CCMIXTER_SONGS_LICENSE.md)
+
 
 - Public Domain: Additional tracks were sourced from CC0 1.0 sources.
