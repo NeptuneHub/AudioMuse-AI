@@ -13,18 +13,23 @@ from config import MAX_SONGS_IN_AI_PROMPT
 logger = logging.getLogger(__name__)
 
 # creative_prompt_template is imported in tasks.py, so it should be defined here
-creative_prompt_template = (
-    "You are an expert music collector and MUST give a title to this playlist.\n"
-    "The title MUST represent the mood and the activity of when you are listening to the playlist.\n"
-    "The title MUST use ONLY standard ASCII (a-z, A-Z, 0-9, spaces, and - & ' ! . , ? ( ) [ ]).\n"
-    "The title MUST be within the range of 5 to 40 characters long.\n"
-    "No special fonts or emojis.\n"
-    "* BAD EXAMPLES: 'Ambient Electronic Space - Electric Soundscapes - Emotional Waves' (Too long/descriptive)\n"
-    "* BAD EXAMPLES: 'Blues Rock Fast Tracks' (Too direct/literal, not evocative enough)\n"
-    "* BAD EXAMPLES: '𝑯𝒘𝒆 𝒂𝒓𝒐𝒏𝒊 𝒅𝒆𝒕𝒔' (Non-standard characters)\n\n"
-    "CRITICAL: Your response MUST be ONLY the single playlist name. No explanations, no 'Playlist Name:', no numbering, no extra text or formatting whatsoever.\n\n"
-    "This is the playlist:\n{song_list_sample}\n\n" # {song_list_sample} will contain the full list
-
+playlist_title_prompt_template = (
+    "You are an expert music curator. Your task is to craft a title for a playlist.\n\n"
+    "To craft a strong title ensure that you:\n"
+    "  - Represent the genres, scenes, and styles of the songs.\n"
+    "  - Capture the overall vibe of the playlist.\n"
+    "  - Reference activities and/or locations that are well suited for listening.\n"
+    "  - Stand out in a sea of boring and trite playlist titles.\n"
+    "  - Be both pithy *and* coherent.\n\n"
+    "Additionally, you MUST strictly adhere to these rules:\n"
+    "  - Use ONLY standard ASCII characters (a-z, A-Z, 0-9, spaces, and - & ' ! . , ? ( ) [ ]).\n"
+    "  - Keep the length between 10 and 40 characters.\n"
+    "  - Do NOT use special fonts or emojis.\n"
+    "  - Respond with ONLY a single playlist name.\n\n"
+    "On the topic of creativity...\n"
+    "Here are some examples of words and phrases that are trite, boring, and uncreative: neon, autumn, quiet, porch, groove, midnight, dusk, night, morning. If you find yourself reaching those words (or other similarly yawn-inducing phrasing), it's a clear sign you need to be more creative. Think laterally!\n\n"
+    "This is the playlist:\n{song_list_sample}\n\n"
+    "To begin, think hard and come up with 5-10 options. Explore what works and try different approaches before deciding on the final name for the playlist.\n"
 )
 
 def clean_playlist_name(name):
