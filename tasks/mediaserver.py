@@ -1005,7 +1005,8 @@ def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, u
     Returns:
         Dict with results for each provider: {provider_id: {'success': bool, 'playlist_id': str, 'error': str}}
     """
-    from app_helper import get_providers, get_provider_by_id, get_primary_provider_id
+    from app_setup import get_providers, get_provider_by_id
+    from app_helper import get_primary_provider_id
 
     if not playlist_name:
         raise ValueError("Playlist name is required")
@@ -1066,7 +1067,7 @@ def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, u
                 }
                 continue
 
-            created = _create_playlist_for_provider_type(provider_type, playlist_name, remapped_ids, user_creds)
+            created = _create_playlist_for_provider_type(provider_type, playlist_name, remapped_ids, user_creds, provider.get('config'))
 
             results[provider_id] = {
                 'success': True,
@@ -1085,20 +1086,82 @@ def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, u
     return results
 
 
-def _create_playlist_for_provider_type(provider_type, playlist_name, item_ids, user_creds=None):
-    """Create playlist on a specific provider type."""
-    if provider_type == 'jellyfin':
-        return jellyfin_create_instant_playlist(playlist_name, item_ids, user_creds)
-    elif provider_type == 'navidrome':
-        return navidrome_create_instant_playlist(playlist_name, item_ids, user_creds)
-    elif provider_type == 'lyrion':
-        return lyrion_create_instant_playlist(playlist_name, item_ids)
-    elif provider_type == 'emby':
-        return emby_create_instant_playlist(playlist_name, item_ids, user_creds)
-    elif provider_type == 'localfiles':
-        return localfiles_create_instant_playlist(playlist_name, item_ids, user_creds)
-    else:
-        raise ValueError(f"Unknown provider type: {provider_type}")
+def _create_playlist_for_provider_type(provider_type, playlist_name, item_ids, user_creds=None, provider_config=None):
+    """Create playlist on a specific provider type.
+
+    When called from multi-provider mode, provider_config contains the DB-stored
+    config (url, token, etc.).  We temporarily apply these values to the config
+    module so that downstream provider functions (which read config.JELLYFIN_URL
+    etc.) pick them up, and we build user_creds from the stored config when the
+    caller hasn't supplied explicit credentials.
+    """
+    # Build a mapping of config module attributes to override from the provider's
+    # stored DB config so that provider functions that read config.* work correctly
+    # even when environment variables are empty.
+    _config_overrides = {}
+    if provider_config:
+        if provider_type == 'jellyfin':
+            _config_overrides = {
+                'JELLYFIN_URL': provider_config.get('url', ''),
+                'JELLYFIN_TOKEN': provider_config.get('token', ''),
+                'JELLYFIN_USER_ID': provider_config.get('user_id', ''),
+            }
+            if not user_creds:
+                user_creds = {
+                    'token': provider_config.get('token', ''),
+                    'user_identifier': provider_config.get('user_id', ''),
+                }
+        elif provider_type == 'navidrome':
+            _config_overrides = {
+                'NAVIDROME_URL': provider_config.get('url', ''),
+                'NAVIDROME_USER': provider_config.get('user', ''),
+                'NAVIDROME_PASSWORD': provider_config.get('password', ''),
+            }
+        elif provider_type == 'emby':
+            _config_overrides = {
+                'EMBY_URL': provider_config.get('url', ''),
+                'EMBY_TOKEN': provider_config.get('token', ''),
+                'EMBY_USER_ID': provider_config.get('user_id', ''),
+            }
+            if not user_creds:
+                user_creds = {
+                    'token': provider_config.get('token', ''),
+                    'user_id': provider_config.get('user_id', ''),
+                }
+        elif provider_type == 'lyrion':
+            _config_overrides = {
+                'LYRION_URL': provider_config.get('url', ''),
+            }
+        elif provider_type == 'localfiles':
+            _config_overrides = {
+                'LOCALFILES_MUSIC_DIR': provider_config.get('music_directory', ''),
+                'LOCALFILES_PLAYLIST_DIR': provider_config.get('playlist_directory', ''),
+            }
+
+    # Temporarily apply config overrides
+    _saved = {}
+    for attr, val in _config_overrides.items():
+        if val:  # Only override if the provider config has a value
+            _saved[attr] = getattr(config, attr, '')
+            setattr(config, attr, val)
+
+    try:
+        if provider_type == 'jellyfin':
+            return jellyfin_create_instant_playlist(playlist_name, item_ids, user_creds)
+        elif provider_type == 'navidrome':
+            return navidrome_create_instant_playlist(playlist_name, item_ids, user_creds)
+        elif provider_type == 'lyrion':
+            return lyrion_create_instant_playlist(playlist_name, item_ids)
+        elif provider_type == 'emby':
+            return emby_create_instant_playlist(playlist_name, item_ids, user_creds)
+        elif provider_type == 'localfiles':
+            return localfiles_create_instant_playlist(playlist_name, item_ids, user_creds)
+        else:
+            raise ValueError(f"Unknown provider type: {provider_type}")
+    finally:
+        # Restore original config values
+        for attr, val in _saved.items():
+            setattr(config, attr, val)
 
 
 def get_enabled_providers_for_playlists():

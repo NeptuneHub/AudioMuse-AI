@@ -137,6 +137,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Only run these categories (comma-separated: api,db,docker,performance,existing_tests)")
     grp_t.add_argument("--skip", type=str, default="",
                        help="Skip these categories (comma-separated)")
+    grp_t.add_argument("--skip-setup-crud", action="store_true",
+                       help="Skip setup wizard CRUD tests (provider create/update/delete)")
+    grp_t.add_argument("--enable-task-starts", action="store_true",
+                       help="Enable task start smoke tests (analysis, clustering, cleaning)")
 
     # Performance settings
     grp_p = parser.add_argument_group("Performance Settings")
@@ -261,6 +265,12 @@ def build_config(args) -> ComparisonConfig:
             config.run_existing_unit_tests = False
         if "existing_tests" in skip or "integration" in skip:
             config.run_existing_integration_tests = False
+
+    # Advanced test group flags
+    if args.skip_setup_crud:
+        config.run_setup_crud_tests = False
+    if args.enable_task_starts:
+        config.run_task_start_tests = True
 
     return config
 

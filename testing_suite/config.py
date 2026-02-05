@@ -98,6 +98,10 @@ class ComparisonConfig:
     api_retry_delay: float = 2.0
     api_task_timeout: int = 1200  # 20 minutes for long-running tasks
 
+    # Advanced test groups
+    run_setup_crud_tests: bool = True     # Setup wizard provider CRUD (feature-only, creates/deletes test data)
+    run_task_start_tests: bool = False    # Task start smoke tests (triggers analysis/clustering work)
+
     # Database comparison thresholds
     db_row_count_tolerance_pct: float = 5.0  # % difference allowed in row counts
     db_embedding_dimension_expected: int = 200
