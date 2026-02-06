@@ -264,7 +264,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                     if isinstance(mel_segs, np.ndarray):
                         mel_segs = torch.from_numpy(mel_segs).float()
                     if isinstance(mel_segs, torch.Tensor):
-                        mel_segs = mel_segs.to(device)
+                        mel_segs = mel_segs.cpu()
 
                     for s in range(mel_segs.shape[0]):
                         all_mel_segments.append(mel_segs[s])
@@ -275,7 +275,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                         if isinstance(t_emb, np.ndarray):
                             t_emb = torch.from_numpy(t_emb).float()
                         if isinstance(t_emb, torch.Tensor):
-                            t_emb = t_emb.to(device)
+                            t_emb = t_emb.cpu()
                         all_teacher_seg_embs.append(t_emb)
 
                 total_segments = len(all_mel_segments)
@@ -292,6 +292,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
 
                     mixed_mel = lam * mel_stack + (1.0 - lam) * mel_stack[perm_t]
                     mixed_teacher = lam * teacher_stack + (1.0 - lam) * teacher_stack[perm_t]
+                    del mel_stack, teacher_stack
 
                     logger.info(f"[GLOBAL MIXUP] Applied: alpha={mixup_alpha}, lam={lam:.4f}, "
                                f"total_segments={total_segments} (from {len(batch_data)} songs)")
