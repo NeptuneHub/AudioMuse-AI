@@ -3,8 +3,9 @@
 # Supports both CPU (ubuntu:24.04) and GPU (nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04) builds
 #
 # Build examples:
-#   CPU:  docker build -t audiomuse-ai .
-#   GPU:  docker build --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 -t audiomuse-ai-gpu .
+#      CPU:  docker build -t audiomuse-ai .
+# OPENVINO:  docker build --build-arg OPENVINO=true -t audiomuse-ai-openvino
+#      GPU:  docker build --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 -t audiomuse-ai-gpu .
 
 ARG BASE_IMAGE=ubuntu:24.04
 
@@ -73,6 +74,7 @@ RUN set -eux; \
 FROM ${BASE_IMAGE} AS base
 
 ARG BASE_IMAGE
+ARG OPENVINO=false
 
 SHELL ["/bin/bash", "-c"]
 
@@ -111,12 +113,31 @@ RUN set -ux; \
     apt-get autoremove -y || true && \
     rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
+# Install Intel GPU drivers for OpenVINO GPU support (when OPENVINO=true)
+RUN if [ "$OPENVINO" = "true" ]; then \
+        echo "Installing Intel GPU drivers for OpenVINO..." && \
+        apt-get update && \
+        apt-get install -y --no-install-recommends wget gpg && \
+        wget -qO - https://repositories.intel.com/gpu/intel-graphics.key | \
+            gpg --dearmor --output /usr/share/keyrings/intel-graphics.gpg && \
+        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu noble client" | \
+            tee /etc/apt/sources.list.d/intel-gpu-noble.list && \
+        apt-get update && \
+        apt-get install -y --no-install-recommends \
+            ocl-icd-libopencl1 \
+            intel-opencl-icd \
+            intel-level-zero-gpu \
+            level-zero && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # ============================================================================
 # Stage 3: Libraries - Python packages installation
 # ============================================================================
 FROM base AS libraries
 
 ARG BASE_IMAGE
+ARG OPENVINO=false
 
 WORKDIR /app
 
@@ -130,6 +151,9 @@ COPY requirements/ /app/requirements/
 RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
         echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager, torch+cuda)"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
+    elif [[ "$OPENVINO" == true ]]; then\
+        echo "OpenVINO base image detected: installing OpenVINO runtime packages (onnxruntime-openvino)"; \
+        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/openvino.txt -r /app/requirements/common.txt || exit 1; \
     else \
         echo "CPU base image: installing all packages together for dependency resolution"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/cpu.txt -r /app/requirements/common.txt || exit 1; \
