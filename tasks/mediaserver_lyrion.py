@@ -27,12 +27,17 @@ def _decode_lyrion_url(url):
 # ##############################################################################
 # Lyrion uses a JSON-RPC API. This section contains functions to interact with it.
 
-def _get_target_paths_for_filtering():
+def _get_target_paths_for_filtering(provider_config=None):
     """
     Gets the target paths from config for path-based filtering.
     Returns a set of lowercase paths to match against, or None if no filtering.
     """
-    folder_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+    # Try per-provider config first
+    if provider_config and provider_config.get('music_libraries'):
+        library_names = provider_config['music_libraries']
+        folder_names_str = ','.join(library_names)
+    else:
+        folder_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
     logger.info(f"DEBUG: MUSIC_LIBRARIES config value: '{folder_names_str}'")
 
     if not folder_names_str.strip():
@@ -140,12 +145,69 @@ def _album_matches_target_paths(album, target_paths):
     logger.info(f"DEBUG: No match for album path '{album_path_lower}'")
     return False
 
-def _get_target_music_folder_ids():
+def get_music_libraries(config_dict=None):
+    """Fetch available music libraries (folders) from Lyrion.
+    Args: config_dict -- provider JSONB config dict (url). Falls back to global config.
+    Returns: [{'id': str, 'name': str}]
+    """
+    if config_dict:
+        api_url = f"{config_dict.get('url', '').rstrip('/')}/jsonrpc.js"
+        payload = {
+            "id": 1,
+            "method": "slim.request",
+            "params": ["", ["musicfolders", 0, 999999]]
+        }
+        try:
+            r = requests.post(api_url, json=payload, timeout=REQUESTS_TIMEOUT)
+            r.raise_for_status()
+            response = r.json().get("result", {})
+        except Exception as e:
+            logger.error(f"Failed to fetch Lyrion music folders: {e}", exc_info=True)
+            return []
+    else:
+        try:
+            response = _jsonrpc_request("musicfolders", [0, 999999])
+        except Exception as e:
+            logger.error(f"Failed to fetch Lyrion music folders: {e}", exc_info=True)
+            return []
+
+    if not response:
+        return []
+
+    # Extract folder list - handle different response key variants
+    all_folders = []
+    if isinstance(response, dict):
+        if "folder_loop" in response:
+            all_folders = response["folder_loop"]
+        elif "folders_loop" in response:
+            all_folders = response["folders_loop"]
+        else:
+            for v in response.values():
+                if isinstance(v, list):
+                    all_folders = v
+                    break
+    elif isinstance(response, list):
+        all_folders = response
+
+    return [
+        {'id': str(f.get('id') or f.get('folder_id', '')), 'name': f.get('name') or f.get('folder', '')}
+        for f in all_folders
+        if isinstance(f, dict) and (f.get('name') or f.get('folder'))
+    ]
+
+
+def _get_target_music_folder_ids(provider_config=None):
     """
     Parses config for music folder names and returns their IDs for filtering using a robust,
     case-insensitive matching against the server's actual folder configuration.
     """
-    folder_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+    # Try per-provider config first
+    if provider_config and provider_config.get('music_libraries'):
+        library_names = provider_config['music_libraries']  # already a list
+        folder_names_str = ','.join(library_names)
+    else:
+        # Fallback to global env var
+        folder_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
 
     logger.info(f"DEBUG: MUSIC_LIBRARIES config value: '{folder_names_str}'")
 
@@ -719,14 +781,10 @@ def get_recent_albums(limit):
 def get_all_songs():
     """
     Fetches all songs from Lyrion using JSON-RPC.
-    For now, just gets all songs since folder filtering is complex in Lyrion.
+    If MUSIC_LIBRARIES is set, filters songs by checking file paths against target folders.
     """
     target_paths = _get_target_paths_for_filtering()
 
-    if target_paths is not None:
-        logger.warning("LYRION FOLDER FILTERING IS DISABLED - fetching all songs instead")
-    
-    # Fetch all songs without filtering
     logger.info("Fetching all songs from Lyrion")
     response = _jsonrpc_request("titles", [0, 999999, "tags:galduAyR"])
     
@@ -771,6 +829,17 @@ def get_all_songs():
             all_songs.append(mapped_song)
 
         logger.info(f"Found {len(songs)} total songs")
+
+    # Apply path filtering if target_paths is set
+    if target_paths is not None and all_songs:
+        pre_filter_count = len(all_songs)
+        filtered_songs = []
+        for song in all_songs:
+            song_path = (song.get('FilePath') or song.get('Path') or '').lower()
+            if any(tp in song_path for tp in target_paths):
+                filtered_songs.append(song)
+        logger.info(f"Lyrion path filtering: {pre_filter_count} -> {len(filtered_songs)} songs")
+        return filtered_songs
 
     return all_songs
 

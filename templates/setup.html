@@ -752,6 +752,40 @@
     .hardware-benefits li {
         margin-bottom: 0.25rem;
     }
+
+    /* Library Checklist */
+    .library-checklist {
+        margin-top: 0.75rem;
+        padding: 0.75rem;
+        background: var(--bg-body);
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+    }
+
+    .library-checklist-title {
+        font-weight: 500;
+        margin-bottom: 0.5rem;
+        font-size: 0.9rem;
+    }
+
+    .library-checklist label {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.25rem 0;
+        font-size: 0.9rem;
+        cursor: pointer;
+    }
+
+    .library-checklist label:hover {
+        color: var(--color-primary);
+    }
+
+    .library-checklist .library-note {
+        font-size: 0.8rem;
+        color: var(--text-muted);
+        margin-top: 0.5rem;
+    }
 </style>
 {% endblock %}
 
@@ -1396,9 +1430,16 @@
             testResult.className = 'test-result';
             testResult.style.display = 'none';
 
+            // Library checklist container (populated after successful test)
+            const libraryChecklist = document.createElement('div');
+            libraryChecklist.id = `library-checklist-${type}`;
+            libraryChecklist.className = 'library-checklist';
+            libraryChecklist.style.display = 'none';
+
             configDiv.appendChild(form);
             configDiv.appendChild(testBtn);
             configDiv.appendChild(testResult);
+            configDiv.appendChild(libraryChecklist);
             configs.appendChild(configDiv);
         });
     }
@@ -1466,9 +1507,50 @@
             }
 
             resultDiv.innerHTML = resultHTML;
+
+            // After successful connection test, fetch available libraries
+            if (data.success && type !== 'localfiles') {
+                fetchProviderLibraries(type, config);
+            }
         } catch (err) {
             resultDiv.className = 'test-result error';
             resultDiv.textContent = 'Connection test failed: ' + err.message;
+        }
+    }
+
+    async function fetchProviderLibraries(type, config) {
+        const checklistDiv = document.getElementById(`library-checklist-${type}`);
+        if (!checklistDiv) return;
+
+        try {
+            const response = await fetch('/api/setup/providers/libraries', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider_type: type, config })
+            });
+            const data = await response.json();
+            const libraries = data.libraries || [];
+
+            if (libraries.length === 0) {
+                checklistDiv.style.display = 'none';
+                return;
+            }
+
+            // Render checklist - all checked by default
+            let html = '<div class="library-checklist-title">Music Libraries:</div>';
+            libraries.forEach(lib => {
+                html += `<label>
+                    <input type="checkbox" checked
+                           data-provider-library="${type}"
+                           data-library-name="${lib.name}">
+                    ${lib.name}
+                </label>`;
+            });
+            html += '<div class="library-note">Uncheck libraries you don\'t want to scan. All checked = scan everything.</div>';
+            checklistDiv.innerHTML = html;
+            checklistDiv.style.display = 'block';
+        } catch (err) {
+            console.error('Error fetching libraries for', type, err);
         }
     }
 
@@ -1483,6 +1565,27 @@
                 config[field] = input.value;
             }
         });
+
+        // Collect selected music libraries
+        const libraryCheckboxes = document.querySelectorAll(`[data-provider-library="${type}"]`);
+        if (libraryCheckboxes.length > 0) {
+            const allChecked = Array.from(libraryCheckboxes).every(cb => cb.checked);
+            if (allChecked) {
+                // All checked = no filtering (don't store music_libraries)
+                // This means "scan everything"
+            } else {
+                const selectedLibraries = [];
+                libraryCheckboxes.forEach(cb => {
+                    if (cb.checked) {
+                        selectedLibraries.push(cb.dataset.libraryName);
+                    }
+                });
+                if (selectedLibraries.length > 0) {
+                    config.music_libraries = selectedLibraries;
+                }
+            }
+        }
+
         return config;
     }
 

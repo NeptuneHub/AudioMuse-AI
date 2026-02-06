@@ -5,11 +5,15 @@ Each function implements a specific search/query strategy.
 """
 import logging
 import json
+import re
 from typing import List, Dict, Optional
 import psycopg2
 from psycopg2.extras import DictCursor
 
 logger = logging.getLogger(__name__)
+
+# Cache for library context (refreshed once per app lifetime or on demand)
+_library_context_cache = None
 
 
 def get_db_connection():
@@ -18,10 +22,83 @@ def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
 
+def get_library_context(force_refresh: bool = False) -> Dict:
+    """Query the database once to build a summary of the user's music library.
+
+    Returns a dict with:
+        total_songs, unique_artists, top_genres (list), year_min, year_max,
+        has_ratings (bool), rated_songs_pct (float)
+    """
+    global _library_context_cache
+    if _library_context_cache is not None and not force_refresh:
+        return _library_context_cache
+
+    db_conn = get_db_connection()
+    try:
+        with db_conn.cursor(cursor_factory=DictCursor) as cur:
+            # Basic counts
+            cur.execute("SELECT COUNT(*) AS cnt, COUNT(DISTINCT author) AS artists FROM public.score")
+            row = cur.fetchone()
+            total_songs = row['cnt']
+            unique_artists = row['artists']
+
+            # Year range
+            cur.execute("SELECT MIN(year) AS ymin, MAX(year) AS ymax FROM public.score WHERE year IS NOT NULL AND year > 0")
+            yr = cur.fetchone()
+            year_min = yr['ymin']
+            year_max = yr['ymax']
+
+            # Rating coverage
+            cur.execute("SELECT COUNT(*) AS rated FROM public.score WHERE rating IS NOT NULL AND rating > 0")
+            rated_count = cur.fetchone()['rated']
+            rated_pct = round(100.0 * rated_count / total_songs, 1) if total_songs > 0 else 0
+
+            # Top genres from mood_vector (extract genre names and count occurrences)
+            # mood_vector format: "rock:0.82,pop:0.45,..."
+            cur.execute("""
+                SELECT unnest(string_to_array(mood_vector, ',')) AS tag
+                FROM public.score
+                WHERE mood_vector IS NOT NULL AND mood_vector != ''
+            """)
+            genre_counts = {}
+            for r in cur:
+                tag = r['tag'].strip()
+                if ':' in tag:
+                    name = tag.split(':')[0].strip()
+                    if name:
+                        genre_counts[name] = genre_counts.get(name, 0) + 1
+            top_genres = sorted(genre_counts, key=genre_counts.get, reverse=True)[:15]
+
+            # Available scales
+            cur.execute("SELECT DISTINCT scale FROM public.score WHERE scale IS NOT NULL AND scale != '' ORDER BY scale")
+            scales = [r['scale'] for r in cur.fetchall()]
+
+        ctx = {
+            'total_songs': total_songs,
+            'unique_artists': unique_artists,
+            'top_genres': top_genres,
+            'year_min': year_min,
+            'year_max': year_max,
+            'has_ratings': rated_count > 0,
+            'rated_songs_pct': rated_pct,
+            'scales': scales,
+        }
+        _library_context_cache = ctx
+        return ctx
+    except Exception as e:
+        logger.warning(f"Failed to get library context: {e}")
+        return {
+            'total_songs': 0, 'unique_artists': 0, 'top_genres': [],
+            'year_min': None, 'year_max': None, 'has_ratings': False,
+            'rated_songs_pct': 0, 'scales': [],
+        }
+    finally:
+        db_conn.close()
+
+
 def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> List[Dict]:
     """Synchronous implementation of artist similarity API."""
     from tasks.artist_gmm_manager import find_similar_artists
-    import re
     
     db_conn = get_db_connection()
     log_messages = []
@@ -447,48 +524,61 @@ Suggest songs for "{user_request}" now:"""
             log_messages.append(f"Raw AI response (first 500 chars): {raw_response[:500]}")
             return {"songs": [], "message": "\n".join(log_messages)}
         
-        # Search database for these songs (FUZZY match)
+        # Search database for these songs using strict two-stage matching
         found_songs = []
+        seen_ids = set()
+
+        def _normalize(s: str) -> str:
+            """Strip spaces, dashes, apostrophes for fuzzy comparison."""
+            return re.sub(r"[\s\-\u2010\u2011\u2012\u2013\u2014/'\".,!?()]", '', s).lower()
+
         for item in song_list:
             title = item.get('title', '')
             artist = item.get('artist', '')
-            
+
             if not title or not artist:
                 continue
-            
+
             with db_conn.cursor(cursor_factory=DictCursor) as cur:
-                # Fuzzy search - match partial title OR artist
+                # Stage 1: Exact case-insensitive match on BOTH title AND artist
                 cur.execute("""
                     SELECT item_id, title, author
                     FROM public.score
-                    WHERE LOWER(title) LIKE LOWER(%s) 
-                       OR LOWER(author) LIKE LOWER(%s)
-                    ORDER BY 
-                        CASE 
-                            WHEN LOWER(title) LIKE LOWER(%s) AND LOWER(author) LIKE LOWER(%s) THEN 1
-                            WHEN LOWER(title) LIKE LOWER(%s) THEN 2
-                            WHEN LOWER(author) LIKE LOWER(%s) THEN 3
-                            ELSE 4
-                        END
-                    LIMIT 3
-                """, (f"%{title}%", f"%{artist}%", f"%{title}%", f"%{artist}%", f"%{title}%", f"%{artist}%"))
-                results = cur.fetchall()
-                
-                for result in results:
-                    song_dict = {
+                    WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s)
+                    LIMIT 1
+                """, (title, artist))
+                result = cur.fetchone()
+
+                # Stage 2: Normalized fuzzy match requiring BOTH title AND artist to match
+                if not result:
+                    title_norm = _normalize(title)
+                    artist_norm = _normalize(artist)
+                    if title_norm and artist_norm:
+                        cur.execute("""
+                            SELECT item_id, title, author
+                            FROM public.score
+                            WHERE LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(title, ' ', ''), '-', ''), '''', ''), '.', ''), ',', ''))
+                                  LIKE LOWER(%s)
+                              AND LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(author, ' ', ''), '-', ''), '''', ''), '.', ''), ',', ''))
+                                  LIKE LOWER(%s)
+                            ORDER BY LENGTH(title) + LENGTH(author)
+                            LIMIT 1
+                        """, (f"%{title_norm}%", f"%{artist_norm}%"))
+                        result = cur.fetchone()
+
+                if result and result['item_id'] not in seen_ids:
+                    found_songs.append({
                         "item_id": result['item_id'],
                         "title": result['title'],
                         "artist": result['author']
-                    }
-                    # Avoid duplicates
-                    if song_dict not in found_songs:
-                        found_songs.append(song_dict)
-            
+                    })
+                    seen_ids.add(result['item_id'])
+
             if len(found_songs) >= get_songs:
                 break
-        
-        log_messages.append(f"Found {len(found_songs)} songs in database")
-        
+
+        log_messages.append(f"Found {len(found_songs)} songs in database (from {len(song_list)} AI suggestions)")
+
         return {"songs": found_songs, "ai_suggestions": len(song_list), "message": "\n".join(log_messages)}
     finally:
         db_conn.close()
@@ -638,37 +728,53 @@ def _song_alchemy_sync(add_items: List[Dict], subtract_items: Optional[List[Dict
 
 
 def _database_genre_query_sync(
-    genres: Optional[List[str]] = None, 
+    genres: Optional[List[str]] = None,
     get_songs: int = 100,
     moods: Optional[List[str]] = None,
     tempo_min: Optional[float] = None,
     tempo_max: Optional[float] = None,
     energy_min: Optional[float] = None,
     energy_max: Optional[float] = None,
-    key: Optional[str] = None
+    key: Optional[str] = None,
+    scale: Optional[str] = None,
+    year_min: Optional[int] = None,
+    year_max: Optional[int] = None,
+    min_rating: Optional[int] = None
 ) -> List[Dict]:
-    """Synchronous implementation of flexible database search with multiple optional filters."""
+    """Synchronous implementation of flexible database search with multiple optional filters.
+
+    Improvements over the original:
+    - Genre matching uses regex to avoid substring false positives (e.g. 'rock' won't match 'indie rock')
+    - Results are ordered by genre confidence score sum (relevance) instead of RANDOM()
+    - Supports scale (major/minor), year range, and minimum rating filters
+    """
     # Ensure get_songs is int (Gemini may return float)
     get_songs = int(get_songs) if get_songs is not None else 100
-    
+
     db_conn = get_db_connection()
     log_messages = []
-    
+
     try:
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
             # Build conditions
             conditions = []
             params = []
-            
-            # Genre conditions (OR)
+
+            # Genre conditions (OR) - use regex to match whole genre names with confidence scores
+            # mood_vector format: "rock:0.82,pop:0.45,indie rock:0.31"
+            # We want "rock" to match "rock:0.82" but NOT "indie rock:0.31"
+            has_genre_filter = False
             if genres:
                 genre_conditions = []
                 for genre in genres:
-                    genre_conditions.append("mood_vector LIKE %s")
-                    params.append(f"%{genre}%")
+                    # Match genre at start of string or after comma, followed by colon
+                    # PostgreSQL regex: (^|,)\s*rock:
+                    genre_conditions.append("mood_vector ~* %s")
+                    params.append(f"(^|,)\\s*{re.escape(genre)}:")
                 conditions.append("(" + " OR ".join(genre_conditions) + ")")
-            
-            # Mood/other_features conditions (AND if multiple moods)
+                has_genre_filter = True
+
+            # Mood/other_features conditions (OR)
             if moods:
                 mood_conditions = []
                 for mood in moods:
@@ -678,7 +784,7 @@ def _database_genre_query_sync(
                     conditions.append(mood_conditions[0])
                 else:
                     conditions.append("(" + " OR ".join(mood_conditions) + ")")
-            
+
             # Numeric filters (AND)
             if tempo_min is not None:
                 conditions.append("tempo >= %s")
@@ -692,31 +798,87 @@ def _database_genre_query_sync(
             if energy_max is not None:
                 conditions.append("energy <= %s")
                 params.append(energy_max)
-            
+
             # Key filter
             if key:
                 conditions.append("key = %s")
                 params.append(key.upper())
-            
+
+            # Scale filter (major/minor)
+            if scale:
+                conditions.append("LOWER(scale) = LOWER(%s)")
+                params.append(scale)
+
+            # Year range filter
+            if year_min is not None:
+                conditions.append("year >= %s")
+                params.append(int(year_min))
+            if year_max is not None:
+                conditions.append("year <= %s")
+                params.append(int(year_max))
+
+            # Minimum rating filter
+            if min_rating is not None:
+                conditions.append("rating >= %s")
+                params.append(int(min_rating))
+
             where_clause = " AND ".join(conditions) if conditions else "1=1"
             params.append(get_songs)
-            
-            query = f"""
-                SELECT DISTINCT item_id, title, author
-                FROM (
-                    SELECT item_id, title, author
-                    FROM public.score
-                    WHERE {where_clause}
-                    ORDER BY RANDOM()
-                ) AS randomized
-                LIMIT %s
-            """
-            
-            cur.execute(query, params)
+
+            # Use relevance ranking when genre filter is active, otherwise random
+            if has_genre_filter:
+                # Build a scoring expression that sums confidence scores for matched genres
+                # For each requested genre, extract its score from mood_vector and sum them
+                score_parts = []
+                score_params = []
+                for genre in genres:
+                    # Extract the numeric score after 'genre:' using regex
+                    score_parts.append("""
+                        COALESCE(
+                            CAST(
+                                NULLIF(
+                                    SUBSTRING(mood_vector FROM %s),
+                                    ''
+                                ) AS NUMERIC
+                            ),
+                            0
+                        )
+                    """)
+                    # Regex to capture the score value: (?:^|,)\s*rock:(\d+\.?\d*)
+                    score_params.append(f"(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
+
+                relevance_expr = " + ".join(score_parts)
+                all_params = score_params + params
+
+                query = f"""
+                    SELECT DISTINCT item_id, title, author
+                    FROM (
+                        SELECT item_id, title, author,
+                               ({relevance_expr}) AS relevance_score
+                        FROM public.score
+                        WHERE {where_clause}
+                        ORDER BY relevance_score DESC, RANDOM()
+                    ) AS ranked
+                    LIMIT %s
+                """
+                cur.execute(query, all_params)
+            else:
+                query = f"""
+                    SELECT DISTINCT item_id, title, author
+                    FROM (
+                        SELECT item_id, title, author
+                        FROM public.score
+                        WHERE {where_clause}
+                        ORDER BY RANDOM()
+                    ) AS randomized
+                    LIMIT %s
+                """
+                cur.execute(query, params)
+
             results = cur.fetchall()
-        
+
         songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
-        
+
         filters = []
         if genres:
             filters.append(f"genres: {', '.join(genres)}")
@@ -728,9 +890,15 @@ def _database_genre_query_sync(
             filters.append(f"energy: {energy_min or 'any'}-{energy_max or 'any'}")
         if key:
             filters.append(f"key: {key}")
-        
+        if scale:
+            filters.append(f"scale: {scale}")
+        if year_min or year_max:
+            filters.append(f"year: {year_min or 'any'}-{year_max or 'any'}")
+        if min_rating:
+            filters.append(f"min_rating: {min_rating}")
+
         log_messages.append(f"Found {len(songs)} songs matching {', '.join(filters) if filters else 'all criteria'}")
-        
+
         return {"songs": songs, "message": "\n".join(log_messages)}
     finally:
         db_conn.close()

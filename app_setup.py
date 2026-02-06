@@ -22,6 +22,7 @@ from tasks.mediaserver import (
     get_provider_info,
     test_provider_connection,
     get_sample_tracks_from_provider,
+    get_libraries_for_provider,
     PROVIDER_TYPES
 )
 import config
@@ -230,19 +231,19 @@ def delete_provider(provider_id):
 PROVIDER_SCHEMAS = {
     'jellyfin': {
         'required': ['url', 'user_id', 'token'],
-        'optional': ['music_path_prefix'],
+        'optional': ['music_path_prefix', 'music_libraries'],
     },
     'navidrome': {
         'required': ['url', 'user', 'password'],
-        'optional': ['music_path_prefix'],
+        'optional': ['music_path_prefix', 'music_libraries'],
     },
     'lyrion': {
         'required': ['url'],
-        'optional': ['music_path_prefix'],
+        'optional': ['music_path_prefix', 'music_libraries'],
     },
     'emby': {
         'required': ['url', 'user_id', 'token'],
-        'optional': ['music_path_prefix'],
+        'optional': ['music_path_prefix', 'music_libraries'],
     },
     'localfiles': {
         'required': ['music_directory'],
@@ -703,6 +704,47 @@ def test_provider_config():
             }
 
     return jsonify(result)
+
+
+@setup_bp.route('/api/setup/providers/libraries', methods=['POST'])
+def get_provider_libraries():
+    """
+    Fetch available music libraries for a provider.
+    Called by frontend after successful connection test.
+    ---
+    tags:
+      - Setup
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              provider_type:
+                type: string
+              config:
+                type: object
+    responses:
+      200:
+        description: List of available music libraries
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    provider_type = data.get('provider_type')
+    config_data = data.get('config', {})
+
+    if not provider_type:
+        return jsonify({'error': 'provider_type is required'}), 400
+
+    try:
+        libraries = get_libraries_for_provider(provider_type, config_data)
+        return jsonify({'libraries': libraries})
+    except Exception as e:
+        logger.error(f"Error fetching libraries for {provider_type}: {e}")
+        return jsonify({'error': str(e), 'libraries': []}), 500
 
 
 @setup_bp.route('/api/setup/settings', methods=['GET'])

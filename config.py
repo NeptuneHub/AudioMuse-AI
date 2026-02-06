@@ -454,3 +454,9 @@ MOOD_SIMILARITY_ENABLE = os.environ.get("MOOD_SIMILARITY_ENABLE", "False").lower
 #   proxy_set_header X-Forwarded-Prefix /audiomuseai;
 # }
 ENABLE_PROXY_FIX = os.environ.get("ENABLE_PROXY_FIX", "False").lower() == "true"
+
+# --- Instant Playlist Optimization ---
+# Max songs from a single artist in the instant playlist (diversity enforcement)
+MAX_SONGS_PER_ARTIST_PLAYLIST = int(os.environ.get("MAX_SONGS_PER_ARTIST_PLAYLIST", "5"))
+# Enable energy-arc shaping for playlist ordering (gentle start -> peak -> cool down)
+PLAYLIST_ENERGY_ARC = os.environ.get("PLAYLIST_ENERGY_ARC", "False").lower() == "true"

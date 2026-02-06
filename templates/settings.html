@@ -492,6 +492,40 @@
         background: rgba(220, 53, 69, 0.2);
         color: #dc3545;
     }
+
+    /* Library Checklist */
+    .library-checklist {
+        margin-top: 0.75rem;
+        padding: 0.75rem;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+    }
+
+    .library-checklist-title {
+        font-weight: 500;
+        margin-bottom: 0.5rem;
+        font-size: 0.9rem;
+    }
+
+    .library-checklist label {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.25rem 0;
+        font-size: 0.9rem;
+        cursor: pointer;
+    }
+
+    .library-checklist label:hover {
+        color: var(--color-primary);
+    }
+
+    .library-checklist .library-note {
+        font-size: 0.8rem;
+        color: var(--text-muted);
+        margin-top: 0.5rem;
+    }
 </style>
 {% endblock %}
 
@@ -677,6 +711,7 @@
                 <!-- Populated based on provider type -->
             </div>
             <div id="provider-test-result" class="test-result" style="display: none;"></div>
+            <div id="provider-library-checklist" class="library-checklist" style="display: none;"></div>
         </div>
         <div class="modal-footer">
             <button class="btn-cancel" onclick="closeProviderModal()">Cancel</button>
@@ -943,6 +978,8 @@
 
         updateProviderFields();
         document.getElementById('provider-test-result').style.display = 'none';
+        const checklistDiv = document.getElementById('provider-library-checklist');
+        if (checklistDiv) { checklistDiv.style.display = 'none'; checklistDiv.innerHTML = ''; }
         document.getElementById('provider-modal').classList.add('visible');
     }
 
@@ -966,6 +1003,8 @@
 
         updateProviderFields(provider.config);
         document.getElementById('provider-test-result').style.display = 'none';
+        const checklistDiv = document.getElementById('provider-library-checklist');
+        if (checklistDiv) { checklistDiv.style.display = 'none'; checklistDiv.innerHTML = ''; }
         document.getElementById('provider-modal').classList.add('visible');
     }
 
@@ -973,6 +1012,12 @@
         document.getElementById('provider-modal').classList.remove('visible');
         document.getElementById('provider-type').disabled = false;
         editingProviderId = null;
+        // Reset library checklist
+        const checklistDiv = document.getElementById('provider-library-checklist');
+        if (checklistDiv) {
+            checklistDiv.style.display = 'none';
+            checklistDiv.innerHTML = '';
+        }
     }
 
     function updateProviderFields(existingConfig = {}) {
@@ -1025,6 +1070,26 @@
                 }
             }
         });
+
+        // Collect selected music libraries from checklist
+        const libraryCheckboxes = document.querySelectorAll('.library-checkbox');
+        if (libraryCheckboxes.length > 0) {
+            const allChecked = Array.from(libraryCheckboxes).every(cb => cb.checked);
+            if (allChecked) {
+                // All checked = no filtering (don't store music_libraries)
+            } else {
+                const selectedLibraries = [];
+                libraryCheckboxes.forEach(cb => {
+                    if (cb.checked) {
+                        selectedLibraries.push(cb.dataset.libraryName);
+                    }
+                });
+                if (selectedLibraries.length > 0) {
+                    config.music_libraries = selectedLibraries;
+                }
+            }
+        }
+
         return config;
     }
 
@@ -1046,9 +1111,64 @@
             const data = await response.json();
             resultDiv.className = `test-result ${data.success ? 'success' : 'error'}`;
             resultDiv.textContent = data.message;
+
+            // After successful connection test, fetch available libraries
+            if (data.success && type !== 'localfiles') {
+                fetchProviderLibraries(type, config);
+            }
         } catch (err) {
             resultDiv.className = 'test-result error';
             resultDiv.textContent = 'Connection test failed: ' + err.message;
+        }
+    }
+
+    async function fetchProviderLibraries(type, config) {
+        const checklistDiv = document.getElementById('provider-library-checklist');
+        if (!checklistDiv) return;
+
+        try {
+            const response = await fetch('/api/setup/providers/libraries', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider_type: type, config })
+            });
+            const data = await response.json();
+            const libraries = data.libraries || [];
+
+            if (libraries.length === 0) {
+                checklistDiv.style.display = 'none';
+                return;
+            }
+
+            // Get existing music_libraries from editing provider (if any)
+            let existingLibraries = null;
+            if (editingProviderId) {
+                const provider = providers.find(p => p.id === editingProviderId);
+                if (provider && provider.config && provider.config.music_libraries) {
+                    existingLibraries = provider.config.music_libraries;
+                }
+            }
+
+            // Render checklist
+            let html = '<div class="library-checklist-title">Music Libraries:</div>';
+            libraries.forEach(lib => {
+                // If editing and provider has music_libraries, check only those
+                // Otherwise check all (default = scan everything)
+                const isChecked = existingLibraries
+                    ? existingLibraries.includes(lib.name)
+                    : true;
+                html += `<label>
+                    <input type="checkbox" ${isChecked ? 'checked' : ''}
+                           class="library-checkbox"
+                           data-library-name="${lib.name}">
+                    ${lib.name}
+                </label>`;
+            });
+            html += '<div class="library-note">Uncheck libraries you don\'t want to scan. All checked = scan everything.</div>';
+            checklistDiv.innerHTML = html;
+            checklistDiv.style.display = 'block';
+        } catch (err) {
+            console.error('Error fetching libraries:', err);
         }
     }
 

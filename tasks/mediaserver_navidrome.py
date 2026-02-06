@@ -15,17 +15,49 @@ NAVIDROME_API_BATCH_SIZE = 40
 # NAVIDROME (SUBSONIC API) IMPLEMENTATION
 # ##############################################################################
 
-def _get_target_music_folder_ids():
+def get_music_libraries(config_dict=None):
+    """Fetch available music libraries (folders) from Navidrome.
+    Args: config_dict -- provider JSONB config dict (url, user, password). Falls back to global config.
+    Returns: [{'id': str, 'name': str}]
+    """
+    if config_dict:
+        auth_params = get_navidrome_auth_params(username=config_dict.get('user'), password=config_dict.get('password'))
+        url = f"{config_dict.get('url', '').rstrip('/')}/rest/getMusicFolders.view"
+        try:
+            r = requests.get(url, params=auth_params, timeout=REQUESTS_TIMEOUT)
+            r.raise_for_status()
+            subsonic = r.json().get("subsonic-response", {})
+            if subsonic.get("status") == "failed":
+                return []
+            folders = subsonic.get("musicFolders", {}).get("musicFolder", [])
+            return [{'id': str(f.get('id', '')), 'name': f.get('name', '')} for f in folders if isinstance(f, dict)]
+        except Exception as e:
+            logger.error(f"Failed to fetch Navidrome music folders: {e}", exc_info=True)
+            return []
+    else:
+        response = _navidrome_request("getMusicFolders")
+        if not (response and "musicFolders" in response and "musicFolder" in response["musicFolders"]):
+            return []
+        folders = response["musicFolders"]["musicFolder"]
+        return [{'id': str(f.get('id', '')), 'name': f.get('name', '')} for f in folders if isinstance(f, dict)]
+
+
+def _get_target_music_folder_ids(provider_config=None):
     """
     Parses config for music folder names and returns their IDs for filtering using a robust,
     case-insensitive matching against the server's actual folder configuration.
     """
-    folder_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+    # Try per-provider config first
+    if provider_config and provider_config.get('music_libraries'):
+        library_names = provider_config['music_libraries']  # already a list
+    else:
+        # Fallback to global env var
+        folder_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+        if not folder_names_str.strip():
+            return None
+        library_names = [n.strip() for n in folder_names_str.split(',') if n.strip()]
 
-    if not folder_names_str.strip():
-        return None
-
-    target_names_lower = {name.strip().lower() for name in folder_names_str.split(',') if name.strip()}
+    target_names_lower = {name.lower() for name in library_names}
 
     # Use the getMusicFolders endpoint to get the available music folders.
     response = _navidrome_request("getMusicFolders")

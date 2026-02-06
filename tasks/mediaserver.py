@@ -25,6 +25,7 @@ import config  # Import the config module to access server type and settings
 
 # Import the specific implementations
 from tasks.mediaserver_jellyfin import (
+    get_music_libraries as jellyfin_get_music_libraries,
     resolve_user as jellyfin_resolve_user,
     get_all_playlists as jellyfin_get_all_playlists,
     delete_playlist as jellyfin_delete_playlist,
@@ -39,6 +40,7 @@ from tasks.mediaserver_jellyfin import (
     get_last_played_time as jellyfin_get_last_played_time,
 )
 from tasks.mediaserver_navidrome import (
+    get_music_libraries as navidrome_get_music_libraries,
     get_all_playlists as navidrome_get_all_playlists,
     delete_playlist as navidrome_delete_playlist,
     get_recent_albums as navidrome_get_recent_albums,
@@ -52,6 +54,7 @@ from tasks.mediaserver_navidrome import (
     get_last_played_time as navidrome_get_last_played_time,
 )
 from tasks.mediaserver_lyrion import (
+    get_music_libraries as lyrion_get_music_libraries,
     get_all_playlists as lyrion_get_all_playlists,
     delete_playlist as lyrion_delete_playlist,
     get_recent_albums as lyrion_get_recent_albums,
@@ -65,6 +68,7 @@ from tasks.mediaserver_lyrion import (
     get_last_played_time as lyrion_get_last_played_time,
 )
 from tasks.mediaserver_emby import (
+    get_music_libraries as emby_get_music_libraries,
     resolve_user as emby_resolve_user,
     get_all_playlists as emby_get_all_playlists,
     delete_playlist as emby_delete_playlist,
@@ -775,6 +779,28 @@ def get_provider_info(provider_type: str):
         return info
 
     return None
+
+
+def get_libraries_for_provider(provider_type: str, config_dict: dict = None):
+    """Fetch available music libraries for a provider type.
+    Args:
+        provider_type: Type of provider (jellyfin, navidrome, etc.)
+        config_dict: Optional provider config dict for setup-time calls
+    Returns: [{'id': str, 'name': str}]
+    """
+    if provider_type == 'jellyfin':
+        return jellyfin_get_music_libraries(config_dict)
+    elif provider_type == 'navidrome':
+        return navidrome_get_music_libraries(config_dict)
+    elif provider_type == 'emby':
+        return emby_get_music_libraries(config_dict)
+    elif provider_type == 'lyrion':
+        return lyrion_get_music_libraries(config_dict)
+    elif provider_type == 'localfiles':
+        return []  # Single directory, no library concept
+    else:
+        logger.warning(f"get_libraries_for_provider: unknown provider type '{provider_type}'")
+        return []
 
 
 def _get_provider_config_fields(provider_type: str):
