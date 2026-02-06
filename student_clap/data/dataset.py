@@ -176,7 +176,8 @@ class StudentCLAPDataset:
                 
                 # --- Gold standard spectrogram augmentation ---
                 mel_aug = mel_specs.copy()
-                if self.split == 'train':
+                augmentation_enabled = self.config.get('training', {}).get('augmentation_enabled', True)
+                if self.split == 'train' and augmentation_enabled:
                     # Random gain
                     gain = np.random.uniform(0.8, 1.2)
                     mel_aug *= gain

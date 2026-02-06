@@ -31,6 +31,7 @@ model_text:
   nhead: 4
 
 training:
+  augmentation_enabled: true  # Set to false to disable all spectrogram augmentations
   batch_size: 64
   gradient_accumulation_steps: 1
   learning_rate: 0.00005 # Original: 0.003
