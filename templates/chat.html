@@ -180,6 +180,7 @@
                     <input type="text" id="mediaServerPlaylistName" name="playlist_name" placeholder="Enter playlist name" required>
                 </div>
             </div>
+            <div id="provider-selector-container"></div>
             <button type="submit" id="submitMediaServerPlaylist">Create Playlist</button>
         </form>
         <div id="mediaServerResponseArea"></div>
@@ -188,10 +189,14 @@
 {% endblock %}
 
 {% block bodyAdditions %}
+    <script src="{{ url_for('static', filename='provider-selector.js') }}"></script>
     <script>
         // --- Self-Executing Anonymous Function to Encapsulate Code ---
         (() => {
             let globalConfig = {};
+
+            // Initialize provider selector
+            initProviderSelector();
 
             // --- DOM Element References ---
             const aiProviderSelect = document.getElementById('aiProvider');
@@ -659,6 +664,7 @@
                     playlist_name: playlistNameInput.value,
                     item_ids: itemIdsInput.value.split(',') // Send as an array
                 };
+                addProviderToPayload(payload);
 
                 try {
                     // MODIFIED: Changed API endpoint to be more generic

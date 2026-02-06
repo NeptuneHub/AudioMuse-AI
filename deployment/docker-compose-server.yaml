@@ -1,13 +1,38 @@
-# AudioMuse-AI Deployment Configuration
-# 
-# SERVER TEMPLATE - Run database, Redis and Flask API
-# This can be run on a lightweight server, tested on an N100 mini PC (without heavy CPU or GPU requirements).
-# For remote worker setup with CPU/GPU on a separate machine, use docker-compose-worker.yaml on the remote machine
-# and configure WORKER_POSTGRES_HOST and WORKER_REDIS_URL in that worker's .env file to point to this server.
+# AudioMuse-AI Server-Only Docker Compose
+# =============================================================================
+# SERVER TEMPLATE - Runs Flask API + Redis + PostgreSQL (NO workers)
+#
+# Use this for split deployments where:
+#   - Server runs on lightweight hardware (N100, Raspberry Pi, NAS, etc.)
+#   - Workers run on separate machines with GPU/better CPU
+#
+# Quick Start:
+#   1. Copy .env.example to .env and configure settings
+#   2. Run: docker-compose -f docker-compose-server.yaml up -d
+#   3. Note this server's IP address for worker configuration
+#   4. On worker machine(s), use docker-compose-worker-cpu.yaml or
+#      docker-compose-worker-nvidia.yaml with these .env settings:
+#        WORKER_REDIS_URL=redis://SERVER_IP:6379/0
+#        WORKER_POSTGRES_HOST=SERVER_IP
+#
+# Network Requirements (ports to open for workers):
+#   - Port 6379: Redis (workers connect here for task queue)
+#   - Port 5432: PostgreSQL (workers connect here for data)
+#   - Port 8000: Web UI (optional, only if exposing to users)
+#
+# Security Note:
+#   For production, consider:
+#   - VPN or private network between server and workers
+#   - Redis password (uncomment command in redis service)
+#   - PostgreSQL with SSL and strong password
+# =============================================================================
 
 version: '3.8'
+
 services:
-  # Redis service for RQ (task queue)
+  # ---------------------------------------------------------------------------
+  # Redis - Task Queue (exposed for remote workers)
+  # ---------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
     container_name: audiomuse-redis
@@ -16,8 +41,17 @@ services:
     volumes:
       - redis-data:/data
     restart: unless-stopped
+    # Uncomment for password protection:
+    # command: redis-server --requirepass ${REDIS_PASSWORD:-changeme}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  # PostgreSQL database service
+  # ---------------------------------------------------------------------------
+  # PostgreSQL - Database (exposed for remote workers)
+  # ---------------------------------------------------------------------------
   postgres:
     image: postgres:15-alpine
     container_name: audiomuse-postgres
@@ -30,42 +64,76 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-audiomuse}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  # AudioMuse-AI Flask application service
+  # ---------------------------------------------------------------------------
+  # AudioMuse-AI Flask Application (Web UI & API only)
+  # NOTE: No worker - analysis tasks are sent to remote workers via Redis
+  # ---------------------------------------------------------------------------
   audiomuse-ai-flask:
-    image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
+    image: ghcr.io/neptunehub/audiomuse-ai:latest
     container_name: audiomuse-ai-flask-app
     ports:
       - "${FRONTEND_PORT:-8000}:8000"
     environment:
       SERVICE_TYPE: "flask"
       TZ: "${TZ:-UTC}"
-      MEDIASERVER_TYPE: "jellyfin"
-      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
-      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
-      JELLYFIN_URL: "${JELLYFIN_URL}"
+      # Media Server Configuration (configure via GUI or .env)
+      MEDIASERVER_TYPE: "${MEDIASERVER_TYPE:-localfiles}"
+      JELLYFIN_URL: "${JELLYFIN_URL:-}"
+      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID:-}"
+      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN:-}"
+      NAVIDROME_URL: "${NAVIDROME_URL:-}"
+      NAVIDROME_USER: "${NAVIDROME_USER:-}"
+      NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD:-}"
+      LYRION_URL: "${LYRION_URL:-}"
+      MPD_HOST: "${MPD_HOST:-}"
+      MPD_PORT: "${MPD_PORT:-6600}"
+      MPD_PASSWORD: "${MPD_PASSWORD:-}"
+      MPD_MUSIC_DIRECTORY: "${MPD_MUSIC_DIRECTORY:-/music}"
+      EMBY_URL: "${EMBY_URL:-}"
+      EMBY_USER_ID: "${EMBY_USER_ID:-}"
+      EMBY_TOKEN: "${EMBY_TOKEN:-}"
+      LOCALFILES_MUSIC_DIRECTORY: "${LOCALFILES_MUSIC_DIRECTORY:-/music}"
+      LOCALFILES_PLAYLIST_DIR: "${LOCALFILES_PLAYLIST_DIR:-/music/playlists}"
+      # Database Configuration
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
       POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
       POSTGRES_HOST: "postgres"
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
       REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
-      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER}"
-      OPENAI_API_KEY: "${OPENAI_API_KEY}"
-      OPENAI_SERVER_URL: "${OPENAI_SERVER_URL}"
-      OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
-      GEMINI_API_KEY: "${GEMINI_API_KEY}"
-      MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
-      CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
+      # AI Configuration
+      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER:-NONE}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_SERVER_URL: "${OPENAI_SERVER_URL:-}"
+      OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      MISTRAL_API_KEY: "${MISTRAL_API_KEY:-}"
+      # Flask doesn't need CLAP models - workers handle that
+      CLAP_ENABLED: "false"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio
+      - ${MUSIC_PATH:-./music}:/music:ro
     depends_on:
-      - redis
-      - postgres
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
+# =============================================================================
+# Volumes
+# =============================================================================
 volumes:
   redis-data:
+    name: audiomuse-redis-data
   postgres-data:
+    name: audiomuse-postgres-data
   temp-audio-flask:
+    name: audiomuse-temp-flask

@@ -19,7 +19,6 @@ google-genai==1.57.0
 mistralai
 umap-learn
 pydub
-python-mpd2
 psutil
 onnx==1.14.1
 resampy

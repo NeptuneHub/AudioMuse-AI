@@ -1,0 +1,1964 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    .setup-wizard {
+        max-width: 800px;
+        margin: 0 auto;
+    }
+
+    .setup-header {
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+
+    .setup-header h1 {
+        font-size: 2rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .setup-header .subtitle {
+        color: var(--text-muted);
+        font-size: 1.1rem;
+    }
+
+    /* Progress Steps */
+    .setup-progress {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 2rem;
+        padding: 0 1rem;
+    }
+
+    .progress-step {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        flex: 1;
+        position: relative;
+    }
+
+    .progress-step:not(:last-child)::after {
+        content: '';
+        position: absolute;
+        top: 15px;
+        left: 50%;
+        width: 100%;
+        height: 2px;
+        background: var(--border-color);
+        z-index: 0;
+    }
+
+    .progress-step.completed:not(:last-child)::after {
+        background: var(--color-primary);
+    }
+
+    .step-number {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        background: var(--bg-body);
+        border: 2px solid var(--border-color);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        z-index: 1;
+        transition: all 0.3s ease;
+    }
+
+    .progress-step.active .step-number {
+        border-color: var(--color-primary);
+        background: var(--color-primary);
+        color: white;
+    }
+
+    .progress-step.completed .step-number {
+        border-color: var(--color-primary);
+        background: var(--color-primary);
+        color: white;
+    }
+
+    .step-label {
+        margin-top: 0.5rem;
+        font-size: 0.85rem;
+        color: var(--text-muted);
+    }
+
+    .progress-step.active .step-label {
+        color: var(--text-main);
+        font-weight: 500;
+    }
+
+    /* Step Content */
+    .step-content {
+        display: none;
+        animation: fadeIn 0.3s ease;
+    }
+
+    .step-content.active {
+        display: block;
+    }
+
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    .step-section {
+        background: var(--bg-body);
+        border-radius: 8px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .step-section h3 {
+        margin-top: 0;
+        margin-bottom: 1rem;
+        font-size: 1.2rem;
+    }
+
+    .step-section p.description {
+        color: var(--text-muted);
+        margin-bottom: 1rem;
+    }
+
+    /* Provider Cards */
+    .provider-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 1rem;
+    }
+
+    .provider-card {
+        background: var(--bg-card);
+        border: 2px solid var(--border-color);
+        border-radius: 8px;
+        padding: 1rem;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+    .provider-card:hover {
+        border-color: var(--color-primary);
+    }
+
+    .provider-card.selected {
+        border-color: var(--color-primary);
+        background: rgba(37, 99, 235, 0.1);
+    }
+
+    .provider-card .provider-name {
+        font-weight: bold;
+        margin-bottom: 0.5rem;
+    }
+
+    .provider-card .provider-desc {
+        font-size: 0.85rem;
+        color: var(--text-muted);
+    }
+
+    .provider-card .provider-check {
+        display: none;
+        color: var(--color-primary);
+        font-size: 1.2rem;
+    }
+
+    .provider-card.selected .provider-check {
+        display: inline;
+    }
+
+    /* Provider Config Form */
+    .provider-config {
+        margin-top: 1.5rem;
+        padding: 1rem;
+        background: var(--bg-card);
+        border-radius: 8px;
+        display: none;
+    }
+
+    .provider-config.visible {
+        display: block;
+    }
+
+    .provider-config h4 {
+        margin-top: 0;
+        margin-bottom: 1rem;
+    }
+
+    .config-field {
+        margin-bottom: 1rem;
+    }
+
+    .config-field label {
+        display: block;
+        margin-bottom: 0.25rem;
+        font-weight: 500;
+    }
+
+    .config-field .field-help {
+        font-size: 0.85rem;
+        color: var(--text-muted);
+        margin-top: 0.25rem;
+    }
+
+    .config-field input,
+    .config-field select {
+        width: 100%;
+        padding: 0.5rem;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        background: var(--bg-body);
+        color: var(--text-main);
+    }
+
+    .config-field input:focus,
+    .config-field select:focus {
+        outline: none;
+        border-color: var(--color-primary);
+    }
+
+    /* Test Connection Button */
+    .test-connection-btn {
+        background: var(--bg-body);
+        border: 1px solid var(--border-color);
+        padding: 0.5rem 1rem;
+        border-radius: 4px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .test-connection-btn:hover {
+        background: var(--bg-card);
+    }
+
+    .test-result {
+        margin-top: 0.5rem;
+        padding: 0.5rem;
+        border-radius: 4px;
+        font-size: 0.9rem;
+    }
+
+    .test-result.success {
+        background: rgba(40, 167, 69, 0.2);
+        color: #28a745;
+    }
+
+    .test-result.error {
+        background: rgba(220, 53, 69, 0.2);
+        color: #dc3545;
+    }
+
+    /* Browse Input Group */
+    .input-with-browse {
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .input-with-browse input {
+        flex: 1;
+    }
+
+    .browse-btn {
+        padding: 0.5rem 1rem;
+        background: var(--bg-body);
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        cursor: pointer;
+        white-space: nowrap;
+        color: var(--text-main);
+    }
+
+    .browse-btn:hover {
+        background: var(--bg-card);
+        border-color: var(--color-primary);
+    }
+
+    /* Directory Browser Modal */
+    .modal-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .modal-overlay.visible {
+        display: flex;
+    }
+
+    .modal-content {
+        background: var(--bg-card);
+        border-radius: 8px;
+        width: 90%;
+        max-width: 500px;
+        max-height: 80vh;
+        display: flex;
+        flex-direction: column;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    }
+
+    .modal-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .modal-header h3 {
+        margin: 0;
+        font-size: 1.1rem;
+    }
+
+    .modal-close {
+        background: none;
+        border: none;
+        font-size: 1.5rem;
+        cursor: pointer;
+        color: var(--text-muted);
+        padding: 0;
+        line-height: 1;
+    }
+
+    .modal-close:hover {
+        color: var(--text-main);
+    }
+
+    .modal-body {
+        padding: 1rem 1.5rem;
+        overflow-y: auto;
+        flex: 1;
+    }
+
+    .current-path {
+        padding: 0.5rem;
+        background: var(--bg-body);
+        border-radius: 4px;
+        font-family: monospace;
+        font-size: 0.9rem;
+        margin-bottom: 1rem;
+        word-break: break-all;
+    }
+
+    .directory-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+    }
+
+    .directory-item {
+        padding: 0.75rem;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        margin-bottom: 0.5rem;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        transition: all 0.15s ease;
+    }
+
+    .directory-item:hover {
+        background: rgba(37, 99, 235, 0.1);
+        border-color: var(--color-primary);
+    }
+
+    .directory-item.parent {
+        font-style: italic;
+        color: var(--text-muted);
+    }
+
+    .directory-item .folder-icon {
+        font-size: 1.2rem;
+    }
+
+    .directory-item.inaccessible {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    .modal-footer {
+        padding: 1rem 1.5rem;
+        border-top: 1px solid var(--border-color);
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.5rem;
+    }
+
+    .modal-footer button {
+        padding: 0.5rem 1rem;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+
+    .modal-footer .btn-cancel {
+        background: var(--bg-body);
+        border: 1px solid var(--border-color);
+        color: var(--text-main);
+    }
+
+    .modal-footer .btn-select {
+        background: var(--color-primary);
+        border: none;
+        color: white;
+    }
+
+    .modal-footer .btn-select:hover {
+        background: var(--color-primary-hover);
+    }
+
+    /* Navigation Buttons */
+    .step-navigation {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 2rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--border-color);
+    }
+
+    .step-navigation button {
+        padding: 0.75rem 1.5rem;
+        border-radius: 4px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+    .btn-prev {
+        background: var(--bg-body);
+        border: 1px solid var(--border-color);
+        color: var(--text-main);
+    }
+
+    .btn-prev:hover {
+        background: var(--bg-card);
+    }
+
+    .btn-next, .btn-complete {
+        background: var(--color-primary);
+        border: none;
+        color: white;
+    }
+
+    .btn-next:hover, .btn-complete:hover {
+        background: var(--color-primary-hover);
+    }
+
+    .btn-next:disabled, .btn-complete:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    /* Advanced Settings Toggle */
+    .advanced-toggle {
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        color: var(--text-muted);
+        margin-top: 1rem;
+        padding: 0.5rem 0;
+    }
+
+    .advanced-toggle:hover {
+        color: var(--text-main);
+    }
+
+    .advanced-content {
+        display: none;
+        margin-top: 1rem;
+    }
+
+    .advanced-content.visible {
+        display: block;
+    }
+
+    /* Hardware Options */
+    .hardware-options {
+        display: flex;
+        gap: 1rem;
+        margin-top: 1rem;
+    }
+
+    .hardware-option {
+        flex: 1;
+        padding: 1.5rem;
+        border: 2px solid var(--border-color);
+        border-radius: 8px;
+        cursor: pointer;
+        text-align: center;
+        transition: all 0.2s ease;
+    }
+
+    .hardware-option:hover {
+        border-color: var(--color-primary);
+    }
+
+    .hardware-option.selected {
+        border-color: var(--color-primary);
+        background: rgba(37, 99, 235, 0.1);
+    }
+
+    .hardware-option .option-icon {
+        font-size: 2rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .hardware-option .option-name {
+        font-weight: bold;
+        margin-bottom: 0.25rem;
+    }
+
+    .hardware-option .option-desc {
+        font-size: 0.85rem;
+        color: var(--text-muted);
+    }
+
+    /* Summary Section */
+    .summary-item {
+        display: flex;
+        justify-content: space-between;
+        padding: 0.75rem 0;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .summary-item:last-child {
+        border-bottom: none;
+    }
+
+    .summary-label {
+        color: var(--text-muted);
+    }
+
+    .summary-value {
+        font-weight: 500;
+    }
+
+    /* Existing Install Banner */
+    .existing-install-banner {
+        background: rgba(37, 99, 235, 0.1);
+        border: 1px solid var(--color-primary);
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1.5rem;
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+
+    .existing-install-banner .banner-icon {
+        font-size: 1.5rem;
+    }
+
+    .existing-install-banner .banner-content h4 {
+        margin: 0 0 0.25rem 0;
+    }
+
+    .existing-install-banner .banner-content p {
+        margin: 0;
+        color: var(--text-muted);
+        font-size: 0.9rem;
+    }
+
+    .existing-providers-list {
+        list-style: none;
+        padding: 0;
+        margin: 0.5rem 0;
+    }
+
+    .existing-providers-list li {
+        padding: 0.4rem 0;
+        font-size: 0.9rem;
+    }
+
+    .provider-badge {
+        display: inline-block;
+        padding: 0.15rem 0.4rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 500;
+        margin-left: 0.5rem;
+    }
+
+    .provider-badge.enabled {
+        background: rgba(40, 167, 69, 0.2);
+        color: #28a745;
+    }
+
+    .provider-badge.disabled {
+        background: rgba(108, 117, 125, 0.2);
+        color: #6c757d;
+    }
+
+    /* Provider List */
+    .configured-providers {
+        margin-top: 1rem;
+    }
+
+    .provider-list-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 1rem;
+        background: var(--bg-card);
+        border-radius: 8px;
+        margin-bottom: 0.5rem;
+    }
+
+    .provider-list-item .provider-info {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+
+    .provider-list-item .provider-status {
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.85rem;
+    }
+
+    .provider-status.enabled {
+        background: rgba(40, 167, 69, 0.2);
+        color: #28a745;
+    }
+
+    .provider-status.disabled {
+        background: rgba(108, 117, 125, 0.2);
+        color: #6c757d;
+    }
+
+    .provider-actions {
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .provider-actions button {
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.85rem;
+        cursor: pointer;
+    }
+
+    /* Worker Connection Info */
+    .connection-info-box {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        background: var(--bg-card);
+        padding: 0.75rem;
+        border-radius: 4px;
+        border: 1px solid var(--border-color);
+    }
+
+    .connection-info-box code {
+        flex: 1;
+        font-family: monospace;
+        font-size: 0.95rem;
+        word-break: break-all;
+    }
+
+    .copy-btn {
+        padding: 0.25rem 0.75rem;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        background: var(--bg-body);
+        cursor: pointer;
+        font-size: 0.85rem;
+    }
+
+    .copy-btn:hover {
+        background: var(--bg-card);
+    }
+
+    .copy-btn.copied {
+        background: rgba(40, 167, 69, 0.2);
+        border-color: #28a745;
+        color: #28a745;
+    }
+
+    .worker-connection-info .config-field {
+        margin-bottom: 1.25rem;
+    }
+
+    /* Hardware Info Display */
+    .hardware-info-box {
+        display: flex;
+        align-items: flex-start;
+        gap: 1rem;
+        padding: 1.25rem;
+        background: var(--bg-card);
+        border-radius: 8px;
+        border: 2px solid var(--border-color);
+    }
+
+    .hardware-info-box.gpu-detected {
+        border-color: #28a745;
+        background: rgba(40, 167, 69, 0.1);
+    }
+
+    .hardware-info-box .hw-icon {
+        font-size: 2.5rem;
+        line-height: 1;
+    }
+
+    .hardware-info-box .hw-details {
+        flex: 1;
+    }
+
+    .hardware-info-box .hw-title {
+        font-weight: bold;
+        font-size: 1.1rem;
+        margin-bottom: 0.25rem;
+    }
+
+    .hardware-info-box .hw-subtitle {
+        color: var(--text-muted);
+        font-size: 0.9rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .hardware-info-box .hw-description {
+        font-size: 0.9rem;
+        line-height: 1.5;
+    }
+
+    .hardware-benefits {
+        margin-top: 1rem;
+        padding: 1rem;
+        background: rgba(37, 99, 235, 0.1);
+        border-radius: 8px;
+        border-left: 3px solid var(--color-primary);
+    }
+
+    .hardware-benefits h4 {
+        margin: 0 0 0.5rem 0;
+        font-size: 0.95rem;
+    }
+
+    .hardware-benefits ul {
+        margin: 0;
+        padding-left: 1.25rem;
+        font-size: 0.9rem;
+    }
+
+    .hardware-benefits li {
+        margin-bottom: 0.25rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="setup-wizard">
+    <div class="setup-header">
+        <h1>AudioMuse-AI Setup</h1>
+        <p class="subtitle">Configure your music analysis system</p>
+    </div>
+
+    <!-- Progress Steps -->
+    <div class="setup-progress">
+        <div class="progress-step active" data-step="1">
+            <div class="step-number">1</div>
+            <span class="step-label">Welcome</span>
+        </div>
+        <div class="progress-step" data-step="2">
+            <div class="step-number">2</div>
+            <span class="step-label">Providers</span>
+        </div>
+        <div class="progress-step" data-step="3">
+            <div class="step-number">3</div>
+            <span class="step-label">Settings</span>
+        </div>
+        <div class="progress-step" data-step="4">
+            <div class="step-number">4</div>
+            <span class="step-label">Complete</span>
+        </div>
+    </div>
+
+    <!-- Step 1: Welcome -->
+    <div class="step-content active" id="step-1">
+        <div class="step-section">
+            <h3>Welcome to AudioMuse-AI</h3>
+            <p class="description">
+                This setup wizard will help you configure AudioMuse-AI to analyze your music library
+                and create intelligent playlists. Let's get started!
+            </p>
+
+            <div id="existing-install-info" style="display: none;">
+                <!-- Populated by JS if existing installation detected -->
+            </div>
+        </div>
+
+        <div class="step-section">
+            <h3>Select Deployment Mode</h3>
+            <p class="description">
+                Choose how you want to deploy AudioMuse-AI.
+            </p>
+
+            <div class="hardware-options">
+                <div class="hardware-option selected" data-deployment="unified">
+                    <div class="option-icon">&#128230;</div>
+                    <div class="option-name">Unified</div>
+                    <div class="option-desc">Server and worker on the same machine. Best for most users.</div>
+                </div>
+                <div class="hardware-option" data-deployment="split">
+                    <div class="option-icon">&#128423;</div>
+                    <div class="option-name">Split</div>
+                    <div class="option-desc">Run workers on separate machines. For distributed setups or dedicated GPU servers.</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Hardware Info for Unified Mode (read-only, auto-detected) -->
+        <div class="step-section" id="hardware-info-section">
+            <h3>Current Hardware Configuration</h3>
+            <div id="hardware-info-content">
+                <!-- Populated by JS based on auto-detection -->
+                <p class="description">Detecting hardware...</p>
+            </div>
+        </div>
+
+        <!-- Hardware Selection for Split Mode (selectable for worker config) -->
+        <div class="step-section" id="hardware-select-section" style="display: none;">
+            <h3>Worker Hardware Configuration</h3>
+            <p class="description">
+                Select the hardware configuration for your remote workers. This helps generate the correct
+                docker-compose recommendations.
+            </p>
+
+            <div class="hardware-options">
+                <div class="hardware-option selected" data-hardware="cpu">
+                    <div class="option-icon">&#128187;</div>
+                    <div class="option-name">CPU Only</div>
+                    <div class="option-desc">Works on any system. Slower analysis but no special requirements.</div>
+                </div>
+                <div class="hardware-option" data-hardware="nvidia">
+                    <div class="option-icon">&#9889;</div>
+                    <div class="option-name">NVIDIA GPU</div>
+                    <div class="option-desc">Faster analysis with CUDA acceleration. Requires NVIDIA GPU with drivers.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="step-navigation">
+            <div></div>
+            <button class="btn-next" onclick="nextStep()">Continue</button>
+        </div>
+    </div>
+
+    <!-- Step 2: Provider Configuration -->
+    <div class="step-content" id="step-2">
+        <div class="step-section">
+            <h3>Configure Media Providers</h3>
+            <p class="description">
+                Select one or more media providers. You can add multiple providers to analyze music
+                from different sources. Tracks are linked by file path, so the same song in different
+                providers will share analysis data.
+            </p>
+
+            <div class="provider-grid" id="provider-grid">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+
+        <div class="step-section" id="provider-config-section" style="display: none;">
+            <h3 id="provider-config-title">Provider Configuration</h3>
+            <div id="provider-configs">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+
+        <div class="configured-providers" id="configured-providers" style="display: none;">
+            <h3>Configured Providers</h3>
+            <div id="provider-list">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+
+        <div class="step-navigation">
+            <button class="btn-prev" onclick="prevStep()">Back</button>
+            <button class="btn-next" onclick="nextStep()" id="btn-step2-next">Continue</button>
+        </div>
+    </div>
+
+    <!-- Step 3: Advanced Settings -->
+    <div class="step-content" id="step-3">
+        <div class="step-section">
+            <h3>Analysis Settings</h3>
+            <p class="description">
+                Configure optional analysis features. The defaults work well for most users.
+            </p>
+
+            <div class="config-field">
+                <label>
+                    <input type="checkbox" id="setting-clap-enabled" checked>
+                    Enable CLAP Text Search
+                </label>
+                <div class="field-help">
+                    Allows searching your music using natural language queries like "upbeat summer songs".
+                    Uses additional memory (~750MB).
+                </div>
+            </div>
+
+            <div class="config-field">
+                <label>
+                    <input type="checkbox" id="setting-gpu-clustering">
+                    Use GPU for Clustering
+                </label>
+                <div class="field-help">
+                    Accelerate clustering with NVIDIA RAPIDS cuML. Only available with NVIDIA GPU.
+                </div>
+            </div>
+        </div>
+
+        <div class="step-section" id="worker-config-section" style="display: none;">
+            <h3>Worker Connection Info</h3>
+            <p class="description">
+                Use these settings when configuring remote workers. Copy them to the worker machine's .env file.
+            </p>
+
+            <div class="worker-connection-info">
+                <div class="config-field">
+                    <label>Redis URL for Workers</label>
+                    <div class="connection-info-box">
+                        <code id="worker-redis-url">redis://&lt;THIS_SERVER_IP&gt;:6379/0</code>
+                        <button class="copy-btn" onclick="copyToClipboard('worker-redis-url')">Copy</button>
+                    </div>
+                    <div class="field-help">Set WORKER_REDIS_URL in worker's .env to this value</div>
+                </div>
+
+                <div class="config-field">
+                    <label>PostgreSQL Host for Workers</label>
+                    <div class="connection-info-box">
+                        <code id="worker-postgres-host">&lt;THIS_SERVER_IP&gt;</code>
+                        <button class="copy-btn" onclick="copyToClipboard('worker-postgres-host')">Copy</button>
+                    </div>
+                    <div class="field-help">Set WORKER_POSTGRES_HOST in worker's .env to this value</div>
+                </div>
+
+                <div class="config-field">
+                    <label>Recommended Docker Compose File</label>
+                    <div class="connection-info-box">
+                        <code id="worker-compose-file">docker-compose-worker-cpu.yaml</code>
+                    </div>
+                    <div class="field-help" id="worker-compose-help">
+                        Run on worker machine: <code>docker-compose -f docker-compose-worker-cpu.yaml up -d</code>
+                    </div>
+                </div>
+            </div>
+
+            <div class="step-section" style="margin-top: 1rem; padding: 1rem; background: rgba(37, 99, 235, 0.1); border-radius: 8px;">
+                <h4 style="margin-top: 0;">Quick Setup for Workers</h4>
+                <ol style="margin: 0.5rem 0 0 1.5rem; padding: 0;">
+                    <li>Copy .env.example to the worker machine</li>
+                    <li>Set WORKER_REDIS_URL and WORKER_POSTGRES_HOST as shown above</li>
+                    <li>Copy your media server credentials (same as this server)</li>
+                    <li>Run the appropriate docker-compose file</li>
+                </ol>
+            </div>
+        </div>
+
+        <div class="step-section">
+            <h3>AI Integration (Optional)</h3>
+            <p class="description">
+                AudioMuse-AI can use AI to generate creative playlist names based on the songs in each cluster.
+                This is purely cosmetic - it doesn't affect the analysis or clustering, just the names given to playlists.
+            </p>
+
+            <div class="config-field">
+                <label for="setting-ai-provider">AI Provider</label>
+                <select id="setting-ai-provider" onchange="updateAIProviderFields()">
+                    <option value="NONE" selected>None (Use Default Names)</option>
+                    <option value="OLLAMA">Ollama (Local)</option>
+                    <option value="OPENAI">OpenAI / OpenRouter</option>
+                    <option value="GEMINI">Google Gemini</option>
+                    <option value="MISTRAL">Mistral AI</option>
+                </select>
+                <div class="field-help">AI service for generating creative playlist names</div>
+            </div>
+
+            <div id="ai-provider-config" class="provider-config">
+                <!-- Dynamically populated based on selected AI provider -->
+            </div>
+        </div>
+
+        <div class="advanced-toggle" onclick="toggleAdvanced()">
+            <span id="advanced-arrow">&#9654;</span>
+            <span>Advanced Settings</span>
+        </div>
+
+        <div class="advanced-content" id="advanced-settings">
+            <div class="step-section">
+                <h3>Database Configuration</h3>
+                <p class="description">
+                    These settings are typically configured via environment variables in Docker.
+                    Only change if you know what you're doing.
+                </p>
+
+                <div class="config-field">
+                    <label for="setting-postgres-host">PostgreSQL Host</label>
+                    <input type="text" id="setting-postgres-host" value="postgres" readonly>
+                    <div class="field-help">Database host (set via POSTGRES_HOST env var)</div>
+                </div>
+
+                <div class="config-field">
+                    <label for="setting-redis-url">Redis URL</label>
+                    <input type="text" id="setting-redis-url" value="redis://redis:6379/0" readonly>
+                    <div class="field-help">Redis connection URL (set via REDIS_URL env var)</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="step-navigation">
+            <button class="btn-prev" onclick="prevStep()">Back</button>
+            <button class="btn-next" onclick="nextStep()">Continue</button>
+        </div>
+    </div>
+
+    <!-- Step 4: Summary & Complete -->
+    <div class="step-content" id="step-4">
+        <div class="step-section">
+            <h3>Setup Summary</h3>
+            <p class="description">
+                Review your configuration before completing the setup.
+            </p>
+
+            <div id="setup-summary">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+
+        <div class="step-section">
+            <h3>What's Next?</h3>
+            <ul>
+                <li>Run the analysis to scan and analyze your music library</li>
+                <li>Generate intelligent playlists based on audio fingerprints</li>
+                <li>Explore your music with similarity search and visualization tools</li>
+            </ul>
+        </div>
+
+        <div class="step-navigation">
+            <button class="btn-prev" onclick="prevStep()">Back</button>
+            <button class="btn-complete" onclick="completeSetup()">Complete Setup</button>
+        </div>
+    </div>
+</div>
+
+<!-- Directory Browser Modal -->
+<div class="modal-overlay" id="directory-browser-modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>Browse Directories</h3>
+            <button class="modal-close" onclick="closeBrowseModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="current-path" id="browse-current-path">/</div>
+            <ul class="directory-list" id="directory-list">
+                <!-- Populated by JS -->
+            </ul>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-cancel" onclick="closeBrowseModal()">Cancel</button>
+            <button class="btn-select" onclick="selectCurrentDirectory()">Select This Folder</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block bodyAdditions %}
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+<script>
+    // State
+    let currentStep = 1;
+    let selectedHardware = 'cpu';
+    let selectedDeployment = 'unified';
+    let selectedProviders = [];
+    let providerConfigs = {};
+    let providerTypes = [];
+    let existingProviders = [];
+    let serverInfo = { host: window.location.hostname, port: window.location.port || '8000' };
+
+    // Directory browser state
+    let browseCurrentPath = '/';
+    let browseTargetInput = null;
+
+    // Track tested providers for mandatory test connection and cross-provider prefix detection
+    let testedProviders = new Set();  // Track which providers have been successfully tested
+    let testedProviderTracks = {};    // Cache sample tracks: { 'jellyfin': [{title, artist, file_path}, ...], ... }
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', async function() {
+        await loadSetupStatus();
+        await loadProviderTypes();
+        await loadSettings();
+        await loadServerInfo();
+        renderProviderGrid();
+        setupHardwareOptions();
+        setupDeploymentOptions();
+        applyExistingSettings();
+    });
+
+    async function loadSetupStatus() {
+        try {
+            const response = await fetch('/api/setup/status');
+            const data = await response.json();
+
+            existingProviders = data.providers || [];
+
+            if (data.setup_completed && existingProviders.length > 0) {
+                // Build provider list HTML
+                const providerListHtml = existingProviders.map(p => {
+                    const badges = [];
+                    if (p.enabled) badges.push('<span class="provider-badge enabled">Enabled</span>');
+                    else badges.push('<span class="provider-badge disabled">Disabled</span>');
+                    return `<li><strong>${p.name || p.provider_type}</strong> (${p.provider_type}) ${badges.join(' ')}</li>`;
+                }).join('');
+
+                // Show existing installation info with provider list
+                const info = document.getElementById('existing-install-info');
+                info.style.display = 'block';
+                info.innerHTML = `
+                    <div class="existing-install-banner">
+                        <div class="banner-icon">&#9989;</div>
+                        <div class="banner-content">
+                            <h4>Existing Installation Detected</h4>
+                            <p>You have ${existingProviders.length} provider(s) configured:</p>
+                            <ul class="existing-providers-list">${providerListHtml}</ul>
+                            <p style="margin-top: 0.5rem; color: var(--text-muted);">
+                                <a href="/settings" style="color: var(--color-primary);">Go to Settings</a> to modify existing providers, or continue below to add new ones.
+                            </p>
+                        </div>
+                    </div>
+                `;
+            }
+        } catch (err) {
+            console.error('Error loading setup status:', err);
+        }
+    }
+
+    let existingSettings = {};
+
+    async function loadSettings() {
+        try {
+            const response = await fetch('/api/setup/settings');
+            const raw = await response.json();
+            // Flatten the category-grouped structure into a simple key-value map.
+            // Backend returns: { category: { key: { value, description } } }
+            // Frontend expects: { key: value }
+            existingSettings = {};
+            for (const category of Object.values(raw)) {
+                for (const [key, entry] of Object.entries(category)) {
+                    existingSettings[key] = entry.value !== undefined ? entry.value : entry;
+                }
+            }
+        } catch (err) {
+            console.error('Error loading settings:', err);
+        }
+    }
+
+    function applyExistingSettings() {
+        // Apply deployment type from saved settings
+        if (existingSettings.deployment_type) {
+            selectedDeployment = existingSettings.deployment_type;
+            document.querySelectorAll('.hardware-option[data-deployment]').forEach(option => {
+                option.classList.remove('selected');
+                if (option.dataset.deployment === selectedDeployment) {
+                    option.classList.add('selected');
+                }
+            });
+            updateWorkerConfigVisibility();
+            updateHardwareSections();
+        }
+
+        // For split mode, apply saved worker hardware selection
+        // For unified mode, hardware is auto-detected from server
+        if (selectedDeployment === 'split' && existingSettings.hardware_type) {
+            selectedHardware = existingSettings.hardware_type;
+            document.querySelectorAll('.hardware-option[data-hardware]').forEach(option => {
+                option.classList.remove('selected');
+                if (option.dataset.hardware === selectedHardware) {
+                    option.classList.add('selected');
+                }
+            });
+        }
+
+        // Apply other settings
+        if (existingSettings.clap_enabled !== undefined) {
+            document.getElementById('setting-clap-enabled').checked = existingSettings.clap_enabled !== false;
+        }
+        if (existingSettings.gpu_clustering !== undefined) {
+            document.getElementById('setting-gpu-clustering').checked = existingSettings.gpu_clustering === true;
+        }
+        if (existingSettings.ai_provider) {
+            document.getElementById('setting-ai-provider').value = existingSettings.ai_provider;
+            updateAIProviderFields();
+        }
+    }
+
+    // AI Provider configuration fields - names match config.py environment variables
+    const aiProviderFields = {
+        'OLLAMA': [
+            {name: 'ollama_server_url', label: 'Server URL', type: 'url', default: 'http://localhost:11434/api/generate', description: 'URL of your Ollama server'},
+            {name: 'ollama_model_name', label: 'Model Name', type: 'text', default: 'llama3.1:8b', description: 'Ollama model to use for playlist naming'}
+        ],
+        'OPENAI': [
+            {name: 'openai_server_url', label: 'Server URL', type: 'url', default: 'https://api.openai.com/v1', description: 'OpenAI API endpoint (or OpenRouter URL)'},
+            {name: 'openai_model_name', label: 'Model Name', type: 'text', default: 'gpt-4o-mini', description: 'Model to use (e.g., gpt-4o-mini, gpt-4o)'},
+            {name: 'openai_api_key', label: 'API Key', type: 'password', required: true, description: 'Your OpenAI or OpenRouter API key'}
+        ],
+        'GEMINI': [
+            {name: 'gemini_api_key', label: 'API Key', type: 'password', required: true, description: 'Your Google Gemini API key'},
+            {name: 'gemini_model_name', label: 'Model Name', type: 'text', default: 'gemini-2.0-flash', description: 'Gemini model to use'}
+        ],
+        'MISTRAL': [
+            {name: 'mistral_api_key', label: 'API Key', type: 'password', required: true, description: 'Your Mistral AI API key'},
+            {name: 'mistral_model_name', label: 'Model Name', type: 'text', default: 'ministral-3b-latest', description: 'Mistral model to use'}
+        ]
+    };
+
+    function updateAIProviderFields() {
+        const provider = document.getElementById('setting-ai-provider').value;
+        const configDiv = document.getElementById('ai-provider-config');
+
+        if (provider === 'NONE' || !aiProviderFields[provider]) {
+            configDiv.style.display = 'none';
+            configDiv.classList.remove('visible');
+            configDiv.innerHTML = '';
+            return;
+        }
+
+        configDiv.style.display = 'block';
+        configDiv.classList.add('visible');
+
+        const fields = aiProviderFields[provider];
+        let html = `<h4>${provider} Configuration</h4>`;
+
+        fields.forEach(field => {
+            // Check for existing saved value
+            const savedValue = existingSettings[field.name] || '';
+            const displayValue = field.type === 'password' ? '' : (savedValue || field.default || '');
+            const placeholder = field.default || '';
+
+            html += `
+                <div class="config-field">
+                    <label for="ai-config-${field.name}">
+                        ${field.label}${field.required ? ' *' : ''}
+                    </label>
+                    <input type="${field.type === 'password' ? 'password' : 'text'}"
+                           id="ai-config-${field.name}"
+                           value="${displayValue}"
+                           placeholder="${placeholder}"
+                           data-ai-field="${field.name}"
+                           ${field.required ? 'required' : ''}>
+                    <div class="field-help">${field.description || ''}</div>
+                </div>
+            `;
+        });
+
+        configDiv.innerHTML = html;
+    }
+
+    async function loadProviderTypes() {
+        try {
+            const response = await fetch('/api/setup/providers/types');
+            providerTypes = await response.json();
+        } catch (err) {
+            console.error('Error loading provider types:', err);
+        }
+    }
+
+    function renderProviderGrid() {
+        const grid = document.getElementById('provider-grid');
+        grid.innerHTML = '';
+
+        providerTypes.forEach(provider => {
+            const isSelected = selectedProviders.includes(provider.type);
+            const card = document.createElement('div');
+            card.className = `provider-card ${isSelected ? 'selected' : ''}`;
+            card.dataset.type = provider.type;
+            card.onclick = () => toggleProvider(provider.type);
+
+            card.innerHTML = `
+                <div class="provider-name">
+                    ${provider.name}
+                    <span class="provider-check">&#10003;</span>
+                </div>
+                <div class="provider-desc">${provider.description}</div>
+            `;
+
+            grid.appendChild(card);
+        });
+
+        updateProviderConfigSection();
+    }
+
+    function toggleProvider(type) {
+        const idx = selectedProviders.indexOf(type);
+        if (idx >= 0) {
+            selectedProviders.splice(idx, 1);
+            delete providerConfigs[type];
+            // Clear tested state when provider is deselected
+            testedProviders.delete(type);
+            delete testedProviderTracks[type];
+        } else {
+            selectedProviders.push(type);
+            providerConfigs[type] = {};
+        }
+        renderProviderGrid();
+    }
+
+    function updateProviderConfigSection() {
+        const section = document.getElementById('provider-config-section');
+        const configs = document.getElementById('provider-configs');
+
+        if (selectedProviders.length === 0) {
+            section.style.display = 'none';
+            return;
+        }
+
+        section.style.display = 'block';
+        configs.innerHTML = '';
+
+        selectedProviders.forEach(type => {
+            const provider = providerTypes.find(p => p.type === type);
+            if (!provider) return;
+
+            const configDiv = document.createElement('div');
+            configDiv.className = 'provider-config visible';
+            configDiv.innerHTML = `<h4>${provider.name} Configuration</h4>`;
+
+            const form = document.createElement('div');
+
+            provider.config_fields.forEach(field => {
+                const fieldDiv = document.createElement('div');
+                fieldDiv.className = 'config-field';
+
+                // Only show browse button for localfiles provider directory fields
+                // (not for music_path_prefix which is just a text prefix, not a browsable path)
+                const isLocalFilesDirectory = (type === 'localfiles') &&
+                    (field.name === 'music_directory' || field.name === 'playlist_directory');
+
+                let inputHtml = '';
+                if (field.type === 'password') {
+                    inputHtml = `<input type="password" id="config-${type}-${field.name}"
+                                 placeholder="${field.default || ''}"
+                                 data-provider="${type}" data-field="${field.name}">`;
+                } else if (field.type === 'boolean') {
+                    inputHtml = `<input type="checkbox" id="config-${type}-${field.name}"
+                                 ${field.default ? 'checked' : ''}
+                                 data-provider="${type}" data-field="${field.name}">`;
+                } else if (field.type === 'number') {
+                    inputHtml = `<input type="number" id="config-${type}-${field.name}"
+                                 value="${field.default || ''}"
+                                 data-provider="${type}" data-field="${field.name}">`;
+                } else if (isLocalFilesDirectory) {
+                    // Path field with browse button (only for localfiles directories)
+                    inputHtml = `<div class="input-with-browse">
+                                    <input type="text" id="config-${type}-${field.name}"
+                                         value="${field.default || ''}"
+                                         placeholder="${field.default || ''}"
+                                         data-provider="${type}" data-field="${field.name}">
+                                    <button type="button" class="browse-btn" onclick="openBrowseModal('config-${type}-${field.name}')">Browse</button>
+                                 </div>`;
+                } else {
+                    inputHtml = `<input type="text" id="config-${type}-${field.name}"
+                                 value="${field.default || ''}"
+                                 placeholder="${field.default || ''}"
+                                 data-provider="${type}" data-field="${field.name}">`;
+                }
+
+                fieldDiv.innerHTML = `
+                    <label for="config-${type}-${field.name}">
+                        ${field.label}${field.required ? ' *' : ''}
+                    </label>
+                    ${inputHtml}
+                    <div class="field-help">${field.description || ''}</div>
+                `;
+
+                form.appendChild(fieldDiv);
+            });
+
+            // Add test connection button
+            const testBtn = document.createElement('button');
+            testBtn.className = 'test-connection-btn';
+            testBtn.innerHTML = '&#128268; Test Connection';
+            testBtn.onclick = () => testProviderConnection(type);
+
+            const testResult = document.createElement('div');
+            testResult.id = `test-result-${type}`;
+            testResult.className = 'test-result';
+            testResult.style.display = 'none';
+
+            configDiv.appendChild(form);
+            configDiv.appendChild(testBtn);
+            configDiv.appendChild(testResult);
+            configs.appendChild(configDiv);
+        });
+    }
+
+    async function testProviderConnection(type) {
+        const config = collectProviderConfig(type);
+        const resultDiv = document.getElementById(`test-result-${type}`);
+
+        resultDiv.style.display = 'block';
+        resultDiv.className = 'test-result';
+        resultDiv.textContent = 'Testing connection...';
+
+        try {
+            // Include cached sample tracks from previously tested providers for cross-provider prefix detection
+            const response = await fetch('/api/setup/providers/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    provider_type: type,
+                    config,
+                    existing_sample_tracks: testedProviderTracks
+                })
+            });
+            const data = await response.json();
+
+            resultDiv.className = `test-result ${data.success ? 'success' : 'error'}`;
+
+            // Build result message with prefix detection info
+            let resultHTML = `<strong>${data.success ? 'Success' : 'Failed'}:</strong> ${data.message}`;
+
+            // Handle successful test
+            if (data.success) {
+                // Mark this provider as tested
+                testedProviders.add(type);
+
+                // Cache sample tracks for use when testing subsequent providers
+                if (data.sample_tracks && data.sample_tracks.length > 0) {
+                    testedProviderTracks[type] = data.sample_tracks;
+                }
+
+                // Handle prefix detection result
+                if (data.prefix_detection) {
+                    const pd = data.prefix_detection;
+
+                    // Auto-fill the music_path_prefix field if prefix detected with confidence
+                    if (data.suggested_prefix !== undefined) {
+                        const prefixInput = document.querySelector(`[data-provider="${type}"][data-field="music_path_prefix"]`);
+                        if (prefixInput && !prefixInput.value) {
+                            prefixInput.value = data.suggested_prefix;
+                            resultHTML += `<br><small>Auto-filled path prefix: "${data.suggested_prefix}"</small>`;
+                        }
+                    }
+
+                    // Show prefix detection details
+                    if (pd.confidence && pd.confidence !== 'none') {
+                        resultHTML += `<br><small>Path prefix detection: ${pd.confidence} confidence`;
+                        if (pd.matches_found) {
+                            resultHTML += ` (${pd.matches_found} matching tracks found)`;
+                        }
+                        resultHTML += `</small>`;
+                    } else if (pd.message) {
+                        resultHTML += `<br><small>${pd.message}</small>`;
+                    }
+                }
+            }
+
+            resultDiv.innerHTML = resultHTML;
+        } catch (err) {
+            resultDiv.className = 'test-result error';
+            resultDiv.textContent = 'Connection test failed: ' + err.message;
+        }
+    }
+
+    function collectProviderConfig(type) {
+        const config = {};
+        const inputs = document.querySelectorAll(`[data-provider="${type}"]`);
+        inputs.forEach(input => {
+            const field = input.dataset.field;
+            if (input.type === 'checkbox') {
+                config[field] = input.checked;
+            } else {
+                config[field] = input.value;
+            }
+        });
+        return config;
+    }
+
+    function collectAllProviderConfigs() {
+        selectedProviders.forEach(type => {
+            providerConfigs[type] = collectProviderConfig(type);
+        });
+    }
+
+    function setupHardwareOptions() {
+        document.querySelectorAll('.hardware-option[data-hardware]').forEach(option => {
+            option.onclick = function() {
+                document.querySelectorAll('.hardware-option[data-hardware]').forEach(o => o.classList.remove('selected'));
+                this.classList.add('selected');
+                selectedHardware = this.dataset.hardware;
+
+                // Update GPU clustering option
+                const gpuClustering = document.getElementById('setting-gpu-clustering');
+                if (selectedHardware === 'nvidia') {
+                    gpuClustering.disabled = false;
+                } else {
+                    gpuClustering.disabled = true;
+                    gpuClustering.checked = false;
+                }
+
+                // Update worker compose file recommendation
+                updateWorkerComposeRecommendation();
+            };
+        });
+    }
+
+    function setupDeploymentOptions() {
+        document.querySelectorAll('.hardware-option[data-deployment]').forEach(option => {
+            option.onclick = function() {
+                document.querySelectorAll('.hardware-option[data-deployment]').forEach(o => o.classList.remove('selected'));
+                this.classList.add('selected');
+                selectedDeployment = this.dataset.deployment;
+
+                // Show/hide worker config section and hardware sections
+                updateWorkerConfigVisibility();
+                updateHardwareSections();
+            };
+        });
+    }
+
+    async function loadServerInfo() {
+        try {
+            const response = await fetch('/api/setup/server-info');
+            if (response.ok) {
+                const data = await response.json();
+                serverInfo = data;
+
+                // Auto-detect hardware based on GPU availability
+                if (data.gpu_available) {
+                    selectedHardware = 'nvidia';
+                } else {
+                    selectedHardware = 'cpu';
+                }
+            }
+        } catch (err) {
+            console.log('Could not load server info, using defaults');
+        }
+        updateWorkerConnectionInfo();
+        updateHardwareSections();
+        renderHardwareInfo();
+    }
+
+    function updateHardwareSections() {
+        const infoSection = document.getElementById('hardware-info-section');
+        const selectSection = document.getElementById('hardware-select-section');
+
+        if (selectedDeployment === 'unified') {
+            // Unified: Show info (read-only), hide selection
+            infoSection.style.display = 'block';
+            selectSection.style.display = 'none';
+        } else {
+            // Split: Hide info, show selection for worker hardware
+            infoSection.style.display = 'none';
+            selectSection.style.display = 'block';
+        }
+    }
+
+    function renderHardwareInfo() {
+        const container = document.getElementById('hardware-info-content');
+        const gpuAvailable = serverInfo.gpu_available;
+        const gpuName = serverInfo.gpu_name;
+
+        let html = '';
+
+        if (gpuAvailable) {
+            html = `
+                <div class="hardware-info-box gpu-detected">
+                    <div class="hw-icon">&#9889;</div>
+                    <div class="hw-details">
+                        <div class="hw-title">NVIDIA GPU Detected</div>
+                        <div class="hw-subtitle">${gpuName || 'CUDA acceleration enabled'}</div>
+                        <div class="hw-description">
+                            Your system is running with GPU acceleration. Audio analysis will use CUDA
+                            for faster ML inference, significantly reducing processing time.
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else {
+            html = `
+                <div class="hardware-info-box">
+                    <div class="hw-icon">&#128187;</div>
+                    <div class="hw-details">
+                        <div class="hw-title">CPU Mode</div>
+                        <div class="hw-subtitle">Running without GPU acceleration</div>
+                        <div class="hw-description">
+                            Your system is running in CPU-only mode. Audio analysis will work but may be slower
+                            for large libraries.
+                        </div>
+                    </div>
+                </div>
+                <div class="hardware-benefits">
+                    <h4>&#128161; Want faster analysis?</h4>
+                    <ul>
+                        <li><strong>5-10x faster</strong> audio fingerprinting with NVIDIA GPU</li>
+                        <li>Enables GPU-accelerated clustering with RAPIDS cuML</li>
+                        <li>Requires an NVIDIA GPU with CUDA support and the nvidia-container-toolkit</li>
+                        <li>Use <code>docker-compose-unified-nvidia.yaml</code> to enable GPU mode</li>
+                    </ul>
+                </div>
+            `;
+        }
+
+        container.innerHTML = html;
+
+        // Update GPU clustering checkbox based on detected hardware
+        const gpuClustering = document.getElementById('setting-gpu-clustering');
+        if (gpuAvailable) {
+            gpuClustering.disabled = false;
+        } else {
+            gpuClustering.disabled = true;
+            gpuClustering.checked = false;
+        }
+    }
+
+    function updateWorkerConfigVisibility() {
+        const workerSection = document.getElementById('worker-config-section');
+        if (selectedDeployment === 'split') {
+            workerSection.style.display = 'block';
+            updateWorkerConnectionInfo();
+        } else {
+            workerSection.style.display = 'none';
+        }
+    }
+
+    function updateWorkerConnectionInfo() {
+        const serverIp = serverInfo.host || window.location.hostname;
+        const redisPort = serverInfo.redis_port || '6379';
+        const postgresPort = serverInfo.postgres_port || '5432';
+
+        document.getElementById('worker-redis-url').textContent = `redis://${serverIp}:${redisPort}/0`;
+        document.getElementById('worker-postgres-host').textContent = serverIp;
+        updateWorkerComposeRecommendation();
+    }
+
+    function updateWorkerComposeRecommendation() {
+        const composeFile = selectedHardware === 'nvidia'
+            ? 'docker-compose-worker-nvidia.yaml'
+            : 'docker-compose-worker-cpu.yaml';
+        document.getElementById('worker-compose-file').textContent = composeFile;
+        document.getElementById('worker-compose-help').innerHTML =
+            `Run on worker machine: <code>docker-compose -f ${composeFile} up -d</code>`;
+    }
+
+    function copyToClipboard(elementId) {
+        const element = document.getElementById(elementId);
+        const text = element.textContent;
+
+        navigator.clipboard.writeText(text).then(() => {
+            const btn = element.parentElement.querySelector('.copy-btn');
+            btn.textContent = 'Copied!';
+            btn.classList.add('copied');
+            setTimeout(() => {
+                btn.textContent = 'Copy';
+                btn.classList.remove('copied');
+            }, 2000);
+        }).catch(err => {
+            console.error('Failed to copy:', err);
+        });
+    }
+
+    function toggleAdvanced() {
+        const content = document.getElementById('advanced-settings');
+        const arrow = document.getElementById('advanced-arrow');
+        content.classList.toggle('visible');
+        arrow.innerHTML = content.classList.contains('visible') ? '&#9660;' : '&#9654;';
+    }
+
+    function updateProgressSteps() {
+        document.querySelectorAll('.progress-step').forEach((step, idx) => {
+            const stepNum = idx + 1;
+            step.classList.remove('active', 'completed');
+            if (stepNum < currentStep) {
+                step.classList.add('completed');
+            } else if (stepNum === currentStep) {
+                step.classList.add('active');
+            }
+        });
+    }
+
+    function showStep(step) {
+        document.querySelectorAll('.step-content').forEach(content => {
+            content.classList.remove('active');
+        });
+        document.getElementById(`step-${step}`).classList.add('active');
+        currentStep = step;
+        updateProgressSteps();
+
+        if (step === 4) {
+            renderSummary();
+        }
+    }
+
+    function nextStep() {
+        if (currentStep === 2) {
+            collectAllProviderConfigs();
+            if (selectedProviders.length === 0) {
+                alert('Please select at least one media provider.');
+                return;
+            }
+
+            // Check all selected providers have been tested
+            const untestedProviders = selectedProviders.filter(p => !testedProviders.has(p));
+            if (untestedProviders.length > 0) {
+                const names = untestedProviders.map(p => {
+                    const pt = providerTypes.find(t => t.type === p);
+                    return pt ? pt.name : p;
+                }).join(', ');
+                alert(`Please test connection for: ${names}`);
+                return;
+            }
+        }
+        if (currentStep < 4) {
+            showStep(currentStep + 1);
+        }
+    }
+
+    function prevStep() {
+        if (currentStep > 1) {
+            showStep(currentStep - 1);
+        }
+    }
+
+    function renderSummary() {
+        const summary = document.getElementById('setup-summary');
+        const providerNames = selectedProviders.map(type => {
+            const p = providerTypes.find(pt => pt.type === type);
+            return p ? p.name : type;
+        }).join(', ');
+
+        let deploymentInfo = selectedDeployment === 'unified'
+            ? 'Unified (server + worker on same machine)'
+            : 'Split (workers on separate machines)';
+
+        // Hardware info differs by deployment mode
+        let hardwareLabel, hardwareValue;
+        if (selectedDeployment === 'unified') {
+            hardwareLabel = 'Server Hardware (Detected)';
+            hardwareValue = selectedHardware === 'nvidia'
+                ? `NVIDIA GPU${serverInfo.gpu_name ? ' (' + serverInfo.gpu_name + ')' : ''}`
+                : 'CPU Only';
+        } else {
+            hardwareLabel = 'Worker Hardware';
+            hardwareValue = selectedHardware === 'nvidia' ? 'NVIDIA GPU' : 'CPU Only';
+        }
+
+        // Determine recommended compose files
+        let composeFiles = [];
+        if (selectedDeployment === 'unified') {
+            composeFiles.push(selectedHardware === 'nvidia'
+                ? 'docker-compose-unified-nvidia.yaml (current)'
+                : 'docker-compose-unified.yaml (current)');
+        } else {
+            composeFiles.push('docker-compose-server.yaml (this machine)');
+            composeFiles.push(selectedHardware === 'nvidia'
+                ? 'docker-compose-worker-nvidia.yaml (workers)'
+                : 'docker-compose-worker-cpu.yaml (workers)');
+        }
+
+        // Get AI provider summary
+        const aiProvider = document.getElementById('setting-ai-provider').value;
+        let aiProviderSummary = aiProvider;
+        if (aiProvider !== 'NONE' && aiProviderFields[aiProvider]) {
+            // Get model name if configured
+            const modelField = aiProviderFields[aiProvider].find(f => f.name.includes('_model'));
+            if (modelField) {
+                const modelInput = document.getElementById(`ai-config-${modelField.name}`);
+                if (modelInput && modelInput.value) {
+                    aiProviderSummary += ` (${modelInput.value})`;
+                }
+            }
+        }
+
+        summary.innerHTML = `
+            <div class="summary-item">
+                <span class="summary-label">Deployment Mode</span>
+                <span class="summary-value">${deploymentInfo}</span>
+            </div>
+            <div class="summary-item">
+                <span class="summary-label">${hardwareLabel}</span>
+                <span class="summary-value">${hardwareValue}</span>
+            </div>
+            <div class="summary-item">
+                <span class="summary-label">Docker Compose Files</span>
+                <span class="summary-value">${composeFiles.join('<br>')}</span>
+            </div>
+            <div class="summary-item">
+                <span class="summary-label">Providers</span>
+                <span class="summary-value">${providerNames || 'None selected'}</span>
+            </div>
+            <div class="summary-item">
+                <span class="summary-label">CLAP Text Search</span>
+                <span class="summary-value">${document.getElementById('setting-clap-enabled').checked ? 'Enabled' : 'Disabled'}</span>
+            </div>
+            <div class="summary-item">
+                <span class="summary-label">GPU Clustering</span>
+                <span class="summary-value">${document.getElementById('setting-gpu-clustering').checked ? 'Enabled' : 'Disabled'}</span>
+            </div>
+            <div class="summary-item">
+                <span class="summary-label">AI Playlist Naming</span>
+                <span class="summary-value">${aiProviderSummary}</span>
+            </div>
+        `;
+    }
+
+    function collectAIProviderSettings() {
+        const provider = document.getElementById('setting-ai-provider').value;
+        const settings = { ai_provider: provider };
+
+        if (provider !== 'NONE' && aiProviderFields[provider]) {
+            // Collect all AI config field values
+            const inputs = document.querySelectorAll('[data-ai-field]');
+            inputs.forEach(input => {
+                const fieldName = input.dataset.aiField;
+                if (input.value) {
+                    settings[fieldName] = input.value;
+                }
+            });
+        }
+
+        return settings;
+    }
+
+    async function completeSetup() {
+        try {
+            // Save providers
+            for (const type of selectedProviders) {
+                const provider = providerTypes.find(p => p.type === type);
+                await fetch('/api/setup/providers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        provider_type: type,
+                        name: provider.name,
+                        config: providerConfigs[type],
+                        enabled: true,
+                        priority: 0
+                    })
+                });
+            }
+
+            // Collect AI provider settings
+            const aiSettings = collectAIProviderSettings();
+
+            // Save settings (including AI provider config)
+            await fetch('/api/setup/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    deployment_type: selectedDeployment,
+                    hardware_type: selectedHardware,
+                    clap_enabled: document.getElementById('setting-clap-enabled').checked,
+                    gpu_clustering: document.getElementById('setting-gpu-clustering').checked,
+                    ...aiSettings
+                })
+            });
+
+            // Mark setup as complete
+            await fetch('/api/setup/complete', { method: 'POST' });
+
+            // Redirect to home
+            alert('Setup complete! Redirecting to the main page...');
+            window.location.href = '/';
+
+        } catch (err) {
+            console.error('Error completing setup:', err);
+            alert('Error saving configuration: ' + err.message);
+        }
+    }
+
+    // Directory Browser Functions
+    function openBrowseModal(inputId) {
+        browseTargetInput = document.getElementById(inputId);
+        browseCurrentPath = browseTargetInput.value || '/';
+
+        const modal = document.getElementById('directory-browser-modal');
+        modal.classList.add('visible');
+
+        loadDirectories(browseCurrentPath);
+    }
+
+    function closeBrowseModal() {
+        const modal = document.getElementById('directory-browser-modal');
+        modal.classList.remove('visible');
+        browseTargetInput = null;
+    }
+
+    async function loadDirectories(path) {
+        const listEl = document.getElementById('directory-list');
+        const pathEl = document.getElementById('browse-current-path');
+
+        listEl.innerHTML = '<li style="padding: 1rem; color: var(--text-muted);">Loading...</li>';
+        pathEl.textContent = path || '/';
+        browseCurrentPath = path;
+
+        try {
+            const url = path ? `/api/setup/browse-directories?path=${encodeURIComponent(path)}` : '/api/setup/browse-directories';
+            const response = await fetch(url);
+            const data = await response.json();
+
+            if (data.error) {
+                listEl.innerHTML = `<li style="padding: 1rem; color: var(--color-danger);">${data.error}</li>`;
+                return;
+            }
+
+            listEl.innerHTML = '';
+
+            // Add parent directory option if not at root
+            if (data.parent_path !== null) {
+                const parentLi = document.createElement('li');
+                parentLi.className = 'directory-item parent';
+                parentLi.innerHTML = '<span class="folder-icon">📁</span> .. (Parent Directory)';
+                parentLi.onclick = () => loadDirectories(data.parent_path);
+                listEl.appendChild(parentLi);
+            }
+
+            // Add directories
+            if (data.directories.length === 0) {
+                const emptyLi = document.createElement('li');
+                emptyLi.style.padding = '1rem';
+                emptyLi.style.color = 'var(--text-muted)';
+                emptyLi.textContent = 'No subdirectories found';
+                listEl.appendChild(emptyLi);
+            } else {
+                data.directories.forEach(dir => {
+                    const li = document.createElement('li');
+                    li.className = 'directory-item' + (dir.accessible === false ? ' inaccessible' : '');
+                    li.innerHTML = `<span class="folder-icon">📁</span> ${dir.name}`;
+
+                    if (dir.accessible !== false) {
+                        li.onclick = () => loadDirectories(dir.path);
+                    }
+
+                    listEl.appendChild(li);
+                });
+            }
+
+            pathEl.textContent = data.current_path;
+            browseCurrentPath = data.current_path;
+
+        } catch (err) {
+            console.error('Error loading directories:', err);
+            listEl.innerHTML = `<li style="padding: 1rem; color: var(--color-danger);">Error loading directories: ${err.message}</li>`;
+        }
+    }
+
+    function selectCurrentDirectory() {
+        if (browseTargetInput && browseCurrentPath) {
+            browseTargetInput.value = browseCurrentPath;
+        }
+        closeBrowseModal();
+    }
+</script>
+{% endblock %}

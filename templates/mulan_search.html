@@ -255,11 +255,13 @@
             <label for="playlist_name">Playlist Name:</label>
             <input type="text" id="playlist_name" name="playlist_name" placeholder="My MuLan Search Playlist" required>
         </div>
+        <div id="provider-selector-container"></div>
         <button type="submit">Create Playlist on Media Server</button>
     </form>
     <div id="playlist-status"></div>
 </section>
 
+<script src="{{ url_for('static', filename='provider-selector.js') }}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const searchForm = document.getElementById('search-form');
@@ -270,8 +272,11 @@ document.addEventListener('DOMContentLoaded', function() {
     const playlistCreator = document.getElementById('playlist-creator');
     const playlistForm = document.getElementById('playlist-form');
     const topQueriesContainer = document.getElementById('top-queries-container');
-    
+
     let currentResults = [];
+
+    // Initialize provider selector
+    initProviderSelector();
     
     // Warmup model on page load for instant searches
     warmupModel();
@@ -425,13 +430,16 @@ document.addEventListener('DOMContentLoaded', function() {
         playlistStatusDiv.textContent = 'Creating playlist...';
         
         try {
+            const payload = {
+                playlist_name: playlistName,
+                track_ids: trackIds
+            };
+            addProviderToPayload(payload);
+
             const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    playlist_name: playlistName,
-                    track_ids: trackIds
-                })
+                body: JSON.stringify(payload)
             });
             
             const data = await response.json();

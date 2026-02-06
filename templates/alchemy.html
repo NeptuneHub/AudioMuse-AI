@@ -143,6 +143,7 @@
                 <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., My Alchemy Mix">
             </div>
         </div>
+        <div id="provider-selector-container"></div>
         <button type="submit" style="background-color: var(--color-success);">Create Playlist on Media Server</button>
     </form>
     <div id="playlist-status"></div>
@@ -150,8 +151,11 @@
 {% endblock %}
 
 {% block bodyAdditions %}
+<script src="{{ url_for('static', filename='provider-selector.js') }}"></script>
 <script>
     (async () => {
+        // Initialize provider selector
+        initProviderSelector();
         // Fetch config to get ALCHEMY defaults
         let defaultN = 100;
         let maxN = 200;
@@ -919,10 +923,12 @@
 
             playlistStatusDiv.textContent = 'Creating playlist...';
             try {
+                const payload = { playlist_name: playlistName, track_ids: combined };
+                addProviderToPayload(payload);
                 const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ playlist_name: playlistName, track_ids: combined }),
+                    body: JSON.stringify(payload),
                 });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || `HTTP error! status: ${response.status}`);

@@ -155,6 +155,7 @@
                 <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., Path from Song A to B">
             </div>
         </div>
+        <div id="provider-selector-container"></div>
         <button type="submit" style="background-color: var(--color-success);">Create Playlist on Media Server</button>
     </form>
     <div id="playlist-status"></div>
@@ -163,6 +164,7 @@
 
 {% block bodyAdditions %}
     <script src="{{ url_for('static', filename='chart.js') }}"></script>
+    <script src="{{ url_for('static', filename='provider-selector.js') }}"></script>
     <script>
         (async () => {
             let currentTrackIds = [];
@@ -171,6 +173,9 @@
             let currentPathData = [];
             let pathDistanceMetric = 'euclidean'; // Default value
             let mapIdToCoord = {}; // cache of id -> [x,y] from /api/map
+
+            // Initialize provider selector
+            initProviderSelector();
 
             // --- Fetch config to get the distance metric ---
             try {
@@ -821,13 +826,19 @@
                 }
                 playlistStatusDiv.textContent = 'Creating playlist...';
                 try {
+                    const payload = {
+                        playlist_name: playlistName,
+                        track_ids: currentTrackIds
+                    };
+                    const providerIds = typeof getSelectedProviders === 'function' ? getSelectedProviders() : null;
+                    if (providerIds !== null) {
+                        payload.provider_ids = providerIds;
+                    }
+
                     const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            playlist_name: playlistName,
-                            track_ids: currentTrackIds
-                        }),
+                        body: JSON.stringify(payload),
                     });
                     const result = await response.json();
                     if (!response.ok) throw new Error(result.error || `HTTP error! status: ${response.status}`);

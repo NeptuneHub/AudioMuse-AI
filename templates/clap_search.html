@@ -194,7 +194,7 @@
     {% endif %}
     
     <div class="search-container">
-        <form id="search-form">
+        <form id="search-form" onsubmit="return false">
             <div class="param-group">
                 <label for="search-query" class="label-with-tooltip">
                     Search Query:
@@ -255,11 +255,13 @@
             <label for="playlist_name">Playlist Name:</label>
             <input type="text" id="playlist_name" name="playlist_name" placeholder="My CLAP Search Playlist" required>
         </div>
+        <div id="provider-selector-container"></div>
         <button type="submit">Create Playlist on Media Server</button>
     </form>
     <div id="playlist-status"></div>
 </section>
 
+<script src="{{ url_for('static', filename='provider-selector.js') }}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const searchForm = document.getElementById('search-form');
@@ -270,8 +272,11 @@ document.addEventListener('DOMContentLoaded', function() {
     const playlistCreator = document.getElementById('playlist-creator');
     const playlistForm = document.getElementById('playlist-form');
     const topQueriesContainer = document.getElementById('top-queries-container');
-    
+
     let currentResults = [];
+
+    // Initialize provider selector
+    initProviderSelector();
     
     // Warmup model on page load for instant searches
     warmupModel();
@@ -308,9 +313,11 @@ document.addEventListener('DOMContentLoaded', function() {
                     tag.className = 'example-tag';
                     tag.setAttribute('data-query', query);
                     tag.textContent = query;
-                    tag.addEventListener('click', function() {
+                    tag.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
                         searchQuery.value = query;
-                        searchForm.dispatchEvent(new Event('submit'));
+                        performSearch();
                     });
                     topQueriesContainer.appendChild(tag);
                 });
@@ -330,49 +337,55 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Example query tags (kept for backwards compatibility, but replaced by loadTopQueries)
     document.querySelectorAll('.example-tag').forEach(tag => {
-        tag.addEventListener('click', function() {
+        tag.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
             const query = this.getAttribute('data-query');
             searchQuery.value = query;
-            searchForm.dispatchEvent(new Event('submit'));
+            performSearch();
         });
     });
     
-    // Search form submission
-    searchForm.addEventListener('submit', async function(e) {
-        e.preventDefault();
-        
+    // Core search logic
+    async function performSearch() {
         const query = searchQuery.value.trim();
         const limit = parseInt(document.getElementById('limit').value);
-        
+
         if (!query || query.length < 3) {
             alert('Please enter at least 3 characters');
             return;
         }
-        
+
         // Show loading
         resultsContainer.classList.remove('hidden');
         resultsList.innerHTML = '<div class="loading-spinner">🔍 Searching...</div>';
         playlistCreator.classList.add('hidden');
-        
+
         try {
             const response = await fetch("{{ url_for('clap_search_bp.clap_search_api') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ query, limit })
             });
-            
+
             const data = await response.json();
-            
+
             if (!response.ok) {
                 throw new Error(data.error || 'Search failed');
             }
-            
+
             currentResults = data.results || [];
             displayResults(currentResults, query);
-            
+
         } catch (error) {
             resultsList.innerHTML = `<div class="error-message">❌ ${error.message}</div>`;
         }
+    }
+
+    // Search form submission
+    searchForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        performSearch();
     });
     
     function displayResults(results, query) {
@@ -432,19 +445,25 @@ document.addEventListener('DOMContentLoaded', function() {
         
         const trackIds = currentResults.map(r => r.item_id);
         playlistStatusDiv.textContent = 'Creating playlist...';
-        
+
         try {
+            const payload = {
+                playlist_name: playlistName,
+                track_ids: trackIds
+            };
+            const providerIds = typeof getSelectedProviders === 'function' ? getSelectedProviders() : null;
+            if (providerIds !== null) {
+                payload.provider_ids = providerIds;
+            }
+
             const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    playlist_name: playlistName,
-                    track_ids: trackIds
-                })
+                body: JSON.stringify(payload)
             });
-            
+
             const data = await response.json();
-            
+
             if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
             playlistStatusDiv.textContent = data.message;
             playlistStatusDiv.className = 'status-success';

@@ -1,0 +1,173 @@
+# AudioMuse-AI - AI Playlist Naming Performance Test Configuration
+
+postgres:
+  container_name: "audiomuse-postgres"
+  user: "audiomuse"
+  database: "audiomusedb"
+
+test_config:
+  num_runs_per_model: 5
+  num_playlists: 3
+  songs_per_playlist: 25
+  timeout_per_request: 120
+
+# The prompt sent to each model. Use {song_list_sample} where the song list goes.
+prompt: |
+  "You are an expert music curator. Your task is to craft a title for a playlist.\n\n"
+  "To craft a strong title ensure that you:\n"
+  "  - Represent the genres, scenes, and styles of the songs.\n"
+  "  - Capture the overall vibe of the playlist.\n"
+  "  - Reference activities and/or locations that are well suited for listening.\n"
+  "  - Stand out in a sea of boring and trite playlist titles.\n"
+  "  - Be both pithy *and* coherent.\n\n"
+  "Additionally, you MUST strictly adhere to these rules:\n"
+  "  - Use ONLY standard ASCII characters (a-z, A-Z, 0-9, spaces, and - & ' ! . , ? ( ) [ ]).\n"
+  "  - Keep the length between 10 and 40 characters.\n"
+  "  - Do NOT use special fonts or emojis.\n"
+  "  - Respond with ONLY a single playlist name.\n\n"
+  "On the topic of creativity...\n"
+  "Here are some examples of words and phrases that are trite, boring, and uncreative: neon, autumn, quiet, porch, groove, midnight, dusk, night, morning. If you find yourself reaching those words (or other similarly yawn-inducing phrasing), it's a clear sign you need to be more creative. Think laterally!\n\n"
+  "This is the playlist:\n{song_list_sample}\n\n"
+  "To begin, think hard and come up with 5-10 options. Explore what works and try different approaches before deciding on the final name for the playlist.\n"
+
+# Hardcoded song list for testing (bypasses DB fetch). Remove to fetch random songs from DB.
+# This simulates a cluster of melancholic/atmospheric songs that would group together.
+sample_songs:
+  - title: "Fix You"
+    author: "Coldplay"
+  - title: "Swallowed In The Sea"
+    author: "Coldplay"
+  - title: "What If"
+    author: "Coldplay"
+  - title: "Til Kingdom Come"
+    author: "Coldplay"
+  - title: "The Hardest Part"
+    author: "Coldplay"
+  - title: "How Does It Feel"
+    author: "London Grammar"
+  - title: "I Need the Night"
+    author: "London Grammar"
+  - title: "Missing"
+    author: "London Grammar"
+  - title: "Lose Your Head"
+    author: "London Grammar"
+  - title: "California Soil"
+    author: "London Grammar"
+  - title: "Fare Well"
+    author: "Hozier"
+  - title: "Wildflower and Barley"
+    author: "Hozier"
+  - title: "Mariners Apartment Complex"
+    author: "Lana Del Rey"
+  - title: "How To Disappear"
+    author: "Lana Del Rey"
+  - title: "Cinnamon Girl"
+    author: "Lana Del Rey"
+  - title: "Happiness Is A Butterfly"
+    author: "Lana Del Rey"
+  - title: "Love Song"
+    author: "Lana Del Rey"
+  - title: "The Greatest"
+    author: "Lana Del Rey"
+  - title: "Heart Of Gold"
+    author: "Neil Young"
+  - title: "Old Man"
+    author: "Neil Young"
+  - title: "Harvest"
+    author: "Neil Young"
+  - title: "A Man Needs A Maid"
+    author: "Neil Young"
+  - title: "Out On The Weekend"
+    author: "Neil Young"
+  - title: "If Leaving Me Is Easy"
+    author: "Phil Collins"
+  - title: "Speed Of Sound"
+    author: "Coldplay"
+
+# Set these once - models inherit from their provider defaults
+defaults:
+  ollama:
+    url: "http://192.168.1.71:11434/api/generate"
+  openrouter:
+    url: "https://openrouter.ai/api/v1/chat/completions"
+    api_key: "sk-or-v1-key"
+
+models:
+  - provider: "ollama"
+    name: "Llama 3.1 8B"
+    model_id: "llama3.1:8b"
+    enabled: true
+
+  - provider: "ollama"
+    name: "Llama 3.2 1B"
+    model_id: "llama3.2:1b"
+    enabled: true
+
+  - provider: "ollama"
+    name: "Gemma 3 1B"
+    model_id: "gemma3:1b"
+    enabled: true
+
+  - provider: "ollama"
+    name: "Gemma 3 4B"
+    model_id: "gemma3:4b"
+    enabled: true
+
+  - provider: "ollama"
+    name: "Gemma 3 12B"
+    model_id: "gemma3:12b"
+    enabled: true
+
+  - provider: "ollama"
+    name: "Qwen 3 0.6B"
+    model_id: "qwen3:0.6b"
+    enabled: true
+
+  - provider: "ollama"
+    name: "Qwen 3 1.7B"
+    model_id: "qwen3:1.7b"
+    enabled: true
+
+  - provider: "ollama"
+    name: "DeepSeek R1 1.5B"
+    model_id: "deepseek-r1:1.5b"
+    enabled: true
+
+  - provider: "openrouter"
+    name: "GPT-4o Mini"
+    model_id: "openai/gpt-4o-mini"
+    enabled: true
+
+  - provider: "openrouter"
+    name: "Claude 4.5 Haiku"
+    model_id: "anthropic/claude-haiku-4.5"
+    enabled: true
+
+  - provider: "openrouter"
+    name: "Claude 4.5 Sonnet"
+    model_id: "anthropic/claude-sonnet-4.5"
+    enabled: true
+
+  - provider: "openrouter"
+    name: "Claude 4.6 Opus"
+    model_id: "anthropic/claude-opus-4.6"
+    enabled: true
+
+  - provider: "openrouter"
+    name: "Gemini 3 Flash"
+    model_id: "google/gemini-3-flash-preview"
+    enabled: true
+
+  - provider: "openrouter"
+    name: "Gemini 3 Pro"
+    model_id: "google/gemini-3-pro-preview"
+    enabled: true
+
+  - provider: "openrouter"
+    name: "GPT 5.2"
+    model_id: "openai/gpt-5.2"
+    enabled: true
+
+output:
+  directory: "testing_suite/reports/ai_naming"
+  save_raw_responses: true

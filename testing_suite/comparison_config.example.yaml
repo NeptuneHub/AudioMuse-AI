@@ -1,0 +1,91 @@
+# AudioMuse-AI Testing & Comparison Suite - Example Configuration
+#
+# Copy this file to comparison_config.yaml and customize for your setup.
+#
+# Usage:
+#   python -m testing_suite --config testing_suite/comparison_config.yaml
+#   python -m testing_suite --config testing_suite/comparison_config.yaml --only api,performance
+#   python -m testing_suite --config testing_suite/comparison_config.yaml --skip docker
+
+# Instance A - Main branch (baseline)
+instance_a:
+  name: "main"
+  branch: "main"
+  # API connection
+  api_url: "http://192.168.1.100:8000"
+  api_timeout: 120
+  # PostgreSQL connection
+  pg_host: "192.168.1.100"
+  pg_port: 5432
+  pg_user: "audiomuse"
+  pg_password: "audiomusepassword"
+  pg_database: "audiomusedb"
+  # Redis connection
+  redis_url: "redis://192.168.1.100:6379/0"
+  # Docker container names
+  docker_flask_container: "audiomuse-ai-flask-app"
+  docker_worker_container: "audiomuse-ai-worker-instance"
+  docker_postgres_container: "audiomuse-postgres"
+  docker_redis_container: "audiomuse-redis"
+  # SSH for remote Docker access (leave empty for local)
+  ssh_host: ""
+  ssh_user: ""
+  ssh_key: ""
+  ssh_port: 22
+
+# Instance B - Feature branch (under test)
+instance_b:
+  name: "feature"
+  branch: "feature-branch"
+  api_url: "http://192.168.1.101:8000"
+  api_timeout: 120
+  pg_host: "192.168.1.101"
+  pg_port: 5432
+  pg_user: "audiomuse"
+  pg_password: "audiomusepassword"
+  pg_database: "audiomusedb"
+  redis_url: "redis://192.168.1.101:6379/0"
+  docker_flask_container: "audiomuse-ai-flask-app"
+  docker_worker_container: "audiomuse-ai-worker-instance"
+  docker_postgres_container: "audiomuse-postgres"
+  docker_redis_container: "audiomuse-redis"
+  ssh_host: ""
+  ssh_user: ""
+  ssh_key: ""
+  ssh_port: 22
+
+# Test modules to run (true/false)
+run_api_tests: true
+run_db_tests: true
+run_docker_tests: true
+run_performance_tests: true
+run_existing_unit_tests: true
+run_existing_integration_tests: true
+
+# Performance test settings
+perf_warmup_requests: 3        # Warmup requests per endpoint before measuring
+perf_benchmark_requests: 10    # Measured requests per endpoint
+perf_concurrent_users: 5       # Concurrent users for load tests
+
+# API test settings
+api_retries: 3                 # Retries on connection errors
+api_retry_delay: 2.0           # Seconds between retries
+api_task_timeout: 1200         # Timeout for long-running tasks (20 min)
+
+# Database quality thresholds
+db_row_count_tolerance_pct: 5.0    # % difference allowed in row counts
+db_embedding_dimension_expected: 200
+db_clap_dimension_expected: 512
+db_score_null_threshold_pct: 10.0  # Max % NULLs in critical columns
+
+# Reporting
+output_dir: "testing_suite/reports/output"
+report_format: "both"    # html, json, or both
+verbose: false
+
+# Test track references (used for functional API tests)
+# These should be tracks that exist in both instances' music libraries
+test_track_artist_1: "Red Hot Chili Peppers"
+test_track_title_1: "By the Way"
+test_track_artist_2: "System of a Down"
+test_track_title_2: "Attack"

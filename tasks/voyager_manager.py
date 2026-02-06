@@ -496,15 +496,15 @@ def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song
             for row in rows:
                 batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
         return batch_details
-    
+
     # Split item_ids into batches for parallel DB queries
     id_batches = [item_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)]
-    
+
     if len(id_batches) > 1:
         # Use parallel DB queries for large datasets
         executor = _get_thread_pool()
         future_to_batch = {executor.submit(fetch_details_batch, batch): batch for batch in id_batches}
-        
+
         for future in as_completed(future_to_batch):
             batch_details = future.result()
             item_details.update(batch_details)
@@ -1465,22 +1465,22 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
             for row in rows:
                 batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
         return batch_details
-    
+
     # Split item_ids into batches for parallel DB queries
     id_batches = [item_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)]
-    
+
     if len(id_batches) > 1:
         # Use parallel DB queries for large datasets
         executor = _get_thread_pool()
         future_to_batch = {executor.submit(fetch_details_batch, batch): batch for batch in id_batches}
-        
+
         for future in as_completed(future_to_batch):
             batch_details = future.result()
             item_details.update(batch_details)
     else:
         # Use single query for small datasets
         item_details = fetch_details_batch(item_ids)
-            
+
     unique_songs_by_content = []
     added_songs_details = []
     for song in distance_filtered_results:
@@ -1628,10 +1628,10 @@ def search_tracks_by_title_and_artist(title_query: str, artist_query: str, limit
         where_clause = " AND ".join(query_parts)
         
         query = f"""
-            SELECT item_id, title, author, album
-            FROM score 
+            SELECT item_id, title, author, album, album_artist
+            FROM score
             WHERE {where_clause}
-            ORDER BY author, title 
+            ORDER BY author, title
             LIMIT %s
         """
         params.append(limit)
@@ -1647,15 +1647,46 @@ def search_tracks_by_title_and_artist(title_query: str, artist_query: str, limit
     return results
 
 
-def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: dict = None):
+def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: dict = None, provider_ids=None):
     """
-    Creates a new playlist on the configured media server with the provided name and track IDs.
+    Creates a new playlist on the configured media server(s) with the provided name and track IDs.
+
+    Args:
+        playlist_name: Name of the playlist
+        track_ids: List of track IDs
+        user_creds: Optional user credentials
+        provider_ids: Provider(s) to create playlist on:
+                     - None: Use primary provider or default config
+                     - 'all': Create on all enabled providers
+                     - int: Single provider ID
+                     - list[int]: Multiple provider IDs
+
+    Returns:
+        If single provider: playlist_id (str)
+        If multiple providers: dict of {provider_id: {'success': bool, 'playlist_id': str, 'error': str}}
     """
     try:
-        # Use the mediaserver dispatcher (imported at module top) to create the playlist.
-        # This avoids importing app_external which may not export the helper.
+        from tasks.mediaserver import create_playlist_multi_provider
+
+        # Use multi-provider function if provider_ids is specified as 'all' or a list
+        if provider_ids == 'all' or isinstance(provider_ids, (list, tuple)):
+            return create_playlist_multi_provider(playlist_name, track_ids, provider_ids, user_creds)
+
+        # Single provider specified
+        if provider_ids is not None:
+            results = create_playlist_multi_provider(playlist_name, track_ids, provider_ids, user_creds)
+            # Extract single result
+            if results:
+                result = list(results.values())[0]
+                if result.get('success'):
+                    return result.get('playlist_id')
+                else:
+                    raise Exception(result.get('error', 'Playlist creation failed'))
+            raise Exception("No provider found")
+
+        # Default: use existing single-provider logic for backward compatibility
         created_playlist = create_instant_playlist(playlist_name, track_ids, user_creds=user_creds)
-        
+
         if not created_playlist:
             raise Exception("Playlist creation failed. The media server did not return a playlist object.")
 

@@ -20,7 +20,6 @@ mistralai
 umap-learn 
 # Use pozalabs fork to avoid Python 3.12 SyntaxWarning until upstream releases a proper fix (see: https://github.com/jiaaro/pydub/issues/801)
 pozalabs-pydub==0.37.0
-python-mpd2
 psutil
 onnx==1.20.0
 resampy

@@ -92,7 +92,8 @@ def search_tracks_endpoint():
                     'item_id': r.get('item_id'),
                     'title': r.get('title'),
                     'author': r.get('author'),
-                    'album': album
+                    'album': album,
+                    'album_artist': (r.get('album_artist') or '').strip() or 'unknown'
                 })
             else:
                 results.append({'item_id': None, 'title': None, 'author': None, 'album': 'unknown'})
@@ -235,6 +236,7 @@ def get_similar_tracks_endpoint():
                     "title": track_info['title'],
                     "author": track_info['author'],
                     "album": (track_info.get('album') or 'unknown'),
+                    "album_artist": (track_info.get('album_artist') or 'unknown'),
                     "distance": distance_map[neighbor_id]
                 })
 
@@ -293,7 +295,8 @@ def get_track_endpoint():
         "item_id": d.get('item_id'),
         "title": d.get('title'),
         "author": d.get('author'),
-        "album": (d.get('album') or 'unknown')
+        "album": (d.get('album') or 'unknown'),
+        "album_artist": (d.get('album_artist') or 'unknown')
     }), 200
   except Exception as e:
     logger.error(f"Unexpected error fetching track {item_id}: {e}", exc_info=True)
@@ -321,6 +324,8 @@ def create_media_server_playlist():
                 items:
                   type: string
                 description: A list of track Item IDs to add to the playlist.
+              provider_ids:
+                description: Provider(s) to create playlist on. Can be 'all', a single ID, or array of IDs.
     responses:
       201:
         description: Playlist created successfully.
@@ -341,6 +346,7 @@ def create_media_server_playlist():
 
     playlist_name = data.get('playlist_name')
     track_ids_raw = data.get('track_ids', [])
+    provider_ids = data.get('provider_ids')  # Can be 'all', int, or list of ints
 
     if not playlist_name:
         return jsonify({"error": "Missing 'playlist_name'"}), 400
@@ -364,15 +370,46 @@ def create_media_server_playlist():
     user_creds = data.get('user_creds') if isinstance(data, dict) else None
 
     try:
-        new_playlist_id = create_playlist_from_ids(playlist_name, final_track_ids, user_creds=user_creds)
+        result = create_playlist_from_ids(playlist_name, final_track_ids, user_creds=user_creds, provider_ids=provider_ids)
 
-        logger.info(f"Successfully created playlist '{playlist_name}' with ID {new_playlist_id}.")
-
-        return jsonify({
-            "message": f"Playlist '{playlist_name}' created successfully!",
-            "playlist_id": new_playlist_id
-        }), 201
+        # Handle multi-provider result (dict) vs single provider result (string)
+        if isinstance(result, dict):
+            # Multi-provider response
+            success_count = sum(1 for r in result.values() if r.get('success'))
+            total_count = len(result)
+            logger.info(f"Created playlist '{playlist_name}' on {success_count}/{total_count} providers.")
+            return jsonify({
+                "message": f"Playlist '{playlist_name}' created on {success_count}/{total_count} provider(s).",
+                "results": result
+            }), 201
+        else:
+            # Single provider response (backward compatible)
+            logger.info(f"Successfully created playlist '{playlist_name}' with ID {result}.")
+            return jsonify({
+                "message": f"Playlist '{playlist_name}' created successfully!",
+                "playlist_id": result
+            }), 201
 
     except Exception as e:
         logger.error(f"Failed to create media server playlist '{playlist_name}': {e}", exc_info=True)
         return jsonify({"error": "An error occurred while creating the playlist on the media server."}), 500
+
+
+@voyager_bp.route('/api/providers/enabled', methods=['GET'])
+def get_enabled_providers():
+    """
+    Get list of enabled providers for playlist creation dropdown.
+    ---
+    tags:
+      - Providers
+    responses:
+      200:
+        description: List of enabled providers
+    """
+    try:
+        from tasks.mediaserver import get_enabled_providers_for_playlists
+        providers = get_enabled_providers_for_playlists()
+        return jsonify(providers), 200
+    except Exception as e:
+        logger.error(f"Failed to get enabled providers: {e}", exc_info=True)
+        return jsonify([]), 200

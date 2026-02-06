@@ -1,0 +1,78 @@
+# AudioMuse-AI Testing & Comparison Suite - Active Configuration
+
+# Instance A - Main branch (baseline)
+instance_a:
+  name: "main"
+  branch: "main"
+  api_url: "http://localhost:8001"
+  api_timeout: 120
+  pg_host: "localhost"
+  pg_port: 5433
+  pg_user: "audiomuse"
+  pg_password: "audiomusepassword"
+  pg_database: "audiomusedb"
+  redis_url: "redis://localhost:6379/0"
+  docker_flask_container: "test-am-flask-jellyfin"
+  docker_worker_container: "test-am-worker-jellyfin"
+  docker_postgres_container: "test-am-pg-jellyfin"
+  docker_redis_container: "test-am-redis-jellyfin"
+  ssh_host: ""
+  ssh_user: ""
+  ssh_key: ""
+  ssh_port: 22
+
+# Instance B - Feature branch (under test)
+instance_b:
+  name: "feature"
+  branch: "multi-provider-testing-suite"
+  api_url: "http://localhost:8000"
+  api_timeout: 120
+  pg_host: "localhost"
+  pg_port: 5432
+  pg_user: "audiomuse"
+  pg_password: "audiomusepassword"
+  pg_database: "audiomusedb"
+  redis_url: "redis://localhost:6379/0"
+  docker_flask_container: "audiomuse-ai-flask-app"
+  docker_worker_container: "audiomuse-ai-worker-instance"
+  docker_postgres_container: "audiomuse-postgres"
+  docker_redis_container: "audiomuse-redis"
+  ssh_host: ""
+  ssh_user: ""
+  ssh_key: ""
+  ssh_port: 22
+
+# Test modules to run
+run_api_tests: true
+run_db_tests: true
+run_docker_tests: true
+run_performance_tests: true
+run_existing_unit_tests: false
+run_existing_integration_tests: false
+
+# Performance test settings
+perf_warmup_requests: 3
+perf_benchmark_requests: 10
+perf_concurrent_users: 5
+
+# API test settings
+api_retries: 3
+api_retry_delay: 2.0
+api_task_timeout: 1200
+
+# Database quality thresholds
+db_row_count_tolerance_pct: 5.0
+db_embedding_dimension_expected: 200
+db_clap_dimension_expected: 512
+db_score_null_threshold_pct: 10.0
+
+# Reporting
+output_dir: "testing_suite/reports/output"
+report_format: "both"
+verbose: false
+
+# Test track references - tracks that exist in BOTH instances
+test_track_artist_1: "Coldplay"
+test_track_title_1: "Fix You"
+test_track_artist_2: "Linkin Park"
+test_track_title_2: "Papercut"
