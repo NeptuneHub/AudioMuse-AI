@@ -36,8 +36,8 @@ training:
   gradient_accumulation_steps: 1
   learning_rate: 0.00005 # Original: 0.003
   warmup_enabled: false  # Linear LR warmup during epoch 1 (from 0 to learning_rate)
-  epochs: 100
-  stage2_epochs: 20
+  epochs: 10
+  stage2_epochs: 10
   stage2_learning_rate: 0.00001 # Original: 0.001
   # Stage 2 scheduler options
   stage2_lr_scheduler:
@@ -54,6 +54,7 @@ training:
   export_onnx_every_epoch: true  # If true, export audio ONNX model after every epoch (can be slow)
   # Mixup augmentation: alpha parameter for Beta(alpha, alpha). 0 disables Mixup
   mixup_alpha: 0.1
+  global_mixup: false  # If true, mix at segment level across all songs (zero data loss); if false, old song-level mixup
   # Loss scaling options
   loss_temperature: 0.7       # Static temperature (divide cosine by this value). If using logit scale, set use_logit_scale=True
   use_logit_scale: true       # If true, use a learnable logit_scale (exp(logit_scale) applied to cosine)

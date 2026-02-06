@@ -133,97 +133,96 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             batch['teacher_segment_embeddings'].append(item.get('teacher_segment_embeddings'))
             batch['song_ids'].append(item['item_id'])
 
-        # --- Minimal Mixup augmentation (cache-only) using torch on device ---
-        # Strategy: mix cached teacher embeddings and corresponding audio segments
-        # for paired samples in the in-memory batch. This keeps the teacher OFF.
+        # --- Mixup augmentation ---
+        global_mixup = config['training'].get('global_mixup', False)
         mixup_alpha = config['training'].get('mixup_alpha', 0.0)
-        if mixup_alpha and mixup_alpha > 0 and len(batch['audio_segments']) > 1 and dataset.split == 'train':
-            lam = float(np.random.beta(mixup_alpha, mixup_alpha))
-            bsz = len(batch['audio_segments'])
-            idx = np.random.permutation(bsz)
-            # Ensure no self-mix (roll if any fixed points)
-            if np.any(idx == np.arange(bsz)):
-                idx = np.roll(idx, 1)
-            mixed_audio = []
-            mixed_teacher = []
-            mixed_teacher_segment_embs = []
-            mixed_song_ids = []
-            for i in range(bsz):
-                j = int(idx[i])
-                A = batch['audio_segments'][i]
-                B = batch['audio_segments'][j]
+        use_global_mixup = (global_mixup and mixup_alpha and mixup_alpha > 0
+                            and len(batch['audio_segments']) > 1 and dataset.split == 'train')
 
-                # Convert to torch tensors and move to training device (supports cuda/mps/cpu)
-                if isinstance(A, np.ndarray):
-                    A_t = torch.from_numpy(A).float().to(device)
-                elif isinstance(A, torch.Tensor):
-                    A_t = A.to(device)
-                else:
-                    A_t = torch.tensor(A, dtype=torch.float32, device=device)
+        if not use_global_mixup:
+            # --- OLD song-level Mixup augmentation (preserved for rollback) ---
+            if mixup_alpha and mixup_alpha > 0 and len(batch['audio_segments']) > 1 and dataset.split == 'train':
+                lam = float(np.random.beta(mixup_alpha, mixup_alpha))
+                bsz = len(batch['audio_segments'])
+                idx = np.random.permutation(bsz)
+                # Ensure no self-mix (roll if any fixed points)
+                if np.any(idx == np.arange(bsz)):
+                    idx = np.roll(idx, 1)
+                mixed_audio = []
+                mixed_teacher = []
+                mixed_teacher_segment_embs = []
+                mixed_song_ids = []
+                for i in range(bsz):
+                    j = int(idx[i])
+                    A = batch['audio_segments'][i]
+                    B = batch['audio_segments'][j]
 
-                if isinstance(B, np.ndarray):
-                    B_t = torch.from_numpy(B).float().to(device)
-                elif isinstance(B, torch.Tensor):
-                    B_t = B.to(device)
-                else:
-                    B_t = torch.tensor(B, dtype=torch.float32, device=device)
+                    if isinstance(A, np.ndarray):
+                        A_t = torch.from_numpy(A).float().to(device)
+                    elif isinstance(A, torch.Tensor):
+                        A_t = A.to(device)
+                    else:
+                        A_t = torch.tensor(A, dtype=torch.float32, device=device)
 
-                # Mix up to the minimum number of segments to preserve alignment
-                min_seg = min(A_t.shape[0], B_t.shape[0]) if A_t.shape[0] and B_t.shape[0] else 0
-                if min_seg == 0:
-                    mixed_seg_t = A_t
-                else:
-                    A_sub = A_t[:min_seg]
-                    B_sub = B_t[:min_seg]
-                    mixed_seg_t = lam * A_sub + (1.0 - lam) * B_sub
-                    # Ensure at least 2 segments (trainer warns/skips <2)
-                    if mixed_seg_t.shape[0] == 1:
-                        mixed_seg_t = torch.cat([mixed_seg_t, mixed_seg_t], dim=0)
+                    if isinstance(B, np.ndarray):
+                        B_t = torch.from_numpy(B).float().to(device)
+                    elif isinstance(B, torch.Tensor):
+                        B_t = B.to(device)
+                    else:
+                        B_t = torch.tensor(B, dtype=torch.float32, device=device)
 
-                mixed_audio.append(mixed_seg_t)
+                    min_seg = min(A_t.shape[0], B_t.shape[0]) if A_t.shape[0] and B_t.shape[0] else 0
+                    if min_seg == 0:
+                        mixed_seg_t = A_t
+                    else:
+                        A_sub = A_t[:min_seg]
+                        B_sub = B_t[:min_seg]
+                        mixed_seg_t = lam * A_sub + (1.0 - lam) * B_sub
+                        if mixed_seg_t.shape[0] == 1:
+                            mixed_seg_t = torch.cat([mixed_seg_t, mixed_seg_t], dim=0)
 
-                # Mix teacher embeddings (cached)
-                embA = batch['teacher_embeddings'][i]
-                embB = batch['teacher_embeddings'][j]
-                if isinstance(embA, np.ndarray):
-                    embA_t = torch.from_numpy(embA).float().to(device)
-                elif isinstance(embA, torch.Tensor):
-                    embA_t = embA.to(device)
-                else:
-                    embA_t = torch.tensor(embA, dtype=torch.float32, device=device)
+                    mixed_audio.append(mixed_seg_t)
 
-                if isinstance(embB, np.ndarray):
-                    embB_t = torch.from_numpy(embB).float().to(device)
-                elif isinstance(embB, torch.Tensor):
-                    embB_t = embB.to(device)
-                else:
-                    embB_t = torch.tensor(embB, dtype=torch.float32, device=device)
+                    embA = batch['teacher_embeddings'][i]
+                    embB = batch['teacher_embeddings'][j]
+                    if isinstance(embA, np.ndarray):
+                        embA_t = torch.from_numpy(embA).float().to(device)
+                    elif isinstance(embA, torch.Tensor):
+                        embA_t = embA.to(device)
+                    else:
+                        embA_t = torch.tensor(embA, dtype=torch.float32, device=device)
 
-                mixed_teacher.append(lam * embA_t + (1.0 - lam) * embB_t)
+                    if isinstance(embB, np.ndarray):
+                        embB_t = torch.from_numpy(embB).float().to(device)
+                    elif isinstance(embB, torch.Tensor):
+                        embB_t = embB.to(device)
+                    else:
+                        embB_t = torch.tensor(embB, dtype=torch.float32, device=device)
 
-                # Mix per-segment teacher embeddings when available
-                tsegA = batch['teacher_segment_embeddings'][i]
-                tsegB = batch['teacher_segment_embeddings'][j]
-                if tsegA is not None and tsegB is not None:
-                    min_emb_seg = min(len(tsegA), len(tsegB))
-                    mixed_tsegs = []
-                    for k in range(min_emb_seg):
-                        a_k = tsegA[k]
-                        b_k = tsegB[k]
-                        a_t = torch.from_numpy(a_k).float().to(device) if isinstance(a_k, np.ndarray) else (a_k.to(device) if isinstance(a_k, torch.Tensor) else torch.tensor(a_k, dtype=torch.float32, device=device))
-                        b_t = torch.from_numpy(b_k).float().to(device) if isinstance(b_k, np.ndarray) else (b_k.to(device) if isinstance(b_k, torch.Tensor) else torch.tensor(b_k, dtype=torch.float32, device=device))
-                        mixed_tsegs.append(lam * a_t + (1.0 - lam) * b_t)
-                    mixed_teacher_segment_embs.append(mixed_tsegs)
-                else:
-                    mixed_teacher_segment_embs.append(None)
+                    mixed_teacher.append(lam * embA_t + (1.0 - lam) * embB_t)
 
-                mixed_song_ids.append(f"{batch['song_ids'][i]}+{batch['song_ids'][j]}")
+                    tsegA = batch['teacher_segment_embeddings'][i]
+                    tsegB = batch['teacher_segment_embeddings'][j]
+                    if tsegA is not None and tsegB is not None:
+                        min_emb_seg = min(len(tsegA), len(tsegB))
+                        mixed_tsegs = []
+                        for k in range(min_emb_seg):
+                            a_k = tsegA[k]
+                            b_k = tsegB[k]
+                            a_t = torch.from_numpy(a_k).float().to(device) if isinstance(a_k, np.ndarray) else (a_k.to(device) if isinstance(a_k, torch.Tensor) else torch.tensor(a_k, dtype=torch.float32, device=device))
+                            b_t = torch.from_numpy(b_k).float().to(device) if isinstance(b_k, np.ndarray) else (b_k.to(device) if isinstance(b_k, torch.Tensor) else torch.tensor(b_k, dtype=torch.float32, device=device))
+                            mixed_tsegs.append(lam * a_t + (1.0 - lam) * b_t)
+                        mixed_teacher_segment_embs.append(mixed_tsegs)
+                    else:
+                        mixed_teacher_segment_embs.append(None)
 
-            batch['audio_segments'] = mixed_audio
-            batch['teacher_embeddings'] = mixed_teacher
-            batch['teacher_segment_embeddings'] = mixed_teacher_segment_embs
-            batch['song_ids'] = mixed_song_ids
-            logger.info(f"[MIXUP] Applied Mixup: alpha={mixup_alpha}, lam={lam:.4f}")
+                    mixed_song_ids.append(f"{batch['song_ids'][i]}+{batch['song_ids'][j]}")
+
+                batch['audio_segments'] = mixed_audio
+                batch['teacher_embeddings'] = mixed_teacher
+                batch['teacher_segment_embeddings'] = mixed_teacher_segment_embs
+                batch['song_ids'] = mixed_song_ids
+                logger.info(f"[MIXUP] Applied Mixup: alpha={mixup_alpha}, lam={lam:.4f}")
 
         # 🧠 REAL TRAINING STEP
         # Include STAGE and current LR in batch log so resume/stage behavior is visible in a single line
@@ -241,7 +240,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             temp_str = f", T={temp_multiplier:.2f}"
         stage_num = config.get('current_stage', 1)
         logger.info(f"🔥 BATCH {num_batches + 1}/{total_batches} (EPOCH {epoch}/{config['training']['epochs']}) [STAGE {stage_num}, LR {lr_str}{temp_str}]: Training on {len(batch_data)} songs...")
-        
+
         try:
             # --- Linear LR warmup for epoch 1 (if enabled) ---
             if epoch == 1 and config['training'].get('warmup_enabled', True):
@@ -249,8 +248,61 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                 for param_group in trainer.optimizer.param_groups:
                     param_group['lr'] = warmup_lr
                 print(f"[LR WARMUP] Epoch 1, Batch {batch_idx+1}/{total_batches}: LR set to {warmup_lr:.6f}")
-            # Forward pass, loss computation, and backward pass
-            step_metrics = trainer.train_step(batch)
+
+            if use_global_mixup:
+                # --- GLOBAL SEGMENT-LEVEL MIXUP ---
+                # Flatten all segments from all songs, pair randomly, mix.
+                # Zero data loss: every segment participates.
+                all_mel_segments = []
+                all_teacher_seg_embs = []
+
+                for i in range(len(batch['audio_segments'])):
+                    mel_segs = batch['audio_segments'][i]
+                    teacher_seg_embs = batch['teacher_segment_embeddings'][i]
+                    teacher_song_emb = batch['teacher_embeddings'][i]
+
+                    if isinstance(mel_segs, np.ndarray):
+                        mel_segs = torch.from_numpy(mel_segs).float()
+                    if isinstance(mel_segs, torch.Tensor):
+                        mel_segs = mel_segs.to(device)
+
+                    for s in range(mel_segs.shape[0]):
+                        all_mel_segments.append(mel_segs[s])
+                        if teacher_seg_embs is not None and s < len(teacher_seg_embs):
+                            t_emb = teacher_seg_embs[s]
+                        else:
+                            t_emb = teacher_song_emb
+                        if isinstance(t_emb, np.ndarray):
+                            t_emb = torch.from_numpy(t_emb).float()
+                        if isinstance(t_emb, torch.Tensor):
+                            t_emb = t_emb.to(device)
+                        all_teacher_seg_embs.append(t_emb)
+
+                total_segments = len(all_mel_segments)
+
+                if total_segments >= 2:
+                    lam = float(np.random.beta(mixup_alpha, mixup_alpha))
+                    perm = np.random.permutation(total_segments)
+                    if np.any(perm == np.arange(total_segments)):
+                        perm = np.roll(perm, 1)
+
+                    mel_stack = torch.stack(all_mel_segments, dim=0)
+                    teacher_stack = torch.stack(all_teacher_seg_embs, dim=0)
+                    perm_t = torch.from_numpy(perm).long()
+
+                    mixed_mel = lam * mel_stack + (1.0 - lam) * mel_stack[perm_t]
+                    mixed_teacher = lam * teacher_stack + (1.0 - lam) * teacher_stack[perm_t]
+
+                    logger.info(f"[GLOBAL MIXUP] Applied: alpha={mixup_alpha}, lam={lam:.4f}, "
+                               f"total_segments={total_segments} (from {len(batch_data)} songs)")
+
+                    step_metrics = trainer.train_step_global_mixup(mixed_mel, mixed_teacher)
+                else:
+                    logger.warning("[GLOBAL MIXUP] Skipped: fewer than 2 total segments")
+                    step_metrics = trainer.train_step(batch)
+            else:
+                # Forward pass, loss computation, and backward pass
+                step_metrics = trainer.train_step(batch)
             
             # Log detailed metrics
             accumulation_info = f" [acc {step_metrics['accumulation_step']}/{trainer.gradient_accumulation_steps}]"

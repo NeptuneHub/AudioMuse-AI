@@ -664,6 +664,65 @@ class StudentCLAPTrainer:
             'will_update': will_update,
         }
 
+    def train_step_global_mixup(self, mixed_mel: torch.Tensor, mixed_teacher: torch.Tensor) -> Dict:
+        """
+        Training step for global segment-level mixup.
+        Receives pre-mixed mel spectrograms and teacher embeddings as flat tensors.
+
+        Args:
+            mixed_mel: (N_total, 1, 128, T) - mixed mel spectrograms
+            mixed_teacher: (N_total, 512) - mixed teacher segment embeddings
+        """
+        self.model.to(self.device)
+        self.model.train()
+
+        if self.accumulation_counter == 0:
+            self.optimizer.zero_grad()
+
+        total_segments = mixed_mel.shape[0]
+        mixed_mel = mixed_mel.to(self.device)
+        mixed_teacher = mixed_teacher.to(self.device)
+
+        # Process all segments through the model in chunks
+        chunk_size = self.segment_batch_size
+        student_emb_list = []
+        for chunk_start in range(0, total_segments, chunk_size):
+            chunk_end = min(chunk_start + chunk_size, total_segments)
+            chunk = mixed_mel[chunk_start:chunk_end]
+            chunk_emb = self.model.forward(chunk)
+            student_emb_list.append(chunk_emb)
+
+        student_embeddings = torch.cat(student_emb_list, dim=0)
+
+        loss, loss_dict = self.compute_loss(student_embeddings, mixed_teacher)
+
+        loss = loss / self.gradient_accumulation_steps
+        loss.backward()
+
+        self.accumulation_counter += 1
+
+        will_update = False
+        if self.accumulation_counter >= self.gradient_accumulation_steps:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config['training']['grad_clip'])
+            self.optimizer.step()
+            self.accumulation_counter = 0
+            will_update = True
+
+        return {
+            'loss': loss.item() * self.gradient_accumulation_steps,
+            'total_loss': loss.item() * self.gradient_accumulation_steps,
+            'mse_loss': loss_dict['mse_loss'],
+            'cosine_loss': loss_dict['cosine_loss'],
+            'mean_cosine_sim': loss_dict['mean_cosine_sim'],
+            'min_cosine_sim': loss_dict['min_cosine_sim'],
+            'max_cosine_sim': loss_dict['max_cosine_sim'],
+            'cosine_similarity': loss_dict['mean_cosine_sim'],
+            'num_training_pairs': total_segments,
+            'num_training_samples': total_segments,
+            'accumulation_step': self.accumulation_counter,
+            'will_update': will_update,
+        }
+
     def export_to_onnx(self, output_path: str):
         """
         Export trained model to ONNX format for production deployment.
