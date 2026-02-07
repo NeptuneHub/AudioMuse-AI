@@ -491,10 +491,10 @@ def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song
     def fetch_details_batch(id_batch):
         batch_details = {}
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT item_id, title, author, album FROM score WHERE item_id = ANY(%s)", (id_batch,))
+            cur.execute("SELECT item_id, title, author, album, album_artist FROM score WHERE item_id = ANY(%s)", (id_batch,))
             rows = cur.fetchall()
             for row in rows:
-                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
+                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album'), 'album_artist': row.get('album_artist')}
         return batch_details
     
     # Split item_ids into batches for parallel DB queries
@@ -770,7 +770,7 @@ def _radius_walk_get_candidates(
         # Fetch details in batch (uses app_helper get_score_data_by_ids)
         try:
             track_details_list = get_score_data_by_ids(item_ids_to_fetch)
-            details_map = {d['item_id']: {'title': d.get('title'), 'author': d.get('author'), 'album': d.get('album')} for d in track_details_list}
+            details_map = {d['item_id']: {'title': d.get('title'), 'author': d.get('author'), 'album': d.get('album'), 'album_artist': d.get('album_artist')} for d in track_details_list}
         except Exception:
             details_map = {}
 
@@ -1460,10 +1460,10 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
     def fetch_details_batch(id_batch):
         batch_details = {}
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT item_id, title, author, album FROM score WHERE item_id = ANY(%s)", (id_batch,))
+            cur.execute("SELECT item_id, title, author, album, album_artist FROM score WHERE item_id = ANY(%s)", (id_batch,))
             rows = cur.fetchall()
             for row in rows:
-                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
+                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album'), 'album_artist': row.get('album_artist')}
         return batch_details
     
     # Split item_ids into batches for parallel DB queries
@@ -1628,10 +1628,10 @@ def search_tracks_by_title_and_artist(title_query: str, artist_query: str, limit
         where_clause = " AND ".join(query_parts)
         
         query = f"""
-            SELECT item_id, title, author, album
-            FROM score 
+            SELECT item_id, title, author, album, album_artist
+            FROM score
             WHERE {where_clause}
-            ORDER BY author, title 
+            ORDER BY author, title
             LIMIT %s
         """
         params.append(limit)

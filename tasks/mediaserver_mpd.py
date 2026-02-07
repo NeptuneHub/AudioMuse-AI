@@ -55,6 +55,7 @@ def _format_song(song_dict):
         'Id': song_dict.get('file'),
         'Name': song_dict.get('title', os.path.basename(song_dict.get('file', ''))),
         'AlbumArtist': song_dict.get('albumartist'),
+        'OriginalAlbumArtist': song_dict.get('albumartist'),
         'Artist': song_dict.get('artist'),
         'Album': song_dict.get('album'),
         'Path': song_dict.get('file'),

@@ -78,7 +78,7 @@ def get_navidrome_auth_params(username=None, password=None):
         logger.warning("Navidrome User or Password is not configured.")
         return {}
     hex_encoded_password = auth_pass.encode('utf-8').hex()
-    return {"u": auth_user, "p": f"enc:{hex_encoded_password}", "v": "1.16.1", "c": config.APP_VERSION, "f": "json"}
+    return {"u": auth_user, "p": f"enc:{hex_encoded_password}", "v": "1.16.1", "c": "AudioMuse", "f": "json"}
 
 def _navidrome_request(endpoint, params=None, method='get', stream=False, user_creds=None):
     """
@@ -284,11 +284,16 @@ def get_all_songs():
                     # artistId in search3 response refers to the album artist
                     artist_id = s.get('artistId')
                     all_songs.append({
-                        'Id': s.get('id'), 
-                        'Name': title, 
+                        'Id': s.get('id'),
+                        'Name': title,
                         'AlbumArtist': artist_name,
                         'ArtistId': artist_id,
-                        'Path': s.get('path')
+                        'OriginalAlbumArtist': s.get('displayAlbumArtist') or s.get('albumArtist'),
+                        'Album': s.get('album'),
+                        'Path': s.get('path'),
+                        'Year': s.get('year'),
+                        'Rating': s.get('userRating') if s.get('userRating') else None,
+                        'FilePath': s.get('path'),
                     })
                 
                 offset += len(songs)
@@ -333,11 +338,16 @@ def get_all_songs():
             for song in album_songs:
                 # Convert to the expected format
                 all_songs.append({
-                    'Id': song.get('Id'), 
-                    'Name': song.get('Name'), 
+                    'Id': song.get('Id'),
+                    'Name': song.get('Name'),
                     'AlbumArtist': song.get('AlbumArtist'),
                     'ArtistId': song.get('ArtistId'),
-                    'Path': song.get('Path')
+                    'OriginalAlbumArtist': song.get('OriginalAlbumArtist'),
+                    'Album': song.get('Album'),
+                    'Path': song.get('Path'),
+                    'Year': song.get('Year'),
+                    'Rating': song.get('Rating'),
+                    'FilePath': song.get('FilePath'),
                 })
 
     return all_songs
@@ -444,12 +454,17 @@ def get_tracks_from_album(album_id, user_creds=None):
             artist, artist_id = _select_best_artist(s, title)
             logger.debug(f"getAlbum track '{title}': artist='{artist}', artist_id='{artist_id}', raw_artistId='{s.get('artistId')}', raw_albumArtistId='{s.get('albumArtistId')}'")
             result.append({
-                **s, 
-                'Id': s.get('id'), 
-                'Name': title, 
+                **s,
+                'Id': s.get('id'),
+                'Name': title,
                 'AlbumArtist': artist,
                 'ArtistId': artist_id,
-                'Path': s.get('path')
+                'OriginalAlbumArtist': s.get('displayAlbumArtist') or s.get('albumArtist'),
+                'Album': s.get('album'),
+                'Path': s.get('path'),
+                'Year': s.get('year'),
+                'Rating': s.get('userRating') if s.get('userRating') else None,
+                'FilePath': s.get('path'),
             })
         return result
     return []
