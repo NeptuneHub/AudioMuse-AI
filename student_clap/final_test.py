@@ -361,40 +361,77 @@ def main():
         overlap5 = len(t_top5 & s_top5)
         r5 = overlap5 / k5 if k5 > 0 else 0.0
 
-        # mAP@10: average precision where relevant = teacher top-10
-        k10 = min(10, num_songs)
+        # Strict mAP@10 per your rules (teacher top-10 = only relevant items, denominator fixed to 10)
+        EVAL_K = 10
+        k10 = min(EVAL_K, num_songs)
         t_top10_list = t_sorted[:k10]
         s_top10_list = s_sorted[:k10]
 
-        def calculate_ap(teacher_top_k, student_top_k):
+        def calculate_ap_fixed_k(teacher_top_k, student_top_k, k=EVAL_K):
+            """AP where denominator is fixed to k (e.g., 10).
+            - iterate over student_top_k positions
+            - add precision@i only when item is in teacher_top_k
+            - divide final sum by k (fixed), per your instruction
+            """
             score = 0.0
             num_hits = 0.0
             for i, p in enumerate(student_top_k):
-                # check if student item is relevant (in teacher top-k)
                 if p in teacher_top_k:
                     num_hits += 1.0
                     precision_at_i = num_hits / (i + 1.0)
                     score += precision_at_i
-            # divide by number of relevant items (teacher top-k)
-            return score / float(len(teacher_top_k)) if len(teacher_top_k) > 0 else 0.0
+            return score / float(k)
 
-        ap10 = calculate_ap(t_top10_list, s_top10_list)
+        ap10 = calculate_ap_fixed_k(t_top10_list, s_top10_list, k=EVAL_K)
 
-        query_metrics[query] = {"r1": r1, "r5": r5, "ap10": ap10, "overlap5": overlap5}
+        # Additional diagnostics to help interpret mAP
+        overlap10 = len(set(t_top10_list) & set(s_top10_list))
+        # same-position matches among top-k (ORDERED count)
+        ordered10 = 0
+        for idx in range(k10):
+            t_item = t_top10_list[idx] if idx < len(t_top10_list) else None
+            s_item = s_top10_list[idx] if idx < len(s_top10_list) else None
+            if t_item is not None and t_item == s_item:
+                ordered10 += 1
+
+        # mean absolute rank shift over teacher top-k items (only for items found in student list)
+        rank_shifts = []
+        for t_idx, item in enumerate(t_top10_list):
+            try:
+                s_idx = s_sorted.index(item)
+                rank_shifts.append(abs(s_idx - t_idx))
+            except ValueError:
+                # item not found in student's ranking (shouldn't happen), treat as max shift k
+                rank_shifts.append(EVAL_K)
+        mean_rank_shift = float(np.mean(rank_shifts)) if rank_shifts else float(EVAL_K)
+
+        query_metrics[query] = {
+            "r1": r1,
+            "r5": r5,
+            "ap10": ap10,
+            "overlap5": overlap5,
+            "overlap10": overlap10,
+            "ordered10": ordered10,
+            "mean_rank_shift": mean_rank_shift,
+        }
         sum_r1 += r1
         sum_r5 += r5
         sum_ap10 += ap10
 
-    # Print per-query table
-    print("\n  {:<30s}  {:^7s}  {:^12s}  {:^8s}".format("Query", "R@1", "R@5", "mAP@10"))
-    print("  " + "-"*30 + "  " + "-"*7 + "  " + "-"*12 + "  " + "-"*8)
+    # Print per-query table (with diagnostics)
+    print("\n  {:<30s}  {:^7s}  {:^12s}  {:^8s}  {:^9s}  {:^9s}  {:^8s}".format(
+        "Query", "R@1", "R@5", "mAP@10", "Overlap10", "Ordered10", "MeanShift"))
+    print("  " + "-"*30 + "  " + "-"*7 + "  " + "-"*12 + "  " + "-"*8 + "  " + "-"*9 + "  " + "-"*9 + "  " + "-"*8)
     for q in TEXT_QUERIES:
         qm = query_metrics[q]
         r1_str = f"{int(qm['r1'])}/1"
         r5_str = f"{qm['overlap5']}/{min(5, num_songs)} ({qm['r5']*100:.1f}%)"
         ap10_str = f"{qm['ap10']:.3f}"
+        overlap10_str = f"{qm['overlap10']}/{min(10, num_songs)}"
+        ordered10_str = f"{qm['ordered10']}/{min(10, num_songs)}"
+        mean_shift_str = f"{qm['mean_rank_shift']:.2f}"
         short_q = (q[:27] + '...') if len(q) > 30 else q
-        print(f"  {short_q:<30s}  {r1_str:^7s}  {r5_str:^12s}  {ap10_str:^8s}")
+        print(f"  {short_q:<30s}  {r1_str:^7s}  {r5_str:^12s}  {ap10_str:^8s}  {overlap10_str:^9s}  {ordered10_str:^9s}  {mean_shift_str:^8s}")
 
     # Summary statistics
     n = len(TEXT_QUERIES)
