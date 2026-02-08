@@ -118,13 +118,15 @@ def student_mel(audio_segment: np.ndarray) -> np.ndarray:
 def load_onnx(path: str) -> ort.InferenceSession:
     """Load an ONNX model, fixing external data references if needed."""
     import onnx
-    from onnx.external_data_helper import set_external_data
 
     model = onnx.load(path, load_external_data=False)
 
     # If the model uses external data, rewrite references to the actual .data
     # file sitting next to the .onnx file (handles renames after export).
-    data_file = os.path.splitext(path)[0] + ".data"
+    # torch.onnx.export names it "<name>.onnx.data", so check both patterns.
+    data_file = path + ".data"  # e.g. model_epoch_1.onnx.data
+    if not os.path.exists(data_file):
+        data_file = os.path.splitext(path)[0] + ".data"  # e.g. model_epoch_1.data
     if os.path.exists(data_file):
         # Use absolute path so ONNXRuntime can find the external data even when the
         # session is created from serialized bytes (cwd might be different).
@@ -193,7 +195,7 @@ def main():
     parser = argparse.ArgumentParser(description="Student CLAP final evaluation")
     script_dir = os.path.dirname(os.path.abspath(__file__))
     parser.add_argument("--songs-dir", default=os.path.join(script_dir, "..", "test", "songs"))
-    parser.add_argument("--student-model", default=os.path.join(script_dir, "models", "audiomuseai_clap_auido.onnx"))
+    parser.add_argument("--student-model", default=os.path.join(script_dir, "models", "model_epoch_2.onnx"))
     parser.add_argument("--teacher-audio-model", default=os.path.join(script_dir, "..", "model", "clap_audio_model.onnx"))
     parser.add_argument("--teacher-text-model", default=os.path.join(script_dir, "..", "model", "clap_text_model.onnx"))
     args = parser.parse_args()
