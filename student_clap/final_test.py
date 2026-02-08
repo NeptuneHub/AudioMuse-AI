@@ -24,6 +24,17 @@ TEXT_QUERIES = [
     "Calm Piano song",
     "Energetic POP song",
     "Love Rock Song",
+    "Happy Pop song",
+    "POP song with Female vocalist",
+    "Instrumental song",
+    "Female Vocalist",
+    "Male Vocalist",
+    "Ukulele POP song",
+    "Jazz Sax song",
+    "Distorted Electric Guitar",
+    "Drum and Bass beat",
+    "Heavy Metal song",
+    "Ambient song"
 ]
 
 # ── Audio constants ─────────────────────────────────────────────────────
@@ -322,6 +333,71 @@ def main():
     print(f"  {'─'*30}  {'─'*9}  {'─'*9}  {'─'*9}")
     overall_delta = np.mean(all_student_vals) - np.mean(all_teacher_vals)
     print(f"  {'OVERALL MEAN':<30s}  {np.mean(all_teacher_vals):>+9.4f}  {np.mean(all_student_vals):>+9.4f}  {overall_delta:>+9.4f}")
+
+    # ── MIR ranking preservation report using R@k and mAP@10 ─────────────
+    print("\n  MIR RANKING METRICS: R@1, R@5, mAP@10 (teacher top-10 as relevance)")
+
+    songs_list = [r["name"] for r in all_results]
+    num_songs = len(songs_list)
+
+    query_metrics = {}
+    sum_r1 = 0.0
+    sum_r5 = 0.0
+    sum_ap10 = 0.0
+
+    for query in TEXT_QUERIES:
+        t_pairs = [(r["name"], r["queries"][query]["teacher"]) for r in all_results]
+        s_pairs = [(r["name"], r["queries"][query]["student"]) for r in all_results]
+        t_sorted = [s for s, _ in sorted(t_pairs, key=lambda x: x[1], reverse=True)]
+        s_sorted = [s for s, _ in sorted(s_pairs, key=lambda x: x[1], reverse=True)]
+
+        # R@1 (accuracy on top-1)
+        r1 = 1.0 if (t_sorted and s_sorted and t_sorted[0] == s_sorted[0]) else 0.0
+
+        # R@5 (fraction of teacher top-5 present in student top-5)
+        k5 = min(5, num_songs)
+        t_top5 = set(t_sorted[:k5])
+        s_top5 = set(s_sorted[:k5])
+        overlap5 = len(t_top5 & s_top5)
+        r5 = overlap5 / k5 if k5 > 0 else 0.0
+
+        # mAP@10: average precision where relevant = teacher top-10
+        k10 = min(10, num_songs)
+        t_top10 = set(t_sorted[:k10])
+        hits = 0
+        sum_prec = 0.0
+        for i in range(1, k10 + 1):
+            if i <= len(s_sorted) and s_sorted[i - 1] in t_top10:
+                hits += 1
+                sum_prec += hits / float(i)
+        ap10 = sum_prec / float(k10) if k10 > 0 else 0.0
+
+        query_metrics[query] = {"r1": r1, "r5": r5, "ap10": ap10, "overlap5": overlap5}
+        sum_r1 += r1
+        sum_r5 += r5
+        sum_ap10 += ap10
+
+    # Print per-query table
+    print("\n  {:<30s}  {:^7s}  {:^12s}  {:^8s}".format("Query", "R@1", "R@5", "mAP@10"))
+    print("  " + "-"*30 + "  " + "-"*7 + "  " + "-"*12 + "  " + "-"*8)
+    for q in TEXT_QUERIES:
+        qm = query_metrics[q]
+        r1_str = f"{int(qm['r1'])}/1"
+        r5_str = f"{qm['overlap5']}/{min(5, num_songs)} ({qm['r5']*100:.1f}%)"
+        ap10_str = f"{qm['ap10']:.3f}"
+        short_q = (q[:27] + '...') if len(q) > 30 else q
+        print(f"  {short_q:<30s}  {r1_str:^7s}  {r5_str:^12s}  {ap10_str:^8s}")
+
+    # Summary statistics
+    n = len(TEXT_QUERIES)
+    mean_r1 = sum_r1 / n if n else 0.0
+    mean_r5 = sum_r5 / n if n else 0.0
+    mean_map10 = sum_ap10 / n if n else 0.0
+
+    print("\n  SUMMARY:")
+    print(f"    Mean R@1 (accuracy) : {mean_r1*100:.1f}% ({int(sum_r1)}/{n})")
+    print(f"    Mean R@5            : {mean_r5*100:.1f}% (mean overlap {mean_r5*5:.2f}/5)")
+    print(f"    mAP@10 (mean)       : {mean_map10:.3f}")
 
     print("\n" + "=" * 80)
     print("  DONE")
