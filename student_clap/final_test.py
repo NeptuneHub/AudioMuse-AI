@@ -206,7 +206,7 @@ def main():
     parser = argparse.ArgumentParser(description="Student CLAP final evaluation")
     script_dir = os.path.dirname(os.path.abspath(__file__))
     parser.add_argument("--songs-dir", default=os.path.join(script_dir, "..", "test", "songs"))
-    parser.add_argument("--student-model", default=os.path.join(script_dir, "models", "model_epoch_2.onnx"))
+    parser.add_argument("--student-model", default=os.path.join(script_dir, "models", "model_epoch_3.onnx"))
     parser.add_argument("--teacher-audio-model", default=os.path.join(script_dir, "..", "model", "clap_audio_model.onnx"))
     parser.add_argument("--teacher-text-model", default=os.path.join(script_dir, "..", "model", "clap_text_model.onnx"))
     args = parser.parse_args()
@@ -363,14 +363,22 @@ def main():
 
         # mAP@10: average precision where relevant = teacher top-10
         k10 = min(10, num_songs)
-        t_top10 = set(t_sorted[:k10])
-        hits = 0
-        sum_prec = 0.0
-        for i in range(1, k10 + 1):
-            if i <= len(s_sorted) and s_sorted[i - 1] in t_top10:
-                hits += 1
-                sum_prec += hits / float(i)
-        ap10 = sum_prec / float(k10) if k10 > 0 else 0.0
+        t_top10_list = t_sorted[:k10]
+        s_top10_list = s_sorted[:k10]
+
+        def calculate_ap(teacher_top_k, student_top_k):
+            score = 0.0
+            num_hits = 0.0
+            for i, p in enumerate(student_top_k):
+                # check if student item is relevant (in teacher top-k)
+                if p in teacher_top_k:
+                    num_hits += 1.0
+                    precision_at_i = num_hits / (i + 1.0)
+                    score += precision_at_i
+            # divide by number of relevant items (teacher top-k)
+            return score / float(len(teacher_top_k)) if len(teacher_top_k) > 0 else 0.0
+
+        ap10 = calculate_ap(t_top10_list, s_top10_list)
 
         query_metrics[query] = {"r1": r1, "r5": r5, "ap10": ap10, "overlap5": overlap5}
         sum_r1 += r1
