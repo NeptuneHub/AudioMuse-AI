@@ -3,6 +3,7 @@
 import requests
 import logging
 import os
+from urllib.parse import unquote, urlparse
 import config
 
 logger = logging.getLogger(__name__)
@@ -12,6 +13,14 @@ REQUESTS_TIMEOUT = 300
 # Custom exception for Lyrion API failures so callers can decide how to handle them
 class LyrionAPIError(Exception):
     pass
+
+def _decode_lyrion_url(url):
+    """Decode Lyrion file:// URI to a plain filesystem path."""
+    if not url:
+        return None
+    if url.startswith('file://'):
+        return unquote(urlparse(url).path)
+    return unquote(url)
 
 # ##############################################################################
 # LYRION (JSON-RPC) IMPLEMENTATION
@@ -719,7 +728,7 @@ def get_all_songs():
     
     # Fetch all songs without filtering
     logger.info("Fetching all songs from Lyrion")
-    response = _jsonrpc_request("titles", [0, 999999])
+    response = _jsonrpc_request("titles", [0, 999999, "tags:galduAyR"])
     
     all_songs = []
     if response and "titles_loop" in response:
@@ -748,14 +757,19 @@ def get_all_songs():
                 used_field = 'fallback'
             
             mapped_song = {
-                'Id': song.get('id'), 
-                'Name': song.get('title'), 
-                'AlbumArtist': track_artist, 
-                'Path': song.get('url'), 
-                'url': song.get('url')
+                'Id': song.get('id'),
+                'Name': song.get('title'),
+                'AlbumArtist': track_artist,
+                'OriginalAlbumArtist': song.get('albumartist'),
+                'Album': song.get('album'),
+                'Path': song.get('url'),
+                'url': song.get('url'),
+                'Year': int(song.get('year')) if song.get('year') else None,
+                'Rating': int(int(song.get('rating')) / 20) if song.get('rating') else None,
+                'FilePath': _decode_lyrion_url(song.get('url')),
             }
             all_songs.append(mapped_song)
-        
+
         logger.info(f"Found {len(songs)} total songs")
 
     return all_songs
@@ -939,7 +953,7 @@ def get_tracks_from_album(album_id):
     # The 'titles' command with a filter is the correct way to get songs for an album.
     # We now fetch all songs and filter them by the album ID.
     try:
-        response = _jsonrpc_request("titles", [0, 999999, f"album_id:{album_id}", "tags:galdu"])
+        response = _jsonrpc_request("titles", [0, 999999, f"album_id:{album_id}", "tags:galduAyR"])
         logger.debug(f"Lyrion API Raw Track Response for Album {album_id}: {response}")
     except Exception as e:
         logger.error(f"Lyrion API call for album {album_id} failed: {e}", exc_info=True)
@@ -1031,7 +1045,14 @@ def get_tracks_from_album(album_id):
             used_field = 'fallback'
         
         path = s.get('url') or s.get('Path') or s.get('path') or ''
-        mapped.append({'Id': id_val, 'Name': title, 'AlbumArtist': artist, 'Path': path, 'url': path})
+        mapped.append({
+            'Id': id_val, 'Name': title, 'AlbumArtist': artist, 'OriginalAlbumArtist': s.get('albumartist'),
+            'Album': s.get('album'),
+            'Path': path, 'url': path,
+            'Year': int(s.get('year')) if s.get('year') else None,
+            'Rating': int(int(s.get('rating')) / 20) if s.get('rating') else None,
+            'FilePath': _decode_lyrion_url(s.get('url')),
+        })
 
     return mapped
 
@@ -1046,7 +1067,7 @@ def get_playlist_by_name(playlist_name):
 
 def get_top_played_songs(limit):
     """Fetches the top N most played songs from Lyrion for a specific user using JSON-RPC."""
-    response = _jsonrpc_request("titles", [0, limit, "sort:popular"])
+    response = _jsonrpc_request("titles", [0, limit, "sort:popular", "tags:galduAyR"])
     if response and "titles_loop" in response:
         songs = response["titles_loop"]
         # Map Lyrion API keys to our standard format.
@@ -1075,11 +1096,16 @@ def get_top_played_songs(limit):
                 used_field = 'fallback'
             
             mapped_songs.append({
-                'Id': s.get('id'), 
-                'Name': title, 
-                'AlbumArtist': track_artist, 
-                'Path': s.get('url'), 
-                'url': s.get('url')
+                'Id': s.get('id'),
+                'Name': title,
+                'AlbumArtist': track_artist,
+                'OriginalAlbumArtist': s.get('albumartist'),
+                'Album': s.get('album'),
+                'Path': s.get('url'),
+                'url': s.get('url'),
+                'Year': int(s.get('year')) if s.get('year') else None,
+                'Rating': int(int(s.get('rating')) / 20) if s.get('rating') else None,
+                'FilePath': _decode_lyrion_url(s.get('url')),
             })
         return mapped_songs
     return []

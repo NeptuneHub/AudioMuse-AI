@@ -26,7 +26,7 @@
         <h1>AudioMuse-AI - Music Map</h1>
         <p>Precompute your music map with a song analysis, then explore it interactively and create your playlist</p>
     </header>
-    <div class="map-controls" style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+    <div class="map-controls" style="display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
         <label for="map_size" class="label-with-tooltip">
             Map size:
             <span class="info-tooltip" tabindex="0">
@@ -40,6 +40,7 @@
             <button id="btn-pct-75" type="button" class="btn btn-ghost">75%</button>
             <button id="btn-pct-100" type="button" class="btn btn-ghost">100%</button>
         </div>
+        <div id="provider-selector-container" style="display:inline-flex; align-items:center;"></div>
         <button id="create-playlist" class="btn btn-primary">Create playlist</button>
         <button id="song-path-btn" class="btn btn-primary" disabled style="margin-left:6px;">Song Path</button>
         <button id="refresh-map" type="button" class="btn btn-ghost" title="Refresh map (clear overlays)" style="margin-left:6px;">Refresh</button>
@@ -1191,7 +1192,11 @@ function clearMapOverlays() {
 {% endblock %}
 
 {% block postHTMLScripts %}
+<script src="{{ url_for('static', filename='provider-selector.js') }}"></script>
 <script>
+        // Initialize provider selector
+        initProviderSelector();
+
         // Improved create-playlist response handling: parse response text safely and surface status
         document.getElementById('create-playlist').onclick = async () => {
             const sel = window._plotSelection || [];
@@ -1202,6 +1207,7 @@ function clearMapOverlays() {
             const filtered = (sel || []).filter(id => id !== undefined && id !== null);
             console.debug('Creating playlist with ids', filtered.slice(0,50));
             const payload = { playlist_name: `Map selection ${new Date().toISOString()}`, track_ids: filtered };
+            addProviderToPayload(payload);
             const resp = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
                 const text = await resp.text();
                 let json = null;

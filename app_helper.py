@@ -84,7 +84,7 @@ def init_db():
     db = get_db()
     with db.cursor() as cur:
         # Create 'score' table
-        cur.execute("CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)")
+        cur.execute("CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)")
         # Add 'energy' column if not exists
         cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'energy')")
         if not cur.fetchone()[0]:
@@ -100,6 +100,26 @@ def init_db():
         if not cur.fetchone()[0]:
             logger.info("Adding 'album' column to 'score' table.")
             cur.execute("ALTER TABLE score ADD COLUMN album TEXT")
+        # Add 'album_artist' column if not exists
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album_artist')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'album_artist' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN album_artist TEXT")
+        # Add 'year' column if not exists
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'year')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'year' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN year INTEGER")
+        # Add 'rating' column if not exists
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'rating')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'rating' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN rating INTEGER")
+        # Add 'file_path' column if not exists
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'file_path')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'file_path' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
         # Create 'playlist' table
         cur.execute("CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))")
         # Create 'task_status' table
@@ -212,7 +232,107 @@ def init_db():
                 """, (query, 1.0, rank))
             
             logger.info(f"Inserted {len(default_queries)} default CLAP search queries")
-        
+
+        # =================================================================
+        # MULTI-PROVIDER SUPPORT TABLES
+        # =================================================================
+
+        # Create 'provider' table - Registry of configured media providers
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS provider (
+                id SERIAL PRIMARY KEY,
+                provider_type VARCHAR(50) NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                config JSONB NOT NULL DEFAULT '{}',
+                enabled BOOLEAN DEFAULT TRUE,
+                priority INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(provider_type, name)
+            )
+        """)
+
+        # Create 'track' table - Stable track identity based on file path
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS track (
+                id SERIAL PRIMARY KEY,
+                file_path_hash VARCHAR(64) NOT NULL UNIQUE,
+                file_path TEXT NOT NULL,
+                normalized_path TEXT,
+                file_size BIGINT,
+                file_modified TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_track_file_path_hash ON track(file_path_hash)")
+        # Add normalized_path column if it doesn't exist (migration for existing installs)
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'track' AND column_name = 'normalized_path')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'normalized_path' column to 'track' table.")
+            cur.execute("ALTER TABLE track ADD COLUMN normalized_path TEXT")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_track_normalized_path ON track(normalized_path)")
+
+        # Create 'provider_track' table - Links provider item_ids to tracks
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS provider_track (
+                id SERIAL PRIMARY KEY,
+                provider_id INTEGER NOT NULL REFERENCES provider(id) ON DELETE CASCADE,
+                track_id INTEGER NOT NULL REFERENCES track(id) ON DELETE CASCADE,
+                item_id TEXT NOT NULL,
+                title TEXT,
+                artist TEXT,
+                album TEXT,
+                last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(provider_id, item_id),
+                UNIQUE(provider_id, track_id)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_provider_track_item_id ON provider_track(item_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_provider_track_track_id ON provider_track(track_id)")
+
+        # Create 'app_settings' table - Application configuration storage
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key VARCHAR(255) PRIMARY KEY,
+                value JSONB NOT NULL,
+                category VARCHAR(100),
+                description TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Add 'track_id' column to 'score' table if not exists (for multi-provider linking)
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'track_id')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'track_id' column to 'score' table for multi-provider support.")
+            cur.execute("ALTER TABLE score ADD COLUMN track_id INTEGER REFERENCES track(id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_score_track_id ON score(track_id)")
+
+        # Add 'file_path' column to 'score' table if not exists (for file identification)
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'file_path')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'file_path' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_score_file_path ON score(file_path)")
+
+        # Insert default settings if app_settings is empty
+        cur.execute("SELECT COUNT(*) FROM app_settings")
+        if cur.fetchone()[0] == 0:
+            default_settings = [
+                ('setup_completed', 'false', 'system', 'Whether the setup wizard has been completed'),
+                ('setup_version', '"1.0"', 'system', 'Version of the setup wizard last completed'),
+                ('multi_provider_enabled', 'false', 'providers', 'Whether multi-provider mode is enabled'),
+                ('primary_provider_id', 'null', 'providers', 'ID of the primary provider for playlist creation'),
+            ]
+            for key, value, category, description in default_settings:
+                cur.execute("""
+                    INSERT INTO app_settings (key, value, category, description)
+                    VALUES (%s, %s::jsonb, %s, %s)
+                    ON CONFLICT (key) DO NOTHING
+                """, (key, value, category, description))
+            logger.info("Inserted default app settings")
+
         db.commit()
 
 # --- Status Constants ---
@@ -427,14 +547,35 @@ def track_exists(item_id):
     cur.close()
     return row is not None
 
-def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None):
-    """Saves track analysis and embedding in a single transaction."""
-    
+def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, album_artist=None, year=None, rating=None, file_path=None, provider_id=None):
+    """Saves track analysis and embedding in a single transaction.
+
+    Also creates/updates track linking for multi-provider support when file_path is provided.
+
+    Args:
+        item_id: Provider-specific track identifier
+        title: Track title
+        author: Artist name
+        tempo: BPM
+        key: Musical key
+        scale: Major/Minor scale
+        moods: Dict of mood labels and scores
+        embedding_vector: numpy array of embeddings
+        energy: Energy level (0.01-0.15)
+        other_features: JSON string of additional features
+        album: Album name
+        album_artist: Album artist name
+        year: Release year
+        rating: User rating
+        file_path: Full path to the audio file (for multi-provider track linking)
+        provider_id: Optional provider ID for creating provider_track link
+    """
+
     def _sanitize_string(s, max_length=1000, field_name="field"):
         """Sanitize string for PostgreSQL insertion."""
         if s is None:
             return None
-        
+
         # Ensure it's a string
         if not isinstance(s, str):
             try:
@@ -442,42 +583,105 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
             except Exception:
                 logger.warning(f"Could not convert {field_name} to string, using empty string")
                 return ""
-        
+
         # Remove problematic characters
         # NUL byte (0x00) - PostgreSQL cannot store
         s = s.replace('\x00', '')
-        
+
         # Remove other control characters that could cause issues
         # Keep only printable ASCII, space, tab, newline, and common Unicode
         s = ''.join(char for char in s if char.isprintable() or char in '\n\t ')
-        
+
         # Truncate to max length to prevent overly long strings
         if len(s) > max_length:
             logger.warning(f"{field_name} truncated from {len(s)} to {max_length} characters")
             s = s[:max_length]
-        
+
         # Strip leading/trailing whitespace
         s = s.strip()
-        
+
         return s
-    
+
     # Sanitize all string inputs with field-specific limits
     title = _sanitize_string(title, max_length=500, field_name="title")
     author = _sanitize_string(author, max_length=200, field_name="author")
     album = _sanitize_string(album, max_length=200, field_name="album")
+    album_artist = _sanitize_string(album_artist, max_length=200, field_name="album_artist")
     key = _sanitize_string(key, max_length=10, field_name="key")
     scale = _sanitize_string(scale, max_length=10, field_name="scale")
     other_features = _sanitize_string(other_features, max_length=2000, field_name="other_features")
+    file_path = _sanitize_string(file_path, max_length=2000, field_name="file_path")
+
+    # year: parse from various date formats and validate
+    def _parse_year_from_date(year_value):
+        """
+        Parse year from various date formats.
+        Supports: YYYY, YYYY-MM-DD, MM-DD-YYYY, DD-MM-YYYY (with - or / separators)
+        """
+        if year_value is None:
+            return None
+
+        year_str = str(year_value).strip()
+        if not year_str:
+            return None
+
+        # Try parsing as pure integer first (YYYY)
+        try:
+            year = int(year_str)
+            if 1000 <= year <= 2100:
+                return year
+        except (ValueError, TypeError):
+            pass
+
+        # Normalize separators
+        normalized = year_str.replace('/', '-')
+        parts = normalized.split('-')
+
+        if len(parts) == 3:
+            try:
+                # YYYY-MM-DD format
+                if len(parts[0]) == 4:
+                    year = int(parts[0])
+                    if 1000 <= year <= 2100:
+                        return year
+
+                # MM-DD-YYYY or DD-MM-YYYY format
+                if len(parts[2]) == 4:
+                    year = int(parts[2])
+                    if 1000 <= year <= 2100:
+                        return year
+
+                # 2-digit year (MM-DD-YY)
+                if len(parts[2]) == 2:
+                    year = int(parts[2])
+                    year += 2000 if year < 30 else 1900
+                    if 1000 <= year <= 2100:
+                        return year
+            except (ValueError, TypeError, IndexError):
+                pass
+
+        return None
+
+    year = _parse_year_from_date(year)
+
+    # rating: validate as integer 0-5 (5-star rating system)
+    if rating is not None:
+        try:
+            rating = int(rating)
+            if rating < 0 or rating > 5:
+                rating = None
+        except (ValueError, TypeError):
+            rating = None
 
     mood_str = ','.join(f"{k}:{v:.3f}" for k, v in moods.items())
-    
+
     conn = get_db() # This now calls the function within this file
     cur = conn.cursor()
     try:
-        # Save analysis to score table
+        # Save analysis to score table (includes file_path for multi-provider linking)
         cur.execute("""
-            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 author = EXCLUDED.author,
@@ -487,8 +691,12 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
                 mood_vector = EXCLUDED.mood_vector,
                 energy = EXCLUDED.energy,
                 other_features = EXCLUDED.other_features,
-                album = EXCLUDED.album
-        """, (item_id, title, author, tempo, key, scale, mood_str, energy, other_features, album))
+                album = EXCLUDED.album,
+                album_artist = EXCLUDED.album_artist,
+                year = EXCLUDED.year,
+                rating = EXCLUDED.rating,
+                file_path = EXCLUDED.file_path
+        """, (item_id, title, author, tempo, key, scale, mood_str, energy, other_features, album, album_artist, year, rating, file_path))
 
         # Save embedding
         if isinstance(embedding_vector, np.ndarray) and embedding_vector.size > 0:
@@ -505,6 +713,23 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
         raise
     finally:
         cur.close()
+
+    # Create track linking for multi-provider support (after main transaction commits)
+    if file_path:
+        try:
+            # Get or create track record based on file path
+            # Pass provider_id for provider-specific path normalization (music_path_prefix)
+            track_id = get_or_create_track(file_path, provider_id=provider_id)
+            if track_id:
+                # Link score to track
+                update_score_track_id(item_id, track_id)
+
+                # Create provider_track link if provider_id is specified
+                if provider_id:
+                    link_provider_track(provider_id, track_id, item_id, title, author, album)
+        except Exception as e:
+            # Log but don't fail - track linking is supplementary
+            logger.warning("Failed to create track linking for %s: %s", item_id, e)
 
 def save_clap_embedding(item_id, clap_embedding_vector):
     """Saves CLAP embedding for a track."""
@@ -554,7 +779,7 @@ def get_all_tracks():
     conn = get_db() # This now calls the function within this file
     cur = conn.cursor(cursor_factory=DictCursor)
     cur.execute("""
-        SELECT s.item_id, s.title, s.author, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, e.embedding
+        SELECT s.item_id, s.title, s.author, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path, e.embedding
         FROM score s
         LEFT JOIN embedding e ON s.item_id = e.item_id
     """)
@@ -585,7 +810,7 @@ def get_tracks_by_ids(item_ids_list):
     item_ids_str = [str(item_id) for item_id in item_ids_list]
     
     query = """
-        SELECT s.item_id, s.title, s.author, s.album, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, e.embedding
+        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path, e.embedding
         FROM score s
         LEFT JOIN embedding e ON s.item_id = e.item_id
         WHERE s.item_id IN %s
@@ -613,7 +838,7 @@ def get_score_data_by_ids(item_ids_list):
     conn = get_db() # This now calls the function within this file
     cur = conn.cursor(cursor_factory=DictCursor)
     query = """
-        SELECT s.item_id, s.title, s.author, s.album, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features
+        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path
         FROM score s
         WHERE s.item_id IN %s
     """
@@ -966,5 +1191,942 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
         if child_db_info and child_db_info.get('status') not in [TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]:
              logger.info(f"Recursively cancelling child job: {child_job_id}")
              cancelled_count += cancel_job_and_children_recursive(child_job_id, reason="Cancelled due to parent task revocation.")
-        
+
     return cancelled_count
+
+
+# ##############################################################################
+# MULTI-PROVIDER HELPER FUNCTIONS
+# ##############################################################################
+
+def get_primary_provider_id():
+    """Get the primary provider ID from app_settings."""
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT value FROM app_settings WHERE key = 'primary_provider_id'")
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            try:
+                # Value is stored as JSONB, could be int or null
+                val = row[0]
+                if isinstance(val, int):
+                    return val
+                if val is None or val == 'null':
+                    return None
+                return int(val)
+            except (ValueError, TypeError):
+                return None
+        return None
+
+
+def get_enabled_provider_ids():
+    """Get list of enabled provider IDs ordered by priority (highest first)."""
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT id FROM provider
+            WHERE enabled = TRUE
+            ORDER BY priority DESC, created_at ASC
+        """)
+        return [row[0] for row in cur.fetchall()]
+
+
+def get_track_by_item_id(item_id, provider_id=None):
+    """
+    Look up a track by item_id with provider fallback logic.
+
+    If provider_id is specified:
+        - Look up in provider_track for that provider first
+        - Fall back to score table if not in provider_track
+
+    If provider_id is NOT specified (backward compatible mode):
+        1. Try the primary provider first
+        2. Try other enabled providers in priority order
+        3. Fall back to direct score table lookup (legacy mode)
+
+    Returns:
+        dict with track info or None if not found
+    """
+    db = get_db()
+
+    def lookup_in_score(item_id):
+        """Direct lookup in score table (legacy mode)."""
+        with db.cursor() as cur:
+            cur.execute("""
+                SELECT item_id, title, author, album, tempo, key, scale,
+                       mood_vector, energy, other_features, file_path, track_id
+                FROM score WHERE item_id = %s
+            """, (item_id,))
+            row = cur.fetchone()
+            if row:
+                return {
+                    'item_id': row[0],
+                    'title': row[1],
+                    'author': row[2],
+                    'album': row[3],
+                    'tempo': row[4],
+                    'key': row[5],
+                    'scale': row[6],
+                    'mood_vector': row[7],
+                    'energy': row[8],
+                    'other_features': row[9],
+                    'file_path': row[10],
+                    'track_id': row[11],
+                    'provider_id': None  # Unknown provider in legacy mode
+                }
+        return None
+
+    def lookup_via_provider(item_id, prov_id):
+        """Look up via provider_track table."""
+        with db.cursor() as cur:
+            # First check provider_track
+            cur.execute("""
+                SELECT pt.item_id, pt.title, pt.artist, pt.album, pt.track_id,
+                       s.tempo, s.key, s.scale, s.mood_vector, s.energy,
+                       s.other_features, s.file_path
+                FROM provider_track pt
+                LEFT JOIN score s ON (
+                    pt.item_id = s.item_id OR
+                    (pt.track_id IS NOT NULL AND pt.track_id = s.track_id)
+                )
+                WHERE pt.provider_id = %s AND pt.item_id = %s
+            """, (prov_id, item_id))
+            row = cur.fetchone()
+            if row:
+                return {
+                    'item_id': row[0],
+                    'title': row[1],
+                    'author': row[2],
+                    'album': row[3],
+                    'track_id': row[4],
+                    'tempo': row[5],
+                    'key': row[6],
+                    'scale': row[7],
+                    'mood_vector': row[8],
+                    'energy': row[9],
+                    'other_features': row[10],
+                    'file_path': row[11],
+                    'provider_id': prov_id
+                }
+        return None
+
+    # If provider_id specified, try that provider first then fall back
+    if provider_id is not None:
+        result = lookup_via_provider(item_id, provider_id)
+        if result:
+            return result
+        # Fall back to direct score lookup
+        return lookup_in_score(item_id)
+
+    # No provider specified - use fallback logic
+    # 1. Try primary provider first
+    primary_id = get_primary_provider_id()
+    if primary_id:
+        result = lookup_via_provider(item_id, primary_id)
+        if result:
+            return result
+
+    # 2. Try other enabled providers in priority order
+    enabled_ids = get_enabled_provider_ids()
+    for prov_id in enabled_ids:
+        if prov_id == primary_id:
+            continue  # Already tried
+        result = lookup_via_provider(item_id, prov_id)
+        if result:
+            return result
+
+    # 3. Fall back to direct score table lookup (legacy/backward compatible)
+    return lookup_in_score(item_id)
+
+
+def get_tracks_by_item_ids(item_ids, provider_id=None):
+    """
+    Look up multiple tracks by item_ids with provider fallback logic.
+
+    Args:
+        item_ids: List of item IDs to look up
+        provider_id: Optional provider ID to scope the lookup
+
+    Returns:
+        dict mapping item_id to track info
+    """
+    if not item_ids:
+        return {}
+
+    results = {}
+    for item_id in item_ids:
+        track = get_track_by_item_id(item_id, provider_id)
+        if track:
+            results[item_id] = track
+
+    return results
+
+
+def resolve_item_id_to_provider(item_id):
+    """
+    Resolve which provider(s) know about a given item_id.
+
+    Returns:
+        List of provider_ids that have this item_id,
+        or empty list if only in score table (legacy)
+    """
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT provider_id FROM provider_track
+            WHERE item_id = %s
+        """, (item_id,))
+        return [row[0] for row in cur.fetchall()]
+
+
+def get_item_id_for_provider(file_path_or_track_id, provider_id):
+    """
+    Get the provider-specific item_id for a track.
+
+    Useful when you have analysis data linked to one provider
+    and need to find the equivalent track in another provider.
+
+    Args:
+        file_path_or_track_id: Either file path (str) or track_id (int)
+        provider_id: The provider to look up in
+
+    Returns:
+        The item_id for that provider, or None if not found
+    """
+    db = get_db()
+    with db.cursor() as cur:
+        if isinstance(file_path_or_track_id, int):
+            # Lookup by track_id
+            cur.execute("""
+                SELECT item_id FROM provider_track
+                WHERE provider_id = %s AND track_id = %s
+            """, (provider_id, file_path_or_track_id))
+        else:
+            # Lookup by file path - need to join through track table
+            cur.execute("""
+                SELECT pt.item_id FROM provider_track pt
+                JOIN track t ON pt.track_id = t.id
+                WHERE pt.provider_id = %s AND t.file_path = %s
+            """, (provider_id, file_path_or_track_id))
+
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def is_multi_provider_mode():
+    """Check if multi-provider mode is enabled."""
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT value FROM app_settings WHERE key = 'multi_provider_enabled'")
+        row = cur.fetchone()
+        if row:
+            val = row[0]
+            return val is True or val == True or val == 'true'
+        return False
+
+
+def set_primary_provider(provider_id):
+    """Set the primary provider ID."""
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            INSERT INTO app_settings (key, value, category, description, updated_at)
+            VALUES ('primary_provider_id', %s, 'providers', 'ID of the primary provider', NOW())
+            ON CONFLICT (key) DO UPDATE SET
+                value = EXCLUDED.value,
+                updated_at = NOW()
+        """, (str(provider_id) if provider_id is not None else 'null',))
+        db.commit()
+
+
+# ##############################################################################
+# TRACK LINKING FUNCTIONS - For multi-provider track identity
+# ##############################################################################
+
+def normalize_provider_path(file_path, provider_id=None):
+    """
+    Normalize a file path for cross-provider matching.
+
+    Handles different provider path formats:
+    - Jellyfin: /media/music/Library/Artist/Album/song.mp3
+    - Navidrome: Artist/Album/song.mp3 (no library folder)
+    - Lyrion: file:///music/Artist/Album/song.mp3
+    - Local: /music/Artist/Album/song.mp3
+
+    Normalization steps:
+    1. Strip file:// URL prefix and URL-decode
+    2. Strip common mount points (/media/music, /music, etc.)
+    3. Strip provider-specific music_path_prefix from config (e.g., "MyLibrary/")
+    4. Convert backslashes to forward slashes
+    5. Remove leading slashes
+
+    Args:
+        file_path: The file path to normalize
+        provider_id: Optional provider ID to get provider-specific path prefix
+
+    Returns:
+        Normalized relative path (e.g., "Artist/Album/song.mp3")
+    """
+    from urllib.parse import unquote
+
+    if not file_path:
+        return None
+
+    normalized = file_path
+
+    # Handle file:// URLs (Lyrion/LMS style)
+    if normalized.startswith('file://'):
+        normalized = normalized[7:]  # Remove 'file://'
+        normalized = unquote(normalized)  # URL-decode
+
+    # Convert Windows backslashes to forward slashes
+    normalized = normalized.replace('\\', '/')
+
+    # List of common mount point prefixes to strip (order matters - longer first)
+    prefixes_to_strip = [
+        '/media/music/',      # Common Jellyfin mount
+        '/media/Media/',      # Alternate Jellyfin
+        '/media/',            # Generic media mount
+        '/mnt/media/music/',  # Mount point style
+        '/mnt/media/',        # Mount point style
+        '/mnt/music/',        # Mount point style
+        '/mnt/data/music/',   # Data volume style
+        '/mnt/data/',         # Data volume style
+        '/mnt/',              # Generic mount
+        '/data/music/',       # Data volume style
+        '/data/',             # Data volume style
+        '/music/',            # Direct music mount
+        '/share/music/',      # NAS style
+        '/share/',            # NAS style
+        '/volume1/music/',    # Synology style
+        '/volume1/',          # Synology style
+    ]
+
+    # Strip mount point prefixes (case-insensitive)
+    lower_normalized = normalized.lower()
+    for prefix in prefixes_to_strip:
+        if lower_normalized.startswith(prefix.lower()):
+            normalized = normalized[len(prefix):]
+            break
+
+    # Remove any remaining leading slashes
+    normalized = normalized.lstrip('/')
+
+    # Handle Windows absolute paths
+    if len(normalized) > 1 and normalized[1] == ':':
+        for marker in ['/music/', '/Music/', '/media/', '/Media/']:
+            idx = normalized.find(marker)
+            if idx != -1:
+                normalized = normalized[idx + len(marker):]
+                break
+
+    # Strip provider-specific music_path_prefix if configured
+    # This handles cases like Jellyfin including "MyLibrary/" but Navidrome not
+    if provider_id:
+        try:
+            from app_setup import get_provider_by_id
+            provider = get_provider_by_id(provider_id)
+            if provider and provider.get('config'):
+                music_prefix = provider['config'].get('music_path_prefix', '')
+                if music_prefix:
+                    music_prefix = music_prefix.replace('\\', '/').strip('/')
+                    if music_prefix and normalized.lower().startswith(music_prefix.lower()):
+                        # Strip the prefix plus any following slash
+                        prefix_len = len(music_prefix)
+                        if len(normalized) > prefix_len and normalized[prefix_len] == '/':
+                            prefix_len += 1
+                        normalized = normalized[prefix_len:]
+        except Exception:
+            pass  # Ignore errors - continue with standard normalization
+
+    return normalized.lstrip('/') if normalized else None
+
+
+def _compute_file_path_hash(file_path, provider_id=None):
+    """
+    Compute SHA-256 hash of normalized file path for track identity.
+
+    Args:
+        file_path: The file path to hash
+        provider_id: Optional provider ID for provider-specific normalization
+
+    Returns:
+        SHA-256 hash string or None if path is empty
+    """
+    import hashlib
+
+    normalized = normalize_provider_path(file_path, provider_id)
+    if not normalized:
+        return None
+
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+
+
+def get_or_create_track(file_path, file_size=None, file_modified=None, provider_id=None):
+    """
+    Get or create a track record based on file path.
+
+    The track table provides stable identity across providers based on file path.
+    Uses provider-specific path normalization if provider_id is given.
+
+    Args:
+        file_path: Full or relative path to the audio file
+        file_size: Optional file size in bytes
+        file_modified: Optional file modification timestamp
+        provider_id: Optional provider ID for path normalization (uses music_path_prefix from config)
+
+    Returns:
+        track_id (int) or None if file_path is empty
+    """
+    if not file_path:
+        return None
+
+    # Get normalized path (without provider-specific prefix)
+    normalized_path = normalize_provider_path(file_path, provider_id)
+    if not normalized_path:
+        return None
+
+    # Compute hash of the normalized path
+    import hashlib
+    file_path_hash = hashlib.sha256(normalized_path.encode('utf-8')).hexdigest()
+
+    db = get_db()
+    with db.cursor() as cur:
+        # Try to get existing track by normalized path hash
+        cur.execute("SELECT id FROM track WHERE file_path_hash = %s", (file_path_hash,))
+        row = cur.fetchone()
+
+        if row:
+            track_id = row[0]
+            # Update file info and normalized_path if provided
+            updates = ["updated_at = NOW()"]
+            values = []
+            if file_size is not None:
+                updates.append("file_size = %s")
+                values.append(file_size)
+            if file_modified is not None:
+                updates.append("file_modified = %s")
+                values.append(file_modified)
+            # Always update normalized_path to latest
+            updates.append("normalized_path = %s")
+            values.append(normalized_path)
+            values.append(track_id)
+            cur.execute(f"UPDATE track SET {', '.join(updates)} WHERE id = %s", values)
+            db.commit()
+            return track_id
+
+        # Create new track with normalized_path
+        cur.execute("""
+            INSERT INTO track (file_path_hash, file_path, normalized_path, file_size, file_modified)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+        """, (file_path_hash, file_path, normalized_path, file_size, file_modified))
+        track_id = cur.fetchone()[0]
+        db.commit()
+        return track_id
+
+
+def link_provider_track(provider_id, track_id, item_id, title=None, artist=None, album=None):
+    """
+    Link a provider's item_id to a track.
+
+    Creates or updates the provider_track mapping that links a provider's
+    native item_id to the stable track identity.
+
+    Args:
+        provider_id: ID of the provider
+        track_id: ID of the track in the track table
+        item_id: Provider's native item identifier
+        title: Track title from this provider
+        artist: Artist name from this provider
+        album: Album name from this provider
+
+    Returns:
+        provider_track id or None on failure
+    """
+    if not provider_id or not track_id or not item_id:
+        return None
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            INSERT INTO provider_track (provider_id, track_id, item_id, title, artist, album, last_synced)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (provider_id, item_id) DO UPDATE SET
+                track_id = EXCLUDED.track_id,
+                title = COALESCE(EXCLUDED.title, provider_track.title),
+                artist = COALESCE(EXCLUDED.artist, provider_track.artist),
+                album = COALESCE(EXCLUDED.album, provider_track.album),
+                last_synced = NOW()
+            RETURNING id
+        """, (provider_id, track_id, item_id, title, artist, album))
+        result = cur.fetchone()
+        db.commit()
+        return result[0] if result else None
+
+
+def update_score_track_id(item_id, track_id):
+    """
+    Update the track_id reference in the score table.
+
+    This links the analysis data to the stable track identity.
+
+    Args:
+        item_id: The item_id in the score table
+        track_id: The track_id to link to
+    """
+    if not item_id or not track_id:
+        return
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            UPDATE score SET track_id = %s WHERE item_id = %s AND (track_id IS NULL OR track_id != %s)
+        """, (track_id, item_id, track_id))
+        db.commit()
+
+
+def get_track_by_file_path(file_path):
+    """
+    Get track info by file path.
+
+    Args:
+        file_path: Full or relative path to the audio file
+
+    Returns:
+        dict with track info or None if not found
+    """
+    if not file_path:
+        return None
+
+    file_path_hash = _compute_file_path_hash(file_path)
+    if not file_path_hash:
+        return None
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT t.id, t.file_path, t.file_path_hash, t.file_size, t.file_modified,
+                   s.item_id, s.title, s.author, s.album, s.tempo, s.key, s.scale,
+                   s.mood_vector, s.energy, s.other_features
+            FROM track t
+            LEFT JOIN score s ON s.track_id = t.id
+            WHERE t.file_path_hash = %s
+        """, (file_path_hash,))
+        row = cur.fetchone()
+        if row:
+            return {
+                'track_id': row[0],
+                'file_path': row[1],
+                'file_path_hash': row[2],
+                'file_size': row[3],
+                'file_modified': row[4],
+                'item_id': row[5],
+                'title': row[6],
+                'author': row[7],
+                'album': row[8],
+                'tempo': row[9],
+                'key': row[10],
+                'scale': row[11],
+                'mood_vector': row[12],
+                'energy': row[13],
+                'other_features': row[14],
+            }
+        return None
+
+
+def get_all_provider_item_ids_for_track(track_id):
+    """
+    Get all provider item_ids linked to a track.
+
+    Args:
+        track_id: The track ID
+
+    Returns:
+        List of dicts with provider_id, item_id, title, artist, album
+    """
+    if not track_id:
+        return []
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT pt.provider_id, pt.item_id, pt.title, pt.artist, pt.album,
+                   p.provider_type, p.name as provider_name
+            FROM provider_track pt
+            JOIN provider p ON p.id = pt.provider_id
+            WHERE pt.track_id = %s
+        """, (track_id,))
+        return [
+            {
+                'provider_id': row[0],
+                'item_id': row[1],
+                'title': row[2],
+                'artist': row[3],
+                'album': row[4],
+                'provider_type': row[5],
+                'provider_name': row[6],
+            }
+            for row in cur.fetchall()
+        ]
+
+
+def find_existing_analysis_by_file_path(file_path, provider_id=None):
+    """
+    Find existing analysis data for a file path using cross-provider matching.
+
+    This is used to check if a track has already been analyzed under a different
+    provider's item_id, allowing reuse of analysis data in multi-provider setups.
+
+    Args:
+        file_path: Full or relative path to the audio file
+        provider_id: Optional provider ID for provider-specific path normalization
+
+    Returns:
+        dict with item_id and analysis status, or None if not found
+    """
+    if not file_path:
+        return None
+
+    file_path_hash = _compute_file_path_hash(file_path, provider_id)
+    if not file_path_hash:
+        return None
+
+    db = get_db()
+    with db.cursor() as cur:
+        # First try via track table (proper linking)
+        cur.execute("""
+            SELECT s.item_id, s.title, s.author,
+                   (s.tempo IS NOT NULL) as has_musicnn,
+                   EXISTS(SELECT 1 FROM embedding e WHERE e.item_id = s.item_id) as has_embedding,
+                   EXISTS(SELECT 1 FROM clap_embedding ce WHERE ce.item_id = s.item_id) as has_clap
+            FROM track t
+            JOIN score s ON s.track_id = t.id
+            WHERE t.file_path_hash = %s
+        """, (file_path_hash,))
+        row = cur.fetchone()
+        if row:
+            return {
+                'item_id': row[0],
+                'title': row[1],
+                'author': row[2],
+                'has_musicnn': row[3],
+                'has_embedding': row[4],
+                'has_clap': row[5],
+                'source': 'track_table'
+            }
+
+        # Fall back to checking score.file_path directly (for legacy data)
+        cur.execute("""
+            SELECT s.item_id, s.title, s.author,
+                   (s.tempo IS NOT NULL) as has_musicnn,
+                   EXISTS(SELECT 1 FROM embedding e WHERE e.item_id = s.item_id) as has_embedding,
+                   EXISTS(SELECT 1 FROM clap_embedding ce WHERE ce.item_id = s.item_id) as has_clap
+            FROM score s
+            WHERE s.file_path = %s
+        """, (file_path,))
+        row = cur.fetchone()
+        if row:
+            return {
+                'item_id': row[0],
+                'title': row[1],
+                'author': row[2],
+                'has_musicnn': row[3],
+                'has_embedding': row[4],
+                'has_clap': row[5],
+                'source': 'score_file_path'
+            }
+
+        return None
+
+
+def copy_analysis_to_new_item(source_item_id, target_item_id, file_path=None, provider_id=None):
+    """
+    Copy analysis data from one item_id to another.
+
+    This is used in multi-provider setups when a track has already been analyzed
+    under a different provider's item_id. Instead of re-analyzing, we copy the
+    existing analysis to the new provider's item_id.
+
+    Args:
+        source_item_id: The item_id that has existing analysis
+        target_item_id: The new item_id to copy analysis to
+        file_path: Optional file path for track linking
+        provider_id: Optional provider ID for track linking
+
+    Returns:
+        True if analysis was copied successfully, False otherwise
+    """
+    if not source_item_id or not target_item_id:
+        return False
+
+    if source_item_id == target_item_id:
+        return True  # Nothing to copy
+
+    db = get_db()
+    try:
+        with db.cursor() as cur:
+            # Copy score data
+            cur.execute("""
+                INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector,
+                                   energy, other_features, album, album_artist, year, rating, file_path, track_id)
+                SELECT %s, title, author, tempo, key, scale, mood_vector,
+                       energy, other_features, album, album_artist, year, rating, file_path, track_id
+                FROM score WHERE item_id = %s
+                ON CONFLICT (item_id) DO NOTHING
+            """, (target_item_id, source_item_id))
+
+            # Copy embedding
+            cur.execute("""
+                INSERT INTO embedding (item_id, embedding)
+                SELECT %s, embedding FROM embedding WHERE item_id = %s
+                ON CONFLICT (item_id) DO NOTHING
+            """, (target_item_id, source_item_id))
+
+            # Copy CLAP embedding if exists
+            cur.execute("""
+                INSERT INTO clap_embedding (item_id, embedding)
+                SELECT %s, embedding FROM clap_embedding WHERE item_id = %s
+                ON CONFLICT (item_id) DO NOTHING
+            """, (target_item_id, source_item_id))
+
+            # Copy MuLan embedding if exists
+            cur.execute("""
+                INSERT INTO mulan_embedding (item_id, embedding)
+                SELECT %s, embedding FROM mulan_embedding WHERE item_id = %s
+                ON CONFLICT (item_id) DO NOTHING
+            """, (target_item_id, source_item_id))
+
+            db.commit()
+
+            # Create track linking for the new item
+            if file_path:
+                track_id = get_or_create_track(file_path, provider_id=provider_id)
+                if track_id:
+                    update_score_track_id(target_item_id, track_id)
+                    if provider_id is not None:
+                        link_provider_track(provider_id, track_id, target_item_id)
+
+            logger.info(f"Copied analysis from {source_item_id} to {target_item_id}")
+            return True
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to copy analysis from {source_item_id} to {target_item_id}: {e}")
+        return False
+
+
+def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None, extra_sample_tracks=None):
+    """
+    Auto-detect the music_path_prefix for a new provider by comparing paths.
+
+    Takes sample tracks from a new provider and compares their paths with
+    existing normalized paths in the database to find the prefix difference.
+
+    Args:
+        sample_tracks: List of track dicts with 'title', 'artist', 'file_path' keys
+        existing_normalized_paths: Optional dict mapping (title, artist) -> normalized_path
+                                   If None, fetches from database
+        extra_sample_tracks: Optional dict mapping provider_type -> list of track dicts
+                            from previously tested providers (for setup wizard flow)
+
+    Returns:
+        dict with:
+            - detected_prefix: The detected prefix to strip (or empty string)
+            - confidence: 'high', 'medium', 'low', or 'none'
+            - matches_found: Number of matching tracks found
+            - sample_comparisons: List of example path comparisons
+    """
+    from urllib.parse import unquote
+
+    if not sample_tracks:
+        return {'detected_prefix': '', 'confidence': 'none', 'matches_found': 0, 'sample_comparisons': []}
+
+    # Get existing normalized paths from database if not provided
+    if existing_normalized_paths is None:
+        existing_normalized_paths = {}
+        db = get_db()
+        with db.cursor() as cur:
+            # Get normalized paths from track table
+            cur.execute("""
+                SELECT LOWER(pt.title), LOWER(pt.artist), t.normalized_path
+                FROM provider_track pt
+                JOIN track t ON pt.track_id = t.id
+                WHERE t.normalized_path IS NOT NULL
+                  AND pt.title IS NOT NULL
+                  AND pt.artist IS NOT NULL
+            """)
+            for row in cur.fetchall():
+                key = (row[0], row[1])
+                if key not in existing_normalized_paths:
+                    existing_normalized_paths[key] = row[2]
+
+            # Also check score table for legacy data
+            cur.execute("""
+                SELECT LOWER(title), LOWER(author), file_path
+                FROM score
+                WHERE file_path IS NOT NULL
+                  AND title IS NOT NULL
+                  AND author IS NOT NULL
+            """)
+            for row in cur.fetchall():
+                key = (row[0], row[1])
+                if key not in existing_normalized_paths:
+                    # Normalize the legacy path
+                    normalized = normalize_provider_path(row[2], provider_id=None)
+                    if normalized:
+                        existing_normalized_paths[key] = normalized
+
+    # Also add paths from extra_sample_tracks (from previously tested providers in setup wizard)
+    if extra_sample_tracks:
+        for provider_type, tracks in extra_sample_tracks.items():
+            for track in tracks:
+                title = track.get('title') or track.get('Name') or track.get('name')
+                artist = track.get('artist') or track.get('Artist') or track.get('AlbumArtist')
+                file_path = track.get('file_path') or track.get('Path') or track.get('path')
+                if title and artist and file_path:
+                    key = (title.lower(), artist.lower())
+                    if key not in existing_normalized_paths:
+                        normalized = normalize_provider_path(file_path, provider_id=None)
+                        if normalized:
+                            existing_normalized_paths[key] = normalized
+
+    if not existing_normalized_paths:
+        return {'detected_prefix': '', 'confidence': 'none', 'matches_found': 0,
+                'sample_comparisons': [], 'message': 'No existing tracks to compare with',
+                'had_existing_tracks': False}
+
+    # Build a secondary index by filename for fallback matching
+    # This helps when title extraction differs between providers (e.g., "01 - Song" vs "Song")
+    existing_by_filename = {}
+    for (title, artist), norm_path in existing_normalized_paths.items():
+        if norm_path:
+            # Extract filename from normalized path
+            filename = norm_path.split('/')[-1].lower() if '/' in norm_path else norm_path.lower()
+            if filename and filename not in existing_by_filename:
+                existing_by_filename[filename] = norm_path
+
+    # Normalize the sample paths (basic normalization without provider prefix)
+    def basic_normalize(path):
+        """Basic path normalization without provider-specific prefix stripping."""
+        if not path:
+            return None
+        normalized = path
+        # Handle file:// URLs
+        if normalized.startswith('file://'):
+            normalized = normalized[7:]
+            normalized = unquote(normalized)
+        normalized = normalized.replace('\\', '/')
+        # Strip common mount points
+        prefixes = ['/media/music/', '/media/', '/mnt/media/music/', '/mnt/music/',
+                    '/mnt/', '/data/music/', '/data/', '/music/', '/share/', '/volume1/']
+        lower = normalized.lower()
+        for prefix in prefixes:
+            if lower.startswith(prefix.lower()):
+                normalized = normalized[len(prefix):]
+                break
+        return normalized.lstrip('/')
+
+    # Find matches and compare paths
+    matches = []
+    for track in sample_tracks:
+        title = track.get('title') or track.get('Name') or track.get('name')
+        artist = track.get('artist') or track.get('Artist') or track.get('AlbumArtist')
+        file_path = track.get('file_path') or track.get('Path') or track.get('path')
+
+        if not file_path:
+            continue
+
+        new_normalized = basic_normalize(file_path)
+        if not new_normalized:
+            continue
+
+        # Try matching by title+artist first
+        existing_path = None
+        if title and artist:
+            key = (title.lower(), artist.lower())
+            existing_path = existing_normalized_paths.get(key)
+
+        # Fallback: match by filename (helps when title extraction differs between providers)
+        if not existing_path:
+            new_filename = new_normalized.split('/')[-1].lower() if '/' in new_normalized else new_normalized.lower()
+            existing_path = existing_by_filename.get(new_filename)
+
+        if existing_path:
+            matches.append({
+                'title': title or '(unknown)',
+                'artist': artist or '(unknown)',
+                'new_path': new_normalized,
+                'existing_path': existing_path
+            })
+
+    if not matches:
+        return {'detected_prefix': '', 'confidence': 'none', 'matches_found': 0,
+                'sample_comparisons': [], 'message': 'No matching tracks found between providers',
+                'had_existing_tracks': True}
+
+    # Detect prefix by finding common suffix
+    prefix_candidates = {}
+    sample_comparisons = []
+
+    for match in matches[:20]:  # Limit analysis to first 20 matches
+        new_path = match['new_path']
+        existing_path = match['existing_path']
+
+        # Check if new path ends with existing path (case-insensitive)
+        if new_path.lower().endswith(existing_path.lower()):
+            # The prefix is what's before the existing path
+            prefix_len = len(new_path) - len(existing_path)
+            prefix = new_path[:prefix_len].rstrip('/')
+            if prefix:
+                prefix_candidates[prefix] = prefix_candidates.get(prefix, 0) + 1
+
+            sample_comparisons.append({
+                'title': match['title'],
+                'new_path': new_path,
+                'existing_path': existing_path,
+                'detected_prefix': prefix
+            })
+        elif existing_path.lower().endswith(new_path.lower()):
+            # The existing path has a prefix (new provider doesn't have it)
+            # This means the NEW provider needs no prefix, but existing does
+            prefix_len = len(existing_path) - len(new_path)
+            # In this case, we don't need a prefix for the new provider
+            prefix_candidates[''] = prefix_candidates.get('', 0) + 1
+
+            sample_comparisons.append({
+                'title': match['title'],
+                'new_path': new_path,
+                'existing_path': existing_path,
+                'detected_prefix': '(existing has prefix, new does not)'
+            })
+
+    if not prefix_candidates:
+        return {'detected_prefix': '', 'confidence': 'low', 'matches_found': len(matches),
+                'sample_comparisons': sample_comparisons[:5],
+                'message': 'Could not detect consistent prefix pattern',
+                'had_existing_tracks': True}
+
+    # Find most common prefix
+    most_common_prefix = max(prefix_candidates, key=prefix_candidates.get)
+    occurrence_count = prefix_candidates[most_common_prefix]
+    total_matches = len(matches)
+
+    # Determine confidence
+    if occurrence_count == total_matches and total_matches >= 3:
+        confidence = 'high'
+    elif occurrence_count >= total_matches * 0.8 and total_matches >= 2:
+        confidence = 'medium'
+    elif occurrence_count >= 1:
+        confidence = 'low'
+    else:
+        confidence = 'none'
+
+    return {
+        'detected_prefix': most_common_prefix,
+        'confidence': confidence,
+        'matches_found': len(matches),
+        'prefix_occurrences': occurrence_count,
+        'sample_comparisons': sample_comparisons[:5],
+        'had_existing_tracks': True
+    }

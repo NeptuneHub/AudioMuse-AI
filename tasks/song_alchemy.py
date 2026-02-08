@@ -796,10 +796,12 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
     details = get_score_data_by_ids(candidate_ids)
     details_map = {d['item_id']: d for d in details}
 
-    # Minimal: ensure album is present for each result (from score table via get_score_data_by_ids)
+    # Minimal: ensure album/album_artist is present for each result (from score table via get_score_data_by_ids)
     for d in details_map.values():
         if 'album' not in d or not d['album']:
             d['album'] = 'Unknown'
+        if 'album_artist' not in d or not d['album_artist']:
+            d['album_artist'] = 'Unknown'
 
     # Build a list of scored candidates for probabilistic sampling
     scored_candidates = []
@@ -834,9 +836,6 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     item = details_map.get(cid, {})
                     item['distance'] = distances.get(cid)
                     item['embedding_2d'] = proj_map.get(cid)
-                    # Ensure album is present
-                    if 'album' not in item or not item['album']:
-                        item['album'] = 'Unknown'
                     ordered.append(item)
             else:
                 # Softmax with temperature (temperature may be None or >0)
@@ -886,9 +885,6 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     item = details_map.get(cid, {})
                     item['distance'] = distances.get(cid)
                     item['embedding_2d'] = proj_map.get(cid)
-                    # Ensure album is present
-                    if 'album' not in item or not item['album']:
-                        item['album'] = 'Unknown'
                     ordered.append(item)
         except Exception as e:
             # Fallback deterministic ordering by best match
@@ -898,9 +894,6 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                 item = details_map.get(i, {})
                 item['distance'] = distances.get(i)
                 item['embedding_2d'] = proj_map.get(i)
-                # Ensure album is present
-                if 'album' not in item or not item['album']:
-                    item['album'] = 'Unknown'
                 ordered.append(item)
 
     # Prepare filtered_out details
@@ -912,9 +905,6 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
             if fid in details_f_map:
                 fd = details_f_map[fid]
                 fd['embedding_2d'] = proj_map.get(fid)
-                # Ensure album is present
-                if 'album' not in fd or not fd['album']:
-                    fd['album'] = 'Unknown'
                 filtered_details.append(fd)
 
     # Centroid projections

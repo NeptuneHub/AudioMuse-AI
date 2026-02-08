@@ -120,6 +120,7 @@
                 <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., My Sonic Mix">
             </div>
         </div>
+        <div id="provider-selector-container"></div>
         <button type="submit" style="background-color: var(--color-success);">
             Create Playlist on Media Server
         </button>
@@ -129,10 +130,14 @@
 {% endblock %}
 
 {% block bodyAdditions %}
+    <script src="{{ url_for('static', filename='provider-selector.js') }}"></script>
     <script>
         (() => {
             let currentTrackIds = [];
             const mediaserverType = "{{ mediaserver_type }}";
+
+            // Initialize provider selector
+            initProviderSelector();
 
             const fingerprintForm = document.getElementById('fingerprint-form');
             const playlistForm = document.getElementById('playlist-form');
@@ -259,6 +264,7 @@
                     payload.user_creds.user = document.getElementById('navidrome_user').value;
                     payload.user_creds.password = document.getElementById('navidrome_password').value;
                 }
+                addProviderToPayload(payload);
 
                 playlistStatusDiv.textContent = 'Creating playlist...';
 

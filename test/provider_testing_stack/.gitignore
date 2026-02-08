@@ -1,0 +1,5 @@
+# Provider persistent data (bind-mounted by docker-compose-test-providers.yaml)
+providers/
+
+# Filled-in env file (contains credentials)
+.env.test

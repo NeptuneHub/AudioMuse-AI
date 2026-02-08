@@ -1,7 +1,7 @@
 import os
 import psycopg2
 from psycopg2.extras import DictCursor
-from flask import Flask, jsonify, request, render_template, g
+from flask import Flask, jsonify, request, render_template, redirect, url_for, g
 import json
 import logging
 import threading
@@ -103,6 +103,7 @@ with app.app_context():
 def index():
     """
     Serve the main HTML page.
+    Redirects to setup wizard if initial setup is not completed.
     ---
     tags:
       - UI
@@ -113,7 +114,13 @@ def index():
           text/html:
             schema:
               type: string
+      302:
+        description: Redirect to setup wizard if setup not completed.
     """
+    # Check if setup is completed - redirect to wizard if not
+    from app_setup import is_setup_completed
+    if not is_setup_completed():
+        return redirect(url_for('setup.setup_page'))
     return render_template('index.html', title = 'AudioMuse-AI - Home Page', active='index')
 
 
@@ -598,6 +605,7 @@ from app_waveform import waveform_bp
 from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
 from app_mulan_search import mulan_search_bp
+from app_setup import setup_bp  # Setup wizard and provider configuration
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -614,6 +622,7 @@ app.register_blueprint(waveform_bp)
 app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
 app.register_blueprint(mulan_search_bp)
+app.register_blueprint(setup_bp)  # Setup wizard
 
 if __name__ == '__main__':
   os.makedirs(TEMP_DIR, exist_ok=True)

@@ -227,13 +227,14 @@
         <div class="param-group">
             <div>
                 <label for="playlist_name">Playlist Name:</label>
-                <input type="text" 
-                       id="playlist_name" 
-                       name="playlist_name" 
-                       required 
+                <input type="text"
+                       id="playlist_name"
+                       name="playlist_name"
+                       required
                        placeholder="e.g., Best of Artist">
             </div>
         </div>
+        <div id="provider-selector-container"></div>
         <button type="submit" id="create-artist-playlist-btn">Create Playlist on Media Server</button>
     </form>
     <div id="playlist-status"></div>
@@ -241,8 +242,12 @@
 {% endblock %}
 
 {% block bodyAdditions %}
+<script src="{{ url_for('static', filename='provider-selector.js') }}"></script>
 <script>
     (() => {
+        // Initialize provider selector
+        initProviderSelector();
+
         let currentArtist = null;
         let similarArtists = [];
         let selectedArtist = null;
@@ -690,13 +695,15 @@
                     finalTrackIds = selectedArtistTracks.map(t => t.item_id);
                 }
                 
+                const payload = {
+                    playlist_name: playlistName,
+                    track_ids: finalTrackIds
+                };
+                addProviderToPayload(payload);
                 const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        playlist_name: playlistName,
-                        track_ids: finalTrackIds
-                    }),
+                    body: JSON.stringify(payload),
                 });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || `HTTP error! status: ${response.status}`);

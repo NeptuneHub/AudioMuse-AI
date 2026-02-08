@@ -650,19 +650,24 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
 
 # --- RQ Task Definitions ---
 # MODIFIED: Removed jellyfin_url, jellyfin_user_id, jellyfin_token as they are no longer needed for the function calls.
-def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
+def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provider_id=None):
     from app import (app, JobStatus)
     from app_helper import (redis_conn, get_db, save_task_status, get_task_info_from_db,
                      save_track_analysis_and_embedding, save_clap_embedding,
+                     get_primary_provider_id, find_existing_analysis_by_file_path,
+                     copy_analysis_to_new_item,
                      TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import analyze_audio_file as clap_analyze, is_clap_available
     from .mulan_analyzer import analyze_audio_file as mulan_analyze
     from config import MULAN_ENABLED
-    
+
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
 
     with app.app_context():
+        # Get provider_id for track linking (use passed value or get primary provider)
+        # Must be inside app.app_context() since get_primary_provider_id() uses get_db()
+        active_provider_id = provider_id if provider_id is not None else get_primary_provider_id()
         initial_details = {"album_name": album_name, "log": [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Album analysis task started."]}
         save_task_status(current_task_id, "album_analysis", TASK_STATUS_STARTED, parent_task_id=parent_task_id, sub_type_identifier=album_id, progress=0, details=initial_details)
         tracks_analyzed_count, tracks_skipped_count, current_progress_val = 0, 0, 0
@@ -776,6 +781,23 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 needs_musicnn = track_id_str not in existing_track_ids_set
                 needs_clap = track_id_str in missing_clap_ids_set
                 needs_mulan = track_id_str in missing_mulan_ids_set
+
+                # Multi-provider: Check if this track was already analyzed under a different provider's item_id
+                # If so, copy the analysis instead of re-analyzing (saves significant compute time)
+                item_file_path = item.get('Path') or item.get('FilePath')
+                if needs_musicnn and item_file_path:
+                    existing_analysis = find_existing_analysis_by_file_path(item_file_path, active_provider_id)
+                    if existing_analysis and existing_analysis.get('has_musicnn'):
+                        # Found existing analysis from another provider - copy it
+                        source_item_id = existing_analysis.get('item_id')
+                        if source_item_id and source_item_id != track_id_str:
+                            if copy_analysis_to_new_item(source_item_id, track_id_str, item_file_path, active_provider_id):
+                                logger.info(f"Copied existing analysis for '{track_name_full}' from provider item {source_item_id}")
+                                needs_musicnn = False
+                                # Also check if CLAP/MuLan can be copied
+                                if needs_clap and existing_analysis.get('has_clap'):
+                                    needs_clap = False
+                                    logger.info(f"  - Also copied CLAP embedding")
 
                 # Album name update now handled in main analysis task. If needed, uncomment below:
                 # try:
@@ -911,7 +933,19 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         logger.info(f"  - Top Moods: {top_moods}")
                         logger.info(f"  - Other Features: {other_features}")
                         
-                        save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding, energy=analysis['energy'], other_features=other_features, album=item.get('Album', None))
+                        save_track_analysis_and_embedding(
+                            item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'),
+                            analysis['tempo'], analysis['key'], analysis['scale'],
+                            top_moods, embedding,
+                            energy=analysis['energy'],
+                            other_features=other_features,
+                            album=item.get('Album', None),
+                            album_artist=item.get('OriginalAlbumArtist', None),
+                            year=item.get('Year'),
+                            rating=item.get('Rating'),
+                            file_path=item.get('Path') or item.get('FilePath'),  # For multi-provider track linking
+                            provider_id=active_provider_id  # Link to provider for multi-provider support
+                        )
                         track_processed = True
                         
                         # Increment session recycler counter after successful analysis
@@ -1264,9 +1298,9 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                         track_id_str = str(item['Id'])
                         try:
                             with get_db() as conn, conn.cursor() as cur:
-                                cur.execute("UPDATE score SET album = %s WHERE item_id = %s", (album.get('Name'), track_id_str))
+                                cur.execute("UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE item_id = %s", (album.get('Name'), item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'), item.get('FilePath'), track_id_str))
                                 conn.commit()
-                            logger.info(f"[MainAnalysisTask] Updated album name for track '{item['Name']}' to '{album.get('Name')}' (main task)")
+                            logger.info(f"[MainAnalysisTask] Updated album/album_artist/year/rating/file_path for track '{item['Name']}' to '{album.get('Name')}' (main task)")
                         except Exception as e:
                             logger.warning(f"[MainAnalysisTask] Failed to update album name for '{item['Name']}': {e}")
                     albums_skipped += 1
@@ -1307,6 +1341,40 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 progress = 5 + int(85 * ((albums_skipped + albums_completed) / float(total_albums_to_check)))
                 status_message = f"Launched: {albums_launched}. Completed: {albums_completed}/{albums_launched}. Active: {len(active_jobs)}. Skipped: {albums_skipped}/{total_albums_to_check}. (Finalizing)"
                 log_and_update_main(status_message, progress, checked_album_ids=list(checked_album_ids))
+                time.sleep(5)
+
+            # Wait for any album analysis jobs still running on the queue from a previous run.
+            # This handles the case where the main task resumes, finds all albums already checked,
+            # but their album tasks are still executing from the previous run.
+            from rq import Queue
+            default_queue = Queue('default', connection=redis_conn)
+            wait_count = 0
+            while True:
+                # Count album analysis jobs still running or queued
+                pending_album_jobs = 0
+                for job in default_queue.jobs:
+                    if hasattr(job, 'func_name') and 'analyze_album_task' in str(job.func_name):
+                        pending_album_jobs += 1
+
+                # Also check started job registry for running jobs
+                started_registry = default_queue.started_job_registry
+                for job_id in started_registry.get_job_ids():
+                    try:
+                        from rq.job import Job
+                        job = Job.fetch(job_id, connection=redis_conn)
+                        if hasattr(job, 'func_name') and 'analyze_album_task' in str(job.func_name):
+                            pending_album_jobs += 1
+                    except Exception:
+                        pass
+
+                if pending_album_jobs == 0:
+                    break
+
+                wait_count += 1
+                if wait_count == 1:
+                    log_and_update_main(f"Waiting for {pending_album_jobs} album analysis job(s) from previous run to complete...", 90)
+                elif wait_count % 6 == 0:  # Log every 30 seconds
+                    log_and_update_main(f"Still waiting for {pending_album_jobs} album analysis job(s)...", 90)
                 time.sleep(5)
 
             log_and_update_main("Performing final index rebuild...", 95)
