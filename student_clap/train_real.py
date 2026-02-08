@@ -670,9 +670,10 @@ def train(config_path: str, resume: str = None):
     
     # Initialize start_epoch early (before datasets need it)
     start_epoch = 1
-    best_val_cosine = 0.0
+    # We now monitor validation MSE (lower is better) for scheduler and checkpointing
+    best_val_mse = float('inf')
     patience_counter = 0
-    last_val_cosine = None  # Store last validation cosine (None if not run yet)
+    last_val_mse = None  # Store last validation MSE (None if not run yet)
     
     # Create checkpoint directory
     checkpoint_dir = Path(config['paths']['checkpoints'])
@@ -758,10 +759,10 @@ def train(config_path: str, resume: str = None):
                 logger.info(f"No scheduler state in checkpoint — created fresh scheduler from config (patience={lr_cfg.get('patience', 10)})")
 
             start_epoch = checkpoint.get('epoch', 0) + 1
-            best_val_cosine = checkpoint.get('best_val_cosine', 0.0)
+            best_val_mse = checkpoint.get('best_val_mse', float('inf'))
             patience_counter = checkpoint.get('patience_counter', 0)
             logger.info(f"✅ Successfully resumed audio from epoch {checkpoint.get('epoch', 'N/A')}")
-            logger.info(f"   📈 Best cosine similarity so far: {best_val_cosine:.4f}")
+            logger.info(f"   📈 Best validation MSE so far: {best_val_mse:.6f}")
             logger.info(f"   ⏰ Patience counter: {patience_counter}/{config['training'].get('lr_scheduler', {}).get('patience', 10)}")
             logger.info(f"   🎯 Will continue from epoch {start_epoch}")
             # Confirm optimizer param groups (LR & weight_decay) after resume
@@ -854,7 +855,7 @@ def train(config_path: str, resume: str = None):
             logger.error(f"❌ Failed to load audio checkpoint: {e}")
             logger.info("🔄 Starting audio training from scratch...")
             start_epoch = 1
-            best_val_cosine = 0.0
+            best_val_mse = float('inf')
             patience_counter = 0
     # Load text checkpoint if available
     if text_enabled and text_resume_path:
@@ -964,7 +965,7 @@ def train(config_path: str, resume: str = None):
         logger.warning(f"⚠️ Failed to save mel cache checkpoint: {e}")
         logger.warning("   Training will continue, but cache won't be preserved on failure")
     
-    best_val_cosine = 0.0
+    best_val_mse = float('inf')
     patience_counter = 0
     training_start_time = time.time()
     
@@ -1174,7 +1175,7 @@ def train(config_path: str, resume: str = None):
                     'optimizer_state_dict': trainer.optimizer.state_dict(),
                     'scheduler_state_dict': trainer.scheduler.state_dict(),
                     'train_metrics': train_metrics,
-                    'best_val_cosine': best_val_cosine,
+                    'best_val_mse': best_val_mse,
                     'patience_counter': patience_counter,
                     'config': config,
                     'timestamp': time.time()
@@ -1211,33 +1212,36 @@ def train(config_path: str, resume: str = None):
         # Validate every epoch (only if audio distillation is enabled)
         if audio_enabled:
             val_metrics = validate_real(trainer, val_dataset, config, epoch)
-            val_cosine = val_metrics['cosine_similarity']['mean']
-            last_val_cosine = val_cosine
+            val_mse = val_metrics['mse']
+            last_val_mse = val_mse
             # Log concise validation summary (this will appear in training.log)
-            logger.info(f"🔍 Validation completed (Epoch {epoch}) — mean cosine: {val_cosine:.4f} (n={val_metrics.get('num_songs','N/A')})")
+            logger.info(f"🔍 Validation completed (Epoch {epoch}) — mean MSE: {val_mse:.6f} (n={val_metrics.get('num_songs','N/A')})")
             print_evaluation_report(val_metrics, f"Validation - Epoch {epoch}")
 
-            # Update the per-epoch checkpoint to include the last validation cosine so files reflect validation results
+            # Update the per-epoch checkpoint to include the last validation MSE so files reflect validation results
             try:
                 # Store validation result under both keys to ensure downstream tools/scripts find it
-                epoch_checkpoint_data['last_val_cosine'] = last_val_cosine
-                epoch_checkpoint_data['val_cosine_sim'] = last_val_cosine
+                epoch_checkpoint_data['last_val_mse'] = last_val_mse
+                epoch_checkpoint_data['val_mse'] = last_val_mse
                 torch.save(epoch_checkpoint_data, epoch_checkpoint_path)
                 if latest_checkpoint_path.exists() or latest_checkpoint_path.is_symlink():
                     latest_checkpoint_path.unlink()
                 torch.save(epoch_checkpoint_data, latest_checkpoint_path)
-                logger.info(f"✅ Updated epoch checkpoint with validation metrics: {epoch_checkpoint_path} (val_cosine={last_val_cosine:.6f})")
+                logger.info(f"✅ Updated epoch checkpoint with validation metrics: {epoch_checkpoint_path} (val_mse={last_val_mse:.6f})")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to update epoch checkpoint with validation metrics: {e}")
 
-            # Step scheduler on validation metric (we monitor cosine similarity - higher is better)
+            # Step scheduler on validation metric (we monitor MSE - lower is better)
             try:
                 sched = trainer.scheduler
                 sched_cls = sched.__class__.__name__
-                # ReduceLROnPlateau expects the validation metric as argument
+                # ReduceLROnPlateau expects the validation metric as argument. If the scheduler was created
+                # with 'mode=max' (legacy), pass negated MSE so maximizing -MSE == minimizing MSE.
                 if sched_cls == 'ReduceLROnPlateau':
-                    sched.step(val_cosine)
-                    logger.info(f"Scheduler (ReduceLROnPlateau) stepped using validation cosine: {val_cosine:.4f}")
+                    mode = getattr(sched, 'mode', None)
+                    val_to_step = -val_mse if mode == 'max' else val_mse
+                    sched.step(val_to_step)
+                    logger.info(f"Scheduler (ReduceLROnPlateau) stepped using validation MSE: {val_mse:.6f} (mode={mode})")
                 elif sched_cls == 'CosineAnnealingLR':
                     # CosineAnnealingLR is driven per-batch during training; do NOT call
                     # step() here at validation time as it would double-count steps.
@@ -1249,11 +1253,11 @@ def train(config_path: str, resume: str = None):
             except Exception as e:
                 logger.warning(f"Failed to step scheduler on validation metric: {e}")
 
-            # Check for improvement (use cosine similarity as main metric)
-            if val_cosine > best_val_cosine:
-                best_val_cosine = val_cosine
+            # Check for improvement (use validation MSE: lower is better)
+            if val_mse < best_val_mse:
+                best_val_mse = val_mse
                 patience_counter = 0
-                logger.info(f"✓ New best validation cosine similarity: {best_val_cosine:.4f}")
+                logger.info(f"✓ New best validation MSE: {best_val_mse:.6f}")
                 # Save best checkpoint
                 best_checkpoint_path = checkpoint_dir / f"best_model_epoch_{epoch}.pth"
                 best_checkpoint_data = {
@@ -1261,8 +1265,8 @@ def train(config_path: str, resume: str = None):
                     'model_state_dict': trainer.model.state_dict(),
                     'optimizer_state_dict': trainer.optimizer.state_dict(),
                     'scheduler_state_dict': trainer.scheduler.state_dict(),
-                    'val_cosine_sim': val_cosine,
-                    'best_val_cosine': best_val_cosine,
+                    'val_mse': val_mse,
+                    'best_val_mse': best_val_mse,
                     'patience_counter': patience_counter,
                     'config': config,
                     'timestamp': time.time()
@@ -1285,9 +1289,9 @@ def train(config_path: str, resume: str = None):
                 'optimizer_state_dict': trainer.optimizer.state_dict(),
                 'scheduler_state_dict': trainer.scheduler.state_dict(),
                 'train_metrics': train_metrics,
-                'best_val_cosine': best_val_cosine,
-                'last_val_cosine': last_val_cosine,
-                'val_cosine_sim': last_val_cosine,
+                'best_val_mse': best_val_mse,
+                'last_val_mse': last_val_mse,
+                'val_mse': last_val_mse,
                 'patience_counter': patience_counter,
                 'config': config,
                 'timestamp': time.time()
@@ -1322,7 +1326,7 @@ def train(config_path: str, resume: str = None):
     total_training_time = time.time() - training_start_time
     logger.info(f"\n🎉 Training complete!")
     logger.info(f"   ⏱️ Total training time: {total_training_time/3600:.1f} hours")
-    logger.info(f"   🏆 Best validation cosine similarity: {best_val_cosine:.4f}")
+    logger.info(f"   🏆 Best validation MSE: {best_val_mse:.6f}")
     
     # Final model export
     final_model_path = Path(config['paths']['final_model'])
@@ -1333,7 +1337,7 @@ def train(config_path: str, resume: str = None):
     torch.save({
         'model_state_dict': trainer.model.state_dict(),
         'config': config,
-        'best_val_cosine_sim': best_val_cosine,
+        'best_val_mse': best_val_mse,
         'total_epochs': epoch
     }, final_pth_path)
     

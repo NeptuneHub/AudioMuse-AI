@@ -96,14 +96,19 @@ def teacher_mel(audio_segment: np.ndarray) -> np.ndarray:
 # ── Student mel spectrogram (EfficientAT) ──────────────────────────────
 
 def student_mel(audio_segment: np.ndarray) -> np.ndarray:
-    """Compute student mel-spec: returns (1, 1, 128, time)."""
+    """Compute student mel-spec: returns (1, 1, 128, time).
+
+    Must match the training preprocessing in
+    student_clap/preprocessing/mel_spectrogram.py which uses
+    librosa.power_to_db (dB scale), NOT np.log.
+    """
     mel = librosa.feature.melspectrogram(
         y=audio_segment, sr=SAMPLE_RATE,
         n_fft=STUDENT_N_FFT, hop_length=STUDENT_HOP, win_length=STUDENT_N_FFT,
         window="hann", center=True, pad_mode="reflect", power=2.0,
         n_mels=STUDENT_N_MELS, fmin=STUDENT_FMIN, fmax=STUDENT_FMAX,
     )
-    mel = np.log(mel + 1e-7)  # student uses log, not power_to_db
+    mel = librosa.power_to_db(mel, ref=1.0, amin=1e-10, top_db=None)
     # shape: (128, time) -> (1, 1, 128, time)
     return mel[np.newaxis, np.newaxis, :, :].astype(np.float32)
 
@@ -111,11 +116,34 @@ def student_mel(audio_segment: np.ndarray) -> np.ndarray:
 # ── ONNX session loader ────────────────────────────────────────────────
 
 def load_onnx(path: str) -> ort.InferenceSession:
+    """Load an ONNX model, fixing external data references if needed."""
+    import onnx
+    from onnx.external_data_helper import set_external_data
+
+    model = onnx.load(path, load_external_data=False)
+
+    # If the model uses external data, rewrite references to the actual .data
+    # file sitting next to the .onnx file (handles renames after export).
+    data_file = os.path.splitext(path)[0] + ".data"
+    if os.path.exists(data_file):
+        # Use absolute path so ONNXRuntime can find the external data even when the
+        # session is created from serialized bytes (cwd might be different).
+        data_path = os.path.abspath(data_file)
+        for tensor in model.graph.initializer:
+            if tensor.HasField("data_location") and tensor.data_location == onnx.TensorProto.EXTERNAL:
+                for entry in tensor.external_data:
+                    if entry.key == "location":
+                        entry.value = data_path
+
     opts = ort.SessionOptions()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     opts.log_severity_level = 3
     providers = ["CPUExecutionProvider"]
-    return ort.InferenceSession(path, sess_options=opts, providers=providers)
+    return ort.InferenceSession(
+        model.SerializeToString(),
+        sess_options=opts,
+        providers=providers,
+    )
 
 
 # ── Embedding functions ─────────────────────────────────────────────────

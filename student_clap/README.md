@@ -39,15 +39,12 @@ You can check how the average cosine similarity (training and validation) is goi
 ```
 python3 - <<'PY'
 import glob, torch
-from pathlib import Path
 for f in sorted(glob.glob('student_clap/checkpoints/checkpoint_epoch_*.pth')):
-    try:
-        ckpt = torch.load(f, map_location='cpu')
-        m = ckpt.get('train_metrics', {})
-        val = ckpt.get('val_cosine_sim', ckpt.get('best_val_cosine', 'N/A'))
-        print(f"{f}: cosine={m.get('avg_cosine_sim')}, val_cosine={val}, lr={m.get('learning_rate')}")
-    except Exception as e:
-        print(f"{f}: ERROR - {e}")
+    ckpt = torch.load(f, map_location='cpu')
+    m = ckpt.get('train_metrics', {})
+    val_mse = ckpt.get('val_mse', ckpt.get('last_val_mse', ckpt.get('best_val_mse','N/A')))
+    val_cos = ckpt.get('val_cosine_sim', ckpt.get('last_val_cosine', ckpt.get('best_val_cosine','N/A')))
+    print(f"{f}: train_cos={m.get('avg_cosine_sim')}, train_mse={m.get('avg_mse')}, val_mse={val_mse}, val_cos={val_cos}, lr={m.get('learning_rate')}")
 PY
 ```
 

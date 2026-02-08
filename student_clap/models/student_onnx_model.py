@@ -203,7 +203,9 @@ class StudentCLAPAudio(nn.Module):
 
         mel_spec = mel_transform(audio)
 
-        mel_spec = torch.log(mel_spec + 1e-7)
+        # Convert to dB scale to match training preprocessing
+        # (student_clap/preprocessing/mel_spectrogram.py uses librosa.power_to_db)
+        mel_spec = 10.0 * torch.log10(mel_spec + 1e-10)
 
         mel_spec = mel_spec.unsqueeze(1)
 
@@ -414,8 +416,9 @@ class StudentCLAPTrainer:
         """
         Compute knowledge distillation loss following tinyCLAP approach.
 
-        Uses NEGATIVE COSINE SIMILARITY as the primary loss (like tinyCLAP paper).
-        This directly optimizes for embedding alignment, which is what matters for retrieval.
+        Uses MEAN-SQUARED ERROR (MSE) on normalized embeddings as the primary loss.
+        This directly optimizes embedding closeness in L2 space (lower MSE is better) and
+        preserves cosine diagnostics for monitoring and optional focal weighting.
 
         Args:
             student_embeddings: Averaged embeddings from student model (batch, 512)
@@ -433,32 +436,19 @@ class StudentCLAPTrainer:
             teacher_embeddings = teacher_embeddings.to(self.device)
         student_embeddings = student_embeddings.to(self.device)
 
-        teacher_embeddings = F.normalize(teacher_embeddings, p=2, dim=1)
-        student_embeddings = F.normalize(student_embeddings, p=2, dim=1)
+        # Normalize embeddings for stable MSE on directions (matches evaluation)
+        teacher_norm = F.normalize(teacher_embeddings, p=2, dim=1)
+        student_norm = F.normalize(student_embeddings, p=2, dim=1)
 
-        cosine_sim = F.cosine_similarity(student_embeddings, teacher_embeddings, dim=1)
+        # Cosine similarity retained for diagnostics and optional focal weighting
+        cosine_sim = F.cosine_similarity(student_norm, teacher_norm, dim=1)
 
-        # Apply temperature or learnable logit_scale (scaling applied to loss logits)
-        if getattr(self, 'use_logit_scale', False):
-            # Clamp logit_scale to [0, ln(50)] to prevent runaway growth (like OpenAI CLIP)
-            # This keeps T (temperature multiplier) in range [1, 50]
-            import math
-            max_logit_scale = math.log(50)  # ~3.912
-            with torch.no_grad():
-                self.model.logit_scale.clamp_(0, max_logit_scale)
-            scale = self.model.logit_scale.exp()
-            scaled = cosine_sim * scale
-            # Log the *effective* multiplier (exp of the stored logit_scale parameter)
-            scale_value = float(scale.detach().cpu().item())
-        else:
-            scaled = cosine_sim / float(self.loss_temperature)
-            scale_value = float(self.loss_temperature)
+        # Compute per-sample MSE on normalized vectors and aggregate (supports focal weighting)
+        per_sample_mse = torch.mean((student_norm - teacher_norm) ** 2, dim=1)
 
-        # Focal-style weighting (based on raw cosine_sim)
+        # Focal-style weighting (based on raw cosine_sim) preserved for flexible weighting
         if self.focal_gamma > 0.0:
-            # base weight (emphasize low-cosine examples)
             weights = (1.0 - cosine_sim).clamp(min=0.0) ** float(self.focal_gamma)
-            # apply triangular window: full weight for <= low, zero for >= high, linear interp between
             low = float(self.focal_low)
             high = float(self.focal_high)
             if high > low:
@@ -466,29 +456,26 @@ class StudentCLAPTrainer:
             else:
                 interp = torch.ones_like(cosine_sim)
             weights = weights * interp
-            # normalize weights to keep loss scale comparable
             weights_sum = weights.sum()
             if weights_sum.item() > 0:
                 weights = weights / weights_sum * weights.numel()
         else:
             weights = torch.ones_like(cosine_sim)
 
-        # Per-sample loss and weighted average (avoid divide-by-zero)
-        per_sample_loss = -scaled
         denom = weights.sum().clamp_min(1e-6)
-        total_loss = (per_sample_loss * weights).sum() / denom
+        total_loss = (per_sample_mse * weights).sum() / denom
 
-        with torch.no_grad():
-            mse_loss = F.mse_loss(student_embeddings, teacher_embeddings)
+        # Unweighted MSE for logging / validation consistency
+        mse_loss = F.mse_loss(student_norm, teacher_norm)
 
         loss_dict = {
             'total_loss': total_loss.item(),
             'mse_loss': mse_loss.item(),
-            'cosine_loss': -total_loss.item(),
+            'cosine_loss': -torch.mean(cosine_sim).item(),
             'mean_cosine_sim': cosine_sim.mean().item(),
             'min_cosine_sim': cosine_sim.min().item(),
             'max_cosine_sim': cosine_sim.max().item(),
-            'loss_scale': scale_value,
+            'loss_scale': float(getattr(self, 'loss_temperature', 1.0)),
             'focal_gamma': float(self.focal_gamma),
             'focal_weighted_samples': int((weights > 0).sum().item())
         }
