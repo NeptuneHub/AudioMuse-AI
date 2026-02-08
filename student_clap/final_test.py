@@ -361,28 +361,31 @@ def main():
         overlap5 = len(t_top5 & s_top5)
         r5 = overlap5 / k5 if k5 > 0 else 0.0
 
-        # Strict mAP@10 per your rules (teacher top-10 = only relevant items, denominator fixed to 10)
+        # mAP@10: evaluate student top-10, but relevant set = teacher top-R
+        # R must be smaller than corpus size so the metric is meaningful.
         EVAL_K = 10
+        RELEVANT_K = min(5, num_songs)  # teacher top-5 = relevant items
         k10 = min(EVAL_K, num_songs)
         t_top10_list = t_sorted[:k10]
         s_top10_list = s_sorted[:k10]
+        relevant_set = set(t_sorted[:RELEVANT_K])
 
-        def calculate_ap_fixed_k(teacher_top_k, student_top_k, k=EVAL_K):
-            """AP where denominator is fixed to k (e.g., 10).
-            - iterate over student_top_k positions
-            - add precision@i only when item is in teacher_top_k
-            - divide final sum by k (fixed), per your instruction
+        def calculate_ap(relevant, retrieved, k):
+            """AP@k with a fixed relevant set.
+            - iterate over retrieved (student top-k)
+            - add precision@i only when item is in relevant
+            - divide by min(|relevant|, k) so perfect retrieval = 1.0
             """
             score = 0.0
             num_hits = 0.0
-            for i, p in enumerate(student_top_k):
-                if p in teacher_top_k:
+            for i, p in enumerate(retrieved):
+                if p in relevant:
                     num_hits += 1.0
                     precision_at_i = num_hits / (i + 1.0)
                     score += precision_at_i
-            return score / float(k)
+            return score / min(len(relevant), k)
 
-        ap10 = calculate_ap_fixed_k(t_top10_list, s_top10_list, k=EVAL_K)
+        ap10 = calculate_ap(relevant_set, s_top10_list, k=EVAL_K)
 
         # Additional diagnostics to help interpret mAP
         overlap10 = len(set(t_top10_list) & set(s_top10_list))
