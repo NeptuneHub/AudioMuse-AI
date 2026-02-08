@@ -5,3 +5,4 @@ pyyaml>=6.0
 pytest>=7.0.0
 pytest-json-report>=1.5.0
 pytest-timeout>=2.1.0
+ftfy

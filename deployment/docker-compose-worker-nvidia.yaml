@@ -26,8 +26,6 @@
 #   - Tasks automatically distributed across workers
 # =============================================================================
 
-version: '3.8'
-
 services:
   # ---------------------------------------------------------------------------
   # AudioMuse-AI Worker (NVIDIA GPU, connects to remote server)
@@ -64,10 +62,6 @@ services:
       NAVIDROME_USER: "${NAVIDROME_USER:-}"
       NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD:-}"
       LYRION_URL: "${LYRION_URL:-}"
-      MPD_HOST: "${MPD_HOST:-}"
-      MPD_PORT: "${MPD_PORT:-6600}"
-      MPD_PASSWORD: "${MPD_PASSWORD:-}"
-      MPD_MUSIC_DIRECTORY: "${MPD_MUSIC_DIRECTORY:-/music}"
       EMBY_URL: "${EMBY_URL:-}"
       EMBY_USER_ID: "${EMBY_USER_ID:-}"
       EMBY_TOKEN: "${EMBY_TOKEN:-}"

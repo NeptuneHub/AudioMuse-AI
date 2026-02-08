@@ -628,6 +628,14 @@ if __name__ == '__main__':
   os.makedirs(TEMP_DIR, exist_ok=True)
 
   with app.app_context():
+    # --- Apply DB settings to runtime config ---
+    try:
+      from app_setup import apply_settings_to_config
+      apply_settings_to_config()
+      logger.info("Applied DB settings to runtime config.")
+    except Exception as e:
+      logger.debug(f"Could not apply DB settings at startup: {e}")
+
     # --- Initial Voyager Index Load ---
     from tasks.voyager_manager import load_voyager_index_for_querying
     load_voyager_index_for_querying()

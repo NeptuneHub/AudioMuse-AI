@@ -73,10 +73,25 @@ def get_library_context(force_refresh: bool = False) -> Dict:
             cur.execute("SELECT DISTINCT scale FROM public.score WHERE scale IS NOT NULL AND scale != '' ORDER BY scale")
             scales = [r['scale'] for r in cur.fetchall()]
 
+            # Top moods from other_features (extract mood tags and count occurrences)
+            # other_features format: "danceable, aggressive, happy" (comma-separated)
+            cur.execute("""
+                SELECT unnest(string_to_array(other_features, ',')) AS mood
+                FROM public.score
+                WHERE other_features IS NOT NULL AND other_features != ''
+            """)
+            mood_counts = {}
+            for r in cur:
+                mood = r['mood'].strip().lower()
+                if mood:
+                    mood_counts[mood] = mood_counts.get(mood, 0) + 1
+            top_moods = sorted(mood_counts, key=mood_counts.get, reverse=True)[:10]
+
         ctx = {
             'total_songs': total_songs,
             'unique_artists': unique_artists,
             'top_genres': top_genres,
+            'top_moods': top_moods,
             'year_min': year_min,
             'year_max': year_max,
             'has_ratings': rated_count > 0,
@@ -89,8 +104,8 @@ def get_library_context(force_refresh: bool = False) -> Dict:
         logger.warning(f"Failed to get library context: {e}")
         return {
             'total_songs': 0, 'unique_artists': 0, 'top_genres': [],
-            'year_min': None, 'year_max': None, 'has_ratings': False,
-            'rated_songs_pct': 0, 'scales': [],
+            'top_moods': [], 'year_min': None, 'year_max': None,
+            'has_ratings': False, 'rated_songs_pct': 0, 'scales': [],
         }
     finally:
         db_conn.close()
@@ -389,7 +404,7 @@ def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filt
             
             if energy_filter and energy_filter in energy_ranges:
                 energy_min, energy_max = energy_ranges[energy_filter]
-                filter_conditions.append("energy_normalized >= %s AND energy_normalized < %s")
+                filter_conditions.append("energy >= %s AND energy < %s")
                 query_params.extend([energy_min, energy_max])
             
             # Query database to filter by tempo/energy
@@ -532,6 +547,10 @@ Suggest songs for "{user_request}" now:"""
             """Strip spaces, dashes, apostrophes for fuzzy comparison."""
             return re.sub(r"[\s\-\u2010\u2011\u2012\u2013\u2014/'\".,!?()]", '', s).lower()
 
+        def _escape_like(s: str) -> str:
+            """Escape LIKE wildcards to prevent injection."""
+            return s.replace('%', r'\%').replace('_', r'\_')
+
         for item in song_list:
             title = item.get('title', '')
             artist = item.get('artist', '')
@@ -563,7 +582,7 @@ Suggest songs for "{user_request}" now:"""
                                   LIKE LOWER(%s)
                             ORDER BY LENGTH(title) + LENGTH(author)
                             LIMIT 1
-                        """, (f"%{title_norm}%", f"%{artist_norm}%"))
+                        """, (f"%{_escape_like(title_norm)}%", f"%{_escape_like(artist_norm)}%"))
                         result = cur.fetchone()
 
                 if result and result['item_id'] not in seen_ids:

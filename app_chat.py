@@ -88,15 +88,16 @@ def chat_config_defaults_api():
     """
     API endpoint to provide default configuration values for the chat interface.
     """
-    # The default_gemini_api_key is no longer sent to the front end for security.
+    # Read from config module attributes (may be overridden by DB settings via apply_settings_to_config)
+    import config as cfg
     return jsonify({
-        "default_ai_provider": AI_MODEL_PROVIDER,
-        "default_ollama_model_name": OLLAMA_MODEL_NAME,
-        "ollama_server_url": OLLAMA_SERVER_URL, # Ollama server URL might be useful for display/info
-        "default_openai_model_name": OPENAI_MODEL_NAME,
-        "openai_server_url": OPENAI_SERVER_URL, # OpenAI server URL for display/info
-        "default_gemini_model_name": GEMINI_MODEL_NAME,
-        "default_mistral_model_name": MISTRAL_MODEL_NAME,
+        "default_ai_provider": cfg.AI_MODEL_PROVIDER,
+        "default_ollama_model_name": cfg.OLLAMA_MODEL_NAME,
+        "ollama_server_url": cfg.OLLAMA_SERVER_URL,
+        "default_openai_model_name": cfg.OPENAI_MODEL_NAME,
+        "openai_server_url": cfg.OPENAI_SERVER_URL,
+        "default_gemini_model_name": cfg.GEMINI_MODEL_NAME,
+        "default_mistral_model_name": cfg.MISTRAL_MODEL_NAME,
     }), 200
 
 @chat_bp.route('/api/chatPlaylist', methods=['POST'])
@@ -385,12 +386,35 @@ def chat_playlist_api():
             unique_artists = len(artist_counts)
             diversity_ratio = round(unique_artists / max(len(all_songs), 1), 2)
 
-            # Genres covered (from tools used)
-            genres_used = set()
-            for t in tools_used_history:
-                if t.get('args', {}).get('genres'):
-                    genres_used.update(t['args']['genres'])
-            genres_str = ", ".join(genres_used) if genres_used else "none specifically"
+            # Genres covered (from actual collected songs' mood_vector)
+            genres_str = "none specifically"
+            collected_ids = [s['item_id'] for s in all_songs]
+            if collected_ids:
+                try:
+                    from tasks.mcp_server import get_db_connection
+                    from psycopg2.extras import DictCursor
+                    db_conn_feedback = get_db_connection()
+                    with db_conn_feedback.cursor(cursor_factory=DictCursor) as cur:
+                        placeholders = ','.join(['%s'] * min(len(collected_ids), 200))
+                        cur.execute(f"""
+                            SELECT unnest(string_to_array(mood_vector, ',')) AS tag
+                            FROM public.score
+                            WHERE item_id IN ({placeholders})
+                            AND mood_vector IS NOT NULL AND mood_vector != ''
+                        """, collected_ids[:200])
+                        genre_freq = {}
+                        for r in cur:
+                            tag = r['tag'].strip()
+                            if ':' in tag:
+                                name = tag.split(':')[0].strip()
+                                if name:
+                                    genre_freq[name] = genre_freq.get(name, 0) + 1
+                        if genre_freq:
+                            top_collected = sorted(genre_freq, key=genre_freq.get, reverse=True)[:8]
+                            genres_str = ", ".join(top_collected)
+                    db_conn_feedback.close()
+                except Exception:
+                    pass
 
             ai_context = f"""Original request: "{original_user_input}"
 Progress: {current_song_count}/{target_song_count} songs collected. Need {songs_needed} MORE.
@@ -421,8 +445,9 @@ Prioritize variety - avoid tools/parameters that duplicate what we already have.
             
             # Fallback based on iteration
             if iteration == 0:
-                log_messages.append("\n🔄 Fallback: Trying genre search...")
-                fallback_result = execute_mcp_tool('search_database', {'genres': ['pop', 'rock'], 'get_songs': 100}, ai_config)
+                fallback_genres = library_context.get('top_genres', ['pop', 'rock'])[:2] if library_context else ['pop', 'rock']
+                log_messages.append(f"\n🔄 Fallback: Trying genre search with {fallback_genres}...")
+                fallback_result = execute_mcp_tool('search_database', {'genres': fallback_genres, 'get_songs': 100}, ai_config)
                 if 'songs' in fallback_result:
                     songs = fallback_result['songs']
                     for song in songs:

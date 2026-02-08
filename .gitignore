@@ -37,6 +37,10 @@ env/
 .pytest_cache/
 htmlcov/
 nul
+testing_suite/reports/
+
+# Deployment secrets
+deployment/main.env
 
 # Large model files in query folder
 /query/*.pt

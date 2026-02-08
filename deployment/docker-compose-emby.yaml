@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   # Redis service for RQ (task queue)
   redis:

@@ -83,6 +83,45 @@ def get_all_settings():
         return settings
 
 
+def apply_settings_to_config():
+    """Apply DB settings to runtime config module.
+
+    Reads relevant settings from the database and updates the corresponding
+    config.* module attributes so that changes made in the settings UI take
+    effect immediately without requiring an app restart.
+    """
+    mapping = {
+        'ai_provider': 'AI_MODEL_PROVIDER',
+        'clap_enabled': 'CLAP_ENABLED',
+        'ollama_server_url': 'OLLAMA_SERVER_URL',
+        'ollama_model_name': 'OLLAMA_MODEL_NAME',
+        'openai_server_url': 'OPENAI_SERVER_URL',
+        'openai_model_name': 'OPENAI_MODEL_NAME',
+        'gemini_model_name': 'GEMINI_MODEL_NAME',
+        'mistral_model_name': 'MISTRAL_MODEL_NAME',
+        'max_songs_per_artist_playlist': 'MAX_SONGS_PER_ARTIST_PLAYLIST',
+        'playlist_energy_arc': 'PLAYLIST_ENERGY_ARC',
+        'ai_request_timeout': 'AI_REQUEST_TIMEOUT_SECONDS',
+    }
+    for db_key, config_attr in mapping.items():
+        val = get_setting(db_key)
+        if val is not None and val != '':
+            existing = getattr(config, config_attr, None)
+            if isinstance(existing, bool):
+                val = val in (True, 'true', 'True')
+            elif isinstance(existing, int):
+                try:
+                    val = int(val)
+                except (ValueError, TypeError):
+                    continue
+            elif isinstance(existing, float):
+                try:
+                    val = float(val)
+                except (ValueError, TypeError):
+                    continue
+            setattr(config, config_attr, val)
+
+
 def is_setup_completed():
     """Check if initial setup has been completed."""
     result = get_setting('setup_completed')
@@ -786,6 +825,12 @@ def update_settings():
 
     for key, value in data.items():
         set_setting(key, value)
+
+    # Apply relevant settings to runtime config immediately
+    try:
+        apply_settings_to_config()
+    except Exception as e:
+        logger.warning(f"Failed to apply settings to runtime config: {e}")
 
     return jsonify({'message': 'Settings updated'})
 

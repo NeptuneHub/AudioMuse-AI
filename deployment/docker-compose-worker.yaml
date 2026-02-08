@@ -1,7 +1,6 @@
 # AudioMuse-AI Deployment Configuration
 #
 # WORKER TEMPLATE - Run this for heavy CPU tasks like analysis and clustering, connected to a lightweight server with Jellyfin and AudioMuse-AI Flask application and databases.
-version: '3.8'
 services:
   # AudioMuse-AI Worker service (GPU-dependent)
   audiomuse-ai-worker:

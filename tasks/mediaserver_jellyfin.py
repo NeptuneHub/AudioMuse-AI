@@ -444,10 +444,12 @@ def get_last_played_time(item_id, user_creds=None):
         logger.error(f"Jellyfin get_last_played_time failed for item {item_id}, user {user_id}: {e}", exc_info=True)
         return None
 
-def create_instant_playlist(playlist_name, item_ids, user_creds=None):
+def create_instant_playlist(playlist_name, item_ids, user_creds=None, server_config=None):
     """Creates a new instant playlist on Jellyfin for a specific user."""
+    sc = server_config or {}
+
     # Treat empty token ("") as not provided and fall back to admin token from config
-    token = config.JELLYFIN_TOKEN
+    token = sc.get('token') or config.JELLYFIN_TOKEN
     if user_creds and isinstance(user_creds, dict) and user_creds.get('token'):
         token = user_creds.get('token')
     if not token:
@@ -455,16 +457,17 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         raise ValueError("Jellyfin Token is required.")
 
     # Treat empty user_identifier as not provided and fall back to admin user id
-    identifier = config.JELLYFIN_USER_ID
+    identifier = sc.get('user_id') or config.JELLYFIN_USER_ID
     if user_creds and isinstance(user_creds, dict) and user_creds.get('user_identifier'):
         identifier = user_creds.get('user_identifier')
     if not identifier:
         raise ValueError("Jellyfin User Identifier is required.")
 
     user_id = resolve_user(identifier, token)
-    
+
     final_playlist_name = f"{playlist_name.strip()}_instant"
-    url = f"{config.JELLYFIN_URL}/Playlists"
+    base_url = sc.get('url') or config.JELLYFIN_URL
+    url = f"{base_url}/Playlists"
     headers = {"X-Emby-Token": token}
     body = {"Name": final_playlist_name, "Ids": item_ids, "UserId": user_id}
     try:

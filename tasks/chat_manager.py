@@ -460,7 +460,7 @@ def execute_action(action, db_conn, log_messages, ai_config=None):
                 
                 if energy_filter and energy_filter in energy_ranges:
                     energy_min, energy_max = energy_ranges[energy_filter]
-                    filter_conditions.append("energy_normalized >= %s AND energy_normalized < %s")
+                    filter_conditions.append("energy >= %s AND energy < %s")
                     query_params.extend([energy_min, energy_max])
                 
                 # Query database to filter by tempo/energy
@@ -469,7 +469,7 @@ def execute_action(action, db_conn, log_messages, ai_config=None):
                     where_clause = ' AND '.join(filter_conditions)
                     
                     sql = f"""
-                        SELECT item_id, title, author, tempo, energy_normalized
+                        SELECT item_id, title, author, tempo, energy
                         FROM public.score
                         WHERE item_id IN ({placeholders})
                         AND {where_clause}
@@ -1226,8 +1226,8 @@ Target Song Count: {target_count}
 Is Energy Query: {is_energy_query}
 
 {"**CRITICAL - TEMPORAL QUERY DETECTED**" if is_temporal_query else "**CRITICAL - GENRE/MOOD QUERY DETECTED**"}
-{"This is a time-based query (e.g., 'recent years', '2020s'). The database has NO YEAR COLUMN." if is_temporal_query else "This is a GENRE/MOOD query (e.g., 'metal songs', 'chill music'). You MUST use mood_vector filtering."}
-{"You MUST filter by specific SONG TITLES to achieve temporal filtering." if is_temporal_query else "You MUST use 'AND mood_vector LIKE %genre%' to filter by genre/mood."}
+{"This is a time-based query (e.g., 'recent years', '2020s'). Use the year column (integer) to filter by year/decade." if is_temporal_query else "This is a GENRE/MOOD query (e.g., 'metal songs', 'chill music'). You MUST use mood_vector filtering."}
+{"Use 'AND year >= YYYY' or 'AND year BETWEEN YYYY AND YYYY' for temporal filtering. You can also combine with specific SONG TITLES if available." if is_temporal_query else "You MUST use 'AND mood_vector LIKE %genre%' to filter by genre/mood."}
 
 {"**CRITICAL - ENERGY QUERY DETECTED**" if is_energy_query else ""}
 {"Add 'AND energy > 0.08' for high energy OR 'AND energy < 0.05' for low energy INSIDE the WHERE clause." if is_energy_query else ""}
@@ -1260,7 +1260,7 @@ Database Schema:
 The goal is to return EXACTLY {target_count} songs. Start with minimal filters and add more ONLY if needed.
 
 **Filtering Priority:**
-- **TEMPORAL QUERIES** (has song titles): Artist filtering + Song title matching
+- **TEMPORAL QUERIES** (year-based): Year column filtering + Artist filtering (+ optional song title matching)
 - **GENRE/MOOD QUERIES** (no song titles): Artist filtering + mood_vector LIKE filter **REQUIRED**
 - **ENERGY QUERIES**: Artist filtering + energy filter
 
@@ -1281,23 +1281,16 @@ If this is NOT a temporal query (no song titles found), you **MUST** add mood_ve
 2. **ABSOLUTELY CRITICAL**: ALL filters (mood_vector, energy, tempo) go INSIDE the subquery, BEFORE "ORDER BY RANDOM()"
 3. **NEVER EVER** add WHERE clause after ") AS randomized" - the outer query is ALWAYS: SELECT DISTINCT item_id, title, author FROM (...) AS randomized LIMIT {target_count}
 4. Use ONLY artists found in step 3 exploration (found_artists list)
-5. For temporal queries: Use (title, author) IN tuples for exact matches
+5. For temporal queries: Use year column filtering (year >= YYYY, year BETWEEN). Optionally add (title, author) IN tuples for exact matches.
 6. Use proper SQL escaping (single quotes as '')
 7. **DOUBLE CHECK**: After writing your SQL, verify that mood_vector, energy, tempo filters are INSIDE the subquery, not outside
 
 **FOR TEMPORAL QUERIES ("recent years", "2020s", "last decade"):**
-- Use found song titles with artist names as exact (title, author) IN tuples
-- Add OR author IN (...) for additional songs from those artists
+- Use the year column to filter by time period (e.g., year >= 2020, year BETWEEN 2010 AND 2019)
+- Combine with author IN (...) if specific artists are found
+- Optionally add (title, author) IN tuples for exact song matches
 - DO NOT add energy filters - this is a TIME-based query, not energy-based
-- DO NOT add mood_vector filters - keep it simple to maximize results
-- **IMPORTANT**: If you have many found artists (>10), use a simpler query:
-  ```
-  SELECT DISTINCT item_id, title, author FROM (
-    SELECT item_id, title, author FROM public.score
-    WHERE author IN ('Taylor Swift', 'Miley Cyrus', 'The Weeknd', ...)
-    ORDER BY RANDOM()
-  ) AS randomized LIMIT {target_count}
-  ```
+- Handle NULL years: some tracks may have year = NULL, exclude them with year IS NOT NULL
 
 **FOR GENRE/MOOD QUERIES ("rock songs", "pop music", "jazz"):**
 - Use author IN (...) for found artists
@@ -1314,12 +1307,8 @@ Strategy Guidance: {strategy_info.get('sql_approach', 'Select diverse songs')}
 **Example 1 - Temporal query ("top radio songs recent years"):**
 SELECT DISTINCT item_id, title, author FROM (
   SELECT item_id, title, author FROM public.score
-  WHERE (title, author) IN (
-      ('Anti-Hero', 'Taylor Swift'),
-      ('Flowers', 'Miley Cyrus'),
-      ('As It Was', 'Harry Styles')
-    )
-    OR author IN ('Taylor Swift', 'Miley Cyrus', 'The Weeknd', 'Dua Lipa')
+  WHERE year >= 2020 AND year IS NOT NULL
+    AND author IN ('Taylor Swift', 'Miley Cyrus', 'The Weeknd', 'Dua Lipa')
   ORDER BY RANDOM()
 ) AS randomized LIMIT {target_count}
 

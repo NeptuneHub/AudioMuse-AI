@@ -324,6 +324,9 @@ def init_db():
                 ('setup_version', '"1.0"', 'system', 'Version of the setup wizard last completed'),
                 ('multi_provider_enabled', 'false', 'providers', 'Whether multi-provider mode is enabled'),
                 ('primary_provider_id', 'null', 'providers', 'ID of the primary provider for playlist creation'),
+                ('max_songs_per_artist_playlist', '5', 'ai', 'Max songs per artist in instant playlists'),
+                ('playlist_energy_arc', 'false', 'ai', 'Enable energy arc shaping for playlist ordering'),
+                ('ai_request_timeout', '300', 'ai', 'AI request timeout in seconds'),
             ]
             for key, value, category, description in default_settings:
                 cur.execute("""

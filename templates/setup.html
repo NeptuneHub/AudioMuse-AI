@@ -1108,6 +1108,7 @@
 
 {% block bodyAdditions %}
 <script src="{{ url_for('static', filename='menu.js') }}"></script>
+<script src="/static/utils.js"></script>
 <script>
     // State
     let currentStep = 1;
@@ -1152,7 +1153,7 @@
                     const badges = [];
                     if (p.enabled) badges.push('<span class="provider-badge enabled">Enabled</span>');
                     else badges.push('<span class="provider-badge disabled">Disabled</span>');
-                    return `<li><strong>${p.name || p.provider_type}</strong> (${p.provider_type}) ${badges.join(' ')}</li>`;
+                    return `<li><strong>${escapeHtml(p.name || p.provider_type)}</strong> (${escapeHtml(p.provider_type)}) ${badges.join(' ')}</li>`;
                 }).join('');
 
                 // Show existing installation info with provider list

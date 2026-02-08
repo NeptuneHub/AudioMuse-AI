@@ -670,19 +670,85 @@
         </div>
         <div class="section-content">
             <p class="section-description">
-                Configure AI providers for creative playlist naming and other features.
+                Configure AI providers for creative playlist naming, instant playlists, and other features.
             </p>
 
             <div class="field-group">
                 <label for="ai-provider">AI Provider</label>
-                <select id="ai-provider" onchange="markDirty()">
+                <select id="ai-provider" onchange="updateAiProviderFields(); markDirty()">
                     <option value="NONE">None (Use Default Names)</option>
                     <option value="OLLAMA">Ollama (Local)</option>
                     <option value="OPENAI">OpenAI / OpenRouter</option>
                     <option value="GEMINI">Google Gemini</option>
                     <option value="MISTRAL">Mistral AI</option>
                 </select>
-                <div class="field-help">AI service for generating creative playlist names</div>
+                <div class="field-help">AI service for generating creative playlist names and instant playlists</div>
+            </div>
+
+            <!-- Provider-specific fields -->
+            <div id="ollama-fields" style="display: none;">
+                <div class="field-group">
+                    <label for="ollama-url">Ollama Server URL</label>
+                    <input type="text" id="ollama-url" placeholder="http://localhost:11434/api/generate" onchange="markDirty()">
+                    <div class="field-help">URL of your Ollama instance</div>
+                </div>
+                <div class="field-group">
+                    <label for="ollama-model">Ollama Model Name</label>
+                    <input type="text" id="ollama-model" placeholder="llama3.1:8b" onchange="markDirty()">
+                    <div class="field-help">Model to use for Ollama (e.g., llama3.1:8b, mistral:7b)</div>
+                </div>
+            </div>
+
+            <div id="openai-fields" style="display: none;">
+                <div class="field-group">
+                    <label for="openai-url">OpenAI / OpenRouter URL</label>
+                    <input type="text" id="openai-url" placeholder="https://api.openai.com/v1/chat/completions" onchange="markDirty()">
+                    <div class="field-help">API endpoint URL. Use OpenRouter URL for third-party models.</div>
+                </div>
+                <div class="field-group">
+                    <label for="openai-model">OpenAI Model Name</label>
+                    <input type="text" id="openai-model" placeholder="gpt-4" onchange="markDirty()">
+                    <div class="field-help">Model name (e.g., gpt-4, gpt-4o, or OpenRouter model IDs)</div>
+                </div>
+            </div>
+
+            <div id="gemini-fields" style="display: none;">
+                <div class="field-group">
+                    <label for="gemini-model">Gemini Model Name</label>
+                    <input type="text" id="gemini-model" placeholder="gemini-2.5-pro" onchange="markDirty()">
+                    <div class="field-help">Google Gemini model (e.g., gemini-2.5-pro, gemini-2.5-flash)</div>
+                </div>
+            </div>
+
+            <div id="mistral-fields" style="display: none;">
+                <div class="field-group">
+                    <label for="mistral-model">Mistral Model Name</label>
+                    <input type="text" id="mistral-model" placeholder="ministral-3b-latest" onchange="markDirty()">
+                    <div class="field-help">Mistral AI model (e.g., ministral-3b-latest, mistral-large-latest)</div>
+                </div>
+            </div>
+
+            <!-- Instant Playlist Settings -->
+            <h3 style="margin-top: 1.5rem; margin-bottom: 1rem; font-size: 1rem; color: var(--text-muted);">Instant Playlist</h3>
+
+            <div class="field-group">
+                <label for="max-artist-songs">Max Songs Per Artist</label>
+                <input type="number" id="max-artist-songs" min="1" max="50" value="5" onchange="markDirty()">
+                <div class="field-help">Maximum songs from a single artist in AI-generated playlists. Lower = more diverse.</div>
+            </div>
+
+            <div class="field-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="energy-arc" onchange="markDirty()">
+                    <span>Enable Energy Arc</span>
+                </label>
+                <div class="field-help">Shape playlist energy: gentle start, build to peak, then cool down.</div>
+            </div>
+
+            <div class="field-group">
+                <label for="ai-timeout">AI Request Timeout (seconds)</label>
+                <input type="number" id="ai-timeout" min="30" max="600" value="300" onchange="markDirty()">
+                <div class="field-help">Seconds to wait for AI responses. Increase for slower hardware or larger models.</div>
             </div>
         </div>
     </div>
@@ -727,6 +793,7 @@
 
 {% block bodyAdditions %}
 <script src="{{ url_for('static', filename='menu.js') }}"></script>
+<script src="/static/utils.js"></script>
 <script>
     // State
     let providers = [];
@@ -812,8 +879,8 @@
             item.innerHTML = `
                 <div class="provider-info">
                     <div>
-                        <div class="provider-name">${p.name || typeInfo.name || p.provider_type}</div>
-                        <div class="provider-type">${typeInfo.name || p.provider_type}</div>
+                        <div class="provider-name">${escapeHtml(p.name || typeInfo.name || p.provider_type)}</div>
+                        <div class="provider-type">${escapeHtml(typeInfo.name || p.provider_type)}</div>
                     </div>
                     <div class="provider-badges">
                         ${isPrimary ? '<span class="badge badge-primary">Primary</span>' : ''}
@@ -860,14 +927,38 @@
         document.getElementById('clap-enabled').checked = settings.clap_enabled !== false;
         document.getElementById('gpu-clustering').checked = settings.gpu_clustering === true;
 
-        // AI
+        // AI Provider
         const aiProvider = document.getElementById('ai-provider');
         if (settings.ai_provider) {
             aiProvider.value = settings.ai_provider;
         }
 
+        // AI Provider Defaults
+        if (settings.ollama_server_url) document.getElementById('ollama-url').value = settings.ollama_server_url;
+        if (settings.ollama_model_name) document.getElementById('ollama-model').value = settings.ollama_model_name;
+        if (settings.openai_server_url) document.getElementById('openai-url').value = settings.openai_server_url;
+        if (settings.openai_model_name) document.getElementById('openai-model').value = settings.openai_model_name;
+        if (settings.gemini_model_name) document.getElementById('gemini-model').value = settings.gemini_model_name;
+        if (settings.mistral_model_name) document.getElementById('mistral-model').value = settings.mistral_model_name;
+
+        // Instant Playlist
+        document.getElementById('max-artist-songs').value = settings.max_songs_per_artist_playlist ?? 5;
+        document.getElementById('energy-arc').checked = settings.playlist_energy_arc === true;
+        document.getElementById('ai-timeout').value = settings.ai_request_timeout ?? 300;
+
+        // Show/hide provider-specific fields
+        updateAiProviderFields();
+
         // Update GPU clustering availability
         updateGpuClusteringState();
+    }
+
+    function updateAiProviderFields() {
+        const provider = document.getElementById('ai-provider').value;
+        document.getElementById('ollama-fields').style.display = provider === 'OLLAMA' ? 'block' : 'none';
+        document.getElementById('openai-fields').style.display = provider === 'OPENAI' ? 'block' : 'none';
+        document.getElementById('gemini-fields').style.display = provider === 'GEMINI' ? 'block' : 'none';
+        document.getElementById('mistral-fields').style.display = provider === 'MISTRAL' ? 'block' : 'none';
     }
 
     function updateWorkerInfo() {
@@ -1270,7 +1361,18 @@
             hardware_type: hardwareType,
             clap_enabled: document.getElementById('clap-enabled').checked,
             gpu_clustering: document.getElementById('gpu-clustering').checked,
-            ai_provider: document.getElementById('ai-provider').value
+            ai_provider: document.getElementById('ai-provider').value,
+            // AI Provider Defaults
+            ollama_server_url: document.getElementById('ollama-url').value || '',
+            ollama_model_name: document.getElementById('ollama-model').value || '',
+            openai_server_url: document.getElementById('openai-url').value || '',
+            openai_model_name: document.getElementById('openai-model').value || '',
+            gemini_model_name: document.getElementById('gemini-model').value || '',
+            mistral_model_name: document.getElementById('mistral-model').value || '',
+            // Instant Playlist
+            max_songs_per_artist_playlist: parseInt(document.getElementById('max-artist-songs').value) || 5,
+            playlist_energy_arc: document.getElementById('energy-arc').checked,
+            ai_request_timeout: parseInt(document.getElementById('ai-timeout').value) || 300,
         };
 
         try {

@@ -783,14 +783,15 @@ def get_last_played_time(item_id, user_creds=None):
         logger.error(f"Emby get_last_played_time failed for item {item_id}, user {user_id}: {e}", exc_info=True)
         return None
 
-def create_instant_playlist(playlist_name, item_ids, user_creds=None):
+def create_instant_playlist(playlist_name, item_ids, user_creds=None, server_config=None):
     # is this duplicate of create_playlist?
     """
     Creates a new instant playlist on Emby for a specific user.
     Handles empty tokens by falling back to the default config token.
     """
-    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
-    token = (user_creds.get('token') if user_creds else None) or config.EMBY_TOKEN
+    sc = server_config or {}
+    user_id = user_creds.get('user_id') if user_creds else (sc.get('user_id') or config.EMBY_USER_ID)
+    token = (user_creds.get('token') if user_creds else None) or sc.get('token') or config.EMBY_TOKEN
     if not token:
         raise ValueError("Emby Token is required and could not be found.")
     if not user_id:
@@ -808,10 +809,10 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         # https://dev.emby.media/doc/restapi/Playlists.html
         # https://dev.emby.media/reference/RestAPI/PlaylistService/postPlaylists.html
 
-        
+        base_url = sc.get('url') or config.EMBY_URL
         ids_param = ",".join(item_ids) if isinstance(item_ids, (list, set, tuple)) else str(item_ids)
         url = (
-            f"{config.EMBY_URL}/emby/Playlists"
+            f"{base_url}/emby/Playlists"
             f"?Name={requests.utils.quote(final_playlist_name)}"
             f"&Ids={requests.utils.quote(ids_param)}"
             f"&UserId={user_id}"

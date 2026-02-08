@@ -117,6 +117,13 @@ def apply_defaults(config: dict) -> None:
             if key not in model:
                 model[key] = value
 
+    # Allow environment variable override for API keys
+    env_api_key = os.environ.get('OPENROUTER_API_KEY')
+    if env_api_key:
+        for model in config.get("models", []):
+            if model.get("provider") == "openrouter":
+                model["api_key"] = env_api_key
+
 
 def split_into_playlists(songs: list[dict], num_playlists: int, per_playlist: int) -> list[list[dict]]:
     """Split a flat song list into N playlists of M songs each."""

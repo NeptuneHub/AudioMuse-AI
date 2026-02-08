@@ -8,6 +8,12 @@
  * 4. Get selected value with getSelectedProviders() when creating playlist
  */
 
+function _escapeHtml(str) {
+    if (str == null) return '';
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+}
+
 let _providers = [];
 let _selectedProviderValue = null; // null = primary/default, 'all' = all providers, number = specific provider
 
@@ -61,7 +67,7 @@ async function initProviderSelector(containerId = 'provider-selector-container',
     }
 
     _providers.forEach(p => {
-        html += `<option value="${p.id}">${p.name}</option>`;
+        html += `<option value="${_escapeHtml(p.id)}">${_escapeHtml(p.name)}</option>`;
     });
 
     html += '</select></div>';
@@ -144,15 +150,15 @@ const providerSelectorStyles = `
     padding: 0.4rem 0.75rem;
     border: 1px solid var(--border-color, #ccc);
     border-radius: 4px;
-    background: var(--bg-primary, #fff);
-    color: var(--text-color, #333);
+    background: var(--bg-input, #fff);
+    color: var(--text-main, #333);
     font-size: 0.9rem;
     min-width: 150px;
 }
 
 .provider-select:focus {
     outline: none;
-    border-color: var(--primary-color, #007bff);
+    border-color: var(--color-primary, #007bff);
 }
 
 /* Compact variant for inline use */

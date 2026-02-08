@@ -1,0 +1,245 @@
+# AudioMuse-AI - Instant Playlist Tool-Calling Performance Test Configuration
+
+test_config:
+  num_runs_per_model: 3
+  timeout_per_request: 120
+  clap_enabled: true  # Controls whether text_search tool is available
+
+# Mock library context (fed to system prompt for realistic testing)
+library_context:
+  total_songs: 15000
+  unique_artists: 2800
+  top_genres: ["rock", "pop", "electronic", "metal", "alternative", "jazz", "indie", "blues", "funk", "country"]
+  top_moods: ["danceable", "aggressive", "happy", "party", "relaxed", "sad"]
+  year_min: 1960
+  year_max: 2025
+  has_ratings: true
+  rated_songs_pct: 45.2
+  scales: ["major", "minor"]
+
+test_queries:
+  # --- song_similarity (3 queries) ---
+  - query: "Similar to By the Way by Red Hot Chili Peppers"
+    expected_tool: "song_similarity"
+    category: "song_similarity"
+    expected_args:
+      song_title: "By the Way"
+      song_artist: "Red Hot Chili Peppers"
+
+  - query: "Songs like Bohemian Rhapsody by Queen"
+    expected_tool: "song_similarity"
+    category: "song_similarity"
+    expected_args:
+      song_title: "Bohemian Rhapsody"
+      song_artist: "Queen"
+
+  - query: "Find me tracks similar to Smells Like Teen Spirit by Nirvana"
+    expected_tool: "song_similarity"
+    category: "song_similarity"
+    expected_args:
+      song_title: "Smells Like Teen Spirit"
+      song_artist: "Nirvana"
+
+  # --- text_search (3 queries, skip if CLAP disabled) ---
+  - query: "calm piano music"
+    expected_tool: "text_search"
+    category: "text_search"
+    skip_if_clap_disabled: true
+
+  - query: "romantic acoustic guitar"
+    expected_tool: "text_search"
+    category: "text_search"
+    skip_if_clap_disabled: true
+
+  - query: "energetic ukulele songs"
+    expected_tool: "text_search"
+    acceptable_tools: ["text_search", "search_database"]
+    category: "text_search"
+    skip_if_clap_disabled: true
+
+  # --- artist_similarity (3 queries) ---
+  - query: "songs like AC/DC"
+    expected_tool: "artist_similarity"
+    category: "artist_similarity"
+
+  - query: "music from artists similar to Radiohead"
+    expected_tool: "artist_similarity"
+    category: "artist_similarity"
+
+  - query: "bands like blink-182"
+    expected_tool: "artist_similarity"
+    category: "artist_similarity"
+
+  # --- song_alchemy (3 queries) ---
+  - query: "sounds like Iron Maiden and Metallica combined"
+    expected_tool: "song_alchemy"
+    category: "song_alchemy"
+
+  - query: "play like Deep Purple meets Led Zeppelin"
+    expected_tool: "song_alchemy"
+    category: "song_alchemy"
+
+  - query: "Beatles but not ballads"
+    expected_tool: "song_alchemy"
+    category: "song_alchemy"
+
+  - query: "mix of Daft Punk and Gorillaz"
+    expected_tool: "song_alchemy"
+    category: "song_alchemy"
+    expected_args:
+      add_items_artists: ["Daft Punk", "Gorillaz"]
+
+  - query: "Pink Floyd without the long songs"
+    expected_tool: "song_alchemy"
+    category: "song_alchemy"
+
+  # --- artist_own_songs (1 query - artist_similarity now handles own songs) ---
+  - query: "blink-182 songs"
+    expected_tool: "artist_similarity"
+    category: "artist_own_songs"
+
+  # --- ai_brainstorm (2 queries) ---
+  - query: "trending songs from 2024"
+    expected_tool: "ai_brainstorm"
+    category: "ai_brainstorm"
+
+  - query: "best Grammy winners of the last decade"
+    expected_tool: "ai_brainstorm"
+    acceptable_tools: ["ai_brainstorm", "search_database"]
+    category: "ai_brainstorm"
+
+  # --- search_database (6 queries, including new filter types) ---
+  - query: "energetic rock music"
+    expected_tool: "search_database"
+    acceptable_tools: ["search_database", "text_search"]
+    category: "search_database"
+    expected_args:
+      genres: ["rock"]
+
+  - query: "running music at 120 BPM"
+    expected_tool: "search_database"
+    category: "search_database"
+
+  - query: "sad jazz songs"
+    expected_tool: "search_database"
+    acceptable_tools: ["search_database", "text_search"]
+    category: "search_database"
+    expected_args:
+      genres: ["jazz"]
+      moods: ["sad"]
+
+  - query: "90s rock songs"
+    expected_tool: "search_database"
+    category: "search_database"
+    expected_args:
+      genres: ["rock"]
+
+  - query: "my highest rated songs"
+    expected_tool: "search_database"
+    category: "search_database"
+
+  - query: "songs in minor key"
+    expected_tool: "search_database"
+    category: "search_database"
+    expected_args:
+      scale: "minor"
+
+  - query: "fast metal songs"
+    expected_tool: "search_database"
+    category: "search_database"
+    expected_args:
+      genres: ["metal"]
+
+  - query: "songs rated 5 stars"
+    expected_tool: "search_database"
+    category: "search_database"
+    expected_args:
+      min_rating: 5
+
+# Set these once - models inherit from their provider defaults
+defaults:
+  ollama:
+    url: "http://localhost:11434/api/generate"
+  openrouter:
+    url: "https://openrouter.ai/api/v1/chat/completions"
+    api_key: "your-openrouter-api-key-here"
+
+models:
+  - provider: "ollama"
+    name: "Llama 3.1 8B"
+    model_id: "llama3.1:8b"
+    enabled: true
+
+  - provider: "ollama"
+    name: "Llama 3.2 1B"
+    model_id: "llama3.2:1b"
+    enabled: true
+
+  - provider: "ollama"
+    name: "Gemma 3 1B"
+    model_id: "gemma3:1b"
+    enabled: true
+
+  - provider: "ollama"
+    name: "Gemma 3 4B"
+    model_id: "gemma3:4b"
+    enabled: true
+
+  - provider: "ollama"
+    name: "Gemma 3 12B"
+    model_id: "gemma3:12b"
+    enabled: true
+
+  - provider: "ollama"
+    name: "Qwen 3 0.6B"
+    model_id: "qwen3:0.6b"
+    enabled: true
+
+  - provider: "ollama"
+    name: "Qwen 3 1.7B"
+    model_id: "qwen3:1.7b"
+    enabled: true
+
+  - provider: "ollama"
+    name: "DeepSeek R1 1.5B"
+    model_id: "deepseek-r1:1.5b"
+    enabled: true
+
+  - provider: "openrouter"
+    name: "GPT-4o Mini"
+    model_id: "openai/gpt-4o-mini"
+    enabled: true
+
+  - provider: "openrouter"
+    name: "Claude 4.5 Haiku"
+    model_id: "anthropic/claude-haiku-4.5"
+    enabled: true
+
+  - provider: "openrouter"
+    name: "Claude 4.5 Sonnet"
+    model_id: "anthropic/claude-sonnet-4.5"
+    enabled: true
+
+  - provider: "openrouter"
+    name: "Claude 4.6 Opus"
+    model_id: "anthropic/claude-opus-4.6"
+    enabled: true
+
+  - provider: "openrouter"
+    name: "Gemini 3 Flash"
+    model_id: "google/gemini-3-flash-preview"
+    enabled: true
+
+  - provider: "openrouter"
+    name: "Gemini 3 Pro"
+    model_id: "google/gemini-3-pro-preview"
+    enabled: true
+
+  - provider: "openrouter"
+    name: "GPT 5.2"
+    model_id: "openai/gpt-5.2"
+    enabled: true
+
+output:
+  directory: "testing_suite/reports/instant_playlist"
+  save_raw_responses: true

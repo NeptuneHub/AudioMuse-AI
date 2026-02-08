@@ -537,7 +537,23 @@ def get_last_played_time(item_id, user_creds):
     if response and "song" in response: return response["song"].get("lastPlayed")
     return None
 
-def create_instant_playlist(playlist_name, item_ids, user_creds):
+def create_instant_playlist(playlist_name, item_ids, user_creds=None, server_config=None):
     """Creates a new instant playlist on Navidrome for a specific user, with batching."""
-    final_playlist_name = f"{playlist_name.strip()}_instant"
-    return _create_playlist_batched(final_playlist_name, item_ids, user_creds)
+    sc = server_config or {}
+    # Build user_creds from server_config if not explicitly provided
+    if not user_creds and sc:
+        user_creds = {
+            'user': sc.get('user', ''),
+            'password': sc.get('password', ''),
+        }
+    # Temporarily override URL if server_config provides one
+    effective_url = sc.get('url') if sc.get('url') else None
+    if effective_url:
+        original_url = config.NAVIDROME_URL
+        config.NAVIDROME_URL = effective_url
+    try:
+        final_playlist_name = f"{playlist_name.strip()}_instant"
+        return _create_playlist_batched(final_playlist_name, item_ids, user_creds)
+    finally:
+        if effective_url:
+            config.NAVIDROME_URL = original_url

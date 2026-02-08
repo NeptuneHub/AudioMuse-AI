@@ -22,6 +22,15 @@ def _decode_lyrion_url(url):
         return unquote(urlparse(url).path)
     return unquote(url)
 
+def _safe_rating(val):
+    """Convert Lyrion 0-100 rating to 0-5 scale, handling non-numeric values."""
+    if not val:
+        return None
+    try:
+        return int(int(val) / 20)
+    except (ValueError, TypeError):
+        return None
+
 # ##############################################################################
 # LYRION (JSON-RPC) IMPLEMENTATION
 # ##############################################################################
@@ -823,7 +832,7 @@ def get_all_songs():
                 'Path': song.get('url'),
                 'url': song.get('url'),
                 'Year': int(song.get('year')) if song.get('year') else None,
-                'Rating': int(int(song.get('rating')) / 20) if song.get('rating') else None,
+                'Rating': _safe_rating(song.get('rating')),
                 'FilePath': _decode_lyrion_url(song.get('url')),
             }
             all_songs.append(mapped_song)
@@ -1119,7 +1128,7 @@ def get_tracks_from_album(album_id):
             'Album': s.get('album'),
             'Path': path, 'url': path,
             'Year': int(s.get('year')) if s.get('year') else None,
-            'Rating': int(int(s.get('rating')) / 20) if s.get('rating') else None,
+            'Rating': _safe_rating(s.get('rating')),
             'FilePath': _decode_lyrion_url(s.get('url')),
         })
 
@@ -1173,7 +1182,7 @@ def get_top_played_songs(limit):
                 'Path': s.get('url'),
                 'url': s.get('url'),
                 'Year': int(s.get('year')) if s.get('year') else None,
-                'Rating': int(int(s.get('rating')) / 20) if s.get('rating') else None,
+                'Rating': _safe_rating(s.get('rating')),
                 'FilePath': _decode_lyrion_url(s.get('url')),
             })
         return mapped_songs
@@ -1185,7 +1194,17 @@ def get_last_played_time(item_id):
     logger.warning("Lyrion's JSON-RPC API does not provide a 'last played time' for individual tracks.")
     return None
 
-def create_instant_playlist(playlist_name, item_ids):
+def create_instant_playlist(playlist_name, item_ids, server_config=None):
     """Creates a new instant playlist on Lyrion for a specific user, with batching."""
-    final_playlist_name = f"{playlist_name.strip()}_instant"
-    return _create_playlist_batched(final_playlist_name, item_ids)
+    sc = server_config or {}
+    # Temporarily override URL if server_config provides one
+    effective_url = sc.get('url') if sc.get('url') else None
+    if effective_url:
+        original_url = config.LYRION_URL
+        config.LYRION_URL = effective_url
+    try:
+        final_playlist_name = f"{playlist_name.strip()}_instant"
+        return _create_playlist_batched(final_playlist_name, item_ids)
+    finally:
+        if effective_url:
+            config.LYRION_URL = original_url

@@ -52,6 +52,48 @@ def get_config() -> Dict:
 
 
 # ##############################################################################
+# DB CACHE HELPERS
+# ##############################################################################
+
+def _get_songs_from_db() -> List[Dict]:
+    """
+    Query the score table for songs with file_path set (previously analyzed).
+    Returns a list of dicts matching the format returned by get_all_songs().
+    Falls back to empty list if DB is unavailable.
+    """
+    try:
+        from app_helper import get_db
+        db = get_db()
+        if not db:
+            return []
+        with db.cursor() as cur:
+            cur.execute("""
+                SELECT item_id, title, author, album, album_artist, file_path,
+                       year, rating
+                FROM score
+                WHERE file_path IS NOT NULL
+            """)
+            rows = cur.fetchall()
+            songs = []
+            for row in rows:
+                songs.append({
+                    'Id': row[0],
+                    'Name': row[1] or 'Unknown',
+                    'AlbumArtist': row[2] or 'Unknown Artist',
+                    'Album': row[3] or 'Unknown Album',
+                    'OriginalAlbumArtist': row[4],
+                    'Path': row[5],
+                    'FilePath': row[5],
+                    'Year': row[6],
+                    'Rating': row[7],
+                })
+            return songs
+    except Exception as e:
+        logger.debug(f"DB cache lookup failed (expected during first scan): {e}")
+        return []
+
+
+# ##############################################################################
 # UTILITY FUNCTIONS
 # ##############################################################################
 
@@ -439,11 +481,13 @@ def get_recent_albums(limit: int) -> List[Dict]:
 
     For local files, we group songs by album and return the most recently
     modified albums based on the newest file in each album.
+    Uses DB cache when available to avoid rescanning the filesystem.
     """
     cfg = get_config()
     music_dir = cfg['music_directory']
 
-    all_songs = get_all_songs()
+    # Try DB cache first, fall back to filesystem scan
+    all_songs = _get_songs_from_db() or get_all_songs()
     if not all_songs:
         return []
 
@@ -489,8 +533,9 @@ def get_tracks_from_album(album_id: str) -> List[Dict]:
     Get all tracks from an album.
 
     For local files, album_id is "Artist - Album Name" format.
+    Uses DB cache when available to avoid rescanning the filesystem.
     """
-    all_songs = get_all_songs()
+    all_songs = _get_songs_from_db() or get_all_songs()
 
     # Filter songs matching this album
     tracks = []
@@ -590,9 +635,9 @@ def create_playlist(base_name: str, item_ids: List[str]) -> Optional[str]:
     # Ensure playlist directory exists
     os.makedirs(playlist_dir, exist_ok=True)
 
-    # Build a lookup from item_id to file path
-    all_songs = get_all_songs()
-    id_to_path = {song['Id']: song['Path'] for song in all_songs}
+    # Build a lookup from item_id to file path (DB cache first, filesystem fallback)
+    all_songs = _get_songs_from_db() or get_all_songs()
+    id_to_path = {song['Id']: song.get('Path') or song.get('FilePath', '') for song in all_songs}
 
     # Resolve paths
     paths = []
@@ -650,13 +695,29 @@ def delete_playlist(playlist_id: str) -> bool:
         return False
 
 
-def create_instant_playlist(playlist_name: str, item_ids: List[str], user_creds=None) -> Optional[Dict]:
+def create_instant_playlist(playlist_name: str, item_ids: List[str], user_creds=None, server_config=None) -> Optional[Dict]:
     """Create an instant playlist (same as regular playlist for local files)."""
-    final_name = f"{playlist_name.strip()}_instant"
-    result = create_playlist(final_name, item_ids)
-    if result:
-        return {'Id': result, 'Name': final_name}
-    return None
+    sc = server_config or {}
+    # Temporarily override env vars if server_config provides directories
+    overrides = {}
+    if sc.get('music_directory'):
+        overrides['LOCALFILES_MUSIC_DIRECTORY'] = os.environ.get('LOCALFILES_MUSIC_DIRECTORY')
+        os.environ['LOCALFILES_MUSIC_DIRECTORY'] = sc['music_directory']
+    if sc.get('playlist_directory'):
+        overrides['LOCALFILES_PLAYLIST_DIR'] = os.environ.get('LOCALFILES_PLAYLIST_DIR')
+        os.environ['LOCALFILES_PLAYLIST_DIR'] = sc['playlist_directory']
+    try:
+        final_name = f"{playlist_name.strip()}_instant"
+        result = create_playlist(final_name, item_ids)
+        if result:
+            return {'Id': result, 'Name': final_name}
+        return None
+    finally:
+        for key, original in overrides.items():
+            if original is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original
 
 
 def get_top_played_songs(limit: int, user_creds=None) -> List[Dict]:
