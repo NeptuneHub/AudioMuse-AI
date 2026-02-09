@@ -192,14 +192,9 @@ services:
 # =============================================================================
 volumes:
   redis-data:
-    name: audiomuse-redis-data
   postgres-data:
-    name: audiomuse-postgres-data
   temp-audio-flask:
-    name: audiomuse-temp-flask
   temp-audio-worker:
-    name: audiomuse-temp-worker
   # Default music volume - only used if MUSIC_PATH env var is not set
   # For local files: set MUSIC_PATH=/your/music/folder in .env or environment
   music-data:
-    name: audiomuse-music-data
