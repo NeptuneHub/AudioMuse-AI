@@ -220,7 +220,7 @@ class StudentCLAPDataset:
                 # If user disabled teacher embedding cache, recompute teacher embeddings from
                 # the augmented mel so teacher receives identical augmentations as student.
                 use_teacher_emb_cache = self.config.get('training', {}).get('use_teacher_embedding_cache', True)
-                if not use_teacher_emb_cache:
+                if not use_teacher_emb_cache and self.split == 'train':
                     try:
                         teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_mel(mel_aug)
                         teacher_embedding = teacher_emb
@@ -254,7 +254,7 @@ class StudentCLAPDataset:
                         # Get teacher embeddings (compute if not cached)
                         use_teacher_emb_cache = self.config.get('training', {}).get('use_teacher_embedding_cache', True)
 
-                        if cached_segment_embeddings is not None and use_teacher_emb_cache:
+                        if cached_segment_embeddings is not None and (use_teacher_emb_cache or self.split != 'train'):
                             # Use cached segments and compute average on-the-fly
                             teacher_segment_embeddings = cached_segment_embeddings
                             teacher_embedding = self.mel_cache.get_averaged_embedding(item['item_id'])
@@ -265,7 +265,7 @@ class StudentCLAPDataset:
                                 logger.error(f"CLAP analysis failed for {item['title']}")
                                 continue
                             # Cache only per-segment embeddings if allowed
-                            if teacher_segment_embeddings and use_teacher_emb_cache:
+                            if teacher_segment_embeddings and (use_teacher_emb_cache or self.split != 'train'):
                                 self.mel_cache.put_segment_embeddings(item['item_id'], teacher_segment_embeddings)
 
                         # Get mel spectrograms (compute if not cached)
