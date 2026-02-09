@@ -180,6 +180,7 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
+        flex-wrap: wrap;
         padding: 1rem;
         background: var(--bg-card);
         border-radius: 8px;
@@ -491,6 +492,27 @@
     .test-result.error {
         background: rgba(220, 53, 69, 0.2);
         color: #dc3545;
+    }
+
+    .test-result.warning {
+        background: rgba(255, 193, 7, 0.2);
+        color: #856404;
+    }
+
+    body.dark-mode .test-result.warning {
+        background: rgba(255, 193, 7, 0.15);
+        color: #ffc107;
+    }
+
+    .rescan-result {
+        margin-top: 0.5rem;
+        width: 100%;
+    }
+
+    .rescan-actions {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 0.5rem;
     }
 
     /* Library Checklist */
@@ -890,8 +912,10 @@
                 <div class="provider-actions">
                     <button onclick="editProvider(${p.id})">Edit</button>
                     <button onclick="toggleProvider(${p.id}, ${!p.enabled})">${p.enabled ? 'Disable' : 'Enable'}</button>
+                    ${p.provider_type === 'navidrome' ? `<button onclick="rescanPaths(${p.id})">Rescan Paths</button>` : ''}
                     <button class="btn-danger" onclick="deleteProvider(${p.id})">Delete</button>
                 </div>
+                <div id="rescan-result-${p.id}" class="rescan-result"></div>
             `;
             list.appendChild(item);
 
@@ -1334,6 +1358,81 @@
             }
         } catch (err) {
             showToast('Error deleting provider', 'error');
+        }
+    }
+
+    async function rescanPaths(providerId) {
+        const resultDiv = document.getElementById(`rescan-result-${providerId}`);
+        resultDiv.innerHTML = '<div class="test-result">Rescanning paths...</div>';
+
+        try {
+            const response = await fetch(`/api/setup/providers/${providerId}/rescan-paths`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await response.json();
+
+            if (!data.success) {
+                resultDiv.innerHTML = `<div class="test-result error">${data.message}</div>`;
+                return;
+            }
+
+            let html = `<div class="test-result ${data.path_format === 'relative' && providers.length > 1 ? 'warning' : 'success'}">`;
+            html += `<strong>Path format:</strong> ${data.path_format}`;
+
+            if (data.path_format === 'relative' && providers.length > 1) {
+                html += `<br>Relative paths may prevent cross-provider track matching.`;
+                html += `<br><small>Enable <strong>"Report Real Path"</strong> in Navidrome's Subsonic settings, then rescan again.</small>`;
+            }
+
+            if (data.matches_found > 0) {
+                html += `<br><strong>Prefix:</strong> "${data.suggested_prefix}" (${data.confidence} confidence, ${data.matches_found} matches)`;
+                if (data.current_prefix !== undefined) {
+                    html += `<br><strong>Current prefix:</strong> "${data.current_prefix}"`;
+                }
+            }
+
+            html += `</div>`;
+
+            if (data.prefix_changed) {
+                html += `<div class="rescan-actions">
+                    <button onclick="updateProviderPrefix(${providerId}, '${data.suggested_prefix.replace(/'/g, "\\'")}')">
+                        Apply Prefix "${data.suggested_prefix}"
+                    </button>
+                </div>`;
+            }
+
+            resultDiv.innerHTML = html;
+        } catch (err) {
+            resultDiv.innerHTML = `<div class="test-result error">Rescan failed: ${err.message}</div>`;
+        }
+    }
+
+    async function updateProviderPrefix(providerId, newPrefix) {
+        try {
+            const provider = providers.find(p => p.id === providerId);
+            if (!provider) {
+                showToast('Provider not found', 'error');
+                return;
+            }
+
+            const updatedConfig = { ...provider.config, music_path_prefix: newPrefix };
+            const response = await fetch(`/api/setup/providers/${providerId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ config: updatedConfig })
+            });
+
+            if (response.ok) {
+                showToast('Path prefix updated', 'success');
+                await loadProviders();
+                renderProviders();
+            } else {
+                const data = await response.json();
+                showToast(data.error || 'Failed to update prefix', 'error');
+            }
+        } catch (err) {
+            showToast('Error updating prefix: ' + err.message, 'error');
         }
     }
 

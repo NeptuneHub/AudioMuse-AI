@@ -33,3 +33,4 @@ httpx
 voyager==2.1.0
 transformers==4.35.2
 sentencepiece
+cryptography

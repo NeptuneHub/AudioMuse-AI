@@ -18,6 +18,7 @@ from redis import Redis
 from flasgger import Swagger, swag_from
 
 # Import configuration
+import config
 from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP_DIR, \
   REDIS_URL, DATABASE_URL, MAX_DISTANCE, MAX_SONGS_PER_CLUSTER, MAX_SONGS_PER_ARTIST, NUM_RECENT_ALBUMS, \
   SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_SILHOUETTE, SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ, \
@@ -635,6 +636,14 @@ if __name__ == '__main__':
       logger.info("Applied DB settings to runtime config.")
     except Exception as e:
       logger.debug(f"Could not apply DB settings at startup: {e}")
+
+    # --- MPD removal warning ---
+    if config.MEDIASERVER_TYPE == 'mpd':
+      logger.warning("=" * 60)
+      logger.warning("MPD provider has been removed in v0.9.0.")
+      logger.warning("Please switch to 'localfiles' or another supported provider.")
+      logger.warning("See deployment/.env.example for configuration options.")
+      logger.warning("=" * 60)
 
     # --- Initial Voyager Index Load ---
     from tasks.voyager_manager import load_voyager_index_for_querying

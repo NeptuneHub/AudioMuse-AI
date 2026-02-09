@@ -40,15 +40,18 @@ SUPPORTED_FORMATS = {'.mp3', '.flac', '.ogg', '.m4a', '.mp4', '.wav', '.wma', '.
 # CONFIGURATION
 # ##############################################################################
 
-def get_config() -> Dict:
+def get_config(overrides: Dict = None) -> Dict:
     """Get local file provider configuration from environment or defaults."""
-    return {
+    cfg = {
         'music_directory': os.environ.get('LOCALFILES_MUSIC_DIRECTORY', '/music'),
         'supported_formats': os.environ.get('LOCALFILES_FORMATS', ','.join(SUPPORTED_FORMATS)).split(','),
         'scan_subdirectories': os.environ.get('LOCALFILES_SCAN_SUBDIRS', 'true').lower() == 'true',
         'use_embedded_metadata': os.environ.get('LOCALFILES_USE_METADATA', 'true').lower() == 'true',
         'playlist_directory': os.environ.get('LOCALFILES_PLAYLIST_DIR', '/music/playlists'),
     }
+    if overrides:
+        cfg.update(overrides)
+    return cfg
 
 
 # ##############################################################################
@@ -60,6 +63,9 @@ def _get_songs_from_db() -> List[Dict]:
     Query the score table for songs with file_path set (previously analyzed).
     Returns a list of dicts matching the format returned by get_all_songs().
     Falls back to empty list if DB is unavailable.
+
+    Uses provider_track join to return the localfiles provider's native item_id
+    when available, with fallback to score.item_id for legacy data.
     """
     try:
         from app_helper import get_db
@@ -67,13 +73,27 @@ def _get_songs_from_db() -> List[Dict]:
         if not db:
             return []
         with db.cursor() as cur:
+            # Try provider-filtered query first (returns localfiles provider item_ids)
             cur.execute("""
-                SELECT item_id, title, author, album, album_artist, file_path,
-                       year, rating
-                FROM score
-                WHERE file_path IS NOT NULL
+                SELECT pt.item_id, s.title, s.author, s.album, s.album_artist,
+                       s.file_path, s.year, s.rating
+                FROM score s
+                JOIN provider_track pt ON pt.track_id = s.track_id
+                JOIN provider p ON p.id = pt.provider_id AND p.provider_type = 'localfiles'
+                WHERE s.file_path IS NOT NULL
+                LIMIT 100000
             """)
             rows = cur.fetchall()
+            if not rows:
+                # Fallback for legacy data without provider_track mappings
+                cur.execute("""
+                    SELECT item_id, title, author, album, album_artist, file_path,
+                           year, rating
+                    FROM score
+                    WHERE file_path IS NOT NULL
+                    LIMIT 100000
+                """)
+                rows = cur.fetchall()
             songs = []
             for row in rows:
                 songs.append({
@@ -87,6 +107,14 @@ def _get_songs_from_db() -> List[Dict]:
                     'Year': row[6],
                     'Rating': row[7],
                 })
+            # Verify sample of file paths exist on disk (stale-data check)
+            sample_size = min(5, len(songs))
+            if sample_size > 0:
+                import random
+                sample = random.sample(songs, sample_size)
+                missing = [s for s in sample if s.get('FilePath') and not os.path.exists(s['FilePath'])]
+                if len(missing) == sample_size:
+                    logger.warning(f"Stale data detected: none of {sample_size} sampled file paths exist on disk")
             return songs
     except Exception as e:
         logger.debug(f"DB cache lookup failed (expected during first scan): {e}")
@@ -622,13 +650,13 @@ def get_playlist_by_name(playlist_name: str) -> Optional[Dict]:
     return None
 
 
-def create_playlist(base_name: str, item_ids: List[str]) -> Optional[str]:
+def create_playlist(base_name: str, item_ids: List[str], config_override: Dict = None) -> Optional[str]:
     """
     Create an M3U playlist file.
 
     item_ids are the file path hashes - we need to look up the actual paths.
     """
-    cfg = get_config()
+    cfg = get_config(overrides=config_override)
     playlist_dir = cfg['playlist_directory']
     music_dir = cfg['music_directory']
 
@@ -698,26 +726,16 @@ def delete_playlist(playlist_id: str) -> bool:
 def create_instant_playlist(playlist_name: str, item_ids: List[str], user_creds=None, server_config=None) -> Optional[Dict]:
     """Create an instant playlist (same as regular playlist for local files)."""
     sc = server_config or {}
-    # Temporarily override env vars if server_config provides directories
-    overrides = {}
+    config_override = {}
     if sc.get('music_directory'):
-        overrides['LOCALFILES_MUSIC_DIRECTORY'] = os.environ.get('LOCALFILES_MUSIC_DIRECTORY')
-        os.environ['LOCALFILES_MUSIC_DIRECTORY'] = sc['music_directory']
+        config_override['music_directory'] = sc['music_directory']
     if sc.get('playlist_directory'):
-        overrides['LOCALFILES_PLAYLIST_DIR'] = os.environ.get('LOCALFILES_PLAYLIST_DIR')
-        os.environ['LOCALFILES_PLAYLIST_DIR'] = sc['playlist_directory']
-    try:
-        final_name = f"{playlist_name.strip()}_instant"
-        result = create_playlist(final_name, item_ids)
-        if result:
-            return {'Id': result, 'Name': final_name}
-        return None
-    finally:
-        for key, original in overrides.items():
-            if original is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = original
+        config_override['playlist_directory'] = sc['playlist_directory']
+    final_name = f"{playlist_name.strip()}_instant"
+    result = create_playlist(final_name, item_ids, config_override=config_override or None)
+    if result:
+        return {'Id': result, 'Name': final_name}
+    return None
 
 
 def get_top_played_songs(limit: int, user_creds=None) -> List[Dict]:

@@ -39,6 +39,11 @@ htmlcov/
 nul
 testing_suite/reports/
 
+# Testing suite configs (contain API keys / DB passwords)
+testing_suite/instant_playlist_test_config.yaml
+testing_suite/ai_naming_test_config.yaml
+testing_suite/comparison_config.yaml
+
 # Deployment secrets
 deployment/main.env
 

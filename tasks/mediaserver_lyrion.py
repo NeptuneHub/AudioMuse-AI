@@ -325,12 +325,12 @@ def _get_first_player():
         logger.error(f"Error getting Lyrion player: {e}")
         return "10.42.6.0"  # Use the player from your example as fallback
 
-def _jsonrpc_request(method, params, player_id=""):
+def _jsonrpc_request(method, params, player_id="", base_url=None):
     """
     Helper to make a JSON-RPC request to the Lyrion server without authentication.
     Returns the 'result' field on success, or None on failure.
     """
-    url = f"{config.LYRION_URL}/jsonrpc.js"
+    url = f"{base_url or config.LYRION_URL}/jsonrpc.js"
     payload = {
         "id": 1,
         "method": "slim.request",
@@ -852,7 +852,7 @@ def get_all_songs():
 
     return all_songs
 
-def _add_to_playlist(playlist_id, item_ids):
+def _add_to_playlist(playlist_id, item_ids, base_url=None):
     """Adds songs to a Lyrion playlist using the working player-based method."""
     if not item_ids: 
         return True
@@ -868,7 +868,7 @@ def _add_to_playlist(playlist_id, item_ids):
     try:
         # Get the original playlist name FIRST, before any operations
         logger.debug("Step 0: Getting original playlist name before operations")
-        playlist_info = _jsonrpc_request("playlists", [0, 999999])  # Get all playlists
+        playlist_info = _jsonrpc_request("playlists", [0, 999999], base_url=base_url)  # Get all playlists
         
         original_name = None
         if playlist_info and "playlists_loop" in playlist_info:
@@ -890,7 +890,7 @@ def _add_to_playlist(playlist_id, item_ids):
         load_response = _jsonrpc_request("playlistcontrol", [
             "cmd:load",
             f"playlist_id:{playlist_id}"
-        ], player_id)
+        ], player_id, base_url=base_url)
         
         logger.debug(f"Load playlist response: {load_response}")
         
@@ -906,7 +906,7 @@ def _add_to_playlist(playlist_id, item_ids):
             add_response = _jsonrpc_request("playlistcontrol", [
                 "cmd:add",
                 f"track_id:{track_id_list}"
-            ], player_id)
+            ], player_id, base_url=base_url)
             
             logger.debug(f"Add batch response: {add_response}")
             
@@ -925,7 +925,7 @@ def _add_to_playlist(playlist_id, item_ids):
         delete_response = _jsonrpc_request("playlists", [
             "delete",
             f"playlist_id:{playlist_id}"
-        ])
+        ], base_url=base_url)
         logger.debug(f"Delete response: {delete_response}")
         
         # Step 4: Save the current player playlist with the original name
@@ -934,7 +934,7 @@ def _add_to_playlist(playlist_id, item_ids):
             "save",
             original_name,
             "silent:1"
-        ], player_id)
+        ], player_id, base_url=base_url)
         
         logger.debug(f"Save playlist response: {save_response}")
         
@@ -965,13 +965,13 @@ def _add_to_playlist(playlist_id, item_ids):
         logger.error(f"Error in playlist update method: {e}")
         return False
 
-def _create_playlist_batched(playlist_name, item_ids):
+def _create_playlist_batched(playlist_name, item_ids, base_url=None):
     """Creates a new Lyrion playlist and adds tracks using the web interface approach."""
     logger.info(f"Attempting to create Lyrion playlist '{playlist_name}' with {len(item_ids)} songs using web interface method.")
 
     try:
         # Step 1: Create the playlist using JSON-RPC (this part works)
-        create_response = _jsonrpc_request("playlists", ["new", f"name:{playlist_name}"])
+        create_response = _jsonrpc_request("playlists", ["new", f"name:{playlist_name}"], base_url=base_url)
         
         if create_response:
             playlist_id = (
@@ -985,7 +985,7 @@ def _create_playlist_batched(playlist_name, item_ids):
                 
                 # Step 2: Add tracks using the web interface method
                 if item_ids:
-                    if _add_to_playlist(playlist_id, item_ids):
+                    if _add_to_playlist(playlist_id, item_ids, base_url=base_url):
                         logger.info(f"✅ Successfully added {len(item_ids)} tracks to playlist '{playlist_name}'.")
                     else:
                         logger.warning(f"Playlist '{playlist_name}' created but some tracks may not have been added.")
@@ -1197,14 +1197,6 @@ def get_last_played_time(item_id):
 def create_instant_playlist(playlist_name, item_ids, server_config=None):
     """Creates a new instant playlist on Lyrion for a specific user, with batching."""
     sc = server_config or {}
-    # Temporarily override URL if server_config provides one
-    effective_url = sc.get('url') if sc.get('url') else None
-    if effective_url:
-        original_url = config.LYRION_URL
-        config.LYRION_URL = effective_url
-    try:
-        final_playlist_name = f"{playlist_name.strip()}_instant"
-        return _create_playlist_batched(final_playlist_name, item_ids)
-    finally:
-        if effective_url:
-            config.LYRION_URL = original_url
+    base_url = sc.get('url') or config.LYRION_URL
+    final_playlist_name = f"{playlist_name.strip()}_instant"
+    return _create_playlist_batched(final_playlist_name, item_ids, base_url=base_url)

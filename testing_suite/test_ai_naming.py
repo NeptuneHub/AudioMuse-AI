@@ -785,9 +785,12 @@ def main():
         description="AudioMuse-AI - AI Playlist Naming Performance Test",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    _default_cfg = "testing_suite/ai_naming_test_config.yaml"
+    if not os.path.exists(_default_cfg):
+        _default_cfg = "testing_suite/ai_naming_test_config.example.yaml"
     parser.add_argument("--config", "-c", type=str,
-                        default="testing_suite/ai_naming_test_config.yaml",
-                        help="Path to YAML config file (default: testing_suite/ai_naming_test_config.yaml)")
+                        default=_default_cfg,
+                        help="Path to YAML config file (default: ai_naming_test_config.yaml)")
     parser.add_argument("--runs", "-n", type=int, default=None,
                         help="Override num_runs_per_model from config")
     parser.add_argument("--dry-run", action="store_true",

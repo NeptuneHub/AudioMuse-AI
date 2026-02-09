@@ -52,7 +52,7 @@ LOCALFILES_PLAYLIST_DIR = os.environ.get("LOCALFILES_PLAYLIST_DIR", "/music/play
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v0.8.8"
+APP_VERSION = "v0.9.0"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -454,6 +454,9 @@ MOOD_SIMILARITY_ENABLE = os.environ.get("MOOD_SIMILARITY_ENABLE", "False").lower
 #   proxy_set_header X-Forwarded-Prefix /audiomuseai;
 # }
 ENABLE_PROXY_FIX = os.environ.get("ENABLE_PROXY_FIX", "False").lower() == "true"
+
+# --- Credential Encryption ---
+ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY', '')
 
 # --- Instant Playlist Optimization ---
 # Max songs from a single artist in the instant playlist (diversity enforcement)

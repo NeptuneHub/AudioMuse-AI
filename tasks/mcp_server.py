@@ -304,40 +304,67 @@ List the famous songs by {artist} now:"""
             log_messages.append(f"Failed to parse AI response: {str(e)}")
             return {"songs": [], "message": "\n".join(log_messages)}
         
-        # Query database for exact matches
+        # Query database for matches (batched)
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
             found_songs = []
-            for title in suggested_titles:
-                cur.execute("""
+            seen_ids = set()
+
+            if suggested_titles:
+                # Build a single query with OR conditions for all suggested titles
+                or_conditions = []
+                title_params = []
+                for title in suggested_titles:
+                    or_conditions.append("title ILIKE %s")
+                    title_params.append(f"%{title}%")
+
+                where_clause = ' OR '.join(or_conditions)
+                cur.execute(f"""
                     SELECT item_id, title, author
                     FROM public.score
-                    WHERE author = %s AND title ILIKE %s
-                    LIMIT 1
-                """, (artist, f"%{title}%"))
-                result = cur.fetchone()
-                if result:
-                    found_songs.append({
-                        "item_id": result['item_id'],
-                        "title": result['title'],
-                        "artist": result['author']
-                    })
-            
+                    WHERE author = %s AND ({where_clause})
+                """, [artist] + title_params)
+                rows = cur.fetchall()
+
+                for title in suggested_titles:
+                    # Find matching row (ILIKE %title% match)
+                    for row in rows:
+                        if title.lower() in row['title'].lower() and row['item_id'] not in seen_ids:
+                            found_songs.append({
+                                "item_id": row['item_id'],
+                                "title": row['title'],
+                                "artist": row['author']
+                            })
+                            seen_ids.add(row['item_id'])
+                            break
+
             # If we found some but not enough, add more random songs from this artist
             if len(found_songs) < get_songs:
-                cur.execute("""
-                    SELECT item_id, title, author
-                    FROM public.score
-                    WHERE author = %s
-                    ORDER BY RANDOM()
-                    LIMIT %s
-                """, (artist, get_songs - len(found_songs)))
+                exclude_ids = list(seen_ids)
+                if exclude_ids:
+                    cur.execute("""
+                        SELECT item_id, title, author
+                        FROM public.score
+                        WHERE author = %s AND item_id != ALL(%s)
+                        ORDER BY RANDOM()
+                        LIMIT %s
+                    """, (artist, exclude_ids, get_songs - len(found_songs)))
+                else:
+                    cur.execute("""
+                        SELECT item_id, title, author
+                        FROM public.score
+                        WHERE author = %s
+                        ORDER BY RANDOM()
+                        LIMIT %s
+                    """, (artist, get_songs - len(found_songs)))
                 additional = cur.fetchall()
                 for r in additional:
-                    found_songs.append({
-                        "item_id": r['item_id'],
-                        "title": r['title'],
-                        "artist": r['author']
-                    })
+                    if r['item_id'] not in seen_ids:
+                        found_songs.append({
+                            "item_id": r['item_id'],
+                            "title": r['title'],
+                            "artist": r['author']
+                        })
+                        seen_ids.add(r['item_id'])
         
         log_messages.append(f"Found {len(found_songs)} songs by {artist}")
         return {"songs": found_songs, "message": "\n".join(log_messages)}
@@ -539,7 +566,7 @@ Suggest songs for "{user_request}" now:"""
             log_messages.append(f"Raw AI response (first 500 chars): {raw_response[:500]}")
             return {"songs": [], "message": "\n".join(log_messages)}
         
-        # Search database for these songs using strict two-stage matching
+        # Search database for these songs using strict two-stage matching (batched)
         found_songs = []
         seen_ids = set()
 
@@ -551,50 +578,96 @@ Suggest songs for "{user_request}" now:"""
             """Escape LIKE wildcards to prevent injection."""
             return s.replace('%', r'\%').replace('_', r'\_')
 
-        for item in song_list:
-            title = item.get('title', '')
-            artist = item.get('artist', '')
+        # Filter valid items (need both title and artist)
+        valid_items = [(item.get('title', ''), item.get('artist', ''))
+                       for item in song_list
+                       if item.get('title') and item.get('artist')]
 
-            if not title or not artist:
-                continue
-
-            with db_conn.cursor(cursor_factory=DictCursor) as cur:
-                # Stage 1: Exact case-insensitive match on BOTH title AND artist
-                cur.execute("""
+        stage2_items = []
+        with db_conn.cursor(cursor_factory=DictCursor) as cur:
+            # Stage 1: Batch exact case-insensitive match on BOTH title AND artist
+            if valid_items:
+                values_params = []
+                for title, artist in valid_items:
+                    values_params.extend([title.lower(), artist.lower()])
+                values_clause = ', '.join(['(%s, %s)'] * len(valid_items))
+                cur.execute(f"""
                     SELECT item_id, title, author
                     FROM public.score
-                    WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s)
-                    LIMIT 1
-                """, (title, artist))
-                result = cur.fetchone()
+                    WHERE (LOWER(title), LOWER(author)) IN (VALUES {values_clause})
+                """, values_params)
+                exact_rows = cur.fetchall()
 
-                # Stage 2: Normalized fuzzy match requiring BOTH title AND artist to match
-                if not result:
+                # Index exact matches by (lower_title, lower_author) for lookup
+                exact_match_map = {}
+                for row in exact_rows:
+                    key = (row['title'].lower(), row['author'].lower())
+                    if key not in exact_match_map:
+                        exact_match_map[key] = row
+
+                # Collect results from stage 1, track unmatched for stage 2
+                stage2_items = []
+                for title, artist in valid_items:
+                    key = (title.lower(), artist.lower())
+                    result = exact_match_map.get(key)
+                    if result and result['item_id'] not in seen_ids:
+                        found_songs.append({
+                            "item_id": result['item_id'],
+                            "title": result['title'],
+                            "artist": result['author']
+                        })
+                        seen_ids.add(result['item_id'])
+                    elif not result:
+                        stage2_items.append((title, artist))
+
+            # Stage 2: Batch normalized fuzzy match for items not found in stage 1
+            if stage2_items:
+                or_conditions = []
+                fuzzy_params = []
+                fuzzy_lookup_order = []
+                for title, artist in stage2_items:
                     title_norm = _normalize(title)
                     artist_norm = _normalize(artist)
                     if title_norm and artist_norm:
-                        cur.execute("""
-                            SELECT item_id, title, author
-                            FROM public.score
-                            WHERE LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(title, ' ', ''), '-', ''), '''', ''), '.', ''), ',', ''))
-                                  LIKE LOWER(%s)
-                              AND LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(author, ' ', ''), '-', ''), '''', ''), '.', ''), ',', ''))
-                                  LIKE LOWER(%s)
-                            ORDER BY LENGTH(title) + LENGTH(author)
-                            LIMIT 1
-                        """, (f"%{_escape_like(title_norm)}%", f"%{_escape_like(artist_norm)}%"))
-                        result = cur.fetchone()
+                        or_conditions.append("""(
+                            LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(title, ' ', ''), '-', ''), '''', ''), '.', ''), ',', ''))
+                                LIKE LOWER(%s)
+                            AND LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(author, ' ', ''), '-', ''), '''', ''), '.', ''), ',', ''))
+                                LIKE LOWER(%s)
+                        )""")
+                        fuzzy_params.extend([f"%{_escape_like(title_norm)}%", f"%{_escape_like(artist_norm)}%"])
+                        fuzzy_lookup_order.append((title_norm, artist_norm))
 
-                if result and result['item_id'] not in seen_ids:
-                    found_songs.append({
-                        "item_id": result['item_id'],
-                        "title": result['title'],
-                        "artist": result['author']
-                    })
-                    seen_ids.add(result['item_id'])
+                if or_conditions:
+                    where_clause = ' OR '.join(or_conditions)
+                    cur.execute(f"""
+                        SELECT item_id, title, author
+                        FROM public.score
+                        WHERE {where_clause}
+                        ORDER BY LENGTH(title) + LENGTH(author)
+                    """, fuzzy_params)
+                    fuzzy_rows = cur.fetchall()
 
-            if len(found_songs) >= get_songs:
-                break
+                    # Match fuzzy results back to requested items
+                    # Build a normalized lookup from DB results
+                    for row in fuzzy_rows:
+                        if row['item_id'] not in seen_ids:
+                            db_title_norm = _normalize(row['title'])
+                            db_artist_norm = _normalize(row['author'])
+                            # Check if this row matches any of the stage2 requests
+                            for t_norm, a_norm in fuzzy_lookup_order:
+                                if t_norm in db_title_norm and a_norm in db_artist_norm:
+                                    found_songs.append({
+                                        "item_id": row['item_id'],
+                                        "title": row['title'],
+                                        "artist": row['author']
+                                    })
+                                    seen_ids.add(row['item_id'])
+                                    fuzzy_lookup_order.remove((t_norm, a_norm))
+                                    break
+
+        # Trim to requested count
+        found_songs = found_songs[:get_songs]
 
         log_messages.append(f"Found {len(found_songs)} songs in database (from {len(song_list)} AI suggestions)")
 
