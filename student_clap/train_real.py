@@ -183,38 +183,62 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
 
                     mixed_audio.append(mixed_seg_t)
 
-                    embA = batch['teacher_embeddings'][i]
-                    embB = batch['teacher_embeddings'][j]
-                    if isinstance(embA, np.ndarray):
-                        embA_t = torch.from_numpy(embA).float().to(device)
-                    elif isinstance(embA, torch.Tensor):
-                        embA_t = embA.to(device)
-                    else:
-                        embA_t = torch.tensor(embA, dtype=torch.float32, device=device)
+                    use_teacher_emb_cache = config['training'].get('use_teacher_embedding_cache', True)
 
-                    if isinstance(embB, np.ndarray):
-                        embB_t = torch.from_numpy(embB).float().to(device)
-                    elif isinstance(embB, torch.Tensor):
-                        embB_t = embB.to(device)
-                    else:
-                        embB_t = torch.tensor(embB, dtype=torch.float32, device=device)
+                    if use_teacher_emb_cache:
+                        embA = batch['teacher_embeddings'][i]
+                        embB = batch['teacher_embeddings'][j]
+                        if isinstance(embA, np.ndarray):
+                            embA_t = torch.from_numpy(embA).float().to(device)
+                        elif isinstance(embA, torch.Tensor):
+                            embA_t = embA.to(device)
+                        else:
+                            embA_t = torch.tensor(embA, dtype=torch.float32, device=device)
 
-                    mixed_teacher.append(lam * embA_t + (1.0 - lam) * embB_t)
+                        if isinstance(embB, np.ndarray):
+                            embB_t = torch.from_numpy(embB).float().to(device)
+                        elif isinstance(embB, torch.Tensor):
+                            embB_t = embB.to(device)
+                        else:
+                            embB_t = torch.tensor(embB, dtype=torch.float32, device=device)
 
-                    tsegA = batch['teacher_segment_embeddings'][i]
-                    tsegB = batch['teacher_segment_embeddings'][j]
-                    if tsegA is not None and tsegB is not None:
-                        min_emb_seg = min(len(tsegA), len(tsegB))
-                        mixed_tsegs = []
-                        for k in range(min_emb_seg):
-                            a_k = tsegA[k]
-                            b_k = tsegB[k]
-                            a_t = torch.from_numpy(a_k).float().to(device) if isinstance(a_k, np.ndarray) else (a_k.to(device) if isinstance(a_k, torch.Tensor) else torch.tensor(a_k, dtype=torch.float32, device=device))
-                            b_t = torch.from_numpy(b_k).float().to(device) if isinstance(b_k, np.ndarray) else (b_k.to(device) if isinstance(b_k, torch.Tensor) else torch.tensor(b_k, dtype=torch.float32, device=device))
-                            mixed_tsegs.append(lam * a_t + (1.0 - lam) * b_t)
-                        mixed_teacher_segment_embs.append(mixed_tsegs)
+                        mixed_teacher.append(lam * embA_t + (1.0 - lam) * embB_t)
+
+                        tsegA = batch['teacher_segment_embeddings'][i]
+                        tsegB = batch['teacher_segment_embeddings'][j]
+                        if tsegA is not None and tsegB is not None:
+                            min_emb_seg = min(len(tsegA), len(tsegB))
+                            mixed_tsegs = []
+                            for k in range(min_emb_seg):
+                                a_k = tsegA[k]
+                                b_k = tsegB[k]
+                                a_t = torch.from_numpy(a_k).float().to(device) if isinstance(a_k, np.ndarray) else (a_k.to(device) if isinstance(a_k, torch.Tensor) else torch.tensor(a_k, dtype=torch.float32, device=device))
+                                b_t = torch.from_numpy(b_k).float().to(device) if isinstance(b_k, np.ndarray) else (b_k.to(device) if isinstance(b_k, torch.Tensor) else torch.tensor(b_k, dtype=torch.float32, device=device))
+                                mixed_tsegs.append(lam * a_t + (1.0 - lam) * b_t)
+                            mixed_teacher_segment_embs.append(mixed_tsegs)
+                        else:
+                            mixed_teacher_segment_embs.append(None)
                     else:
-                        mixed_teacher_segment_embs.append(None)
+                        # When teacher embedding cache is disabled, recompute embeddings from the
+                        # mixed mel so teacher sees the exact same mixed input as the student.
+                        try:
+                            mixed_np = mixed_seg_t.detach().cpu().numpy()
+                            # Ensure batch dimension expected by compute_embeddings_from_mel
+                            if mixed_np.ndim == 3:
+                                # (num_segments, n_mels, time) -> add channel dim
+                                mixed_np = mixed_np[:, np.newaxis, :, :]
+                            teacher_emb, teacher_seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_np)
+                            if teacher_emb is None:
+                                raise RuntimeError("CLAP failed to compute embeddings for mixed audio")
+                            mixed_teacher.append(torch.from_numpy(teacher_emb).float().to(device))
+                            if teacher_seg_embs is not None:
+                                mixed_teacher_segment_embs.append([torch.from_numpy(x).float().to(device) for x in teacher_seg_embs])
+                            else:
+                                mixed_teacher_segment_embs.append(None)
+                        except Exception as e:
+                            logger.error(f"[MIXUP][CACHE-OFF] Failed to compute teacher embeddings for mixed sample: {e}")
+                            mixed_teacher.append(torch.zeros((512,), dtype=torch.float32, device=device))
+                            mixed_teacher_segment_embs.append(None)
 
                     mixed_song_ids.append(f"{batch['song_ids'][i]}+{batch['song_ids'][j]}")
 
@@ -291,7 +315,24 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                     perm_t = torch.from_numpy(perm).long()
 
                     mixed_mel = lam * mel_stack + (1.0 - lam) * mel_stack[perm_t]
-                    mixed_teacher = lam * teacher_stack + (1.0 - lam) * teacher_stack[perm_t]
+                    use_teacher_emb_cache = config['training'].get('use_teacher_embedding_cache', True)
+                    if use_teacher_emb_cache:
+                        mixed_teacher = lam * teacher_stack + (1.0 - lam) * teacher_stack[perm_t]
+                    else:
+                        # Recompute teacher embeddings for each mixed segment so teacher sees
+                        # the exact same mixed input as the student.
+                        try:
+                            mixed_np = mixed_mel.numpy()
+                            # mixed_np shape: (total_segments, n_mels, time) or (total_segments, 1, n_mels, time)
+                            if mixed_np.ndim == 3:
+                                mixed_np = mixed_np[:, np.newaxis, :, :]
+                            avg_emb, seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_np)
+                            # seg_embs is list length total_segments
+                            mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
+                        except Exception as e:
+                            logger.error(f"[GLOBAL MIXUP][CACHE-OFF] Failed to compute teacher embeddings for mixed segments: {e}")
+                            mixed_teacher = lam * teacher_stack + (1.0 - lam) * teacher_stack[perm_t]
+
                     del mel_stack, teacher_stack
 
                     logger.info(f"[GLOBAL MIXUP] Applied: alpha={mixup_alpha}, lam={lam:.4f}, "

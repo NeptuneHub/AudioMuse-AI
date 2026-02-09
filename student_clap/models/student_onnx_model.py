@@ -275,6 +275,9 @@ class StudentCLAPTrainer:
         # --- Loss scaling options (temperature or learnable logit_scale) ---
         self.use_logit_scale = bool(config['training'].get('use_logit_scale', False))
         self.loss_temperature = float(config['training'].get('loss_temperature', 1.0))
+        # Whether to normalize embeddings before computing MSE (default: True)
+        self.normalize_embeddings = bool(config['training'].get('normalize_embeddings', True))
+        logger.info(f"🔧 Normalize embeddings before loss: {self.normalize_embeddings}")
         # Focal-weighting params
         self.focal_gamma = float(config['training'].get('loss_focal_gamma', 0.0))
         self.focal_low = float(config['training'].get('loss_focal_low_threshold', 0.4))
@@ -437,8 +440,13 @@ class StudentCLAPTrainer:
         student_embeddings = student_embeddings.to(self.device)
 
         # Normalize embeddings for stable MSE on directions (matches evaluation)
-        teacher_norm = F.normalize(teacher_embeddings, p=2, dim=1)
-        student_norm = F.normalize(student_embeddings, p=2, dim=1)
+        if getattr(self, 'normalize_embeddings', True):
+            teacher_norm = F.normalize(teacher_embeddings, p=2, dim=1)
+            student_norm = F.normalize(student_embeddings, p=2, dim=1)
+        else:
+            # Use raw embeddings (no L2 normalization)
+            teacher_norm = teacher_embeddings
+            student_norm = student_embeddings
 
         # Cosine similarity retained for diagnostics and optional focal weighting
         cosine_sim = F.cosine_similarity(student_norm, teacher_norm, dim=1)

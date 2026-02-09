@@ -69,6 +69,9 @@ class StudentCLAPDataset:
         self.mel_cache = MelSpectrogramCache(mel_cache_path)
         logger.info(f"🔧 MEL CACHE PATH: {mel_cache_path}")
         logger.info(f"🔧 MEL CACHE: No size limit - will cache all songs")
+        # Log teacher embedding cache setting
+        tcache = self.config.get('training', {}).get('use_teacher_embedding_cache', True)
+        logger.info(f"🔧 Teacher embedding cache enabled: {tcache}")
 
         # Load songs from directory
         logger.info(f"Loading songs for '{split}' from {data_path}...")
@@ -213,6 +216,18 @@ class StudentCLAPDataset:
                         f"[AUGMENT] Epoch {self.epoch} (train): gain={gain:.3f}, noise={'yes' if 'noise_level' in locals() else 'no'}, shift={'yes' if 'shift' in locals() and shift != 0 else 'no'}, freq_mask={'yes' if freq_masked else 'no'}, time_mask={'yes' if time_masked else 'no'}"
                     )
                 mel_tensor = torch.from_numpy(mel_aug).float()
+
+                # If user disabled teacher embedding cache, recompute teacher embeddings from
+                # the augmented mel so teacher receives identical augmentations as student.
+                use_teacher_emb_cache = self.config.get('training', {}).get('use_teacher_embedding_cache', True)
+                if not use_teacher_emb_cache:
+                    try:
+                        teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_mel(mel_aug)
+                        teacher_embedding = teacher_emb
+                        teacher_segment_embeddings = teacher_seg_embs
+                    except Exception as e:
+                        logger.error(f"[CACHE-OFF] Failed to compute teacher embeddings from mel for {item['item_id']}: {e}")
+
                 batch.append({
                     'item_id': item['item_id'],
                     'title': item['title'],
@@ -237,20 +252,22 @@ class StudentCLAPDataset:
                         cached_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
                         
                         # Get teacher embeddings (compute if not cached)
-                        if cached_segment_embeddings is not None:
+                        use_teacher_emb_cache = self.config.get('training', {}).get('use_teacher_embedding_cache', True)
+
+                        if cached_segment_embeddings is not None and use_teacher_emb_cache:
                             # Use cached segments and compute average on-the-fly
                             teacher_segment_embeddings = cached_segment_embeddings
                             teacher_embedding = self.mel_cache.get_averaged_embedding(item['item_id'])
                         else:
-                            # Compute from audio and cache segments only
+                            # Compute from audio if cache disabled or not present
                             teacher_embedding, duration_sec, num_segments, teacher_segment_embeddings = self.clap_embedder.analyze_audio(audio_path)
                             if teacher_embedding is None:
                                 logger.error(f"CLAP analysis failed for {item['title']}")
                                 continue
-                            # Cache only per-segment embeddings (average computed on-the-fly)
-                            if teacher_segment_embeddings:
+                            # Cache only per-segment embeddings if allowed
+                            if teacher_segment_embeddings and use_teacher_emb_cache:
                                 self.mel_cache.put_segment_embeddings(item['item_id'], teacher_segment_embeddings)
-                        
+
                         # Get mel spectrograms (compute if not cached)
                         if cached_mel_result is not None:
                             full_mel, audio_length = cached_mel_result
@@ -301,8 +318,57 @@ class StudentCLAPDataset:
                                 sample_rate=self.audio_config['sample_rate'],
                                 hop_length_stft=self.audio_config['hop_length_stft']
                             )
-                        
-                        mel_tensor = torch.from_numpy(mel_specs).float()
+
+                        # Apply augmentations to the newly computed mel_specs as well
+                        mel_aug = mel_specs.copy()
+                        augmentation_enabled = self.config.get('training', {}).get('augmentation_enabled', True)
+                        if self.split == 'train' and augmentation_enabled:
+                            # Random gain
+                            gain = np.random.uniform(0.8, 1.2)
+                            mel_aug *= gain
+                            # Additive noise
+                            if np.random.rand() < 0.5:
+                                noise_level = np.random.uniform(0.001, 0.01)
+                                mel_aug += np.random.normal(0, noise_level, mel_aug.shape)
+                            # Time shifting
+                            if np.random.rand() < 0.5:
+                                shift = np.random.randint(-mel_aug.shape[1] // 20, mel_aug.shape[1] // 20)
+                                mel_aug = np.roll(mel_aug, shift, axis=1)
+                            # Frequency masking (SpecAugment)
+                            freq_masked = False
+                            if np.random.rand() < 0.5:
+                                num_masks = np.random.randint(1, 3)
+                                for _ in range(num_masks):
+                                    f = np.random.randint(0, mel_aug.shape[0])
+                                    f_width = np.random.randint(0, mel_aug.shape[0] // 8 + 1)
+                                    mel_aug[max(0, f - f_width // 2):min(mel_aug.shape[0], f + f_width // 2), :] = 0
+                                freq_masked = True
+                            # Time masking (SpecAugment)
+                            time_masked = False
+                            if np.random.rand() < 0.5:
+                                num_masks = np.random.randint(1, 3)
+                                for _ in range(num_masks):
+                                    t = np.random.randint(0, mel_aug.shape[1])
+                                    t_width = np.random.randint(0, mel_aug.shape[1] // 10 + 1)
+                                    mel_aug[:, max(0, t - t_width // 2):min(mel_aug.shape[1], t + t_width // 2)] = 0
+                                time_masked = True
+                            # Logging
+                            import logging
+                            logging.getLogger(__name__).info(
+                                f"[AUGMENT] Epoch {self.epoch} (train): gain={gain:.3f}, noise={'yes' if 'noise_level' in locals() else 'no'}, shift={'yes' if 'shift' in locals() and shift != 0 else 'no'}, freq_mask={'yes' if freq_masked else 'no'}, time_mask={'yes' if time_masked else 'no'}"
+                            )
+
+                        # If user disabled teacher embedding cache, recompute teacher embeddings from
+                        # the augmented mel so teacher receives identical augmentations as student.
+                        if not use_teacher_emb_cache:
+                            try:
+                                teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_mel(mel_aug)
+                                teacher_embedding = teacher_emb
+                                teacher_segment_embeddings = teacher_seg_embs
+                            except Exception as e:
+                                logger.error(f"[CACHE-OFF] Failed to compute teacher embeddings from mel for {item['item_id']}: {e}")
+
+                        mel_tensor = torch.from_numpy(mel_aug).float()
                         batch.append({
                             'item_id': item['item_id'],
                             'title': item['title'],

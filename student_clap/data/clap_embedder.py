@@ -181,7 +181,74 @@ class CLAPEmbedder:
             
             # Return both averaged and individual segment embeddings
             return avg_embedding, duration_sec, num_segments, embeddings
-            
         except Exception as e:
             logger.error(f"Failed to analyze {audio_path}: {e}")
             return None, 0, 0, None
+
+    def compute_embeddings_from_mel(self, mel_segments: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[list]]:
+        """
+        Compute CLAP embeddings from already-computed mel-spectrogram segments.
+
+        This accepts mel segments from the student preprocessing pipeline (typically
+        128 mel bins) and resamples them in frequency to the teacher's expected
+        number of mel bands (N_MELS=64) before running the ONNX teacher model.
+
+        Args:
+            mel_segments: np.ndarray of shape (num_segments, 1, n_mels, time) or
+                          (num_segments, n_mels, time). Values should be log-mel dB.
+
+        Returns:
+            Tuple of (averaged_embedding, list_of_segment_embeddings)
+        """
+        try:
+            if mel_segments is None:
+                return None, None
+
+            # Normalize input shape to (num_segments, n_mels, time)
+            if isinstance(mel_segments, np.ndarray):
+                ms = mel_segments
+            else:
+                ms = np.array(mel_segments)
+
+            if ms.ndim == 4 and ms.shape[1] == 1:
+                ms = ms[:, 0, :, :]  # (num_segments, n_mels, time)
+            elif ms.ndim == 3:
+                # already (num_segments, n_mels, time)
+                pass
+            else:
+                logger.error(f"Unsupported mel_segments shape: {ms.shape}")
+                return None, None
+
+            num_segments = ms.shape[0]
+            segment_embeddings = []
+
+            # Frequency resampling helper: linear interpolation across mel axis
+            def resample_mel_frequency(mel, new_n_mels=N_MELS):
+                old_n, T = mel.shape
+                old_pos = np.linspace(0.0, 1.0, old_n)
+                new_pos = np.linspace(0.0, 1.0, new_n_mels)
+                res = np.zeros((new_n_mels, T), dtype=mel.dtype)
+                for t in range(T):
+                    res[:, t] = np.interp(new_pos, old_pos, mel[:, t])
+                return res
+
+            for seg in ms:
+                # seg: (n_mels_old, time)
+                # Resample to teacher N_MELS
+                seg_resampled = resample_mel_frequency(seg, new_n_mels=N_MELS)
+                # Transpose to (time, n_mels)
+                mel_input = seg_resampled.T.astype(np.float32)
+                # Add batch and channel dims: (1, 1, time, n_mels)
+                mel_input = mel_input[np.newaxis, np.newaxis, :, :]
+                # Run ONNX inference
+                onnx_inputs = {'mel_spectrogram': mel_input}
+                outputs = self.session.run(None, onnx_inputs)
+                emb = outputs[0][0]
+                segment_embeddings.append(emb.astype(np.float32))
+
+            # Average
+            avg_emb = np.mean(segment_embeddings, axis=0).astype(np.float32)
+            return avg_emb, segment_embeddings
+        except Exception as e:
+            logger.error(f"Failed to compute embeddings from mel segments: {e}")
+            return None, None

@@ -149,6 +149,8 @@ for line in sys.stdin:
 - `loss_temperature` (float, default 1.0): static temperature applied to the cosine similarity (cosine / temperature).
 - `use_logit_scale` (bool, default false): if true, a learnable `logit_scale` parameter (stored as `model.logit_scale`) is used and applied as `cosine * exp(logit_scale)`.
 - `init_logit_scale` (float, default 1.0): initial value for the learnable logit_scale.
+- `normalize_embeddings` (bool, default true): if true, the student and teacher embeddings are L2‑normalized before computing the MSE; set to `false` to compute MSE on raw (unnormalized) embeddings.
+- `use_teacher_embedding_cache` (bool, default true): if true, teacher segment/avg embeddings are read from the mel cache when available. Set to `false` to force recomputation of teacher embeddings from the (augmented) mel at training time — note this keeps the mel spectrogram cache in use but disables caching of teacher embeddings, and ensures augmentations/mixup are applied identically to teacher and student inputs.
 
 ## Training - Text
 
