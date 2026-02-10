@@ -60,10 +60,9 @@ import glob, torch
 for f in sorted(glob.glob('student_clap/checkpoints/checkpoint_epoch_*.pth')):
     ckpt = torch.load(f, map_location='cpu')
     m = ckpt.get('train_metrics', {})
-    val_mse = ckpt.get('val_mse', ckpt.get('last_val_mse', ckpt.get('best_val_mse','N/A')))
-    val_cos = ckpt.get('val_cosine_sim', ckpt.get('last_val_cosine', ckpt.get('best_val_cosine','N/A')))
-    val_sem = ckpt.get('val_metrics', {}).get('val_semantic_error', 'N/A') if isinstance(ckpt.get('val_metrics'), dict) else 'N/A'
-    print(f"{f}: train_cos={m.get('avg_cosine_sim')}, train_mse={m.get('avg_mse')}, train_sem={m.get('avg_semantic','N/A')}, val_mse={val_mse}, val_sem={val_sem}, val_cos={val_cos}, lr={m.get('learning_rate')}")
+    val_mse = ckpt.get('val_mse', ckpt.get('last_val_mse', 'N/A'))
+    val_sem = ckpt.get('val_semantic_error', 'N/A')
+    print(f"{f}: train_cos={m.get('avg_cosine_sim')}, train_mse={m.get('avg_mse')}, train_sem={m.get('avg_semantic','N/A')}, val_mse={val_mse}, val_sem={val_sem}, lr={m.get('learning_rate')}")
 PY
 ```
 
