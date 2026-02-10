@@ -66,6 +66,7 @@ training:
   # Whether to L2-normalize embeddings before computing MSE loss (default: true)
   normalize_embeddings: false
   lambda_semantic: 0.1  # Weight for semantic alignment loss (query-based distillation)
+  semantic_temperature: 1  # Temperature for KLD softmax (lower = sharper peaks, forces ranking)
   use_teacher_embedding_cache: false  # If false, always recompute teacher embeddings from (augmented) mel; mel cache still used
   lr_scheduler:
     use_cosine_annealing: false  # If true, use CosineAnnealingLR instead of ReduceLROnPlateau in Stage 1

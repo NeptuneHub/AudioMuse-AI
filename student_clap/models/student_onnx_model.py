@@ -312,11 +312,12 @@ class StudentCLAPTrainer:
                 weight_decay=config['training']['weight_decay']
             )
 
-        # Semantic alignment loss weight
+        # Semantic alignment loss (KL Divergence with temperature-scaled softmax)
         self.lambda_semantic = float(config['training'].get('lambda_semantic', 0.0))
+        self.semantic_temperature = float(config['training'].get('semantic_temperature', 0.1))
         self.text_anchors = None  # Set per-epoch via set_text_anchors()
         if self.lambda_semantic > 0:
-            logger.info(f"🔧 Semantic alignment loss enabled (lambda={self.lambda_semantic})")
+            logger.info(f"🔧 Semantic alignment loss enabled (lambda={self.lambda_semantic}, tau={self.semantic_temperature})")
 
         self.gradient_accumulation_steps = config['training'].get('gradient_accumulation_steps', 1)
         self.accumulation_counter = 0
@@ -426,22 +427,28 @@ class StudentCLAPTrainer:
 
     def compute_semantic_loss(self, student_song_embs: torch.Tensor, teacher_song_embs: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
         """
-        Compute semantic alignment loss: MSE between student and teacher
-        similarity matrices against text_anchors.
+        Compute semantic alignment loss using KL Divergence with temperature-scaled softmax.
+
+        Converts similarity scores into probability distributions and forces the student
+        to reproduce the teacher's ranking profile, not just raw distances.
 
         Args:
             student_song_embs: (N_songs, 512) L2-normalized song-level student embeddings
             teacher_song_embs: (N_songs, 512) L2-normalized song-level teacher embeddings
         Returns:
-            semantic_loss: scalar tensor
+            semantic_loss: scalar tensor (KL divergence)
             semantic_details: dict with per-query diagnostics
         """
         s_sim = torch.mm(student_song_embs, self.text_anchors.t())  # (N_songs, N_queries)
         t_sim = torch.mm(teacher_song_embs, self.text_anchors.t())
 
-        loss = F.mse_loss(s_sim, t_sim)
+        # KL Divergence on temperature-sharpened distributions
+        tau = self.semantic_temperature
+        s_log_prob = F.log_softmax(s_sim / tau, dim=-1)
+        t_prob = F.softmax(t_sim / tau, dim=-1)
+        loss = F.kl_div(s_log_prob, t_prob, reduction='batchmean')
 
-        # Per-query diagnostics: mean across songs
+        # Per-query diagnostics: mean across songs (on raw similarities for interpretability)
         with torch.no_grad():
             s_mean = s_sim.mean(dim=0)  # (N_queries,)
             t_mean = t_sim.mean(dim=0)

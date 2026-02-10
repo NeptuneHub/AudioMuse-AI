@@ -646,7 +646,7 @@ def validate_real(trainer: StudentCLAPTrainer,
     except Exception as e:
         logger.warning(f"⚠️ Could not compute detailed validation diagnostics: {e}")
 
-    # Compute val_semantic_error if text anchors are available
+    # Compute val_semantic_error (KLD) if text anchors are available
     if trainer.text_anchors is not None and len(val_song_student_embs) > 0:
         try:
             with torch.no_grad():
@@ -656,9 +656,12 @@ def validate_real(trainer: StudentCLAPTrainer,
                 t = torch.nn.functional.normalize(t, p=2, dim=1)
                 s_sim = torch.mm(s, trainer.text_anchors.t())
                 t_sim = torch.mm(t, trainer.text_anchors.t())
-                val_semantic_error = torch.nn.functional.mse_loss(s_sim, t_sim).item()
+                tau = trainer.semantic_temperature
+                s_log_prob = torch.nn.functional.log_softmax(s_sim / tau, dim=-1)
+                t_prob = torch.nn.functional.softmax(t_sim / tau, dim=-1)
+                val_semantic_error = torch.nn.functional.kl_div(s_log_prob, t_prob, reduction='batchmean').item()
             metrics['val_semantic_error'] = val_semantic_error
-            logger.info(f"🔬 val_semantic_error: {val_semantic_error:.6f}")
+            logger.info(f"🔬 val_semantic_error (KLD): {val_semantic_error:.6f}")
         except Exception as e:
             logger.warning(f"⚠️ Could not compute val_semantic_error: {e}")
 
