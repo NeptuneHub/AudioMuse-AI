@@ -99,6 +99,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
     
     total_loss = 0.0
     total_mse = 0.0
+    total_semantic = 0.0
     total_cosine_sim = 0.0
     num_batches = 0
     num_songs = 0
@@ -354,12 +355,26 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             logger.info(f"   📈 Training samples: {num_training_samples} (from {len(batch_data)} songs)")
             logger.info(f"   📊 Loss: {step_metrics['total_loss']:.6f}")
             logger.info(f"      └─ MSE Loss: {step_metrics['mse_loss']:.6f}")
+            sem_loss = step_metrics.get('semantic_loss', 0.0) or 0.0
+            if sem_loss > 0:
+                logger.info(f"      └─ Semantic Loss: {sem_loss:.6f}")
             logger.info(f"      └─ Cosine Loss: {step_metrics['cosine_loss']:.6f}")
+            # Per-query semantic alignment diagnostics
+            sem_details = step_metrics.get('semantic_details')
+            if sem_details:
+                logger.info(f"   🧠 SEMANTIC ALIGNMENT (Top Discrepancies):")
+                for rank, d in enumerate(sem_details['top_discrepancies'], 1):
+                    name = d['name'].title()
+                    sign = '+' if d['diff'] >= 0 else ''
+                    warn = ' ⚠️' if abs(d['diff']) > 0.15 else ''
+                    logger.info(f"     {rank}. [{name}]  Diff: {sign}{d['diff']:.2f} (T: {d['teacher']:.2f}, S: {d['student']:.2f}){warn}")
+                logger.info(f"     ✨ Avg Query Alignment: {sem_details['avg_query_alignment']:.2f} (Teacher-Student Sim)")
             logger.info(f"   🎯 Cosine Similarity: {step_metrics['mean_cosine_sim']:.4f} (min: {step_metrics['min_cosine_sim']:.4f}, max: {step_metrics['max_cosine_sim']:.4f})")
-            
+
             # Accumulate metrics
             total_loss += step_metrics['total_loss']
             total_mse += step_metrics['mse_loss']
+            total_semantic += sem_loss
             total_cosine_sim += step_metrics['mean_cosine_sim']
             num_batches += 1
             num_songs += len(batch_data)
@@ -439,6 +454,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
     # Compute averages BEFORE updating scheduler (ReduceLROnPlateau needs the metric)
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
     avg_mse = total_mse / num_batches if num_batches > 0 else 0.0
+    avg_semantic = total_semantic / num_batches if num_batches > 0 else 0.0
     avg_cosine_sim = total_cosine_sim / num_batches if num_batches > 0 else 0.0
     
     # Scheduler stepping is handled after validation (we want to monitor validation cosine for generalization).
@@ -458,6 +474,8 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
     logger.info(f"🎯 EPOCH {epoch}/{config['training']['epochs']} COMPLETE:")
     logger.info(f"   📈 Average Loss: {avg_loss:.6f}")
     logger.info(f"   📊 Average MSE: {avg_mse:.6f}")
+    if avg_semantic > 0:
+        logger.info(f"   📝 Average Semantic Loss: {avg_semantic:.6f}")
     logger.info(f"   🎯 Average Cosine Sim: {avg_cosine_sim:.4f}")
     logger.info(f"   📚 Songs processed: {num_songs}/{len(dataset)} ({num_batches}/{total_batches} batches)")
     logger.info(f"   ⏱️ Epoch time: {epoch_time/60:.1f}min ({epoch_time/num_songs:.1f}s/song)")
@@ -471,6 +489,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
         'epoch': epoch,
         'avg_loss': avg_loss,
         'avg_mse': avg_mse,
+        'avg_semantic': avg_semantic,
         'avg_cosine_sim': avg_cosine_sim,
         'num_batches': num_batches,
         'num_songs': num_songs,
@@ -504,6 +523,8 @@ def validate_real(trainer: StudentCLAPTrainer,
     student_embeddings_list = []
     teacher_embeddings_list = []
     song_ids = []
+    val_song_student_embs = []  # Song-level means for semantic error
+    val_song_teacher_embs = []
     
     with torch.no_grad():
         for batch_data in tqdm(dataset.iterate_batches_streaming(config['training']['batch_size'], shuffle=False),
@@ -584,6 +605,11 @@ def validate_real(trainer: StudentCLAPTrainer,
                 student_embeddings.append(avg_embedding)
                 teacher_embeddings_batch.append(teacher_song_emb)
 
+                # Collect song-level embeddings for semantic error
+                val_song_student_embs.append(avg_embedding)
+                teacher_song_np = teacher_song_emb.numpy() if hasattr(teacher_song_emb, 'numpy') else teacher_song_emb
+                val_song_teacher_embs.append(teacher_song_np)
+
                 logger.info(f"   🔎 Validation: song {batch['song_ids'][i]} -> segments={num_segs}, pairs_added={num_segs + 1}")
             
             # Stack and store (only if we have valid embeddings)
@@ -619,6 +645,22 @@ def validate_real(trainer: StudentCLAPTrainer,
         metrics['per_song_cosines'] = per_song_cosines.tolist()
     except Exception as e:
         logger.warning(f"⚠️ Could not compute detailed validation diagnostics: {e}")
+
+    # Compute val_semantic_error if text anchors are available
+    if trainer.text_anchors is not None and len(val_song_student_embs) > 0:
+        try:
+            with torch.no_grad():
+                s = torch.from_numpy(np.vstack(val_song_student_embs)).float().to(trainer.device)
+                t = torch.from_numpy(np.vstack(val_song_teacher_embs)).float().to(trainer.device)
+                s = torch.nn.functional.normalize(s, p=2, dim=1)
+                t = torch.nn.functional.normalize(t, p=2, dim=1)
+                s_sim = torch.mm(s, trainer.text_anchors.t())
+                t_sim = torch.mm(t, trainer.text_anchors.t())
+                val_semantic_error = torch.nn.functional.mse_loss(s_sim, t_sim).item()
+            metrics['val_semantic_error'] = val_semantic_error
+            logger.info(f"🔬 val_semantic_error: {val_semantic_error:.6f}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not compute val_semantic_error: {e}")
 
     # Restore model to training mode to avoid surprising downstream code
     try:
@@ -709,6 +751,27 @@ def train(config_path: str, resume: str = None):
     logger.info(f"   Estimated size: {model_info['estimated_size_mb']:.1f} MB")
     logger.info(f"   Device: {trainer.device}")
     
+    # --- Semantic alignment anchors (query-based distillation) ---
+    import json
+    query_json_path = Path(os.path.dirname(config_path)) / "query.json"
+    semantic_queries = None
+    semantic_text_embedder = None
+    semantic_tokenizer = None
+    if query_json_path.exists() and config['training'].get('lambda_semantic', 0) > 0:
+        with open(query_json_path) as f:
+            semantic_queries = json.load(f)["semantic_anchors"]
+        text_teacher_path = Path(config['paths']['teacher_model_text'])
+        if text_enabled:
+            # Reuse already-loaded objects
+            semantic_tokenizer = tokenizer
+            semantic_text_embedder = teacher_text_embedder
+        else:
+            semantic_tokenizer = get_tokenizer()
+            semantic_text_embedder = CLAPTextEmbedder(str(text_teacher_path))
+        logger.info(f"📝 Loaded {len(semantic_queries)} semantic queries from {query_json_path}")
+    else:
+        logger.info("📝 Semantic alignment loss disabled (lambda_semantic=0 or query.json not found)")
+
     # Initialize start_epoch early (before datasets need it)
     start_epoch = 1
     # We now monitor validation MSE (lower is better) for scheduler and checkpointing
@@ -1044,6 +1107,16 @@ def train(config_path: str, resume: str = None):
         except Exception:
             pass
 
+        # === PRE-COMPUTE TEXT ANCHORS FOR SEMANTIC LOSS ===
+        if semantic_queries is not None and semantic_text_embedder is not None:
+            enc = semantic_tokenizer(semantic_queries, padding=True, truncation=True, max_length=77, return_tensors='pt')
+            with torch.no_grad():
+                text_anchors_np = semantic_text_embedder.encode(enc['input_ids'].numpy(), enc['attention_mask'].numpy())
+            text_anchors = torch.from_numpy(text_anchors_np).float()
+            text_anchors = torch.nn.functional.normalize(text_anchors, p=2, dim=1)
+            trainer.set_text_anchors(text_anchors, query_names=semantic_queries)
+            logger.info(f"📝 Text anchors computed: {text_anchors.shape} (epoch {epoch})")
+
         # === TEXT DISTILLATION EPOCH ===
         if text_enabled:
             logger.info(f"\n=== TEXT DISTILLATION: Epoch {epoch} ===")
@@ -1256,7 +1329,8 @@ def train(config_path: str, resume: str = None):
             val_mse = val_metrics['mse']
             last_val_mse = val_mse
             # Log concise validation summary (this will appear in training.log)
-            logger.info(f"🔍 Validation completed (Epoch {epoch}) — mean MSE: {val_mse:.6f} (n={val_metrics.get('num_songs','N/A')})")
+            val_sem = val_metrics.get('val_semantic_error', 'N/A')
+            logger.info(f"🔍 Validation completed (Epoch {epoch}) — val_mse_audio: {val_mse:.6f} | val_semantic_error: {val_sem} (n={val_metrics.get('num_songs','N/A')})")
             print_evaluation_report(val_metrics, f"Validation - Epoch {epoch}")
 
             # Update the per-epoch checkpoint to include the last validation MSE so files reflect validation results

@@ -33,6 +33,11 @@ python3 -m venv venv && source venv/bin/activate && pip install -r requirements.
 python3 train_real.py --config config.yaml
 ```
 
+To run report you can use this (you need to change the name of the .onnx model in the code)
+```
+python final_test.py
+```
+
 ## Useful command
 
 You can check how the average cosine similarity (training and validation) is going for each epoch with this one line command:
@@ -46,7 +51,22 @@ for f in sorted(glob.glob('student_clap/checkpoints/checkpoint_epoch_*.pth')):
     val_cos = ckpt.get('val_cosine_sim', ckpt.get('last_val_cosine', ckpt.get('best_val_cosine','N/A')))
     print(f"{f}: train_cos={m.get('avg_cosine_sim')}, train_mse={m.get('avg_mse')}, val_mse={val_mse}, val_cos={val_cos}, lr={m.get('learning_rate')}")
 PY
+
+
+with semantic metrics
 ```
+python3 - <<'PY'
+import glob, torch
+for f in sorted(glob.glob('student_clap/checkpoints/checkpoint_epoch_*.pth')):
+    ckpt = torch.load(f, map_location='cpu')
+    m = ckpt.get('train_metrics', {})
+    val_mse = ckpt.get('val_mse', ckpt.get('last_val_mse', ckpt.get('best_val_mse','N/A')))
+    val_cos = ckpt.get('val_cosine_sim', ckpt.get('last_val_cosine', ckpt.get('best_val_cosine','N/A')))
+    val_sem = ckpt.get('val_metrics', {}).get('val_semantic_error', 'N/A') if isinstance(ckpt.get('val_metrics'), dict) else 'N/A'
+    print(f"{f}: train_cos={m.get('avg_cosine_sim')}, train_mse={m.get('avg_mse')}, train_sem={m.get('avg_semantic','N/A')}, val_mse={val_mse}, val_sem={val_sem}, val_cos={val_cos}, lr={m.get('learning_rate')}")
+PY
+```
+
 
 You can check the million of parameter used for your input configuration with this command:
 ```

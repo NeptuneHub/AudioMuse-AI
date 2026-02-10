@@ -312,6 +312,12 @@ class StudentCLAPTrainer:
                 weight_decay=config['training']['weight_decay']
             )
 
+        # Semantic alignment loss weight
+        self.lambda_semantic = float(config['training'].get('lambda_semantic', 0.0))
+        self.text_anchors = None  # Set per-epoch via set_text_anchors()
+        if self.lambda_semantic > 0:
+            logger.info(f"🔧 Semantic alignment loss enabled (lambda={self.lambda_semantic})")
+
         self.gradient_accumulation_steps = config['training'].get('gradient_accumulation_steps', 1)
         self.accumulation_counter = 0
 
@@ -413,6 +419,55 @@ class StudentCLAPTrainer:
         total_params = sum(p.numel() for p in self.model.parameters())
         logger.info(f"   📊 Trainable params: {trainable_params:,}/{total_params:,} ({trainable_params/total_params*100:.1f}%)")
 
+    def set_text_anchors(self, anchors: torch.Tensor, query_names: list = None):
+        """Set pre-computed text anchor embeddings [N_queries, 512] on device."""
+        self.text_anchors = anchors.to(self.device)
+        self.query_names = query_names
+
+    def compute_semantic_loss(self, student_song_embs: torch.Tensor, teacher_song_embs: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
+        """
+        Compute semantic alignment loss: MSE between student and teacher
+        similarity matrices against text_anchors.
+
+        Args:
+            student_song_embs: (N_songs, 512) L2-normalized song-level student embeddings
+            teacher_song_embs: (N_songs, 512) L2-normalized song-level teacher embeddings
+        Returns:
+            semantic_loss: scalar tensor
+            semantic_details: dict with per-query diagnostics
+        """
+        s_sim = torch.mm(student_song_embs, self.text_anchors.t())  # (N_songs, N_queries)
+        t_sim = torch.mm(teacher_song_embs, self.text_anchors.t())
+
+        loss = F.mse_loss(s_sim, t_sim)
+
+        # Per-query diagnostics: mean across songs
+        with torch.no_grad():
+            s_mean = s_sim.mean(dim=0)  # (N_queries,)
+            t_mean = t_sim.mean(dim=0)
+            diff = t_mean - s_mean  # positive = teacher higher
+            abs_diff = diff.abs()
+            # Top 3 discrepancies
+            top_k = min(3, abs_diff.shape[0])
+            top_vals, top_idx = abs_diff.topk(top_k)
+            top_discrepancies = []
+            for k in range(top_k):
+                idx = top_idx[k].item()
+                name = self.query_names[idx] if self.query_names else f"query_{idx}"
+                top_discrepancies.append({
+                    'name': name,
+                    'diff': diff[idx].item(),
+                    'teacher': t_mean[idx].item(),
+                    'student': s_mean[idx].item(),
+                })
+            # Avg teacher-student cosine per query (avg across songs, then avg across queries)
+            avg_alignment = F.cosine_similarity(s_sim, t_sim, dim=0).mean().item()
+
+        return loss, {
+            'top_discrepancies': top_discrepancies,
+            'avg_query_alignment': avg_alignment,
+        }
+
     def compute_loss(self,
                     student_embeddings: torch.Tensor,
                     teacher_embeddings: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
@@ -508,6 +563,8 @@ class StudentCLAPTrainer:
 
         student_embeddings = []
         teacher_embeddings = []
+        song_student_means = []  # Per-song mean student embeddings for semantic loss
+        song_teacher_embs = []   # Per-song teacher embeddings for semantic loss
 
         for i, (mel_segments, teacher_emb, teacher_segment_embs) in enumerate(zip(
             batch['audio_segments'],
@@ -544,15 +601,19 @@ class StudentCLAPTrainer:
                     chunk = chunk.to(self.device)
                     chunk_embeddings = self.model.forward(chunk)
                     segment_embeddings_list.append(chunk_embeddings)
-                
+
                 segment_embeddings = torch.cat(segment_embeddings_list, dim=0)
-                
+
                 for seg_idx, seg_emb in enumerate(segment_embeddings):
                     student_embeddings.append(seg_emb.unsqueeze(0))
                     if teacher_segment_embs is not None and seg_idx < len(teacher_segment_embs):
                         teacher_embeddings.append(teacher_segment_embs[seg_idx])
                     else:
                         teacher_embeddings.append(teacher_emb)
+
+                # Song-level mean for semantic loss
+                song_student_means.append(torch.mean(segment_embeddings, dim=0, keepdim=True))
+                song_teacher_embs.append(teacher_emb.unsqueeze(0) if teacher_emb.dim() == 1 else teacher_emb)
 
             elif self.training_strategy == "averaged":
                 # Process segments in chunks to reduce memory usage
@@ -564,13 +625,17 @@ class StudentCLAPTrainer:
                     chunk = chunk.to(self.device)
                     chunk_embeddings = self.model.forward(chunk)
                     segment_embeddings_list.append(chunk_embeddings)
-                
+
                 segment_embeddings = torch.cat(segment_embeddings_list, dim=0)
-                
+
                 avg_embedding = torch.mean(segment_embeddings, dim=0, keepdim=True)
                 avg_embedding = F.normalize(avg_embedding, p=2, dim=1)
                 student_embeddings.append(avg_embedding)
                 teacher_embeddings.append(teacher_emb)
+
+                # Song-level mean for semantic loss
+                song_student_means.append(torch.mean(segment_embeddings, dim=0, keepdim=True))
+                song_teacher_embs.append(teacher_emb.unsqueeze(0) if teacher_emb.dim() == 1 else teacher_emb)
 
             elif self.training_strategy == "both":
                 # Process segments in chunks to reduce memory usage
@@ -597,6 +662,10 @@ class StudentCLAPTrainer:
                 student_embeddings.append(avg_embedding)
                 teacher_embeddings.append(teacher_emb)
 
+                # Song-level mean for semantic loss
+                song_student_means.append(torch.mean(segment_embeddings, dim=0, keepdim=True))
+                song_teacher_embs.append(teacher_emb.unsqueeze(0) if teacher_emb.dim() == 1 else teacher_emb)
+
             else:
                 raise ValueError(f"Unknown training_strategy: {self.training_strategy}")
 
@@ -609,6 +678,7 @@ class StudentCLAPTrainer:
                 'loss': None,
                 'total_loss': None,
                 'mse_loss': None,
+                'semantic_loss': None,
                 'cosine_loss': None,
                 'mean_cosine_sim': None,
                 'min_cosine_sim': None,
@@ -627,6 +697,18 @@ class StudentCLAPTrainer:
         teacher_embeddings = torch.cat([e.unsqueeze(0) if e.dim() == 1 else e for e in teacher_embeddings], dim=0).to(self.device)
 
         loss, loss_dict = self.compute_loss(student_embeddings, teacher_embeddings)
+
+        # Semantic alignment loss
+        semantic_loss_val = 0.0
+        semantic_details = None
+        if self.text_anchors is not None and self.lambda_semantic > 0 and len(song_student_means) > 0:
+            s_songs = torch.cat(song_student_means, dim=0)
+            t_songs = torch.cat(song_teacher_embs, dim=0)
+            s_songs = F.normalize(s_songs, p=2, dim=1)
+            t_songs = F.normalize(t_songs, p=2, dim=1)
+            semantic_loss, semantic_details = self.compute_semantic_loss(s_songs, t_songs)
+            loss = loss + self.lambda_semantic * semantic_loss
+            semantic_loss_val = semantic_loss.item()
 
         loss = loss / self.gradient_accumulation_steps
 
@@ -648,6 +730,8 @@ class StudentCLAPTrainer:
             'loss': loss.item() * self.gradient_accumulation_steps,
             'total_loss': loss.item() * self.gradient_accumulation_steps,
             'mse_loss': loss_dict['mse_loss'],
+            'semantic_loss': semantic_loss_val,
+            'semantic_details': semantic_details,
             'cosine_loss': loss_dict['cosine_loss'],
             'mean_cosine_sim': loss_dict['mean_cosine_sim'],
             'min_cosine_sim': loss_dict['min_cosine_sim'],
@@ -691,6 +775,16 @@ class StudentCLAPTrainer:
 
         loss, loss_dict = self.compute_loss(student_embeddings, mixed_teacher)
 
+        # Semantic alignment loss (use segment embeddings directly since no song boundaries in global mixup)
+        semantic_loss_val = 0.0
+        semantic_details = None
+        if self.text_anchors is not None and self.lambda_semantic > 0:
+            s_norm = F.normalize(student_embeddings, p=2, dim=1)
+            t_norm = F.normalize(mixed_teacher, p=2, dim=1)
+            semantic_loss, semantic_details = self.compute_semantic_loss(s_norm, t_norm)
+            loss = loss + self.lambda_semantic * semantic_loss
+            semantic_loss_val = semantic_loss.item()
+
         loss = loss / self.gradient_accumulation_steps
         loss.backward()
 
@@ -707,6 +801,8 @@ class StudentCLAPTrainer:
             'loss': loss.item() * self.gradient_accumulation_steps,
             'total_loss': loss.item() * self.gradient_accumulation_steps,
             'mse_loss': loss_dict['mse_loss'],
+            'semantic_loss': semantic_loss_val,
+            'semantic_details': semantic_details,
             'cosine_loss': loss_dict['cosine_loss'],
             'mean_cosine_sim': loss_dict['mean_cosine_sim'],
             'min_cosine_sim': loss_dict['min_cosine_sim'],

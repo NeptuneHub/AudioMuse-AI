@@ -206,7 +206,7 @@ def main():
     parser = argparse.ArgumentParser(description="Student CLAP final evaluation")
     script_dir = os.path.dirname(os.path.abspath(__file__))
     parser.add_argument("--songs-dir", default=os.path.join(script_dir, "..", "test", "songs"))
-    parser.add_argument("--student-model", default=os.path.join(script_dir, "models", "model_epoch_4.onnx"))
+    parser.add_argument("--student-model", default=os.path.join(script_dir, "models", "model_epoch_3.onnx"))
     parser.add_argument("--teacher-audio-model", default=os.path.join(script_dir, "..", "model", "clap_audio_model.onnx"))
     parser.add_argument("--teacher-text-model", default=os.path.join(script_dir, "..", "model", "clap_text_model.onnx"))
     args = parser.parse_args()
