@@ -96,7 +96,8 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
     logger.info(f"🚀 REAL ONNX TRAINING - Epoch {epoch}/{config['training']['epochs']} | Device: {device} | LR: {lr} | WD: {wd}")
     
     batch_size = config['training']['batch_size']
-    
+    log_every = config.get('logging', {}).get('log_every', 10)
+
     total_loss = 0.0
     total_mse = 0.0
     total_semantic = 0.0
@@ -339,13 +340,16 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                     logger.info(f"[GLOBAL MIXUP] Applied: alpha={mixup_alpha}, lam={lam:.4f}, "
                                f"total_segments={total_segments} (from {len(batch_data)} songs)")
 
-                    step_metrics = trainer.train_step_global_mixup(mixed_mel, mixed_teacher)
+                    should_log_details = (batch_idx % log_every == 0)
+                    step_metrics = trainer.train_step_global_mixup(mixed_mel, mixed_teacher, compute_diagnostics=should_log_details)
                 else:
                     logger.warning("[GLOBAL MIXUP] Skipped: fewer than 2 total segments")
-                    step_metrics = trainer.train_step(batch)
+                    should_log_details = (batch_idx % log_every == 0)
+                    step_metrics = trainer.train_step(batch, compute_diagnostics=should_log_details)
             else:
                 # Forward pass, loss computation, and backward pass
-                step_metrics = trainer.train_step(batch)
+                should_log_details = (batch_idx % log_every == 0)
+                step_metrics = trainer.train_step(batch, compute_diagnostics=should_log_details)
             
             # Log detailed metrics
             accumulation_info = f" [acc {step_metrics['accumulation_step']}/{trainer.gradient_accumulation_steps}]"
@@ -654,8 +658,8 @@ def validate_real(trainer: StudentCLAPTrainer,
                 t = torch.from_numpy(np.vstack(val_song_teacher_embs)).float().to(trainer.device)
                 s = torch.nn.functional.normalize(s, p=2, dim=1)
                 t = torch.nn.functional.normalize(t, p=2, dim=1)
-                s_sim = torch.mm(s, trainer.text_anchors.t())
-                t_sim = torch.mm(t, trainer.text_anchors.t())
+                s_sim = torch.mm(s, trainer.text_anchors_t)
+                t_sim = torch.mm(t, trainer.text_anchors_t)
                 tau = trainer.semantic_temperature
                 s_log_prob = torch.nn.functional.log_softmax(s_sim / tau, dim=-1)
                 t_prob = torch.nn.functional.softmax(t_sim / tau, dim=-1)
@@ -755,23 +759,34 @@ def train(config_path: str, resume: str = None):
     logger.info(f"   Device: {trainer.device}")
     
     # --- Semantic alignment anchors (query-based distillation) ---
+    # Compute text anchors ONCE at startup, then free the text model to save memory
     import json
+    import gc
     query_json_path = Path(os.path.dirname(config_path)) / "query.json"
     semantic_queries = None
-    semantic_text_embedder = None
-    semantic_tokenizer = None
     if query_json_path.exists() and config['training'].get('lambda_semantic', 0) > 0:
         with open(query_json_path) as f:
             semantic_queries = json.load(f)["semantic_anchors"]
+        logger.info(f"📝 Loaded {len(semantic_queries)} semantic queries from {query_json_path}")
+        # Load text model temporarily just to compute anchors
         text_teacher_path = Path(config['paths']['teacher_model_text'])
         if text_enabled:
-            # Reuse already-loaded objects
-            semantic_tokenizer = tokenizer
-            semantic_text_embedder = teacher_text_embedder
+            _tok = tokenizer
+            _emb = teacher_text_embedder
         else:
-            semantic_tokenizer = get_tokenizer()
-            semantic_text_embedder = CLAPTextEmbedder(str(text_teacher_path))
-        logger.info(f"📝 Loaded {len(semantic_queries)} semantic queries from {query_json_path}")
+            _tok = get_tokenizer()
+            _emb = CLAPTextEmbedder(str(text_teacher_path))
+        enc = _tok(semantic_queries, padding=True, truncation=True, max_length=77, return_tensors='pt')
+        with torch.no_grad():
+            text_anchors_np = _emb.encode(enc['input_ids'].numpy(), enc['attention_mask'].numpy())
+        text_anchors = torch.from_numpy(text_anchors_np).float()
+        text_anchors = torch.nn.functional.normalize(text_anchors, p=2, dim=1)
+        trainer.set_text_anchors(text_anchors, query_names=semantic_queries)
+        logger.info(f"📝 Text anchors computed: {text_anchors.shape} — freeing text model from memory")
+        # Free text model + tokenizer immediately (only needed if we created them)
+        if not text_enabled:
+            del _tok, _emb
+            gc.collect()
     else:
         logger.info("📝 Semantic alignment loss disabled (lambda_semantic=0 or query.json not found)")
 
@@ -1110,15 +1125,7 @@ def train(config_path: str, resume: str = None):
         except Exception:
             pass
 
-        # === PRE-COMPUTE TEXT ANCHORS FOR SEMANTIC LOSS ===
-        if semantic_queries is not None and semantic_text_embedder is not None:
-            enc = semantic_tokenizer(semantic_queries, padding=True, truncation=True, max_length=77, return_tensors='pt')
-            with torch.no_grad():
-                text_anchors_np = semantic_text_embedder.encode(enc['input_ids'].numpy(), enc['attention_mask'].numpy())
-            text_anchors = torch.from_numpy(text_anchors_np).float()
-            text_anchors = torch.nn.functional.normalize(text_anchors, p=2, dim=1)
-            trainer.set_text_anchors(text_anchors, query_names=semantic_queries)
-            logger.info(f"📝 Text anchors computed: {text_anchors.shape} (epoch {epoch})")
+        # Text anchors are pre-computed once at startup (no per-epoch recomputation needed)
 
         # === TEXT DISTILLATION EPOCH ===
         if text_enabled:

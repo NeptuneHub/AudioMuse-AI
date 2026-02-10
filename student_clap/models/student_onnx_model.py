@@ -423,57 +423,60 @@ class StudentCLAPTrainer:
     def set_text_anchors(self, anchors: torch.Tensor, query_names: list = None):
         """Set pre-computed text anchor embeddings [N_queries, 512] on device."""
         self.text_anchors = anchors.to(self.device)
+        self.text_anchors_t = self.text_anchors.t().contiguous()  # Cache transpose (512, N_queries)
         self.query_names = query_names
 
-    def compute_semantic_loss(self, student_song_embs: torch.Tensor, teacher_song_embs: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
+    def compute_semantic_loss(self, student_song_embs: torch.Tensor, teacher_song_embs: torch.Tensor, compute_diagnostics: bool = False) -> Tuple[torch.Tensor, Dict]:
         """
         Compute semantic alignment loss using KL Divergence with temperature-scaled softmax.
 
-        Converts similarity scores into probability distributions and forces the student
-        to reproduce the teacher's ranking profile, not just raw distances.
-
         Args:
-            student_song_embs: (N_songs, 512) L2-normalized song-level student embeddings
-            teacher_song_embs: (N_songs, 512) L2-normalized song-level teacher embeddings
+            student_song_embs: (N, 512) L2-normalized student embeddings
+            teacher_song_embs: (N, 512) L2-normalized teacher embeddings
+            compute_diagnostics: if True, compute per-query details (expensive due to GPU sync)
         Returns:
             semantic_loss: scalar tensor (KL divergence)
-            semantic_details: dict with per-query diagnostics
+            semantic_details: dict with per-query diagnostics (or None if not requested)
         """
-        s_sim = torch.mm(student_song_embs, self.text_anchors.t())  # (N_songs, N_queries)
-        t_sim = torch.mm(teacher_song_embs, self.text_anchors.t())
+        # Use cached transpose to avoid recomputing every batch
+        s_sim = torch.mm(student_song_embs, self.text_anchors_t)  # (N, N_queries)
+        # Teacher side is a fixed target — detach to avoid building unnecessary computation graph
+        with torch.no_grad():
+            t_sim = torch.mm(teacher_song_embs, self.text_anchors_t)
 
         # KL Divergence on temperature-sharpened distributions
         tau = self.semantic_temperature
         s_log_prob = F.log_softmax(s_sim / tau, dim=-1)
-        t_prob = F.softmax(t_sim / tau, dim=-1)
+        t_prob = F.softmax(t_sim / tau, dim=-1).detach()  # Fixed target, no grad needed
         loss = F.kl_div(s_log_prob, t_prob, reduction='batchmean')
 
-        # Per-query diagnostics: mean across songs (on raw similarities for interpretability)
-        with torch.no_grad():
-            s_mean = s_sim.mean(dim=0)  # (N_queries,)
-            t_mean = t_sim.mean(dim=0)
-            diff = t_mean - s_mean  # positive = teacher higher
-            abs_diff = diff.abs()
-            # Top 3 discrepancies
-            top_k = min(3, abs_diff.shape[0])
-            top_vals, top_idx = abs_diff.topk(top_k)
-            top_discrepancies = []
-            for k in range(top_k):
-                idx = top_idx[k].item()
-                name = self.query_names[idx] if self.query_names else f"query_{idx}"
-                top_discrepancies.append({
-                    'name': name,
-                    'diff': diff[idx].item(),
-                    'teacher': t_mean[idx].item(),
-                    'student': s_mean[idx].item(),
-                })
-            # Avg teacher-student cosine per query (avg across songs, then avg across queries)
-            avg_alignment = F.cosine_similarity(s_sim, t_sim, dim=0).mean().item()
+        # Per-query diagnostics only when needed (avoids .item() GPU sync every batch)
+        semantic_details = None
+        if compute_diagnostics:
+            with torch.no_grad():
+                s_mean = s_sim.mean(dim=0)
+                t_mean = t_sim.mean(dim=0)
+                diff = t_mean - s_mean
+                abs_diff = diff.abs()
+                top_k = min(3, abs_diff.shape[0])
+                top_vals, top_idx = abs_diff.topk(top_k)
+                top_discrepancies = []
+                for k in range(top_k):
+                    idx = top_idx[k].item()
+                    name = self.query_names[idx] if self.query_names else f"query_{idx}"
+                    top_discrepancies.append({
+                        'name': name,
+                        'diff': diff[idx].item(),
+                        'teacher': t_mean[idx].item(),
+                        'student': s_mean[idx].item(),
+                    })
+                avg_alignment = F.cosine_similarity(s_sim, t_sim, dim=0).mean().item()
+            semantic_details = {
+                'top_discrepancies': top_discrepancies,
+                'avg_query_alignment': avg_alignment,
+            }
 
-        return loss, {
-            'top_discrepancies': top_discrepancies,
-            'avg_query_alignment': avg_alignment,
-        }
+        return loss, semantic_details
 
     def compute_loss(self,
                     student_embeddings: torch.Tensor,
@@ -552,7 +555,7 @@ class StudentCLAPTrainer:
 
         return total_loss, loss_dict
 
-    def train_step(self, batch: Dict) -> Dict:
+    def train_step(self, batch: Dict, compute_diagnostics: bool = False) -> Dict:
         """
         Single training step on a batch.
 
@@ -710,10 +713,10 @@ class StudentCLAPTrainer:
         semantic_details = None
         if self.text_anchors is not None and self.lambda_semantic > 0 and len(song_student_means) > 0:
             s_songs = torch.cat(song_student_means, dim=0)
-            t_songs = torch.cat(song_teacher_embs, dim=0)
+            t_songs = torch.cat(song_teacher_embs, dim=0).detach()
             s_songs = F.normalize(s_songs, p=2, dim=1)
             t_songs = F.normalize(t_songs, p=2, dim=1)
-            semantic_loss, semantic_details = self.compute_semantic_loss(s_songs, t_songs)
+            semantic_loss, semantic_details = self.compute_semantic_loss(s_songs, t_songs, compute_diagnostics=compute_diagnostics)
             loss = loss + self.lambda_semantic * semantic_loss
             semantic_loss_val = semantic_loss.item()
 
@@ -750,7 +753,7 @@ class StudentCLAPTrainer:
             'will_update': will_update,
         }
 
-    def train_step_global_mixup(self, mixed_mel: torch.Tensor, mixed_teacher: torch.Tensor) -> Dict:
+    def train_step_global_mixup(self, mixed_mel: torch.Tensor, mixed_teacher: torch.Tensor, compute_diagnostics: bool = False) -> Dict:
         """
         Training step for global segment-level mixup.
         Receives pre-mixed mel spectrograms and teacher embeddings as flat tensors.
@@ -787,8 +790,8 @@ class StudentCLAPTrainer:
         semantic_details = None
         if self.text_anchors is not None and self.lambda_semantic > 0:
             s_norm = F.normalize(student_embeddings, p=2, dim=1)
-            t_norm = F.normalize(mixed_teacher, p=2, dim=1)
-            semantic_loss, semantic_details = self.compute_semantic_loss(s_norm, t_norm)
+            t_norm = F.normalize(mixed_teacher.detach(), p=2, dim=1)
+            semantic_loss, semantic_details = self.compute_semantic_loss(s_norm, t_norm, compute_diagnostics=compute_diagnostics)
             loss = loss + self.lambda_semantic * semantic_loss
             semantic_loss_val = semantic_loss.item()
 
