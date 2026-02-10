@@ -1338,6 +1338,8 @@ def train(config_path: str, resume: str = None):
                 # Store validation result under both keys to ensure downstream tools/scripts find it
                 epoch_checkpoint_data['last_val_mse'] = last_val_mse
                 epoch_checkpoint_data['val_mse'] = last_val_mse
+                if 'val_semantic_error' in val_metrics:
+                    epoch_checkpoint_data['val_semantic_error'] = val_metrics['val_semantic_error']
                 torch.save(epoch_checkpoint_data, epoch_checkpoint_path)
                 if latest_checkpoint_path.exists() or latest_checkpoint_path.is_symlink():
                     latest_checkpoint_path.unlink()
