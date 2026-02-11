@@ -109,7 +109,12 @@ For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](d
    ```bash
    docker compose -f deployment/docker-compose.yaml up -d
    ```
+> Remember to get the correct version for your Music Server.
 
+> docker-compose.yaml is for Jellyfin.
+> You also have docker-compose-navidrome.yaml, docker-compose-lyrion.yaml, dokcer-compose-emby.yaml
+
+> Other example are for advanced deployment.
 4. **Access the application:**
    Open your browser at `http://localhost:8000`
 

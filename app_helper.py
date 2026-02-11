@@ -998,61 +998,91 @@ def update_playlist_table(playlists): # Removed db_path
         cur.close()
 
 def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Task cancellation processed by API."):
-    """Helper to cancel a job and its children based on DB records."""
+    """Helper to cancel a job and its children based on DB records.
+
+    NOTE: Minimal global behavior — when invoked from the API cancel endpoint we clear RQ queues,
+    attempt to stop all jobs known to RQ, delete all rows in `task_status`, and insert a single
+    REVOKED row for the requested `job_id` (so UI sees one canonical cancelled task).
+    This keeps the function signature unchanged and is intentionally simple and destructive (as requested).
+    """
     cancelled_count = 0
 
-    # First, determine the task_type for the current job_id
-    db_task_info = get_task_info_from_db(job_id)
-    current_task_type = db_task_info.get('task_type') if db_task_info else task_type_from_db
-
-    if not current_task_type:
-        logger.warning(f"Could not determine task_type for job {job_id}. Cannot reliably mark as REVOKED in DB or cancel children.")
+    # --- Scan RQ for job ids to cancel ---
+    job_ids = set()
+    for q in (rq_queue_high, rq_queue_default):
         try:
-            Job.fetch(job_id, connection=redis_conn)
-            send_stop_job_command(redis_conn, job_id)
-            cancelled_count += 1
-            logger.info(f"Job {job_id} (task_type unknown) stop command sent to RQ.")
-        except NoSuchJobError:
-            pass
-        return cancelled_count
+            ids = getattr(q, 'job_ids', None)
+            if ids is None:
+                key = f"rq:queue:{getattr(q, 'name', '')}"
+                raw = redis_conn.lrange(key, 0, -1)
+                ids = [x.decode() if isinstance(x, (bytes, bytearray)) else str(x) for x in raw]
+            job_ids.update([str(i) for i in ids if i is not None])
+        except Exception as e_q:
+            logger.warning(f"Could not read queue {getattr(q, 'name', '<unknown>')}: {e_q}")
 
-    # Mark as REVOKED in DB for the current job. This is the primary action.
-    save_task_status(job_id, current_task_type, TASK_STATUS_REVOKED, progress=100, details={"message": reason})
-
-    # Attempt to stop the job in RQ. This is a secondary action to interrupt a running process.
-    action_taken_in_rq = False
+    # Include job ids from RQ job keys (covers started jobs)
     try:
-        job_rq = Job.fetch(job_id, connection=redis_conn)
-        current_rq_status = job_rq.get_status()
-        logger.info(f"Job {job_id} (type: {current_task_type}) found in RQ with status: {current_rq_status}")
+        raw_keys = redis_conn.keys('rq:job:*')
+        for k in raw_keys:
+            kstr = k.decode() if isinstance(k, (bytes, bytearray)) else str(k)
+            parts = kstr.split(':')
+            if len(parts) >= 3:
+                jid = ':'.join(parts[2:])
+                job_ids.add(jid)
+    except Exception as e_keys:
+        logger.warning(f"Could not list rq job keys: {e_keys}")
 
-        if not job_rq.is_finished and not job_rq.is_failed and not job_rq.is_canceled:
-            if job_rq.is_started:
-                send_stop_job_command(redis_conn, job_id)
-            else:
-                job_rq.cancel()
-            action_taken_in_rq = True
-            logger.info(f"  Sent stop/cancel command for job {job_id} in RQ.")
-        else:
-            logger.info(f"  Job {job_id} is already in a terminal RQ state: {current_rq_status}.")
+    # Attempt to cancel/stop all discovered jobs
+    for jid in job_ids:
+        try:
+            try:
+                j = Job.fetch(jid, connection=redis_conn)
+                if not j.is_finished and not j.is_failed and not j.is_canceled:
+                    if j.is_started:
+                        send_stop_job_command(redis_conn, jid)
+                    else:
+                        j.cancel()
+                    cancelled_count += 1
+                    logger.info(f"Sent stop/cancel for job {jid} during global cancel")
+            except NoSuchJobError:
+                logger.debug(f"Job {jid} not found in RQ during global cancel")
+        except Exception as e_j:
+            logger.error(f"Error cancelling job {jid} during global cancel: {e_j}")
 
-    except NoSuchJobError:
-        logger.warning(f"Job {job_id} (type: {current_task_type}) not found in RQ, but marked as REVOKED in DB.")
-    except Exception as e_rq_interaction:
-        logger.error(f"Error interacting with RQ for job {job_id}: {e_rq_interaction}")
+    # Try to clear the RQ queues using API (preferred) and fallback to key deletion if necessary
+    try:
+        for q in (rq_queue_high, rq_queue_default):
+            try:
+                if hasattr(q, 'empty'):
+                    q.empty()
+                    logger.info(f"Emptied queue {getattr(q, 'name', '<unknown>')} via Queue.empty() as part of global cancel")
+                else:
+                    key = f"rq:queue:{getattr(q, 'name', '')}"
+                    redis_conn.delete(key)
+                    logger.info(f"Deleted Redis key fallback for queue: {key} as part of global cancel")
+            except Exception as e_q:
+                logger.warning(f"Failed to empty queue {getattr(q, 'name', '<unknown>')} during global cancel: {e_q}")
+    except Exception as e_qdel:
+        logger.warning(f'Failed to clear queue lists during global cancel: {e_qdel}')
 
-    if action_taken_in_rq:
-        cancelled_count += 1
+    # Consolidate DB: delete all task_status rows and insert a single REVOKED row for job_id
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute("DELETE FROM task_status")
+        deleted = cur.rowcount
+        db.commit()
+        logger.info(f"Global cancel DB cleanup: deleted {deleted} task_status rows")
+    except Exception as e_dbdel:
+        db.rollback()
+        logger.error(f"Error deleting task_status rows during global cancel: {e_dbdel}")
+    finally:
+        cur.close()
 
-    # Recursively cancel children found in the database
-    children_tasks = get_child_tasks_from_db(job_id)
-    
-    for child_task in children_tasks:
-        child_job_id = child_task['task_id']
-        # We only need to proceed if the child is not already in a terminal state
-        child_db_info = get_task_info_from_db(child_job_id)
-        if child_db_info and child_db_info.get('status') not in [TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]:
-             logger.info(f"Recursively cancelling child job: {child_job_id}")
-             cancelled_count += cancel_job_and_children_recursive(child_job_id, reason="Cancelled due to parent task revocation.")
-        
+    try:
+        # Ensure a single REVOKED row exists for job_id
+        save_task_status(job_id, 'unknown', TASK_STATUS_REVOKED, progress=100, details={"message": reason, "origin": "global_cancel"})
+    except Exception as e_save:
+        logger.error(f"Failed to insert REVOKED recap row for {job_id}: {e_save}")
+
     return cancelled_count
