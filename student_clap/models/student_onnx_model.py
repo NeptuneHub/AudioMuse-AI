@@ -312,11 +312,17 @@ class StudentCLAPTrainer:
                 weight_decay=config['training']['weight_decay']
             )
 
+        # Loss function selection: "mse" or "cosine"
+        self.loss_function = config['training'].get('loss_function', 'mse')
+
         # Semantic alignment loss (KL Divergence with temperature-scaled softmax)
         self.lambda_semantic = float(config['training'].get('lambda_semantic', 0.0))
         self.semantic_temperature = float(config['training'].get('semantic_temperature', 0.1))
         self.text_anchors = None  # Set per-epoch via set_text_anchors()
-        if self.lambda_semantic > 0:
+        if self.loss_function == 'cosine':
+            self.lambda_semantic = 0.0
+            logger.info(f"🔧 Cosine loss mode: semantic alignment disabled")
+        elif self.lambda_semantic > 0:
             logger.info(f"🔧 Semantic alignment loss enabled (lambda={self.lambda_semantic}, tau={self.semantic_temperature})")
 
         self.gradient_accumulation_steps = config['training'].get('gradient_accumulation_steps', 1)
@@ -535,11 +541,31 @@ class StudentCLAPTrainer:
         else:
             weights = torch.ones_like(cosine_sim)
 
+        # Select per-sample loss based on loss_function
+        if self.loss_function == 'cosine':
+            # Apply temperature or learnable logit_scale (same as original tinyCLAP approach)
+            if getattr(self, 'use_logit_scale', False):
+                import math
+                max_logit_scale = math.log(50)  # ~3.912, keeps T in [1, 50]
+                with torch.no_grad():
+                    self.model.logit_scale.clamp_(0, max_logit_scale)
+                scale = self.model.logit_scale.exp()
+                scaled = cosine_sim * scale
+                scale_value = float(scale.detach().cpu().item())
+            else:
+                scaled = cosine_sim / float(self.loss_temperature)
+                scale_value = float(self.loss_temperature)
+            per_sample_loss = -scaled  # maximize scaled cosine similarity
+        else:
+            per_sample_loss = per_sample_mse     # MSE (default)
+            scale_value = float(getattr(self, 'loss_temperature', 1.0))
+
         denom = weights.sum().clamp_min(1e-6)
-        total_loss = (per_sample_mse * weights).sum() / denom
+        total_loss = (per_sample_loss * weights).sum() / denom
 
         # Unweighted MSE for logging / validation consistency
-        mse_loss = F.mse_loss(student_norm, teacher_norm)
+        with torch.no_grad():
+            mse_loss = F.mse_loss(student_norm, teacher_norm)
 
         loss_dict = {
             'total_loss': total_loss.item(),
@@ -548,7 +574,7 @@ class StudentCLAPTrainer:
             'mean_cosine_sim': cosine_sim.mean().item(),
             'min_cosine_sim': cosine_sim.min().item(),
             'max_cosine_sim': cosine_sim.max().item(),
-            'loss_scale': float(getattr(self, 'loss_temperature', 1.0)),
+            'loss_scale': scale_value,
             'focal_gamma': float(self.focal_gamma),
             'focal_weighted_samples': int((weights > 0).sum().item())
         }

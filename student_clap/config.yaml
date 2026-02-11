@@ -55,6 +55,8 @@ training:
   # Mixup augmentation: alpha parameter for Beta(alpha, alpha). 0 disables Mixup
   mixup_alpha: 0.1
   global_mixup: true  # If true, mix at segment level across all songs (zero data loss); if false, old song-level mixup
+  # Loss function: "mse" or "cosine". Cosine disables MSE and semantic, uses 1-cosine as loss
+  loss_function: "cosine"
   # Loss scaling options
   loss_temperature: 0.7       # Static temperature (divide cosine by this value). If using logit scale, set use_logit_scale=True
   use_logit_scale: true       # If true, use a learnable logit_scale (exp(logit_scale) applied to cosine)

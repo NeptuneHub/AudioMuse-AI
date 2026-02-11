@@ -66,6 +66,21 @@ for f in sorted(glob.glob('student_clap/checkpoints/checkpoint_epoch_*.pth')):
 PY
 ```
 
+with both:
+```
+python3 - <<'PY'
+import glob, torch
+for f in sorted(glob.glob('student_clap/checkpoints/checkpoint_epoch_*.pth')):
+    ckpt = torch.load(f, map_location='cpu')
+    m = ckpt.get('train_metrics', {})
+    val_mse = ckpt.get('val_mse', ckpt.get('last_val_mse', 'N/A'))
+    val_cos = ckpt.get('val_cosine', 'N/A')
+    val_met = ckpt.get('val_metric', 'N/A')
+    val_met_name = ckpt.get('val_metric_name', 'N/A')
+    val_sem = ckpt.get('val_semantic_error', 'N/A')
+    print(f"{f}: train_cos={m.get('avg_cosine_sim')}, train_mse={m.get('avg_mse')}, train_sem={m.get('avg_semantic','N/A')}, val_mse={val_mse}, val_cosine={val_cos}, {val_met_name}={val_met}, val_sem={val_sem}, lr={m.get('learning_rate')}")
+PY
+```
 
 You can check the million of parameter used for your input configuration with this command:
 ```
