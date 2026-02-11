@@ -133,18 +133,22 @@ def normalize_file_path(path: str, base_path: str = "") -> str:
     - Make relative to music library root
     - Strip leading/trailing whitespace
     """
-    p = Path(path)
+    # Replace backslashes first so Linux doesn't treat them as literal chars
+    path = path.replace('\\', '/')
+    p = PurePosixPath(path)
 
     # Make relative if absolute and base_path provided
-    if base_path and p.is_absolute():
-        try:
-            base = Path(base_path)
-            p = p.relative_to(base)
-        except ValueError:
-            pass  # Not relative to base, keep as-is
+    if base_path:
+        base_path = base_path.replace('\\', '/')
+        base = PurePosixPath(base_path)
+        if p.is_absolute():
+            try:
+                p = p.relative_to(base)
+            except ValueError:
+                pass  # Not relative to base, keep as-is
 
     # Convert to POSIX style
-    normalized = PurePosixPath(p).as_posix()
+    normalized = p.as_posix()
 
     return normalized.strip()
 
@@ -772,14 +776,6 @@ def get_provider_info() -> Dict:
                 'required': True,
                 'description': 'Path to your music library folder',
                 'default': '/music'
-            },
-            {
-                'name': 'supported_formats',
-                'label': 'Supported Formats',
-                'type': 'text',
-                'required': False,
-                'description': 'Comma-separated list of audio file extensions',
-                'default': ','.join(SUPPORTED_FORMATS)
             },
             {
                 'name': 'scan_subdirectories',

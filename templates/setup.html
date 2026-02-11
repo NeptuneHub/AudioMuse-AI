@@ -221,6 +221,7 @@
     /* Test Connection Button */
     .test-connection-btn {
         background: var(--bg-body);
+        color: var(--text-main);
         border: 1px solid var(--border-color);
         padding: 0.5rem 1rem;
         border-radius: 4px;
@@ -1553,9 +1554,19 @@
                                  placeholder="${field.default || ''}"
                                  data-provider="${type}" data-field="${field.name}">`;
                 } else if (field.type === 'boolean') {
-                    inputHtml = `<input type="checkbox" id="config-${type}-${field.name}"
+                    // Render inline with label
+                    fieldDiv.innerHTML = `
+                        <label for="config-${type}-${field.name}" style="display:flex;align-items:center;gap:8px;">
+                            ${field.label}${field.required ? ' *' : ''}
+                            <input type="checkbox" id="config-${type}-${field.name}"
                                  ${field.default ? 'checked' : ''}
-                                 data-provider="${type}" data-field="${field.name}">`;
+                                 data-provider="${type}" data-field="${field.name}"
+                                 style="width:auto;margin:0;">
+                        </label>
+                        <div class="field-help">${field.description || ''}</div>
+                    `;
+                    form.appendChild(fieldDiv);
+                    return; // skip the default innerHTML below
                 } else if (field.type === 'number') {
                     inputHtml = `<input type="number" id="config-${type}-${field.name}"
                                  value="${field.default || ''}"

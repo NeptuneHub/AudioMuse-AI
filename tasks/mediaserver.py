@@ -839,8 +839,6 @@ def _get_provider_config_fields(provider_type: str):
              'description': 'Path to your music library folder (e.g., /music)', 'default': '/music'},
             {'name': 'playlist_directory', 'label': 'Playlist Directory', 'type': 'path', 'required': False,
              'description': 'Where to save generated playlists', 'default': '/music/playlists'},
-            {'name': 'formats', 'label': 'Audio Formats', 'type': 'text', 'required': False,
-             'description': 'Comma-separated list of formats to scan', 'default': '.mp3,.flac,.ogg,.m4a,.wav'},
             {'name': 'scan_subdirs', 'label': 'Scan Subdirectories', 'type': 'boolean', 'required': False,
              'description': 'Recursively scan subdirectories', 'default': True},
         ],

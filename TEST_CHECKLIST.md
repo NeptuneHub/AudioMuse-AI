@@ -34,29 +34,32 @@
 
 ```
 AudioMuse-AI/
-├── tests/unit/              # Unit tests (no external services needed)
-│   ├── test_analysis.py     # Audio analysis (50+ tests)
-│   ├── test_ai.py           # AI provider routing (30+ tests)
-│   ├── test_clustering.py   # Clustering helpers (60+ tests)
-│   ├── test_clustering_helper.py
-│   ├── test_clustering_postprocessing.py
-│   ├── test_mediaserver.py  # Jellyfin provider (15+ tests)
-│   ├── test_voyager_manager.py  # Similarity search (20+ tests)
-│   ├── test_commons.py      # Score vectors (10+ tests)
-│   ├── test_app_analysis.py
-│   ├── test_clap_text_search.py
-│   ├── test_artist_gmm_manager.py
-│   ├── test_memory_cleanup.py
-│   ├── test_memory_utils.py
-│   ├── test_path_manager.py
-│   ├── test_song_alchemy.py
-│   ├── test_sonic_fingerprint_manager.py
-│   ├── test_string_sanitization.py
-│   ├── test_mcp_server.py         # NEW - MCP tools
-│   ├── test_playlist_ordering.py  # NEW - Playlist ordering
-│   ├── test_app_setup.py          # NEW - Setup wizard & providers
-│   ├── test_app_chat.py           # NEW - Instant playlist pipeline
-│   └── test_mediaserver_localfiles.py  # NEW - LocalFiles provider
+├── tests/
+│   ├── conftest.py              # Shared fixtures (importlib bypass, DB mocks, config restore)
+│   └── unit/                    # Unit tests (no external services needed)
+│       ├── test_analysis.py     # Audio analysis (50+ tests)
+│       ├── test_ai.py           # AI provider routing (30+ tests)
+│       ├── test_ai_mcp_client.py    # NEW - AI MCP client (60+ tests)
+│       ├── test_clustering.py   # Clustering helpers (60+ tests)
+│       ├── test_clustering_helper.py
+│       ├── test_clustering_postprocessing.py
+│       ├── test_mediaserver.py  # Jellyfin provider (15+ tests)
+│       ├── test_voyager_manager.py  # Similarity search (20+ tests)
+│       ├── test_commons.py      # Score vectors (10+ tests)
+│       ├── test_app_analysis.py
+│       ├── test_clap_text_search.py
+│       ├── test_artist_gmm_manager.py
+│       ├── test_memory_cleanup.py
+│       ├── test_memory_utils.py
+│       ├── test_path_manager.py
+│       ├── test_song_alchemy.py
+│       ├── test_sonic_fingerprint_manager.py
+│       ├── test_string_sanitization.py
+│       ├── test_mcp_server.py         # NEW - MCP tools
+│       ├── test_playlist_ordering.py  # NEW - Playlist ordering
+│       ├── test_app_setup.py          # NEW - Setup wizard & providers
+│       ├── test_app_chat.py           # NEW - Instant playlist pipeline
+│       └── test_mediaserver_localfiles.py  # NEW - LocalFiles provider
 ├── test/                    # Integration tests (require running services)
 │   ├── test.py              # End-to-end smoke tests
 │   ├── test_analysis_integration.py
@@ -68,6 +71,10 @@ AudioMuse-AI/
 │       ├── docker-compose-test-providers.yaml
 │       └── TEST_GUIDE.md
 ├── testing_suite/           # Comparison & benchmarking
+│   ├── __main__.py                # CLI entry point
+│   ├── config.py                  # Suite configuration
+│   ├── orchestrator.py            # Test orchestration
+│   ├── utils.py                   # Shared utilities
 │   ├── test_instant_playlist.py   # Instant playlist scenarios
 │   ├── test_ai_naming.py          # AI naming quality
 │   ├── comparators/               # Cross-instance comparison
@@ -75,6 +82,8 @@ AudioMuse-AI/
 │   │   ├── db_comparator.py
 │   │   ├── docker_comparator.py
 │   │   └── performance_comparator.py
+│   ├── test_runner/               # Existing test runner
+│   │   └── existing_tests.py
 │   ├── run_comparison.py          # Entry point
 │   └── reports/html_report.py
 └── pytest.ini               # Test configuration
@@ -103,7 +112,7 @@ pytest tests/unit/test_mcp_server.py::TestSearchDatabase::test_genre_regex_preve
 pytest tests/unit/ -v -m "not slow"
 
 # Run only new tests (for this branch)
-pytest tests/unit/test_mcp_server.py tests/unit/test_playlist_ordering.py tests/unit/test_app_setup.py tests/unit/test_app_chat.py tests/unit/test_mediaserver_localfiles.py -v
+pytest tests/unit/test_mcp_server.py tests/unit/test_playlist_ordering.py tests/unit/test_app_setup.py tests/unit/test_app_chat.py tests/unit/test_mediaserver_localfiles.py tests/unit/test_ai_mcp_client.py -v
 
 # ============================================================
 # INTEGRATION TESTS (require running services, 20+ minutes)
@@ -166,6 +175,14 @@ pytest -m integration -v   # Integration tests only
 pytest -m "not slow" -v    # Skip slow tests
 ```
 
+### URL Prefix Note
+
+Some unit tests register blueprints **without** `url_prefix` for simplicity (e.g., `test_app_chat.py` tests `/api/config_defaults`). In production, these routes have prefixes:
+- `chat_bp` → `/chat/...` (e.g., `/chat/api/config_defaults`)
+- `external_bp` → `/external/...` (e.g., `/external/get_score`)
+
+The endpoint paths in this checklist reflect **production** URLs.
+
 ### Test Dependencies
 
 ```bash
@@ -188,6 +205,7 @@ pip install -r testing_suite/requirements.txt
 | Area | Tests | Status |
 |------|-------|--------|
 | MCP tool logic (genre regex, brainstorm matching, relevance scoring) | 40+ | **NEW** |
+| AI MCP client (system prompt, tool defs, provider dispatch, energy conversion) | 60+ | **NEW** |
 | Playlist ordering (greedy NN, Circle of Fifths, energy arc) | 25+ | **NEW** |
 | Setup wizard (provider CRUD, settings, validation) | 30+ | **NEW** |
 | Instant playlist pipeline (iteration loop, diversity, sampling) | 35+ | **NEW** |
@@ -256,19 +274,24 @@ pip install -r testing_suite/requirements.txt
 
 | # | Test Case | Type | Endpoint | Expected |
 |---|-----------|------|----------|----------|
-| 3.3.1 | List providers (empty) | Auto | `GET /api/providers` | `[]` |
-| 3.3.2 | Add provider | Auto | `POST /api/providers` | 201, provider returned |
-| 3.3.3 | Get provider by ID | Auto | `GET /api/providers/<id>` | Provider details returned |
-| 3.3.4 | Update provider | Auto | `PUT /api/providers/<id>` | Updated fields reflected |
-| 3.3.5 | Delete provider | Auto | `DELETE /api/providers/<id>` | 200, provider removed |
-| 3.3.6 | Test connection (valid) | Auto | `POST /api/providers/test` | `{"success": true}` |
-| 3.3.7 | Test connection (invalid) | Auto | `POST /api/providers/test` with bad URL | `{"success": false, "error": "..."}` |
-| 3.3.8 | Get libraries | Manual | `GET /api/providers/<id>/libraries` | Library list returned |
-| 3.3.9 | Get sample tracks | Manual | `GET /api/providers/<id>/sample-tracks` | Track list with file paths |
-| 3.3.10 | Detect prefix | Auto | `POST /api/providers/detect-prefix` | Correct prefix string |
-| 3.3.11 | Get enabled providers | Auto | `GET /api/providers/enabled` | Only enabled providers |
-| 3.3.12 | Invalid provider type | Auto | `POST /api/providers` with bad type | 400 error |
-| 3.3.13 | Missing required fields | Auto | `POST /api/providers` incomplete | 400 error |
+| 3.3.1 | List providers (empty) | Auto | `GET /api/setup/providers` | `[]` |
+| 3.3.2 | Add provider | Auto | `POST /api/setup/providers` | 201, provider returned |
+| 3.3.3 | Get provider by ID | Auto | `GET /api/setup/providers/<id>` | Provider details returned |
+| 3.3.4 | Update provider | Auto | `PUT /api/setup/providers/<id>` | Updated fields reflected |
+| 3.3.5 | Delete provider | Auto | `DELETE /api/setup/providers/<id>` | 200, provider removed |
+| 3.3.6 | Test connection (by ID) | Auto | `POST /api/setup/providers/<id>/test` | `{"success": true}` |
+| 3.3.7 | Test connection (inline) | Auto | `POST /api/setup/providers/test` with config | `{"success": true}` or `{"success": false, "error": "..."}` |
+| 3.3.8 | Get libraries | Manual | `POST /api/setup/providers/libraries` | Library list returned |
+| 3.3.9 | Rescan paths | Manual | `POST /api/setup/providers/<id>/rescan-paths` | Track list with file paths |
+| 3.3.10 | Get enabled providers | Auto | `GET /api/providers/enabled` | Only enabled providers |
+| 3.3.11 | Invalid provider type | Auto | `POST /api/setup/providers` with bad type | 400 error |
+| 3.3.12 | Missing required fields | Auto | `POST /api/setup/providers` incomplete | 400 error |
+| 3.3.13 | Get provider types | Auto | `GET /api/setup/providers/types` | List of supported provider types |
+| 3.3.14 | Multi-provider config | Auto | `POST /api/setup/multi-provider` | Multi-provider setup applied |
+| 3.3.15 | Set primary provider | Auto | `PUT /api/setup/primary-provider` | Primary provider updated |
+| 3.3.16 | Server info | Auto | `GET /api/setup/server-info` | Server configuration returned |
+| 3.3.17 | Browse directories | Manual | `GET /api/setup/browse-directories` | Directory listing returned |
+| 3.3.18 | Complete setup | Auto | `POST /api/setup/complete` | Setup marked as complete |
 
 ### 3.4 Multi-Provider Playlist Creation
 
@@ -342,7 +365,7 @@ pip install -r testing_suite/requirements.txt
 
 | # | Test Case | Type | Steps | Expected |
 |---|-----------|------|-------|----------|
-| 5.3.1 | Settings saved to DB | Auto | `POST /api/settings` | Saved in `app_settings` table |
+| 5.3.1 | Settings saved to DB | Auto | `PUT /api/setup/settings` | Saved in `app_settings` table |
 | 5.3.2 | Settings loaded on startup | Auto | Restart app | `apply_settings_to_config()` overrides config |
 | 5.3.3 | Settings override env vars | Auto | Set env var AND DB setting | DB setting takes precedence |
 
@@ -360,17 +383,16 @@ pip install -r testing_suite/requirements.txt
 | 6.1.4 | Active tasks (none) | Auto | `GET /api/active_tasks` | 200, empty/null |
 | 6.1.5 | Cancel nonexistent task | Auto | `POST /api/cancel/nonexistent` | 404 |
 | 6.1.6 | Playlists (empty) | Auto | `GET /api/playlists` | 200, `[]` |
-| 6.1.7 | Setup status | Auto | `GET /api/setup/status` | 200, setup status |
-| 6.1.8 | Providers list (empty) | Auto | `GET /api/providers` | 200, `[]` |
-| 6.1.9 | Settings GET | Auto | `GET /api/settings` | 200, current settings |
-| 6.1.10 | Config defaults | Auto | `GET /api/config_defaults` | 200, AI provider defaults |
-| 6.1.11 | Filter options | Auto | `GET /api/filter_options` | 200 (may be empty) |
-| 6.1.12 | Similarity page | Auto | `GET /similarity` | 200, HTML |
-| 6.1.13 | Alchemy page | Auto | `GET /alchemy` | 200, HTML |
-| 6.1.14 | Map page | Auto | `GET /map` | 200, HTML |
-| 6.1.15 | Path page | Auto | `GET /path` | 200, HTML |
-| 6.1.16 | Cron page | Auto | `GET /cron` | 200, HTML |
-| 6.1.17 | Cleaning page | Auto | `GET /cleaning` | 200, HTML |
+| 6.1.7 | Setup status | Auto | `GET /api/setup/status` | 200, setup complete/incomplete |
+| 6.1.8 | Providers list (empty) | Auto | `GET /api/setup/providers` | 200, `[]` |
+| 6.1.9 | Settings GET | Auto | `GET /api/setup/settings` | 200, current settings |
+| 6.1.10 | Config defaults | Auto | `GET /chat/api/config_defaults` | 200, AI provider defaults |
+| 6.1.11 | Similarity page | Auto | `GET /similarity` | 200, HTML |
+| 6.1.12 | Alchemy page | Auto | `GET /alchemy` | 200, HTML |
+| 6.1.13 | Map page | Auto | `GET /map` | 200, HTML |
+| 6.1.14 | Path page | Auto | `GET /path` | 200, HTML |
+| 6.1.15 | Cron page | Auto | `GET /cron` | 200, HTML |
+| 6.1.16 | Cleaning page | Auto | `GET /cleaning` | 200, HTML |
 
 ### 6.2 Endpoints With Provider (Media server configured, tracks analyzed)
 
@@ -379,17 +401,17 @@ pip install -r testing_suite/requirements.txt
 | 6.2.1 | Search tracks | Auto | `GET /api/search_tracks?title=test` | 200, array of matches |
 | 6.2.2 | Similar tracks by ID | Auto | `GET /api/similar_tracks?item_id=X` | 200, similar tracks array |
 | 6.2.3 | Similar tracks by title+artist | Auto | `GET /api/similar_tracks?title=X&artist=Y` | 200, similar tracks array |
-| 6.2.4 | Get score | Auto | `GET /get_score?id=X` | 200, track metadata incl. new fields |
-| 6.2.5 | Get embedding | Auto | `GET /get_embedding?id=X` | 200, embedding vector |
+| 6.2.4 | Get score | Auto | `GET /external/get_score?id=X` | 200, track metadata incl. new fields |
+| 6.2.5 | Get embedding | Auto | `GET /external/get_embedding?id=X` | 200, embedding vector |
 | 6.2.6 | Artist search | Auto | `GET /api/search_artists?query=X` | 200, artist matches |
 | 6.2.7 | Similar artists | Auto | `GET /api/similar_artists?artist=X` | 200, similar artists |
 | 6.2.8 | Alchemy search | Auto | `POST /api/alchemy` with items | 200, results array |
 | 6.2.9 | Path finding | Auto | `GET /api/find_path?start_song_id=X&end_song_id=Y` | 200, path array |
-| 6.2.10 | Map data | Auto | `GET /api/map/100` | 200, items with projections |
-| 6.2.11 | Map data compressed | Auto | `GET /api/map/gzip/100` | 200, gzip content |
+| 6.2.10 | Map data | Auto | `GET /api/map?percent=100` | 200, items with projections |
+| 6.2.11 | Map cache status | Auto | `GET /api/map_cache_status` | 200, cache info |
 | 6.2.12 | CLAP search (if enabled) | Auto | `POST /api/clap/search` with query | 200, results |
 | 6.2.13 | MuLan search (if enabled) | Auto | `POST /api/mulan/search` with query | 200, results |
-| 6.2.14 | Chat playlist | Manual | `POST /api/chatPlaylist` | 200, streaming playlist |
+| 6.2.14 | Chat playlist | Manual | `POST /chat/api/chatPlaylist` | 200, streaming playlist |
 | 6.2.15 | Start analysis | Auto | `POST /api/analysis/start` | 202, task_id |
 | 6.2.16 | Start clustering | Auto | `POST /api/clustering/start` | 202, task_id |
 | 6.2.17 | Cron CRUD | Auto | `POST/GET/DELETE /api/cron` | Cron entry management |
@@ -483,32 +505,70 @@ pip install -r testing_suite/requirements.txt
 | 8.5.4 | CLAP tool included when enabled | Auto | `text_search` in tool list when `CLAP_ENABLED=true` |
 | 8.5.5 | CLAP tool excluded when disabled | Auto | `text_search` NOT in tool list when `CLAP_ENABLED=false` |
 
-### 8.6 AI Provider Integration (Manual + Automated)
-
-| # | Test Case | Type | Provider | Details |
-|---|-----------|------|----------|---------|
-| 8.6.1 | Gemini tool calling | Manual | Gemini | Sends request, receives tool calls, executes them |
-| 8.6.2 | Gemini protobuf handling | Auto | Gemini | `_convert_protobuf_to_dict()` converts correctly |
-| 8.6.3 | Gemini fc.args vs fc.arguments | Auto | Gemini | Both formats parsed correctly |
-| 8.6.4 | OpenAI tool calling | Manual | OpenAI | Standard tool calling works |
-| 8.6.5 | OpenAI timeout handling | Auto | OpenAI | `httpx.ReadTimeout` caught and handled |
-| 8.6.6 | Mistral tool calling | Manual | Mistral | SDK-based tool calling works |
-| 8.6.7 | Ollama JSON extraction | Auto | Ollama | Markdown code blocks stripped, JSON parsed |
-| 8.6.8 | Ollama edge case: text before JSON | Auto | Ollama | `Here is my response: {"tool_calls":...}` → parsed |
-| 8.6.9 | Ollama edge case: schema in response | Auto | Ollama | `{"tool_calls": {"_description": ...}}` → rejected |
-| 8.6.10 | Ollama edge case: invalid JSON | Auto | Ollama | Malformed JSON → empty tool_calls |
-| 8.6.11 | AI_MODEL_PROVIDER=NONE | Auto | None | Playlist naming skipped |
-| 8.6.12 | Full pipeline per provider | Manual | All | End-to-end playlist generation with each provider |
-
-### 8.7 Library Context (Automated)
+### 8.6 AI MCP Client (Automated - `test_ai_mcp_client.py`)
 
 | # | Test Case | Type | Details |
 |---|-----------|------|---------|
-| 8.7.1 | get_library_context returns stats | Auto | Total songs, unique artists, top genres, etc. |
-| 8.7.2 | Caching works | Auto | Second call returns cached result |
-| 8.7.3 | Empty library handling | Auto | No songs in DB → graceful defaults |
-| 8.7.4 | Year range calculation | Auto | Min/max year from DB |
-| 8.7.5 | Rating coverage percentage | Auto | % of tracks with rating > 0 |
+| 8.6.1 | Prompt includes all tool names | Auto | All 5-6 tool names in prompt text |
+| 8.6.2 | CLAP decision tree has 6 steps | Auto | With CLAP enabled, 6 steps in decision tree |
+| 8.6.3 | No-CLAP decision tree has 5 steps | Auto | With CLAP disabled, 5 steps |
+| 8.6.4 | Library context injected | Auto | Total songs, artists, genres in prompt |
+| 8.6.5 | No library section when None | Auto | Graceful handling of missing context |
+| 8.6.6 | Dynamic genres from context | Auto | Top genres from DB in prompt |
+| 8.6.7 | Dynamic moods from context | Auto | Top moods from DB in prompt |
+| 8.6.8 | Fallback genres when no context | Auto | Default genre list used |
+| 8.6.9 | Year range shown | Auto | Min/max year in prompt |
+| 8.6.10 | Rating info shown | Auto | Rating coverage % in prompt |
+| 8.6.11 | 6 tools with CLAP | Auto | `get_mcp_tools()` returns 6 |
+| 8.6.12 | 5 tools without CLAP | Auto | `get_mcp_tools()` returns 5 |
+| 8.6.13 | Tools have required keys | Auto | name, description, parameters present |
+| 8.6.14 | search_database filter properties | Auto | Genre, mood, tempo, energy, key, scale, year, rating |
+| 8.6.15 | Energy 0 → ENERGY_MIN | Auto | `execute_mcp_tool` converts correctly |
+| 8.6.16 | Energy 1 → ENERGY_MAX | Auto | `execute_mcp_tool` converts correctly |
+| 8.6.17 | Energy 0.5 → midpoint | Auto | Linear interpolation |
+| 8.6.18 | No energy args → None | Auto | Missing args pass through as None |
+| 8.6.19 | Unknown tool → error | Auto | Returns error dict |
+| 8.6.20 | song_alchemy normalizes strings | Auto | Plain strings → dicts |
+| 8.6.21 | Provider dispatch routing | Auto | Gemini/OpenAI/Mistral/Ollama dispatch correctly |
+| 8.6.22 | Unknown provider → error | Auto | Returns error dict |
+| 8.6.23 | Ollama JSON parsing | Auto | Valid JSON tool_calls extracted |
+| 8.6.24 | Ollama markdown stripping | Auto | Code blocks stripped before parsing |
+| 8.6.25 | Ollama schema detection rejected | Auto | Schema-like response → error |
+| 8.6.26 | Ollama JSON decode error | Auto | Malformed JSON → error |
+| 8.6.27 | Ollama read timeout | Auto | httpx.ReadTimeout → error |
+| 8.6.28 | Gemini missing API key | Auto | Empty key → error |
+| 8.6.29 | Gemini schema type conversion | Auto | JSON schema → Gemini types |
+| 8.6.30 | OpenAI tool call extraction | Auto | Standard OpenAI format parsed |
+| 8.6.31 | OpenAI read timeout | Auto | httpx.ReadTimeout → error |
+| 8.6.32 | Mistral missing API key | Auto | Empty/placeholder key → error |
+| 8.6.33 | Mistral tool call extraction | Auto | Mistral SDK format parsed |
+
+### 8.7 AI Provider Integration (Manual + Automated)
+
+| # | Test Case | Type | Provider | Details |
+|---|-----------|------|----------|---------|
+| 8.7.1 | Gemini tool calling | Manual | Gemini | Sends request, receives tool calls, executes them |
+| 8.7.2 | Gemini protobuf handling | Auto | Gemini | `_convert_protobuf_to_dict()` converts correctly |
+| 8.7.3 | Gemini fc.args vs fc.arguments | Auto | Gemini | Both formats parsed correctly |
+| 8.7.4 | OpenAI tool calling | Manual | OpenAI | Standard tool calling works |
+| 8.7.5 | OpenAI timeout handling | Auto | OpenAI | `httpx.ReadTimeout` caught and handled |
+| 8.7.6 | Mistral tool calling | Manual | Mistral | SDK-based tool calling works |
+| 8.7.7 | Ollama JSON extraction | Auto | Ollama | Markdown code blocks stripped, JSON parsed |
+| 8.7.8 | Ollama edge case: text before JSON | Auto | Ollama | `Here is my response: {"tool_calls":...}` → parsed |
+| 8.7.9 | Ollama edge case: schema in response | Auto | Ollama | `{"tool_calls": {"_description": ...}}` → rejected |
+| 8.7.10 | Ollama edge case: invalid JSON | Auto | Ollama | Malformed JSON → empty tool_calls |
+| 8.7.11 | AI_MODEL_PROVIDER=NONE | Auto | None | Playlist naming skipped |
+| 8.7.12 | Full pipeline per provider | Manual | All | End-to-end playlist generation with each provider |
+
+### 8.8 Library Context (Automated)
+
+| # | Test Case | Type | Details |
+|---|-----------|------|---------|
+| 8.8.1 | get_library_context returns stats | Auto | Total songs, unique artists, top genres, etc. |
+| 8.8.2 | Caching works | Auto | Second call returns cached result |
+| 8.8.3 | Empty library handling | Auto | No songs in DB → graceful defaults |
+| 8.8.4 | Year range calculation | Auto | Min/max year from DB |
+| 8.8.5 | Rating coverage percentage | Auto | % of tracks with rating > 0 |
 
 ---
 
@@ -685,28 +745,31 @@ For EACH provider (Jellyfin, Navidrome, Lyrion, Emby, LocalFiles):
 
 ### 12.2 Visual Correctness (All Manual)
 
-For EACH of these 18 templates, verify in BOTH light and dark mode:
+For EACH of these 21 pages/templates, verify in BOTH light and dark mode:
 
-| # | Page | Check Items |
-|---|------|-------------|
-| 12.2.1 | Chat (instant playlist) | Background, text, input fields, buttons, results cards |
-| 12.2.2 | Similarity search | Background, search inputs, results table, cards |
-| 12.2.3 | Alchemy | Background, add/subtract buttons, results, projections |
-| 12.2.4 | Artist similarity | Background, search, results list |
-| 12.2.5 | Path finding | Background, start/end selectors, path visualization |
-| 12.2.6 | Map | Background, map container, tooltips |
-| 12.2.7 | CLAP search | Background, search input, results |
-| 12.2.8 | MuLan search | Background, search input, results |
-| 12.2.9 | Sonic fingerprint | Background, results, credentials form |
-| 12.2.10 | Waveform | Background, waveform canvas, controls |
-| 12.2.11 | Cleaning | Background, status display |
-| 12.2.12 | Cron | Background, cron table, add form |
-| 12.2.13 | Collection sync | Background, sync status |
-| 12.2.14 | Settings | Background, form fields, dropdowns |
-| 12.2.15 | Setup wizard | Background, wizard steps, buttons |
-| 12.2.16 | Sidebar navigation | Background, links, active state, toggle button |
-| 12.2.17 | Chart.js charts | Grid lines, labels, data points use CSS variable colors |
-| 12.2.18 | Error/loading states | Spinner, error messages visible in both themes |
+| # | Page | Template | Check Items |
+|---|------|----------|-------------|
+| 12.2.1 | Homepage | `index.html` | Background, navigation cards, layout |
+| 12.2.2 | Chat (instant playlist) | `chat.html` | Background, text, input fields, buttons, results cards |
+| 12.2.3 | Similarity search | `similarity.html` | Background, search inputs, results table, cards |
+| 12.2.4 | Alchemy | `alchemy.html` | Background, add/subtract buttons, results, projections |
+| 12.2.5 | Artist similarity | `artist_similarity.html` | Background, search, results list |
+| 12.2.6 | Path finding | `path.html` | Background, start/end selectors, path visualization |
+| 12.2.7 | Map | `map.html` | Background, map container, tooltips |
+| 12.2.8 | CLAP search | `clap_search.html` | Background, search input, results |
+| 12.2.9 | MuLan search | `mulan_search.html` | Background, search input, results |
+| 12.2.10 | Sonic fingerprint | `sonic_fingerprint.html` | Background, results, credentials form |
+| 12.2.11 | Waveform | `waveform.html` | Background, waveform canvas, controls |
+| 12.2.12 | Analysis | `script.html` | Background, progress display, status |
+| 12.2.13 | Cleaning | `cleaning.html` | Background, status display |
+| 12.2.14 | Cron | `cron.html` | Background, cron table, add form |
+| 12.2.15 | Collection sync | `collection.html` | Background, sync status |
+| 12.2.16 | Collection script | `collection_script.html` | Background, script display |
+| 12.2.17 | Settings | `settings.html` | Background, form fields, dropdowns |
+| 12.2.18 | Setup wizard | `setup.html` | Background, wizard steps, buttons |
+| 12.2.19 | Sidebar navigation | `sidebar_navi.html` | Background, links, active state, toggle button |
+| 12.2.20 | Chart.js charts | _(cross-cutting)_ | Grid lines, labels, data points use CSS variable colors |
+| 12.2.21 | Error/loading states | _(cross-cutting)_ | Spinner, error messages visible in both themes |
 
 ### 12.3 CSS Variables (Automated)
 
@@ -792,14 +855,17 @@ For EACH of these 18 templates, verify in BOTH light and dark mode:
 
 | # | Test Case | Steps | Expected |
 |---|-----------|-------|----------|
-| 15.1 | Unified CPU compose | `docker compose -f docker-compose-unified.yaml up` | App + worker start, health check passes |
-| 15.2 | Unified NVIDIA compose | `docker compose -f docker-compose-unified-nvidia.yaml up` | GPU detected, CUDA available |
-| 15.3 | Split deployment: server | Start server compose | API responds on port |
-| 15.4 | Split deployment: worker | Start worker compose with remote Redis/PG | Worker connects and processes jobs |
-| 15.5 | Unraid templates | Import XML templates | Containers configured correctly |
-| 15.6 | .env.example works | Copy to .env, start | App starts with setup wizard |
-| 15.7 | No `version:` in compose | Check all compose files | No deprecated `version: '3.8'` line |
-| 15.8 | Test provider stack | Start test compose files | Jellyfin + Navidrome + AudioMuse running |
+| 15.1 | Unified CPU compose | `docker compose -f deployment/docker-compose-unified.yaml up` | App + worker start, health check passes |
+| 15.2 | Unified NVIDIA compose | `docker compose -f deployment/docker-compose-unified-nvidia.yaml up` | GPU detected, CUDA available |
+| 15.3 | Unified NVIDIA test compose | `docker compose -f deployment/docker-compose-unified-nvidia-test.yaml up` | Test variant starts |
+| 15.4 | Split deployment: server | `docker compose -f deployment/docker-compose-server.yaml up` | API responds on port |
+| 15.5 | Split deployment: worker CPU | `docker compose -f deployment/docker-compose-worker-cpu.yaml up` | Worker connects and processes jobs |
+| 15.6 | Split deployment: worker NVIDIA | `docker compose -f deployment/docker-compose-worker-nvidia.yaml up` | GPU worker connects |
+| 15.7 | DMR compose | `docker compose -f deployment/docker-compose-dmr.yaml up` | DMR variant starts |
+| 15.8 | Unraid templates | Import XML templates | Containers configured correctly |
+| 15.9 | .env.example works | Copy to .env, start | App starts with setup wizard |
+| 15.10 | No `version:` in compose | Check all compose files | No deprecated `version: '3.8'` line |
+| 15.11 | Test provider stack | Start test compose files | Jellyfin + Navidrome + AudioMuse running |
 
 ---
 
@@ -862,7 +928,7 @@ For EACH of these 18 templates, verify in BOTH light and dark mode:
 |---|-----------|------|---------|
 | 17.3.1 | Provider credentials not logged | Manual | Check logs for token/password values |
 | 17.3.2 | API keys not in responses | Auto | GET endpoints don't return API keys |
-| 17.3.3 | Provider config API sanitized | Auto | `GET /api/providers` redacts sensitive fields |
+| 17.3.3 | Provider config API sanitized | Auto | `GET /api/setup/providers` redacts sensitive fields |
 
 ---
 
@@ -872,6 +938,7 @@ For EACH of these 18 templates, verify in BOTH light and dark mode:
 
 - [ ] All existing unit tests pass (`pytest tests/unit/ -v`)
 - [ ] New MCP tool tests pass (Section 9)
+- [ ] New AI MCP client tests pass (Section 8.6)
 - [ ] New playlist ordering tests pass (Section 14)
 - [ ] New instant playlist pipeline tests pass (Section 8)
 - [ ] New setup wizard tests pass (Section 3)
@@ -895,7 +962,7 @@ For EACH of these 18 templates, verify in BOTH light and dark mode:
 - [ ] Dark mode visual correctness on all pages (Section 12.2)
 - [ ] All provider-specific tests (Section 10.1)
 - [ ] Docker deployment tests (Section 15)
-- [ ] AI provider integration tests (Section 8.6)
+- [ ] AI provider integration tests (Section 8.7)
 - [ ] Comparison suite benchmarks (testing_suite/)
 - [ ] Security audit (Section 17)
 
@@ -908,20 +975,21 @@ For EACH of these 18 templates, verify in BOTH light and dark mode:
 | Multi-Provider Architecture | 22 | 10 | 32 |
 | GUI Setup Wizard | 0 | 22 | 22 |
 | Environment / Config | 12 | 3 | 15 |
-| API Endpoints | 27 | 4 | 31 |
+| API Endpoints | 26 | 4 | 30 |
 | App Interactions | 0 | 14 | 14 |
-| Instant Playlist & AI | 30 | 6 | 36 |
+| Instant Playlist & AI (pipeline) | 30 | 6 | 36 |
+| AI MCP Client (test_ai_mcp_client.py) | 63 | 0 | 63 |
 | MCP Tools | 40 | 0 | 40 |
 | Provider-Specific | 18 | 14 per provider | 88 |
 | Database & Schema | 12 | 0 | 12 |
-| Dark Mode | 5 | 20 | 25 |
+| Dark Mode | 5 | 23 | 28 |
 | Analysis Pipeline | 8 | 1 | 9 |
 | Playlist Ordering | 16 | 0 | 16 |
-| Deployment | 0 | 8 | 8 |
+| Deployment | 0 | 11 | 11 |
 | Regression | 6 | 13 | 19 |
 | Security | 7 | 1 | 8 |
-| **TOTAL** | **203** | **~116** | **~319** |
+| **TOTAL** | **265** | **~122** | **~387** |
 
 **Existing automated tests:** ~200+
-**New automated tests to write:** ~203
-**Manual test cases:** ~116
+**New automated tests:** ~265
+**Manual test cases:** ~122
