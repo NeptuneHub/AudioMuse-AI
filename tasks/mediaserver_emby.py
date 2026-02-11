@@ -14,17 +14,50 @@ REQUESTS_TIMEOUT = 300
 # ##############################################################################
 # Accessing the API is via http[s]://hostname:port/emby/{apipath}
 # https://dev.emby.media/doc/restapi/index.html
-def _get_target_library_ids():
+def get_music_libraries(config_dict=None):
+    """Fetch available music libraries from Emby.
+    Args: config_dict -- provider JSONB config dict (url, token, user_id). Falls back to global config.
+    Returns: [{'id': str, 'name': str}]
+    """
+    if config_dict:
+        url = f"{config_dict.get('url', '').rstrip('/')}/emby/Library/VirtualFolders"
+        headers = {"X-Emby-Token": config_dict.get('token', '')}
+    else:
+        url = f"{config.EMBY_URL}/emby/Library/VirtualFolders"
+        headers = config.HEADERS
+
+    try:
+        r = requests.get(url, headers=headers, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        all_libraries = r.json()
+        if not isinstance(all_libraries, list):
+            return []
+        return [
+            {'id': lib['ItemId'], 'name': lib['Name']}
+            for lib in all_libraries
+            if lib.get('CollectionType') == 'music'
+        ]
+    except Exception as e:
+        logger.error(f"Failed to fetch Emby music libraries from '{url}': {e}", exc_info=True)
+        return []
+
+
+def _get_target_library_ids(provider_config=None):
     """
     Parses config for library names and returns their IDs for filtering using a robust,
     case-insensitive matching against the server's actual library configuration.
     """
-    library_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+    # Try per-provider config first
+    if provider_config and provider_config.get('music_libraries'):
+        library_names = provider_config['music_libraries']  # already a list
+    else:
+        # Fallback to global env var
+        library_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+        if not library_names_str.strip():
+            return None
+        library_names = [n.strip() for n in library_names_str.split(',') if n.strip()]
 
-    if not library_names_str.strip():
-        return None
-
-    target_names_lower = {name.strip().lower() for name in library_names_str.split(',') if name.strip()}
+    target_names_lower = {name.lower() for name in library_names}
 
     # Compatible with Emby GET /Library/VirtualFolders API (returns a list, not a dict).
     # https://dev.emby.media/reference/RestAPI/LibraryStructureService/getLibraryVirtualfoldersQuery.html
@@ -523,48 +556,64 @@ def _select_best_artist(item, title="Unknown"):
     return track_artist, artist_id
 
 def get_all_songs(user_creds=None):
-    # Emby might have a maximum number of items returned per request.
-    # not sure if this approach would work.. It defnitly needs testing.
-    """Fetches all songs from Emby using admin credentials."""
+    """Fetches all songs from Emby using admin credentials.
+    If MUSIC_LIBRARIES is set (or per-provider music_libraries), filters by library.
+    """
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
-    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+    target_library_ids = _get_target_library_ids()
+
+    # Config is set but no matching libraries found - return nothing
+    if isinstance(target_library_ids, set) and not target_library_ids:
+        logger.warning("Library filtering is active, but no matching libraries were found. Returning no songs.")
+        return []
+
     all_items = []
-    start_index = 0
     limit = 1000  # max items per request
 
-    while True:
-        params = {
-            "IncludeItemTypes": "Audio",
-            "Recursive": True,
-            "StartIndex": start_index,
-            "Limit": limit,
-            "Fields": "UserData,Path,ProductionYear"
-        }
-        try:
-            r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
-            r.raise_for_status()
-            items = r.json().get("Items", [])
+    # Build list of parent_ids to iterate over
+    if target_library_ids is None:
+        parent_ids = [None]  # No filtering
+    else:
+        parent_ids = list(target_library_ids)
+        logger.info(f"Fetching songs from {len(parent_ids)} specific Emby libraries.")
 
-            # Apply artist field prioritization
-            for item in items:
-                item['OriginalAlbumArtist'] = item.get('AlbumArtist')
-                title = item.get('Name', 'Unknown')
-                artist_name, artist_id = _select_best_artist(item, title)
-                item['AlbumArtist'] = artist_name
-                item['ArtistId'] = artist_id
-                item['Year'] = item.get('ProductionYear')
-                item['FilePath'] = item.get('Path')
+    for parent_id in parent_ids:
+        start_index = 0
+        while True:
+            url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+            params = {
+                "IncludeItemTypes": "Audio",
+                "Recursive": True,
+                "StartIndex": start_index,
+                "Limit": limit,
+                "Fields": "UserData,Path,ProductionYear"
+            }
+            if parent_id:
+                params["ParentId"] = parent_id
+            try:
+                r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+                r.raise_for_status()
+                items = r.json().get("Items", [])
 
-            all_items.extend(items)
+                # Apply artist field prioritization
+                for item in items:
+                    item['OriginalAlbumArtist'] = item.get('AlbumArtist')
+                    title = item.get('Name', 'Unknown')
+                    artist_name, artist_id = _select_best_artist(item, title)
+                    item['AlbumArtist'] = artist_name
+                    item['ArtistId'] = artist_id
+                    item['Year'] = item.get('ProductionYear')
+                    item['FilePath'] = item.get('Path')
 
-            if len(items) < limit:
-                # No more items left
+                all_items.extend(items)
+
+                if len(items) < limit:
+                    break
+
+                start_index += limit
+            except Exception as e:
+                logger.error(f"Emby get_all_songs failed at index {start_index}: {e}", exc_info=True)
                 break
-
-            start_index += limit
-        except Exception as e:
-            logger.error(f"Emby get_all_songs failed at index {start_index}: {e}", exc_info=True)
-            break
 
     return all_items
 
@@ -734,14 +783,15 @@ def get_last_played_time(item_id, user_creds=None):
         logger.error(f"Emby get_last_played_time failed for item {item_id}, user {user_id}: {e}", exc_info=True)
         return None
 
-def create_instant_playlist(playlist_name, item_ids, user_creds=None):
+def create_instant_playlist(playlist_name, item_ids, user_creds=None, server_config=None):
     # is this duplicate of create_playlist?
     """
     Creates a new instant playlist on Emby for a specific user.
     Handles empty tokens by falling back to the default config token.
     """
-    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
-    token = (user_creds.get('token') if user_creds else None) or config.EMBY_TOKEN
+    sc = server_config or {}
+    user_id = user_creds.get('user_id') if user_creds else (sc.get('user_id') or config.EMBY_USER_ID)
+    token = (user_creds.get('token') if user_creds else None) or sc.get('token') or config.EMBY_TOKEN
     if not token:
         raise ValueError("Emby Token is required and could not be found.")
     if not user_id:
@@ -759,10 +809,10 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         # https://dev.emby.media/doc/restapi/Playlists.html
         # https://dev.emby.media/reference/RestAPI/PlaylistService/postPlaylists.html
 
-        
+        base_url = sc.get('url') or config.EMBY_URL
         ids_param = ",".join(item_ids) if isinstance(item_ids, (list, set, tuple)) else str(item_ids)
         url = (
-            f"{config.EMBY_URL}/emby/Playlists"
+            f"{base_url}/emby/Playlists"
             f"?Name={requests.utils.quote(final_playlist_name)}"
             f"&Ids={requests.utils.quote(ids_param)}"
             f"&UserId={user_id}"

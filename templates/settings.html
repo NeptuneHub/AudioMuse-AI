@@ -180,6 +180,7 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
+        flex-wrap: wrap;
         padding: 1rem;
         background: var(--bg-card);
         border-radius: 8px;
@@ -492,6 +493,61 @@
         background: rgba(220, 53, 69, 0.2);
         color: #dc3545;
     }
+
+    .test-result.warning {
+        background: rgba(255, 193, 7, 0.2);
+        color: #856404;
+    }
+
+    body.dark-mode .test-result.warning {
+        background: rgba(255, 193, 7, 0.15);
+        color: #ffc107;
+    }
+
+    .rescan-result {
+        margin-top: 0.5rem;
+        width: 100%;
+    }
+
+    .rescan-actions {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 0.5rem;
+    }
+
+    /* Library Checklist */
+    .library-checklist {
+        margin-top: 0.75rem;
+        padding: 0.75rem;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+    }
+
+    .library-checklist-title {
+        font-weight: 500;
+        margin-bottom: 0.5rem;
+        font-size: 0.9rem;
+    }
+
+    .library-checklist label {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.25rem 0;
+        font-size: 0.9rem;
+        cursor: pointer;
+    }
+
+    .library-checklist label:hover {
+        color: var(--color-primary);
+    }
+
+    .library-checklist .library-note {
+        font-size: 0.8rem;
+        color: var(--text-muted);
+        margin-top: 0.5rem;
+    }
 </style>
 {% endblock %}
 
@@ -636,19 +692,85 @@
         </div>
         <div class="section-content">
             <p class="section-description">
-                Configure AI providers for creative playlist naming and other features.
+                Configure AI providers for creative playlist naming, instant playlists, and other features.
             </p>
 
             <div class="field-group">
                 <label for="ai-provider">AI Provider</label>
-                <select id="ai-provider" onchange="markDirty()">
+                <select id="ai-provider" onchange="updateAiProviderFields(); markDirty()">
                     <option value="NONE">None (Use Default Names)</option>
                     <option value="OLLAMA">Ollama (Local)</option>
                     <option value="OPENAI">OpenAI / OpenRouter</option>
                     <option value="GEMINI">Google Gemini</option>
                     <option value="MISTRAL">Mistral AI</option>
                 </select>
-                <div class="field-help">AI service for generating creative playlist names</div>
+                <div class="field-help">AI service for generating creative playlist names and instant playlists</div>
+            </div>
+
+            <!-- Provider-specific fields -->
+            <div id="ollama-fields" style="display: none;">
+                <div class="field-group">
+                    <label for="ollama-url">Ollama Server URL</label>
+                    <input type="text" id="ollama-url" placeholder="http://localhost:11434/api/generate" onchange="markDirty()">
+                    <div class="field-help">URL of your Ollama instance</div>
+                </div>
+                <div class="field-group">
+                    <label for="ollama-model">Ollama Model Name</label>
+                    <input type="text" id="ollama-model" placeholder="llama3.1:8b" onchange="markDirty()">
+                    <div class="field-help">Model to use for Ollama (e.g., llama3.1:8b, mistral:7b)</div>
+                </div>
+            </div>
+
+            <div id="openai-fields" style="display: none;">
+                <div class="field-group">
+                    <label for="openai-url">OpenAI / OpenRouter URL</label>
+                    <input type="text" id="openai-url" placeholder="https://api.openai.com/v1/chat/completions" onchange="markDirty()">
+                    <div class="field-help">API endpoint URL. Use OpenRouter URL for third-party models.</div>
+                </div>
+                <div class="field-group">
+                    <label for="openai-model">OpenAI Model Name</label>
+                    <input type="text" id="openai-model" placeholder="gpt-4" onchange="markDirty()">
+                    <div class="field-help">Model name (e.g., gpt-4, gpt-4o, or OpenRouter model IDs)</div>
+                </div>
+            </div>
+
+            <div id="gemini-fields" style="display: none;">
+                <div class="field-group">
+                    <label for="gemini-model">Gemini Model Name</label>
+                    <input type="text" id="gemini-model" placeholder="gemini-2.5-pro" onchange="markDirty()">
+                    <div class="field-help">Google Gemini model (e.g., gemini-2.5-pro, gemini-2.5-flash)</div>
+                </div>
+            </div>
+
+            <div id="mistral-fields" style="display: none;">
+                <div class="field-group">
+                    <label for="mistral-model">Mistral Model Name</label>
+                    <input type="text" id="mistral-model" placeholder="ministral-3b-latest" onchange="markDirty()">
+                    <div class="field-help">Mistral AI model (e.g., ministral-3b-latest, mistral-large-latest)</div>
+                </div>
+            </div>
+
+            <!-- Instant Playlist Settings -->
+            <h3 style="margin-top: 1.5rem; margin-bottom: 1rem; font-size: 1rem; color: var(--text-muted);">Instant Playlist</h3>
+
+            <div class="field-group">
+                <label for="max-artist-songs">Max Songs Per Artist</label>
+                <input type="number" id="max-artist-songs" min="1" max="50" value="5" onchange="markDirty()">
+                <div class="field-help">Maximum songs from a single artist in AI-generated playlists. Lower = more diverse.</div>
+            </div>
+
+            <div class="field-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="energy-arc" onchange="markDirty()">
+                    <span>Enable Energy Arc</span>
+                </label>
+                <div class="field-help">Shape playlist energy: gentle start, build to peak, then cool down.</div>
+            </div>
+
+            <div class="field-group">
+                <label for="ai-timeout">AI Request Timeout (seconds)</label>
+                <input type="number" id="ai-timeout" min="30" max="600" value="300" onchange="markDirty()">
+                <div class="field-help">Seconds to wait for AI responses. Increase for slower hardware or larger models.</div>
             </div>
         </div>
     </div>
@@ -677,6 +799,7 @@
                 <!-- Populated based on provider type -->
             </div>
             <div id="provider-test-result" class="test-result" style="display: none;"></div>
+            <div id="provider-library-checklist" class="library-checklist" style="display: none;"></div>
         </div>
         <div class="modal-footer">
             <button class="btn-cancel" onclick="closeProviderModal()">Cancel</button>
@@ -692,6 +815,7 @@
 
 {% block bodyAdditions %}
 <script src="{{ url_for('static', filename='menu.js') }}"></script>
+<script src="/static/utils.js"></script>
 <script>
     // State
     let providers = [];
@@ -777,8 +901,8 @@
             item.innerHTML = `
                 <div class="provider-info">
                     <div>
-                        <div class="provider-name">${p.name || typeInfo.name || p.provider_type}</div>
-                        <div class="provider-type">${typeInfo.name || p.provider_type}</div>
+                        <div class="provider-name">${escapeHtml(p.name || typeInfo.name || p.provider_type)}</div>
+                        <div class="provider-type">${escapeHtml(typeInfo.name || p.provider_type)}</div>
                     </div>
                     <div class="provider-badges">
                         ${isPrimary ? '<span class="badge badge-primary">Primary</span>' : ''}
@@ -788,8 +912,10 @@
                 <div class="provider-actions">
                     <button onclick="editProvider(${p.id})">Edit</button>
                     <button onclick="toggleProvider(${p.id}, ${!p.enabled})">${p.enabled ? 'Disable' : 'Enable'}</button>
+                    ${p.provider_type === 'navidrome' ? `<button onclick="rescanPaths(${p.id})">Rescan Paths</button>` : ''}
                     <button class="btn-danger" onclick="deleteProvider(${p.id})">Delete</button>
                 </div>
+                <div id="rescan-result-${p.id}" class="rescan-result"></div>
             `;
             list.appendChild(item);
 
@@ -825,14 +951,38 @@
         document.getElementById('clap-enabled').checked = settings.clap_enabled !== false;
         document.getElementById('gpu-clustering').checked = settings.gpu_clustering === true;
 
-        // AI
+        // AI Provider
         const aiProvider = document.getElementById('ai-provider');
         if (settings.ai_provider) {
             aiProvider.value = settings.ai_provider;
         }
 
+        // AI Provider Defaults
+        if (settings.ollama_server_url) document.getElementById('ollama-url').value = settings.ollama_server_url;
+        if (settings.ollama_model_name) document.getElementById('ollama-model').value = settings.ollama_model_name;
+        if (settings.openai_server_url) document.getElementById('openai-url').value = settings.openai_server_url;
+        if (settings.openai_model_name) document.getElementById('openai-model').value = settings.openai_model_name;
+        if (settings.gemini_model_name) document.getElementById('gemini-model').value = settings.gemini_model_name;
+        if (settings.mistral_model_name) document.getElementById('mistral-model').value = settings.mistral_model_name;
+
+        // Instant Playlist
+        document.getElementById('max-artist-songs').value = settings.max_songs_per_artist_playlist ?? 5;
+        document.getElementById('energy-arc').checked = settings.playlist_energy_arc === true;
+        document.getElementById('ai-timeout').value = settings.ai_request_timeout ?? 300;
+
+        // Show/hide provider-specific fields
+        updateAiProviderFields();
+
         // Update GPU clustering availability
         updateGpuClusteringState();
+    }
+
+    function updateAiProviderFields() {
+        const provider = document.getElementById('ai-provider').value;
+        document.getElementById('ollama-fields').style.display = provider === 'OLLAMA' ? 'block' : 'none';
+        document.getElementById('openai-fields').style.display = provider === 'OPENAI' ? 'block' : 'none';
+        document.getElementById('gemini-fields').style.display = provider === 'GEMINI' ? 'block' : 'none';
+        document.getElementById('mistral-fields').style.display = provider === 'MISTRAL' ? 'block' : 'none';
     }
 
     function updateWorkerInfo() {
@@ -943,6 +1093,8 @@
 
         updateProviderFields();
         document.getElementById('provider-test-result').style.display = 'none';
+        const checklistDiv = document.getElementById('provider-library-checklist');
+        if (checklistDiv) { checklistDiv.style.display = 'none'; checklistDiv.innerHTML = ''; }
         document.getElementById('provider-modal').classList.add('visible');
     }
 
@@ -966,6 +1118,8 @@
 
         updateProviderFields(provider.config);
         document.getElementById('provider-test-result').style.display = 'none';
+        const checklistDiv = document.getElementById('provider-library-checklist');
+        if (checklistDiv) { checklistDiv.style.display = 'none'; checklistDiv.innerHTML = ''; }
         document.getElementById('provider-modal').classList.add('visible');
     }
 
@@ -973,6 +1127,12 @@
         document.getElementById('provider-modal').classList.remove('visible');
         document.getElementById('provider-type').disabled = false;
         editingProviderId = null;
+        // Reset library checklist
+        const checklistDiv = document.getElementById('provider-library-checklist');
+        if (checklistDiv) {
+            checklistDiv.style.display = 'none';
+            checklistDiv.innerHTML = '';
+        }
     }
 
     function updateProviderFields(existingConfig = {}) {
@@ -1025,6 +1185,26 @@
                 }
             }
         });
+
+        // Collect selected music libraries from checklist
+        const libraryCheckboxes = document.querySelectorAll('.library-checkbox');
+        if (libraryCheckboxes.length > 0) {
+            const allChecked = Array.from(libraryCheckboxes).every(cb => cb.checked);
+            if (allChecked) {
+                // All checked = no filtering (don't store music_libraries)
+            } else {
+                const selectedLibraries = [];
+                libraryCheckboxes.forEach(cb => {
+                    if (cb.checked) {
+                        selectedLibraries.push(cb.dataset.libraryName);
+                    }
+                });
+                if (selectedLibraries.length > 0) {
+                    config.music_libraries = selectedLibraries;
+                }
+            }
+        }
+
         return config;
     }
 
@@ -1046,9 +1226,64 @@
             const data = await response.json();
             resultDiv.className = `test-result ${data.success ? 'success' : 'error'}`;
             resultDiv.textContent = data.message;
+
+            // After successful connection test, fetch available libraries
+            if (data.success && type !== 'localfiles') {
+                fetchProviderLibraries(type, config);
+            }
         } catch (err) {
             resultDiv.className = 'test-result error';
             resultDiv.textContent = 'Connection test failed: ' + err.message;
+        }
+    }
+
+    async function fetchProviderLibraries(type, config) {
+        const checklistDiv = document.getElementById('provider-library-checklist');
+        if (!checklistDiv) return;
+
+        try {
+            const response = await fetch('/api/setup/providers/libraries', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider_type: type, config })
+            });
+            const data = await response.json();
+            const libraries = data.libraries || [];
+
+            if (libraries.length === 0) {
+                checklistDiv.style.display = 'none';
+                return;
+            }
+
+            // Get existing music_libraries from editing provider (if any)
+            let existingLibraries = null;
+            if (editingProviderId) {
+                const provider = providers.find(p => p.id === editingProviderId);
+                if (provider && provider.config && provider.config.music_libraries) {
+                    existingLibraries = provider.config.music_libraries;
+                }
+            }
+
+            // Render checklist
+            let html = '<div class="library-checklist-title">Music Libraries:</div>';
+            libraries.forEach(lib => {
+                // If editing and provider has music_libraries, check only those
+                // Otherwise check all (default = scan everything)
+                const isChecked = existingLibraries
+                    ? existingLibraries.includes(lib.name)
+                    : true;
+                html += `<label>
+                    <input type="checkbox" ${isChecked ? 'checked' : ''}
+                           class="library-checkbox"
+                           data-library-name="${lib.name}">
+                    ${lib.name}
+                </label>`;
+            });
+            html += '<div class="library-note">Uncheck libraries you don\'t want to scan. All checked = scan everything.</div>';
+            checklistDiv.innerHTML = html;
+            checklistDiv.style.display = 'block';
+        } catch (err) {
+            console.error('Error fetching libraries:', err);
         }
     }
 
@@ -1126,6 +1361,81 @@
         }
     }
 
+    async function rescanPaths(providerId) {
+        const resultDiv = document.getElementById(`rescan-result-${providerId}`);
+        resultDiv.innerHTML = '<div class="test-result">Rescanning paths...</div>';
+
+        try {
+            const response = await fetch(`/api/setup/providers/${providerId}/rescan-paths`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await response.json();
+
+            if (!data.success) {
+                resultDiv.innerHTML = `<div class="test-result error">${data.message}</div>`;
+                return;
+            }
+
+            let html = `<div class="test-result ${data.path_format === 'relative' && providers.length > 1 ? 'warning' : 'success'}">`;
+            html += `<strong>Path format:</strong> ${data.path_format}`;
+
+            if (data.path_format === 'relative' && providers.length > 1) {
+                html += `<br>Relative paths may prevent cross-provider track matching.`;
+                html += `<br><small>Enable <strong>"Report Real Path"</strong> in Navidrome's Subsonic settings, then rescan again.</small>`;
+            }
+
+            if (data.matches_found > 0) {
+                html += `<br><strong>Prefix:</strong> "${data.suggested_prefix}" (${data.confidence} confidence, ${data.matches_found} matches)`;
+                if (data.current_prefix !== undefined) {
+                    html += `<br><strong>Current prefix:</strong> "${data.current_prefix}"`;
+                }
+            }
+
+            html += `</div>`;
+
+            if (data.prefix_changed) {
+                html += `<div class="rescan-actions">
+                    <button onclick="updateProviderPrefix(${providerId}, '${data.suggested_prefix.replace(/'/g, "\\'")}')">
+                        Apply Prefix "${data.suggested_prefix}"
+                    </button>
+                </div>`;
+            }
+
+            resultDiv.innerHTML = html;
+        } catch (err) {
+            resultDiv.innerHTML = `<div class="test-result error">Rescan failed: ${err.message}</div>`;
+        }
+    }
+
+    async function updateProviderPrefix(providerId, newPrefix) {
+        try {
+            const provider = providers.find(p => p.id === providerId);
+            if (!provider) {
+                showToast('Provider not found', 'error');
+                return;
+            }
+
+            const updatedConfig = { ...provider.config, music_path_prefix: newPrefix };
+            const response = await fetch(`/api/setup/providers/${providerId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ config: updatedConfig })
+            });
+
+            if (response.ok) {
+                showToast('Path prefix updated', 'success');
+                await loadProviders();
+                renderProviders();
+            } else {
+                const data = await response.json();
+                showToast(data.error || 'Failed to update prefix', 'error');
+            }
+        } catch (err) {
+            showToast('Error updating prefix: ' + err.message, 'error');
+        }
+    }
+
     // Save settings
     async function saveSettings() {
         // Collect current values
@@ -1150,7 +1460,18 @@
             hardware_type: hardwareType,
             clap_enabled: document.getElementById('clap-enabled').checked,
             gpu_clustering: document.getElementById('gpu-clustering').checked,
-            ai_provider: document.getElementById('ai-provider').value
+            ai_provider: document.getElementById('ai-provider').value,
+            // AI Provider Defaults
+            ollama_server_url: document.getElementById('ollama-url').value || '',
+            ollama_model_name: document.getElementById('ollama-model').value || '',
+            openai_server_url: document.getElementById('openai-url').value || '',
+            openai_model_name: document.getElementById('openai-model').value || '',
+            gemini_model_name: document.getElementById('gemini-model').value || '',
+            mistral_model_name: document.getElementById('mistral-model').value || '',
+            // Instant Playlist
+            max_songs_per_artist_playlist: parseInt(document.getElementById('max-artist-songs').value) || 5,
+            playlist_energy_arc: document.getElementById('energy-arc').checked,
+            ai_request_timeout: parseInt(document.getElementById('ai-timeout').value) || 300,
         };
 
         try {

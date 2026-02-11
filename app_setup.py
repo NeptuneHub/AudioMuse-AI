@@ -16,12 +16,13 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request, render_template, redirect, url_for, g
 from functools import wraps
 
-from app_helper import get_db, detect_music_path_prefix
+from app_helper import get_db, detect_music_path_prefix, detect_path_format, encrypt_provider_config, decrypt_provider_config
 from tasks.mediaserver import (
     get_available_provider_types,
     get_provider_info,
     test_provider_connection,
     get_sample_tracks_from_provider,
+    get_libraries_for_provider,
     PROVIDER_TYPES
 )
 import config
@@ -82,10 +83,85 @@ def get_all_settings():
         return settings
 
 
+def apply_settings_to_config():
+    """Apply DB settings to runtime config module.
+
+    Reads relevant settings from the database and updates the corresponding
+    config.* module attributes so that changes made in the settings UI take
+    effect immediately without requiring an app restart.
+    """
+    mapping = {
+        'ai_provider': 'AI_MODEL_PROVIDER',
+        'clap_enabled': 'CLAP_ENABLED',
+        'ollama_server_url': 'OLLAMA_SERVER_URL',
+        'ollama_model_name': 'OLLAMA_MODEL_NAME',
+        'openai_server_url': 'OPENAI_SERVER_URL',
+        'openai_model_name': 'OPENAI_MODEL_NAME',
+        'gemini_model_name': 'GEMINI_MODEL_NAME',
+        'mistral_model_name': 'MISTRAL_MODEL_NAME',
+        'max_songs_per_artist_playlist': 'MAX_SONGS_PER_ARTIST_PLAYLIST',
+        'playlist_energy_arc': 'PLAYLIST_ENERGY_ARC',
+        'ai_request_timeout': 'AI_REQUEST_TIMEOUT_SECONDS',
+    }
+    for db_key, config_attr in mapping.items():
+        val = get_setting(db_key)
+        if val is not None and val != '':
+            existing = getattr(config, config_attr, None)
+            if isinstance(existing, bool):
+                val = val in (True, 'true', 'True')
+            elif isinstance(existing, int):
+                try:
+                    val = int(val)
+                except (ValueError, TypeError):
+                    continue
+            elif isinstance(existing, float):
+                try:
+                    val = float(val)
+                except (ValueError, TypeError):
+                    continue
+            setattr(config, config_attr, val)
+
+
 def is_setup_completed():
-    """Check if initial setup has been completed."""
+    """Check if initial setup has been completed.
+
+    If the DB flag is already set, return immediately.  Otherwise, check
+    whether the user has configured a supported provider via environment
+    variables (non-placeholder values).  If so, auto-create the default
+    provider row and mark setup as completed so that env-configured users
+    are never redirected to the setup wizard.
+
+    ``localfiles`` is excluded because it requires explicit path
+    configuration via the wizard.
+    """
     result = get_setting('setup_completed')
-    return result is True or result == 'true' or result == True
+    if result is True or result == 'true' or result == True:
+        return True
+
+    # Auto-detect env-var configuration for server-based providers
+    _ENV_REQUIREMENTS = {
+        'jellyfin': [config.JELLYFIN_URL, config.JELLYFIN_TOKEN, config.JELLYFIN_USER_ID],
+        'navidrome': [config.NAVIDROME_URL, config.NAVIDROME_USER, config.NAVIDROME_PASSWORD],
+        'lyrion': [config.LYRION_URL],
+        'emby': [config.EMBY_URL, config.EMBY_TOKEN, config.EMBY_USER_ID],
+    }
+
+    provider_type = config.MEDIASERVER_TYPE
+    required_values = _ENV_REQUIREMENTS.get(provider_type)
+    if required_values is None:
+        return False  # localfiles or unknown — require wizard
+
+    # All values must be non-empty and must not contain placeholder text
+    if all(v and 'your_' not in v for v in required_values):
+        try:
+            create_default_provider_from_env()
+            set_setting('setup_completed', True, 'system', 'Auto-completed from environment variables')
+            logger.info(f"Auto-completed setup for env-configured provider: {provider_type}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to auto-complete setup from env: {e}")
+
+    return False
 
 
 def is_multi_provider_enabled():
@@ -126,7 +202,7 @@ def get_providers(enabled_only=False):
                 'id': row[0],
                 'provider_type': row[1],
                 'name': row[2],
-                'config': row[3],  # JSONB is automatically parsed
+                'config': decrypt_provider_config(row[3]),  # JSONB is automatically parsed, decrypt sensitive fields
                 'enabled': row[4],
                 'priority': row[5],
                 'created_at': row[6].isoformat() if row[6] else None,
@@ -159,7 +235,7 @@ def get_provider_by_id(provider_id):
                 'id': row[0],
                 'provider_type': row[1],
                 'name': row[2],
-                'config': row[3],
+                'config': decrypt_provider_config(row[3]),
                 'enabled': row[4],
                 'priority': row[5],
             }
@@ -169,12 +245,13 @@ def get_provider_by_id(provider_id):
 def add_provider(provider_type, name, config_data, enabled=True, priority=0):
     """Add a new provider configuration."""
     db = get_db()
+    encrypted_config = encrypt_provider_config(config_data)
     with db.cursor() as cur:
         cur.execute("""
             INSERT INTO provider (provider_type, name, config, enabled, priority)
             VALUES (%s, %s, %s, %s, %s)
             RETURNING id
-        """, (provider_type, name, json.dumps(config_data), enabled, priority))
+        """, (provider_type, name, json.dumps(encrypted_config), enabled, priority))
         provider_id = cur.fetchone()[0]
         db.commit()
         return provider_id
@@ -191,7 +268,7 @@ def update_provider(provider_id, name=None, config_data=None, enabled=None, prio
         values.append(name)
     if config_data is not None:
         updates.append("config = %s")
-        values.append(json.dumps(config_data))
+        values.append(json.dumps(encrypt_provider_config(config_data)))
     if enabled is not None:
         updates.append("enabled = %s")
         values.append(enabled)
@@ -230,19 +307,19 @@ def delete_provider(provider_id):
 PROVIDER_SCHEMAS = {
     'jellyfin': {
         'required': ['url', 'user_id', 'token'],
-        'optional': ['music_path_prefix'],
+        'optional': ['music_path_prefix', 'music_libraries'],
     },
     'navidrome': {
         'required': ['url', 'user', 'password'],
-        'optional': ['music_path_prefix'],
+        'optional': ['music_path_prefix', 'music_libraries'],
     },
     'lyrion': {
         'required': ['url'],
-        'optional': ['music_path_prefix'],
+        'optional': ['music_path_prefix', 'music_libraries'],
     },
     'emby': {
         'required': ['url', 'user_id', 'token'],
-        'optional': ['music_path_prefix'],
+        'optional': ['music_path_prefix', 'music_libraries'],
     },
     'localfiles': {
         'required': ['music_directory'],
@@ -486,7 +563,7 @@ def create_provider():
 
     try:
         # Check if provider of this type already exists - upsert to prevent duplicates
-        existing_providers = get_all_providers()
+        existing_providers = get_providers(enabled_only=False)
         existing = next((p for p in existing_providers if p['provider_type'] == provider_type), None)
 
         if existing:
@@ -674,6 +751,10 @@ def test_provider_config():
                 # Return sample tracks so frontend can cache them for subsequent provider tests
                 result['sample_tracks'] = sample_tracks
 
+                # Detect path format for Navidrome (relative vs absolute)
+                if provider_type == 'navidrome':
+                    result['path_format'] = detect_path_format(sample_tracks)
+
                 # Detect prefix by comparing with existing tracks (DB + cached tracks from previously tested providers)
                 prefix_result = detect_music_path_prefix(sample_tracks, extra_sample_tracks=existing_sample_tracks)
                 result['prefix_detection'] = prefix_result
@@ -703,6 +784,107 @@ def test_provider_config():
             }
 
     return jsonify(result)
+
+
+@setup_bp.route('/api/setup/providers/<int:provider_id>/rescan-paths', methods=['POST'])
+def rescan_provider_paths(provider_id):
+    """
+    Rescan file paths for a provider to detect path format and prefix changes.
+    Useful after changing Navidrome's "Report Real Path" setting.
+    ---
+    tags:
+      - Setup
+    parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    responses:
+      200:
+        description: Rescan results
+      404:
+        description: Provider not found
+    """
+    provider = get_provider_by_id(provider_id)
+    if not provider:
+        return jsonify({'error': 'Provider not found'}), 404
+
+    provider_type = provider['provider_type']
+    config_data = provider['config']
+
+    try:
+        sample_tracks = get_sample_tracks_from_provider(provider_type, config_data, limit=50)
+        if not sample_tracks:
+            return jsonify({
+                'success': False,
+                'message': 'Could not fetch sample tracks from provider'
+            })
+
+        path_format = detect_path_format(sample_tracks)
+        prefix_result = detect_music_path_prefix(sample_tracks)
+
+        current_prefix = config_data.get('music_path_prefix', '')
+        suggested_prefix = prefix_result.get('detected_prefix', '')
+        prefix_changed = current_prefix != suggested_prefix and prefix_result.get('matches_found', 0) > 0
+
+        return jsonify({
+            'success': True,
+            'path_format': path_format,
+            'suggested_prefix': suggested_prefix,
+            'current_prefix': current_prefix,
+            'prefix_changed': prefix_changed,
+            'confidence': prefix_result.get('confidence', 'none'),
+            'matches_found': prefix_result.get('matches_found', 0),
+            'message': f'Path format: {path_format}. '
+                       + (f'Suggested prefix: "{suggested_prefix}" ({prefix_result.get("confidence")} confidence)'
+                          if prefix_result.get('matches_found', 0) > 0
+                          else 'No matching tracks found for prefix detection.')
+        })
+    except Exception as e:
+        logger.error(f"Error rescanning paths for provider {provider_id}: {e}")
+        return jsonify({'success': False, 'message': f'Rescan failed: {str(e)}'}), 500
+
+
+@setup_bp.route('/api/setup/providers/libraries', methods=['POST'])
+def get_provider_libraries():
+    """
+    Fetch available music libraries for a provider.
+    Called by frontend after successful connection test.
+    ---
+    tags:
+      - Setup
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              provider_type:
+                type: string
+              config:
+                type: object
+    responses:
+      200:
+        description: List of available music libraries
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    provider_type = data.get('provider_type')
+    config_data = data.get('config', {})
+
+    if not provider_type:
+        return jsonify({'error': 'provider_type is required'}), 400
+
+    try:
+        libraries = get_libraries_for_provider(provider_type, config_data)
+        return jsonify({'libraries': libraries})
+    except Exception as e:
+        logger.error(f"Error fetching libraries for {provider_type}: {e}")
+        return jsonify({'error': str(e), 'libraries': []}), 500
 
 
 @setup_bp.route('/api/setup/settings', methods=['GET'])
@@ -744,6 +926,12 @@ def update_settings():
 
     for key, value in data.items():
         set_setting(key, value)
+
+    # Apply relevant settings to runtime config immediately
+    try:
+        apply_settings_to_config()
+    except Exception as e:
+        logger.warning(f"Failed to apply settings to runtime config: {e}")
 
     return jsonify({'message': 'Settings updated'})
 

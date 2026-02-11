@@ -25,6 +25,7 @@ import config  # Import the config module to access server type and settings
 
 # Import the specific implementations
 from tasks.mediaserver_jellyfin import (
+    get_music_libraries as jellyfin_get_music_libraries,
     resolve_user as jellyfin_resolve_user,
     get_all_playlists as jellyfin_get_all_playlists,
     delete_playlist as jellyfin_delete_playlist,
@@ -39,6 +40,7 @@ from tasks.mediaserver_jellyfin import (
     get_last_played_time as jellyfin_get_last_played_time,
 )
 from tasks.mediaserver_navidrome import (
+    get_music_libraries as navidrome_get_music_libraries,
     get_all_playlists as navidrome_get_all_playlists,
     delete_playlist as navidrome_delete_playlist,
     get_recent_albums as navidrome_get_recent_albums,
@@ -52,6 +54,7 @@ from tasks.mediaserver_navidrome import (
     get_last_played_time as navidrome_get_last_played_time,
 )
 from tasks.mediaserver_lyrion import (
+    get_music_libraries as lyrion_get_music_libraries,
     get_all_playlists as lyrion_get_all_playlists,
     delete_playlist as lyrion_delete_playlist,
     get_recent_albums as lyrion_get_recent_albums,
@@ -65,11 +68,12 @@ from tasks.mediaserver_lyrion import (
     get_last_played_time as lyrion_get_last_played_time,
 )
 from tasks.mediaserver_emby import (
+    get_music_libraries as emby_get_music_libraries,
     resolve_user as emby_resolve_user,
     get_all_playlists as emby_get_all_playlists,
     delete_playlist as emby_delete_playlist,
     get_recent_albums as emby_get_recent_albums,
-    get_recent_music_items as emby_get_recent_music_items,
+
     get_tracks_from_album as emby_get_tracks_from_album,
     download_track as emby_download_track,
     get_all_songs as emby_get_all_songs,
@@ -239,6 +243,12 @@ def get_provider_function(provider_type: str, function_name: str):
         get_all_songs = get_provider_function('jellyfin', 'get_all_songs')
         songs = get_all_songs()
     """
+    if provider_type == 'mpd':
+        raise ValueError(
+            "MPD provider has been removed in v0.9. Please use the LocalFiles "
+            "provider or another supported media server. See "
+            "deployment/.env.example for configuration options."
+        )
     provider_funcs = _PROVIDER_FUNCTIONS.get(provider_type)
     if not provider_funcs:
         logger.warning(f"Unknown provider type: {provider_type}")
@@ -321,25 +331,6 @@ def get_recent_albums(limit):
     if config.MEDIASERVER_TYPE == 'emby': return emby_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'localfiles': return localfiles_get_recent_albums(limit)
     return []
-
-def get_recent_music_items(limit):
-    """
-    Fetches both recent albums AND standalone tracks for comprehensive music discovery.
-    This ensures no music is missed during analysis, even with incomplete metadata.
-    Now implemented for Jellyfin, Navidrome, and Lyrion - all provide comprehensive discovery.
-    """
-    if config.MEDIASERVER_TYPE == 'jellyfin': 
-        return jellyfin_get_recent_music_items(limit)
-    elif config.MEDIASERVER_TYPE == 'navidrome': 
-        return navidrome_get_recent_music_items(limit)
-    elif config.MEDIASERVER_TYPE == 'lyrion': 
-        return lyrion_get_recent_music_items(limit)
-    elif config.MEDIASERVER_TYPE == 'emby': 
-        return emby_get_recent_music_items(limit)
-    else:
-        # Fallback to regular album fetching for servers without comprehensive discovery
-        logger.info(f"get_recent_music_items not yet implemented for {config.MEDIASERVER_TYPE}, falling back to get_recent_albums")
-        return get_recent_albums(limit)
 
 def get_tracks_from_album(album_id):
     """Fetches tracks for an album using admin credentials."""
@@ -777,6 +768,28 @@ def get_provider_info(provider_type: str):
     return None
 
 
+def get_libraries_for_provider(provider_type: str, config_dict: dict = None):
+    """Fetch available music libraries for a provider type.
+    Args:
+        provider_type: Type of provider (jellyfin, navidrome, etc.)
+        config_dict: Optional provider config dict for setup-time calls
+    Returns: [{'id': str, 'name': str}]
+    """
+    if provider_type == 'jellyfin':
+        return jellyfin_get_music_libraries(config_dict)
+    elif provider_type == 'navidrome':
+        return navidrome_get_music_libraries(config_dict)
+    elif provider_type == 'emby':
+        return emby_get_music_libraries(config_dict)
+    elif provider_type == 'lyrion':
+        return lyrion_get_music_libraries(config_dict)
+    elif provider_type == 'localfiles':
+        return []  # Single directory, no library concept
+    else:
+        logger.warning(f"get_libraries_for_provider: unknown provider type '{provider_type}'")
+        return []
+
+
 def _get_provider_config_fields(provider_type: str):
     """Get configuration fields for a provider type."""
     # Common field for path normalization in multi-provider setups
@@ -849,7 +862,7 @@ def get_all_playlists_multi_provider(provider_ids=None):
     Returns:
         List of playlists with provider info, deduplicated by name
     """
-    from app_helper import get_providers, get_provider_by_id
+    from app_setup import get_providers, get_provider_by_id
 
     all_playlists = []
     seen_names = {}  # Track playlist names to detect duplicates
@@ -900,94 +913,65 @@ def _get_playlists_for_provider_type(provider_type):
     return []
 
 
-def remap_item_ids_for_provider(item_ids: list, source_provider_id: int, target_provider_id: int) -> list:
+def remap_item_ids_for_provider(item_ids: list, target_provider_id: int) -> list:
     """
-    Remap item IDs from one provider's namespace to another's using file_path as the common key.
+    Remap canonical item IDs (from score) to a target provider's native IDs.
 
-    When creating playlists across providers, item_ids from the source provider need to be
-    translated to the target provider's item_ids. This is done by:
-    1. Looking up file_path for each source item_id in the score table
-    2. Finding the matching item_id in the target provider by file_path
+    Uses the provider_track table to resolve canonical item_ids to the target
+    provider's namespace. With single-row-per-track in score, this is the only
+    correct way to remap across providers.
+
+    The lookup chain is:
+      canonical item_id -> score.track_id -> provider_track(target_provider_id) -> target item_id
+
+    Also handles the case where the canonical item_id already belongs to the target provider.
 
     Args:
-        item_ids: List of item IDs from the source provider
-        source_provider_id: ID of the source provider
+        item_ids: List of canonical item IDs (from score table)
         target_provider_id: ID of the target provider
 
     Returns:
         List of remapped item IDs for the target provider (preserving order, skipping unmatchable)
     """
-    if not item_ids:
-        return []
-
-    # If same provider, no remapping needed
-    if source_provider_id == target_provider_id:
-        return item_ids
+    if not item_ids or not target_provider_id:
+        return item_ids or []
 
     from app_helper import get_db
 
     db = get_db()
-    remapped_ids = []
-
     try:
         with db.cursor() as cur:
-            # Get file_paths for source item_ids
+            # Single batch query: canonical -> track_id -> target provider's item_id
+            # pt_track: resolves via score.track_id -> provider_track
+            # pt_direct: handles case where canonical item_id IS the target provider's ID
             cur.execute("""
-                SELECT item_id, file_path
-                FROM score
-                WHERE item_id = ANY(%s) AND file_path IS NOT NULL
-            """, (item_ids,))
-            source_id_to_path = {row[0]: row[1] for row in cur.fetchall()}
+                SELECT s.item_id AS canonical_id,
+                       COALESCE(pt_track.item_id, pt_direct.item_id) AS target_id
+                FROM score s
+                LEFT JOIN provider_track pt_track
+                    ON pt_track.track_id = s.track_id AND pt_track.provider_id = %s
+                LEFT JOIN provider_track pt_direct
+                    ON pt_direct.item_id = s.item_id AND pt_direct.provider_id = %s
+                WHERE s.item_id = ANY(%s)
+                  AND (pt_track.item_id IS NOT NULL OR pt_direct.item_id IS NOT NULL)
+            """, (target_provider_id, target_provider_id, item_ids))
 
-            if not source_id_to_path:
-                logger.warning(f"No file_paths found for source item_ids (provider {source_provider_id})")
-                return item_ids  # Fall back to original IDs
+            canonical_to_target = {row[0]: row[1] for row in cur.fetchall()}
 
-            # Get the file paths we need to look up
-            paths_to_find = list(source_id_to_path.values())
+        remapped = []
+        for canonical_id in item_ids:
+            target_id = canonical_to_target.get(canonical_id)
+            if target_id:
+                remapped.append(target_id)
+            else:
+                logger.debug(f"No mapping for {canonical_id} to provider {target_provider_id}")
 
-            # Find matching item_ids in target provider by file_path
-            # The score table has file_path but item_ids are provider-specific
-            # We need to normalize paths and match
-            cur.execute("""
-                SELECT item_id, file_path
-                FROM score
-                WHERE file_path = ANY(%s)
-            """, (paths_to_find,))
-            path_to_ids = {}
-            for row in cur.fetchall():
-                path = row[1]
-                if path not in path_to_ids:
-                    path_to_ids[path] = []
-                path_to_ids[path].append(row[0])
-
-            # Remap in order, preserving the original playlist order
-            for orig_id in item_ids:
-                path = source_id_to_path.get(orig_id)
-                if path and path in path_to_ids:
-                    # Use the first matching ID (there might be multiple if same file analyzed multiple times)
-                    target_ids = path_to_ids[path]
-                    if target_ids:
-                        # Prefer an ID that's different from source if available (for cross-provider)
-                        for tid in target_ids:
-                            if tid != orig_id:
-                                remapped_ids.append(tid)
-                                break
-                        else:
-                            # All IDs are the same, use the first one
-                            remapped_ids.append(target_ids[0])
-                else:
-                    # No match found, keep original ID (might work if providers share IDs)
-                    logger.debug(f"No cross-provider match for item_id {orig_id}, keeping original")
-                    remapped_ids.append(orig_id)
-
-            logger.info(f"Remapped {len(remapped_ids)} of {len(item_ids)} item IDs for cross-provider playlist")
+        logger.info(f"Remapped {len(remapped)} of {len(item_ids)} item IDs for provider {target_provider_id}")
+        return remapped
 
     except Exception as e:
         logger.error(f"Error remapping item IDs: {e}")
-        return item_ids  # Fall back to original IDs
-
-    return remapped_ids
+        return item_ids
 
 
 def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, user_creds=None):
@@ -1039,24 +1023,15 @@ def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, u
             provider = get_provider_by_id(provider_ids)
             providers = [provider] if provider else []
 
-    # Determine source provider for ID remapping
-    # If we have a primary provider, use its IDs as the source
-    source_provider_id = get_primary_provider_id()
-    if not source_provider_id and providers:
-        source_provider_id = providers[0]['id']
-
     # Create playlist on each provider
     for provider in providers:
         provider_id = provider['id']
         provider_type = provider['provider_type']
 
         try:
-            # Remap item IDs if creating on a different provider
-            if source_provider_id and provider_id != source_provider_id:
-                remapped_ids = remap_item_ids_for_provider(item_ids, source_provider_id, provider_id)
-                logger.info(f"Cross-provider playlist: remapped {len(item_ids)} IDs for provider {provider.get('name')}")
-            else:
-                remapped_ids = item_ids
+            # ALWAYS remap - canonical item_ids are provider-agnostic
+            remapped_ids = remap_item_ids_for_provider(item_ids, provider_id)
+            logger.info(f"Playlist remap: {len(remapped_ids)} of {len(item_ids)} IDs resolved for provider {provider.get('name')}")
 
             if not remapped_ids:
                 logger.warning(f"No valid track IDs after remapping for provider {provider.get('name')}")
@@ -1090,78 +1065,37 @@ def _create_playlist_for_provider_type(provider_type, playlist_name, item_ids, u
     """Create playlist on a specific provider type.
 
     When called from multi-provider mode, provider_config contains the DB-stored
-    config (url, token, etc.).  We temporarily apply these values to the config
-    module so that downstream provider functions (which read config.JELLYFIN_URL
-    etc.) pick them up, and we build user_creds from the stored config when the
-    caller hasn't supplied explicit credentials.
+    config (url, token, etc.).  We pass it as server_config to the provider's
+    create_instant_playlist function, which handles the override internally.
     """
-    # Build a mapping of config module attributes to override from the provider's
-    # stored DB config so that provider functions that read config.* work correctly
-    # even when environment variables are empty.
-    _config_overrides = {}
-    if provider_config:
+    sc = provider_config or {}
+
+    # Build user_creds from stored config when the caller hasn't supplied
+    # explicit credentials.
+    if sc and not user_creds:
         if provider_type == 'jellyfin':
-            _config_overrides = {
-                'JELLYFIN_URL': provider_config.get('url', ''),
-                'JELLYFIN_TOKEN': provider_config.get('token', ''),
-                'JELLYFIN_USER_ID': provider_config.get('user_id', ''),
-            }
-            if not user_creds:
-                user_creds = {
-                    'token': provider_config.get('token', ''),
-                    'user_identifier': provider_config.get('user_id', ''),
-                }
-        elif provider_type == 'navidrome':
-            _config_overrides = {
-                'NAVIDROME_URL': provider_config.get('url', ''),
-                'NAVIDROME_USER': provider_config.get('user', ''),
-                'NAVIDROME_PASSWORD': provider_config.get('password', ''),
+            user_creds = {
+                'token': sc.get('token', ''),
+                'user_identifier': sc.get('user_id', ''),
             }
         elif provider_type == 'emby':
-            _config_overrides = {
-                'EMBY_URL': provider_config.get('url', ''),
-                'EMBY_TOKEN': provider_config.get('token', ''),
-                'EMBY_USER_ID': provider_config.get('user_id', ''),
-            }
-            if not user_creds:
-                user_creds = {
-                    'token': provider_config.get('token', ''),
-                    'user_id': provider_config.get('user_id', ''),
-                }
-        elif provider_type == 'lyrion':
-            _config_overrides = {
-                'LYRION_URL': provider_config.get('url', ''),
-            }
-        elif provider_type == 'localfiles':
-            _config_overrides = {
-                'LOCALFILES_MUSIC_DIR': provider_config.get('music_directory', ''),
-                'LOCALFILES_PLAYLIST_DIR': provider_config.get('playlist_directory', ''),
+            user_creds = {
+                'token': sc.get('token', ''),
+                'user_id': sc.get('user_id', ''),
             }
 
-    # Temporarily apply config overrides
-    _saved = {}
-    for attr, val in _config_overrides.items():
-        if val:  # Only override if the provider config has a value
-            _saved[attr] = getattr(config, attr, '')
-            setattr(config, attr, val)
-
-    try:
-        if provider_type == 'jellyfin':
-            return jellyfin_create_instant_playlist(playlist_name, item_ids, user_creds)
-        elif provider_type == 'navidrome':
-            return navidrome_create_instant_playlist(playlist_name, item_ids, user_creds)
-        elif provider_type == 'lyrion':
-            return lyrion_create_instant_playlist(playlist_name, item_ids)
-        elif provider_type == 'emby':
-            return emby_create_instant_playlist(playlist_name, item_ids, user_creds)
-        elif provider_type == 'localfiles':
-            return localfiles_create_instant_playlist(playlist_name, item_ids, user_creds)
-        else:
-            raise ValueError(f"Unknown provider type: {provider_type}")
-    finally:
-        # Restore original config values
-        for attr, val in _saved.items():
-            setattr(config, attr, val)
+    if provider_type == 'jellyfin':
+        return jellyfin_create_instant_playlist(playlist_name, item_ids, user_creds, server_config=sc)
+    elif provider_type == 'navidrome':
+        return navidrome_create_instant_playlist(playlist_name, item_ids, user_creds, server_config=sc)
+    elif provider_type == 'lyrion':
+        return lyrion_create_instant_playlist(playlist_name, item_ids, server_config=sc)
+    elif provider_type == 'emby':
+        return emby_create_instant_playlist(playlist_name, item_ids, user_creds, server_config=sc)
+    elif provider_type == 'localfiles':
+        return localfiles_create_instant_playlist(playlist_name, item_ids, user_creds, server_config=sc)
+    else:
+        raise ValueError(f"Unknown provider type: {provider_type}")
 
 
 def get_enabled_providers_for_playlists():

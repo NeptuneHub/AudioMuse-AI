@@ -87,10 +87,10 @@ sample_songs:
 # Set these once - models inherit from their provider defaults
 defaults:
   ollama:
-    url: "http://192.168.1.71:11434/api/generate"
+    url: "http://localhost:11434/api/generate"
   openrouter:
     url: "https://openrouter.ai/api/v1/chat/completions"
-    api_key: "sk-or-v1-key"
+    api_key: "your-openrouter-api-key-here"
 
 models:
   - provider: "ollama"

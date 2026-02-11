@@ -316,6 +316,10 @@ def init_db():
             cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_file_path ON score(file_path)")
 
+        # Performance indexes for hot queries (brainstorm, artist search)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author_lower ON score(LOWER(author))")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_score_title_author_lower ON score(LOWER(title), LOWER(author))")
+
         # Insert default settings if app_settings is empty
         cur.execute("SELECT COUNT(*) FROM app_settings")
         if cur.fetchone()[0] == 0:
@@ -324,6 +328,9 @@ def init_db():
                 ('setup_version', '"1.0"', 'system', 'Version of the setup wizard last completed'),
                 ('multi_provider_enabled', 'false', 'providers', 'Whether multi-provider mode is enabled'),
                 ('primary_provider_id', 'null', 'providers', 'ID of the primary provider for playlist creation'),
+                ('max_songs_per_artist_playlist', '5', 'ai', 'Max songs per artist in instant playlists'),
+                ('playlist_energy_arc', 'false', 'ai', 'Enable energy arc shaping for playlist ordering'),
+                ('ai_request_timeout', '300', 'ai', 'AI request timeout in seconds'),
             ]
             for key, value, category, description in default_settings:
                 cur.execute("""
@@ -332,6 +339,179 @@ def init_db():
                     ON CONFLICT (key) DO NOTHING
                 """, (key, value, category, description))
             logger.info("Inserted default app settings")
+
+        # =================================================================
+        # MIGRATIONS (guarded by app_settings keys)
+        # =================================================================
+
+        # Migration: Recompute track.file_path_hash with case-normalized paths
+        cur.execute("SELECT value FROM app_settings WHERE key = 'migration_case_normalization_done'")
+        if not cur.fetchone():
+            try:
+                import hashlib as _hashlib
+                logger.info("Running migration: case normalization for track.file_path_hash")
+                cur.execute("SELECT id, file_path, normalized_path FROM track")
+                tracks_to_update = cur.fetchall()
+                merged_count = 0
+                updated_count = 0
+
+                # Group tracks by their new normalized hash
+                hash_groups = {}
+                for track_id, file_path, old_normalized in tracks_to_update:
+                    if not file_path:
+                        continue
+                    # Re-normalize with .lower() (normalize_provider_path now returns lowered)
+                    new_normalized = normalize_provider_path(file_path)
+                    if not new_normalized:
+                        continue
+                    new_hash = _hashlib.sha256(new_normalized.encode('utf-8')).hexdigest()
+                    if new_hash not in hash_groups:
+                        hash_groups[new_hash] = []
+                    hash_groups[new_hash].append((track_id, new_normalized, new_hash))
+
+                for new_hash, group in hash_groups.items():
+                    if len(group) == 1:
+                        # Simple update
+                        track_id, new_normalized, new_hash = group[0]
+                        cur.execute("""
+                            UPDATE track SET file_path_hash = %s, normalized_path = %s, updated_at = NOW()
+                            WHERE id = %s
+                        """, (new_hash, new_normalized, track_id))
+                        updated_count += 1
+                    else:
+                        # Merge: keep the first, redirect others' provider_track refs
+                        canonical_track_id = group[0][0]
+                        new_normalized = group[0][1]
+                        cur.execute("""
+                            UPDATE track SET file_path_hash = %s, normalized_path = %s, updated_at = NOW()
+                            WHERE id = %s
+                        """, (new_hash, new_normalized, canonical_track_id))
+                        for dup_track_id, _, _ in group[1:]:
+                            # Redirect provider_track references
+                            cur.execute("""
+                                UPDATE provider_track SET track_id = %s WHERE track_id = %s
+                            """, (canonical_track_id, dup_track_id))
+                            # Redirect score.track_id references
+                            cur.execute("""
+                                UPDATE score SET track_id = %s WHERE track_id = %s
+                            """, (canonical_track_id, dup_track_id))
+                            # Delete duplicate track
+                            cur.execute("DELETE FROM track WHERE id = %s", (dup_track_id,))
+                            merged_count += 1
+
+                cur.execute("""
+                    INSERT INTO app_settings (key, value, updated_at)
+                    VALUES ('migration_case_normalization_done', 'true', NOW())
+                    ON CONFLICT (key) DO NOTHING
+                """)
+                db.commit()
+                logger.info(f"Case normalization migration complete: {updated_count} updated, {merged_count} merged")
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"Case normalization migration failed (will retry next startup): {e}")
+
+        # Migration: Consolidate duplicate score rows (one per track_id)
+        # MUST run AFTER all new code paths (link_provider_to_existing_track, updated remap, etc.)
+        cur.execute("SELECT value FROM app_settings WHERE key = 'migration_dedup_score_rows_done'")
+        if not cur.fetchone():
+            try:
+                logger.info("Running migration: consolidating duplicate score rows")
+                # Find track_ids with multiple score rows
+                cur.execute("""
+                    SELECT track_id, COUNT(*) as cnt
+                    FROM score
+                    WHERE track_id IS NOT NULL
+                    GROUP BY track_id
+                    HAVING COUNT(*) > 1
+                """)
+                dup_groups = cur.fetchall()
+                total_deleted = 0
+
+                for track_id, cnt in dup_groups:
+                    # Get all item_ids for this track_id
+                    cur.execute("""
+                        SELECT s.item_id FROM score s WHERE s.track_id = %s ORDER BY s.item_id
+                    """, (track_id,))
+                    item_ids = [row[0] for row in cur.fetchall()]
+
+                    # Ensure each item_id has a provider_track entry
+                    for item_id in item_ids:
+                        cur.execute("""
+                            SELECT 1 FROM provider_track WHERE item_id = %s
+                        """, (item_id,))
+                        if not cur.fetchone():
+                            # Check if this item_id is the canonical one used in Voyager etc.
+                            # Try to link it via score's file_path
+                            cur.execute("SELECT file_path FROM score WHERE item_id = %s", (item_id,))
+                            fp_row = cur.fetchone()
+                            if fp_row and fp_row[0]:
+                                logger.debug(f"Dedup migration: item {item_id} has no provider_track entry, creating placeholder")
+                                # We can't create a full link without provider_id, skip this group
+                                logger.warning(f"Skipping dedup for track_id {track_id}: item {item_id} has no provider_track mapping")
+                                break
+                    else:
+                        # All items have provider_track entries — safe to dedup
+                        # Pick canonical: prefer the one from the primary provider
+                        primary_pid = get_primary_provider_id()
+                        canonical_id = None
+                        if primary_pid:
+                            cur.execute("""
+                                SELECT pt.item_id FROM provider_track pt
+                                WHERE pt.track_id = %s AND pt.provider_id = %s
+                                LIMIT 1
+                            """, (track_id, primary_pid))
+                            row = cur.fetchone()
+                            if row:
+                                canonical_id = row[0]
+                        if not canonical_id:
+                            canonical_id = item_ids[0]  # First alphabetically
+
+                        # Delete non-canonical rows (in FK order)
+                        non_canonical = [iid for iid in item_ids if iid != canonical_id]
+                        if non_canonical:
+                            cur.execute("DELETE FROM mulan_embedding WHERE item_id = ANY(%s)", (non_canonical,))
+                            cur.execute("DELETE FROM clap_embedding WHERE item_id = ANY(%s)", (non_canonical,))
+                            cur.execute("DELETE FROM embedding WHERE item_id = ANY(%s)", (non_canonical,))
+                            cur.execute("DELETE FROM score WHERE item_id = ANY(%s)", (non_canonical,))
+                            total_deleted += len(non_canonical)
+
+                cur.execute("""
+                    INSERT INTO app_settings (key, value, updated_at)
+                    VALUES ('migration_dedup_score_rows_done', 'true', NOW())
+                    ON CONFLICT (key) DO NOTHING
+                """)
+                db.commit()
+                logger.info(f"Score dedup migration complete: {total_deleted} duplicate rows removed from {len(dup_groups)} track groups")
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"Score dedup migration failed (will retry next startup): {e}")
+
+        # Migration: Encrypt existing unencrypted provider configs
+        cur.execute("SELECT value FROM app_settings WHERE key = 'migration_encrypt_provider_configs_done'")
+        if not cur.fetchone():
+            try:
+                cur.execute("SELECT id, config FROM provider")
+                for row in cur.fetchall():
+                    provider_id, pconfig = row
+                    if pconfig and isinstance(pconfig, dict):
+                        needs_encrypt = any(
+                            k in pconfig and pconfig[k] and not str(pconfig[k]).startswith('gAAAAA')
+                            for k in SENSITIVE_CONFIG_KEYS
+                        )
+                        if needs_encrypt:
+                            encrypted = encrypt_provider_config(pconfig)
+                            cur.execute("UPDATE provider SET config = %s WHERE id = %s",
+                                        (json.dumps(encrypted), provider_id))
+                cur.execute("""
+                    INSERT INTO app_settings (key, value, updated_at)
+                    VALUES ('migration_encrypt_provider_configs_done', 'true', NOW())
+                    ON CONFLICT (key) DO NOTHING
+                """)
+                db.commit()
+                logger.info("Encrypted existing provider configs")
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"Provider config encryption migration failed: {e}")
 
         db.commit()
 
@@ -611,6 +791,12 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     scale = _sanitize_string(scale, max_length=10, field_name="scale")
     other_features = _sanitize_string(other_features, max_length=2000, field_name="other_features")
     file_path = _sanitize_string(file_path, max_length=2000, field_name="file_path")
+
+    # Normalize file_path for consistent cross-provider matching
+    if file_path:
+        normalized_fp = normalize_provider_path(file_path)
+        if normalized_fp:
+            file_path = normalized_fp
 
     # year: parse from various date formats and validate
     def _parse_year_from_date(year_value):
@@ -1440,6 +1626,75 @@ def set_primary_provider(provider_id):
 
 
 # ##############################################################################
+# CREDENTIAL ENCRYPTION
+# ##############################################################################
+
+SENSITIVE_CONFIG_KEYS = {'token', 'password', 'api_key'}
+
+def _get_fernet():
+    """Get or create a Fernet cipher using ENCRYPTION_KEY from config/env."""
+    from cryptography.fernet import Fernet
+    import config as _config
+    key = getattr(_config, 'ENCRYPTION_KEY', None) or os.environ.get('ENCRYPTION_KEY')
+    if not key:
+        # Check app_settings for a previously generated key
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute("SELECT value FROM app_settings WHERE key = 'encryption_key'")
+            row = cur.fetchone()
+            if row and row[0]:
+                key = row[0] if isinstance(row[0], str) else str(row[0])
+                # Strip JSON quotes if present
+                key = key.strip('"')
+        if not key:
+            # Auto-generate and persist
+            key = Fernet.generate_key().decode()
+            db = get_db()
+            with db.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO app_settings (key, value, updated_at)
+                    VALUES ('encryption_key', %s, NOW())
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+                """, (json.dumps(key),))
+                db.commit()
+            logger.info("Generated and stored new encryption key")
+    return Fernet(key.encode() if isinstance(key, str) else key)
+
+
+def encrypt_provider_config(config_dict):
+    """Encrypt sensitive fields in a provider config dict before storage."""
+    if not config_dict or not isinstance(config_dict, dict):
+        return config_dict
+    encrypted = dict(config_dict)
+    try:
+        f = _get_fernet()
+        for k in SENSITIVE_CONFIG_KEYS:
+            if k in encrypted and encrypted[k] and not str(encrypted[k]).startswith('gAAAAA'):
+                encrypted[k] = f.encrypt(str(encrypted[k]).encode()).decode()
+    except Exception as e:
+        logger.error(f"Failed to encrypt provider config: {e}")
+    return encrypted
+
+
+def decrypt_provider_config(config_dict):
+    """Decrypt sensitive fields in a provider config dict after retrieval."""
+    if not config_dict or not isinstance(config_dict, dict):
+        return config_dict
+    decrypted = dict(config_dict)
+    try:
+        f = _get_fernet()
+        for k in SENSITIVE_CONFIG_KEYS:
+            if k in decrypted and decrypted[k] and str(decrypted[k]).startswith('gAAAAA'):
+                try:
+                    decrypted[k] = f.decrypt(str(decrypted[k]).encode()).decode()
+                except Exception:
+                    pass  # Not encrypted or wrong key, leave as-is
+    except Exception as e:
+        logger.error(f"Failed to decrypt provider config: {e}")
+    return decrypted
+
+
+# ##############################################################################
 # TRACK LINKING FUNCTIONS - For multi-provider track identity
 # ##############################################################################
 
@@ -1539,7 +1794,8 @@ def normalize_provider_path(file_path, provider_id=None):
         except Exception:
             pass  # Ignore errors - continue with standard normalization
 
-    return normalized.lstrip('/') if normalized else None
+    result = normalized.lstrip('/') if normalized else None
+    return result.lower() if result else None
 
 
 def _compute_file_path_hash(file_path, provider_id=None):
@@ -1840,13 +2096,46 @@ def find_existing_analysis_by_file_path(file_path, provider_id=None):
         return None
 
 
+def link_provider_to_existing_track(file_path, provider_id, item_id, title=None, artist=None, album=None):
+    """
+    Link a new provider's item_id to an already-analyzed track via provider_track.
+
+    Unlike copy_analysis_to_new_item(), this does NOT duplicate score/embedding rows.
+    It only creates a provider_track mapping so the provider's item_id resolves
+    to the existing canonical track.
+
+    Args:
+        file_path: File path of the track (used to find/create the track record)
+        provider_id: ID of the provider being linked
+        item_id: The provider's native item identifier
+        title: Optional track title from this provider
+        artist: Optional artist name from this provider
+        album: Optional album name from this provider
+
+    Returns:
+        True if linking succeeded, False otherwise
+    """
+    if not file_path or not provider_id or not item_id:
+        return False
+    try:
+        track_id = get_or_create_track(file_path, provider_id=provider_id)
+        if not track_id:
+            return False
+        link_provider_track(provider_id, track_id, item_id, title, artist, album)
+        logger.info(f"Linked provider {provider_id} item {item_id} to track {track_id} (no row duplication)")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to link provider track for {item_id}: {e}")
+        return False
+
+
 def copy_analysis_to_new_item(source_item_id, target_item_id, file_path=None, provider_id=None):
     """
-    Copy analysis data from one item_id to another.
+    DEPRECATED: Use link_provider_to_existing_track() instead.
 
-    This is used in multi-provider setups when a track has already been analyzed
-    under a different provider's item_id. Instead of re-analyzing, we copy the
-    existing analysis to the new provider's item_id.
+    Copy analysis data from one item_id to another.
+    This duplicates score + embedding rows, which wastes storage and causes
+    duplicate Voyager index entries. Kept temporarily for migration.
 
     Args:
         source_item_id: The item_id that has existing analysis
@@ -2130,3 +2419,25 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None, extr
         'sample_comparisons': sample_comparisons[:5],
         'had_existing_tracks': True
     }
+
+
+def detect_path_format(sample_tracks):
+    """
+    Detect whether sample track paths are absolute or relative.
+
+    Navidrome's "Report Real Path" setting controls this:
+    - OFF (default): relative paths like "Artist/Album/Track.flac"
+    - ON: absolute paths like "/music/Artist/Album/Track.flac"
+
+    Args:
+        sample_tracks: List of track dicts with 'file_path' key
+
+    Returns:
+        'absolute', 'relative', or 'unknown'
+    """
+    paths = [t.get('file_path', '') for t in sample_tracks if t]
+    paths = [p for p in paths if p]
+    if not paths:
+        return 'unknown'
+    absolute_count = sum(1 for p in paths if p.startswith('/'))
+    return 'absolute' if absolute_count > len(paths) / 2 else 'relative'

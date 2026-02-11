@@ -10,61 +10,158 @@ import config
 logger = logging.getLogger(__name__)
 
 
+_FALLBACK_GENRES = "rock, pop, metal, jazz, electronic, dance, alternative, indie, punk, blues, hard rock, heavy metal, hip-hop, funk, country, soul"
+_FALLBACK_MOODS = "danceable, aggressive, happy, party, relaxed, sad"
+
+
+def _get_dynamic_genres(library_context: Optional[Dict]) -> str:
+    """Return genre list from library context, falling back to defaults."""
+    if library_context and library_context.get('top_genres'):
+        return ', '.join(library_context['top_genres'][:15])
+    return _FALLBACK_GENRES
+
+
+def _get_dynamic_moods(library_context: Optional[Dict]) -> str:
+    """Return mood list from library context, falling back to defaults."""
+    if library_context and library_context.get('top_moods'):
+        return ', '.join(library_context['top_moods'][:10])
+    return _FALLBACK_MOODS
+
+
+def _build_system_prompt(tools: List[Dict], library_context: Optional[Dict] = None) -> str:
+    """Build a single canonical system prompt used by ALL AI providers.
+
+    Args:
+        tools: MCP tool definitions (used to list correct tool names)
+        library_context: Optional dict from get_library_context() with library stats
+    """
+    tool_names = [t['name'] for t in tools]
+    has_text_search = 'text_search' in tool_names
+
+    # Build library context section
+    lib_section = ""
+    if library_context and library_context.get('total_songs', 0) > 0:
+        ctx = library_context
+        year_range = ''
+        if ctx.get('year_min') and ctx.get('year_max'):
+            year_range = f"\n- Year range: {ctx['year_min']}-{ctx['year_max']}"
+        rating_info = ''
+        if ctx.get('has_ratings'):
+            rating_info = f"\n- {ctx['rated_songs_pct']}% of songs have ratings (0-5 scale)"
+        scale_info = ''
+        if ctx.get('scales'):
+            scale_info = f"\n- Scales available: {', '.join(ctx['scales'])}"
+
+        lib_section = f"""
+=== USER'S MUSIC LIBRARY ===
+- {ctx['total_songs']} songs from {ctx['unique_artists']} artists{year_range}{rating_info}{scale_info}
+"""
+
+    # Build tool decision tree
+    decision_tree = []
+    decision_tree.append("1. Specific song+artist mentioned? -> song_similarity")
+    if has_text_search:
+        decision_tree.append("2. Instruments (piano, guitar, ukulele) or SOUND DESCRIPTIONS (romantic, dreamy, chill vibes)? -> text_search")
+        decision_tree.append("3. 'songs by/from/like [ARTIST]'? -> artist_similarity (returns artist's own + similar)")
+        decision_tree.append("4. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
+        decision_tree.append("5. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
+        decision_tree.append("6. Genre/mood/tempo/energy/year/rating filters? -> search_database (last resort)")
+    else:
+        decision_tree.append("2. 'songs by/from/like [ARTIST]'? -> artist_similarity (returns artist's own + similar)")
+        decision_tree.append("3. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
+        decision_tree.append("4. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
+        decision_tree.append("5. Genre/mood/tempo/energy/year/rating filters? -> search_database (last resort)")
+
+    decision_text = '\n'.join(decision_tree)
+
+    prompt = f"""You are an expert music playlist curator. Analyze the user's request and call the appropriate tools to build a playlist of 100 songs.
+{lib_section}
+=== TOOL SELECTION (most specific -> most general) ===
+{decision_text}
+
+=== RULES ===
+1. Call one or more tools - each returns songs with item_id, title, and artist
+2. song_similarity REQUIRES both title AND artist - never leave empty
+3. artist_similarity returns the artist's OWN songs + songs from SIMILAR artists
+4. search_database: COMBINE all filters in ONE call. Use for genre/mood/tempo/energy/year/rating
+5. For multiple artists: call artist_similarity once per artist, or use song_alchemy to blend
+6. Prefer tool calls over text explanations
+7. For complex requests, call MULTIPLE tools in ONE turn for better coverage:
+   - "relaxing piano jazz" -> text_search("relaxing piano") + search_database(genres=["jazz"])
+   - "energetic songs by Metallica and AC/DC" -> artist_similarity("Metallica") + artist_similarity("AC/DC")
+8. When a query has BOTH a genre AND a mood from the MOODS list, prefer search_database over text_search:
+   - "sad jazz" -> search_database(genres=["jazz"], moods=["sad"])  NOT text_search
+   - But "dreamy atmospheric" -> text_search (no specific genre, sound description)
+
+=== VALID search_database VALUES ===
+GENRES: {_get_dynamic_genres(library_context)}
+MOODS: {_get_dynamic_moods(library_context)}
+TEMPO: 40-200 BPM
+ENERGY: 0.0 (calm) to 1.0 (intense) - use 0.0-0.35 for low, 0.35-0.65 for medium, 0.65-1.0 for high
+SCALE: major, minor
+YEAR: year_min/year_max (e.g., 1990-1999 for 90s). For decade requests (80s, 90s), prefer year filters over genres.
+RATING: min_rating 1-5 (user's personal ratings)"""
+
+    return prompt
+
+
 def call_ai_with_mcp_tools(
     provider: str,
     user_message: str,
     tools: List[Dict],
     ai_config: Dict,
-    log_messages: List[str]
+    log_messages: List[str],
+    library_context: Optional[Dict] = None
 ) -> Dict:
     """
     Call AI provider with MCP tool definitions and handle tool calling flow.
-    
+
     Args:
         provider: AI provider ('GEMINI', 'OPENAI', 'MISTRAL', 'OLLAMA')
         user_message: The user's natural language request
         tools: List of MCP tool definitions
         ai_config: Configuration dict with API keys, URLs, model names
         log_messages: List to append log messages to
-    
+        library_context: Optional library stats dict from get_library_context()
+
     Returns:
         Dict with 'tool_calls' (list of tool calls) or 'error' (error message)
     """
     if provider == "GEMINI":
-        return _call_gemini_with_tools(user_message, tools, ai_config, log_messages)
+        return _call_gemini_with_tools(user_message, tools, ai_config, log_messages, library_context)
     elif provider == "OPENAI":
-        return _call_openai_with_tools(user_message, tools, ai_config, log_messages)
+        return _call_openai_with_tools(user_message, tools, ai_config, log_messages, library_context)
     elif provider == "MISTRAL":
-        return _call_mistral_with_tools(user_message, tools, ai_config, log_messages)
+        return _call_mistral_with_tools(user_message, tools, ai_config, log_messages, library_context)
     elif provider == "OLLAMA":
-        return _call_ollama_with_tools(user_message, tools, ai_config, log_messages)
+        return _call_ollama_with_tools(user_message, tools, ai_config, log_messages, library_context)
     else:
         return {"error": f"Unsupported AI provider: {provider}"}
 
 
-def _call_gemini_with_tools(user_message: str, tools: List[Dict], ai_config: Dict, log_messages: List[str]) -> Dict:
+def _call_gemini_with_tools(user_message: str, tools: List[Dict], ai_config: Dict, log_messages: List[str], library_context: Optional[Dict] = None) -> Dict:
     """Call Gemini with function calling."""
     try:
         import google.genai as genai
-        
+
         api_key = ai_config.get('gemini_key')
         model_name = ai_config.get('gemini_model', 'gemini-2.5-pro')
-        
+
         if not api_key or api_key == "YOUR-GEMINI-API-KEY-HERE":
             return {"error": "Valid Gemini API key required"}
-        
+
         # Use new google-genai Client API
         client = genai.Client(api_key=api_key)
-        
+
         # Convert MCP tools to Gemini function declarations
         # Gemini uses a different schema format - need to convert types
         def convert_schema_for_gemini(schema):
             """Convert JSON Schema to Gemini-compatible format."""
             if not isinstance(schema, dict):
                 return schema
-            
+
             result = {}
-            
+
             # Convert type field
             if 'type' in schema:
                 schema_type = schema['type']
@@ -78,29 +175,29 @@ def _call_gemini_with_tools(user_message: str, tools: List[Dict], ai_config: Dic
                     'object': 'OBJECT'
                 }
                 result['type'] = type_map.get(schema_type, schema_type.upper())
-            
+
             # Copy description
             if 'description' in schema:
                 result['description'] = schema['description']
-            
+
             # Handle properties recursively
             if 'properties' in schema:
                 result['properties'] = {
-                    k: convert_schema_for_gemini(v) 
+                    k: convert_schema_for_gemini(v)
                     for k, v in schema['properties'].items()
                 }
-            
+
             # Handle array items
             if 'items' in schema:
                 result['items'] = convert_schema_for_gemini(schema['items'])
-            
+
             # Copy required and enum (Gemini doesn't support 'default')
             for field in ['required', 'enum']:
                 if field in schema:
                     result[field] = schema[field]
-            
+
             return result
-        
+
         function_declarations = []
         for tool in tools:
             func_decl = {
@@ -109,37 +206,21 @@ def _call_gemini_with_tools(user_message: str, tools: List[Dict], ai_config: Dic
                 "parameters": convert_schema_for_gemini(tool['inputSchema'])
             }
             function_declarations.append(func_decl)
-        
-        # System instruction for playlist generation
-        system_instruction = """You are an expert music playlist curator with access to a music database.
 
-Your task is to analyze the user's request and determine which tools to call to build a great playlist.
+        # Unified system prompt
+        system_instruction = _build_system_prompt(tools, library_context)
 
-IMPORTANT RULES:
-1. Call tools to gather songs - you can call multiple tools
-2. Each tool returns a list of songs with item_id, title, and artist
-3. Combine results from multiple tool calls if needed
-4. Return ONLY tool calls - do not provide text responses yet
-
-Available strategies:
-- For artist requests: Use artist_similarity or artist_hits
-- For genre/mood: Use search_by_genre
-- For energy/tempo: Use search_by_tempo_energy
-- For vibe descriptions: Use vibe_match
-- For specific songs: Use song_similarity
-- To check what's available: Use explore_database first
-
-Call the appropriate tools now to fulfill the user's request."""
-        
         # Prepare tools for new API
         tools_list = [genai.types.Tool(function_declarations=function_declarations)]
-        
+
         # Generate response with function calling using new API
         # Note: Using 'ANY' mode to force tool calling instead of text response
+        # system_instruction gives the prompt proper role separation (not mixed into user content)
         response = client.models.generate_content(
             model=model_name,
-            contents=f"{system_instruction}\n\nUser request: {user_message}",
+            contents=user_message,
             config=genai.types.GenerateContentConfig(
+                system_instruction=system_instruction,
                 tools=tools_list,
                 tool_config=genai.types.ToolConfig(
                     function_calling_config=genai.types.FunctionCallingConfig(mode='ANY')
@@ -197,15 +278,15 @@ Call the appropriate tools now to fulfill the user's request."""
         return {"error": f"Gemini error: {str(e)}"}
 
 
-def _call_openai_with_tools(user_message: str, tools: List[Dict], ai_config: Dict, log_messages: List[str]) -> Dict:
+def _call_openai_with_tools(user_message: str, tools: List[Dict], ai_config: Dict, log_messages: List[str], library_context: Optional[Dict] = None) -> Dict:
     """Call OpenAI-compatible API with function calling."""
     try:
         import httpx
-        
+
         api_url = ai_config.get('openai_url', 'https://api.openai.com/v1/chat/completions')
         api_key = ai_config.get('openai_key', 'no-key-needed')
         model_name = ai_config.get('openai_model', 'gpt-4')
-        
+
         # Convert MCP tools to OpenAI function format
         functions = []
         for tool in tools:
@@ -217,34 +298,22 @@ def _call_openai_with_tools(user_message: str, tools: List[Dict], ai_config: Dic
                     "parameters": tool['inputSchema']
                 }
             })
-        
+
         # Build request
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}"
         }
-        
+
+        # Unified system prompt
+        system_prompt = _build_system_prompt(tools, library_context)
+
         payload = {
             "model": model_name,
             "messages": [
                 {
                     "role": "system",
-                    "content": """You are an expert music playlist curator with access to a music database.
-
-Analyze the user's request and call the appropriate tools to build a playlist.
-
-Rules:
-1. Call one or more tools to gather songs
-2. Each tool returns songs with item_id, title, and artist
-3. Choose tools based on the request type:
-   - Artist requests → artist_similarity or artist_hits
-   - Genre/mood → search_by_genre
-   - Energy/tempo → search_by_tempo_energy
-   - Vibe descriptions → vibe_match
-   - Specific songs → song_similarity
-   - Check availability → explore_database
-
-Call the tools needed to fulfill the request."""
+                    "content": system_prompt
                 },
                 {
                     "role": "user",
@@ -298,19 +367,19 @@ Call the tools needed to fulfill the request."""
         return {"error": f"OpenAI error: {str(e)}"}
 
 
-def _call_mistral_with_tools(user_message: str, tools: List[Dict], ai_config: Dict, log_messages: List[str]) -> Dict:
+def _call_mistral_with_tools(user_message: str, tools: List[Dict], ai_config: Dict, log_messages: List[str], library_context: Optional[Dict] = None) -> Dict:
     """Call Mistral with function calling."""
     try:
         from mistralai import Mistral
-        
+
         api_key = ai_config.get('mistral_key')
         model_name = ai_config.get('mistral_model', 'mistral-large-latest')
-        
+
         if not api_key or api_key == "YOUR-GEMINI-API-KEY-HERE":
             return {"error": "Valid Mistral API key required"}
-        
+
         client = Mistral(api_key=api_key)
-        
+
         # Convert MCP tools to Mistral function format
         mistral_tools = []
         for tool in tools:
@@ -322,26 +391,17 @@ def _call_mistral_with_tools(user_message: str, tools: List[Dict], ai_config: Di
                     "parameters": tool['inputSchema']
                 }
             })
-        
+
+        # Unified system prompt
+        system_prompt = _build_system_prompt(tools, library_context)
+
         # Call Mistral
         response = client.chat.complete(
             model=model_name,
             messages=[
                 {
                     "role": "system",
-                    "content": """You are an expert music playlist curator with access to a music database.
-
-Analyze the user's request and call the appropriate tools to build a playlist.
-
-Rules:
-1. Call one or more tools to gather songs
-2. Choose tools based on request type:
-   - Artists → artist_similarity or artist_hits
-   - Genres → search_by_genre
-   - Energy/tempo → search_by_tempo_energy
-   - Vibes → vibe_match
-
-Call the tools now."""
+                    "content": system_prompt
                 },
                 {
                     "role": "user",
@@ -376,180 +436,58 @@ Call the tools now."""
         return {"error": f"Mistral error: {str(e)}"}
 
 
-def _call_ollama_with_tools(user_message: str, tools: List[Dict], ai_config: Dict, log_messages: List[str]) -> Dict:
+def _call_ollama_with_tools(user_message: str, tools: List[Dict], ai_config: Dict, log_messages: List[str], library_context: Optional[Dict] = None) -> Dict:
     """
     Call Ollama with tool definitions.
     Note: Ollama's tool calling support varies by model. This uses a prompt-based approach.
     """
     try:
         import httpx
-        
+
         ollama_url = ai_config.get('ollama_url', 'http://localhost:11434/api/generate')
         model_name = ai_config.get('ollama_model', 'llama3.1:8b')
-        
-        # Build simpler tool list for Ollama
+
+        # Build tool parameter descriptions for Ollama (it needs explicit param listings)
         tools_list = []
-        has_text_search = False
+        has_text_search = 'text_search' in [t['name'] for t in tools]
         for tool in tools:
-            if tool['name'] == 'text_search':
-                has_text_search = True
             props = tool['inputSchema'].get('properties', {})
-            required = tool['inputSchema'].get('required', [])
             params_desc = ", ".join([f"{k} ({v.get('type')})" for k, v in props.items()])
-            tools_list.append(f"• {tool['name']}: {tool['description']}\n  Parameters: {params_desc}")
-        
+            tools_list.append(f"- {tool['name']}: {params_desc}")
         tools_text = "\n".join(tools_list)
-        
-        # Build tool priority list dynamically
-        tool_count = len(tools)
-        tool_priorities = []
-        tool_priorities.append("1. song_similarity - EXACT API: similar songs (needs title+artist)")
-        if has_text_search:
-            tool_priorities.append("2. text_search - CLAP SEARCH: natural language search for instruments, moods, descriptive queries")
-            tool_priorities.append("3. artist_similarity - EXACT API: songs from similar artists (NOT artist's own songs)")
-            tool_priorities.append("4. song_alchemy - VECTOR MATH: blend/subtract artists/songs")
-            tool_priorities.append("5. ai_brainstorm - AI KNOWLEDGE: artist's own songs, trending, era, complex requests")
-            tool_priorities.append("6. search_database - EXACT DB: filter by genre/mood/tempo/energy (LAST RESORT)")
-        else:
-            tool_priorities.append("2. artist_similarity - EXACT API: songs from similar artists (NOT artist's own songs)")
-            tool_priorities.append("3. song_alchemy - VECTOR MATH: blend/subtract artists/songs")
-            tool_priorities.append("4. ai_brainstorm - AI KNOWLEDGE: artist's own songs, trending, era, complex requests")
-            tool_priorities.append("5. search_database - EXACT DB: filter by genre/mood/tempo/energy (LAST RESORT)")
-        
-        tool_priorities_text = "\n".join(tool_priorities)
-        
-        # Build decision tree dynamically
-        decision_steps = []
-        if has_text_search:
-            decision_steps.append("- Specific song+artist mentioned? → song_similarity (exact API)")
-            decision_steps.append("- ⚠️ INSTRUMENTS mentioned (piano, guitar, drums, violin, saxophone, etc.)? → text_search (CLAP) - NEVER use search_database for instruments!")
-            decision_steps.append("- Descriptive/subjective moods (romantic, chill, melancholic, dreamy, uplifting)? → text_search (CLAP)")
-            decision_steps.append("- 'songs like [ARTIST]' (similar artists)? → artist_similarity (exact API)")
-            decision_steps.append("- 'sounds like [ARTIST1] + [ARTIST2]' or 'like X but NOT Y'? → song_alchemy (vector math)")
-            decision_steps.append("- Artist's OWN songs, trending, era, complex? → ai_brainstorm (AI knowledge)")
-            decision_steps.append("- Database genres/moods ONLY (rock, pop, metal, jazz - NO instruments)? → search_database (exact DB)")
-        else:
-            decision_steps.append("- Specific song+artist mentioned? → song_similarity (exact API)")
-            decision_steps.append("- 'songs like [ARTIST]' (similar artists)? → artist_similarity (exact API)")
-            decision_steps.append("- 'sounds like [ARTIST1] + [ARTIST2]' or 'like X but NOT Y'? → song_alchemy (vector math)")
-            decision_steps.append("- Artist's OWN songs, trending, era, complex? → ai_brainstorm (AI knowledge)")
-            decision_steps.append("- Genre/mood/tempo/energy filters only? → search_database (exact DB)")
-        
-        decision_steps_text = "\n".join(decision_steps)
-        
-        # Build examples dynamically
+
+        # Use the unified system prompt as base, then add Ollama-specific JSON format instructions
+        system_prompt = _build_system_prompt(tools, library_context)
+
+        # Build a few examples for Ollama's JSON output format
         examples = []
-        examples.append("""
-"Similar to By the Way by Red Hot Chili Peppers"
-{{
-  "tool_calls": [{{"name": "song_similarity", "arguments": {{"song_title": "By the Way", "song_artist": "Red Hot Chili Peppers", "get_songs": 100}}}}]
-}}""")
-        
+        examples.append('"Similar to By the Way by Red Hot Chili Peppers"\n{{"tool_calls": [{{"name": "song_similarity", "arguments": {{"song_title": "By the Way", "song_artist": "Red Hot Chili Peppers", "get_songs": 100}}}}]}}')
         if has_text_search:
-            examples.append("""
-"calm piano song"
-{{
-  "tool_calls": [{{"name": "text_search", "arguments": {{"description": "calm piano", "get_songs": 100}}}}]
-}}""")
-            examples.append("""
-"romantic acoustic guitar"
-{{
-  "tool_calls": [{{"name": "text_search", "arguments": {{"description": "romantic acoustic guitar", "get_songs": 100}}}}]
-}}""")
-            examples.append("""
-"energetic ukulele songs"
-{{
-  "tool_calls": [{{"name": "text_search", "arguments": {{"description": "energetic ukulele", "energy_filter": "high", "get_songs": 100}}}}]
-}}""")
-        
-        examples.append("""
-"songs like blink-182" (similar artists, NOT blink-182's own)
-{{
-  "tool_calls": [{{"name": "artist_similarity", "arguments": {{"artist": "blink-182", "get_songs": 100}}}}]
-}}""")
-        
-        examples.append("""
-"blink-182 songs" (blink-182's OWN songs)
-{{
-  "tool_calls": [{{"name": "ai_brainstorm", "arguments": {{"user_request": "blink-182 songs", "get_songs": 100}}}}]
-}}""")
-        
-        examples.append("""
-"running 120 bpm"
-{{
-  "tool_calls": [{{"name": "search_database", "arguments": {{"tempo_min": 115, "tempo_max": 125, "energy_min": 0.08, "get_songs": 100}}}}]
-}}""")
-        
-        examples_text = "\n".join(examples)
-        
-        prompt = f"""You are a music playlist curator. Analyze this request and decide which tools to call.
+            examples.append('"calm piano song"\n{{"tool_calls": [{{"name": "text_search", "arguments": {{"description": "calm piano", "get_songs": 100}}}}]}}')
+        examples.append('"songs like blink-182"\n{{"tool_calls": [{{"name": "artist_similarity", "arguments": {{"artist": "blink-182", "get_songs": 100}}}}]}}')
+        examples.append('"blink-182 songs"\n{{"tool_calls": [{{"name": "artist_similarity", "arguments": {{"artist": "blink-182", "get_songs": 100}}}}]}}')
+        examples.append('"energetic rock"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"genres": ["rock"], "energy_min": 0.65, "get_songs": 100}}}}]}}')
+        examples_text = "\n\n".join(examples)
 
-Request: "{user_message}"
+        prompt = f"""{system_prompt}
 
-Available tools:
+=== TOOL PARAMETERS ===
 {tools_text}
 
-CRITICAL RULES:
-1. Return ONLY valid JSON object (not an array)
-2. Use this EXACT format:
+=== OUTPUT FORMAT (CRITICAL) ===
+Return ONLY a valid JSON object with this EXACT format:
 {{
   "tool_calls": [
-    {{"name": "tool_name", "arguments": {{"param": "value"}}}},
-    {{"name": "tool_name2", "arguments": {{"param": "value"}}}}
+    {{"name": "tool_name", "arguments": {{"param": "value"}}}}
   ]
 }}
 
-YOU HAVE {tool_count} TOOLS (in priority order):
-{tool_priorities_text}
-
-STEP 1 - ANALYZE INTENT:
-What does the user want?
-{decision_steps_text}
-
-CRITICAL RULES:
-1. song_similarity NEEDS title+artist - no empty titles!
-2. ⚠️ INSTRUMENTS → text_search! If query mentions INSTRUMENTS (piano, guitar, drums, violin, saxophone, trumpet, flute, bass, ukulele, harmonica), you MUST use text_search, NOT search_database!
-3. text_search is ALSO BEST for descriptive/subjective moods (romantic, chill, sad, melancholic, uplifting, dreamy)
-4. artist_similarity returns SIMILAR artists, NOT artist's own songs
-5. search_database = ONLY for database genres/moods listed below (NOT instruments!)
-6. ai_brainstorm = DEFAULT for complex requests
-7. Match ACTUAL user request - don't invent different requests!
-
-⚠️ CRITICAL DISTINCTION:
-- INSTRUMENTS (piano, guitar, drums) → text_search
-- GENRES (rock, pop, metal, jazz) → search_database
-- "piano" is NOT a genre! Use text_search for instruments!
-
-VALID search_database VALUES (ONLY THESE):
-GENRES: rock, pop, metal, jazz, electronic, dance, alternative, indie, punk, blues, hard rock, heavy metal, Hip-Hop, funk, country, 00s, 90s, 80s, 70s, 60s
-MOODS: danceable, aggressive, happy, party, relaxed, sad
-TEMPO: 40-200 BPM | ENERGY: 0.01-0.15
-⚠️ NOTE: Instruments like "piano" are NOT valid genres! Use text_search instead!
-
-KEY EXAMPLES:
+=== EXAMPLES ===
 {examples_text}
 
-"energetic rock"
-{{
-  "tool_calls": [{{"name": "search_database", "arguments": {{"genres": ["rock"], "energy_min": 0.08, "moods": ["happy"], "get_songs": 100}}}}]
-}}
-
-"trending 2025"
-{{
-  "tool_calls": [{{"name": "ai_brainstorm", "arguments": {{"user_request": "trending 2025", "get_songs": 100}}}}]
-}}
-
-⚠️ WRONG EXAMPLES (DO NOT DO THIS):
-❌ "piano songs" with search_database genres=["piano"] → WRONG! Piano is an instrument, not a genre. Use text_search instead.
-❌ "guitar music" with search_database genres=["guitar"] → WRONG! Guitar is an instrument. Use text_search.
-✅ "piano songs" → Use text_search with description="piano"
-✅ "calm piano" → Use text_search with description="calm piano"
-
-Now analyze this request and call tools:
-
+Now analyze this request and return ONLY the JSON:
 Request: "{user_message}"
-
-Return ONLY the JSON object with tool_calls array:"""
+"""
         
         payload = {
             "model": model_name,
@@ -710,15 +648,32 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
                 tool_args.get('get_songs', 100)
             )
         elif tool_name == "search_database":
+            # Convert normalized energy (0-1) to raw energy scale
+            # AI sees 0.0-1.0, raw DB range is ENERGY_MIN-ENERGY_MAX (e.g. 0.01-0.15)
+            energy_min_raw = None
+            energy_max_raw = None
+            e_min = tool_args.get('energy_min')
+            e_max = tool_args.get('energy_max')
+            if e_min is not None:
+                e_min = float(e_min)
+                energy_min_raw = config.ENERGY_MIN + e_min * (config.ENERGY_MAX - config.ENERGY_MIN)
+            if e_max is not None:
+                e_max = float(e_max)
+                energy_max_raw = config.ENERGY_MIN + e_max * (config.ENERGY_MAX - config.ENERGY_MIN)
+
             return _database_genre_query_sync(
                 tool_args.get('genres'),
                 tool_args.get('get_songs', 100),
                 tool_args.get('moods'),
                 tool_args.get('tempo_min'),
                 tool_args.get('tempo_max'),
-                tool_args.get('energy_min'),
-                tool_args.get('energy_max'),
-                tool_args.get('key')
+                energy_min_raw,
+                energy_max_raw,
+                tool_args.get('key'),
+                tool_args.get('scale'),
+                tool_args.get('year_min'),
+                tool_args.get('year_max'),
+                tool_args.get('min_rating')
             )
         elif tool_name == "ai_brainstorm":
             return _ai_brainstorm_sync(
@@ -736,13 +691,13 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
 
 def get_mcp_tools() -> List[Dict]:
     """Get the list of available MCP tools - 6 CORE TOOLS.
-    
+
     ⚠️ CRITICAL: ALWAYS choose tools in THIS ORDER (most specific → most general):
     1. SONG_SIMILARITY - for specific song title + artist
     2. TEXT_SEARCH - for instruments, specific moods, descriptive queries (requires CLAP)
-    3. ARTIST_SIMILARITY - for songs FROM specific artist(s)
+    3. ARTIST_SIMILARITY - for songs BY/FROM specific artist(s) (includes artist's own songs)
     4. SONG_ALCHEMY - for 'sounds LIKE' blending multiple artists/songs
-    5. AI_BRAINSTORM - for world knowledge (artist's own songs, era, awards)
+    5. AI_BRAINSTORM - for world knowledge (trending, awards, songs NOT in library)
     6. SEARCH_DATABASE - for genre/mood/tempo filters (last resort)
     
     Never skip to a general tool when a specific tool can handle the request!
@@ -781,7 +736,7 @@ def get_mcp_tools() -> List[Dict]:
     if CLAP_ENABLED:
         tools.append({
             "name": "text_search",
-            "description": "🥈 PRIORITY #2: HIGH PRIORITY - Natural language search using CLAP. ✅ USE for: INSTRUMENTS (piano, guitar, ukulele), SPECIFIC MOODS (romantic, sad, happy), DESCRIPTIVE QUERIES ('chill vibes', 'energetic workout'). Supports optional tempo/energy filters for hybrid search.",
+            "description": "🥈 PRIORITY #2: HIGH PRIORITY - Natural language search using CLAP. ✅ USE for: INSTRUMENTS (piano, guitar, ukulele), SOUND DESCRIPTIONS (romantic, dreamy, chill vibes), DESCRIPTIVE QUERIES ('energetic workout'). Supports optional tempo/energy filters for hybrid search.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -812,7 +767,7 @@ def get_mcp_tools() -> List[Dict]:
     tools.extend([
         {
             "name": "artist_similarity",
-            "description": f"🥉 PRIORITY #{'3' if CLAP_ENABLED else '2'}: Find songs FROM similar artists (NOT the artist's own songs). ✅ USE for: 'songs FROM Artist X, Artist Y' (call once per artist). ❌ DON'T USE for: 'sounds LIKE multiple artists' (use song_alchemy).",
+            "description": f"🥉 PRIORITY #{'3' if CLAP_ENABLED else '2'}: Find songs BY an artist AND similar artists. ✅ USE for: 'songs by/from/like Artist X' including the artist's own songs (call once per artist). ❌ DON'T USE for: 'sounds LIKE multiple artists blended' (use song_alchemy).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -831,7 +786,7 @@ def get_mcp_tools() -> List[Dict]:
         },
         {
             "name": "song_alchemy",
-            "description": f"🏅 PRIORITY #{'4' if CLAP_ENABLED else '3'}: VECTOR ARITHMETIC - Blend or subtract artists/songs using musical math. ✅ BEST for: 'SOUNDS LIKE / PLAY LIKE multiple artists' ('play like Iron Maiden, Metallica, Deep Purple'), 'like X but NOT Y', 'Artist A meets Artist B'. ❌ DON'T USE for: 'songs FROM artists' (use artist_similarity), single artist (use artist_similarity), genre/mood (use search_database). Examples: 'play like Iron Maiden + Metallica + Deep Purple' = add all 3; 'Beatles but not ballads' = add Beatles, subtract ballads.",
+            "description": f"🏅 PRIORITY #{'4' if CLAP_ENABLED else '3'}: VECTOR ARITHMETIC - Blend or subtract MULTIPLE artists/songs. REQUIRES 2+ items. Keywords: 'meets', 'combined', 'blend', 'mix of', 'but not', 'without'. ✅ BEST for: 'play like A + B' ('play like Iron Maiden, Metallica, Deep Purple'), 'like X but NOT Y', 'Artist A meets Artist B', 'mix of A and B'. ❌ DON'T USE for: single artist (use artist_similarity), genre/mood (use search_database). Examples: 'play like Iron Maiden + Metallica + Deep Purple' = add all 3; 'Beatles but not ballads' = add Beatles, subtract ballads.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -884,7 +839,7 @@ def get_mcp_tools() -> List[Dict]:
         },
         {
             "name": "ai_brainstorm",
-            "description": f"🏅 PRIORITY #{'5' if CLAP_ENABLED else '4'}: AI world knowledge - Use ONLY when other tools CAN'T work. ✅ USE for: artist's OWN songs, specific era/year, trending songs, award winners, chart hits. ❌ DON'T USE for: 'sounds like' (use song_alchemy), artist similarity (use artist_similarity), genre/mood (use search_database), instruments/moods (use text_search if available).",
+            "description": f"🏅 PRIORITY #{'5' if CLAP_ENABLED else '4'}: AI world knowledge - Use ONLY when other tools CAN'T work. ✅ USE for: named events (Grammy, Billboard, festivals), cultural knowledge (trending, viral, classic hits), historical significance (best of decade, iconic albums), songs NOT in library. ❌ DON'T USE for: artist's own songs (use artist_similarity), 'sounds like' (use song_alchemy), genre/mood (use search_database), instruments/moods (use text_search if available).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -903,7 +858,7 @@ def get_mcp_tools() -> List[Dict]:
         },
         {
             "name": "search_database",
-            "description": f"🎖️ PRIORITY #{'6' if CLAP_ENABLED else '5'}: MOST GENERAL (last resort) - Search by genre/mood/tempo/energy filters. ✅ USE for: genre/mood/tempo combinations when NO specific artists/songs mentioned AND text_search not available/suitable. ❌ DON'T USE if you can use other more specific tools. COMBINE all filters in ONE call!",
+            "description": f"🎖️ PRIORITY #{'6' if CLAP_ENABLED else '5'}: MOST GENERAL (last resort) - Search by genre/mood/tempo/energy/year/rating/scale filters. ✅ USE for: genre/mood/tempo combinations when NO specific artists/songs mentioned AND text_search not available/suitable. ❌ DON'T USE if you can use other more specific tools. COMBINE all filters in ONE call!",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -927,15 +882,32 @@ def get_mcp_tools() -> List[Dict]:
                     },
                     "energy_min": {
                         "type": "number",
-                        "description": "Min energy (0.01-0.15)"
+                        "description": "Min energy 0.0 (calm) to 1.0 (intense)"
                     },
                     "energy_max": {
                         "type": "number",
-                        "description": "Max energy (0.01-0.15)"
+                        "description": "Max energy 0.0 (calm) to 1.0 (intense)"
                     },
                     "key": {
                         "type": "string",
                         "description": "Musical key (C, D, E, F, G, A, B with # or b)"
+                    },
+                    "scale": {
+                        "type": "string",
+                        "enum": ["major", "minor"],
+                        "description": "Musical scale: major or minor"
+                    },
+                    "year_min": {
+                        "type": "integer",
+                        "description": "Earliest release year (e.g. 1990)"
+                    },
+                    "year_max": {
+                        "type": "integer",
+                        "description": "Latest release year (e.g. 1999)"
+                    },
+                    "min_rating": {
+                        "type": "integer",
+                        "description": "Minimum user rating 1-5"
                     },
                     "get_songs": {
                         "type": "integer",

@@ -208,9 +208,9 @@ Features:
 
 ```
 deployment/
-├── docker-compose.yaml           # CPU version (default)
-├── docker-compose-nvidia.yaml    # GPU/NVIDIA version
-└── docker-compose-extras.yaml    # Optional: pgAdmin, monitoring, etc.
+├── docker-compose-unified.yaml           # CPU version (default)
+├── docker-compose-unified-nvidia.yaml    # GPU/NVIDIA version
+└── docker-compose-unified-nvidia-test.yaml  # GPU local build (development)
 ```
 
 All provider-specific configuration moves to:

@@ -13,17 +13,49 @@ REQUESTS_TIMEOUT = 300
 # JELLYFIN IMPLEMENTATION
 # ##############################################################################
 
-def _get_target_library_ids():
+def get_music_libraries(config_dict=None):
+    """Fetch available music libraries from Jellyfin.
+    Args: config_dict -- provider JSONB config dict (url, token, user_id). Falls back to global config.
+    Returns: [{'id': str, 'name': str}]
+    """
+    if config_dict:
+        url = config_dict.get('url', '').rstrip('/')
+        headers = {"X-Emby-Token": config_dict.get('token', '')}
+    else:
+        url = config.JELLYFIN_URL
+        headers = config.HEADERS
+
+    api_url = f"{url}/Library/VirtualFolders"
+    try:
+        r = requests.get(api_url, headers=headers, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        all_libraries = r.json()
+        return [
+            {'id': lib['ItemId'], 'name': lib['Name']}
+            for lib in all_libraries
+            if lib.get('CollectionType') == 'music'
+        ]
+    except Exception as e:
+        logger.error(f"Failed to fetch Jellyfin music libraries from '{api_url}': {e}", exc_info=True)
+        return []
+
+
+def _get_target_library_ids(provider_config=None):
     """
     Parses config for library names and returns their IDs for filtering using a robust,
     case-insensitive matching against the server's actual library configuration.
     """
-    library_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+    # Try per-provider config first
+    if provider_config and provider_config.get('music_libraries'):
+        library_names = provider_config['music_libraries']  # already a list
+    else:
+        # Fallback to global env var
+        library_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+        if not library_names_str.strip():
+            return None
+        library_names = [n.strip() for n in library_names_str.split(',') if n.strip()]
 
-    if not library_names_str.strip():
-        return None
-
-    target_names_lower = {name.strip().lower() for name in library_names_str.split(',') if name.strip()}
+    target_names_lower = {name.lower() for name in library_names}
 
     # Use the /Library/VirtualFolders endpoint as it provides the canonical system configuration.
     url = f"{config.JELLYFIN_URL}/Library/VirtualFolders"
@@ -270,28 +302,54 @@ def _select_best_artist(item, title="Unknown"):
     return track_artist, artist_id
 
 def get_all_songs():
-    """Fetches all songs from Jellyfin using admin credentials."""
-    url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
-    params = {"IncludeItemTypes": "Audio", "Recursive": True, "Fields": "Path"}
-    try:
-        r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
-        r.raise_for_status()
-        items = r.json().get("Items", [])
+    """Fetches all songs from Jellyfin using admin credentials.
+    If MUSIC_LIBRARIES is set (or per-provider music_libraries), filters by library.
+    """
+    target_library_ids = _get_target_library_ids()
 
-        # Apply artist field prioritization to each item
-        for item in items:
-            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
-            title = item.get('Name', 'Unknown')
-            artist_name, artist_id = _select_best_artist(item, title)
-            item['AlbumArtist'] = artist_name
-            item['ArtistId'] = artist_id
-            item['Year'] = item.get('ProductionYear')
-            item['FilePath'] = item.get('Path')
-
-        return items
-    except Exception as e:
-        logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)
+    # Config is set but no matching libraries found - return nothing
+    if isinstance(target_library_ids, set) and not target_library_ids:
+        logger.warning("Library filtering is active, but no matching libraries were found. Returning no songs.")
         return []
+
+    all_items = []
+
+    if target_library_ids is None:
+        # No filtering - fetch all songs
+        url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
+        params = {"IncludeItemTypes": "Audio", "Recursive": True, "Fields": "Path"}
+        try:
+            r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+            r.raise_for_status()
+            all_items = r.json().get("Items", [])
+        except Exception as e:
+            logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)
+            return []
+    else:
+        # Filter by library using ParentId
+        logger.info(f"Fetching songs from {len(target_library_ids)} specific Jellyfin libraries.")
+        for library_id in target_library_ids:
+            url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
+            params = {"IncludeItemTypes": "Audio", "Recursive": True, "Fields": "Path", "ParentId": library_id}
+            try:
+                r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+                r.raise_for_status()
+                items = r.json().get("Items", [])
+                all_items.extend(items)
+            except Exception as e:
+                logger.error(f"Jellyfin get_all_songs failed for library {library_id}: {e}", exc_info=True)
+
+    # Apply artist field prioritization to each item
+    for item in all_items:
+        item['OriginalAlbumArtist'] = item.get('AlbumArtist')
+        title = item.get('Name', 'Unknown')
+        artist_name, artist_id = _select_best_artist(item, title)
+        item['AlbumArtist'] = artist_name
+        item['ArtistId'] = artist_id
+        item['Year'] = item.get('ProductionYear')
+        item['FilePath'] = item.get('Path')
+
+    return all_items
 
 def get_playlist_by_name(playlist_name):
     """Finds a Jellyfin playlist by its exact name using admin credentials."""
@@ -386,10 +444,12 @@ def get_last_played_time(item_id, user_creds=None):
         logger.error(f"Jellyfin get_last_played_time failed for item {item_id}, user {user_id}: {e}", exc_info=True)
         return None
 
-def create_instant_playlist(playlist_name, item_ids, user_creds=None):
+def create_instant_playlist(playlist_name, item_ids, user_creds=None, server_config=None):
     """Creates a new instant playlist on Jellyfin for a specific user."""
+    sc = server_config or {}
+
     # Treat empty token ("") as not provided and fall back to admin token from config
-    token = config.JELLYFIN_TOKEN
+    token = sc.get('token') or config.JELLYFIN_TOKEN
     if user_creds and isinstance(user_creds, dict) and user_creds.get('token'):
         token = user_creds.get('token')
     if not token:
@@ -397,16 +457,17 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         raise ValueError("Jellyfin Token is required.")
 
     # Treat empty user_identifier as not provided and fall back to admin user id
-    identifier = config.JELLYFIN_USER_ID
+    identifier = sc.get('user_id') or config.JELLYFIN_USER_ID
     if user_creds and isinstance(user_creds, dict) and user_creds.get('user_identifier'):
         identifier = user_creds.get('user_identifier')
     if not identifier:
         raise ValueError("Jellyfin User Identifier is required.")
 
     user_id = resolve_user(identifier, token)
-    
+
     final_playlist_name = f"{playlist_name.strip()}_instant"
-    url = f"{config.JELLYFIN_URL}/Playlists"
+    base_url = sc.get('url') or config.JELLYFIN_URL
+    url = f"{base_url}/Playlists"
     headers = {"X-Emby-Token": token}
     body = {"Name": final_playlist_name, "Ids": item_ids, "UserId": user_id}
     try:

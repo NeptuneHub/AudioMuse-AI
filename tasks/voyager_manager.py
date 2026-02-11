@@ -222,8 +222,14 @@ def build_and_store_voyager_index(db_conn=None):
 
     cur = db_conn.cursor()
     try:
-        logger.info("Fetching all embeddings from the database...")
-        cur.execute("SELECT item_id, embedding FROM embedding")
+        logger.info("Fetching all embeddings from the database (deduplicated by track)...")
+        cur.execute("""
+            SELECT DISTINCT ON (COALESCE(s.track_id, e.item_id))
+                   e.item_id, e.embedding
+            FROM embedding e
+            JOIN score s ON e.item_id = s.item_id
+            ORDER BY COALESCE(s.track_id, e.item_id), s.item_id
+        """)
         all_embeddings = cur.fetchall()
 
         if not all_embeddings:

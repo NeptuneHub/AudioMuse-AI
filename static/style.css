@@ -739,7 +739,7 @@ body.dark-mode #cancel-sync-btn:disabled {
     /* This will now appear directly after the navigation links */
     padding: 2rem 1rem 1rem 1rem; /* Extra top padding to space it from the last link */
     font-size: 0.8rem; /* Smaller font */
-    color: #6B7280; /* Grey text color */
+    color: var(--text-muted); /* Grey text color */
     text-align: center;
     /* Ensure long text wraps and doesn't get truncated */
     overflow-wrap: break-word;

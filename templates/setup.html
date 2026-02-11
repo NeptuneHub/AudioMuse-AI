@@ -251,6 +251,16 @@
         color: #dc3545;
     }
 
+    .test-result.warning {
+        background: rgba(255, 193, 7, 0.2);
+        color: #856404;
+    }
+
+    body.dark-mode .test-result.warning {
+        background: rgba(255, 193, 7, 0.15);
+        color: #ffc107;
+    }
+
     /* Browse Input Group */
     .input-with-browse {
         display: flex;
@@ -752,6 +762,123 @@
     .hardware-benefits li {
         margin-bottom: 0.25rem;
     }
+
+    /* Library Checklist */
+    .library-checklist {
+        margin-top: 0.75rem;
+        padding: 0.75rem;
+        background: var(--bg-body);
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+    }
+
+    .library-checklist-title {
+        font-weight: 500;
+        margin-bottom: 0.5rem;
+        font-size: 0.9rem;
+    }
+
+    .library-checklist label {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.25rem 0;
+        font-size: 0.9rem;
+        cursor: pointer;
+    }
+
+    .library-checklist label:hover {
+        color: var(--color-primary);
+    }
+
+    .library-checklist .library-note {
+        font-size: 0.8rem;
+        color: var(--text-muted);
+        margin-top: 0.5rem;
+    }
+
+    /* Provider Guide Info Box */
+    .provider-guide {
+        margin-bottom: 1rem;
+        border-radius: 4px;
+        background: var(--bg-body);
+        border: 1px solid var(--border-color);
+        border-left: 3px solid var(--color-primary);
+    }
+
+    .provider-guide summary {
+        padding: 0.75rem 1rem;
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 0.95rem;
+        color: var(--color-primary);
+        list-style: none;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .provider-guide summary::-webkit-details-marker {
+        display: none;
+    }
+
+    .provider-guide summary::before {
+        content: '\25B6';
+        font-size: 0.7rem;
+        transition: transform 0.2s ease;
+    }
+
+    .provider-guide[open] summary::before {
+        transform: rotate(90deg);
+    }
+
+    .provider-guide .guide-content {
+        padding: 0 1rem 1rem 1rem;
+        font-size: 0.9rem;
+        line-height: 1.6;
+        color: var(--text-body);
+    }
+
+    .provider-guide .guide-content h4 {
+        margin: 0.75rem 0 0.25rem 0;
+        font-size: 0.9rem;
+        color: var(--text-title);
+    }
+
+    .provider-guide .guide-content ul,
+    .provider-guide .guide-content ol {
+        margin: 0.25rem 0 0.5rem 1.25rem;
+        padding: 0;
+    }
+
+    .provider-guide .guide-content li {
+        margin-bottom: 0.25rem;
+    }
+
+    .provider-guide .guide-content code {
+        background: var(--bg-card);
+        padding: 0.1rem 0.35rem;
+        border-radius: 3px;
+        font-size: 0.85rem;
+    }
+
+    .provider-guide .guide-content a {
+        color: var(--color-primary);
+        text-decoration: none;
+    }
+
+    .provider-guide .guide-content a:hover {
+        text-decoration: underline;
+    }
+
+    .provider-guide .guide-content .guide-tested {
+        margin-top: 0.5rem;
+        padding: 0.4rem 0.6rem;
+        background: rgba(40, 167, 69, 0.1);
+        border-radius: 4px;
+        font-size: 0.85rem;
+        color: var(--text-muted);
+    }
 </style>
 {% endblock %}
 
@@ -1074,6 +1201,7 @@
 
 {% block bodyAdditions %}
 <script src="{{ url_for('static', filename='menu.js') }}"></script>
+<script src="/static/utils.js"></script>
 <script>
     // State
     let currentStep = 1;
@@ -1118,7 +1246,7 @@
                     const badges = [];
                     if (p.enabled) badges.push('<span class="provider-badge enabled">Enabled</span>');
                     else badges.push('<span class="provider-badge disabled">Disabled</span>');
-                    return `<li><strong>${p.name || p.provider_type}</strong> (${p.provider_type}) ${badges.join(' ')}</li>`;
+                    return `<li><strong>${escapeHtml(p.name || p.provider_type)}</strong> (${escapeHtml(p.provider_type)}) ${badges.join(' ')}</li>`;
                 }).join('');
 
                 // Show existing installation info with provider list
@@ -1201,6 +1329,71 @@
             updateAIProviderFields();
         }
     }
+
+    // Provider setup guides - shown as expandable info box in provider config section
+    const PROVIDER_GUIDES = {
+        jellyfin: `
+            <h4>Getting Your Credentials</h4>
+            <ul>
+                <li><strong>User ID:</strong> Go to the Jellyfin admin panel, click on a user, and copy the User ID from the URL (the long string after <code>/users/</code>)</li>
+                <li><strong>API Token:</strong> Go to <strong>Dashboard &gt; API Keys</strong>, click <strong>"+"</strong> to create a new key, and give it a name like "AudioMuse"</li>
+            </ul>
+            <h4>Optional Plugin</h4>
+            <p>For enhanced integration, install the <a href="https://github.com/NeptuneHub/audiomuse-ai-plugin" target="_blank" rel="noopener">AudioMuse-AI Plugin for Jellyfin</a> to trigger analysis directly from Jellyfin.</p>
+            <div class="guide-tested">Validated with Jellyfin <strong>10.11.3</strong></div>
+        `,
+        navidrome: `
+            <h4>Getting Your Credentials</h4>
+            <ul>
+                <li>Use your standard Navidrome <strong>username</strong> and <strong>password</strong></li>
+                <li>For LMS or other Subsonic-compatible servers, use the <strong>Subsonic API token</strong> instead of the password</li>
+            </ul>
+            <h4>Enabling Real Path (Multi-Provider)</h4>
+            <p>By default, Navidrome reports an internal path (artist/album/track) rather than the real file path. If you use multiple providers and want to match files across them, enable "Report Real Path":</p>
+            <ol>
+                <li>Log into the Navidrome web interface</li>
+                <li>Go to <strong>Players</strong> in the right sidebar</li>
+                <li>Click on the <strong>AudioMuse</strong> player entry (appears after AudioMuse first connects)</li>
+                <li>Toggle <strong>"Report Real Path"</strong> to enabled</li>
+            </ol>
+            <p>Alternatively, set <code>ND_DEFAULTREPORTREALPATH=true</code> as a Navidrome environment variable to enable this by default for all players.</p>
+            <h4>Optional Plugin</h4>
+            <p>For enhanced integration, install the <a href="https://github.com/NeptuneHub/AudioMuse-AI-NV-plugin" target="_blank" rel="noopener">AudioMuse-AI Plugin for Navidrome</a> to trigger analysis directly from Navidrome.</p>
+            <div class="guide-tested">Validated with Navidrome <strong>0.58.0</strong></div>
+        `,
+        lyrion: `
+            <h4>Getting Your Credentials</h4>
+            <ul>
+                <li><strong>No authentication required</strong> &mdash; just enter your Lyrion / LMS server URL</li>
+            </ul>
+            <h4>Compatibility</h4>
+            <p>Also compatible with Logitech Media Server (LMS). No additional plugins are required.</p>
+            <div class="guide-tested">Validated with Lyrion <strong>9.0.2</strong> / LMS <strong>v3.69.0</strong></div>
+        `,
+        emby: `
+            <h4>Getting Your Credentials</h4>
+            <ul>
+                <li><strong>User ID:</strong> Go to the Emby admin panel, click on a user, and copy the User ID from the URL</li>
+                <li><strong>API Token:</strong> Go to <strong>Dashboard &gt; API Keys</strong>, create a new key, and give it a name like "AudioMuse"</li>
+            </ul>
+            <div class="guide-tested">Validated with Emby <strong>4.9.1.80</strong></div>
+        `,
+        localfiles: `
+            <h4>Setup</h4>
+            <ul>
+                <li>Point <strong>Music Directory</strong> to the root folder containing your music files</li>
+                <li>Optionally set a <strong>Playlist Directory</strong> for M3U playlist output</li>
+            </ul>
+            <h4>Supported Formats</h4>
+            <p>MP3, FLAC, OGG, M4A, WAV, WMA, AAC, OPUS</p>
+            <h4>Features</h4>
+            <ul>
+                <li>Extracts metadata from ID3, Vorbis, and MP4 tags</li>
+                <li>Creates M3U playlists in your playlist directory</li>
+                <li>No media server required</li>
+            </ul>
+        `
+    };
 
     // AI Provider configuration fields - names match config.py environment variables
     const aiProviderFields = {
@@ -1334,6 +1527,15 @@
             configDiv.className = 'provider-config visible';
             configDiv.innerHTML = `<h4>${provider.name} Configuration</h4>`;
 
+            // Add provider setup guide if available
+            const guide = PROVIDER_GUIDES[type];
+            if (guide) {
+                const guideEl = document.createElement('details');
+                guideEl.className = 'provider-guide';
+                guideEl.innerHTML = `<summary>How to use AudioMuse-AI with ${provider.name}</summary><div class="guide-content">${guide}</div>`;
+                configDiv.appendChild(guideEl);
+            }
+
             const form = document.createElement('div');
 
             provider.config_fields.forEach(field => {
@@ -1396,9 +1598,16 @@
             testResult.className = 'test-result';
             testResult.style.display = 'none';
 
+            // Library checklist container (populated after successful test)
+            const libraryChecklist = document.createElement('div');
+            libraryChecklist.id = `library-checklist-${type}`;
+            libraryChecklist.className = 'library-checklist';
+            libraryChecklist.style.display = 'none';
+
             configDiv.appendChild(form);
             configDiv.appendChild(testBtn);
             configDiv.appendChild(testResult);
+            configDiv.appendChild(libraryChecklist);
             configs.appendChild(configDiv);
         });
     }
@@ -1463,12 +1672,62 @@
                         resultHTML += `<br><small>${pd.message}</small>`;
                     }
                 }
+
+                // Warn about relative paths for Navidrome in multi-provider setups
+                if (type === 'navidrome' && data.path_format === 'relative' && selectedProviders.length > 1) {
+                    resultHTML += `<div class="test-result warning" style="margin-top: 0.5rem;">
+                        <strong>Warning:</strong> Navidrome is returning relative file paths.
+                        In a multi-provider setup, this will prevent cross-provider track matching.
+                        <br><small>To fix: In Navidrome, go to Settings &gt; Subsonic &gt; enable <strong>"Report Real Path"</strong>, then re-test the connection.</small>
+                    </div>`;
+                }
             }
 
             resultDiv.innerHTML = resultHTML;
+
+            // After successful connection test, fetch available libraries
+            if (data.success && type !== 'localfiles') {
+                fetchProviderLibraries(type, config);
+            }
         } catch (err) {
             resultDiv.className = 'test-result error';
             resultDiv.textContent = 'Connection test failed: ' + err.message;
+        }
+    }
+
+    async function fetchProviderLibraries(type, config) {
+        const checklistDiv = document.getElementById(`library-checklist-${type}`);
+        if (!checklistDiv) return;
+
+        try {
+            const response = await fetch('/api/setup/providers/libraries', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider_type: type, config })
+            });
+            const data = await response.json();
+            const libraries = data.libraries || [];
+
+            if (libraries.length === 0) {
+                checklistDiv.style.display = 'none';
+                return;
+            }
+
+            // Render checklist - all checked by default
+            let html = '<div class="library-checklist-title">Music Libraries:</div>';
+            libraries.forEach(lib => {
+                html += `<label>
+                    <input type="checkbox" checked
+                           data-provider-library="${type}"
+                           data-library-name="${lib.name}">
+                    ${lib.name}
+                </label>`;
+            });
+            html += '<div class="library-note">Uncheck libraries you don\'t want to scan. All checked = scan everything.</div>';
+            checklistDiv.innerHTML = html;
+            checklistDiv.style.display = 'block';
+        } catch (err) {
+            console.error('Error fetching libraries for', type, err);
         }
     }
 
@@ -1483,6 +1742,27 @@
                 config[field] = input.value;
             }
         });
+
+        // Collect selected music libraries
+        const libraryCheckboxes = document.querySelectorAll(`[data-provider-library="${type}"]`);
+        if (libraryCheckboxes.length > 0) {
+            const allChecked = Array.from(libraryCheckboxes).every(cb => cb.checked);
+            if (allChecked) {
+                // All checked = no filtering (don't store music_libraries)
+                // This means "scan everything"
+            } else {
+                const selectedLibraries = [];
+                libraryCheckboxes.forEach(cb => {
+                    if (cb.checked) {
+                        selectedLibraries.push(cb.dataset.libraryName);
+                    }
+                });
+                if (selectedLibraries.length > 0) {
+                    config.music_libraries = selectedLibraries;
+                }
+            }
+        }
+
         return config;
     }
 
