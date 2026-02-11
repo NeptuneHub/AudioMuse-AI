@@ -1405,7 +1405,6 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 started_registry = default_queue.started_job_registry
                 for job_id in started_registry.get_job_ids():
                     try:
-                        from rq.job import Job
                         job = Job.fetch(job_id, connection=redis_conn)
                         if hasattr(job, 'func_name') and 'analyze_album_task' in str(job.func_name):
                             pending_album_jobs += 1

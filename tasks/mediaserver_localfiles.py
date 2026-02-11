@@ -99,7 +99,7 @@ def _get_songs_from_db() -> List[Dict]:
                 songs.append({
                     'Id': row[0],
                     'Name': row[1] or 'Unknown',
-                    'AlbumArtist': row[2] or 'Unknown Artist',
+                    'AlbumArtist': row[4] or row[2] or 'Unknown Artist',
                     'Album': row[3] or 'Unknown Album',
                     'OriginalAlbumArtist': row[4],
                     'Path': row[5],
@@ -107,14 +107,6 @@ def _get_songs_from_db() -> List[Dict]:
                     'Year': row[6],
                     'Rating': row[7],
                 })
-            # Verify sample of file paths exist on disk (stale-data check)
-            sample_size = min(5, len(songs))
-            if sample_size > 0:
-                import random
-                sample = random.sample(songs, sample_size)
-                missing = [s for s in sample if s.get('FilePath') and not os.path.exists(s['FilePath'])]
-                if len(missing) == sample_size:
-                    logger.warning(f"Stale data detected: none of {sample_size} sampled file paths exist on disk")
             return songs
     except Exception as e:
         logger.debug(f"DB cache lookup failed (expected during first scan): {e}")
@@ -518,8 +510,8 @@ def get_recent_albums(limit: int) -> List[Dict]:
     cfg = get_config()
     music_dir = cfg['music_directory']
 
-    # Try DB cache first, fall back to filesystem scan
-    all_songs = _get_songs_from_db() or get_all_songs()
+    # Always do a full filesystem scan to discover all albums
+    all_songs = get_all_songs()
     if not all_songs:
         return []
 
@@ -567,7 +559,7 @@ def get_tracks_from_album(album_id: str) -> List[Dict]:
     For local files, album_id is "Artist - Album Name" format.
     Uses DB cache when available to avoid rescanning the filesystem.
     """
-    all_songs = _get_songs_from_db() or get_all_songs()
+    all_songs = get_all_songs()
 
     # Filter songs matching this album
     tracks = []
