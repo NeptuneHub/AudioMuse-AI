@@ -277,18 +277,9 @@ def cancel_task_endpoint(task_id):
       404:
         description: Task ID not found in the database.
     """
-    db_task_info = get_task_info_from_db(task_id)
-    if not db_task_info:
-        return jsonify({"message": f"Task {task_id} not found in database.", "task_id": task_id}), 404
-
-    if db_task_info.get('status') in [TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]:
-        return jsonify({"message": f"Task {task_id} is already in a terminal state ({db_task_info.get('status')}) and cannot be cancelled.", "task_id": task_id}), 400
-
+    # Always perform cancel when the endpoint is invoked. No early returns.
     cancelled_count = cancel_job_and_children_recursive(task_id, reason=f"Cancellation requested for task {task_id} via API.")
-
-    if cancelled_count > 0:
-        return jsonify({"message": f"Task {task_id} and its children cancellation initiated. {cancelled_count} total jobs affected.", "task_id": task_id, "cancelled_jobs_count": cancelled_count}), 200
-    return jsonify({"message": "Task could not be cancelled (e.g., already completed or not found in active state).", "task_id": task_id}), 400
+    return jsonify({"message": f"Task {task_id} cancellation requested. {cancelled_count} cancellation actions attempted.", "task_id": task_id, "cancelled_jobs_count": cancelled_count}), 200
 
 
 @app.route('/api/cancel_all/<task_type_prefix>', methods=['POST'])
