@@ -357,11 +357,13 @@ class StudentCLAPTrainer:
 
         # Mixed precision (bfloat16 autocast for forward passes only)
         self.use_amp = bool(config['training'].get('use_amp', False))
+        # Always store a valid device string for amp_device_type so calls to
+        # torch.amp.autocast(...) don't receive None even when AMP is disabled.
+        self.amp_device_type = 'cuda' if self.device.type == 'cuda' else 'cpu'
         if self.use_amp:
-            self.amp_device_type = 'cuda' if self.device.type == 'cuda' else 'cpu'
             logger.info(f"⚡ Mixed precision enabled: autocast(device_type='{self.amp_device_type}', dtype=bfloat16)")
         else:
-            self.amp_device_type = None
+            logger.info("⚡ Mixed precision disabled")
 
         self.training_strategy = config['training'].get('training_strategy', 'averaged')
         self.segment_batch_size = config['model'].get('segment_batch_size', 10)

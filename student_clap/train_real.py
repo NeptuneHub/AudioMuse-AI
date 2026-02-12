@@ -571,7 +571,7 @@ def validate_real(trainer: StudentCLAPTrainer,
                 chunk_size = config['model'].get('segment_batch_size', 10)
                 segment_embeddings_list = []
                 use_amp = getattr(trainer, 'use_amp', False)
-                amp_device_type = getattr(trainer, 'amp_device_type', 'cuda')
+                amp_device_type = getattr(trainer, 'amp_device_type', None) or ( 'cuda' if torch.cuda.is_available() else 'cpu' )
                 for chunk_start in range(0, audio_segments.shape[0], chunk_size):
                     chunk_end = min(chunk_start + chunk_size, audio_segments.shape[0])
                     chunk = audio_segments[chunk_start:chunk_end]

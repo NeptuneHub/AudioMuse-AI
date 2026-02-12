@@ -31,9 +31,9 @@ model_text:
   nhead: 4
 
 training:
-  use_amp: true               # Use bfloat16 mixed precision for forward passes (model weights stay FP32)
+  use_amp: false               # Use bfloat16 mixed precision for forward passes (model weights stay FP32)
   augmentation_enabled: true  # Set to false to disable all spectrogram augmentations
-  batch_size: 64
+  batch_size: 1
   gradient_accumulation_steps: 1
   learning_rate: 0.003 # Original: 0.003
   warmup_enabled: false  # Linear LR warmup during epoch 1 (from 0 to learning_rate)
@@ -95,7 +95,7 @@ paths:
 dataset:
   fma_path: "/Users/guidocolangiuli/Music/FMA"
   validation_path: "/Users/guidocolangiuli/Music/FMA_VAL"
-  sample_size: 0
+  sample_size: 10
 
 logging:
   level: "INFO"
