@@ -78,7 +78,7 @@ for f in sorted(glob.glob('student_clap/checkpoints/checkpoint_epoch_*.pth')):
     val_met = ckpt.get('val_metric', 'N/A')
     val_met_name = ckpt.get('val_metric_name', 'N/A')
     val_sem = ckpt.get('val_semantic_error', 'N/A')
-    print(f"{f}: train_cos={m.get('avg_cosine_sim')}, train_mse={m.get('avg_mse')}, train_sem={m.get('avg_semantic','N/A')}, val_mse={val_mse}, val_cosine={val_cos}, {val_met_name}={val_met}, val_sem={val_sem}, lr={m.get('learning_rate')}")
+    print(f"{f}: train_cos={m.get('avg_cosine_sim')}, train_mse={m.get('avg_mse')}, train_sem={m.get('avg_semantic','N/A')}, val_mse={val_mse}, {val_met_name}={val_met}, val_sem={val_sem}, lr={m.get('learning_rate')}")
 PY
 ```
 
