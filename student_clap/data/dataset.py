@@ -130,21 +130,21 @@ class StudentCLAPDataset:
             # Check cache status and categorize
             tasks_to_process = []
             tasks_cached = []
-            
+
             # Track cache statistics
             mel_cached_count = 0
             embedding_cached_count = 0
-            
+
             for item in batch_items:
                 mel_result = self.mel_cache.get_with_audio_length(item['item_id'])
                 has_embedding = self.mel_cache.has_segment_embeddings(item['item_id'])
-                
+
                 # Update cache counts
                 if mel_result is not None:
                     mel_cached_count += 1
                 if has_embedding:
                     embedding_cached_count += 1
-                
+
                 # Categorize items
                 if mel_result is None or not has_embedding:
                     # Need to process from scratch
@@ -152,17 +152,17 @@ class StudentCLAPDataset:
                 else:
                     # Fully cached
                     tasks_cached.append((item, mel_result))
-            
+
             logger.info(f"   📊 Cache Status: Mel={mel_cached_count}/{len(batch_items)} | Embedding={embedding_cached_count}/{len(batch_items)}")
             logger.info(f"   📦 Processing: {len(tasks_cached)} fully cached, "
                        f"{len(tasks_to_process)} need analysis")
-            
+
             batch = []
-            
+
             # 1. Process cached (extract segments from full mel at runtime)
             for item, mel_result in tasks_cached:
                 full_mel, audio_length = mel_result
-                
+
                 # Get teacher embeddings from cache
                 teacher_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
                 teacher_embedding = self.mel_cache.get_averaged_embedding(item['item_id'])
