@@ -61,6 +61,7 @@ training:
   loss_temperature: 0.7       # Static temperature (divide cosine by this value). If using logit scale, set use_logit_scale=True
   use_logit_scale: true       # If true, use a learnable logit_scale (exp(logit_scale) applied to cosine)
   init_logit_scale: 2.6592    # Initial value = ln(1/0.07) matching TinyCLAP initialization
+  max_logit_scale_T: 20       # Max temperature (T) for learnable logit_scale clamp. logit_scale clamped to [0, ln(T)]
   # Focal-style weighting for cosine (set gamma>0 to enable)
   loss_focal_gamma: 0       # gamma > 0 focuses gradients on hard (low-cosine) samples
   loss_focal_low_threshold: 0.65  # cosine <= low -> full weight

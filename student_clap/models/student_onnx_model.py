@@ -546,7 +546,8 @@ class StudentCLAPTrainer:
             # Apply temperature or learnable logit_scale (same as original tinyCLAP approach)
             if getattr(self, 'use_logit_scale', False):
                 import math
-                max_logit_scale = math.log(50)  # ~3.912, keeps T in [1, 50]
+                max_T = float(self.config['training'].get('max_logit_scale_T', 20))
+                max_logit_scale = math.log(max_T)
                 with torch.no_grad():
                     self.model.logit_scale.clamp_(0, max_logit_scale)
                 scale = self.model.logit_scale.exp()
