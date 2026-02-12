@@ -130,7 +130,6 @@ class StudentCLAPDataset:
             # Check cache status and categorize
             tasks_to_process = []
             tasks_cached = []
-            use_teacher_emb_cache = self.config.get('training', {}).get('use_teacher_embedding_cache', True)
 
             # Track cache statistics
             mel_cached_count = 0
@@ -138,11 +137,7 @@ class StudentCLAPDataset:
 
             for item in batch_items:
                 mel_result = self.mel_cache.get_with_audio_length(item['item_id'])
-                # Skip embedding check when cache is off — embeddings will be recomputed
-                if use_teacher_emb_cache or self.split != 'train':
-                    has_embedding = self.mel_cache.has_segment_embeddings(item['item_id'])
-                else:
-                    has_embedding = True  # don't care, will recompute
+                has_embedding = self.mel_cache.has_segment_embeddings(item['item_id'])
 
                 # Update cache counts
                 if mel_result is not None:
@@ -155,7 +150,7 @@ class StudentCLAPDataset:
                     # Need to process from scratch
                     tasks_to_process.append(item)
                 else:
-                    # Fully cached (or mel cached + embeddings will be recomputed)
+                    # Fully cached
                     tasks_cached.append((item, mel_result))
 
             logger.info(f"   📊 Cache Status: Mel={mel_cached_count}/{len(batch_items)} | Embedding={embedding_cached_count}/{len(batch_items)}")
@@ -168,18 +163,9 @@ class StudentCLAPDataset:
             for item, mel_result in tasks_cached:
                 full_mel, audio_length = mel_result
 
-                # Get teacher embeddings from cache (skip if cache off — will recompute after augmentation)
-                if use_teacher_emb_cache or self.split != 'train':
-                    teacher_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
-                    if teacher_segment_embeddings is not None:
-                        avg_emb = np.mean(teacher_segment_embeddings, axis=0).astype(np.float32)
-                        norm = np.linalg.norm(avg_emb)
-                        teacher_embedding = avg_emb / norm if norm > 0 else avg_emb
-                    else:
-                        teacher_embedding = None
-                else:
-                    teacher_segment_embeddings = None
-                    teacher_embedding = None
+                # Get teacher embeddings from cache
+                teacher_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
+                teacher_embedding = self.mel_cache.get_averaged_embedding(item['item_id'])
                 
                 # Extract overlapped segments from full mel spectrogram at runtime
                 mel_specs = self.mel_cache.extract_overlapped_segments(
@@ -233,6 +219,7 @@ class StudentCLAPDataset:
 
                 # If user disabled teacher embedding cache, recompute teacher embeddings from
                 # the augmented mel so teacher receives identical augmentations as student.
+                use_teacher_emb_cache = self.config.get('training', {}).get('use_teacher_embedding_cache', True)
                 if not use_teacher_emb_cache and self.split == 'train':
                     try:
                         teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_mel(mel_aug)
