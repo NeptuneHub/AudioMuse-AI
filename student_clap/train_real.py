@@ -114,7 +114,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
     
     # Iterate over batches with STREAMING downloads
     total_batches = (len(dataset) + batch_size - 1) // batch_size
-    for batch_idx, batch_data in enumerate(tqdm(dataset.iterate_batches_streaming(batch_size, shuffle=True),
+    for batch_idx, batch_data in enumerate(tqdm(dataset.iterate_batches_streaming(batch_size, shuffle=True), 
                           desc=f"Epoch {epoch} - Real Training")):
         
         batch_start_time = time.time()
@@ -276,12 +276,11 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                 print(f"[LR WARMUP] Epoch 1, Batch {batch_idx+1}/{total_batches}: LR set to {warmup_lr:.6f}")
 
             if use_global_mixup:
-                # --- GLOBAL SEGMENT-LEVEL MIXUP (vectorized) ---
+                # --- GLOBAL SEGMENT-LEVEL MIXUP ---
                 # Flatten all segments from all songs, pair randomly, mix.
                 # Zero data loss: every segment participates.
-                # Uses torch.cat on per-song tensors instead of per-segment append + torch.stack.
-                mel_tensors = []
-                teacher_tensors = []
+                all_mel_segments = []
+                all_teacher_seg_embs = []
 
                 for i in range(len(batch['audio_segments'])):
                     mel_segs = batch['audio_segments'][i]
@@ -290,60 +289,51 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
 
                     if isinstance(mel_segs, np.ndarray):
                         mel_segs = torch.from_numpy(mel_segs).float()
-                    mel_tensors.append(mel_segs)
+                    if isinstance(mel_segs, torch.Tensor):
+                        mel_segs = mel_segs.cpu()
 
-                    n_segs = mel_segs.shape[0]
-                    if teacher_seg_embs is not None and len(teacher_seg_embs) >= n_segs:
-                        t_list = teacher_seg_embs[:n_segs]
-                        t_stack = torch.stack([
-                            torch.from_numpy(e).float() if isinstance(e, np.ndarray) else e.float()
-                            for e in t_list
-                        ])
-                    else:
-                        if isinstance(teacher_song_emb, np.ndarray):
-                            t_single = torch.from_numpy(teacher_song_emb).float()
+                    for s in range(mel_segs.shape[0]):
+                        all_mel_segments.append(mel_segs[s])
+                        if teacher_seg_embs is not None and s < len(teacher_seg_embs):
+                            t_emb = teacher_seg_embs[s]
                         else:
-                            t_single = teacher_song_emb.float()
-                        t_stack = t_single.unsqueeze(0).expand(n_segs, -1)
-                    teacher_tensors.append(t_stack)
+                            t_emb = teacher_song_emb
+                        if isinstance(t_emb, np.ndarray):
+                            t_emb = torch.from_numpy(t_emb).float()
+                        if isinstance(t_emb, torch.Tensor):
+                            t_emb = t_emb.cpu()
+                        all_teacher_seg_embs.append(t_emb)
 
-                mel_stack = torch.cat(mel_tensors, dim=0)
-                teacher_stack = torch.cat(teacher_tensors, dim=0)
-                total_segments = mel_stack.shape[0]
+                total_segments = len(all_mel_segments)
 
                 if total_segments >= 2:
                     lam = float(np.random.beta(mixup_alpha, mixup_alpha))
+                    perm = np.random.permutation(total_segments)
+                    if np.any(perm == np.arange(total_segments)):
+                        perm = np.roll(perm, 1)
 
-                    # Mix on GPU for faster element-wise ops on large tensors
-                    mix_device = device
-                    mel_stack = mel_stack.to(mix_device)
-                    teacher_stack = teacher_stack.to(mix_device)
+                    mel_stack = torch.stack(all_mel_segments, dim=0)
+                    teacher_stack = torch.stack(all_teacher_seg_embs, dim=0)
+                    perm_t = torch.from_numpy(perm).long()
 
-                    perm_t = torch.randperm(total_segments, device=mix_device)
-                    # Ensure no self-pairing
-                    self_paired = (perm_t == torch.arange(total_segments, device=mix_device))
-                    if self_paired.any():
-                        perm_t = (perm_t + 1) % total_segments
-
-                    # In-place mixing to halve memory: mixed = lam*A + (1-lam)*A[perm]
-                    mixed_mel = mel_stack[perm_t].mul_(1.0 - lam).add_(mel_stack, alpha=lam)
+                    mixed_mel = lam * mel_stack + (1.0 - lam) * mel_stack[perm_t]
                     use_teacher_emb_cache = config['training'].get('use_teacher_embedding_cache', True)
                     if use_teacher_emb_cache:
-                        mixed_teacher = teacher_stack[perm_t].mul_(1.0 - lam).add_(teacher_stack, alpha=lam)
+                        mixed_teacher = lam * teacher_stack + (1.0 - lam) * teacher_stack[perm_t]
                     else:
                         # Recompute teacher embeddings for each mixed segment so teacher sees
                         # the exact same mixed input as the student.
                         try:
-                            mixed_np = mixed_mel.cpu().numpy()
+                            mixed_np = mixed_mel.numpy()
                             # mixed_np shape: (total_segments, n_mels, time) or (total_segments, 1, n_mels, time)
                             if mixed_np.ndim == 3:
                                 mixed_np = mixed_np[:, np.newaxis, :, :]
                             avg_emb, seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_np)
                             # seg_embs is list length total_segments
-                            mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0).to(mix_device)
+                            mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
                         except Exception as e:
                             logger.error(f"[GLOBAL MIXUP][CACHE-OFF] Failed to compute teacher embeddings for mixed segments: {e}")
-                            mixed_teacher = teacher_stack[perm_t].mul_(1.0 - lam).add_(teacher_stack, alpha=lam)
+                            mixed_teacher = lam * teacher_stack + (1.0 - lam) * teacher_stack[perm_t]
 
                     del mel_stack, teacher_stack
 
