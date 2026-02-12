@@ -31,6 +31,7 @@ model_text:
   nhead: 4
 
 training:
+  use_amp: true               # Use bfloat16 mixed precision for forward passes (model weights stay FP32)
   augmentation_enabled: true  # Set to false to disable all spectrogram augmentations
   batch_size: 64
   gradient_accumulation_steps: 1

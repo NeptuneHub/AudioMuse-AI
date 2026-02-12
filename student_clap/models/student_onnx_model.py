@@ -355,6 +355,14 @@ class StudentCLAPTrainer:
             )
             logger.info(f"📉 LR Scheduler: ReduceLROnPlateau (factor={lr_factor}, patience={lr_patience}, threshold={lr_threshold}, mode={lr_mode})")
 
+        # Mixed precision (bfloat16 autocast for forward passes only)
+        self.use_amp = bool(config['training'].get('use_amp', False))
+        if self.use_amp:
+            self.amp_device_type = 'cuda' if self.device.type == 'cuda' else 'cpu'
+            logger.info(f"⚡ Mixed precision enabled: autocast(device_type='{self.amp_device_type}', dtype=bfloat16)")
+        else:
+            self.amp_device_type = None
+
         self.training_strategy = config['training'].get('training_strategy', 'averaged')
         self.segment_batch_size = config['model'].get('segment_batch_size', 10)
 
@@ -636,7 +644,9 @@ class StudentCLAPTrainer:
                     chunk = mel_segments[chunk_start:chunk_end]
                     # Ensure chunk is on correct device/dtype
                     chunk = chunk.to(self.device)
-                    chunk_embeddings = self.model.forward(chunk)
+                    with torch.amp.autocast(device_type=self.amp_device_type, dtype=torch.bfloat16, enabled=self.use_amp):
+                        chunk_embeddings = self.model.forward(chunk)
+                    chunk_embeddings = chunk_embeddings.float()  # Back to FP32 for loss
                     segment_embeddings_list.append(chunk_embeddings)
 
                 segment_embeddings = torch.cat(segment_embeddings_list, dim=0)
@@ -660,7 +670,9 @@ class StudentCLAPTrainer:
                     chunk_end = min(chunk_start + chunk_size, mel_segments.shape[0])
                     chunk = mel_segments[chunk_start:chunk_end]
                     chunk = chunk.to(self.device)
-                    chunk_embeddings = self.model.forward(chunk)
+                    with torch.amp.autocast(device_type=self.amp_device_type, dtype=torch.bfloat16, enabled=self.use_amp):
+                        chunk_embeddings = self.model.forward(chunk)
+                    chunk_embeddings = chunk_embeddings.float()  # Back to FP32 for loss
                     segment_embeddings_list.append(chunk_embeddings)
 
                 segment_embeddings = torch.cat(segment_embeddings_list, dim=0)
@@ -682,9 +694,11 @@ class StudentCLAPTrainer:
                     chunk_end = min(chunk_start + chunk_size, mel_segments.shape[0])
                     chunk = mel_segments[chunk_start:chunk_end]
                     chunk = chunk.to(self.device)
-                    chunk_embeddings = self.model.forward(chunk)
+                    with torch.amp.autocast(device_type=self.amp_device_type, dtype=torch.bfloat16, enabled=self.use_amp):
+                        chunk_embeddings = self.model.forward(chunk)
+                    chunk_embeddings = chunk_embeddings.float()  # Back to FP32 for loss
                     segment_embeddings_list.append(chunk_embeddings)
-                
+
                 segment_embeddings = torch.cat(segment_embeddings_list, dim=0)
 
                 for seg_idx, seg_emb in enumerate(segment_embeddings):
@@ -805,7 +819,9 @@ class StudentCLAPTrainer:
         for chunk_start in range(0, total_segments, chunk_size):
             chunk_end = min(chunk_start + chunk_size, total_segments)
             chunk = mixed_mel[chunk_start:chunk_end]
-            chunk_emb = self.model.forward(chunk)
+            with torch.amp.autocast(device_type=self.amp_device_type, dtype=torch.bfloat16, enabled=self.use_amp):
+                chunk_emb = self.model.forward(chunk)
+            chunk_emb = chunk_emb.float()  # Back to FP32 for loss
             student_emb_list.append(chunk_emb)
 
         student_embeddings = torch.cat(student_emb_list, dim=0)

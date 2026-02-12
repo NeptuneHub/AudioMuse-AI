@@ -570,10 +570,14 @@ def validate_real(trainer: StudentCLAPTrainer,
                 # Process segments in chunks to reduce memory usage
                 chunk_size = config['model'].get('segment_batch_size', 10)
                 segment_embeddings_list = []
+                use_amp = getattr(trainer, 'use_amp', False)
+                amp_device_type = getattr(trainer, 'amp_device_type', 'cuda')
                 for chunk_start in range(0, audio_segments.shape[0], chunk_size):
                     chunk_end = min(chunk_start + chunk_size, audio_segments.shape[0])
                     chunk = audio_segments[chunk_start:chunk_end]
-                    chunk_embeddings = trainer.model(chunk)  # (chunk_size, 512)
+                    with torch.amp.autocast(device_type=amp_device_type, dtype=torch.bfloat16, enabled=use_amp):
+                        chunk_embeddings = trainer.model(chunk)  # (chunk_size, 512)
+                    chunk_embeddings = chunk_embeddings.float()
                     segment_embeddings_list.append(chunk_embeddings)
                 
                 segment_embeddings = torch.cat(segment_embeddings_list, dim=0)  # (num_segments, 512)
