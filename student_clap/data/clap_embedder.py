@@ -10,6 +10,7 @@ import numpy as np
 import librosa
 import onnxruntime as ort
 from typing import Tuple, Optional
+from util import provider
 
 logger = logging.getLogger(__name__)
 
@@ -53,17 +54,14 @@ class CLAPEmbedder:
         #sess_options.inter_op_num_threads = 2  # Parallel layers
         
         # Use CUDA if available, otherwise CPU
-        available_providers = ort.get_available_providers()
-        if 'CUDAExecutionProvider' in available_providers:
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            logger.info(f"CLAP model loaded: {model_path}")
-            logger.info(f"✅ Using CUDA for ONNX teacher model")
-        else:
-            providers = ['CPUExecutionProvider']
-            logger.info(f"CLAP model loaded: {model_path}")
+        available_providers = provider.get_available_providers()
+        logger.info(f"✅ Using %s for ONNX teacher text model",
+                    [provider.split('ExecutionProvider')[0] for provider in available_providers])
+        elif len(available_providers) == 1:  # only CPUExecutionProvider
             logger.info(f"✅ Using optimized CPU inference (8 threads)")
             logger.info(f"   Performance: ~325ms/segment vs 713ms with CoreML")
             logger.info(f"   Reason: Only 24% of ops supported by CoreML GPU, context switching overhead too high")
+        logger.info(f"CLAP model loaded: {model_path}")
 
         self.session = ort.InferenceSession(
             model_path,
