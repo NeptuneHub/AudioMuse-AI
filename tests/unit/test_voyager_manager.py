@@ -544,9 +544,9 @@ class TestSearchTracksByTitleAndArtist:
             ]
             mock_cursor.__iter__ = Mock(return_value=iter([]))
             
-            from tasks.voyager_manager import search_tracks_by_title_and_artist
+            from tasks.voyager_manager import search_tracks_unified
             
-            results = search_tracks_by_title_and_artist('Test Song', '', limit=10)
+            results = search_tracks_unified('Test Song', limit=10)
             
             # Verify query was executed
             mock_cursor.execute.assert_called_once()
@@ -562,9 +562,9 @@ class TestSearchTracksByTitleAndArtist:
             mock_get_db.return_value = mock_conn
             mock_conn.cursor.return_value = mock_cursor
             
-            from tasks.voyager_manager import search_tracks_by_title_and_artist
+            from tasks.voyager_manager import search_tracks_unified
             
-            results = search_tracks_by_title_and_artist('', '')
+            results = search_tracks_unified('')
             
             assert results == []
 
