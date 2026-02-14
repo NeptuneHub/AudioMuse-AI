@@ -40,6 +40,9 @@ psutil
 torchvision>=0.15.0
 importlib_metadata
 
+# Teacher CLAP (PyTorch .pt backend)
+laion-clap>=1.1.4
+
 # Missing
 numpy
 dotenv
