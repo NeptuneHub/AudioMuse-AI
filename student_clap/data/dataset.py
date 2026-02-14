@@ -60,9 +60,12 @@ class StudentCLAPDataset:
             data_path = self.dataset_config['validation_path']
         self.song_loader = LocalSongLoader(data_path)
 
-        # Initialize CLAP embedder for teacher embeddings
+        # Initialize CLAP embedder for teacher embeddings (ONNX or PyTorch).
+        # Ensure teacher uses the same `segment_batch_size` configured for the student.
         teacher_model_path = self.paths_config['teacher_model']
-        self.clap_embedder = CLAPEmbedder(teacher_model_path)
+        seg_bs = self.config.get('model', {}).get('segment_batch_size', 1)
+        logger.info(f"🔧 Teacher segment_batch_size: {seg_bs}")
+        self.clap_embedder = CLAPEmbedder(teacher_model_path, segment_batch_size=seg_bs)
 
         # Initialize mel spectrogram cache (stores both mel specs and embeddings)
         mel_cache_path = self.paths_config.get('mel_cache', './cache/mel_spectrograms.db')
@@ -233,7 +236,12 @@ class StudentCLAPDataset:
 
                 # If user disabled teacher embedding cache, recompute teacher embeddings from
                 # the augmented mel so teacher receives identical augmentations as student.
-                if not use_teacher_emb_cache and self.split == 'train':
+                # Skip when global_mixup is active — the training loop will run teacher
+                # once on the final mixed mel instead (avoids double teacher inference).
+                global_mixup = self.config.get('training', {}).get('global_mixup', False)
+                mixup_alpha = self.config.get('training', {}).get('mixup_alpha', 0.0)
+                skip_teacher = global_mixup and mixup_alpha and mixup_alpha > 0
+                if not use_teacher_emb_cache and self.split == 'train' and not skip_teacher:
                     try:
                         teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_mel(mel_aug)
                         teacher_embedding = teacher_emb
@@ -373,7 +381,11 @@ class StudentCLAPDataset:
 
                         # If user disabled teacher embedding cache, recompute teacher embeddings from
                         # the augmented mel so teacher receives identical augmentations as student.
-                        if not use_teacher_emb_cache:
+                        # Skip when global_mixup is active — training loop handles it post-mix.
+                        global_mixup = self.config.get('training', {}).get('global_mixup', False)
+                        mixup_alpha = self.config.get('training', {}).get('mixup_alpha', 0.0)
+                        skip_teacher = global_mixup and mixup_alpha and mixup_alpha > 0
+                        if not use_teacher_emb_cache and not skip_teacher:
                             try:
                                 teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_mel(mel_aug)
                                 teacher_embedding = teacher_emb

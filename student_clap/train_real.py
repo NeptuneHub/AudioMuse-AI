@@ -93,7 +93,31 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
     device = trainer.device
     lr = trainer.optimizer.param_groups[0]['lr']
     wd = trainer.optimizer.param_groups[0].get('weight_decay', None)
-    logger.info(f"🚀 REAL ONNX TRAINING - Epoch {epoch}/{config['training']['epochs']} | Device: {device} | LR: {lr} | WD: {wd}")
+
+    # Resolve teacher backend/device/provider for clearer logs (audio teacher)
+    teacher_descr = 'n/a'
+    try:
+        clap = getattr(dataset, 'clap_embedder', None)
+        if clap is None:
+            teacher_descr = 'missing'
+        else:
+            backend = getattr(clap, '_backend', 'onnx')
+            if backend == 'torch':
+                tdev = getattr(clap, '_device', None)
+                teacher_descr = f"pt/{tdev}"
+            else:
+                sess = getattr(clap, 'session', None)
+                provs = []
+                try:
+                    provs = sess.get_providers() if sess is not None else []
+                except Exception:
+                    provs = []
+                provider = provs[0] if provs else 'cpu'
+                teacher_descr = f"onnx/{provider}"
+    except Exception:
+        teacher_descr = 'unknown'
+
+    logger.info(f"🚀 REAL ONNX TRAINING - Epoch {epoch}/{config['training']['epochs']} | StudentDevice: {device} | Teacher: {teacher_descr} | LR: {lr} | WD: {wd}")
     
     batch_size = config['training']['batch_size']
     log_every = config.get('logging', {}).get('log_every', 10)
@@ -281,6 +305,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                 # Zero data loss: every segment participates.
                 all_mel_segments = []
                 all_teacher_seg_embs = []
+                use_teacher_emb_cache = config['training'].get('use_teacher_embedding_cache', True)
 
                 for i in range(len(batch['audio_segments'])):
                     mel_segs = batch['audio_segments'][i]
@@ -294,15 +319,18 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
 
                     for s in range(mel_segs.shape[0]):
                         all_mel_segments.append(mel_segs[s])
-                        if teacher_seg_embs is not None and s < len(teacher_seg_embs):
-                            t_emb = teacher_seg_embs[s]
-                        else:
-                            t_emb = teacher_song_emb
-                        if isinstance(t_emb, np.ndarray):
-                            t_emb = torch.from_numpy(t_emb).float()
-                        if isinstance(t_emb, torch.Tensor):
-                            t_emb = t_emb.cpu()
-                        all_teacher_seg_embs.append(t_emb)
+                        # Only collect teacher embeddings when cache is on
+                        # (when cache is off, teacher runs post-mix)
+                        if use_teacher_emb_cache:
+                            if teacher_seg_embs is not None and s < len(teacher_seg_embs):
+                                t_emb = teacher_seg_embs[s]
+                            else:
+                                t_emb = teacher_song_emb
+                            if isinstance(t_emb, np.ndarray):
+                                t_emb = torch.from_numpy(t_emb).float()
+                            if isinstance(t_emb, torch.Tensor):
+                                t_emb = t_emb.cpu()
+                            all_teacher_seg_embs.append(t_emb)
 
                 total_segments = len(all_mel_segments)
 
@@ -313,29 +341,24 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                         perm = np.roll(perm, 1)
 
                     mel_stack = torch.stack(all_mel_segments, dim=0)
-                    teacher_stack = torch.stack(all_teacher_seg_embs, dim=0)
                     perm_t = torch.from_numpy(perm).long()
 
                     mixed_mel = lam * mel_stack + (1.0 - lam) * mel_stack[perm_t]
-                    use_teacher_emb_cache = config['training'].get('use_teacher_embedding_cache', True)
                     if use_teacher_emb_cache:
+                        teacher_stack = torch.stack(all_teacher_seg_embs, dim=0)
                         mixed_teacher = lam * teacher_stack + (1.0 - lam) * teacher_stack[perm_t]
+                        del teacher_stack
                     else:
                         # Recompute teacher embeddings for each mixed segment so teacher sees
                         # the exact same mixed input as the student.
-                        try:
-                            mixed_np = mixed_mel.numpy()
-                            # mixed_np shape: (total_segments, n_mels, time) or (total_segments, 1, n_mels, time)
-                            if mixed_np.ndim == 3:
-                                mixed_np = mixed_np[:, np.newaxis, :, :]
-                            avg_emb, seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_np)
-                            # seg_embs is list length total_segments
-                            mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
-                        except Exception as e:
-                            logger.error(f"[GLOBAL MIXUP][CACHE-OFF] Failed to compute teacher embeddings for mixed segments: {e}")
-                            mixed_teacher = lam * teacher_stack + (1.0 - lam) * teacher_stack[perm_t]
+                        mixed_np = mixed_mel.numpy()
+                        # mixed_np shape: (total_segments, n_mels, time) or (total_segments, 1, n_mels, time)
+                        if mixed_np.ndim == 3:
+                            mixed_np = mixed_np[:, np.newaxis, :, :]
+                        avg_emb, seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_np)
+                        mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
 
-                    del mel_stack, teacher_stack
+                    del mel_stack
 
                     logger.info(f"[GLOBAL MIXUP] Applied: alpha={mixup_alpha}, lam={lam:.4f}, "
                                f"total_segments={total_segments} (from {len(batch_data)} songs)")
@@ -723,7 +746,13 @@ def train(config_path: str, resume: str = None):
         text_optimizer = torch.optim.Adam(student_text_model.parameters(), lr=3e-4)
         text_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(text_optimizer, mode='min', factor=0.1, patience=5, min_lr=1e-6)
         teacher_text_embedder = CLAPTextEmbedder(str(text_teacher_path))
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Prefer CUDA -> MPS (macOS) -> CPU for student text model
+        if torch.cuda.is_available():
+            device = torch.device('cuda')
+        elif getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
+            device = torch.device('mps')
+        else:
+            device = torch.device('cpu')
         student_text_model.to(device)
     
     # Expand environment variables

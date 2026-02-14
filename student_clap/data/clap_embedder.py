@@ -29,48 +29,132 @@ F_MAX = 14000
 
 class CLAPEmbedder:
     """
-    Minimal CLAP embedder using ONNX model directly.
+    Minimal CLAP embedder that supports either ONNX (`.onnx`) or PyTorch
+    split checkpoints (`clap_audio_model.pt`). When a PyTorch checkpoint is
+    provided the embedder runs the teacher using `laion_clap` on CPU.
+
+    This class also supports batched segment inference via `segment_batch_size`.
     """
     
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, segment_batch_size: int = 1):
         """
         Initialize CLAP embedder.
-        
+
         Args:
-            model_path: Path to clap_audio_model.onnx
+            model_path: Path to `clap_audio_model.onnx` or `clap_audio_model.pt`
+            segment_batch_size: number of segments to run in a single forward pass
         """
         if not os.path.exists(model_path):
             raise RuntimeError(f"CLAP model not found: {model_path}")
-        
-        # Load ONNX model with optimized CPU inference
-        # NOTE: CoreML is 2x SLOWER than CPU for this model due to poor operator coverage
-        # Only 24% of ops run on GPU, context switching kills performance
-        sess_options = ort.SessionOptions()
-        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        sess_options.log_severity_level = 3
-        
-        # Optimize CPU threading for M4 (10 cores: 4 performance + 6 efficiency)
-        #sess_options.intra_op_num_threads = 8  # Parallel ops within a layer
-        #sess_options.inter_op_num_threads = 2  # Parallel layers
-        
-        # Use CUDA if available, otherwise CPU
-        available_providers = ort.get_available_providers()
-        if 'CUDAExecutionProvider' in available_providers:
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            logger.info(f"CLAP model loaded: {model_path}")
-            logger.info(f"✅ Using CUDA for ONNX teacher model")
-        else:
-            providers = ['CPUExecutionProvider']
-            logger.info(f"CLAP model loaded: {model_path}")
-            logger.info(f"✅ Using optimized CPU inference (8 threads)")
-            logger.info(f"   Performance: ~325ms/segment vs 713ms with CoreML")
-            logger.info(f"   Reason: Only 24% of ops supported by CoreML GPU, context switching overhead too high")
 
-        self.session = ort.InferenceSession(
-            model_path,
-            sess_options=sess_options,
-            providers=providers
-        )
+        # Normalize batch size
+        try:
+            self.segment_batch_size = max(1, int(segment_batch_size))
+        except Exception:
+            self.segment_batch_size = 1
+
+        # Backend selection by file extension
+        lower = model_path.lower()
+        if lower.endswith(('.pt', '.pth')):
+            # Use PyTorch (laion_clap) for teacher
+            try:
+                import torch
+                import laion_clap
+            except Exception as e:
+                raise RuntimeError(f"PyTorch CLAP backend requested but missing dependency: {e}")
+
+            logger.info(f"CLAP audio (PyTorch) loaded: {model_path}")
+            logger.info(f"✅ Using PyTorch backend for teacher; segment_batch_size={self.segment_batch_size}")
+
+            # Try to load minimal split checkpoint (audio_branch + audio_projection) or full checkpoint
+            state = torch.load(model_path, map_location='cpu')
+            clap = laion_clap.CLAP_Module(enable_fusion=False, amodel='HTSAT-base')
+            clap.eval()
+
+            # If split checkpoint saved by split_clap_pt.py
+            if isinstance(state, dict) and ('audio_branch' in state or 'audio_projection' in state):
+                try:
+                    if 'audio_branch' in state:
+                        clap.model.audio_branch.load_state_dict(state['audio_branch'], strict=False)
+                    if 'audio_projection' in state:
+                        clap.model.audio_projection.load_state_dict(state['audio_projection'], strict=False)
+                except Exception:
+                    # fallback to load_ckpt for other checkpoint formats
+                    try:
+                        clap.load_ckpt(model_path)
+                    except Exception:
+                        raise
+            else:
+                # attempt to load as full CLAP checkpoint
+                try:
+                    clap.load_ckpt(model_path)
+                except Exception as e:
+                    raise RuntimeError(f"Unable to load PyTorch CLAP checkpoint: {e}")
+
+            # Create lightweight audio wrapper (same forward signature used elsewhere)
+            import torch.nn as nn
+            class AudioCLAPWrapper(nn.Module):
+                def __init__(self, clap_model):
+                    super().__init__()
+                    self.audio_branch = clap_model.model.audio_branch
+                    self.audio_projection = clap_model.model.audio_projection
+
+                def forward(self, mel_spec: 'torch.Tensor'):
+                    x = mel_spec.transpose(1, 3)  # (batch, 64, time, 1)
+                    x = self.audio_branch.bn0(x)
+                    x = x.transpose(1, 3)  # (batch, 1, time, 64)
+                    x = self.audio_branch.reshape_wav2img(x)
+                    audio_output = self.audio_branch.forward_features(x)
+                    audio_embed = self.audio_projection(audio_output['embedding'])
+                    audio_embed = torch.nn.functional.normalize(audio_embed, dim=-1)
+                    return audio_embed
+
+            self._backend = 'torch'
+            self.audio_wrapper = AudioCLAPWrapper(clap)
+            self.audio_wrapper.eval()
+
+            # Prefer CUDA -> MPS (macOS) -> CPU for PyTorch backend
+            import torch
+            if torch.cuda.is_available():
+                device = torch.device('cuda')
+            elif getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
+                device = torch.device('mps')
+            else:
+                device = torch.device('cpu')
+            self._device = device
+            self.audio_wrapper.to(self._device)
+            logger.info(f"✅ PyTorch teacher device: {self._device}")
+
+        else:
+            # Default: ONNX backend (unchanged behavior)
+            sess_options = ort.SessionOptions()
+            sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            sess_options.log_severity_level = 3
+            available_providers = ort.get_available_providers()
+            # Prefer CUDA -> Metal/CoreML -> CPU for ONNXRuntime providers
+            if 'CUDAExecutionProvider' in available_providers:
+                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+                logger.info(f"CLAP model loaded: {model_path}")
+                logger.info(f"✅ Using CUDAExecutionProvider for ONNX teacher model")
+            elif 'MetalExecutionProvider' in available_providers:
+                providers = ['MetalExecutionProvider', 'CPUExecutionProvider']
+                logger.info(f"CLAP model loaded: {model_path}")
+                logger.info(f"✅ Using MetalExecutionProvider (onnxruntime-metal) for ONNX teacher model")
+            elif 'CoreMLExecutionProvider' in available_providers:
+                providers = ['CoreMLExecutionProvider', 'CPUExecutionProvider']
+                logger.info(f"CLAP model loaded: {model_path}")
+                logger.info(f"✅ Using CoreMLExecutionProvider for ONNX teacher model")
+            else:
+                providers = ['CPUExecutionProvider']
+                logger.info(f"CLAP model loaded: {model_path}")
+                logger.info(f"✅ Using CPUExecutionProvider for ONNX teacher model")
+
+            self._backend = 'onnx'
+            self.session = ort.InferenceSession(
+                model_path,
+                sess_options=sess_options,
+                providers=providers
+            )
     
     def compute_mel_spectrogram(self, audio_data: np.ndarray) -> np.ndarray:
         """
@@ -160,27 +244,16 @@ class CLAPEmbedder:
             
             num_segments = len(segments)
             
-            # Process each segment and get embeddings
-            embeddings = []
-            for segment in segments:
-                # Compute mel-spectrogram
-                mel_spec = self.compute_mel_spectrogram(segment)
-                
-                # Add batch and channel dimensions: (1, 1, time_frames, 64)
-                mel_input = mel_spec[:, np.newaxis, :, :]
-                
-                # Run ONNX inference
-                onnx_inputs = {'mel_spectrogram': mel_input}
-                outputs = self.session.run(None, onnx_inputs)
-                audio_embedding = outputs[0][0]  # Remove batch dimension
-                
-                embeddings.append(audio_embedding)
-            
-            # Average embeddings across segments
-            avg_embedding = np.mean(embeddings, axis=0).astype(np.float32)
-            
-            # Return both averaged and individual segment embeddings
-            return avg_embedding, duration_sec, num_segments, embeddings
+            # Compute mel for all segments first and use the batched inference path
+            mel_inputs = [self.compute_mel_spectrogram(seg)[0] for seg in segments]  # (time, n_mels)
+            # Stack into (num_segments, 1, time, n_mels)
+            mel_batch = np.stack(mel_inputs).astype(np.float32)
+            mel_batch = mel_batch[:, np.newaxis, :, :]
+
+            # Use compute_embeddings_from_mel to run batched inference (resampling + backend aware)
+            avg_embedding, segment_embeddings = self.compute_embeddings_from_mel(mel_batch)
+
+            return avg_embedding, duration_sec, num_segments, segment_embeddings
         except Exception as e:
             logger.error(f"Failed to analyze {audio_path}: {e}")
             return None, 0, 0, None
@@ -189,9 +262,8 @@ class CLAPEmbedder:
         """
         Compute CLAP embeddings from already-computed mel-spectrogram segments.
 
-        This accepts mel segments from the student preprocessing pipeline (typically
-        128 mel bins) and resamples them in frequency to the teacher's expected
-        number of mel bands (N_MELS=64) before running the ONNX teacher model.
+        Supports both ONNX and PyTorch backends and processes `segment_batch_size`
+        segments per forward pass to reduce overhead and memory pressure.
 
         Args:
             mel_segments: np.ndarray of shape (num_segments, 1, n_mels, time) or
@@ -205,15 +277,10 @@ class CLAPEmbedder:
                 return None, None
 
             # Normalize input shape to (num_segments, n_mels, time)
-            if isinstance(mel_segments, np.ndarray):
-                ms = mel_segments
-            else:
-                ms = np.array(mel_segments)
-
+            ms = np.array(mel_segments)
             if ms.ndim == 4 and ms.shape[1] == 1:
                 ms = ms[:, 0, :, :]  # (num_segments, n_mels, time)
             elif ms.ndim == 3:
-                # already (num_segments, n_mels, time)
                 pass
             else:
                 logger.error(f"Unsupported mel_segments shape: {ms.shape}")
@@ -232,19 +299,37 @@ class CLAPEmbedder:
                     res[:, t] = np.interp(new_pos, old_pos, mel[:, t])
                 return res
 
+            # Prepare batched inputs for inference: (num_segments, 1, time, n_mels)
+            batched_mels = []
             for seg in ms:
-                # seg: (n_mels_old, time)
-                # Resample to teacher N_MELS
                 seg_resampled = resample_mel_frequency(seg, new_n_mels=N_MELS)
-                # Transpose to (time, n_mels)
-                mel_input = seg_resampled.T.astype(np.float32)
-                # Add batch and channel dims: (1, 1, time, n_mels)
-                mel_input = mel_input[np.newaxis, np.newaxis, :, :]
-                # Run ONNX inference
-                onnx_inputs = {'mel_spectrogram': mel_input}
-                outputs = self.session.run(None, onnx_inputs)
-                emb = outputs[0][0]
-                segment_embeddings.append(emb.astype(np.float32))
+                mel_input = seg_resampled.T.astype(np.float32)  # (time, n_mels)
+                batched_mels.append(mel_input)
+
+            batched = np.stack(batched_mels, axis=0)  # (num_segments, time, n_mels)
+            batched = batched[:, np.newaxis, :, :]   # (num_segments, 1, time, n_mels)
+
+            # Run inference in chunks according to self.segment_batch_size
+            for start in range(0, num_segments, self.segment_batch_size):
+                end = min(start + self.segment_batch_size, num_segments)
+                batch_np = batched[start:end]
+
+                if self._backend == 'onnx':
+                    onnx_inputs = {'mel_spectrogram': batch_np}
+                    outputs = self.session.run(None, onnx_inputs)
+                    batch_embs = outputs[0]
+                    for emb in batch_embs:
+                        segment_embeddings.append(emb.astype(np.float32))
+
+                else:
+                    # PyTorch backend
+                    import torch
+                    batch_tensor = torch.from_numpy(batch_np).float().to(getattr(self, '_device', torch.device('cpu')))
+                    with torch.no_grad():
+                        out = self.audio_wrapper(batch_tensor)
+                    out_np = out.cpu().numpy()
+                    for emb in out_np:
+                        segment_embeddings.append(emb.astype(np.float32))
 
             # Average
             avg_emb = np.mean(segment_embeddings, axis=0).astype(np.float32)
