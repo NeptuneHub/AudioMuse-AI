@@ -346,6 +346,8 @@ VOYAGER_METRIC = os.environ.get("VOYAGER_METRIC", "angular") # Options: 'angular
 VOYAGER_EF_CONSTRUCTION = int(os.environ.get("VOYAGER_EF_CONSTRUCTION", "1024"))
 VOYAGER_M = int(os.environ.get("VOYAGER_M", "64"))
 VOYAGER_QUERY_EF = int(os.environ.get("VOYAGER_QUERY_EF", "1024"))
+VOYAGER_MAX_PART_SIZE_MB = int(os.environ.get("VOYAGER_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for voyager index storage
+ARTIST_INDEX_MAX_PART_SIZE_MB = int(os.environ.get("ARTIST_INDEX_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for artist index storage
 
 # --- Pathfinding Constants ---
 # The distance metric to use for pathfinding. Options: 'angular', 'euclidean'.
