@@ -427,6 +427,9 @@ def build_and_store_artist_index(db_conn=None):
     
     try:
         # Step 0: Load existing GMM params for incremental rebuild
+        # Prefer single-row entry (backwards compatible). If not present, check for
+        # segmented rows named ARTIST_INDEX_NAME_<part>_<total> and pick the
+        # first non-empty `gmm_params_json` (prefer part 1).
         existing_gmm_params = None
         try:
             cur.execute("""
@@ -435,9 +438,34 @@ def build_and_store_artist_index(db_conn=None):
                 WHERE index_name = %s
             """, (ARTIST_INDEX_NAME,))
             row = cur.fetchone()
+
             if row and row[0]:
                 existing_gmm_params = json.loads(row[0])
-                logger.info(f"Loaded existing GMM params for {len(existing_gmm_params)} artists (incremental mode)")
+                logger.info(f"Loaded existing GMM params for {len(existing_gmm_params)} artists (incremental mode, single-row)")
+            else:
+                # Single-row not present or empty — look for segmented parts
+                cur.execute("SELECT index_name, artist_map_json, gmm_params_json FROM artist_index_data WHERE index_name LIKE %s", (ARTIST_INDEX_NAME + "_%_%",))
+                candidates = cur.fetchall()
+
+                if candidates:
+                    seg_pattern = re.compile(rf"^{re.escape(ARTIST_INDEX_NAME)}_(\d+)_(\d+)$")
+                    selected_gmm_json = None
+
+                    # Prefer part 1's metadata if present; otherwise take first non-empty
+                    for name, part_artist_map_json, part_gmm_params_json in candidates:
+                        m = seg_pattern.match(name)
+                        if not m:
+                            continue
+                        part_no = int(m.group(1))
+                        if part_no == 1 and part_gmm_params_json:
+                            selected_gmm_json = part_gmm_params_json
+                            break
+                        if not selected_gmm_json and part_gmm_params_json:
+                            selected_gmm_json = part_gmm_params_json
+
+                    if selected_gmm_json:
+                        existing_gmm_params = json.loads(selected_gmm_json)
+                        logger.info(f"Loaded existing GMM params for {len(existing_gmm_params)} artists (incremental mode, segmented)")
         except Exception as e:
             logger.warning(f"Could not load existing GMM params, will do full rebuild: {e}")
             existing_gmm_params = None
