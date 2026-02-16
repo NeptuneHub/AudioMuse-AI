@@ -635,7 +635,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             del mood_logits
         if 'averaged_logits' in locals():
             del averaged_logits
-        import gc
         gc.collect()
         # Use comprehensive cleanup for successful analysis
         comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
