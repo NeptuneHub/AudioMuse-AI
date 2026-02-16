@@ -404,12 +404,13 @@ ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN = float(os.environ.get("ALCHEMY_SUBTRACT_DIS
 
 # --- Other Essentia Model Paths ---
 # Paths for models used in predict_other_models (VGGish-based)
-DANCEABILITY_MODEL_PATH = os.environ.get("DANCEABILITY_MODEL_PATH", "/app/model/danceability-msd-musicnn-1.onnx") # Example, adjust if different
-AGGRESSIVE_MODEL_PATH = os.environ.get("AGGRESSIVE_MODEL_PATH", "/app/model/mood_aggressive-msd-musicnn-1.onnx")
-HAPPY_MODEL_PATH = os.environ.get("HAPPY_MODEL_PATH", "/app/model/mood_happy-msd-musicnn-1.onnx")
-PARTY_MODEL_PATH = os.environ.get("PARTY_MODEL_PATH", "/app/model/mood_party-msd-musicnn-1.onnx")
-RELAXED_MODEL_PATH = os.environ.get("RELAXED_MODEL_PATH", "/app/model/mood_relaxed-msd-musicnn-1.onnx")
-SAD_MODEL_PATH = os.environ.get("SAD_MODEL_PATH", "/app/model/mood_sad-msd-musicnn-1.onnx")
+# Use `_MODEL_DIR_BASE` so `MODEL_DIR` (set by the standalone launcher) is respected.
+DANCEABILITY_MODEL_PATH = os.environ.get("DANCEABILITY_MODEL_PATH", os.path.join(_MODEL_DIR_BASE, "danceability-msd-musicnn-1.onnx"))
+AGGRESSIVE_MODEL_PATH = os.environ.get("AGGRESSIVE_MODEL_PATH", os.path.join(_MODEL_DIR_BASE, "mood_aggressive-msd-musicnn-1.onnx"))
+HAPPY_MODEL_PATH = os.environ.get("HAPPY_MODEL_PATH", os.path.join(_MODEL_DIR_BASE, "mood_happy-msd-musicnn-1.onnx"))
+PARTY_MODEL_PATH = os.environ.get("PARTY_MODEL_PATH", os.path.join(_MODEL_DIR_BASE, "mood_party-msd-musicnn-1.onnx"))
+RELAXED_MODEL_PATH = os.environ.get("RELAXED_MODEL_PATH", os.path.join(_MODEL_DIR_BASE, "mood_relaxed-msd-musicnn-1.onnx"))
+SAD_MODEL_PATH = os.environ.get("SAD_MODEL_PATH", os.path.join(_MODEL_DIR_BASE, "mood_sad-msd-musicnn-1.onnx"))
 
 # --- Energy Normalization Range ---
 ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.01"))
