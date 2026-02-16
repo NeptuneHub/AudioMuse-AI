@@ -151,6 +151,19 @@ def apply_config_to_environment():
         _cfg.EMBY_USER_ID = os.environ.get('EMBY_USER_ID', getattr(_cfg, 'EMBY_USER_ID', ''))
         _cfg.EMBY_TOKEN = os.environ.get('EMBY_TOKEN', getattr(_cfg, 'EMBY_TOKEN', ''))
 
+        # Recompute `HEADERS` in the in-memory config module so code that uses
+        # `config.HEADERS` (set at import-time) immediately sees the updated token.
+        try:
+            if _cfg.MEDIASERVER_TYPE == 'jellyfin':
+                _cfg.HEADERS = {"X-Emby-Token": _cfg.JELLYFIN_TOKEN}
+            elif _cfg.MEDIASERVER_TYPE == 'emby':
+                _cfg.HEADERS = {"X-Emby-Token": _cfg.EMBY_TOKEN}
+            else:
+                _cfg.HEADERS = {}
+        except Exception:
+            # non-critical — continue
+            pass
+
         logger.info("Applied standalone config.ini values to runtime config module")
     except Exception:
         logger.debug("Could not update in-memory config module from config.ini")
