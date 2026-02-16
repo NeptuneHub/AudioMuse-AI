@@ -32,11 +32,11 @@ model_text:
 
 training:
   use_amp: false               # Use bfloat16 mixed precision for forward passes (model weights stay FP32)
-  augmentation_enabled: true  # Set to false to disable all spectrogram augmentations
+  augmentation_enabled: false  # Set to false to disable all spectrogram augmentations
   batch_size: 64
   gradient_accumulation_steps: 1
   learning_rate: 0.003 # Original: 0.003
-  warmup_enabled: false  # Linear LR warmup during epoch 1 (from 0 to learning_rate)
+  warmup_enabled: true  # Linear LR warmup during epoch 1 (from 0 to learning_rate)
   epochs: 100
   stage2_epochs: 50
   stage2_learning_rate: 0.001 # Original: 0.001
@@ -54,15 +54,16 @@ training:
   save_every: 1
   export_onnx_every_epoch: true  # If true, export audio ONNX model after every epoch (can be slow)
   # Mixup augmentation: alpha parameter for Beta(alpha, alpha). 0 disables Mixup
-  mixup_alpha: 0.1
-  global_mixup: true  # If true, mix at segment level across all songs (zero data loss); if false, old song-level mixup
-  # Loss function: "mse" or "cosine". Cosine disables MSE and semantic, uses 1-cosine as loss
-  loss_function: "cosine"
+  mixup_alpha: 0
+  global_mixup: false  # If true, mix at segment level across all songs (zero data loss); if false, old song-level mixup
+  # Loss function: "mse", "cosine", or "kl". Cosine/KL disable MSE and semantic.
+  # "kl": KL divergence on softmax distributions (Beyer-style distillation), temperature from logit_scale
+  loss_function: "kl"
   # Loss scaling options
   loss_temperature: 0.7       # Static temperature (divide cosine by this value). If using logit scale, set use_logit_scale=True
   use_logit_scale: true       # If true, use a learnable logit_scale (exp(logit_scale) applied to cosine)
   init_logit_scale: 2.6592    # Initial value = ln(1/0.07) matching TinyCLAP initialization
-  max_logit_scale_T: 20       # Max temperature (T) for learnable logit_scale clamp. logit_scale clamped to [0, ln(T)]
+  max_logit_scale_T: 50       # Max temperature (T) for learnable logit_scale clamp. logit_scale clamped to [0, ln(T)]
   # Focal-style weighting for cosine (set gamma>0 to enable)
   loss_focal_gamma: 0       # gamma > 0 focuses gradients on hard (low-cosine) samples
   loss_focal_low_threshold: 0.65  # cosine <= low -> full weight
@@ -71,7 +72,7 @@ training:
   normalize_embeddings: false
   lambda_semantic: 0.1  # Weight for semantic alignment loss (query-based distillation)
   semantic_temperature: 1  # Temperature for KLD softmax (lower = sharper peaks, forces ranking)
-  use_teacher_embedding_cache: false  # If false, always recompute teacher embeddings from (augmented) mel; mel cache still used
+  use_teacher_embedding_cache: true  # If false, always recompute teacher embeddings from (augmented) mel; mel cache still used
   lr_scheduler:
     use_cosine_annealing: false  # If true, use CosineAnnealingLR instead of ReduceLROnPlateau in Stage 1
     mode: 'max'             # monitor metric to maximize (we monitor validation cosine)
@@ -93,8 +94,8 @@ paths:
   text_json: "../model/text.json"
 
 dataset:
-  fma_path: "/Users/guidocolangiuli/Music/FMA"
-  validation_path: "/Users/guidocolangiuli/Music/FMA_VAL"
+  fma_path: "/Volumes/USB256/FMA"
+  validation_path: "/Volumes/USB256/FMA_VAL"
   sample_size: 0
 
 logging:

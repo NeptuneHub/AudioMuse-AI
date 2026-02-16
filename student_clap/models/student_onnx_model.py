@@ -312,16 +312,16 @@ class StudentCLAPTrainer:
                 weight_decay=config['training']['weight_decay']
             )
 
-        # Loss function selection: "mse" or "cosine"
+        # Loss function selection: "mse", "cosine", or "kl"
         self.loss_function = config['training'].get('loss_function', 'mse')
 
         # Semantic alignment loss (KL Divergence with temperature-scaled softmax)
         self.lambda_semantic = float(config['training'].get('lambda_semantic', 0.0))
         self.semantic_temperature = float(config['training'].get('semantic_temperature', 0.1))
         self.text_anchors = None  # Set per-epoch via set_text_anchors()
-        if self.loss_function == 'cosine':
+        if self.loss_function in ('cosine', 'kl'):
             self.lambda_semantic = 0.0
-            logger.info(f"🔧 Cosine loss mode: semantic alignment disabled")
+            logger.info(f"🔧 {self.loss_function} loss mode: semantic alignment disabled")
         elif self.lambda_semantic > 0:
             logger.info(f"🔧 Semantic alignment loss enabled (lambda={self.lambda_semantic}, tau={self.semantic_temperature})")
 
@@ -567,6 +567,26 @@ class StudentCLAPTrainer:
                 scaled = cosine_sim / float(self.loss_temperature)
                 scale_value = float(self.loss_temperature)
             per_sample_loss = -scaled  # maximize scaled cosine similarity
+        elif self.loss_function == 'kl':
+            # Beyer-style KL divergence on softmax distributions over embedding dimensions
+            import math
+            if getattr(self, 'use_logit_scale', False):
+                max_T = float(self.config['training'].get('max_logit_scale_T', 50))
+                max_logit_scale = math.log(max_T)
+                with torch.no_grad():
+                    self.model.logit_scale.clamp_(0, max_logit_scale)
+                T = self.model.logit_scale.exp()
+                scale_value = float(T.detach().cpu().item())
+            else:
+                T = float(self.loss_temperature)
+                scale_value = T
+            p_s = F.log_softmax(student_norm / T, dim=-1)
+            p_t = F.softmax(teacher_norm / T, dim=-1)
+            # Per-sample KL: sum over embedding dim, then scale by T^2 (Hinton rule)
+            per_sample_kl = F.kl_div(p_s, p_t, reduction='none').sum(dim=-1)
+            T_sq = T ** 2 if isinstance(T, float) else T.detach() ** 2
+            per_sample_loss = per_sample_kl * T_sq
+            self._last_kl_raw = per_sample_kl.mean().item()  # unscaled KL for logging
         else:
             per_sample_loss = per_sample_mse     # MSE (default)
             scale_value = float(getattr(self, 'loss_temperature', 1.0))
@@ -585,6 +605,7 @@ class StudentCLAPTrainer:
             'mean_cosine_sim': cosine_sim.mean().item(),
             'min_cosine_sim': cosine_sim.min().item(),
             'max_cosine_sim': cosine_sim.max().item(),
+            'kl_loss': getattr(self, '_last_kl_raw', 0.0),
             'loss_scale': scale_value,
             'focal_gamma': float(self.focal_gamma),
             'focal_weighted_samples': int((weights > 0).sum().item())
@@ -786,6 +807,7 @@ class StudentCLAPTrainer:
             'semantic_loss': semantic_loss_val,
             'semantic_details': semantic_details,
             'cosine_loss': loss_dict['cosine_loss'],
+            'kl_loss': loss_dict.get('kl_loss', 0.0),
             'mean_cosine_sim': loss_dict['mean_cosine_sim'],
             'min_cosine_sim': loss_dict['min_cosine_sim'],
             'max_cosine_sim': loss_dict['max_cosine_sim'],
@@ -859,6 +881,7 @@ class StudentCLAPTrainer:
             'semantic_loss': semantic_loss_val,
             'semantic_details': semantic_details,
             'cosine_loss': loss_dict['cosine_loss'],
+            'kl_loss': loss_dict.get('kl_loss', 0.0),
             'mean_cosine_sim': loss_dict['mean_cosine_sim'],
             'min_cosine_sim': loss_dict['min_cosine_sim'],
             'max_cosine_sim': loss_dict['max_cosine_sim'],

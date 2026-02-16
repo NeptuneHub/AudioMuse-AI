@@ -124,6 +124,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
 
     total_loss = 0.0
     total_mse = 0.0
+    total_kl = 0.0
     total_semantic = 0.0
     total_cosine_sim = 0.0
     num_batches = 0
@@ -386,6 +387,8 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             if sem_loss > 0:
                 logger.info(f"      └─ Semantic Loss: {sem_loss:.6f}")
             logger.info(f"      └─ Cosine Loss: {step_metrics['cosine_loss']:.6f}")
+            if step_metrics.get('kl_loss', 0.0) > 0:
+                logger.info(f"      └─ KL Loss (raw): {step_metrics['kl_loss']:.6f}")
             # Per-query semantic alignment diagnostics
             sem_details = step_metrics.get('semantic_details')
             if sem_details:
@@ -401,6 +404,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             # Accumulate metrics
             total_loss += step_metrics['total_loss']
             total_mse += step_metrics['mse_loss']
+            total_kl += step_metrics.get('kl_loss', 0.0)
             total_semantic += sem_loss
             total_cosine_sim += step_metrics['mean_cosine_sim']
             num_batches += 1
@@ -481,6 +485,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
     # Compute averages BEFORE updating scheduler (ReduceLROnPlateau needs the metric)
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
     avg_mse = total_mse / num_batches if num_batches > 0 else 0.0
+    avg_kl = total_kl / num_batches if num_batches > 0 else 0.0
     avg_semantic = total_semantic / num_batches if num_batches > 0 else 0.0
     avg_cosine_sim = total_cosine_sim / num_batches if num_batches > 0 else 0.0
     
@@ -501,6 +506,8 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
     logger.info(f"🎯 EPOCH {epoch}/{config['training']['epochs']} COMPLETE:")
     logger.info(f"   📈 Average Loss: {avg_loss:.6f}")
     logger.info(f"   📊 Average MSE: {avg_mse:.6f}")
+    if avg_kl > 0:
+        logger.info(f"   📊 Average KL (raw): {avg_kl:.6f}")
     if avg_semantic > 0:
         logger.info(f"   📝 Average Semantic Loss: {avg_semantic:.6f}")
     logger.info(f"   🎯 Average Cosine Sim: {avg_cosine_sim:.4f}")
@@ -516,6 +523,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
         'epoch': epoch,
         'avg_loss': avg_loss,
         'avg_mse': avg_mse,
+        'avg_kl': avg_kl,
         'avg_semantic': avg_semantic,
         'avg_cosine_sim': avg_cosine_sim,
         'num_batches': num_batches,
@@ -677,6 +685,23 @@ def validate_real(trainer: StudentCLAPTrainer,
     except Exception as e:
         logger.warning(f"⚠️ Could not compute detailed validation diagnostics: {e}")
 
+    # Compute val_kl (raw KL divergence on embedding distributions) using trainer's temperature
+    try:
+        import math
+        if getattr(trainer, 'use_logit_scale', False) and hasattr(trainer.model, 'logit_scale'):
+            T_val = trainer.model.logit_scale.exp().item()
+        else:
+            T_val = float(getattr(trainer, 'loss_temperature', 1.0))
+        s_t = torch.from_numpy(s_norm).float()
+        t_t = torch.from_numpy(t_norm).float()
+        p_s = torch.nn.functional.log_softmax(s_t / T_val, dim=-1)
+        p_t = torch.nn.functional.softmax(t_t / T_val, dim=-1)
+        val_kl = torch.nn.functional.kl_div(p_s, p_t, reduction='batchmean').item()
+        metrics['val_kl'] = val_kl
+        logger.info(f"🔬 val_kl (raw, T={T_val:.2f}): {val_kl:.6f}")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not compute val_kl: {e}")
+
     # Compute val_semantic_error (KLD) if text anchors are available
     if trainer.text_anchors is not None and len(val_song_student_embs) > 0:
         try:
@@ -826,7 +851,7 @@ def train(config_path: str, resume: str = None):
     # Initialize start_epoch early (before datasets need it)
     start_epoch = 1
     loss_fn = config['training'].get('loss_function', 'mse')
-    val_metric_name = 'val_cosine' if loss_fn == 'cosine' else 'val_mse'
+    val_metric_name = 'val_cosine' if loss_fn in ('cosine', 'kl') else 'val_mse'
     patience_counter = 0
     last_val_metric = None  # Store last validation metric (None if not run yet)
     
@@ -1016,7 +1041,7 @@ def train(config_path: str, resume: str = None):
             logger.error(f"❌ Failed to load audio checkpoint: {e}")
             logger.info("🔄 Starting audio training from scratch...")
             start_epoch = 1
-            best_val_metric = float('-inf') if loss_fn == 'cosine' else float('inf')
+            best_val_metric = float('-inf') if loss_fn in ('cosine', 'kl') else float('inf')
             patience_counter = 0
     # Load text checkpoint if available
     if text_enabled and text_resume_path:
@@ -1126,8 +1151,8 @@ def train(config_path: str, resume: str = None):
         logger.warning(f"⚠️ Failed to save mel cache checkpoint: {e}")
         logger.warning("   Training will continue, but cache won't be preserved on failure")
     
-    # For cosine: higher is better → start from -inf. For MSE: lower is better → start from +inf.
-    best_val_metric = float('-inf') if loss_fn == 'cosine' else float('inf')
+    # For cosine/kl: higher is better → start from -inf. For MSE: lower is better → start from +inf.
+    best_val_metric = float('-inf') if loss_fn in ('cosine', 'kl') else float('inf')
     training_start_time = time.time()
     
     audio_enabled = config.get('distillation', {}).get('audio_enabled', True)
@@ -1379,7 +1404,7 @@ def train(config_path: str, resume: str = None):
             val_mse = val_metrics['mse']
             val_cosine = val_metrics['cosine_similarity']['mean']
             # Select primary validation metric based on loss_function
-            if loss_fn == 'cosine':
+            if loss_fn in ('cosine', 'kl'):
                 val_metric = val_cosine
                 val_metric_name = 'val_cosine'
             else:
@@ -1388,7 +1413,8 @@ def train(config_path: str, resume: str = None):
             last_val_metric = val_metric
             # Log concise validation summary (this will appear in training.log)
             val_sem = val_metrics.get('val_semantic_error', 'N/A')
-            logger.info(f"🔍 Validation completed (Epoch {epoch}) — {val_metric_name}: {val_metric:.6f} | val_mse: {val_mse:.6f} | val_cosine: {val_cosine:.4f} | val_semantic_error: {val_sem} (n={val_metrics.get('num_songs','N/A')})")
+            val_kl = val_metrics.get('val_kl', 0.0)
+            logger.info(f"🔍 Validation completed (Epoch {epoch}) — {val_metric_name}: {val_metric:.6f} | val_mse: {val_mse:.6f} | val_cosine: {val_cosine:.4f} | val_kl: {val_kl:.6f} | val_semantic_error: {val_sem} (n={val_metrics.get('num_songs','N/A')})")
             print_evaluation_report(val_metrics, f"Validation - Epoch {epoch}")
 
             # Update the per-epoch checkpoint to include validation metrics
@@ -1396,6 +1422,8 @@ def train(config_path: str, resume: str = None):
                 epoch_checkpoint_data['last_val_mse'] = val_mse
                 epoch_checkpoint_data['val_mse'] = val_mse
                 epoch_checkpoint_data['val_cosine'] = val_cosine
+                epoch_checkpoint_data['val_kl'] = val_kl
+                epoch_checkpoint_data['train_kl'] = train_metrics.get('avg_kl', 0.0)
                 epoch_checkpoint_data['val_metric'] = val_metric
                 epoch_checkpoint_data['val_metric_name'] = val_metric_name
                 if 'val_semantic_error' in val_metrics:
@@ -1414,8 +1442,8 @@ def train(config_path: str, resume: str = None):
                 sched_cls = sched.__class__.__name__
                 if sched_cls == 'ReduceLROnPlateau':
                     mode = getattr(sched, 'mode', None)
-                    if loss_fn == 'cosine':
-                        # Cosine: higher is better
+                    if loss_fn in ('cosine', 'kl'):
+                        # Cosine/KL: higher is better
                         val_to_step = val_metric if mode == 'max' else -val_metric
                     else:
                         # MSE: lower is better
@@ -1434,7 +1462,7 @@ def train(config_path: str, resume: str = None):
                 logger.warning(f"Failed to step scheduler on validation metric: {e}")
 
             # Check for improvement
-            if loss_fn == 'cosine':
+            if loss_fn in ('cosine', 'kl'):
                 is_better = val_metric > best_val_metric
             else:
                 is_better = val_metric < best_val_metric
@@ -1452,6 +1480,8 @@ def train(config_path: str, resume: str = None):
                     'scheduler_state_dict': trainer.scheduler.state_dict(),
                     'val_mse': val_mse,
                     'val_cosine': val_cosine,
+                    'val_kl': val_kl,
+                    'train_kl': train_metrics.get('avg_kl', 0.0),
                     'val_metric': val_metric,
                     'val_metric_name': val_metric_name,
                     'best_val_metric': best_val_metric,
@@ -1481,6 +1511,8 @@ def train(config_path: str, resume: str = None):
                 'last_val_mse': val_metrics.get('mse', 0) if audio_enabled else 0,
                 'val_mse': val_metrics.get('mse', 0) if audio_enabled else 0,
                 'val_cosine': val_metrics.get('cosine_similarity', {}).get('mean', 0) if audio_enabled else 0,
+                'val_kl': val_metrics.get('val_kl', 0) if audio_enabled else 0,
+                'train_kl': train_metrics.get('avg_kl', 0),
                 'val_metric': last_val_metric if audio_enabled else 0,
                 'val_metric_name': val_metric_name if audio_enabled else 'N/A',
                 'best_val_metric': best_val_metric,

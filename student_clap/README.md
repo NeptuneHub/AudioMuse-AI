@@ -30,12 +30,20 @@ With this command you will create the virtual env with all the dependencies and 
 python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt
 
 # Run training
+screen -S training
 python3 train_real.py --config config.yaml
+screen -r training
+
 ```
 
 To run report you can use this (you need to change the name of the .onnx model in the code)
 ```
 python final_test.py
+```
+
+To re run only the validation on a checkpoint
+```
+python3 revalidate_checkpoint.py --ckpt checkpoint_epoch_1.pth
 ```
 
 ## Useful command
@@ -51,7 +59,7 @@ for f in sorted(glob.glob('student_clap/checkpoints/checkpoint_epoch_*.pth')):
     val_cos = ckpt.get('val_cosine_sim', ckpt.get('last_val_cosine', ckpt.get('best_val_cosine','N/A')))
     print(f"{f}: train_cos={m.get('avg_cosine_sim')}, train_mse={m.get('avg_mse')}, val_mse={val_mse}, val_cos={val_cos}, lr={m.get('learning_rate')}")
 PY
-
+```
 
 with semantic metrics
 ```
