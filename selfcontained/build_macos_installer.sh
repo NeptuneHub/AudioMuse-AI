@@ -232,6 +232,10 @@ AudioMuse-AI for macOS
 INSTALLATION:
 1. Drag "AudioMuse-AI.app" to your Applications folder
 2. Double-click AudioMuse-AI in Applications to launch
+
+   If macOS prevents launching the app due to Gatekeeper/quarantine, run:
+   sudo xattr -rd com.apple.quarantine "/Applications/AudioMuse-AI.app" && open "/Applications/AudioMuse-AI.app"
+
 3. A menu bar icon (♪) will appear in the top-right menu bar
 4. On first run, models will be downloaded (~1.7 GB)
 5. Click the menu bar icon and select "Open Web Interface"
