@@ -251,7 +251,16 @@ def check_and_download_models(model_dir: Path, cache_dir: Path, include_optional
     if not missing_models:
         logger.info("✓ All models are already downloaded")
         return True
-    
+
+    # For models that don't include a 'size' field, probe the remote URL with
+    # an HTTP HEAD to get Content-Length so we can present a realistic total.
+    for model_name, model_info in missing_models:
+        if 'size' not in model_info:
+            probed = _probe_remote_size(model_info['url'])
+            if probed:
+                model_info['size'] = probed
+                logger.info(f"Detected remote size for {model_name}: {probed/1_000_000:.1f} MB")
+
     # Calculate total download size (missing sizes treated as 0)
     total_size = sum(info.get('size', 0) for _, info in missing_models) / 1_000_000  # MB
     logger.info(f"")
