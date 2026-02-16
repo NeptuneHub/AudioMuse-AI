@@ -5,7 +5,7 @@
 # Base standalone requirements
 SQLAlchemy>=2.0.0
 huey>=2.5.0
--r common.txt
+-r standalone.txt
 
 # ============================================================================
 # MULTI-PLATFORM ONNX RUNTIME
