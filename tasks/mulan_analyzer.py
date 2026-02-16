@@ -21,6 +21,7 @@ import config
 from typing import Tuple, Optional
 from transformers import AutoTokenizer
 from tasks.memory_utils import cleanup_cuda_memory, cleanup_onnx_session, handle_onnx_memory_error
+from util import provider
 
 logger = logging.getLogger(__name__)
 
@@ -66,12 +67,9 @@ def _load_mulan_models(load_text_models=False):
         logger.info("MuLan: Using ONNX Runtime automatic thread management")
         
         # Select execution provider (CPU or CUDA)
-        providers = ['CPUExecutionProvider']
-        if ort.get_available_providers() and 'CUDAExecutionProvider' in ort.get_available_providers():
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            logger.info("CUDA available - using GPU acceleration")
-        else:
-            logger.info("Using CPU execution")
+        providers = provider.get_available_providers()
+        logger.info("Using %s acceleration",
+                    [provider.split('ExecutionProvider')[0] for provider in providers])
         
         # Load audio encoder (with external data file)
         logger.info(f"Loading audio encoder: {config.AUDIO_MODEL_PATH}")
@@ -172,9 +170,7 @@ def initialize_mulan_text_models():
         # sess_options.intra_op_num_threads = num_threads
         # sess_options.inter_op_num_threads = num_threads
         
-        providers = ['CPUExecutionProvider']
-        if ort.get_available_providers() and 'CUDAExecutionProvider' in ort.get_available_providers():
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        providers = provider.get_available_providers()
         
         # Load text encoder
         _text_session = ort.InferenceSession(

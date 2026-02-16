@@ -1035,7 +1035,7 @@ class TestOOMFallback:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    @patch('tasks.analysis.ort.get_available_providers')
+    @patch('tasks.analysis.provider.get_available_providers')
     def test_embedding_oom_fallback_to_cpu(self, mock_providers, mock_audio_load, mock_mel, 
                                            mock_beat, mock_rms, mock_chroma, mock_onnx_session):
         """Test GPU OOM during embedding inference triggers CPU fallback
@@ -1123,7 +1123,7 @@ class TestOOMFallback:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    @patch('tasks.analysis.ort.get_available_providers')
+    @patch('tasks.analysis.provider.get_available_providers')
     def test_prediction_oom_fallback_to_cpu(self, mock_providers, mock_audio_load, mock_mel, 
                                             mock_beat, mock_rms, mock_chroma, mock_onnx_session):
         """Test GPU OOM during prediction inference triggers CPU fallback
@@ -1204,7 +1204,7 @@ class TestOOMFallback:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    @patch('tasks.analysis.ort.get_available_providers')
+    @patch('tasks.analysis.provider.get_available_providers')
     def test_secondary_model_oom_fallback_to_cpu(self, mock_providers, mock_audio_load, mock_mel, 
                                                   mock_beat, mock_rms, mock_chroma, mock_onnx_session):
         """Test GPU OOM during secondary model inference triggers CPU fallback
@@ -1286,7 +1286,7 @@ class TestOOMFallback:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    @patch('tasks.analysis.ort.get_available_providers')
+    @patch('tasks.analysis.provider.get_available_providers')
     def test_non_oom_exception_is_reraised(self, mock_providers, mock_audio_load, mock_mel, 
                                            mock_beat, mock_rms, mock_chroma, mock_onnx_session):
         """Test non-OOM exceptions are re-raised (not caught by OOM handler)
@@ -1345,7 +1345,7 @@ class TestOOMFallback:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    @patch('tasks.analysis.ort.get_available_providers')
+    @patch('tasks.analysis.provider.get_available_providers')
     def test_successful_gpu_inference_no_fallback(self, mock_providers, mock_audio_load, mock_mel, 
                                                   mock_beat, mock_rms, mock_chroma, mock_onnx_session):
         """Test successful GPU inference doesn't trigger CPU fallback
