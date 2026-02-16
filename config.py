@@ -237,7 +237,8 @@ REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 # Possible values: 'standalone', 'server' (default)
 # In 'standalone' mode, uses DuckDB instead of PostgreSQL
 DEPLOYMENT_MODE = os.environ.get('DEPLOYMENT_MODE', 'server').lower()
-SQLITE_DATABASE_PATH = os.environ.get('SQLITE_DATABASE_PATH', 'audiomuse.duckdb')
+# Default standalone DB path: keep filename `audiomuse.duckdb` but place it under ~/.audiomuse
+SQLITE_DATABASE_PATH = os.environ.get('SQLITE_DATABASE_PATH', os.path.join(os.path.expanduser('~'), '.audiomuse', 'audiomuse.duckdb'))
 # Standalone worker count: default 2 workers can handle different task types
 # CLAP semaphore limits concurrent CLAP analyses to 1 (prevents crashes)
 STANDALONE_WORKER_COUNT = int(os.environ.get('STANDALONE_WORKER_COUNT', '2'))

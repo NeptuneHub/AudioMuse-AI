@@ -101,7 +101,15 @@ def setup_standalone_environment():
     os.environ['MODEL_DIR'] = str(model_dir)
     os.environ['HF_HOME'] = str(cache_dir / 'huggingface')
     os.environ['TRANSFORMERS_CACHE'] = str(cache_dir / 'huggingface')
-    
+
+    # Ensure SQLite DB path is available early so modules that import `config`
+    # (which reads environment at import-time) will pick up the correct value.
+    if 'SQLITE_DATABASE_PATH' not in os.environ:
+        db_path = data_dir / 'audiomuse.db'
+        os.environ['SQLITE_DATABASE_PATH'] = str(db_path)
+    else:
+        db_path = Path(os.environ['SQLITE_DATABASE_PATH'])
+
     # Check system dependencies
     from selfcontained.model_downloader import check_system_dependencies
     check_system_dependencies()
@@ -121,13 +129,6 @@ def setup_standalone_environment():
     if not check_and_download_models(model_dir, cache_dir, include_optional=False):
         logger.error("Failed to download required models. Please check your internet connection.")
         sys.exit(1)
-    
-    # Set SQLite database path if not already set
-    if 'SQLITE_DATABASE_PATH' not in os.environ:
-        db_path = data_dir / 'audiomuse.db'
-        os.environ['SQLITE_DATABASE_PATH'] = str(db_path)
-    else:
-        db_path = Path(os.environ['SQLITE_DATABASE_PATH'])
     
     # Set worker count if not already set
     # Default to 2 workers: enough to handle multiple task types without overwhelming CLAP
