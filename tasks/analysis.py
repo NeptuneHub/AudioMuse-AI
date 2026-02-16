@@ -413,26 +413,18 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     prediction_sess = None
     should_cleanup_sessions = False
     
-    # Configure provider options for GPU memory management (used for main and secondary models)
-    available_providers = ort.get_available_providers()
-    if 'CUDAExecutionProvider' in available_providers:
-        # Get GPU device ID from environment or default to 0
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-            'cudnn_conv_algo_search': 'EXHAUSTIVE',
-            'do_copy_in_default_stream': True,
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - attempting to use GPU for analysis (device_id={gpu_device_id})")
+    # Configure provider options for GPU/accelerator usage (CUDA -> MPS -> CPU)
+    from tasks.onnx_utils import get_preferred_onnx_provider_options
+
+    provider_options = get_preferred_onnx_provider_options()
+    # Log higher-level message only (don't spam with low-level provider list)
+    top_provider = provider_options[0][0] if provider_options else 'CPUExecutionProvider'
+    if top_provider == 'CUDAExecutionProvider':
+        logger.info("CUDA provider available - attempting to use GPU for analysis")
+    elif top_provider in ('MPSExecutionProvider', 'CoreMLExecutionProvider'):
+        logger.info("Apple GPU provider available - attempting to use it for analysis")
     else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
+        logger.info("No GPU provider available - using CPU only")
     
     try:
         # Use pre-loaded sessions if provided, otherwise load per-song
@@ -862,22 +854,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         if onnx_sessions is None:
                             logger.info(f"Lazy-loading Essentia models for album: {album_name}")
                             onnx_sessions = {}
-                            available_providers = ort.get_available_providers()
-                            
-                            if 'CUDAExecutionProvider' in available_providers:
-                                gpu_device_id = 0
-                                cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-                                if cuda_visible and cuda_visible != '-1':
-                                    gpu_device_id = 0
-                                cuda_options = {
-                                    'device_id': gpu_device_id,
-                                    'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-                                    'cudnn_conv_algo_search': 'EXHAUSTIVE',      # Find memory-efficient algorithms
-                                    'do_copy_in_default_stream': True,           # Better memory sync
-                                }
-                                provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-                            else:
-                                provider_options = [('CPUExecutionProvider', {})]
+                            from tasks.onnx_utils import get_preferred_onnx_provider_options
+                            provider_options = get_preferred_onnx_provider_options()
+
                             
                             try:
                                 for model_name, model_path in model_paths.items():
@@ -910,22 +889,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             
                             # Recreate sessions
                             onnx_sessions = {}
-                            available_providers = ort.get_available_providers()
-                            
-                            if 'CUDAExecutionProvider' in available_providers:
-                                gpu_device_id = 0
-                                cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-                                if cuda_visible and cuda_visible != '-1':
-                                    gpu_device_id = 0
-                                cuda_options = {
-                                    'device_id': gpu_device_id,
-                                    'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-                                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
-                                    'do_copy_in_default_stream': True,
-                                }
-                                provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-                            else:
-                                provider_options = [('CPUExecutionProvider', {})]
+                            from tasks.onnx_utils import get_preferred_onnx_provider_options
+                            provider_options = get_preferred_onnx_provider_options()
                             
                             try:
                                 for model_name, model_path in model_paths.items():

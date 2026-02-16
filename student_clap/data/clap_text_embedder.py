@@ -13,15 +13,16 @@ class CLAPTextEmbedder:
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_options.log_severity_level = 3
-        available_providers = ort.get_available_providers()
-        if 'CUDAExecutionProvider' in available_providers:
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            logger.info(f"CLAP text model loaded: {model_path}")
-            logger.info(f"✅ Using CUDA for ONNX teacher text model")
+        from tasks.onnx_utils import get_preferred_onnx_provider_options
+        providers = [p[0] for p in get_preferred_onnx_provider_options()]
+        top = providers[0] if providers else 'CPUExecutionProvider'
+        logger.info(f"CLAP text model loaded: {model_path}")
+        if top == 'CUDAExecutionProvider':
+            logger.info("✅ Using CUDA for ONNX teacher text model")
+        elif top in ('MPSExecutionProvider', 'CoreMLExecutionProvider'):
+            logger.info("✅ Using Apple GPU (MPS/CoreML) for ONNX teacher text model")
         else:
-            providers = ['CPUExecutionProvider']
-            logger.info(f"CLAP text model loaded: {model_path}")
-            logger.info(f"✅ Using CPU for ONNX teacher text model")
+            logger.info("✅ Using CPU for ONNX teacher text model")
         self.session = ort.InferenceSession(
             model_path,
             sess_options=sess_options,

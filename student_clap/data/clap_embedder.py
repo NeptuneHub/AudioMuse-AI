@@ -52,18 +52,19 @@ class CLAPEmbedder:
         #sess_options.intra_op_num_threads = 8  # Parallel ops within a layer
         #sess_options.inter_op_num_threads = 2  # Parallel layers
         
-        # Use CUDA if available, otherwise CPU
-        available_providers = ort.get_available_providers()
-        if 'CUDAExecutionProvider' in available_providers:
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            logger.info(f"CLAP model loaded: {model_path}")
-            logger.info(f"✅ Using CUDA for ONNX teacher model")
+        # Select provider: CUDA -> MPS -> CPU
+        from tasks.onnx_utils import get_preferred_onnx_provider_options
+        providers = [p[0] for p in get_preferred_onnx_provider_options()]
+        top = providers[0] if providers else 'CPUExecutionProvider'
+        logger.info(f"CLAP model loaded: {model_path}")
+        if top == 'CUDAExecutionProvider':
+            logger.info("✅ Using CUDA for ONNX teacher model")
+        elif top in ('MPSExecutionProvider', 'CoreMLExecutionProvider'):
+            logger.info("✅ Using Apple GPU (MPS/CoreML) for ONNX teacher model")
         else:
-            providers = ['CPUExecutionProvider']
-            logger.info(f"CLAP model loaded: {model_path}")
-            logger.info(f"✅ Using optimized CPU inference (8 threads)")
-            logger.info(f"   Performance: ~325ms/segment vs 713ms with CoreML")
-            logger.info(f"   Reason: Only 24% of ops supported by CoreML GPU, context switching overhead too high")
+            logger.info("✅ Using optimized CPU inference (8 threads)")
+            logger.info("   Performance: ~325ms/segment vs 713ms with CoreML")
+            logger.info("   Reason: Only 24% of ops supported by CoreML GPU, context switching overhead too high")
 
         self.session = ort.InferenceSession(
             model_path,

@@ -72,15 +72,22 @@ psutil
 # ONNX RUNTIME - Platform Specific
 # ============================================================================
 # Default: CPU-only (smallest package, works everywhere)
-# For GPU support, see standalone-gpu-*.txt files
+# Standalone now includes macOS GPU toolchain entries so a single
+# `requirements/standalone.txt` can be used for mac builds (MPS/CoreML).
 
 # CPU-only ONNX Runtime (default for standalone)
 onnxruntime==1.19.2
 
+# Apple Silicon GPU support is provided by ONNX Runtime's MPSExecutionProvider
+# (no additional packages required in `requirements/standalone.txt`).
+# Developer-only packages for training/export (PyTorch/coremltools) remain in
+# `student_clap/requirements.txt` and `requirements/standalone-dev.txt`.
+
 # ============================================================================
 # NOTES:
 # ============================================================================
-# For NVIDIA GPU support: Use requirements/standalone-gpu-nvidia.txt
-# For macOS GPU support: Use requirements/standalone-gpu-macos.txt
-# For development: Use requirements/standalone-dev.txt (includes all variants)
+# Standalone installer builds are currently supported for macOS only.
+# - `requirements/standalone.txt` contains both CPU deps and macOS GPU/conversion deps.
+# - NVIDIA/cuda standalone builds have been removed from this repository.
+
 duckdb>=0.9.2

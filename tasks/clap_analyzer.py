@@ -70,23 +70,15 @@ def _load_audio_model():
     session = None
     
     # Configure provider options with GPU memory management
-    available_providers = ort.get_available_providers()
-    if 'CUDAExecutionProvider' in available_providers:
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
+    from tasks.onnx_utils import get_preferred_onnx_provider_options
+    provider_options = get_preferred_onnx_provider_options()
+    top_provider = provider_options[0][0] if provider_options else 'CPUExecutionProvider'
+    if top_provider == 'CUDAExecutionProvider':
+        logger.info(f"CUDA provider available - will attempt to use GPU")
+    elif top_provider in ('MPSExecutionProvider', 'CoreMLExecutionProvider'):
+        logger.info("Apple GPU provider available - will attempt to use it")
     else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
+        logger.info("No GPU provider available - using CPU only")
     
     # Create session
     try:
@@ -143,24 +135,15 @@ def _load_text_model():
     
     # Text model typically runs on CPU in Flask containers
     session = None
-    available_providers = ort.get_available_providers()
-    
-    if 'CUDAExecutionProvider' in available_providers:
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
+    from tasks.onnx_utils import get_preferred_onnx_provider_options
+    provider_options = get_preferred_onnx_provider_options()
+    top_provider = provider_options[0][0] if provider_options else 'CPUExecutionProvider'
+    if top_provider == 'CUDAExecutionProvider':
+        logger.info("CUDA provider available - will attempt to use GPU")
+    elif top_provider in ('MPSExecutionProvider', 'CoreMLExecutionProvider'):
+        logger.info("Apple GPU provider available - will attempt to use it")
     else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
+        logger.info("No GPU provider available - using CPU only")
     
     # Create session
     try:
@@ -231,26 +214,15 @@ def _load_onnx_model():
     session = None
     
     # Configure provider options with GPU memory management
-    available_providers = ort.get_available_providers()
-    if 'CUDAExecutionProvider' in available_providers:
-        # Get GPU device ID from environment or default to 0
-        # Docker sets NVIDIA_VISIBLE_DEVICES, CUDA runtime uses CUDA_VISIBLE_DEVICES
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            # If CUDA_VISIBLE_DEVICES is set, use first device (already mapped to 0)
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
+    from tasks.onnx_utils import get_preferred_onnx_provider_options
+    provider_options = get_preferred_onnx_provider_options()
+    top_provider = provider_options[0][0] if provider_options else 'CPUExecutionProvider'
+    if top_provider == 'CUDAExecutionProvider':
+        logger.info("CUDA provider available - will attempt to use GPU")
+    elif top_provider == 'MPSExecutionProvider':
+        logger.info("MPS provider available - will attempt to use Apple GPU")
     else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
+        logger.info("No GPU provider available - using CPU only")
     
     # Create session with determined providers
     try:

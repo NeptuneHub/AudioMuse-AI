@@ -106,6 +106,15 @@ def setup_standalone_environment():
     from selfcontained.model_downloader import check_system_dependencies
     check_system_dependencies()
     
+    # Report preferred ONNX provider (helps verify macOS GPU selection at startup)
+    try:
+        from tasks.onnx_utils import get_preferred_onnx_provider_options
+        prefs = get_preferred_onnx_provider_options()
+        top = prefs[0][0] if prefs else 'CPUExecutionProvider'
+        logger.info(f"Preferred ONNX provider at startup: {top} (providers: {[p for p,_ in prefs]})")
+    except Exception:
+        logger.debug("ONNX provider detection skipped (onnxruntime not installed)")
+
     # Check and download models if needed
     from selfcontained.model_downloader import check_and_download_models
     logger.info("Checking ML models...")

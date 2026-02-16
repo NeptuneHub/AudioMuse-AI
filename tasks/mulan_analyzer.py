@@ -65,11 +65,14 @@ def _load_mulan_models(load_text_models=False):
         # logger.info(f"MuLan: Using {num_threads} threads ({logical_cores} logical cores - 2)")
         logger.info("MuLan: Using ONNX Runtime automatic thread management")
         
-        # Select execution provider (CPU or CUDA)
-        providers = ['CPUExecutionProvider']
-        if ort.get_available_providers() and 'CUDAExecutionProvider' in ort.get_available_providers():
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        # Select execution provider (CUDA -> MPS -> CPU)
+        from tasks.onnx_utils import get_preferred_onnx_provider_options
+        providers = [p[0] for p in get_preferred_onnx_provider_options()]
+        top = providers[0] if providers else 'CPUExecutionProvider'
+        if top == 'CUDAExecutionProvider':
             logger.info("CUDA available - using GPU acceleration")
+        elif top == 'MPSExecutionProvider':
+            logger.info("MPS available - using Apple GPU acceleration")
         else:
             logger.info("Using CPU execution")
         
@@ -172,9 +175,8 @@ def initialize_mulan_text_models():
         # sess_options.intra_op_num_threads = num_threads
         # sess_options.inter_op_num_threads = num_threads
         
-        providers = ['CPUExecutionProvider']
-        if ort.get_available_providers() and 'CUDAExecutionProvider' in ort.get_available_providers():
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        from tasks.onnx_utils import get_preferred_onnx_provider_options
+        providers = [p[0] for p in get_preferred_onnx_provider_options()]
         
         # Load text encoder
         _text_session = ort.InferenceSession(

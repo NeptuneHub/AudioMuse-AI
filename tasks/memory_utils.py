@@ -212,15 +212,16 @@ def reset_onnx_memory_pool() -> bool:
         # Force garbage collection first
         gc.collect()
         
-        # Determine available providers
-        providers = ort.get_available_providers()
-        preferred_provider = None
-        
-        if 'CUDAExecutionProvider' in providers:
-            preferred_provider = 'CUDAExecutionProvider'
+        # Determine available providers (prefer CUDA -> MPS -> CPU)
+        from tasks.onnx_utils import get_preferred_onnx_provider_options
+        provider_options = get_preferred_onnx_provider_options()
+        preferred_provider = provider_options[0][0] if provider_options else None
+
+        if preferred_provider == 'CUDAExecutionProvider':
             logger.debug("Using CUDA provider for ONNX memory pool reset")
-        elif 'CPUExecutionProvider' in providers:
-            preferred_provider = 'CPUExecutionProvider'
+        elif preferred_provider in ('MPSExecutionProvider', 'CoreMLExecutionProvider'):
+            logger.debug("Using Apple GPU provider for ONNX memory pool reset")
+        elif preferred_provider == 'CPUExecutionProvider':
             logger.debug("Using CPU provider for ONNX memory pool reset")
         else:
             logger.debug("No suitable ONNX provider found for memory pool reset")

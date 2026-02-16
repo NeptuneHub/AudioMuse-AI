@@ -47,14 +47,8 @@ jobs:
         run: |
           source .venv/bin/activate
           pip install --upgrade pip
-          # Install standalone requirements
-          if [ -f requirements/standalone-gpu-macos.txt ]; then
-            pip install -r requirements/standalone-gpu-macos.txt
-          elif [ -f requirements/standalone.txt ]; then
-            pip install -r requirements/standalone.txt
-          else
-            pip install -r requirements/common.txt
-          fi
+          # Install standalone requirements (consolidated for macOS builds)
+          pip install -r requirements/standalone.txt
       
       - name: Run preparation script
         run: |

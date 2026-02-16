@@ -1378,6 +1378,43 @@ class TestOOMFallback:
             mock_session.get_outputs.return_value = [mock_output]
             
             # Successful inference - no OOM
+
+    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis.librosa.feature.chroma_stft')
+    @patch('tasks.analysis.librosa.feature.rms')
+    @patch('tasks.analysis.librosa.beat.beat_track')
+    @patch('tasks.analysis.librosa.feature.melspectrogram')
+    @patch('tasks.analysis.robust_load_audio_with_fallback')
+    @patch('tasks.analysis.ort.get_available_providers')
+    def test_successful_mps_inference_no_fallback(self, mock_providers, mock_audio_load, mock_mel, 
+                                                  mock_beat, mock_rms, mock_chroma, mock_onnx_session):
+        """Test successful MPS (Apple GPU) inference doesn't trigger CPU fallback"""
+        mock_providers.return_value = ['MPSExecutionProvider', 'CPUExecutionProvider']
+        
+        mock_audio = np.random.rand(16000)
+        mock_audio_load.return_value = (mock_audio, 16000)
+        
+        mock_beat.return_value = (120.0, np.array([0, 100]))
+        mock_rms.return_value = np.array([[0.5]])
+        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_mel.return_value = np.random.rand(96, 1000)
+        
+        cpu_fallback_used = [False]
+        
+        def create_session(model_path, providers=None, provider_options=None):
+            # Check if this is a CPU-only fallback session
+            if isinstance(providers, list) and 'CPUExecutionProvider' in providers and len(providers) == 1:
+                cpu_fallback_used[0] = True
+            
+            mock_session = Mock()
+            mock_input = Mock()
+            mock_input.name = 'input'
+            mock_output = Mock()
+            mock_output.name = 'output'
+            mock_session.get_inputs.return_value = [mock_input]
+            mock_session.get_outputs.return_value = [mock_output]
+            
+            # Successful inference - no OOM
             call_count = [0]
             def successful_run(output_names, feed_dict):
                 call_count[0] += 1
