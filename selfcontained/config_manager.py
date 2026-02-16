@@ -129,7 +129,32 @@ def apply_config_to_environment():
         os.environ['EMBY_URL'] = config.get('emby', 'url', fallback='')
         os.environ['EMBY_USER_ID'] = config.get('emby', 'user_id', fallback='')
         os.environ['EMBY_TOKEN'] = config.get('emby', 'token', fallback='')
-    
+
+    # ALSO update the in-memory `config` module so modules that already imported
+    # `config` pick up values from the standalone config.ini without requiring a
+    # process restart or import-order assumptions.
+    try:
+        import config as _cfg
+        # Update only the mediaserver-related values (minimal surface area)
+        _cfg.MEDIASERVER_TYPE = os.environ.get('MEDIASERVER_TYPE', _cfg.MEDIASERVER_TYPE)
+        _cfg.MUSIC_LIBRARIES = os.environ.get('MUSIC_LIBRARIES', _cfg.MUSIC_LIBRARIES)
+
+        # Jellyfin
+        _cfg.JELLYFIN_URL = os.environ.get('JELLYFIN_URL', getattr(_cfg, 'JELLYFIN_URL', ''))
+        _cfg.JELLYFIN_USER_ID = os.environ.get('JELLYFIN_USER_ID', getattr(_cfg, 'JELLYFIN_USER_ID', ''))
+        _cfg.JELLYFIN_TOKEN = os.environ.get('JELLYFIN_TOKEN', getattr(_cfg, 'JELLYFIN_TOKEN', ''))
+
+        # Navidrome / Lyrion / Emby
+        _cfg.NAVIDROME_URL = os.environ.get('NAVIDROME_URL', getattr(_cfg, 'NAVIDROME_URL', ''))
+        _cfg.LYRION_URL = os.environ.get('LYRION_URL', getattr(_cfg, 'LYRION_URL', ''))
+        _cfg.EMBY_URL = os.environ.get('EMBY_URL', getattr(_cfg, 'EMBY_URL', ''))
+        _cfg.EMBY_USER_ID = os.environ.get('EMBY_USER_ID', getattr(_cfg, 'EMBY_USER_ID', ''))
+        _cfg.EMBY_TOKEN = os.environ.get('EMBY_TOKEN', getattr(_cfg, 'EMBY_TOKEN', ''))
+
+        logger.info("Applied standalone config.ini values to runtime config module")
+    except Exception:
+        logger.debug("Could not update in-memory config module from config.ini")
+
     return True
 
 def is_configured():
