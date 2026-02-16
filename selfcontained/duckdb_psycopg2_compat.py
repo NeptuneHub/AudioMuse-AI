@@ -155,8 +155,11 @@ class DuckDBDictCursor:
 
     def execute(self, query: str, params: Optional[Tuple] = None):
         """Execute query - converts PostgreSQL syntax to DuckDB"""
-        _maybe_create_sequences(self._cursor, query)
+        # Convert SQL first so SERIAL -> nextval(...) occurs before we try to
+        # create any referenced sequences. This prevents "Sequence ... does
+        # not exist" errors for CREATE TABLE with SERIAL columns.
         query, params = _convert_query_and_params(query, params)
+        _maybe_create_sequences(self._cursor, query)
         if params:
             self._cursor.execute(query, params)
         else:
@@ -209,8 +212,11 @@ class DuckDBCursor:
 
     def execute(self, query: str, params: Optional[Tuple] = None):
         """Execute query - converts PostgreSQL syntax to DuckDB"""
-        _maybe_create_sequences(self._cursor, query)
+        # Convert SQL first so SERIAL -> nextval(...) occurs before we try to
+        # create any referenced sequences. This prevents "Sequence ... does
+        # not exist" errors for CREATE TABLE with SERIAL columns.
         query, params = _convert_query_and_params(query, params)
+        _maybe_create_sequences(self._cursor, query)
         if params:
             self._cursor.execute(query, params)
         else:
