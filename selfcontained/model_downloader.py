@@ -105,39 +105,63 @@ OPTIONAL_MODELS = {
 }
 
 
+def _probe_remote_size(url: str) -> int | None:
+    """Try to determine remote Content-Length via HTTP HEAD. Returns bytes or None."""
+    try:
+        req = urllib.request.Request(url, method='HEAD')
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            cl = resp.getheader('Content-Length') or resp.getheader('content-length')
+            if cl:
+                return int(cl)
+    except Exception:
+        return None
+
+
 def download_file(url: str, destination: Path, expected_size: int = None) -> bool:
     """
     Download a file with progress reporting and retry logic.
-    
+
+    If `expected_size` is not provided we attempt a HTTP HEAD to learn the
+    Content-Length for progress reporting and validation.
+
     Args:
         url: URL to download from
         destination: Local path to save file
         expected_size: Expected file size in bytes (for validation)
-    
+
     Returns:
         True if successful, False otherwise
     """
+    # Attempt to probe remote size if caller didn't provide it
+    if expected_size is None:
+        probed = _probe_remote_size(url)
+        if probed:
+            expected_size = probed
+            logger.info(f"Detected remote size for {destination.name}: {expected_size/1_000_000:.1f} MB")
+
     max_retries = 5
-    
+
     for attempt in range(max_retries):
         try:
             # Create directory if needed
             destination.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # Download with progress
             logger.info(f"Downloading {destination.name} (attempt {attempt + 1}/{max_retries})...")
-            
+
             def progress_hook(block_num, block_size, total_size):
                 downloaded = block_num * block_size
-                if total_size > 0:
-                    percent = min(100, downloaded * 100 // total_size)
+                # prefer server-supplied total_size, fall back to expected_size if available
+                ts = total_size if total_size and total_size > 0 else (expected_size or 0)
+                if ts > 0:
+                    percent = min(100, int(downloaded * 100 // ts))
                     mb_downloaded = downloaded / 1_000_000
-                    mb_total = total_size / 1_000_000
+                    mb_total = ts / 1_000_000
                     if block_num % 100 == 0:  # Update every 100 blocks
                         logger.info(f"  Progress: {percent}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)")
-            
+
             urllib.request.urlretrieve(url, destination, reporthook=progress_hook)
-            
+
             # Validate size
             actual_size = destination.stat().st_size
             if expected_size and actual_size < expected_size * 0.95:  # Allow 5% variance
@@ -148,22 +172,22 @@ def download_file(url: str, destination: Path, expected_size: int = None) -> boo
                     time.sleep((attempt + 1) ** 2)  # Exponential backoff
                     continue
                 return False
-            
+
             logger.info(f"✓ Downloaded {destination.name} ({actual_size/1_000_000:.1f} MB)")
             return True
-            
+
         except Exception as e:
             logger.error(f"Download attempt {attempt + 1} failed: {e}")
             if destination.exists():
                 destination.unlink()
-            
+
             if attempt < max_retries - 1:
                 import time
                 time.sleep((attempt + 1) ** 2)  # Exponential backoff
             else:
                 logger.error(f"Failed to download {url} after {max_retries} attempts")
                 return False
-    
+
     return False
 
 
@@ -250,7 +274,7 @@ def check_and_download_models(model_dir: Path, cache_dir: Path, include_optional
             destination = model_dir / model_name
         
         # Download
-        if not download_file(model_info['url'], destination, model_info['size']):
+        if not download_file(model_info['url'], destination, model_info.get('size')):
             logger.error(f"Failed to download {model_name}")
             return False
         
