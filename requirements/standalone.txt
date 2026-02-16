@@ -78,10 +78,12 @@ psutil
 # CPU-only ONNX Runtime (default for standalone)
 onnxruntime==1.19.2
 
-# Apple Silicon GPU support is provided by ONNX Runtime's MPSExecutionProvider
-# (no additional packages required in `requirements/standalone.txt`).
-# Developer-only packages for training/export (PyTorch/coremltools) remain in
+# PyTorch (runtime): keep PyTorch in the standalone installer to preserve
+# session-cleanup helpers, optional PyTorch-based fallbacks, and CUDA/MPS
+# memory-management utilities used by `tasks.memory_utils`.
+# Developer-only conversion/export tools (e.g. coremltools) remain in
 # `student_clap/requirements.txt` and `requirements/standalone-dev.txt`.
+torch==2.5.1
 
 # ============================================================================
 # NOTES:
