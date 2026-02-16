@@ -6,7 +6,9 @@ Auto-downloads required ML models on first run
 
 import os
 import sys
+import ssl
 import urllib.request
+import urllib.error
 import logging
 from pathlib import Path
 from typing import List, Dict
@@ -106,15 +108,35 @@ OPTIONAL_MODELS = {
 
 
 def _probe_remote_size(url: str) -> int | None:
-    """Try to determine remote Content-Length via HTTP HEAD. Returns bytes or None."""
+    """Try to determine remote Content-Length via HTTP HEAD. Returns bytes or None.
+
+    If the platform's certificate store is incomplete and a SSL verification
+    error occurs, we retry the HEAD request with an unverified SSL context.
+    """
+    req = urllib.request.Request(url, method='HEAD')
+
     try:
-        req = urllib.request.Request(url, method='HEAD')
         with urllib.request.urlopen(req, timeout=10) as resp:
             cl = resp.getheader('Content-Length') or resp.getheader('content-length')
             if cl:
                 return int(cl)
+    except urllib.error.URLError as e:
+        # Retry with unverified SSL context for environments with broken CA bundles
+        reason = getattr(e, 'reason', None)
+        if isinstance(reason, ssl.SSLCertVerificationError) or (isinstance(reason, ssl.SSLError) and 'CERTIFICATE_VERIFY_FAILED' in str(reason)):
+            logger.warning("SSL certificate verify failed for HEAD; retrying HEAD with unverified context")
+            try:
+                ctx = ssl._create_unverified_context()
+                with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                    cl = resp.getheader('Content-Length') or resp.getheader('content-length')
+                    if cl:
+                        return int(cl)
+            except Exception:
+                return None
     except Exception:
         return None
+
+    return None
 
 
 def download_file(url: str, destination: Path, expected_size: int = None) -> bool:
@@ -160,7 +182,51 @@ def download_file(url: str, destination: Path, expected_size: int = None) -> boo
                     if block_num % 100 == 0:  # Update every 100 blocks
                         logger.info(f"  Progress: {percent}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)")
 
-            urllib.request.urlretrieve(url, destination, reporthook=progress_hook)
+            # Streaming download (so we can control SSL context on retry)
+            def _do_stream_download(ctx=None):
+                req = urllib.request.Request(url, headers={"User-Agent": "AudioMuse-Model-Downloader/1.0"})
+                with urllib.request.urlopen(req, timeout=60, context=ctx) as resp:
+                    # prefer server header if present
+                    total_header = resp.getheader('Content-Length') or resp.getheader('content-length')
+                    total_size = int(total_header) if total_header and total_header.isdigit() else (expected_size or 0)
+
+                    block_size = 8192
+                    downloaded = 0
+                    block_num = 0
+
+                    # Write to a temporary file then atomically move into place
+                    tmp_path = destination.with_suffix(destination.suffix + '.part')
+                    with open(tmp_path, 'wb') as out_f:
+                        while True:
+                            chunk = resp.read(block_size)
+                            if not chunk:
+                                break
+                            out_f.write(chunk)
+                            downloaded += len(chunk)
+                            block_num += 1
+                            # call progress hook occasionally
+                            if total_size > 0 and block_num % 100 == 0:
+                                progress_hook(block_num, block_size, total_size)
+
+                    # final progress update
+                    progress_hook(block_num, block_size, total_size)
+
+                    # move temp file into final destination
+                    tmp_path.replace(destination)
+
+            ssl_unverified_used = False
+
+            try:
+                _do_stream_download(ctx=None)
+            except urllib.error.URLError as e:
+                reason = getattr(e, 'reason', None)
+                if isinstance(reason, ssl.SSLCertVerificationError) or (isinstance(reason, ssl.SSLError) and 'CERTIFICATE_VERIFY_FAILED' in str(reason)):
+                    logger.warning("SSL certificate verify failed during download; retrying with unverified SSL context")
+                    ctx = ssl._create_unverified_context()
+                    _do_stream_download(ctx=ctx)
+                    ssl_unverified_used = True
+                else:
+                    raise
 
             # Validate size
             actual_size = destination.stat().st_size
@@ -173,7 +239,7 @@ def download_file(url: str, destination: Path, expected_size: int = None) -> boo
                     continue
                 return False
 
-            logger.info(f"✓ Downloaded {destination.name} ({actual_size/1_000_000:.1f} MB)")
+            logger.info(f"✓ Downloaded {destination.name} ({actual_size/1_000_000:.1f} MB){' (ssl-unverified)' if ssl_unverified_used else ''}")
             return True
 
         except Exception as e:
