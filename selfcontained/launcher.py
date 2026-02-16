@@ -20,12 +20,57 @@ os.environ['DEPLOYMENT_MODE'] = 'standalone'
 
 # Set up logging to file when running as packaged app
 log_handlers = [logging.StreamHandler()]
+
+# Custom handler that prepends new log entries to the top of the log file
+class PrependFileHandler(logging.Handler):
+    """Logging handler that writes newest log lines at the top of the file.
+
+    Note: prepending requires rewriting the file on each emit. This is
+    intentional per UX request (newest-first log file) but may be slower
+    for very large files.
+    """
+    def __init__(self, filename, encoding='utf-8'):
+        super().__init__()
+        self.filename = str(filename)
+        self.encoding = encoding
+        # ensure file exists
+        open(self.filename, 'a', encoding=self.encoding).close()
+
+    def emit(self, record):
+        try:
+            msg = self.format(record) + '\n'
+            # Write atomically: create temp file in same dir then replace
+            import tempfile, os
+            dir_name = os.path.dirname(self.filename) or '.'
+            fd, tmp_path = tempfile.mkstemp(dir=dir_name)
+            try:
+                with os.fdopen(fd, 'w', encoding=self.encoding) as tmpf:
+                    tmpf.write(msg)
+                    # copy existing contents in chunks to avoid high memory use
+                    if os.path.exists(self.filename):
+                        with open(self.filename, 'r', encoding=self.encoding, errors='ignore') as oldf:
+                            while True:
+                                chunk = oldf.read(8192)
+                                if not chunk:
+                                    break
+                                tmpf.write(chunk)
+                # atomic replace
+                os.replace(tmp_path, self.filename)
+            finally:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+        except Exception:
+            self.handleError(record)
+
 if getattr(sys, 'frozen', False):
-    # Running as PyInstaller bundle - also log to file
+    # Running as PyInstaller bundle - also log to file (newest-first)
     data_dir = Path.home() / '.audiomuse'
     data_dir.mkdir(parents=True, exist_ok=True)
     log_file = data_dir / 'audiomuse.log'
-    file_handler = logging.FileHandler(log_file, mode='a')
+    file_handler = PrependFileHandler(log_file)
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     log_handlers.append(file_handler)
     print(f"AudioMuse-AI is starting... Logs: {log_file}")

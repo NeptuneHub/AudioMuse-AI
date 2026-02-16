@@ -17,6 +17,40 @@ logger = logging.getLogger(__name__)
 GITHUB_RELEASE_BASE = "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"
 
 REQUIRED_MODELS = {
+    # MusicNN / MusiCNN models (required for audio feature extraction)
+    'msd-musicnn-1.onnx': {
+        'url': f'{GITHUB_RELEASE_BASE}/msd-musicnn-1.onnx',
+        'description': 'MusiCNN embedding model (msd-musicnn-1)'
+    },
+    'msd-msd-musicnn-1.onnx': {
+        'url': f'{GITHUB_RELEASE_BASE}/msd-msd-musicnn-1.onnx',
+        'description': 'MusiCNN prediction model (msd-msd-musicnn-1)'
+    },
+    'danceability-msd-musicnn-1.onnx': {
+        'url': f'{GITHUB_RELEASE_BASE}/danceability-msd-musicnn-1.onnx',
+        'description': 'Danceability classifier (MusicNN)'
+    },
+    'mood_aggressive-msd-musicnn-1.onnx': {
+        'url': f'{GITHUB_RELEASE_BASE}/mood_aggressive-msd-musicnn-1.onnx',
+        'description': 'Mood - aggressive (MusicNN)'
+    },
+    'mood_happy-msd-musicnn-1.onnx': {
+        'url': f'{GITHUB_RELEASE_BASE}/mood_happy-msd-musicnn-1.onnx',
+        'description': 'Mood - happy (MusicNN)'
+    },
+    'mood_party-msd-musicnn-1.onnx': {
+        'url': f'{GITHUB_RELEASE_BASE}/mood_party-msd-musicnn-1.onnx',
+        'description': 'Mood - party (MusicNN)'
+    },
+    'mood_relaxed-msd-musicnn-1.onnx': {
+        'url': f'{GITHUB_RELEASE_BASE}/mood_relaxed-msd-musicnn-1.onnx',
+        'description': 'Mood - relaxed (MusicNN)'
+    },
+    'mood_sad-msd-musicnn-1.onnx': {
+        'url': f'{GITHUB_RELEASE_BASE}/mood_sad-msd-musicnn-1.onnx',
+        'description': 'Mood - sad (MusicNN)'
+    },
+
     # CLAP models for music search (required)
     'clap_audio_model.onnx': {
         'url': f'{GITHUB_RELEASE_BASE}/clap_audio_model.onnx',
@@ -194,8 +228,8 @@ def check_and_download_models(model_dir: Path, cache_dir: Path, include_optional
         logger.info("✓ All models are already downloaded")
         return True
     
-    # Calculate total download size
-    total_size = sum(info['size'] for _, info in missing_models) / 1_000_000  # MB
+    # Calculate total download size (missing sizes treated as 0)
+    total_size = sum(info.get('size', 0) for _, info in missing_models) / 1_000_000  # MB
     logger.info(f"")
     logger.info(f"╔══════════════════════════════════════════════════════════╗")
     logger.info(f"║  First-time setup: Downloading ML models                ║")

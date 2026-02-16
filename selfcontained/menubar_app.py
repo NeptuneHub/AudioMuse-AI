@@ -65,17 +65,21 @@ class AudioMuseMenuBarApp(rumps.App):
             )
     
     def open_config(self, _):
-        """Open configuration file in default editor"""
-        if self.config_file.exists():
-            subprocess.run(['open', str(self.config_file)])
-        else:
-            # Create config file with placeholder
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-            self.config_file.write_text(
-                "# AudioMuse-AI Configuration\n"
-                "# Visit http://localhost:8000/setup to configure your media server\n"
-            )
-            subprocess.run(['open', str(self.config_file)])
+        """Open the web setup page (preferred) instead of editing the raw file."""
+        try:
+            setup_url = self.server_url.rstrip('/') + '/setup'
+            webbrowser.open(setup_url)
+        except Exception:
+            # Fallback: open the raw config file if browser/open fails
+            if self.config_file.exists():
+                subprocess.run(['open', str(self.config_file)])
+            else:
+                self.data_dir.mkdir(parents=True, exist_ok=True)
+                self.config_file.write_text(
+                    "# AudioMuse-AI Configuration\n"
+                    "# Created by AudioMuse-AI\n"
+                )
+                subprocess.run(['open', str(self.config_file)])
     
     def open_data_folder(self, _):
         """Open data folder in Finder"""
