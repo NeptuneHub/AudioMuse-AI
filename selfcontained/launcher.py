@@ -102,10 +102,19 @@ def setup_standalone_environment():
     os.environ['HF_HOME'] = str(cache_dir / 'huggingface')
     os.environ['TRANSFORMERS_CACHE'] = str(cache_dir / 'huggingface')
 
-    # Ensure SQLite DB path is available early so modules that import `config`
-    # (which reads environment at import-time) will pick up the correct value.
+    # Ensure SQLITE_DATABASE_PATH is set early and prefer existing DB files to avoid
+    # creating duplicate empty DBs on upgrades. Keep the canonical filename
+    # `audiomuse.duckdb` but accept legacy `audiomuse.db` if present.
     if 'SQLITE_DATABASE_PATH' not in os.environ:
-        db_path = data_dir / 'audiomuse.db'
+        default_duckdb = data_dir / 'audiomuse.duckdb'
+        legacy_db = data_dir / 'audiomuse.db'
+        if default_duckdb.exists():
+            db_path = default_duckdb
+        elif legacy_db.exists():
+            db_path = legacy_db
+            logger.info("Found legacy DB file 'audiomuse.db' — using it to preserve existing data.")
+        else:
+            db_path = default_duckdb
         os.environ['SQLITE_DATABASE_PATH'] = str(db_path)
     else:
         db_path = Path(os.environ['SQLITE_DATABASE_PATH'])

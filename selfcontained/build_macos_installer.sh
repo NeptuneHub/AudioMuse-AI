@@ -269,7 +269,7 @@ Click menu bar icon → "Open Web Interface" → Setup
 
 LOG FILES:
 Application logs: ~/.audiomuse/audiomuse.log
-Database: ~/.audiomuse/audiomuse.db
+Database: ~/.audiomuse/audiomuse.duckdb
 Models: ~/.audiomuse/model/
 Config: ~/.audiomuse/config.ini
 
