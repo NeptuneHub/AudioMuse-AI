@@ -719,13 +719,30 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     
     # CRITICAL: Clean up large tensors before return
     try:
-        # Clean up all large intermediate variables
-        del embeddings_per_patch, audio, mel_spec, log_mel_spec, spec_patches, transposed_patches, final_patches
-        del embedding_feed_dict, prediction_feed_dict
+        # Clean up all large intermediate variables safely (only delete if present)
+        if 'embeddings_per_patch' in locals():
+            del embeddings_per_patch
+        if 'audio' in locals():
+            del audio
+        if 'mel_spec' in locals():
+            del mel_spec
+        if 'log_mel_spec' in locals():
+            del log_mel_spec
+        if 'spec_patches' in locals():
+            del spec_patches
+        if 'transposed_patches' in locals():
+            del transposed_patches
+        if 'final_patches' in locals():
+            del final_patches
+        if 'embedding_feed_dict' in locals():
+            del embedding_feed_dict
+        if 'prediction_feed_dict' in locals():
+            del prediction_feed_dict
         if 'mood_logits' in locals():
             del mood_logits
         if 'averaged_logits' in locals():
             del averaged_logits
+
         gc.collect()
         # Use comprehensive cleanup for successful analysis
         comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
