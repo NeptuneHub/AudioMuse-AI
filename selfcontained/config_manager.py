@@ -3,6 +3,7 @@ Configuration manager for standalone mode.
 Handles reading/writing media server configuration to ~/.audiomuse/config.ini
 """
 import os
+import re
 import configparser
 from pathlib import Path
 import logging
@@ -26,6 +27,26 @@ def read_config():
             logger.error(f"Error reading config file: {e}")
             return configparser.ConfigParser()
     return configparser.ConfigParser()
+
+def _normalize_base_url(url: str) -> str:
+    """Normalize a base URL for mediaserver endpoints.
+
+    - Trim whitespace
+    - Ensure scheme (add http:// if missing)
+    - Ensure trailing slash
+    - Return empty string for falsy input
+    """
+    if not url:
+        return ''
+    url = url.strip()
+    # Add scheme if missing
+    if not re.match(r'^https?://', url, re.I):
+        url = 'http://' + url
+    # Ensure trailing slash
+    if not url.endswith('/'):
+        url = url + '/'
+    return url
+
 
 def write_config(config_data):
     """
@@ -52,23 +73,23 @@ def write_config(config_data):
     
     if media_type == 'jellyfin':
         config['jellyfin'] = {
-            'url': config_data.get('jellyfin_url', ''),
+            'url': _normalize_base_url(config_data.get('jellyfin_url', '')),
             'user_id': config_data.get('jellyfin_user_id', ''),
             'token': config_data.get('jellyfin_token', '')
         }
     elif media_type == 'navidrome':
         config['navidrome'] = {
-            'url': config_data.get('navidrome_url', ''),
+            'url': _normalize_base_url(config_data.get('navidrome_url', '')),
             'user': config_data.get('navidrome_user', ''),
             'password': config_data.get('navidrome_password', '')
         }
     elif media_type == 'lyrion':
         config['lyrion'] = {
-            'url': config_data.get('lyrion_url', '')
+            'url': _normalize_base_url(config_data.get('lyrion_url', ''))
         }
     elif media_type == 'emby':
         config['emby'] = {
-            'url': config_data.get('emby_url', ''),
+            'url': _normalize_base_url(config_data.get('emby_url', '')),
             'user_id': config_data.get('emby_user_id', ''),
             'token': config_data.get('emby_token', '')
         }
@@ -113,20 +134,20 @@ def apply_config_to_environment():
     
     # Apply type-specific settings
     if config.has_section('jellyfin'):
-        os.environ['JELLYFIN_URL'] = config.get('jellyfin', 'url', fallback='')
+        os.environ['JELLYFIN_URL'] = _normalize_base_url(config.get('jellyfin', 'url', fallback=''))
         os.environ['JELLYFIN_USER_ID'] = config.get('jellyfin', 'user_id', fallback='')
         os.environ['JELLYFIN_TOKEN'] = config.get('jellyfin', 'token', fallback='')
     
     if config.has_section('navidrome'):
-        os.environ['NAVIDROME_URL'] = config.get('navidrome', 'url', fallback='')
+        os.environ['NAVIDROME_URL'] = _normalize_base_url(config.get('navidrome', 'url', fallback=''))
         os.environ['NAVIDROME_USER'] = config.get('navidrome', 'user', fallback='')
         os.environ['NAVIDROME_PASSWORD'] = config.get('navidrome', 'password', fallback='')
     
     if config.has_section('lyrion'):
-        os.environ['LYRION_URL'] = config.get('lyrion', 'url', fallback='')
+        os.environ['LYRION_URL'] = _normalize_base_url(config.get('lyrion', 'url', fallback=''))
     
     if config.has_section('emby'):
-        os.environ['EMBY_URL'] = config.get('emby', 'url', fallback='')
+        os.environ['EMBY_URL'] = _normalize_base_url(config.get('emby', 'url', fallback=''))
         os.environ['EMBY_USER_ID'] = config.get('emby', 'user_id', fallback='')
         os.environ['EMBY_TOKEN'] = config.get('emby', 'token', fallback='')
 
@@ -200,20 +221,20 @@ def get_current_config():
         result['music_libraries'] = config.get('mediaserver', 'music_libraries', fallback='')
     
     if config.has_section('jellyfin'):
-        result['jellyfin_url'] = config.get('jellyfin', 'url', fallback='')
+        result['jellyfin_url'] = _normalize_base_url(config.get('jellyfin', 'url', fallback=''))
         result['jellyfin_user_id'] = config.get('jellyfin', 'user_id', fallback='')
         result['jellyfin_token'] = config.get('jellyfin', 'token', fallback='')
     
     if config.has_section('navidrome'):
-        result['navidrome_url'] = config.get('navidrome', 'url', fallback='')
+        result['navidrome_url'] = _normalize_base_url(config.get('navidrome', 'url', fallback=''))
         result['navidrome_user'] = config.get('navidrome', 'user', fallback='')
         result['navidrome_password'] = config.get('navidrome', 'password', fallback='')
     
     if config.has_section('lyrion'):
-        result['lyrion_url'] = config.get('lyrion', 'url', fallback='')
+        result['lyrion_url'] = _normalize_base_url(config.get('lyrion', 'url', fallback=''))
     
     if config.has_section('emby'):
-        result['emby_url'] = config.get('emby', 'url', fallback='')
+        result['emby_url'] = _normalize_base_url(config.get('emby', 'url', fallback=''))
         result['emby_user_id'] = config.get('emby', 'user_id', fallback='')
         result['emby_token'] = config.get('emby', 'token', fallback='')
     

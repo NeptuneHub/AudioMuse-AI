@@ -467,25 +467,43 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         try:
             embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
         except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
-            if "Failed to allocate memory" in str(e):
+            err_str = str(e)
+            if "Failed to allocate memory" in err_str:
                 logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during embedding inference, attempting CPU fallback...")
-                
+
                 # Cleanup old session and recreate with CPU
                 if should_cleanup_sessions:
                     cleanup_onnx_session(embedding_sess, "embedding")
-                
+
                 # Use comprehensive cleanup for OOM errors
                 comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
-                
+
                 # Create CPU session
                 embedding_sess = ort.InferenceSession(
                     model_paths['embedding'],
                     providers=['CPUExecutionProvider']
                 )
-                
+
                 # Retry with CPU session
                 embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
                 logger.info(f"Successfully completed embedding inference on CPU after OOM")
+
+            # CoreML-specific runtime error: dynamic sequence-length resizing is not always supported
+            # Fallback to CPU when CoreML reports dynamic-resize / sequence-length errors.
+            elif ("dynamically resizing" in err_str.lower() or "sequence length" in err_str.lower() or 'coreml' in err_str.lower()):
+                logger.warning(f"CoreML dynamic-resize error detected for {os.path.basename(file_path)} during embedding inference; falling back to CPU... ({err_str})")
+
+                # Cleanup old session if we created it
+                if should_cleanup_sessions:
+                    cleanup_onnx_session(embedding_sess, "embedding")
+
+                # Create CPU session and retry once
+                embedding_sess = ort.InferenceSession(
+                    model_paths['embedding'],
+                    providers=['CPUExecutionProvider']
+                )
+                embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+                logger.info(f"Successfully completed embedding inference on CPU after CoreML dynamic-resize fallback")
             else:
                 raise
         
@@ -493,25 +511,41 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         try:
             mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
         except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
-            if "Failed to allocate memory" in str(e):
+            err_str = str(e)
+            if "Failed to allocate memory" in err_str:
                 logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during prediction inference, attempting CPU fallback...")
-                
+
                 # Cleanup old session and recreate with CPU
                 if should_cleanup_sessions:
                     cleanup_onnx_session(prediction_sess, "prediction")
-                
+
                 # Use comprehensive cleanup for OOM errors
                 comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
-                
+
                 # Create CPU session
                 prediction_sess = ort.InferenceSession(
                     model_paths['prediction'],
                     providers=['CPUExecutionProvider']
                 )
-                
+
                 # Retry with CPU session
                 mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
                 logger.info(f"Successfully completed prediction inference on CPU after OOM")
+
+            # CoreML dynamic-resize error: fall back to CPU and retry once
+            elif ("dynamically resizing" in err_str.lower() or "sequence length" in err_str.lower() or 'coreml' in err_str.lower()):
+                logger.warning(f"CoreML dynamic-resize error detected for {os.path.basename(file_path)} during prediction inference; falling back to CPU... ({err_str})")
+
+                if should_cleanup_sessions:
+                    cleanup_onnx_session(prediction_sess, "prediction")
+
+                prediction_sess = ort.InferenceSession(
+                    model_paths['prediction'],
+                    providers=['CPUExecutionProvider']
+                )
+
+                mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
+                logger.info(f"Successfully completed prediction inference on CPU after CoreML dynamic-resize fallback")
             else:
                 raise
         
