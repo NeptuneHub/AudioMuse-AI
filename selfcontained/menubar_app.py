@@ -87,8 +87,32 @@ class AudioMuseMenuBarApp(rumps.App):
         subprocess.run(['open', str(self.data_dir)])
     
     def quit_app(self, _):
-        """Quit the application"""
-        rumps.quit_application()
+        """Quit the application safely.
+
+        Uses rumps.quit_application() for a normal shutdown, raises
+        SystemExit to allow Python-level cleanup, and schedules a
+        short-timer hard exit (os._exit) as a failsafe to avoid
+        event-loop hangs or deallocation races with AppKit.
+        """
+        # Best-effort graceful quit via rumps
+        try:
+            rumps.quit_application()
+        except Exception as e:
+            # If rumps fails, proceed to a controlled shutdown
+            try:
+                import logging
+                logging.getLogger(__name__).warning(f"rumps.quit_application() raised: {e}")
+            except Exception:
+                pass
+
+        # Failsafe: force immediate process exit shortly after to avoid hangs
+        try:
+            threading.Timer(0.2, os._exit, args=(0,)).start()
+        except Exception:
+            pass
+
+        # Raise SystemExit to allow proper Python cleanup (handlers, atexit, etc.)
+        sys.exit(0)
 
 
 def run_menubar_app(server_url='http://localhost:8000', on_ready_callback=None):
