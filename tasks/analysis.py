@@ -463,9 +463,60 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                 )
             should_cleanup_sessions = True
         
-        embedding_feed_dict = {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches}
+        # Run embedding inference with CoreML/MPS compatibility handling.
+        # Apple GPU providers often cannot handle dynamic sequence lengths; to
+        # avoid CoreML dynamic-resize errors we chunk / pad the spectrogram
+        # patches into fixed-size windows when the top provider is Apple GPU.
+        embedding_input_name = DEFINED_TENSOR_NAMES['embedding']['input']
+        embedding_output_name = DEFINED_TENSOR_NAMES['embedding']['output']
+
+        def _run_embedding_with_coreml_compat(session, patches, top_provider):
+            # If not Apple GPU, run normally
+            if top_provider not in ('MPSExecutionProvider', 'CoreMLExecutionProvider'):
+                return run_inference(session, {embedding_input_name: patches}, embedding_output_name)
+
+            import config as _cfg
+            chunk_size = getattr(_cfg, 'COREML_FIXED_NUM_PATCHES', 20)
+            num_patches = patches.shape[0]
+
+            # Helper to run a single (possibly padded) chunk and trim padded outputs
+            def _run_chunk(chunk_arr, valid_count):
+                out = run_inference(session, {embedding_input_name: chunk_arr}, embedding_output_name)
+                if out is None:
+                    return None
+                return out[:valid_count]
+
+            if num_patches == 0:
+                return np.zeros((0, 0), dtype=np.float32)
+
+            # If small enough, pad up to chunk_size (CoreML-friendly fixed size)
+            if num_patches <= chunk_size:
+                if num_patches < chunk_size:
+                    pad_count = chunk_size - num_patches
+                    pad_shape = (pad_count, patches.shape[1], patches.shape[2])
+                    padded = np.concatenate([patches, np.zeros(pad_shape, dtype=patches.dtype)], axis=0)
+                    out = _run_chunk(padded, num_patches)
+                else:
+                    out = _run_chunk(patches, num_patches)
+                return out
+
+            # If larger, process in chunked windows and concatenate results
+            outs = []
+            for i in range(0, num_patches, chunk_size):
+                chunk = patches[i:i+chunk_size]
+                valid = chunk.shape[0]
+                if valid < chunk_size:
+                    pad_count = chunk_size - valid
+                    pad_shape = (pad_count, patches.shape[1], patches.shape[2])
+                    chunk = np.concatenate([chunk, np.zeros(pad_shape, dtype=patches.dtype)], axis=0)
+                out_chunk = _run_chunk(chunk, valid)
+                if out_chunk is None:
+                    return None
+                outs.append(out_chunk)
+            return np.vstack(outs)
+
         try:
-            embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+            embeddings_per_patch = _run_embedding_with_coreml_compat(embedding_sess, final_patches, top_provider)
         except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
             err_str = str(e)
             if "Failed to allocate memory" in err_str:
@@ -485,7 +536,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                 )
 
                 # Retry with CPU session
-                embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+                embeddings_per_patch = run_inference(embedding_sess, {embedding_input_name: final_patches}, embedding_output_name)
                 logger.info(f"Successfully completed embedding inference on CPU after OOM")
 
             # CoreML-specific runtime error: dynamic sequence-length resizing is not always supported
@@ -509,7 +560,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                     model_paths['embedding'],
                     providers=['CPUExecutionProvider']
                 )
-                embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
+                embeddings_per_patch = run_inference(embedding_sess, {embedding_input_name: final_patches}, embedding_output_name)
                 logger.info(f"Successfully completed embedding inference on CPU after CoreML dynamic-resize fallback")
             else:
                 raise

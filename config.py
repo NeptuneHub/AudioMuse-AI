@@ -282,6 +282,12 @@ TOP_N_OTHER_FEATURES = int(os.environ.get("TOP_N_OTHER_FEATURES", "2")) # Number
 # Model directory: use MODEL_DIR env if set (standalone), otherwise /app/model (server)
 _MODEL_DIR_BASE = os.environ.get("MODEL_DIR", "/app/model")
 EMBEDDING_MODEL_PATH = os.path.join(_MODEL_DIR_BASE, "msd-musicnn-1.onnx")
+
+# When running ONNX CoreML / Apple GPU providers some models cannot accept
+# variable-length sequence inputs. Set a fixed number of spectrogram patches
+# to send per ONNX call on Apple GPU providers. The runtime will pad/truncate
+# or chunk the input into windows of this size when using CoreML/MPS.
+COREML_FIXED_NUM_PATCHES = int(os.environ.get('COREML_FIXED_NUM_PATCHES', '20'))
 PREDICTION_MODEL_PATH = os.path.join(_MODEL_DIR_BASE, "msd-msd-musicnn-1.onnx")
 EMBEDDING_DIMENSION = 200
 
