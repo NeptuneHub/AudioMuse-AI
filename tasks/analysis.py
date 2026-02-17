@@ -493,6 +493,13 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             elif ("dynamically resizing" in err_str.lower() or "sequence length" in err_str.lower() or 'coreml' in err_str.lower()):
                 logger.warning(f"CoreML dynamic-resize error detected for {os.path.basename(file_path)} during embedding inference; falling back to CPU... ({err_str})")
 
+                # Disable CoreML provider for the rest of this runtime to avoid repeated failures
+                try:
+                    from tasks.onnx_utils import disable_onnx_provider
+                    disable_onnx_provider('CoreMLExecutionProvider')
+                except Exception:
+                    pass
+
                 # Cleanup old session if we created it
                 if should_cleanup_sessions:
                     cleanup_onnx_session(embedding_sess, "embedding")
@@ -535,6 +542,13 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             # CoreML dynamic-resize error: fall back to CPU and retry once
             elif ("dynamically resizing" in err_str.lower() or "sequence length" in err_str.lower() or 'coreml' in err_str.lower()):
                 logger.warning(f"CoreML dynamic-resize error detected for {os.path.basename(file_path)} during prediction inference; falling back to CPU... ({err_str})")
+
+                # Disable CoreML provider to avoid repeated failures in future tracks
+                try:
+                    from tasks.onnx_utils import disable_onnx_provider
+                    disable_onnx_provider('CoreMLExecutionProvider')
+                except Exception:
+                    pass
 
                 if should_cleanup_sessions:
                     cleanup_onnx_session(prediction_sess, "prediction")

@@ -22,9 +22,14 @@ def get_preferred_onnx_provider_options() -> List[Tuple[str, Dict]]:
     """Return ONNX provider options in preferred order.
 
     Preferred order:
-      1. CUDAExecutionProvider (if available)
-      2. MPSExecutionProvider (if available)
-      3. CPUExecutionProvider (always present as fallback)
+      1. CUDAExecutionProvider (if available and not blacklisted)
+      2. MPSExecutionProvider (if available and not blacklisted)
+      3. CoreMLExecutionProvider (if available and not blacklisted)
+      4. CPUExecutionProvider (always present as fallback)
+
+    Providers can be disabled at runtime via `disable_onnx_provider()` or by
+    setting the `ONNX_PROVIDER_BLACKLIST` environment variable. This allows
+    automatic disabling when providers fail (e.g. CoreML dynamic-resize).
 
     Each entry is a tuple (provider_name, provider_options_dict).
     """
@@ -39,8 +44,24 @@ def get_preferred_onnx_provider_options() -> List[Tuple[str, Dict]]:
     available = ort.get_available_providers() or []
     opts: List[Tuple[str, Dict]] = []
 
+    # Support runtime blacklisting via env var or in-memory blacklist
+    env_blacklist = set()
+    env_val = os.environ.get('ONNX_PROVIDER_BLACKLIST', '')
+    if env_val:
+        env_blacklist = set([p.strip() for p in env_val.split(',') if p.strip()])
+
+    # Internal in-memory blacklist (set by runtime when providers fail)
+    global _disabled_providers
+    try:
+        _ = _disabled_providers  # referenced below
+    except NameError:
+        _disabled_providers = set()
+
+    def provider_allowed(name: str) -> bool:
+        return name not in env_blacklist and name not in _disabled_providers
+
     # 1) CUDA
-    if 'CUDAExecutionProvider' in available:
+    if 'CUDAExecutionProvider' in available and provider_allowed('CUDAExecutionProvider'):
         gpu_device_id = 0
         cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
         if cuda_visible and cuda_visible != '-1':
@@ -55,14 +76,37 @@ def get_preferred_onnx_provider_options() -> List[Tuple[str, Dict]]:
         opts.append(('CUDAExecutionProvider', cuda_options))
 
     # 2) Apple GPU: prefer MPSExecutionProvider, fallback to CoreMLExecutionProvider
-    if 'MPSExecutionProvider' in available:
+    if 'MPSExecutionProvider' in available and provider_allowed('MPSExecutionProvider'):
         opts.append(('MPSExecutionProvider', {}))
-    elif 'CoreMLExecutionProvider' in available:
+    elif 'CoreMLExecutionProvider' in available and provider_allowed('CoreMLExecutionProvider'):
         # Some ONNX Runtime mac builds expose CoreMLExecutionProvider instead
         opts.append(('CoreMLExecutionProvider', {}))
 
     # 3) Always include CPU as final fallback
-    opts.append(('CPUExecutionProvider', {}))
+    if provider_allowed('CPUExecutionProvider'):
+        opts.append(('CPUExecutionProvider', {}))
 
     logger.debug(f"Preferred ONNX providers: {[p for p, _ in opts]}")
     return opts
+
+
+# Runtime control helpers --------------------------------------------------
+def disable_onnx_provider(provider_name: str) -> None:
+    """Disable an ONNX provider at runtime (affects subsequent calls).
+
+    Example: disable_onnx_provider('CoreMLExecutionProvider')
+    """
+    global _disabled_providers
+    try:
+        _ = _disabled_providers
+    except NameError:
+        _disabled_providers = set()
+    _disabled_providers.add(provider_name)
+    logger.warning(f"ONNX provider disabled at runtime: {provider_name}")
+
+
+def is_onnx_provider_disabled(provider_name: str) -> bool:
+    try:
+        return provider_name in _disabled_providers
+    except Exception:
+        return False
