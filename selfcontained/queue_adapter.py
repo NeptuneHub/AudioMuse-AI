@@ -19,21 +19,67 @@ _standalone_job_info = threading.local()
 
 class StandaloneJobProxy:
     """Minimal RQ Job-like object for standalone mode worker threads.
-    Allows tasks to retrieve their own job_id via get_standalone_current_job()."""
+
+    This proxy implements a small subset of the RQ Job interface used by
+    tasks (e.g. `is_started`, `is_finished`, `is_stopped`, `meta`,
+    `save_meta`, and `get_status`). The goal is to behave sensibly in
+    standalone (Huey-backed) mode so task code that expects an RQ job
+    object doesn't need special-casing.
+    """
 
     def __init__(self, job_id):
         self.id = job_id
         self._meta = {}
+        # Internal runtime flags (conservative defaults for a running job)
+        self._stopped = False
 
     @property
     def meta(self):
         return self._meta
 
     def save_meta(self):
-        pass  # No-op in standalone
+        # No-op for standalone, but present for compatibility with RQ Job
+        return None
 
+    # Compatibility helpers used throughout the codebase -----------------
     def get_status(self):
+        """Return a simple status string similar to RQ Job's state.
+
+        Defaults to 'started' for an in-progress standalone job. Other
+        terminal checks should consult the database (task status) where
+        appropriate.
+        """
         return 'started'
+
+    @property
+    def is_stopped(self) -> bool:
+        """Indicates an external stop request for the job.
+
+        Standalone mode does not currently support direct in-process job
+        cancellation via the proxy; return the internal flag (default
+        False). Task code should also check DB task status where needed.
+        """
+        return bool(self._stopped)
+
+    @property
+    def is_finished(self) -> bool:
+        """Standalone proxy never reports finished (worker is executing).
+
+        Tasks should rely on DB child-task records for authoritative state.
+        """
+        return False
+
+    @property
+    def is_failed(self) -> bool:
+        return False
+
+    @property
+    def is_canceled(self) -> bool:
+        return False
+
+    @property
+    def is_started(self) -> bool:
+        return True
 
 
 def get_standalone_current_job():
