@@ -82,6 +82,50 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Keep a handle to the singleton lock file so it remains open for the
+# lifetime of the process (releases automatically when process exits).
+_singleton_lock_file = None
+
+
+def acquire_singleton_lock(lock_path=None):
+    """Try to acquire an exclusive file lock to ensure a single instance.
+
+    Returns an open file object if the lock was acquired, or None if another
+    instance holds the lock or locking is not supported.
+    """
+    try:
+        if lock_path is None:
+            from pathlib import Path
+            lock_path = Path.home() / '.audiomuse' / 'audiomuse.lock'
+        else:
+            from pathlib import Path
+            lock_path = Path(lock_path)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Open the lock file and try an exclusive, non-blocking flock. On
+        # POSIX systems fcntl.flock is sufficient; if not available, skip
+        # singleton enforcement (return None so caller can decide).
+        f = open(lock_path, 'a+')
+        try:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (ImportError, OSError):
+            try:
+                f.close()
+            except Exception:
+                pass
+            return None
+
+        # Record PID for debugging and keep the file handle alive
+        f.seek(0)
+        f.truncate()
+        f.write(str(os.getpid()))
+        f.flush()
+        return f
+    except Exception:
+        return None
+
+
 def setup_standalone_environment():
     """Set up environment for standalone mode."""
     
@@ -179,6 +223,17 @@ def main():
     """Main entry point for standalone launcher."""
     
     try:
+        # Startup diagnostics: log PID/PPID and ensure only one instance runs
+        logger.info(f"Startup PID={os.getpid()} PPID={os.getppid()}")
+
+        # Enforce single-instance for packaged standalone app on POSIX systems
+        global _singleton_lock_file
+        if getattr(sys, 'frozen', False) and sys.platform == 'darwin':
+            _singleton_lock_file = acquire_singleton_lock()
+            if not _singleton_lock_file:
+                logger.error("Another instance of AudioMuse-AI appears to be running — exiting")
+                sys.exit(0)
+
         # Setup environment
         db_path = setup_standalone_environment()
         
