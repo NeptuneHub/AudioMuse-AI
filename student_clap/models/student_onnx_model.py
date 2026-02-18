@@ -339,6 +339,13 @@ class FusionStudentCLAPAudio(nn.Module):
         logger.info(f"  TOTAL: {total_params:,} ({total_params/1e6:.2f}M)")
         logger.info(f"  TRAINABLE: {trainable_params:,} ({trainable_params/1e6:.2f}M)")
 
+    def train(self, mode: bool = True):
+        """Override to keep specialist permanently in eval() mode."""
+        super().train(mode)
+        # Specialist must always use running BatchNorm stats from checkpoint
+        self.specialist.eval()
+        return self
+
     def forward(self, mel_spec: torch.Tensor) -> torch.Tensor:
         """
         Gated residual forward: specialist identity + gated student delta.
