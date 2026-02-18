@@ -298,9 +298,19 @@ class FusionStudentCLAPAudio(nn.Module):
         self.use_gradient_checkpointing = config['model'].get('use_gradient_checkpointing', False)
 
         # --- Specialist (FROZEN) ---
+        # Use the checkpoint's own config for the specialist architecture so it
+        # always matches the saved weights (e.g. mn10_as), regardless of what
+        # the current config says for the student.
         logger.info(f"Loading frozen specialist from: {specialist_checkpoint_path}")
-        self.specialist = StudentCLAPAudio(config)
         ckpt = torch.load(specialist_checkpoint_path, map_location='cpu')
+        specialist_config = config.copy()
+        specialist_config['model'] = config['model'].copy()
+        if 'config' in ckpt and 'model' in ckpt['config']:
+            ckpt_model_cfg = ckpt['config']['model']
+            specialist_config['model']['efficientat_model'] = ckpt_model_cfg.get('efficientat_model', config['model']['efficientat_model'])
+            specialist_config['model']['dropout'] = ckpt_model_cfg.get('dropout', config['model'].get('dropout', 0.3))
+            logger.info(f"  Specialist architecture from checkpoint: {specialist_config['model']['efficientat_model']}")
+        self.specialist = StudentCLAPAudio(specialist_config)
         self.specialist.load_state_dict(ckpt['model_state_dict'], strict=False)
         # Freeze all specialist parameters
         for param in self.specialist.parameters():
@@ -310,7 +320,14 @@ class FusionStudentCLAPAudio(nn.Module):
         logger.info(f"  Specialist loaded: {specialist_params:,} params (all frozen)")
 
         # --- Trainable Student (FRESH) ---
-        self.student = StudentCLAPAudio(config)
+        # Use student_efficientat_model if set, otherwise fall back to efficientat_model
+        student_config = config.copy()
+        student_config['model'] = config['model'].copy()
+        student_model_name = config['model'].get('student_efficientat_model', None)
+        if student_model_name:
+            student_config['model']['efficientat_model'] = student_model_name
+            logger.info(f"  Student architecture override: {student_model_name}")
+        self.student = StudentCLAPAudio(student_config)
         student_params = sum(p.numel() for p in self.student.parameters())
         logger.info(f"  Trainable student: {student_params:,} params")
 

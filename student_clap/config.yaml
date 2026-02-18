@@ -20,6 +20,7 @@ model:
   # e.g. 'dymn10_as' will map to width_mult=1.0 and use the corresponding AudioSet pre-trained weights
   # Default uses the canonical pretrained key so there is no ambiguity (pass 'dymn10_as' is still accepted)
   efficientat_model: "mn10_as"
+  student_efficientat_model: "mn04_as"  # Override for trainable student in fusion mode (null = same as efficientat_model)
   use_pretrained: true  # Use AudioSet pretrained weights
   specialist_checkpoint: "../model/checkpoint_epoch_9.pth"  # Frozen specialist for fusion model (set to null to disable)
   use_gradient_checkpointing: true
