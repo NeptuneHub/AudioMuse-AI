@@ -251,35 +251,19 @@ class StudentCLAPAudio(nn.Module):
         }
 
 
-class FusionHead(nn.Module):
-    """Fusion head that combines specialist and student embeddings (2x512 -> 512)."""
-
-    def __init__(self, d_in: int = 1024, d_out: int = 512, p: float = 0.3) -> None:
-        super().__init__()
-        self.linear1 = nn.Linear(d_in, d_out, bias=False)
-        self.linear2 = nn.Linear(d_out, d_out, bias=False)
-        self.layer_norm = nn.LayerNorm(d_out)
-        self.drop = nn.Dropout(p)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        embed1 = self.linear1(x)
-        embed2 = self.drop(self.linear2(F.gelu(embed1)))
-        embeds = self.layer_norm(embed1 + embed2)
-        return embeds
-
-
 class FusionStudentCLAPAudio(nn.Module):
     """
-    Fusion model: frozen specialist + trainable student + learnable fusion head.
+    Gated Residual Fusion: frozen specialist (identity) + trainable student (delta).
 
-    Architecture:
-        mel -> specialist(frozen) -> 512
-        mel -> student(trainable) -> 512
-        concat(specialist_out, student_out) -> 1024 -> FusionHead -> 512 (L2-normalized)
+    Architecture (Beyer et al., 2022 — Residual Knowledge Distillation):
+        mel -> specialist(frozen, full model) -> 512-dim (identity skip-connection)
+        mel -> student_backbone(trainable, mn04_as) -> 384-dim -> Linear(384,512) -> projected
+        fused = specialist_emb + sigmoid(alpha) * projected
+        output = L2-normalize(fused)
 
-    The specialist is loaded from a checkpoint and completely frozen.
-    The trainable student is a fresh mn10_as EfficientAT model.
-    The fusion head merges both 512-dim outputs into a single 512-dim embedding.
+    The specialist embedding passes through untouched (no bottleneck).
+    The student learns a residual delta, gated by a learnable scalar alpha
+    initialized at -3.0 (sigmoid ≈ 0.047), so the output starts ~95% specialist.
     """
 
     def __init__(self, config: Dict, specialist_checkpoint_path: str):
@@ -297,10 +281,9 @@ class FusionStudentCLAPAudio(nn.Module):
         self.segment_batch_size = config['model'].get('segment_batch_size', 10)
         self.use_gradient_checkpointing = config['model'].get('use_gradient_checkpointing', False)
 
-        # --- Specialist (FROZEN) ---
+        # --- Specialist (FROZEN) --- full StudentCLAPAudio with projection head
         # Use the checkpoint's own config for the specialist architecture so it
-        # always matches the saved weights (e.g. mn10_as), regardless of what
-        # the current config says for the student.
+        # always matches the saved weights (e.g. mn10_as).
         logger.info(f"Loading frozen specialist from: {specialist_checkpoint_path}")
         ckpt = torch.load(specialist_checkpoint_path, map_location='cpu')
         specialist_config = config.copy()
@@ -312,34 +295,42 @@ class FusionStudentCLAPAudio(nn.Module):
             logger.info(f"  Specialist architecture from checkpoint: {specialist_config['model']['efficientat_model']}")
         self.specialist = StudentCLAPAudio(specialist_config)
         self.specialist.load_state_dict(ckpt['model_state_dict'], strict=False)
-        # Freeze all specialist parameters
         for param in self.specialist.parameters():
             param.requires_grad = False
         self.specialist.eval()
         specialist_params = sum(p.numel() for p in self.specialist.parameters())
         logger.info(f"  Specialist loaded: {specialist_params:,} params (all frozen)")
 
-        # --- Trainable Student (FRESH) ---
-        # Use student_efficientat_model if set, otherwise fall back to efficientat_model
-        student_config = config.copy()
-        student_config['model'] = config['model'].copy()
-        student_model_name = config['model'].get('student_efficientat_model', None)
-        if student_model_name:
-            student_config['model']['efficientat_model'] = student_model_name
-            logger.info(f"  Student architecture override: {student_model_name}")
-        self.student = StudentCLAPAudio(student_config)
-        student_params = sum(p.numel() for p in self.student.parameters())
-        logger.info(f"  Trainable student: {student_params:,} params")
-
-        # --- Fusion Head (TRAINABLE) ---
-        dropout = config['model'].get('dropout', 0.3)
-        self.fusion_head = FusionHead(
-            d_in=self.embedding_dim * 2,
-            d_out=self.embedding_dim,
-            p=dropout
+        # --- Student Backbone Only (TRAINABLE, no projection head) ---
+        student_model_name = config['model'].get('student_efficientat_model', config['model']['efficientat_model'])
+        logger.info(f"  Student backbone: {student_model_name}")
+        pretrained = student_model_name if config['model'].get('use_pretrained', True) else None
+        self.student_backbone = get_efficientat_model(
+            num_classes=527,
+            pretrained_name=pretrained,
+            head_type="mlp",
+            se_dims="c",
+            input_dim_f=self.n_mels,
+            input_dim_t=1000,
         )
-        fusion_params = sum(p.numel() for p in self.fusion_head.parameters())
-        logger.info(f"  Fusion head: {fusion_params:,} params")
+        # Determine backbone output dimension
+        with torch.no_grad():
+            dummy = torch.randn(1, 1, self.n_mels, 1000)
+            _, features = self.student_backbone(dummy)
+            backbone_dim = features.shape[-1]
+        logger.info(f"  Student backbone output dim: {backbone_dim}")
+        student_bb_params = sum(p.numel() for p in self.student_backbone.parameters())
+        logger.info(f"  Student backbone: {student_bb_params:,} params (trainable)")
+
+        # --- Student Projector (TRAINABLE) --- simple linear dim alignment
+        self.student_projector = nn.Linear(backbone_dim, self.embedding_dim, bias=False)
+        proj_params = self.student_projector.weight.numel()
+        logger.info(f"  Student projector ({backbone_dim}->{self.embedding_dim}): {proj_params:,} params")
+
+        # --- Learnable Gating (TRAINABLE) ---
+        # sigmoid(-3.0) ≈ 0.047 => output starts ~95% specialist
+        self.alpha = nn.Parameter(torch.tensor(-3.0))
+        logger.info(f"  Gating alpha init: {self.alpha.item():.1f} (sigmoid={torch.sigmoid(self.alpha).item():.4f})")
 
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -348,34 +339,43 @@ class FusionStudentCLAPAudio(nn.Module):
 
     def forward(self, mel_spec: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass: run specialist and student in parallel, fuse outputs.
+        Gated residual forward: specialist identity + gated student delta.
 
         Args:
             mel_spec: Mel-spectrogram (batch, 1, n_mels, time) or (batch, n_mels, time)
         Returns:
             L2-normalized 512-dim embeddings (batch, 512)
         """
-        # Specialist forward (no grad, eval mode) — detach to free intermediate memory
+        # Specialist forward (frozen, detached) — identity skip-connection
         with torch.no_grad():
-            specialist_emb = self.specialist(mel_spec).detach()  # (batch, 512), L2-normalized, no graph
+            specialist_emb = self.specialist(mel_spec).detach()  # (B, 512) L2-normed
 
-        # Student forward (trainable)
-        student_emb = self.student(mel_spec)  # (batch, 512), already L2-normalized
+        # Student backbone only (trainable)
+        if mel_spec.dim() == 3:
+            mel_spec = mel_spec.unsqueeze(1)
+        if self.training and self.use_gradient_checkpointing:
+            def backbone_forward(x):
+                return self.student_backbone(x)
+            _, student_features = torch.utils.checkpoint.checkpoint(
+                backbone_forward, mel_spec, use_reentrant=False
+            )
+        else:
+            _, student_features = self.student_backbone(mel_spec)  # (B, backbone_dim)
 
-        # Fuse: concat -> fusion head -> normalize
-        fused = torch.cat([specialist_emb, student_emb], dim=1)  # (batch, 1024)
-        embeddings = self.fusion_head(fused)  # (batch, 512)
-        embeddings = F.normalize(embeddings, p=2, dim=1)
+        # Project to embedding dim + gated addition
+        projected = self.student_projector(student_features)  # (B, 512)
+        gate = torch.sigmoid(self.alpha)
+        fused = specialist_emb + gate * projected
 
-        return embeddings
+        return F.normalize(fused, p=2, dim=1)
 
     def compute_mel_spectrogram(self, audio: torch.Tensor) -> torch.Tensor:
-        """Delegate to student's mel spectrogram computation."""
-        return self.student.compute_mel_spectrogram(audio)
+        """Delegate to specialist's mel spectrogram computation (same audio config)."""
+        return self.specialist.compute_mel_spectrogram(audio)
 
     def process_audio_segments(self, audio_segments: torch.Tensor) -> torch.Tensor:
         """Process multiple audio segments and return averaged embedding."""
-        model_device = next(self.student.parameters()).device
+        model_device = next(self.student_backbone.parameters()).device
         audio_segments = audio_segments.to(model_device)
 
         mel_specs = self.compute_mel_spectrogram(audio_segments)
@@ -540,16 +540,13 @@ class StudentCLAPTrainer:
     #
 
     def _freeze_encoder(self):
-        """Freeze encoder layers, keep only projection head(s) and fusion head trainable (Stage 2).
+        """Freeze encoder layers, keep only projection/fusion trainable (Stage 2).
 
-        This implementation is robust to different student architectures: it
-        disables gradients for all parameters, then enables them back for the
-        projection head (and optional `logit_scale` if present). It also places
-        the encoder in `eval()` so BatchNorm uses running stats collected in
-        Stage 1, which stabilizes outputs when the encoder is frozen.
+        Disables gradients for all parameters, then re-enables the trainable
+        heads. Places encoders in eval() so BatchNorm uses running stats.
 
-        For FusionStudentCLAPAudio: freezes both specialist and student backbones,
-        keeps student projection head and fusion head trainable.
+        For FusionStudentCLAPAudio (gated residual): freezes student_backbone,
+        keeps student_projector and alpha (gate) trainable.
         """
 
         # First, disable gradients everywhere
@@ -559,27 +556,15 @@ class StudentCLAPTrainer:
         is_fusion = isinstance(self.model, FusionStudentCLAPAudio)
 
         if is_fusion:
-            # FusionStudentCLAPAudio: enable fusion head + student projection head
-            for param in self.model.fusion_head.parameters():
+            # Gated residual fusion: keep projector + gate trainable
+            for param in self.model.student_projector.parameters():
                 param.requires_grad = True
-            self.model.fusion_head.train()
-            logger.info("🔒 Fusion head set to train() for Stage 2")
+            self.model.alpha.requires_grad = True
+            logger.info("🔒 Student projector + alpha gate set to trainable for Stage 2")
 
-            if hasattr(self.model.student, 'projection_head'):
-                for param in self.model.student.projection_head.parameters():
-                    param.requires_grad = True
-                self.model.student.projection_head.train()
-                logger.info("🔒 Student projection head set to train() for Stage 2")
-
-            # Set both backbones to eval
-            for attr_name in ('backbone', 'base', 'phinet'):
-                for sub in (self.model.specialist, self.model.student):
-                    if hasattr(sub, attr_name):
-                        try:
-                            getattr(sub, attr_name).eval()
-                        except Exception:
-                            pass
-            logger.info("🔒 Both specialist and student backbones set to eval() for Stage 2")
+            # Set student backbone to eval (specialist is already permanently eval)
+            self.model.student_backbone.eval()
+            logger.info("🔒 Student backbone set to eval() for Stage 2")
         else:
             # Original StudentCLAPAudio path
             if hasattr(self.model, 'projection_head') and self.model.projection_head is not None:
