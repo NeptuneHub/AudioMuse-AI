@@ -323,9 +323,11 @@ class FusionStudentCLAPAudio(nn.Module):
         logger.info(f"  Student backbone: {student_bb_params:,} params (trainable)")
 
         # --- Student Projector (TRAINABLE) --- simple linear dim alignment
+        # Zero-init so student contribution is exactly 0 at start (output = pure specialist)
         self.student_projector = nn.Linear(backbone_dim, self.embedding_dim, bias=False)
+        nn.init.zeros_(self.student_projector.weight)
         proj_params = self.student_projector.weight.numel()
-        logger.info(f"  Student projector ({backbone_dim}->{self.embedding_dim}): {proj_params:,} params")
+        logger.info(f"  Student projector ({backbone_dim}->{self.embedding_dim}): {proj_params:,} params (zero-init)")
 
         # --- Learnable Gating (TRAINABLE) ---
         # sigmoid(-3.0) ≈ 0.047 => output starts ~95% specialist
