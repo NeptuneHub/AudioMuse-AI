@@ -703,8 +703,20 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                  # If it's active in RQ but not in memory, add it to active_jobs.
                  state_dict["active_jobs"][job_id] = job
         except NoSuchJobError:
-            # Job not in RQ (cleared) and not marked terminal in DB. 
-            # This is the original stuck case. We assume it's done/cleared and process it.
+            # Job not in RQ (cleared). In standalone mode (Huey) a job may disappear from RQ
+            # briefly while still being processed or while the worker is finalizing DB writes.
+            # Previously we immediately treated missing RQ entries as finished which could
+            # cause the main task to assume the batch failed and move on too early.
+            start_time = state_dict.get("batch_start_times", {}).get(job_id)
+            grace_seconds = max(5, CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS)  # short grace window
+            if start_time is not None:
+                elapsed = current_time - start_time
+                # If the batch started recently, wait a bit for DB to reflect terminal state
+                if elapsed < grace_seconds and db_status == TASK_STATUS_PROGRESS:
+                    logger.info(f"Job {job_id} not in RQ but started {elapsed:.1f}s ago and DB shows PROGRESS — waiting up to {grace_seconds}s before marking as missing.")
+                    continue
+
+            # Fallback: treat as finished/missing to avoid starvation (existing behavior)
             logger.warning(f"Job {job_id} (status: {db_status}) not found in RQ (likely cleared). Treating as finished to prevent main task starvation.")
             jobs_ready_for_result_extraction.append(job_id)
         except Exception as e:
