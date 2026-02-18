@@ -11,6 +11,7 @@ import logging
 import uuid
 import traceback
 import gc
+import requests
 from pydub import AudioSegment
 from tempfile import NamedTemporaryFile
 
@@ -1362,6 +1363,9 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             logger.critical(f"FATAL ERROR: Main analysis task failed due to DB connection issue: {e}", exc_info=True)
             log_and_update_main(f"❌ Main analysis failed due to a database connection error. The task may be retried.", current_progress, task_state=TASK_STATUS_FAILURE, error_message=str(e), traceback=traceback.format_exc())
             # Re-raise to allow RQ to handle retries if configured on the task itself
+            raise
+        except requests.exceptions.ConnectionError:
+            log_and_update_main("❌ Could not connect to Jellyfin. Check the URL in your .env file.", current_progress, task_state=TASK_STATUS_FAILURE)
             raise
         except Exception as e:
             logger.critical(f"FATAL ERROR: Analysis failed: {e}", exc_info=True)

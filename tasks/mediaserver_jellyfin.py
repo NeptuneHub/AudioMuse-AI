@@ -10,6 +10,44 @@ logger = logging.getLogger(__name__)
 REQUESTS_TIMEOUT = 300
 
 # ##############################################################################
+# VALIDATION LOGIC (FAIL FAST)
+# ##############################################################################
+
+def validate_connection():
+    """
+    Validates connectivity, token, and user ID with a SHORT timeout (10s).
+    Raises specific exceptions (PermissionError, ValueError) if config is wrong.
+    """
+    short_timeout = 10
+    
+    # 1. Check Server Reachability
+    ping_url = f"{config.JELLYFIN_URL}/System/Info/Public"
+    try:
+        requests.get(ping_url, timeout=short_timeout).raise_for_status()
+    except Exception as e:
+        raise ConnectionError(f"Could not connect to Jellyfin at '{config.JELLYFIN_URL}': {e}")
+
+    # 2. Check Token and User ID
+    user_url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}"
+    headers = {"X-Emby-Token": config.JELLYFIN_TOKEN}
+    
+    try:
+        r = requests.get(user_url, headers=headers, timeout=short_timeout)
+        
+        if r.status_code == 401:
+            raise PermissionError("Invalid Jellyfin API Token (401 Unauthorized).")
+        if r.status_code == 404:
+            raise ValueError(f"Jellyfin User ID '{config.JELLYFIN_USER_ID}' not found (404).")
+            
+        r.raise_for_status()
+        
+    except Exception as e:
+        # If it's already a specific error, re-raise it. Otherwise wrap it.
+        if isinstance(e, (PermissionError, ValueError)):
+            raise e
+        raise ConnectionError(f"Failed to validate Jellyfin User/Token: {e}")
+
+# ##############################################################################
 # JELLYFIN IMPLEMENTATION
 # ##############################################################################
 
@@ -68,7 +106,8 @@ def _get_target_library_ids():
 
     except Exception as e:
         logger.error(f"Failed to fetch or parse Jellyfin virtual folders at '{url}': {e}", exc_info=True)
-        return set()
+        #raise e
+        raise e
 
 
 def _jellyfin_get_users(token):
@@ -105,6 +144,9 @@ def get_recent_albums(limit):
     Uses global admin credentials.
     If MUSIC_LIBRARIES is set, it will only return albums from those libraries.
     """
+    
+    validate_connection()
+
     target_library_ids = _get_target_library_ids()
     
     # Case 1: Config is set, but no matching libraries were found. Scan nothing.
@@ -142,8 +184,8 @@ def get_recent_albums(limit):
                 if len(albums_on_page) < page_size:
                     break
             except Exception as e:
-                logger.error(f"Jellyfin get_recent_albums failed during 'scan all': {e}", exc_info=True)
-                break
+                logger.error(f"Jellyfin get_recent_albums failed during 'scan all': {e}")
+                raise e
     
     # Case 3: Config is set and we have library IDs. Scan each of these libraries by using their ID as ParentId.
     else:
