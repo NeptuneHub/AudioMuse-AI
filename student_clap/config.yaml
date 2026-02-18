@@ -21,6 +21,7 @@ model:
   # Default uses the canonical pretrained key so there is no ambiguity (pass 'dymn10_as' is still accepted)
   efficientat_model: "mn10_as"
   use_pretrained: true  # Use AudioSet pretrained weights
+  specialist_checkpoint: "../model/checkpoint_epoch_9.pth"  # Frozen specialist for fusion model (set to null to disable)
   use_gradient_checkpointing: true
   segment_batch_size: 5  # Process N segments at a time to reduce memory
 
@@ -58,7 +59,7 @@ training:
   global_mixup: false  # If true, mix at segment level across all songs (zero data loss); if false, old song-level mixup
   # Loss function: "mse", "cosine", or "kl". Cosine/KL disable MSE and semantic.
   # "kl": KL divergence on softmax distributions (Beyer-style distillation), temperature from logit_scale
-  loss_function: "kl"
+  loss_function: "cosine"
   # Loss scaling options
   loss_temperature: 0.7       # Static temperature (divide cosine by this value). If using logit scale, set use_logit_scale=True
   use_logit_scale: true       # If true, use a learnable logit_scale (exp(logit_scale) applied to cosine)

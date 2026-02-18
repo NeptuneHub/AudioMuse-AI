@@ -250,6 +250,138 @@ class StudentCLAPAudio(nn.Module):
             'estimated_size_mb': size_mb
         }
 
+
+class FusionHead(nn.Module):
+    """Fusion head that combines specialist and student embeddings (2x512 -> 512)."""
+
+    def __init__(self, d_in: int = 1024, d_out: int = 512, p: float = 0.3) -> None:
+        super().__init__()
+        self.linear1 = nn.Linear(d_in, d_out, bias=False)
+        self.linear2 = nn.Linear(d_out, d_out, bias=False)
+        self.layer_norm = nn.LayerNorm(d_out)
+        self.drop = nn.Dropout(p)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        embed1 = self.linear1(x)
+        embed2 = self.drop(self.linear2(F.gelu(embed1)))
+        embeds = self.layer_norm(embed1 + embed2)
+        return embeds
+
+
+class FusionStudentCLAPAudio(nn.Module):
+    """
+    Fusion model: frozen specialist + trainable student + learnable fusion head.
+
+    Architecture:
+        mel -> specialist(frozen) -> 512
+        mel -> student(trainable) -> 512
+        concat(specialist_out, student_out) -> 1024 -> FusionHead -> 512 (L2-normalized)
+
+    The specialist is loaded from a checkpoint and completely frozen.
+    The trainable student is a fresh mn10_as EfficientAT model.
+    The fusion head merges both 512-dim outputs into a single 512-dim embedding.
+    """
+
+    def __init__(self, config: Dict, specialist_checkpoint_path: str):
+        super().__init__()
+        self.config = config
+
+        # Audio preprocessing params (delegated from config)
+        self.sample_rate = config['audio']['sample_rate']
+        self.n_mels = config['audio']['n_mels']
+        self.n_fft = config['audio']['n_fft']
+        self.hop_length = config['audio']['hop_length_stft']
+        self.fmin = config['audio']['fmin']
+        self.fmax = config['audio']['fmax']
+        self.embedding_dim = config['model']['embedding_dim']
+        self.segment_batch_size = config['model'].get('segment_batch_size', 10)
+        self.use_gradient_checkpointing = config['model'].get('use_gradient_checkpointing', False)
+
+        # --- Specialist (FROZEN) ---
+        logger.info(f"Loading frozen specialist from: {specialist_checkpoint_path}")
+        self.specialist = StudentCLAPAudio(config)
+        ckpt = torch.load(specialist_checkpoint_path, map_location='cpu')
+        self.specialist.load_state_dict(ckpt['model_state_dict'], strict=False)
+        # Freeze all specialist parameters
+        for param in self.specialist.parameters():
+            param.requires_grad = False
+        self.specialist.eval()
+        specialist_params = sum(p.numel() for p in self.specialist.parameters())
+        logger.info(f"  Specialist loaded: {specialist_params:,} params (all frozen)")
+
+        # --- Trainable Student (FRESH) ---
+        self.student = StudentCLAPAudio(config)
+        student_params = sum(p.numel() for p in self.student.parameters())
+        logger.info(f"  Trainable student: {student_params:,} params")
+
+        # --- Fusion Head (TRAINABLE) ---
+        dropout = config['model'].get('dropout', 0.3)
+        self.fusion_head = FusionHead(
+            d_in=self.embedding_dim * 2,
+            d_out=self.embedding_dim,
+            p=dropout
+        )
+        fusion_params = sum(p.numel() for p in self.fusion_head.parameters())
+        logger.info(f"  Fusion head: {fusion_params:,} params")
+
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        logger.info(f"  TOTAL: {total_params:,} ({total_params/1e6:.2f}M)")
+        logger.info(f"  TRAINABLE: {trainable_params:,} ({trainable_params/1e6:.2f}M)")
+
+    def forward(self, mel_spec: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass: run specialist and student in parallel, fuse outputs.
+
+        Args:
+            mel_spec: Mel-spectrogram (batch, 1, n_mels, time) or (batch, n_mels, time)
+        Returns:
+            L2-normalized 512-dim embeddings (batch, 512)
+        """
+        # Specialist forward (no grad, eval mode) — detach to free intermediate memory
+        with torch.no_grad():
+            specialist_emb = self.specialist(mel_spec).detach()  # (batch, 512), L2-normalized, no graph
+
+        # Student forward (trainable)
+        student_emb = self.student(mel_spec)  # (batch, 512), already L2-normalized
+
+        # Fuse: concat -> fusion head -> normalize
+        fused = torch.cat([specialist_emb, student_emb], dim=1)  # (batch, 1024)
+        embeddings = self.fusion_head(fused)  # (batch, 512)
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+
+        return embeddings
+
+    def compute_mel_spectrogram(self, audio: torch.Tensor) -> torch.Tensor:
+        """Delegate to student's mel spectrogram computation."""
+        return self.student.compute_mel_spectrogram(audio)
+
+    def process_audio_segments(self, audio_segments: torch.Tensor) -> torch.Tensor:
+        """Process multiple audio segments and return averaged embedding."""
+        model_device = next(self.student.parameters()).device
+        audio_segments = audio_segments.to(model_device)
+
+        mel_specs = self.compute_mel_spectrogram(audio_segments)
+        segment_embeddings = self.forward(mel_specs)
+
+        averaged_embedding = torch.mean(segment_embeddings, dim=0, keepdim=True)
+        averaged_embedding = F.normalize(averaged_embedding, p=2, dim=1)
+
+        return averaged_embedding
+
+    def count_parameters(self) -> Dict[str, int]:
+        """Count model parameters for size analysis."""
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        size_mb = total_params * 4 / (1024 * 1024)
+
+        return {
+            'total_parameters': total_params,
+            'trainable_parameters': trainable_params,
+            'estimated_size_mb': size_mb
+        }
+
+
 class StudentCLAPTrainer:
     """
     ONNX-compatible trainer for Student CLAP using PyTorch.
@@ -270,7 +402,18 @@ class StudentCLAPTrainer:
         else:
             self.device = torch.device('cpu')
 
-        self.model = StudentCLAPAudio(config).to(self.device)
+        # Use FusionStudentCLAPAudio if specialist_checkpoint is configured
+        specialist_ckpt = config['model'].get('specialist_checkpoint', None)
+        if specialist_ckpt:
+            import os
+            # Resolve relative path from config file location (student_clap/)
+            if not os.path.isabs(specialist_ckpt):
+                specialist_ckpt = os.path.join(os.path.dirname(__file__), '..', specialist_ckpt)
+            specialist_ckpt = os.path.abspath(specialist_ckpt)
+            logger.info(f"🔀 Using FusionStudentCLAPAudio with specialist: {specialist_ckpt}")
+            self.model = FusionStudentCLAPAudio(config, specialist_ckpt).to(self.device)
+        else:
+            self.model = StudentCLAPAudio(config).to(self.device)
 
         # --- Loss scaling options (temperature or learnable logit_scale) ---
         self.use_logit_scale = bool(config['training'].get('use_logit_scale', False))
@@ -380,57 +523,82 @@ class StudentCLAPTrainer:
     #
 
     def _freeze_encoder(self):
-        """Freeze encoder layers, keep only projection head trainable (Stage 2).
+        """Freeze encoder layers, keep only projection head(s) and fusion head trainable (Stage 2).
 
         This implementation is robust to different student architectures: it
         disables gradients for all parameters, then enables them back for the
         projection head (and optional `logit_scale` if present). It also places
         the encoder in `eval()` so BatchNorm uses running stats collected in
         Stage 1, which stabilizes outputs when the encoder is frozen.
+
+        For FusionStudentCLAPAudio: freezes both specialist and student backbones,
+        keeps student projection head and fusion head trainable.
         """
 
         # First, disable gradients everywhere
         for param in self.model.parameters():
             param.requires_grad = False
 
-        # Enable only projection head params
-        if hasattr(self.model, 'projection_head') and self.model.projection_head is not None:
-            for param in self.model.projection_head.parameters():
+        is_fusion = isinstance(self.model, FusionStudentCLAPAudio)
+
+        if is_fusion:
+            # FusionStudentCLAPAudio: enable fusion head + student projection head
+            for param in self.model.fusion_head.parameters():
                 param.requires_grad = True
-            # Ensure projection head is in training mode (we will update it)
-            try:
-                self.model.projection_head.train()
-            except Exception:
-                pass
+            self.model.fusion_head.train()
+            logger.info("🔒 Fusion head set to train() for Stage 2")
+
+            if hasattr(self.model.student, 'projection_head'):
+                for param in self.model.student.projection_head.parameters():
+                    param.requires_grad = True
+                self.model.student.projection_head.train()
+                logger.info("🔒 Student projection head set to train() for Stage 2")
+
+            # Set both backbones to eval
+            for attr_name in ('backbone', 'base', 'phinet'):
+                for sub in (self.model.specialist, self.model.student):
+                    if hasattr(sub, attr_name):
+                        try:
+                            getattr(sub, attr_name).eval()
+                        except Exception:
+                            pass
+            logger.info("🔒 Both specialist and student backbones set to eval() for Stage 2")
         else:
-            logger.warning("⚠️ projection_head not found on model when attempting to freeze encoder")
-
-        # If using learnable logit_scale, allow it to be trained during stage 2
-        if hasattr(self.model, 'logit_scale') and isinstance(getattr(self.model, 'logit_scale'), torch.nn.Parameter):
-            self.model.logit_scale.requires_grad = True
-
-        # Set encoder to eval() to use running BatchNorm stats collected during Stage 1
-        encoder_flag_set = False
-        # Prefer explicit `backbone` attribute (EfficientAT), then older names 'base' or 'phinet'
-        for attr_name in ('backbone', 'base', 'phinet'):
-            if hasattr(self.model, attr_name):
-                try:
-                    getattr(self.model, attr_name).eval()
-                    encoder_flag_set = True
-                    logger.info(f"🔒 Encoder ({attr_name}) set to eval() for Stage 2")
-                    break
-                except Exception:
-                    pass
-
-        if not encoder_flag_set:
-            # Fallback: set whole model to eval but re-enable projector training
-            self.model.eval()
-            logger.warning("⚠️ Could not find encoder module by name; set entire model to eval() as fallback")
-            if hasattr(self.model, 'projection_head'):
+            # Original StudentCLAPAudio path
+            if hasattr(self.model, 'projection_head') and self.model.projection_head is not None:
+                for param in self.model.projection_head.parameters():
+                    param.requires_grad = True
                 try:
                     self.model.projection_head.train()
                 except Exception:
                     pass
+            else:
+                logger.warning("projection_head not found on model when attempting to freeze encoder")
+
+            # Set encoder to eval() to use running BatchNorm stats collected during Stage 1
+            encoder_flag_set = False
+            for attr_name in ('backbone', 'base', 'phinet'):
+                if hasattr(self.model, attr_name):
+                    try:
+                        getattr(self.model, attr_name).eval()
+                        encoder_flag_set = True
+                        logger.info(f"🔒 Encoder ({attr_name}) set to eval() for Stage 2")
+                        break
+                    except Exception:
+                        pass
+
+            if not encoder_flag_set:
+                self.model.eval()
+                logger.warning("Could not find encoder module by name; set entire model to eval() as fallback")
+                if hasattr(self.model, 'projection_head'):
+                    try:
+                        self.model.projection_head.train()
+                    except Exception:
+                        pass
+
+        # If using learnable logit_scale, allow it to be trained during stage 2
+        if hasattr(self.model, 'logit_scale') and isinstance(getattr(self.model, 'logit_scale'), torch.nn.Parameter):
+            self.model.logit_scale.requires_grad = True
 
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         total_params = sum(p.numel() for p in self.model.parameters())
