@@ -315,38 +315,33 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
 
             if use_global_mixup:
                 # --- GLOBAL SEGMENT-LEVEL MIXUP ---
-                # Flatten all segments from all songs, pair randomly, mix.
-                # Zero data loss: every segment participates.
-                all_mel_segments = []
-                all_teacher_seg_embs = []
-                all_teacher_mel_segments = []  # teacher mel segments for cache-off path
+                # Flatten all segments from all songs into a single tensor, then mix.
+                # Memory-efficient: concatenate directly from batch instead of
+                # building an intermediate per-segment list (avoids an extra copy).
                 use_teacher_emb_cache = config['training'].get('use_teacher_embedding_cache', True)
+
+                # Build flat tensors directly from the batch (no intermediate list)
+                student_parts = []
+                teacher_emb_parts = []   # only used when cache ON
+                teacher_mel_parts = []   # only used when cache OFF
 
                 for i in range(len(batch['audio_segments'])):
                     mel_segs = batch['audio_segments'][i]
-                    teacher_seg_embs = batch['teacher_segment_embeddings'][i]
-                    teacher_song_emb = batch['teacher_embeddings'][i]
-
                     if isinstance(mel_segs, np.ndarray):
                         mel_segs = torch.from_numpy(mel_segs).float()
                     if isinstance(mel_segs, torch.Tensor):
                         mel_segs = mel_segs.cpu()
+                    student_parts.append(mel_segs)  # already (num_segs, 1, 128, T)
 
-                    # Collect teacher mel segments when teacher cache is off
-                    tmel_segs_i = None
                     if not use_teacher_emb_cache:
                         tmel_list = batch.get('teacher_mel_segments', [])
                         if i < len(tmel_list) and tmel_list[i] is not None:
-                            tmel_segs_i = tmel_list[i]
-
-                    for s in range(mel_segs.shape[0]):
-                        all_mel_segments.append(mel_segs[s])
-                        # Collect teacher mel segments for cache-off mixup
-                        if not use_teacher_emb_cache and tmel_segs_i is not None and s < len(tmel_segs_i):
-                            all_teacher_mel_segments.append(tmel_segs_i[s])
-                        # Only collect teacher embeddings when cache is on
-                        # (when cache is off, teacher runs post-mix)
-                        if use_teacher_emb_cache:
+                            teacher_mel_parts.append(tmel_list[i])  # numpy (num_segs, 1, 64, T)
+                    else:
+                        teacher_seg_embs = batch['teacher_segment_embeddings'][i]
+                        teacher_song_emb = batch['teacher_embeddings'][i]
+                        n_segs = mel_segs.shape[0]
+                        for s in range(n_segs):
                             if teacher_seg_embs is not None and s < len(teacher_seg_embs):
                                 t_emb = teacher_seg_embs[s]
                             else:
@@ -355,39 +350,50 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                                 t_emb = torch.from_numpy(t_emb).float()
                             if isinstance(t_emb, torch.Tensor):
                                 t_emb = t_emb.cpu()
-                            all_teacher_seg_embs.append(t_emb)
+                            teacher_emb_parts.append(t_emb)
 
-                total_segments = len(all_mel_segments)
+                # Concatenate student segments into one tensor (no extra copy vs stacking a flat list)
+                mel_stack = torch.cat(student_parts, dim=0)  # (total_segments, 1, 128, T)
+                del student_parts
+                # Free batch student data immediately — mel_stack is the only reference now
+                del batch['audio_segments']
+
+                total_segments = mel_stack.shape[0]
 
                 if total_segments >= 2:
                     lam = float(np.random.beta(mixup_alpha, mixup_alpha))
                     perm = np.random.permutation(total_segments)
                     if np.any(perm == np.arange(total_segments)):
                         perm = np.roll(perm, 1)
+                    perm_t = torch.from_numpy(perm).long()
+
+                    # Mix student mel in-place style: create mixed, then free original
+                    mixed_mel = lam * mel_stack + (1.0 - lam) * mel_stack[perm_t]
+                    del mel_stack
 
                     if use_teacher_emb_cache:
-                        # --- Cache ON: mix mel and teacher embeddings directly ---
-                        mel_stack = torch.stack(all_mel_segments, dim=0)
-                        perm_t = torch.from_numpy(perm).long()
-                        mixed_mel = lam * mel_stack + (1.0 - lam) * mel_stack[perm_t]
-                        teacher_stack = torch.stack(all_teacher_seg_embs, dim=0)
+                        # --- Cache ON: mix teacher embeddings directly ---
+                        teacher_stack = torch.stack(teacher_emb_parts, dim=0)
+                        del teacher_emb_parts
                         mixed_teacher = lam * teacher_stack + (1.0 - lam) * teacher_stack[perm_t]
-                        del teacher_stack, mel_stack
+                        del teacher_stack
                     else:
-                        # --- Cache OFF: mix student mel + teacher mel, compute teacher embeddings ---
-                        mel_stack = torch.stack(all_mel_segments, dim=0)
-                        perm_t = torch.from_numpy(perm).long()
-                        mixed_mel = lam * mel_stack + (1.0 - lam) * mel_stack[perm_t]
-                        del mel_stack
+                        # --- Cache OFF: mix teacher mel, compute teacher embeddings ---
+                        del teacher_emb_parts
+                        # Free batch teacher mel data — we'll use our own concat
+                        if 'teacher_mel_segments' in batch:
+                            del batch['teacher_mel_segments']
 
-                        if len(all_teacher_mel_segments) == total_segments:
-                            tmel_stack = np.stack(all_teacher_mel_segments, axis=0)
+                        if len(teacher_mel_parts) > 0:
+                            tmel_stack = np.concatenate(teacher_mel_parts, axis=0)  # (total, 1, 64, T)
+                            del teacher_mel_parts
                             mixed_tmel = (lam * tmel_stack + (1.0 - lam) * tmel_stack[perm]).astype(np.float32)
+                            del tmel_stack
                             if mixed_tmel.ndim == 3:
                                 mixed_tmel = mixed_tmel[:, np.newaxis, :, :]
                             avg_emb, seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_tmel)
+                            del mixed_tmel
                             mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
-                            del tmel_stack
                         else:
                             # Fallback: teacher mel not available, use student mel for teacher
                             logger.warning("[GLOBAL MIXUP] teacher_mel_segments not available, falling back to student-mel-based teacher")
@@ -396,6 +402,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                                 mixed_np = mixed_np[:, np.newaxis, :, :]
                             avg_emb, seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_np)
                             mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
+                    del perm_t
 
                     logger.info(f"[GLOBAL MIXUP] Applied: alpha={mixup_alpha}, lam={lam:.4f}, "
                                f"total_segments={total_segments} (from {len(batch_data)} songs)")
