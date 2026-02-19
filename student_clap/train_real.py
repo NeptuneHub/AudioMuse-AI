@@ -149,6 +149,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             'audio_segments': [],
             'teacher_embeddings': [],
             'teacher_segment_embeddings': [],
+            'raw_audio_segments': [],
             'song_ids': []
         }
         
@@ -158,6 +159,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             batch['audio_segments'].append(audio_segments)
             batch['teacher_embeddings'].append(item['teacher_embedding'])
             batch['teacher_segment_embeddings'].append(item.get('teacher_segment_embeddings'))
+            batch['raw_audio_segments'].append(item.get('raw_audio_segments'))
             batch['song_ids'].append(item['item_id'])
 
         # --- Mixup augmentation ---
@@ -246,15 +248,44 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                         else:
                             mixed_teacher_segment_embs.append(None)
                     else:
-                        # When teacher embedding cache is disabled, recompute embeddings from the
-                        # mixed mel so teacher sees the exact same mixed input as the student.
+                        # When teacher embedding cache is disabled, mix raw audio
+                        # segments and compute teacher from the mixed raw audio so
+                        # teacher uses its own correct mel params (n_mels=64, etc.).
                         try:
-                            mixed_np = mixed_seg_t.detach().cpu().numpy()
-                            # Ensure batch dimension expected by compute_embeddings_from_mel
-                            if mixed_np.ndim == 3:
-                                # (num_segments, n_mels, time) -> add channel dim
-                                mixed_np = mixed_np[:, np.newaxis, :, :]
-                            teacher_emb, teacher_seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_np)
+                            rawA = batch.get('raw_audio_segments', [None] * bsz)[i]
+                            rawB = batch.get('raw_audio_segments', [None] * bsz)[j]
+                            if rawA is not None and rawB is not None:
+                                min_raw_seg = min(len(rawA), len(rawB))
+                                mixed_raw = []
+                                for rs in range(min_raw_seg):
+                                    mixed_raw.append(
+                                        (lam * rawA[rs] + (1.0 - lam) * rawB[rs]).astype(np.float32)
+                                    )
+                                # Recompute student mel from mixed raw audio
+                                from student_clap.preprocessing.mel_spectrogram import compute_mel_spectrogram_batch
+                                audio_cfg = config['audio']
+                                mixed_mel_np = compute_mel_spectrogram_batch(
+                                    mixed_raw,
+                                    sr=audio_cfg['sample_rate'],
+                                    n_mels=audio_cfg['n_mels'],
+                                    n_fft=audio_cfg['n_fft'],
+                                    hop_length=audio_cfg['hop_length_stft'],
+                                    fmin=audio_cfg['fmin'],
+                                    fmax=audio_cfg['fmax'],
+                                )
+                                mixed_seg_t = torch.from_numpy(mixed_mel_np).float().to(device)
+                                if mixed_seg_t.shape[0] == 1:
+                                    mixed_seg_t = torch.cat([mixed_seg_t, mixed_seg_t], dim=0)
+                                mixed_audio[-1] = mixed_seg_t  # overwrite the mel-mixed version
+
+                                # Teacher from mixed raw audio (correct teacher mel params)
+                                teacher_emb, teacher_seg_embs = dataset.clap_embedder.compute_embeddings_from_audio(mixed_raw)
+                            else:
+                                # Fallback: raw audio not available, use mel-based path
+                                mixed_np = mixed_seg_t.detach().cpu().numpy()
+                                if mixed_np.ndim == 3:
+                                    mixed_np = mixed_np[:, np.newaxis, :, :]
+                                teacher_emb, teacher_seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_np)
                             if teacher_emb is None:
                                 raise RuntimeError("CLAP failed to compute embeddings for mixed audio")
                             mixed_teacher.append(torch.from_numpy(teacher_emb).float().to(device))
@@ -310,6 +341,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                 # Zero data loss: every segment participates.
                 all_mel_segments = []
                 all_teacher_seg_embs = []
+                all_raw_segments = []  # raw audio segments for cache-off path
                 use_teacher_emb_cache = config['training'].get('use_teacher_embedding_cache', True)
 
                 for i in range(len(batch['audio_segments'])):
@@ -322,8 +354,18 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                     if isinstance(mel_segs, torch.Tensor):
                         mel_segs = mel_segs.cpu()
 
+                    # Collect raw audio segments when teacher cache is off
+                    raw_segs_i = None
+                    if not use_teacher_emb_cache:
+                        raw_list = batch.get('raw_audio_segments', [])
+                        if i < len(raw_list) and raw_list[i] is not None:
+                            raw_segs_i = raw_list[i]
+
                     for s in range(mel_segs.shape[0]):
                         all_mel_segments.append(mel_segs[s])
+                        # Collect raw audio segments for cache-off mixup
+                        if not use_teacher_emb_cache and raw_segs_i is not None and s < len(raw_segs_i):
+                            all_raw_segments.append(raw_segs_i[s])
                         # Only collect teacher embeddings when cache is on
                         # (when cache is off, teacher runs post-mix)
                         if use_teacher_emb_cache:
@@ -345,25 +387,51 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                     if np.any(perm == np.arange(total_segments)):
                         perm = np.roll(perm, 1)
 
-                    mel_stack = torch.stack(all_mel_segments, dim=0)
-                    perm_t = torch.from_numpy(perm).long()
-
-                    mixed_mel = lam * mel_stack + (1.0 - lam) * mel_stack[perm_t]
                     if use_teacher_emb_cache:
+                        # --- Cache ON: mix mel and teacher embeddings directly ---
+                        mel_stack = torch.stack(all_mel_segments, dim=0)
+                        perm_t = torch.from_numpy(perm).long()
+                        mixed_mel = lam * mel_stack + (1.0 - lam) * mel_stack[perm_t]
                         teacher_stack = torch.stack(all_teacher_seg_embs, dim=0)
                         mixed_teacher = lam * teacher_stack + (1.0 - lam) * teacher_stack[perm_t]
-                        del teacher_stack
+                        del teacher_stack, mel_stack
                     else:
-                        # Recompute teacher embeddings for each mixed segment so teacher sees
-                        # the exact same mixed input as the student.
-                        mixed_np = mixed_mel.numpy()
-                        # mixed_np shape: (total_segments, n_mels, time) or (total_segments, 1, n_mels, time)
-                        if mixed_np.ndim == 3:
-                            mixed_np = mixed_np[:, np.newaxis, :, :]
-                        avg_emb, seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_np)
-                        mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
-
-                    del mel_stack
+                        # --- Cache OFF: mix raw audio, compute student mel + teacher ---
+                        if len(all_raw_segments) == total_segments:
+                            mixed_raw = []
+                            for s_idx in range(total_segments):
+                                mixed_raw.append(
+                                    (lam * all_raw_segments[s_idx] + (1.0 - lam) * all_raw_segments[perm[s_idx]]).astype(np.float32)
+                                )
+                            # Compute student mel from mixed raw audio
+                            from student_clap.preprocessing.mel_spectrogram import compute_mel_spectrogram_batch
+                            audio_cfg = config['audio']
+                            mixed_mel_np = compute_mel_spectrogram_batch(
+                                mixed_raw,
+                                sr=audio_cfg['sample_rate'],
+                                n_mels=audio_cfg['n_mels'],
+                                n_fft=audio_cfg['n_fft'],
+                                hop_length=audio_cfg['hop_length_stft'],
+                                fmin=audio_cfg['fmin'],
+                                fmax=audio_cfg['fmax'],
+                            )
+                            mixed_mel = torch.from_numpy(mixed_mel_np).float()
+                            # Teacher embeddings from mixed raw audio (correct teacher mel params)
+                            avg_emb, seg_embs = dataset.clap_embedder.compute_embeddings_from_audio(mixed_raw)
+                            mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
+                            del mixed_raw
+                        else:
+                            # Fallback: raw audio not available, use mel-based path
+                            logger.warning("[GLOBAL MIXUP] raw_audio_segments not available, falling back to mel-based teacher")
+                            mel_stack = torch.stack(all_mel_segments, dim=0)
+                            perm_t = torch.from_numpy(perm).long()
+                            mixed_mel = lam * mel_stack + (1.0 - lam) * mel_stack[perm_t]
+                            mixed_np = mixed_mel.numpy()
+                            if mixed_np.ndim == 3:
+                                mixed_np = mixed_np[:, np.newaxis, :, :]
+                            avg_emb, seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_np)
+                            mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
+                            del mel_stack
 
                     logger.info(f"[GLOBAL MIXUP] Applied: alpha={mixup_alpha}, lam={lam:.4f}, "
                                f"total_segments={total_segments} (from {len(batch_data)} songs)")
@@ -423,6 +491,8 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             if 'batch' in locals():
                 if 'audio_segments' in batch:
                     del batch['audio_segments']  # This is the heavy data
+                if 'raw_audio_segments' in batch:
+                    del batch['raw_audio_segments']  # Raw waveforms are even heavier
                 del batch
             
             # Step CosineAnnealingLR per-batch for smooth decay (both Stage 1 and Stage 2),

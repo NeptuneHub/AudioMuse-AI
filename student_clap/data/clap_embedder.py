@@ -20,8 +20,10 @@ SEGMENT_LENGTH = 480000  # 10 seconds at 48kHz
 HOP_LENGTH = 240000      # 5 seconds (50% overlap)
 
 # Mel-spectrogram parameters (HTSAT-base model)
+# These MUST match laion_clap's audio_cfg exactly:
+#   window_size=1024, hop_size=480, mel_bins=64, fmin=50, fmax=14000
 N_FFT = 1024
-HOP_LENGTH_STFT = 320
+HOP_LENGTH_STFT = 480
 N_MELS = 64
 F_MIN = 50
 F_MAX = 14000
@@ -164,9 +166,11 @@ class CLAPEmbedder:
             audio_data: Audio waveform (mono, 48kHz)
             
         Returns:
-            mel_spectrogram: Shape (1, time_frames, 64)
+            mel_spectrogram: Shape (1, n_mels, time_frames) — i.e. (1, 64, T)
+                             Standard (frequency, time) layout so that
+                             resample_mel_frequency operates on axis-0 correctly.
         """
-        # Compute mel-spectrogram
+        # Compute mel-spectrogram — librosa returns (n_mels, time_frames)
         mel = librosa.feature.melspectrogram(
             y=audio_data,
             sr=SAMPLE_RATE,
@@ -185,10 +189,12 @@ class CLAPEmbedder:
         # Convert to log scale
         mel = librosa.power_to_db(mel, ref=1.0, amin=1e-10, top_db=None)
         
-        # Transpose to (time_frames, mel_bins)
-        mel = mel.T
+        # Keep (n_mels, time_frames) — do NOT transpose.
+        # resample_mel_frequency expects axis-0 = frequency, axis-1 = time.
+        # The model expects (batch, 1, time, n_mels); the .T in
+        # compute_embeddings_from_mel handles that conversion.
         
-        # Add channel dimension: (1, time_frames, 64)
+        # Add channel dimension: (1, n_mels, time_frames)
         mel = mel[np.newaxis, :, :]
         
         return mel.astype(np.float32)
@@ -245,8 +251,8 @@ class CLAPEmbedder:
             num_segments = len(segments)
             
             # Compute mel for all segments first and use the batched inference path
-            mel_inputs = [self.compute_mel_spectrogram(seg)[0] for seg in segments]  # (time, n_mels)
-            # Stack into (num_segments, 1, time, n_mels)
+            mel_inputs = [self.compute_mel_spectrogram(seg)[0] for seg in segments]  # (n_mels, time)
+            # Stack into (num_segments, 1, n_mels, time)
             mel_batch = np.stack(mel_inputs).astype(np.float32)
             mel_batch = mel_batch[:, np.newaxis, :, :]
 
@@ -292,6 +298,8 @@ class CLAPEmbedder:
             # Frequency resampling helper: linear interpolation across mel axis
             def resample_mel_frequency(mel, new_n_mels=N_MELS):
                 old_n, T = mel.shape
+                if old_n == new_n_mels:
+                    return mel  # no-op when frequency count already matches
                 old_pos = np.linspace(0.0, 1.0, old_n)
                 new_pos = np.linspace(0.0, 1.0, new_n_mels)
                 res = np.zeros((new_n_mels, T), dtype=mel.dtype)
@@ -336,4 +344,30 @@ class CLAPEmbedder:
             return avg_emb, segment_embeddings
         except Exception as e:
             logger.error(f"Failed to compute embeddings from mel segments: {e}")
+            return None, None
+
+    def compute_embeddings_from_audio(self, audio_segments: list) -> Tuple[Optional[np.ndarray], Optional[list]]:
+        """
+        Compute CLAP embeddings from raw audio waveform segments using the
+        correct teacher mel-spectrogram parameters (n_mels=64, n_fft=1024,
+        hop=320, fmin=50).
+
+        Use this instead of compute_embeddings_from_mel when raw audio is
+        available to avoid feeding student-format mel to the teacher.
+
+        Args:
+            audio_segments: list of np.ndarray, each shape (n_samples,) at 48kHz
+
+        Returns:
+            Tuple of (averaged_embedding, list_of_segment_embeddings)
+        """
+        try:
+            if not audio_segments:
+                return None, None
+            mel_inputs = [self.compute_mel_spectrogram(seg)[0] for seg in audio_segments]
+            mel_batch = np.stack(mel_inputs).astype(np.float32)
+            mel_batch = mel_batch[:, np.newaxis, :, :]  # (N, 1, n_mels, time)
+            return self.compute_embeddings_from_mel(mel_batch)
+        except Exception as e:
+            logger.error(f"Failed to compute embeddings from audio segments: {e}")
             return None, None

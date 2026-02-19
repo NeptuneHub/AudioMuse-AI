@@ -11,6 +11,8 @@ import logging
 import numpy as np
 import torch
 import torchaudio
+import librosa
+import soundfile as sf
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 
@@ -101,6 +103,103 @@ class StudentCLAPDataset:
 
         logger.info(f"Dataset '{split}': {len(self.items)} items from {data_path}")
         
+    def _load_and_segment_raw_audio(self, audio_path: str):
+        """Load audio from file, resample to target SR, and segment.
+
+        Uses librosa (same as teacher CLAPEmbedder.analyze_audio) to handle
+        MP3 and other formats that soundfile alone can't decode.
+
+        Returns:
+            list of np.ndarray – each element has shape (segment_length,)
+
+        Raises:
+            RuntimeError: if the file cannot be loaded at all.
+        """
+        target_sr = self.audio_config['sample_rate']
+
+        # Pre-check: fast reject files that soundfile considers malformed so
+        # we don't fall through to a slow audioread fallback that also fails.
+        try:
+            sf.info(audio_path)
+        except Exception:
+            raise RuntimeError(
+                f"File not readable by soundfile (malformed or unsupported): {audio_path}"
+            )
+
+        # librosa handles MP3 via audioread fallback and resamples in one call
+        audio_data, _ = librosa.load(audio_path, sr=target_sr, mono=True)
+
+        segments = self._segment_audio(audio_data)
+        # _segment_audio returns (num_segments, segment_length)
+        if isinstance(segments, np.ndarray) and segments.ndim == 2:
+            segments = [segments[i] for i in range(segments.shape[0])]
+        elif isinstance(segments, np.ndarray) and segments.ndim == 1:
+            segments = [segments]
+        return segments
+
+    def _apply_waveform_augmentation(self, raw_segments):
+        """Apply gain and additive noise to raw audio segments (in-place).
+
+        Returns the augmentation log string.
+        """
+        gain = np.random.uniform(0.8, 1.2)
+        add_noise = np.random.rand() < 0.5
+        noise_level = np.random.uniform(0.001, 0.01) if add_noise else 0
+        for s in range(len(raw_segments)):
+            raw_segments[s] = (raw_segments[s] * gain).astype(np.float32)
+            if add_noise:
+                raw_segments[s] = (
+                    raw_segments[s]
+                    + np.random.normal(0, noise_level, raw_segments[s].shape).astype(np.float32)
+                )
+        return f"gain={gain:.3f}, noise={'yes' if add_noise else 'no'}"
+
+    def _compute_student_mel_from_segments(self, raw_segments):
+        """Compute student mel spectrograms from a list of raw audio segments.
+
+        Returns:
+            np.ndarray of shape (num_segments, 1, n_mels, time)
+        """
+        return compute_mel_spectrogram_batch(
+            raw_segments,
+            sr=self.audio_config['sample_rate'],
+            n_mels=self.audio_config['n_mels'],
+            n_fft=self.audio_config['n_fft'],
+            hop_length=self.audio_config['hop_length_stft'],
+            fmin=self.audio_config['fmin'],
+            fmax=self.audio_config['fmax'],
+        )
+
+    def _apply_specaugment(self, mel_aug):
+        """Apply SpecAugment (time shift, freq masking, time masking) to mel.
+
+        Operates on the last two dims (n_mels, time) so works with both 2-D
+        and 4-D arrays.
+        """
+        # Time shifting
+        if np.random.rand() < 0.5:
+            shift = np.random.randint(-mel_aug.shape[-1] // 20, mel_aug.shape[-1] // 20)
+            mel_aug = np.roll(mel_aug, shift, axis=-1)
+        # Frequency masking
+        freq_masked = False
+        if np.random.rand() < 0.5:
+            num_masks = np.random.randint(1, 3)
+            for _ in range(num_masks):
+                f = np.random.randint(0, mel_aug.shape[-2])
+                f_width = np.random.randint(0, mel_aug.shape[-2] // 8 + 1)
+                mel_aug[..., max(0, f - f_width // 2):min(mel_aug.shape[-2], f + f_width // 2), :] = 0
+            freq_masked = True
+        # Time masking
+        time_masked = False
+        if np.random.rand() < 0.5:
+            num_masks = np.random.randint(1, 3)
+            for _ in range(num_masks):
+                t = np.random.randint(0, mel_aug.shape[-1])
+                t_width = np.random.randint(0, mel_aug.shape[-1] // 10 + 1)
+                mel_aug[..., max(0, t - t_width // 2):min(mel_aug.shape[-1], t + t_width // 2)] = 0
+            time_masked = True
+        return mel_aug, freq_masked, time_masked
+
     def __len__(self) -> int:
         """Return number of items in dataset."""
         return len(self.items)
@@ -171,6 +270,71 @@ class StudentCLAPDataset:
             for item, mel_result in tasks_cached:
                 full_mel, audio_length = mel_result
                 
+                augmentation_enabled = self.config.get('training', {}).get('augmentation_enabled', True)
+                global_mixup = self.config.get('training', {}).get('global_mixup', False)
+                mixup_alpha = self.config.get('training', {}).get('mixup_alpha', 0.0)
+                skip_teacher = global_mixup and mixup_alpha and mixup_alpha > 0
+
+                # ------------------------------------------------------------------
+                # RAW-AUDIO PATH: when teacher cache is off we must compute the
+                # teacher mel from raw audio (teacher uses different mel params).
+                # Waveform-level augmentations (gain, noise) are also applied to
+                # the raw audio so that both student and teacher see the same input.
+                # ------------------------------------------------------------------
+                if not use_teacher_emb_cache and self.split == 'train':
+                    try:
+                        raw_segments = self._load_and_segment_raw_audio(item['file_path'])
+                    except Exception as e:
+                        logger.warning(f"⚠️ Skipping {item['item_id']} — cannot load raw audio: {e}")
+                        continue
+
+                    # Waveform augmentation (gain + noise) on raw audio
+                    aug_log = ""
+                    if augmentation_enabled:
+                        aug_log = self._apply_waveform_augmentation(raw_segments)
+
+                    # Student mel from (augmented) raw audio
+                    mel_aug = self._compute_student_mel_from_segments(raw_segments)
+
+                    # SpecAugment on student mel only
+                    freq_masked = False
+                    time_masked = False
+                    if augmentation_enabled:
+                        mel_aug, freq_masked, time_masked = self._apply_specaugment(mel_aug)
+                        logger.info(
+                            f"[AUGMENT-WAV] Epoch {self.epoch} (train, cached): {aug_log}, "
+                            f"freq_mask={'yes' if freq_masked else 'no'}, "
+                            f"time_mask={'yes' if time_masked else 'no'}"
+                        )
+
+                    # Teacher embeddings from (augmented) raw audio using correct teacher mel params
+                    teacher_embedding = None
+                    teacher_segment_embeddings = None
+                    if not skip_teacher:
+                        try:
+                            teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_audio(raw_segments)
+                            teacher_embedding = teacher_emb
+                            teacher_segment_embeddings = teacher_seg_embs
+                        except Exception as e:
+                            logger.error(f"[CACHE-OFF] Failed to compute teacher from audio for {item['item_id']}: {e}")
+
+                    mel_tensor = torch.from_numpy(mel_aug).float()
+                    batch.append({
+                        'item_id': item['item_id'],
+                        'title': item['title'],
+                        'author': item.get('author', 'Unknown'),
+                        'audio_path': item.get('file_path', 'cached'),
+                        'audio_segments': mel_tensor,
+                        'raw_audio_segments': raw_segments,
+                        'teacher_embedding': teacher_embedding,
+                        'teacher_segment_embeddings': teacher_segment_embeddings,
+                        'num_segments': mel_aug.shape[0],
+                    })
+                    continue
+
+                # ------------------------------------------------------------------
+                # ORIGINAL PATH: teacher cache is on (or validation split)
+                # ------------------------------------------------------------------
                 # Get teacher embeddings from cache (skip if cache off — will recompute after augmentation)
                 if use_teacher_emb_cache or self.split != 'train':
                     teacher_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
@@ -196,7 +360,6 @@ class StudentCLAPDataset:
                 
                 # --- Gold standard spectrogram augmentation ---
                 mel_aug = mel_specs.copy()
-                augmentation_enabled = self.config.get('training', {}).get('augmentation_enabled', True)
                 if self.split == 'train' and augmentation_enabled:
                     # Random gain
                     gain = np.random.uniform(0.8, 1.2)
@@ -234,21 +397,6 @@ class StudentCLAPDataset:
                     )
                 mel_tensor = torch.from_numpy(mel_aug).float()
 
-                # If user disabled teacher embedding cache, recompute teacher embeddings from
-                # the augmented mel so teacher receives identical augmentations as student.
-                # Skip when global_mixup is active — the training loop will run teacher
-                # once on the final mixed mel instead (avoids double teacher inference).
-                global_mixup = self.config.get('training', {}).get('global_mixup', False)
-                mixup_alpha = self.config.get('training', {}).get('mixup_alpha', 0.0)
-                skip_teacher = global_mixup and mixup_alpha and mixup_alpha > 0
-                if not use_teacher_emb_cache and self.split == 'train' and not skip_teacher:
-                    try:
-                        teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_mel(mel_aug)
-                        teacher_embedding = teacher_emb
-                        teacher_segment_embeddings = teacher_seg_embs
-                    except Exception as e:
-                        logger.error(f"[CACHE-OFF] Failed to compute teacher embeddings from mel for {item['item_id']}: {e}")
-
                 batch.append({
                     'item_id': item['item_id'],
                     'title': item['title'],
@@ -272,50 +420,21 @@ class StudentCLAPDataset:
                         cached_mel_result = self.mel_cache.get_with_audio_length(item['item_id'])
                         cached_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
                         
-                        # Get teacher embeddings (compute if not cached)
-                        use_teacher_emb_cache = self.config.get('training', {}).get('use_teacher_embedding_cache', True)
+                        augmentation_enabled = self.config.get('training', {}).get('augmentation_enabled', True)
+                        global_mixup = self.config.get('training', {}).get('global_mixup', False)
+                        mixup_alpha = self.config.get('training', {}).get('mixup_alpha', 0.0)
+                        skip_teacher = global_mixup and mixup_alpha and mixup_alpha > 0
 
-                        if cached_segment_embeddings is not None and (use_teacher_emb_cache or self.split != 'train'):
-                            # Use cached segments and compute average on-the-fly
-                            teacher_segment_embeddings = cached_segment_embeddings
-                            teacher_embedding = self.mel_cache.get_averaged_embedding(item['item_id'])
-                        else:
-                            # Compute from audio if cache disabled or not present
-                            teacher_embedding, duration_sec, num_segments, teacher_segment_embeddings = self.clap_embedder.analyze_audio(audio_path)
-                            if teacher_embedding is None:
-                                logger.error(f"CLAP analysis failed for {item['title']}")
-                                continue
-                            # Cache only per-segment embeddings if allowed
-                            if teacher_segment_embeddings and (use_teacher_emb_cache or self.split != 'train'):
-                                self.mel_cache.put_segment_embeddings(item['item_id'], teacher_segment_embeddings)
-
-                        # Get mel spectrograms (compute if not cached)
-                        if cached_mel_result is not None:
-                            full_mel, audio_length = cached_mel_result
-                            
-                            # Extract overlapped segments from full spectrogram at runtime
-                            mel_specs = self.mel_cache.extract_overlapped_segments(
-                                full_mel,
-                                audio_length=audio_length,
-                                segment_length=self.audio_config['segment_length'],
-                                hop_length=self.audio_config['hop_length'],
-                                sample_rate=self.audio_config['sample_rate'],
-                                hop_length_stft=self.audio_config['hop_length_stft']
-                            )
-                        else:
-                            # Load audio at 48kHz
-                            import torchaudio
+                        # Ensure mel is cached (compute if needed) even when teacher cache is off
+                        if cached_mel_result is None:
                             audio_tensor, sr = torchaudio.load(audio_path)
                             if audio_tensor.shape[0] > 1:
                                 audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
                             if sr != self.audio_config['sample_rate']:
                                 resampler = torchaudio.transforms.Resample(sr, self.audio_config['sample_rate'])
                                 audio_tensor = resampler(audio_tensor)
-                            
                             audio_data = audio_tensor.squeeze(0).numpy()
                             audio_length = len(audio_data)
-                            
-                            # OPTIMIZED APPROACH: Compute FULL mel spectrogram once (SAVES SPACE!)
                             logger.debug(f"Computing full mel spectrogram for {item['title']} ({audio_length} samples)")
                             full_mel_spec = compute_full_mel_spectrogram(
                                 audio_data,
@@ -326,23 +445,92 @@ class StudentCLAPDataset:
                                 fmin=self.audio_config['fmin'],
                                 fmax=self.audio_config['fmax']
                             )
-                            
-                            # Cache the FULL mel spectrogram (not segmented - SAVES SPACE!)
                             self.mel_cache.put(item['item_id'], full_mel_spec, audio_length=audio_length)
-                            
-                            # Extract overlapped segments at runtime
-                            mel_specs = self.mel_cache.extract_overlapped_segments(
-                                full_mel_spec,
-                                audio_length=audio_length,
-                                segment_length=self.audio_config['segment_length'],
-                                hop_length=self.audio_config['hop_length'],
-                                sample_rate=self.audio_config['sample_rate'],
-                                hop_length_stft=self.audio_config['hop_length_stft']
-                            )
 
-                        # Apply augmentations to the newly computed mel_specs as well
+                        # ----------------------------------------------------------
+                        # RAW-AUDIO PATH (teacher cache off, training)
+                        # ----------------------------------------------------------
+                        if not use_teacher_emb_cache and self.split == 'train':
+                            try:
+                                raw_segments = self._load_and_segment_raw_audio(audio_path)
+                            except Exception as e:
+                                logger.warning(f"⚠️ Skipping {item['item_id']} — cannot load raw audio: {e}")
+                                continue
+
+                            # Waveform augmentation (gain + noise) on raw audio
+                            aug_log = ""
+                            if augmentation_enabled:
+                                aug_log = self._apply_waveform_augmentation(raw_segments)
+
+                            # Student mel from (augmented) raw audio
+                            mel_aug = self._compute_student_mel_from_segments(raw_segments)
+
+                            # SpecAugment on student mel only
+                            freq_masked = False
+                            time_masked = False
+                            if augmentation_enabled:
+                                mel_aug, freq_masked, time_masked = self._apply_specaugment(mel_aug)
+                                logger.info(
+                                    f"[AUGMENT-WAV] Epoch {self.epoch} (train, new): {aug_log}, "
+                                    f"freq_mask={'yes' if freq_masked else 'no'}, "
+                                    f"time_mask={'yes' if time_masked else 'no'}"
+                                )
+
+                            # Teacher embeddings from (augmented) raw audio
+                            teacher_embedding = None
+                            teacher_segment_embeddings = None
+                            if not skip_teacher:
+                                try:
+                                    teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_audio(raw_segments)
+                                    teacher_embedding = teacher_emb
+                                    teacher_segment_embeddings = teacher_seg_embs
+                                except Exception as e:
+                                    logger.error(f"[CACHE-OFF] Failed to compute teacher from audio for {item['item_id']}: {e}")
+
+                            mel_tensor = torch.from_numpy(mel_aug).float()
+                            batch.append({
+                                'item_id': item['item_id'],
+                                'title': item['title'],
+                                'author': item.get('author', 'Unknown'),
+                                'audio_path': audio_path,
+                                'audio_segments': mel_tensor,
+                                'raw_audio_segments': raw_segments,
+                                'teacher_embedding': teacher_embedding,
+                                'teacher_segment_embeddings': teacher_segment_embeddings,
+                                'num_segments': mel_aug.shape[0],
+                            })
+                            continue
+
+                        # ----------------------------------------------------------
+                        # ORIGINAL PATH (teacher cache on or validation)
+                        # ----------------------------------------------------------
+                        # Get teacher embeddings (compute if not cached)
+                        if cached_segment_embeddings is not None and (use_teacher_emb_cache or self.split != 'train'):
+                            teacher_segment_embeddings = cached_segment_embeddings
+                            teacher_embedding = self.mel_cache.get_averaged_embedding(item['item_id'])
+                        else:
+                            teacher_embedding, duration_sec, num_segments, teacher_segment_embeddings = self.clap_embedder.analyze_audio(audio_path)
+                            if teacher_embedding is None:
+                                logger.error(f"CLAP analysis failed for {item['title']}")
+                                continue
+                            if teacher_segment_embeddings and (use_teacher_emb_cache or self.split != 'train'):
+                                self.mel_cache.put_segment_embeddings(item['item_id'], teacher_segment_embeddings)
+
+                        # Get mel spectrograms from cache (guaranteed to exist now)
+                        cached_mel_result = self.mel_cache.get_with_audio_length(item['item_id'])
+                        full_mel, audio_length = cached_mel_result
+
+                        mel_specs = self.mel_cache.extract_overlapped_segments(
+                            full_mel,
+                            audio_length=audio_length,
+                            segment_length=self.audio_config['segment_length'],
+                            hop_length=self.audio_config['hop_length'],
+                            sample_rate=self.audio_config['sample_rate'],
+                            hop_length_stft=self.audio_config['hop_length_stft']
+                        )
+
+                        # Apply augmentations to mel_specs
                         mel_aug = mel_specs.copy()
-                        augmentation_enabled = self.config.get('training', {}).get('augmentation_enabled', True)
                         if self.split == 'train' and augmentation_enabled:
                             # Random gain
                             gain = np.random.uniform(0.8, 1.2)
@@ -373,25 +561,13 @@ class StudentCLAPDataset:
                                     t_width = np.random.randint(0, mel_aug.shape[1] // 10 + 1)
                                     mel_aug[:, max(0, t - t_width // 2):min(mel_aug.shape[1], t + t_width // 2)] = 0
                                 time_masked = True
-                            # Logging
-                            import logging
-                            logging.getLogger(__name__).info(
-                                f"[AUGMENT] Epoch {self.epoch} (train): gain={gain:.3f}, noise={'yes' if 'noise_level' in locals() else 'no'}, shift={'yes' if 'shift' in locals() and shift != 0 else 'no'}, freq_mask={'yes' if freq_masked else 'no'}, time_mask={'yes' if time_masked else 'no'}"
+                            logger.info(
+                                f"[AUGMENT] Epoch {self.epoch} (train): gain={gain:.3f}, "
+                                f"noise={'yes' if 'noise_level' in locals() else 'no'}, "
+                                f"shift={'yes' if 'shift' in locals() and shift != 0 else 'no'}, "
+                                f"freq_mask={'yes' if freq_masked else 'no'}, "
+                                f"time_mask={'yes' if time_masked else 'no'}"
                             )
-
-                        # If user disabled teacher embedding cache, recompute teacher embeddings from
-                        # the augmented mel so teacher receives identical augmentations as student.
-                        # Skip when global_mixup is active — training loop handles it post-mix.
-                        global_mixup = self.config.get('training', {}).get('global_mixup', False)
-                        mixup_alpha = self.config.get('training', {}).get('mixup_alpha', 0.0)
-                        skip_teacher = global_mixup and mixup_alpha and mixup_alpha > 0
-                        if not use_teacher_emb_cache and not skip_teacher:
-                            try:
-                                teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_mel(mel_aug)
-                                teacher_embedding = teacher_emb
-                                teacher_segment_embeddings = teacher_seg_embs
-                            except Exception as e:
-                                logger.error(f"[CACHE-OFF] Failed to compute teacher embeddings from mel for {item['item_id']}: {e}")
 
                         mel_tensor = torch.from_numpy(mel_aug).float()
                         batch.append({
