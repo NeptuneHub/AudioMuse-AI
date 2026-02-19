@@ -71,6 +71,19 @@ class MelSpectrogramCache:
             )
         """)
         self.conn.commit()
+
+        # Teacher mel spectrograms (different params from student: 64 bins, n_fft=1024, etc.)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS teacher_mel_spectrograms (
+                item_id TEXT PRIMARY KEY,
+                mel_shape_time INTEGER NOT NULL,
+                mel_shape_mels INTEGER NOT NULL,
+                mel_data BLOB NOT NULL,
+                audio_length INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self.conn.commit()
         
         # Create indexes for faster lookups
         self.conn.execute("""
@@ -78,6 +91,9 @@ class MelSpectrogramCache:
         """)
         self.conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_segment_item_id ON segment_embeddings(item_id)
+        """)
+        self.conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_teacher_mel_item_id ON teacher_mel_spectrograms(item_id)
         """)
         self.conn.commit()
         
@@ -245,6 +261,58 @@ class MelSpectrogramCache:
         logger.debug(f"Extracted {len(segments)} segments from full mel (shape {full_mel.shape} -> {segmented_mel.shape})")
         return segmented_mel
     
+    # ---- Teacher mel cache ----
+
+    def put_teacher_mel(self, item_id: str, mel_spectrogram: np.ndarray, audio_length: int):
+        """Store full TEACHER mel spectrogram (compressed).
+
+        Args:
+            item_id: Song item ID
+            mel_spectrogram: shape (1, n_mels, time) with teacher params (64 bins)
+            audio_length: original audio length in samples
+        """
+        if len(mel_spectrogram.shape) != 3 or mel_spectrogram.shape[0] != 1:
+            raise ValueError(f"Expected shape (1, n_mels, time), got {mel_spectrogram.shape}")
+        if mel_spectrogram.dtype != np.float32:
+            mel_spectrogram = mel_spectrogram.astype(np.float32)
+        mel_n_mels = mel_spectrogram.shape[1]
+        mel_time = mel_spectrogram.shape[2]
+        compressed = zlib.compress(mel_spectrogram.tobytes(), level=6)
+        try:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO teacher_mel_spectrograms "
+                "(item_id, mel_shape_time, mel_shape_mels, mel_data, audio_length) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (item_id, mel_time, mel_n_mels, compressed, audio_length),
+            )
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to save teacher mel for {item_id}: {e}")
+            self.conn.rollback()
+            raise
+
+    def get_teacher_mel(self, item_id: str) -> Optional[tuple]:
+        """Get teacher mel + audio_length.  Returns (mel_array, audio_length) or None."""
+        cursor = self.conn.execute(
+            "SELECT mel_shape_time, mel_shape_mels, mel_data, audio_length "
+            "FROM teacher_mel_spectrograms WHERE item_id = ?",
+            (item_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        mel_time, mel_mels, data_bytes, audio_length = row
+        decompressed = zlib.decompress(data_bytes)
+        mel = np.frombuffer(decompressed, dtype=np.float32).reshape(1, mel_mels, mel_time)
+        return (mel, audio_length)
+
+    def has_teacher_mel(self, item_id: str) -> bool:
+        cursor = self.conn.execute(
+            "SELECT 1 FROM teacher_mel_spectrograms WHERE item_id = ? LIMIT 1",
+            (item_id,),
+        )
+        return cursor.fetchone() is not None
+
     def has(self, item_id: str) -> bool:
         """
         Check if item is in cache.
@@ -439,6 +507,7 @@ class MelSpectrogramCache:
         """Clear all cached data."""
         self.conn.execute("DELETE FROM mel_spectrograms")
         self.conn.execute("DELETE FROM segment_embeddings")
+        self.conn.execute("DELETE FROM teacher_mel_spectrograms")
         self.conn.commit()
         logger.info("Cleared all mel spectrogram and embedding cache")
         

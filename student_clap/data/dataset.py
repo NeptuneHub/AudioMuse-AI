@@ -21,6 +21,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from student_clap.data.local_song_loader import LocalSongLoader
 from student_clap.data.clap_embedder import CLAPEmbedder
+from student_clap.data.clap_embedder import (
+    N_FFT as TEACHER_N_FFT, HOP_LENGTH_STFT as TEACHER_HOP_LENGTH_STFT,
+    N_MELS as TEACHER_N_MELS, F_MIN as TEACHER_F_MIN, F_MAX as TEACHER_F_MAX,
+)
 from student_clap.data.mel_cache import MelSpectrogramCache
 from student_clap.preprocessing.audio_segmentation import (
     segment_audio, SAMPLE_RATE, SEGMENT_LENGTH, HOP_LENGTH
@@ -103,56 +107,30 @@ class StudentCLAPDataset:
 
         logger.info(f"Dataset '{split}': {len(self.items)} items from {data_path}")
         
-    def _load_and_segment_raw_audio(self, audio_path: str):
-        """Load audio from file, resample to target SR, and segment.
+    def _compute_full_teacher_mel(self, audio_path: str):
+        """Compute full teacher mel spectrogram from an audio file.
 
-        Uses librosa (same as teacher CLAPEmbedder.analyze_audio) to handle
-        MP3 and other formats that soundfile alone can't decode.
-
-        Returns:
-            list of np.ndarray – each element has shape (segment_length,)
-
-        Raises:
-            RuntimeError: if the file cannot be loaded at all.
+        Uses the correct teacher CLAP mel params (64 bins, n_fft=1024,
+        hop=480, fmin=50).  Returns (mel, audio_length) where mel is
+        (1, 64, time_frames).
         """
-        target_sr = self.audio_config['sample_rate']
-
-        # Pre-check: fast reject files that soundfile considers malformed so
-        # we don't fall through to a slow audioread fallback that also fails.
         try:
             sf.info(audio_path)
         except Exception:
-            raise RuntimeError(
-                f"File not readable by soundfile (malformed or unsupported): {audio_path}"
-            )
-
-        # librosa handles MP3 via audioread fallback and resamples in one call
-        audio_data, _ = librosa.load(audio_path, sr=target_sr, mono=True)
-
-        segments = self._segment_audio(audio_data)
-        # _segment_audio returns (num_segments, segment_length)
-        if isinstance(segments, np.ndarray) and segments.ndim == 2:
-            segments = [segments[i] for i in range(segments.shape[0])]
-        elif isinstance(segments, np.ndarray) and segments.ndim == 1:
-            segments = [segments]
-        return segments
-
-    def _apply_waveform_augmentation(self, raw_segments):
-        """Apply gain and additive noise to raw audio segments (in-place).
-
-        Returns the augmentation log string.
-        """
-        gain = np.random.uniform(0.8, 1.2)
-        add_noise = np.random.rand() < 0.5
-        noise_level = np.random.uniform(0.001, 0.01) if add_noise else 0
-        for s in range(len(raw_segments)):
-            raw_segments[s] = (raw_segments[s] * gain).astype(np.float32)
-            if add_noise:
-                raw_segments[s] = (
-                    raw_segments[s]
-                    + np.random.normal(0, noise_level, raw_segments[s].shape).astype(np.float32)
-                )
-        return f"gain={gain:.3f}, noise={'yes' if add_noise else 'no'}"
+            raise RuntimeError(f"File not readable by soundfile: {audio_path}")
+        audio_data, _ = librosa.load(audio_path, sr=self.audio_config['sample_rate'], mono=True)
+        audio_length = len(audio_data)
+        from student_clap.preprocessing.mel_spectrogram import compute_mel_spectrogram
+        teacher_mel = compute_mel_spectrogram(
+            audio_data,
+            sr=self.audio_config['sample_rate'],
+            n_mels=TEACHER_N_MELS,
+            n_fft=TEACHER_N_FFT,
+            hop_length=TEACHER_HOP_LENGTH_STFT,
+            fmin=TEACHER_F_MIN,
+            fmax=TEACHER_F_MAX,
+        )
+        return teacher_mel, audio_length
 
     def _compute_student_mel_from_segments(self, raw_segments):
         """Compute student mel spectrograms from a list of raw audio segments.
@@ -169,6 +147,25 @@ class StudentCLAPDataset:
             fmin=self.audio_config['fmin'],
             fmax=self.audio_config['fmax'],
         )
+
+    def _apply_mel_augmentation(self, mel, seed=None):
+        """Apply gain + additive noise to a mel spectrogram (any shape with last 2 dims = n_mels, time).
+
+        When *seed* is provided the RNG state is re-seeded so that two calls
+        with the same seed produce identical augmentation.  This is used to
+        keep student and teacher mels in sync.
+
+        Returns (augmented_mel, aug_log_string).
+        """
+        if seed is not None:
+            np.random.seed(seed)
+        gain = np.random.uniform(0.8, 1.2)
+        mel_aug = mel * gain
+        add_noise = np.random.rand() < 0.5
+        if add_noise:
+            noise_level = np.random.uniform(0.001, 0.01)
+            mel_aug = mel_aug + np.random.normal(0, noise_level, mel_aug.shape).astype(np.float32)
+        return mel_aug, f"gain={gain:.3f}, noise={'yes' if add_noise else 'no'}"
 
     def _apply_specaugment(self, mel_aug):
         """Apply SpecAugment (time shift, freq masking, time masking) to mel.
@@ -276,56 +273,81 @@ class StudentCLAPDataset:
                 skip_teacher = global_mixup and mixup_alpha and mixup_alpha > 0
 
                 # ------------------------------------------------------------------
-                # RAW-AUDIO PATH: when teacher cache is off we must compute the
-                # teacher mel from raw audio (teacher uses different mel params).
-                # Waveform-level augmentations (gain, noise) are also applied to
-                # the raw audio so that both student and teacher see the same input.
+                # DUAL-MEL PATH: when teacher cache is off we load/compute both
+                # student and teacher mel from cache, apply the same mel-level
+                # augmentation (gain + noise) with a shared seed, then
+                # SpecAugment on the student mel only.
                 # ------------------------------------------------------------------
                 if not use_teacher_emb_cache and self.split == 'train':
-                    try:
-                        raw_segments = self._load_and_segment_raw_audio(item['file_path'])
-                    except Exception as e:
-                        logger.warning(f"⚠️ Skipping {item['item_id']} — cannot load raw audio: {e}")
-                        continue
+                    # --- teacher mel (from cache or compute & cache) ---
+                    teacher_mel_result = self.mel_cache.get_teacher_mel(item['item_id'])
+                    if teacher_mel_result is not None:
+                        teacher_full_mel, teacher_audio_length = teacher_mel_result
+                    else:
+                        try:
+                            teacher_full_mel, teacher_audio_length = self._compute_full_teacher_mel(item['file_path'])
+                            self.mel_cache.put_teacher_mel(item['item_id'], teacher_full_mel, teacher_audio_length)
+                        except Exception as e:
+                            logger.warning(f"⚠️ Skipping {item['item_id']} — cannot compute teacher mel: {e}")
+                            continue
 
-                    # Waveform augmentation (gain + noise) on raw audio
+                    # --- extract segments from both mels ---
+                    mel_specs = self.mel_cache.extract_overlapped_segments(
+                        full_mel,
+                        audio_length=audio_length,
+                        segment_length=self.audio_config['segment_length'],
+                        hop_length=self.audio_config['hop_length'],
+                        sample_rate=self.audio_config['sample_rate'],
+                        hop_length_stft=self.audio_config['hop_length_stft'],
+                    )
+                    teacher_mel_segs = self.mel_cache.extract_overlapped_segments(
+                        teacher_full_mel,
+                        audio_length=teacher_audio_length,
+                        segment_length=self.audio_config['segment_length'],
+                        hop_length=self.audio_config['hop_length'],
+                        sample_rate=self.audio_config['sample_rate'],
+                        hop_length_stft=TEACHER_HOP_LENGTH_STFT,
+                    )
+
+                    # --- mel-level augmentation (gain + noise) with shared seed ---
+                    mel_aug = mel_specs.copy()
+                    teacher_aug = teacher_mel_segs.copy()
                     aug_log = ""
                     if augmentation_enabled:
-                        aug_log = self._apply_waveform_augmentation(raw_segments)
+                        seed = np.random.randint(0, 2**31)
+                        mel_aug, aug_log = self._apply_mel_augmentation(mel_aug, seed=seed)
+                        teacher_aug, _ = self._apply_mel_augmentation(teacher_aug, seed=seed)
 
-                    # Student mel from (augmented) raw audio
-                    mel_aug = self._compute_student_mel_from_segments(raw_segments)
-
-                    # SpecAugment on student mel only
+                    # --- SpecAugment on student mel only ---
                     freq_masked = False
                     time_masked = False
                     if augmentation_enabled:
                         mel_aug, freq_masked, time_masked = self._apply_specaugment(mel_aug)
                         logger.info(
-                            f"[AUGMENT-WAV] Epoch {self.epoch} (train, cached): {aug_log}, "
+                            f"[AUGMENT-DUAL] Epoch {self.epoch} (train, cached): {aug_log}, "
                             f"freq_mask={'yes' if freq_masked else 'no'}, "
                             f"time_mask={'yes' if time_masked else 'no'}"
                         )
 
-                    # Teacher embeddings from (augmented) raw audio using correct teacher mel params
+                    # --- teacher embeddings from augmented teacher mel ---
                     teacher_embedding = None
                     teacher_segment_embeddings = None
                     if not skip_teacher:
                         try:
-                            teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_audio(raw_segments)
+                            teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_mel(teacher_aug)
                             teacher_embedding = teacher_emb
                             teacher_segment_embeddings = teacher_seg_embs
                         except Exception as e:
-                            logger.error(f"[CACHE-OFF] Failed to compute teacher from audio for {item['item_id']}: {e}")
+                            logger.error(f"[CACHE-OFF] Failed to compute teacher from mel for {item['item_id']}: {e}")
 
                     mel_tensor = torch.from_numpy(mel_aug).float()
                     batch.append({
                         'item_id': item['item_id'],
                         'title': item['title'],
                         'author': item.get('author', 'Unknown'),
-                        'audio_path': item.get('file_path', 'cached'),
+                        'audio_path': 'cached',
                         'audio_segments': mel_tensor,
-                        'raw_audio_segments': raw_segments,
+                        'teacher_mel_segments': teacher_aug,
                         'teacher_embedding': teacher_embedding,
                         'teacher_segment_embeddings': teacher_segment_embeddings,
                         'num_segments': mel_aug.shape[0],
@@ -358,42 +380,15 @@ class StudentCLAPDataset:
                     hop_length_stft=self.audio_config['hop_length_stft']
                 )
                 
-                # --- Gold standard spectrogram augmentation ---
+                # --- Spectrogram augmentation (student mel only) ---
                 mel_aug = mel_specs.copy()
                 if self.split == 'train' and augmentation_enabled:
-                    # Random gain
-                    gain = np.random.uniform(0.8, 1.2)
-                    mel_aug *= gain
-                    # Additive noise
-                    if np.random.rand() < 0.5:
-                        noise_level = np.random.uniform(0.001, 0.01)
-                        mel_aug += np.random.normal(0, noise_level, mel_aug.shape)
-                    # Time shifting
-                    if np.random.rand() < 0.5:
-                        shift = np.random.randint(-mel_aug.shape[1] // 20, mel_aug.shape[1] // 20)
-                        mel_aug = np.roll(mel_aug, shift, axis=1)
-                    # Frequency masking (SpecAugment)
-                    freq_masked = False
-                    if np.random.rand() < 0.5:
-                        num_masks = np.random.randint(1, 3)
-                        for _ in range(num_masks):
-                            f = np.random.randint(0, mel_aug.shape[0])
-                            f_width = np.random.randint(0, mel_aug.shape[0] // 8 + 1)
-                            mel_aug[max(0, f - f_width // 2):min(mel_aug.shape[0], f + f_width // 2), :] = 0
-                        freq_masked = True
-                    # Time masking (SpecAugment)
-                    time_masked = False
-                    if np.random.rand() < 0.5:
-                        num_masks = np.random.randint(1, 3)
-                        for _ in range(num_masks):
-                            t = np.random.randint(0, mel_aug.shape[1])
-                            t_width = np.random.randint(0, mel_aug.shape[1] // 10 + 1)
-                            mel_aug[:, max(0, t - t_width // 2):min(mel_aug.shape[1], t + t_width // 2)] = 0
-                        time_masked = True
-                    # Logging
-                    import logging
-                    logging.getLogger(__name__).info(
-                        f"[AUGMENT] Epoch {self.epoch} (train): gain={gain:.3f}, noise={'yes' if 'noise_level' in locals() else 'no'}, shift={'yes' if 'shift' in locals() and shift != 0 else 'no'}, freq_mask={'yes' if freq_masked else 'no'}, time_mask={'yes' if time_masked else 'no'}"
+                    mel_aug, aug_log = self._apply_mel_augmentation(mel_aug)
+                    mel_aug, freq_masked, time_masked = self._apply_specaugment(mel_aug)
+                    logger.info(
+                        f"[AUGMENT] Epoch {self.epoch} (train, cached-emb): {aug_log}, "
+                        f"freq_mask={'yes' if freq_masked else 'no'}, "
+                        f"time_mask={'yes' if time_masked else 'no'}"
                     )
                 mel_tensor = torch.from_numpy(mel_aug).float()
 
@@ -448,22 +443,54 @@ class StudentCLAPDataset:
                             self.mel_cache.put(item['item_id'], full_mel_spec, audio_length=audio_length)
 
                         # ----------------------------------------------------------
-                        # RAW-AUDIO PATH (teacher cache off, training)
+                        # DUAL-MEL PATH (teacher cache off, training)
                         # ----------------------------------------------------------
                         if not use_teacher_emb_cache and self.split == 'train':
-                            try:
-                                raw_segments = self._load_and_segment_raw_audio(audio_path)
-                            except Exception as e:
-                                logger.warning(f"⚠️ Skipping {item['item_id']} — cannot load raw audio: {e}")
+                            # ensure student mel available
+                            cached_mel_result = self.mel_cache.get_with_audio_length(item['item_id'])
+                            if cached_mel_result is None:
+                                logger.warning(f"⚠️ Skipping {item['item_id']} — student mel not cached")
                                 continue
+                            full_mel, audio_length = cached_mel_result
 
-                            # Waveform augmentation (gain + noise) on raw audio
+                            # teacher mel (from cache or compute & cache)
+                            teacher_mel_result = self.mel_cache.get_teacher_mel(item['item_id'])
+                            if teacher_mel_result is not None:
+                                teacher_full_mel, teacher_audio_length = teacher_mel_result
+                            else:
+                                try:
+                                    teacher_full_mel, teacher_audio_length = self._compute_full_teacher_mel(audio_path)
+                                    self.mel_cache.put_teacher_mel(item['item_id'], teacher_full_mel, teacher_audio_length)
+                                except Exception as e:
+                                    logger.warning(f"⚠️ Skipping {item['item_id']} — cannot compute teacher mel: {e}")
+                                    continue
+
+                            # extract segments from both mels
+                            mel_specs = self.mel_cache.extract_overlapped_segments(
+                                full_mel,
+                                audio_length=audio_length,
+                                segment_length=self.audio_config['segment_length'],
+                                hop_length=self.audio_config['hop_length'],
+                                sample_rate=self.audio_config['sample_rate'],
+                                hop_length_stft=self.audio_config['hop_length_stft'],
+                            )
+                            teacher_mel_segs = self.mel_cache.extract_overlapped_segments(
+                                teacher_full_mel,
+                                audio_length=teacher_audio_length,
+                                segment_length=self.audio_config['segment_length'],
+                                hop_length=self.audio_config['hop_length'],
+                                sample_rate=self.audio_config['sample_rate'],
+                                hop_length_stft=TEACHER_HOP_LENGTH_STFT,
+                            )
+
+                            # mel-level augmentation (gain + noise) with shared seed
+                            mel_aug = mel_specs.copy()
+                            teacher_aug = teacher_mel_segs.copy()
                             aug_log = ""
                             if augmentation_enabled:
-                                aug_log = self._apply_waveform_augmentation(raw_segments)
-
-                            # Student mel from (augmented) raw audio
-                            mel_aug = self._compute_student_mel_from_segments(raw_segments)
+                                seed = np.random.randint(0, 2**31)
+                                mel_aug, aug_log = self._apply_mel_augmentation(mel_aug, seed=seed)
+                                teacher_aug, _ = self._apply_mel_augmentation(teacher_aug, seed=seed)
 
                             # SpecAugment on student mel only
                             freq_masked = False
@@ -471,21 +498,21 @@ class StudentCLAPDataset:
                             if augmentation_enabled:
                                 mel_aug, freq_masked, time_masked = self._apply_specaugment(mel_aug)
                                 logger.info(
-                                    f"[AUGMENT-WAV] Epoch {self.epoch} (train, new): {aug_log}, "
+                                    f"[AUGMENT-DUAL] Epoch {self.epoch} (train, new): {aug_log}, "
                                     f"freq_mask={'yes' if freq_masked else 'no'}, "
                                     f"time_mask={'yes' if time_masked else 'no'}"
                                 )
 
-                            # Teacher embeddings from (augmented) raw audio
+                            # teacher embeddings from augmented teacher mel
                             teacher_embedding = None
                             teacher_segment_embeddings = None
                             if not skip_teacher:
                                 try:
-                                    teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_audio(raw_segments)
+                                    teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_mel(teacher_aug)
                                     teacher_embedding = teacher_emb
                                     teacher_segment_embeddings = teacher_seg_embs
                                 except Exception as e:
-                                    logger.error(f"[CACHE-OFF] Failed to compute teacher from audio for {item['item_id']}: {e}")
+                                    logger.error(f"[CACHE-OFF] Failed to compute teacher from mel for {item['item_id']}: {e}")
 
                             mel_tensor = torch.from_numpy(mel_aug).float()
                             batch.append({
@@ -494,7 +521,7 @@ class StudentCLAPDataset:
                                 'author': item.get('author', 'Unknown'),
                                 'audio_path': audio_path,
                                 'audio_segments': mel_tensor,
-                                'raw_audio_segments': raw_segments,
+                                'teacher_mel_segments': teacher_aug,
                                 'teacher_embedding': teacher_embedding,
                                 'teacher_segment_embeddings': teacher_segment_embeddings,
                                 'num_segments': mel_aug.shape[0],
@@ -529,42 +556,13 @@ class StudentCLAPDataset:
                             hop_length_stft=self.audio_config['hop_length_stft']
                         )
 
-                        # Apply augmentations to mel_specs
+                        # Apply augmentations to mel_specs (student mel only)
                         mel_aug = mel_specs.copy()
                         if self.split == 'train' and augmentation_enabled:
-                            # Random gain
-                            gain = np.random.uniform(0.8, 1.2)
-                            mel_aug *= gain
-                            # Additive noise
-                            if np.random.rand() < 0.5:
-                                noise_level = np.random.uniform(0.001, 0.01)
-                                mel_aug += np.random.normal(0, noise_level, mel_aug.shape)
-                            # Time shifting
-                            if np.random.rand() < 0.5:
-                                shift = np.random.randint(-mel_aug.shape[1] // 20, mel_aug.shape[1] // 20)
-                                mel_aug = np.roll(mel_aug, shift, axis=1)
-                            # Frequency masking (SpecAugment)
-                            freq_masked = False
-                            if np.random.rand() < 0.5:
-                                num_masks = np.random.randint(1, 3)
-                                for _ in range(num_masks):
-                                    f = np.random.randint(0, mel_aug.shape[0])
-                                    f_width = np.random.randint(0, mel_aug.shape[0] // 8 + 1)
-                                    mel_aug[max(0, f - f_width // 2):min(mel_aug.shape[0], f + f_width // 2), :] = 0
-                                freq_masked = True
-                            # Time masking (SpecAugment)
-                            time_masked = False
-                            if np.random.rand() < 0.5:
-                                num_masks = np.random.randint(1, 3)
-                                for _ in range(num_masks):
-                                    t = np.random.randint(0, mel_aug.shape[1])
-                                    t_width = np.random.randint(0, mel_aug.shape[1] // 10 + 1)
-                                    mel_aug[:, max(0, t - t_width // 2):min(mel_aug.shape[1], t + t_width // 2)] = 0
-                                time_masked = True
+                            mel_aug, aug_log = self._apply_mel_augmentation(mel_aug)
+                            mel_aug, freq_masked, time_masked = self._apply_specaugment(mel_aug)
                             logger.info(
-                                f"[AUGMENT] Epoch {self.epoch} (train): gain={gain:.3f}, "
-                                f"noise={'yes' if 'noise_level' in locals() else 'no'}, "
-                                f"shift={'yes' if 'shift' in locals() and shift != 0 else 'no'}, "
+                                f"[AUGMENT] Epoch {self.epoch} (train, new-emb): {aug_log}, "
                                 f"freq_mask={'yes' if freq_masked else 'no'}, "
                                 f"time_mask={'yes' if time_masked else 'no'}"
                             )
