@@ -63,47 +63,32 @@
 
         <div class="param-group">
             <div class="autocomplete-container">
-                <label for="start_artist_search" class="label-with-tooltip">
-                    Start Song Artist:
+                <label for="start_search" class="label-with-tooltip">
+                    Start Song, Artist or Album name:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Filter by artist to narrow down your song search. Start typing to see matching artists from your library.</span>
+                        <span class="tooltip-text">Type the song, artist or album you want to find similar tracks to. As you type, suggestions will appear below</span>
                     </span>
                 </label>
-                <input type="text" id="start_artist_search" name="start_artist_search" placeholder="Start typing artist name..." autocomplete="off">
-            </div>
-
-            <div class="autocomplete-container">
-                <label for="start_title_search" class="label-with-tooltip">
-                    Start Song Title:
-                    <span class="info-tooltip" tabindex="0">
-                        <span class="info-icon"></span>
-                        <span class="tooltip-text">The first song of your musical journey. Type to search your library. The path will smoothly transition from this song to your end song.</span>
-                    </span>
-                </label>
-                <input type="text" id="start_title_search" name="start_title_search" placeholder="Start typing track title..." autocomplete="off">
+                <input type="text" id="start_search" name="start_search" placeholder="Start typing..." autocomplete="off">
+                <div id="start_title_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                <div id="start_artist_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                <div id="start_album_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
                 <div id="start-autocomplete-results" class="autocomplete-results hidden"></div>
             </div>
 
             <div class="autocomplete-container">
-                <label for="end_artist_search" class="label-with-tooltip">
-                    End Song Artist:
+                <label for="end_search" class="label-with-tooltip">
+                    End Song, Artist or Album name:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Filter by artist to narrow down your destination song search. Start typing to see matching artists from your library.</span>
+                        <span class="tooltip-text">Type the song, artist or album you want to find similar tracks to. As you type, suggestions will appear below</span>
                     </span>
                 </label>
-                <input type="text" id="end_artist_search" name="end_artist_search" placeholder="Start typing artist name..." autocomplete="off">
-            </div>
-            <div class="autocomplete-container">
-                <label for="end_title_search" class="label-with-tooltip">
-                    End Song Title:
-                    <span class="info-tooltip" tabindex="0">
-                        <span class="info-icon"></span>
-                        <span class="tooltip-text">The destination song of your journey. The algorithm finds the smoothest sonic path between your start and end songs, creating a seamless listening experience.</span>
-                    </span>
-                </label>
-                <input type="text" id="end_title_search" name="end_title_search" placeholder="Start typing track title..." autocomplete="off">
+                <input type="text" id="end_search" name="end_search" placeholder="Start typing..." autocomplete="off">
+                <div id="end_title_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                <div id="end_artist_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                <div id="end_album_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
                 <div id="end-autocomplete-results" class="autocomplete-results hidden"></div>
             </div>
 
@@ -203,12 +188,16 @@
 
             const pathForm = document.getElementById('path-form');
             const playlistForm = document.getElementById('playlist-form');
-            const startArtistInput = document.getElementById('start_artist_search');
-            const startTitleInput = document.getElementById('start_title_search');
-            const endArtistInput = document.getElementById('end_artist_search');
-            const endTitleInput = document.getElementById('end_title_search');
+            const startSearchInput = document.getElementById('start_search');
+            const endSearchInput = document.getElementById('end_search');
             const startSongIdInput = document.getElementById('start_song_id');
             const endSongIdInput = document.getElementById('end_song_id');
+            const startTitleDiv = document.getElementById('start_title_display');
+            const startArtistDiv = document.getElementById('start_artist_display');
+            const startAlbumDiv = document.getElementById('start_album_display');
+            const endTitleDiv = document.getElementById('end_title_display');
+            const endArtistDiv = document.getElementById('end_artist_display');
+            const endAlbumDiv = document.getElementById('end_album_display');
             const startAutocompleteResults = document.getElementById('start-autocomplete-results');
             const endAutocompleteResults = document.getElementById('end-autocomplete-results');
             const resultsContainer = document.getElementById('results-container');
@@ -223,16 +212,15 @@
             const viewRangeBtn = document.getElementById('view-range-btn');
             const viewDiffBtn = document.getElementById('view-diff-btn');
 
-            const setupAutocomplete = (artistInputEl, titleInputEl, resultsEl, idEl) => {
+            const setupAutocomplete = (searchInputEl, resultsEl, idEl, displayTitleEl, displayArtistEl, displayAlbumEl) => {
                 const handleSearch = async () => {
-                    const artistQuery = artistInputEl.value.trim();
-                    const titleQuery = titleInputEl.value.trim();
-                    if (artistQuery.length < 3 && titleQuery.length < 3) {
+                    const searchQuery = searchInputEl.value.trim();
+                    if (searchQuery.length < 3) {
                         resultsEl.classList.add('hidden');
                         return;
                     }
                     try {
-                        const params = new URLSearchParams({ artist: artistQuery, title: titleQuery });
+                        const params = new URLSearchParams({ search_query: searchQuery });
                         const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
                         const tracks = await response.json();
                         resultsEl.innerHTML = '';
@@ -244,8 +232,9 @@
                                 itemDiv.className = 'autocomplete-item';
                                 itemDiv.innerHTML = `<div class="title">${track.title}</div><div class="artist">${track.author}</div><div class="album">${track.album ? track.album : ''}</div>`;
                                 itemDiv.addEventListener('click', () => {
-                                    artistInputEl.value = track.author;
-                                    titleInputEl.value = track.title;
+                                    displayTitleEl.textContent = 'Title: ' + track.title;
+                                    displayArtistEl.textContent = 'Artist: ' + track.author;
+                                    displayAlbumEl.textContent = 'Album: ' + (track.album || '');
                                     idEl.value = track.item_id;
                                     resultsEl.classList.add('hidden');
                                 });
@@ -258,16 +247,11 @@
                         resultsEl.classList.add('hidden');
                     }
                 };
-                const debouncedSearch = () => {
-                    clearTimeout(searchTimeout);
-                    searchTimeout = setTimeout(handleSearch, 300);
-                };
-                artistInputEl.addEventListener('input', debouncedSearch);
-                titleInputEl.addEventListener('input', debouncedSearch);
+                searchInputEl.addEventListener('input', handleSearch);
             };
 
-            setupAutocomplete(startArtistInput, startTitleInput, startAutocompleteResults, startSongIdInput);
-            setupAutocomplete(endArtistInput, endTitleInput, endAutocompleteResults, endSongIdInput);
+            setupAutocomplete(startSearchInput, startAutocompleteResults, startSongIdInput, startTitleDiv, startArtistDiv, startAlbumDiv);
+            setupAutocomplete(endSearchInput, endAutocompleteResults, endSongIdInput, endTitleDiv, endArtistDiv, endAlbumDiv);
 
             document.addEventListener('click', (e) => {
                 if (!e.target.closest('.autocomplete-container')) {
@@ -797,7 +781,7 @@
 
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
-                    document.getElementById('playlist_name').value = `Path: ${startTitleInput.value} to ${endTitleInput.value}`;
+                    document.getElementById('playlist_name').value = `Path: ${startTitleDiv.value} to ${endTitleDiv.value}`;
                 } catch (error) {
                     statusDiv.textContent = `Error: ${error.message}`;
                     statusDiv.className = 'status-error';

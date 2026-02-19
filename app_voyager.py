@@ -6,7 +6,7 @@ import logging
 from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT
 from tasks.voyager_manager import (
     find_nearest_neighbors_by_id, 
-  get_max_distance_for_id,
+    get_max_distance_for_id,
     create_playlist_from_ids,
     search_tracks_unified,
     get_item_id_by_title_and_artist
