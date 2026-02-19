@@ -10,7 +10,8 @@ import sys
 import logging
 import numpy as np
 import torch
-import torchaudio
+# torchaudio removed — unified on librosa for audio loading to avoid
+# resampler discrepancies between torchaudio and librosa.
 import librosa
 import soundfile as sf
 from typing import Dict, List, Optional, Tuple
@@ -107,20 +108,47 @@ class StudentCLAPDataset:
             logger.info(f"📦 Found existing mel cache: {cached_count} songs, {cache_size_gb:.1f}GB")
 
         logger.info(f"Dataset '{split}': {len(self.items)} items from {data_path}")
-        
-    def _compute_full_teacher_mel(self, audio_path: str):
-        """Compute full teacher mel spectrogram from an audio file.
 
-        Uses the correct teacher CLAP mel params (64 bins, n_fft=1024,
-        hop=480, fmin=50).  Returns (mel, audio_length) where mel is
-        (1, 64, time_frames).
+    # ------------------------------------------------------------------
+    # Audio I/O — single loader used by both student and teacher paths.
+    # Using librosa exclusively avoids sample-count discrepancies that
+    # arise when mixing torchaudio and librosa resamplers.
+    # ------------------------------------------------------------------
+
+    def _load_audio(self, audio_path: str) -> Tuple[np.ndarray, int]:
+        """Load and resample audio to the configured sample rate.
+
+        Returns:
+            (audio_data, audio_length) where audio_data is a 1-D float32
+            numpy array at ``self.audio_config['sample_rate']``.
         """
         try:
             sf.info(audio_path)
         except Exception:
             raise RuntimeError(f"File not readable by soundfile: {audio_path}")
-        audio_data, _ = librosa.load(audio_path, sr=self.audio_config['sample_rate'], mono=True)
-        audio_length = len(audio_data)
+        audio_data, _ = librosa.load(
+            audio_path, sr=self.audio_config['sample_rate'], mono=True
+        )
+        return audio_data, len(audio_data)
+
+    def _compute_full_teacher_mel(
+        self,
+        audio_path: str,
+        audio_data: Optional[np.ndarray] = None,
+        audio_length: Optional[int] = None,
+    ):
+        """Compute full teacher mel spectrogram.
+
+        If *audio_data* / *audio_length* are provided the file is NOT
+        re-loaded from disk — the caller already loaded it (single-load
+        optimisation).
+
+        Uses the correct teacher CLAP mel params (64 bins, n_fft=1024,
+        hop=480, fmin=50).  Returns (mel, audio_length) where mel is
+        (1, 64, time_frames).
+        """
+        if audio_data is None:
+            audio_data, audio_length = self._load_audio(audio_path)
         from student_clap.preprocessing.mel_spectrogram import compute_mel_spectrogram
         teacher_mel = compute_mel_spectrogram(
             audio_data,
@@ -313,6 +341,20 @@ class StudentCLAPDataset:
                     # Free full mel arrays — only segmented copies are needed from here
                     del full_mel, teacher_full_mel
 
+                    # Defence-in-depth: ensure student & teacher have the
+                    # same segment count.  Should always match now that both
+                    # mels are computed from the same librosa-loaded audio,
+                    # but guard against edge cases (e.g. different n_fft).
+                    if mel_specs.shape[0] != teacher_mel_segs.shape[0]:
+                        min_segs = min(mel_specs.shape[0], teacher_mel_segs.shape[0])
+                        logger.warning(
+                            f"⚠️ Segment count mismatch for {item['item_id']}: "
+                            f"student={mel_specs.shape[0]}, teacher={teacher_mel_segs.shape[0]}, "
+                            f"truncating to {min_segs}"
+                        )
+                        mel_specs = mel_specs[:min_segs]
+                        teacher_mel_segs = teacher_mel_segs[:min_segs]
+
                     # --- mel-level augmentation (gain + noise) with shared seed ---
                     # _apply_mel_augmentation returns a new array (mel * gain),
                     # so no .copy() needed — originals are not modified.
@@ -430,19 +472,17 @@ class StudentCLAPDataset:
                         mixup_alpha = self.config.get('training', {}).get('mixup_alpha', 0.0)
                         skip_teacher = global_mixup and mixup_alpha and mixup_alpha > 0
 
-                        # Ensure mel is cached (compute if needed) even when teacher cache is off
+                        # Load audio ONCE (librosa) — used for both student
+                        # and teacher mel if they need computing.
+                        audio_data_loaded = None
+                        audio_length_loaded = None
+
+                        # Ensure student mel is cached (compute if needed)
                         if cached_mel_result is None:
-                            audio_tensor, sr = torchaudio.load(audio_path)
-                            if audio_tensor.shape[0] > 1:
-                                audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
-                            if sr != self.audio_config['sample_rate']:
-                                resampler = torchaudio.transforms.Resample(sr, self.audio_config['sample_rate'])
-                                audio_tensor = resampler(audio_tensor)
-                            audio_data = audio_tensor.squeeze(0).numpy()
-                            audio_length = len(audio_data)
-                            logger.debug(f"Computing full mel spectrogram for {item['title']} ({audio_length} samples)")
+                            audio_data_loaded, audio_length_loaded = self._load_audio(audio_path)
+                            logger.debug(f"Computing full mel spectrogram for {item['title']} ({audio_length_loaded} samples)")
                             full_mel_spec = compute_full_mel_spectrogram(
-                                audio_data,
+                                audio_data_loaded,
                                 sr=self.audio_config['sample_rate'],
                                 n_mels=self.audio_config['n_mels'],
                                 n_fft=self.audio_config['n_fft'],
@@ -450,7 +490,7 @@ class StudentCLAPDataset:
                                 fmin=self.audio_config['fmin'],
                                 fmax=self.audio_config['fmax']
                             )
-                            self.mel_cache.put(item['item_id'], full_mel_spec, audio_length=audio_length)
+                            self.mel_cache.put(item['item_id'], full_mel_spec, audio_length=audio_length_loaded)
 
                         # ----------------------------------------------------------
                         # DUAL-MEL PATH (teacher cache off, training)
@@ -469,8 +509,14 @@ class StudentCLAPDataset:
                                 teacher_full_mel, teacher_audio_length = teacher_mel_result
                             else:
                                 try:
-                                    teacher_full_mel, teacher_audio_length = self._compute_full_teacher_mel(audio_path)
+                                    teacher_full_mel, teacher_audio_length = self._compute_full_teacher_mel(
+                                        audio_path,
+                                        audio_data=audio_data_loaded,
+                                        audio_length=audio_length_loaded,
+                                    )
                                     self.mel_cache.put_teacher_mel(item['item_id'], teacher_full_mel, teacher_audio_length)
+                                    # Audio data no longer needed — both mels computed
+                                    del audio_data_loaded
                                 except Exception as e:
                                     logger.warning(f"⚠️ Skipping {item['item_id']} — cannot compute teacher mel: {e}")
                                     continue
@@ -495,6 +541,17 @@ class StudentCLAPDataset:
 
                             # Free full mel arrays — only segmented copies are needed from here
                             del full_mel, teacher_full_mel
+
+                            # Defence-in-depth: ensure matching segment counts.
+                            if mel_specs.shape[0] != teacher_mel_segs.shape[0]:
+                                min_segs = min(mel_specs.shape[0], teacher_mel_segs.shape[0])
+                                logger.warning(
+                                    f"⚠️ Segment count mismatch for {item['item_id']}: "
+                                    f"student={mel_specs.shape[0]}, teacher={teacher_mel_segs.shape[0]}, "
+                                    f"truncating to {min_segs}"
+                                )
+                                mel_specs = mel_specs[:min_segs]
+                                teacher_mel_segs = teacher_mel_segs[:min_segs]
 
                             # mel-level augmentation (gain + noise) with shared seed
                             # _apply_mel_augmentation returns a new array (mel * gain),

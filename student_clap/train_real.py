@@ -387,6 +387,24 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                         if len(teacher_mel_parts) > 0:
                             tmel_stack = np.concatenate(teacher_mel_parts, axis=0)  # (total, 1, 64, T)
                             del teacher_mel_parts
+                            # Safety: truncate to match student segment count
+                            # (torchaudio vs librosa resamplers may differ by ±1 segment)
+                            if tmel_stack.shape[0] != total_segments:
+                                min_seg = min(tmel_stack.shape[0], total_segments)
+                                logger.warning(
+                                    f"[GLOBAL MIXUP] Segment count mismatch: "
+                                    f"student={total_segments}, teacher={tmel_stack.shape[0]}, "
+                                    f"truncating to {min_seg}"
+                                )
+                                tmel_stack = tmel_stack[:min_seg]
+                                mixed_mel = mixed_mel[:min_seg]
+                                perm = perm[perm < min_seg]  # keep only valid indices
+                                # re-do permutation if truncation broke it
+                                if len(perm) != min_seg:
+                                    perm = np.random.permutation(min_seg)
+                                    if np.any(perm == np.arange(min_seg)):
+                                        perm = np.roll(perm, 1)
+                                total_segments = min_seg
                             mixed_tmel = (lam * tmel_stack + (1.0 - lam) * tmel_stack[perm]).astype(np.float32)
                             del tmel_stack
                             if mixed_tmel.ndim == 3:
