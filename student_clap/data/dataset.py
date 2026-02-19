@@ -311,13 +311,16 @@ class StudentCLAPDataset:
                     )
 
                     # --- mel-level augmentation (gain + noise) with shared seed ---
-                    mel_aug = mel_specs.copy()
-                    teacher_aug = teacher_mel_segs.copy()
+                    # _apply_mel_augmentation returns a new array (mel * gain),
+                    # so no .copy() needed — originals are not modified.
                     aug_log = ""
                     if augmentation_enabled:
                         seed = np.random.randint(0, 2**31)
-                        mel_aug, aug_log = self._apply_mel_augmentation(mel_aug, seed=seed)
-                        teacher_aug, _ = self._apply_mel_augmentation(teacher_aug, seed=seed)
+                        mel_aug, aug_log = self._apply_mel_augmentation(mel_specs, seed=seed)
+                        teacher_aug, _ = self._apply_mel_augmentation(teacher_mel_segs, seed=seed)
+                    else:
+                        mel_aug = mel_specs
+                        teacher_aug = teacher_mel_segs
 
                     # --- SpecAugment on student mel only ---
                     freq_masked = False
@@ -382,15 +385,17 @@ class StudentCLAPDataset:
                 )
                 
                 # --- Spectrogram augmentation (student mel only) ---
-                mel_aug = mel_specs.copy()
+                # _apply_mel_augmentation returns a new array, no .copy() needed.
                 if self.split == 'train' and augmentation_enabled:
-                    mel_aug, aug_log = self._apply_mel_augmentation(mel_aug)
+                    mel_aug, aug_log = self._apply_mel_augmentation(mel_specs)
                     mel_aug, freq_masked, time_masked = self._apply_specaugment(mel_aug)
                     logger.info(
                         f"[AUGMENT] Epoch {self.epoch} (train, cached-emb): {aug_log}, "
                         f"freq_mask={'yes' if freq_masked else 'no'}, "
                         f"time_mask={'yes' if time_masked else 'no'}"
                     )
+                else:
+                    mel_aug = mel_specs
                 mel_tensor = torch.from_numpy(mel_aug).float()
 
                 batch.append({
@@ -485,13 +490,16 @@ class StudentCLAPDataset:
                             )
 
                             # mel-level augmentation (gain + noise) with shared seed
-                            mel_aug = mel_specs.copy()
-                            teacher_aug = teacher_mel_segs.copy()
+                            # _apply_mel_augmentation returns a new array (mel * gain),
+                            # so no .copy() needed — originals are not modified.
                             aug_log = ""
                             if augmentation_enabled:
                                 seed = np.random.randint(0, 2**31)
-                                mel_aug, aug_log = self._apply_mel_augmentation(mel_aug, seed=seed)
-                                teacher_aug, _ = self._apply_mel_augmentation(teacher_aug, seed=seed)
+                                mel_aug, aug_log = self._apply_mel_augmentation(mel_specs, seed=seed)
+                                teacher_aug, _ = self._apply_mel_augmentation(teacher_mel_segs, seed=seed)
+                            else:
+                                mel_aug = mel_specs
+                                teacher_aug = teacher_mel_segs
 
                             # SpecAugment on student mel only
                             freq_masked = False
@@ -558,15 +566,17 @@ class StudentCLAPDataset:
                         )
 
                         # Apply augmentations to mel_specs (student mel only)
-                        mel_aug = mel_specs.copy()
+                        # _apply_mel_augmentation returns a new array, no .copy() needed.
                         if self.split == 'train' and augmentation_enabled:
-                            mel_aug, aug_log = self._apply_mel_augmentation(mel_aug)
+                            mel_aug, aug_log = self._apply_mel_augmentation(mel_specs)
                             mel_aug, freq_masked, time_masked = self._apply_specaugment(mel_aug)
                             logger.info(
                                 f"[AUGMENT] Epoch {self.epoch} (train, new-emb): {aug_log}, "
                                 f"freq_mask={'yes' if freq_masked else 'no'}, "
                                 f"time_mask={'yes' if time_masked else 'no'}"
                             )
+                        else:
+                            mel_aug = mel_specs
 
                         mel_tensor = torch.from_numpy(mel_aug).float()
                         batch.append({
