@@ -70,8 +70,9 @@ class StudentCLAPDataset:
         # Ensure teacher uses the same `segment_batch_size` configured for the student.
         teacher_model_path = self.paths_config['teacher_model']
         seg_bs = self.config.get('model', {}).get('segment_batch_size', 1)
-        logger.info(f"🔧 Teacher segment_batch_size: {seg_bs}")
-        self.clap_embedder = CLAPEmbedder(teacher_model_path, segment_batch_size=seg_bs)
+        use_amp = self.config.get('training', {}).get('use_amp', False)
+        logger.info(f"🔧 Teacher segment_batch_size: {seg_bs}, use_amp: {use_amp}")
+        self.clap_embedder = CLAPEmbedder(teacher_model_path, segment_batch_size=seg_bs, use_amp=use_amp)
 
         # Initialize mel spectrogram cache (stores both mel specs and embeddings)
         mel_cache_path = self.paths_config.get('mel_cache', './cache/mel_spectrograms.db')

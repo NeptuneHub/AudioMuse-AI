@@ -38,14 +38,16 @@ class CLAPEmbedder:
     This class also supports batched segment inference via `segment_batch_size`.
     """
     
-    def __init__(self, model_path: str, segment_batch_size: int = 1):
+    def __init__(self, model_path: str, segment_batch_size: int = 1, use_amp: bool = False):
         """
         Initialize CLAP embedder.
 
         Args:
             model_path: Path to `clap_audio_model.onnx` or `clap_audio_model.pt`
             segment_batch_size: number of segments to run in a single forward pass
+            use_amp: if True, use BF16 autocast on CUDA for inference
         """
+        self.use_amp = use_amp
         if not os.path.exists(model_path):
             raise RuntimeError(f"CLAP model not found: {model_path}")
 
@@ -332,10 +334,13 @@ class CLAPEmbedder:
                 else:
                     # PyTorch backend
                     import torch
-                    batch_tensor = torch.from_numpy(batch_np).float().to(getattr(self, '_device', torch.device('cpu')))
-                    with torch.no_grad():
+                    device = getattr(self, '_device', torch.device('cpu'))
+                    batch_tensor = torch.from_numpy(batch_np).float().to(device)
+                    amp_enabled = self.use_amp and device.type == 'cuda'
+                    amp_device = device.type if device.type == 'cuda' else 'cpu'
+                    with torch.no_grad(), torch.amp.autocast(device_type=amp_device, dtype=torch.bfloat16, enabled=amp_enabled):
                         out = self.audio_wrapper(batch_tensor)
-                    out_np = out.cpu().numpy()
+                    out_np = out.float().cpu().numpy()
                     for emb in out_np:
                         segment_embeddings.append(emb.astype(np.float32))
 
