@@ -117,6 +117,10 @@ class CLAPEmbedder:
             self.audio_wrapper = AudioCLAPWrapper(clap)
             self.audio_wrapper.eval()
 
+            # Free the full CLAP module (text branch etc.) — only audio_branch
+            # and audio_projection are kept alive via audio_wrapper.
+            del clap, state
+
             # Prefer CUDA -> MPS (macOS) -> CPU for PyTorch backend
             import torch
             if torch.cuda.is_available():
@@ -285,9 +289,9 @@ class CLAPEmbedder:
                 return None, None
 
             # Normalize input shape to (num_segments, n_mels, time)
-            ms = np.array(mel_segments)
+            ms = np.asarray(mel_segments)
             if ms.ndim == 4 and ms.shape[1] == 1:
-                ms = ms[:, 0, :, :]  # (num_segments, n_mels, time)
+                ms = ms[:, 0, :, :]  # (num_segments, n_mels, time) — view, no copy
             elif ms.ndim == 3:
                 pass
             else:
@@ -310,14 +314,24 @@ class CLAPEmbedder:
                 return res
 
             # Prepare batched inputs for inference: (num_segments, 1, time, n_mels)
-            batched_mels = []
-            for seg in ms:
-                seg_resampled = resample_mel_frequency(seg, new_n_mels=N_MELS)
-                mel_input = seg_resampled.T.astype(np.float32)  # (time, n_mels)
-                batched_mels.append(mel_input)
+            if ms.shape[1] == N_MELS:
+                # Fast path (common): no resampling needed — vectorized transpose
+                # ms is (N, n_mels, T) → transpose to (N, T, n_mels) → add channel
+                batched = ms.transpose(0, 2, 1).astype(np.float32)  # contiguous copy
+                batched = batched[:, np.newaxis, :, :]  # (N, 1, T, n_mels) — view
+            else:
+                # Slow path: per-segment resampling required
+                batched_mels = []
+                for seg in ms:
+                    seg_resampled = resample_mel_frequency(seg, new_n_mels=N_MELS)
+                    mel_input = seg_resampled.T.astype(np.float32)  # (time, n_mels)
+                    batched_mels.append(mel_input)
+                batched = np.stack(batched_mels, axis=0)  # (num_segments, time, n_mels)
+                batched = batched[:, np.newaxis, :, :]   # (num_segments, 1, time, n_mels)
+                del batched_mels
 
-            batched = np.stack(batched_mels, axis=0)  # (num_segments, time, n_mels)
-            batched = batched[:, np.newaxis, :, :]   # (num_segments, 1, time, n_mels)
+            # Free ms — no longer needed after batching
+            del ms
 
             # Run inference in chunks according to self.segment_batch_size
             for start in range(0, num_segments, self.segment_batch_size):

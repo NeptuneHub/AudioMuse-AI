@@ -310,6 +310,9 @@ class StudentCLAPDataset:
                         hop_length_stft=TEACHER_HOP_LENGTH_STFT,
                     )
 
+                    # Free full mel arrays — only segmented copies are needed from here
+                    del full_mel, teacher_full_mel
+
                     # --- mel-level augmentation (gain + noise) with shared seed ---
                     # _apply_mel_augmentation returns a new array (mel * gain),
                     # so no .copy() needed — originals are not modified.
@@ -383,6 +386,7 @@ class StudentCLAPDataset:
                     sample_rate=self.audio_config['sample_rate'],
                     hop_length_stft=self.audio_config['hop_length_stft']
                 )
+                del full_mel  # Free decompressed full mel — only segments needed
                 
                 # --- Spectrogram augmentation (student mel only) ---
                 # _apply_mel_augmentation returns a new array, no .copy() needed.
@@ -489,6 +493,9 @@ class StudentCLAPDataset:
                                 hop_length_stft=TEACHER_HOP_LENGTH_STFT,
                             )
 
+                            # Free full mel arrays — only segmented copies are needed from here
+                            del full_mel, teacher_full_mel
+
                             # mel-level augmentation (gain + noise) with shared seed
                             # _apply_mel_augmentation returns a new array (mel * gain),
                             # so no .copy() needed — originals are not modified.
@@ -564,6 +571,7 @@ class StudentCLAPDataset:
                             sample_rate=self.audio_config['sample_rate'],
                             hop_length_stft=self.audio_config['hop_length_stft']
                         )
+                        del full_mel  # Free decompressed full mel — only segments needed
 
                         # Apply augmentations to mel_specs (student mel only)
                         # _apply_mel_augmentation returns a new array, no .copy() needed.
