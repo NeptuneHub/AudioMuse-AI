@@ -22,26 +22,20 @@
     <form id="similarity-form">
         <input type="hidden" id="selected_item_id" name="item_id">
         <div class="param-group">
-            <div class="autocomplete-container">
-                <label for="artist_search" class="label-with-tooltip">
-                    Artist:
-                    <span class="info-tooltip" tabindex="0">
-                        <span class="info-icon"></span>
-                        <span class="tooltip-text">Start typing an artist name to narrow down the song search. This helps find the exact track you're looking for.</span>
-                    </span>
-                </label>
-                <input type="text" id="artist_search" name="artist_search" placeholder="Start typing artist name..." autocomplete="off">
-            </div>
 
             <div class="autocomplete-container">
-                <label for="title_search" class="label-with-tooltip">
-                    Track Title:
+                <label for="search_query" class="label-with-tooltip">
+                    Song, Artist or Album name:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Type the song name you want to find similar tracks to. As you type, suggestions will appear below.</span>
+                        <span class="tooltip-text">Type the song, artist or album you want to find similar tracks to. As you type, suggestions will appear below.</span>
                     </span>
                 </label>
-                <input type="text" id="title_search" name="title_search" placeholder="Start typing track title..." autocomplete="off">
+                <input type="text" id="search_query" name="search_query" placeholder="Start typing..." autocomplete="off">
+                <div id="selected_title_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                <input type="hidden" id="selected_item_title" name="title">
+                <div id="selected_artist_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                <input type="hidden" id="selected_item_artist" name="artist">
                 <div id="selected_album_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
                 <input type="hidden" id="selected_item_album" name="album">
                 <div id="autocomplete-results" class="autocomplete-results hidden"></div>
@@ -125,8 +119,7 @@
 
             const similarityForm = document.getElementById('similarity-form');
             const playlistForm = document.getElementById('playlist-form');
-            const artistInput = document.getElementById('artist_search');
-            const titleInput = document.getElementById('title_search');
+            const searchInput = document.getElementById('search_query');
             const selectedItemIdInput = document.getElementById('selected_item_id');
             const autocompleteResults = document.getElementById('autocomplete-results');
             const resultsContainer = document.getElementById('results-container');
@@ -139,16 +132,15 @@
             const handleSearchInput = () => {
                 clearTimeout(searchTimeout);
                 searchTimeout = setTimeout(async () => {
-                    const artistQuery = artistInput.value.trim();
-                    const titleQuery = titleInput.value.trim();
+                    const searchQuery = searchInput.value.trim();
 
-                    if (artistQuery.length < 3 && titleQuery.length < 3) {
+                    if (searchQuery.length < 3) {
                         hideAutocomplete();
                         return;
                     }
 
                     try {
-                        const params = new URLSearchParams({ artist: artistQuery, title: titleQuery });
+                        const params = new URLSearchParams({ search_query: searchQuery });
                         const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
                         const tracks = await response.json();
                         showAutocomplete(tracks);
@@ -180,9 +172,22 @@
             };
 
             const selectTrack = (track) => {
-                artistInput.value = track.author;
-                titleInput.value = track.title;
                 selectedItemIdInput.value = track.item_id;
+
+                // Store track title (fallback to 'unknown' when missing) and show to user
+                const titleVal = (track.title || '').trim() || 'unknown';
+                const titleDisplay = (track.title || '').trim() || 'Unknown';
+                const titleInputEl = document.getElementById('selected_item_title');
+                if (titleInputEl) titleInputEl.value = titleVal;
+                const titleDisplayEl = document.getElementById('selected_title_display');
+                if (titleDisplayEl) titleDisplayEl.textContent = 'Title: ' + titleDisplay;
+                // Store artist (fallback to 'unknown' when missing) and show to user
+                const artistVal = (track.author || '').trim() || 'unknown';
+                const artistDisplay = (track.author || '').trim() || 'Unknown';
+                const artistInputEl = document.getElementById('selected_item_artist');
+                if (artistInputEl) artistInputEl.value = artistVal;
+                const artistDisplayEl = document.getElementById('selected_artist_display');
+                if (artistDisplayEl) artistDisplayEl.textContent = 'Artist: ' + artistDisplay;
                 // Store album (fallback to 'unknown' when missing) and show to user
                 const albumVal = (track.album || '').trim() || 'unknown';
                 const albumDisplay = (track.album || '').trim() || 'Unknown';
@@ -190,11 +195,11 @@
                 if (albumInputEl) albumInputEl.value = albumVal;
                 const albumDisplayEl = document.getElementById('selected_album_display');
                 if (albumDisplayEl) albumDisplayEl.textContent = 'Album: ' + albumDisplay;
+
                 hideAutocomplete();
             };
 
-            artistInput.addEventListener('input', handleSearchInput);
-            titleInput.addEventListener('input', handleSearchInput);
+            searchInput.addEventListener('input', handleSearchInput);
             document.addEventListener('click', (e) => {
                 if (!e.target.closest('.autocomplete-container')) {
                     hideAutocomplete();
@@ -291,9 +296,19 @@
                         console.error('Failed to fetch max distance:', err);
                     }
 
+                    selectedTrackTitle = (document.getElementById('selected_item_title') && document.getElementById('selected_item_title').value) ? document.getElementById('selected_item_title').value : 'Unknown';
+
                     currentTrackIds = [itemId, ...data.map(track => track.item_id)];
 
-                    currentTracks = [{id: itemId, title: titleInput.value, author: artistInput.value, album: (document.getElementById('selected_item_album') && document.getElementById('selected_item_album').value) ? document.getElementById('selected_item_album').value : 'Unknown'}, ...data.map(track => ({id: track.item_id, title: track.title, author: track.author, album: track.album || 'Unknown'}))];
+                    currentTracks = [
+                        {
+                            id: itemId,
+                            title: selectedTrackTitle,
+                            author: (document.getElementById('selected_item_artist') && document.getElementById('selected_item_artist').value) ? document.getElementById('selected_item_artist').value : 'Unknown',
+                            album: (document.getElementById('selected_item_album') && document.getElementById('selected_item_album').value) ? document.getElementById('selected_item_album').value : 'Unknown'
+                        },
+                        ...data.map(track => ({id: track.item_id, title: track.title, author: track.author, album: track.album || 'Unknown'}))
+                    ];
 
                     // Graph visualization removed: skipping map fetch and chart rendering.
 
@@ -302,7 +317,7 @@
                     resultsTableWrapper.innerHTML = tableHTML;
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
-                    document.getElementById('playlist_name').value = "Similar to " + titleInput.value;
+                    document.getElementById('playlist_name').value = "Similar to " + selectedTrackTitle;
 
                 } catch (error) {
                     statusDiv.textContent = `Error: ${error.message}`;

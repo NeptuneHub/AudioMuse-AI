@@ -6,7 +6,7 @@ import numpy as np
 import logging
 
 # Import voyager_manager functions for track lookups
-from tasks.voyager_manager import search_tracks_by_title_and_artist
+from tasks.voyager_manager import search_tracks_unified
 # NOTE: The import of 'get_db' has been moved inside each function to prevent circular imports.
 
 logger = logging.getLogger(__name__)
@@ -158,7 +158,7 @@ def search_tracks_endpoint():
 
     try:
         # Reuse the existing search logic
-        results = search_tracks_by_title_and_artist(title_query, artist_query)
+        results = search_tracks_unified(title_query + artist_query) # TODO convert to search_query
         return jsonify(results)
     except Exception as e:
         logger.error(f"Error during external track search: {e}", exc_info=True)
