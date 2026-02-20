@@ -532,27 +532,70 @@ class TestCreatePlaylistFromIds:
 class TestSearchTracksByTitleAndArtist:
     """Test track search functionality"""
 
-    def test_searches_with_title_only(self):
-        """Should search by title when no artist provided"""
+    def test_search_with_single_keyword(self):
         with patch('app_helper.get_db') as mock_get_db:
             mock_conn = Mock()
             mock_cursor = Mock()
             mock_get_db.return_value = mock_conn
             mock_conn.cursor.return_value = mock_cursor
             mock_cursor.fetchall.return_value = [
-                {'item_id': 'item-1', 'title': 'Test Song', 'author': 'Artist 1'}
+                {'item_id': 'item-1', 'title': 'Test Song', 'author': 'Artist 1'},
+                {'item_id': 'item-2', 'title': 'Song 2', 'author': 'Test Artist'},
             ]
-            mock_cursor.__iter__ = Mock(return_value=iter([]))
-            
+
             from tasks.voyager_manager import search_tracks_unified
-            
-            results = search_tracks_unified('Test Song', limit=10)
-            
+
+            results = search_tracks_unified("test", limit=10)
+
             # Verify query was executed
             mock_cursor.execute.assert_called_once()
-            # The query should search both title and author when only title provided
-            call_args = mock_cursor.execute.call_args
-            assert 'ILIKE' in call_args[0][0]
+
+            query, params = mock_cursor.execute.call_args[0]
+            # WHERE must include one LIKE condition
+            assert query.count("search_u LIKE") == 1
+            assert "AND search_u LIKE" not in query
+            # Ranking should include one block
+            assert query.count("CASE WHEN lower(unaccent(title))") == 1
+            assert query.count("CASE WHEN lower(unaccent(author))") == 1
+            assert query.count("CASE WHEN lower(unaccent(album))") == 1
+            # Keywords must be wrapped correctly
+            assert "%test%" in params
+            # Both items should be returned as they match in either title or author
+            assert len(results) == 2
+            assert {r['item_id'] for r in results} == {"item-1", "item-2"}
+
+    def test_search_with_two_keywords(self):
+        with patch('app_helper.get_db') as mock_get_db:
+            mock_conn = Mock()
+            mock_cursor = Mock()
+            mock_get_db.return_value = mock_conn
+            mock_conn.cursor.return_value = mock_cursor
+            mock_cursor.fetchall.return_value = [
+                {'item_id': 'item-1', 'title': 'Test Song', 'author': 'Artist 1'},
+                {'item_id': 'item-2', 'title': 'Song 2', 'author': 'Test Artist'},
+            ]
+
+            from tasks.voyager_manager import search_tracks_unified
+
+            results = search_tracks_unified("test song", limit=10)
+
+            # Verify query was executed
+            mock_cursor.execute.assert_called_once()
+
+            query, params = mock_cursor.execute.call_args[0]
+            # WHERE must include two LIKE conditions
+            assert query.count("search_u LIKE") == 2
+            assert query.count("AND search_u LIKE") == 1
+            # Ranking should include two block
+            assert query.count("CASE WHEN lower(unaccent(title))") == 2
+            assert query.count("CASE WHEN lower(unaccent(author))") == 2
+            assert query.count("CASE WHEN lower(unaccent(album))") == 2
+            # Keywords must be wrapped correctly
+            assert "%test%" in params
+            assert "%song%" in params
+            # Both items should be returned as all keywords match in title or author
+            assert len(results) == 2
+            assert {r['item_id'] for r in results} == {"item-1", "item-2"}
 
     def test_returns_empty_for_no_query(self):
         """Should return empty list when no search terms"""
