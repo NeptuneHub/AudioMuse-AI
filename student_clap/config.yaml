@@ -6,13 +6,16 @@ audio:
   segment_length: 480000   # 10 seconds at 48kHz
   hop_length: 240000       # 5 seconds (50% overlap)
   # Student mel-spectrogram params (EfficientAT)
+  # hop=320 aligned to teacher so both produce the same number of segments
   student:
     n_mels: 128
     n_fft: 2048
-    hop_length_stft: 480
+    hop_length_stft: 320
     fmin: 0
     fmax: 14000
   # Teacher mel-spectrogram params (HTSAT-base / laion_clap)
+  # hop=320 matching HTSAT-base audio_cfg.hop_size (150 fps at 48 kHz)
+  # audio_length=1024 (max time frames): 480000/320=1500 → CLAP truncates internally
   teacher:
     n_mels: 64
     n_fft: 1024
