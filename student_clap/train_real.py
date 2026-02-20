@@ -273,7 +273,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                                 mixed_teacher_segment_embs.append(None)
                         except Exception as e:
                             logger.error(f"[MIXUP][CACHE-OFF] Failed to compute teacher embeddings for mixed sample: {e}")
-                            mixed_teacher.append(torch.zeros((512,), dtype=torch.float32, device=device))
+                            mixed_teacher.append(torch.zeros((config['model']['embedding_dim'],), dtype=torch.float32, device=device))
                             mixed_teacher_segment_embs.append(None)
 
                     mixed_song_ids.append(f"{batch['song_ids'][i]}+{batch['song_ids'][j]}")

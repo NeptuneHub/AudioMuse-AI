@@ -13,11 +13,12 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Default parameters for student model
-# (Different from teacher which uses 64 mel bands)
+# Default parameters — fallback values matching the student (EfficientAT) model.
+# In practice, callers always pass explicit values from config.yaml so these
+# defaults are only used for standalone / test invocations.
 DEFAULT_SAMPLE_RATE = 48000
 DEFAULT_N_MELS = 128
-DEFAULT_N_FFT = 1024
+DEFAULT_N_FFT = 2048
 DEFAULT_HOP_LENGTH = 480
 DEFAULT_FMIN = 0
 DEFAULT_FMAX = 14000

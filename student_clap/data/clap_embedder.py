@@ -10,23 +10,14 @@ import numpy as np
 import soundfile as sf
 import librosa
 import onnxruntime as ort
-from typing import Tuple, Optional
+from typing import Dict, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
-# CLAP parameters (MUST match AudioMuse-AI preprocessing)
-SAMPLE_RATE = 48000
-SEGMENT_LENGTH = 480000  # 10 seconds at 48kHz
-HOP_LENGTH = 240000      # 5 seconds (50% overlap)
-
-# Mel-spectrogram parameters (HTSAT-base model)
-# These MUST match laion_clap's audio_cfg exactly:
-#   window_size=1024, hop_size=480, mel_bins=64, fmin=50, fmax=14000
-N_FFT = 1024
-HOP_LENGTH_STFT = 480
-N_MELS = 64
-F_MIN = 50
-F_MAX = 14000
+# Audio segmentation defaults (shared between student and teacher)
+DEFAULT_SAMPLE_RATE = 48000
+DEFAULT_SEGMENT_LENGTH = 480000  # 10 seconds at 48kHz
+DEFAULT_HOP_LENGTH = 240000      # 5 seconds (50% overlap)
 
 
 class CLAPEmbedder:
@@ -38,7 +29,8 @@ class CLAPEmbedder:
     This class also supports batched segment inference via `segment_batch_size`.
     """
     
-    def __init__(self, model_path: str, segment_batch_size: int = 1, use_amp: bool = False):
+    def __init__(self, model_path: str, segment_batch_size: int = 1, use_amp: bool = False,
+                 teacher_audio_config: Optional[Dict] = None):
         """
         Initialize CLAP embedder.
 
@@ -46,8 +38,24 @@ class CLAPEmbedder:
             model_path: Path to `clap_audio_model.onnx` or `clap_audio_model.pt`
             segment_batch_size: number of segments to run in a single forward pass
             use_amp: if True, use BF16 autocast on CUDA for inference
+            teacher_audio_config: dict with keys n_fft, hop_length_stft, n_mels,
+                fmin, fmax.  Read from config.yaml ``audio.teacher``.  If *None*
+                a default HTSAT-base config is used (for standalone / test usage).
         """
         self.use_amp = use_amp
+
+        # --- Teacher mel parameters from config (single source of truth) ---
+        if teacher_audio_config is None:
+            logger.warning("No teacher_audio_config provided — using HTSAT-base defaults")
+            teacher_audio_config = {
+                'n_fft': 1024, 'hop_length_stft': 320, 'n_mels': 64,
+                'fmin': 50, 'fmax': 14000,
+            }
+        self.n_fft = teacher_audio_config['n_fft']
+        self.hop_length_stft = teacher_audio_config['hop_length_stft']
+        self.n_mels = teacher_audio_config['n_mels']
+        self.fmin = teacher_audio_config['fmin']
+        self.fmax = teacher_audio_config['fmax']
         if not os.path.exists(model_path):
             raise RuntimeError(f"CLAP model not found: {model_path}")
 
@@ -179,17 +187,17 @@ class CLAPEmbedder:
         # Compute mel-spectrogram — librosa returns (n_mels, time_frames)
         mel = librosa.feature.melspectrogram(
             y=audio_data,
-            sr=SAMPLE_RATE,
-            n_fft=N_FFT,
-            hop_length=HOP_LENGTH_STFT,
-            win_length=N_FFT,
+            sr=DEFAULT_SAMPLE_RATE,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length_stft,
+            win_length=self.n_fft,
             window='hann',
             center=True,
             pad_mode='reflect',
             power=2.0,
-            n_mels=N_MELS,
-            fmin=F_MIN,
-            fmax=F_MAX
+            n_mels=self.n_mels,
+            fmin=self.fmin,
+            fmax=self.fmax
         )
         
         # Convert to log scale
@@ -225,33 +233,33 @@ class CLAPEmbedder:
                 return None, 0, 0, None
 
             # Load audio at 48kHz
-            audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True)
+            audio_data, sr = librosa.load(audio_path, sr=DEFAULT_SAMPLE_RATE, mono=True)
             
             # Quantize to int16 and back (match CLAP preprocessing)
             audio_data = np.clip(audio_data, -1.0, 1.0)
             audio_data = (audio_data * 32767.0).astype(np.int16)
             audio_data = (audio_data / 32767.0).astype(np.float32)
             
-            duration_sec = len(audio_data) / SAMPLE_RATE
+            duration_sec = len(audio_data) / DEFAULT_SAMPLE_RATE
             
             # Create overlapping segments
             segments = []
             total_length = len(audio_data)
             
-            if total_length <= SEGMENT_LENGTH:
+            if total_length <= DEFAULT_SEGMENT_LENGTH:
                 # Pad short audio
-                padded = np.pad(audio_data, (0, SEGMENT_LENGTH - total_length), mode='constant')
+                padded = np.pad(audio_data, (0, DEFAULT_SEGMENT_LENGTH - total_length), mode='constant')
                 segments.append(padded)
             else:
                 # Create overlapping segments
-                for start in range(0, total_length - SEGMENT_LENGTH + 1, HOP_LENGTH):
-                    segment = audio_data[start:start + SEGMENT_LENGTH]
+                for start in range(0, total_length - DEFAULT_SEGMENT_LENGTH + 1, DEFAULT_HOP_LENGTH):
+                    segment = audio_data[start:start + DEFAULT_SEGMENT_LENGTH]
                     segments.append(segment)
                 
                 # Add final segment if needed
-                last_start = len(segments) * HOP_LENGTH
+                last_start = len(segments) * DEFAULT_HOP_LENGTH
                 if last_start < total_length:
-                    last_segment = audio_data[-SEGMENT_LENGTH:]
+                    last_segment = audio_data[-DEFAULT_SEGMENT_LENGTH:]
                     segments.append(last_segment)
             
             num_segments = len(segments)
@@ -302,7 +310,8 @@ class CLAPEmbedder:
             segment_embeddings = []
 
             # Frequency resampling helper: linear interpolation across mel axis
-            def resample_mel_frequency(mel, new_n_mels=N_MELS):
+            target_n_mels = self.n_mels
+            def resample_mel_frequency(mel, new_n_mels=target_n_mels):
                 old_n, T = mel.shape
                 if old_n == new_n_mels:
                     return mel  # no-op when frequency count already matches
@@ -314,7 +323,7 @@ class CLAPEmbedder:
                 return res
 
             # Prepare batched inputs for inference: (num_segments, 1, time, n_mels)
-            if ms.shape[1] == N_MELS:
+            if ms.shape[1] == self.n_mels:
                 # Fast path (common): no resampling needed — vectorized transpose
                 # ms is (N, n_mels, T) → transpose to (N, T, n_mels) → add channel
                 batched = ms.transpose(0, 2, 1).astype(np.float32)  # contiguous copy
@@ -323,7 +332,7 @@ class CLAPEmbedder:
                 # Slow path: per-segment resampling required
                 batched_mels = []
                 for seg in ms:
-                    seg_resampled = resample_mel_frequency(seg, new_n_mels=N_MELS)
+                    seg_resampled = resample_mel_frequency(seg, new_n_mels=self.n_mels)
                     mel_input = seg_resampled.T.astype(np.float32)  # (time, n_mels)
                     batched_mels.append(mel_input)
                 batched = np.stack(batched_mels, axis=0)  # (num_segments, time, n_mels)
@@ -368,8 +377,8 @@ class CLAPEmbedder:
     def compute_embeddings_from_audio(self, audio_segments: list) -> Tuple[Optional[np.ndarray], Optional[list]]:
         """
         Compute CLAP embeddings from raw audio waveform segments using the
-        correct teacher mel-spectrogram parameters (n_mels=64, n_fft=1024,
-        hop=320, fmin=50).
+        teacher mel-spectrogram parameters configured in ``config.yaml``
+        (read at init time via *teacher_audio_config*).
 
         Use this instead of compute_embeddings_from_mel when raw audio is
         available to avoid feeding student-format mel to the teacher.

@@ -22,10 +22,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from student_clap.data.local_song_loader import LocalSongLoader
 from student_clap.data.clap_embedder import CLAPEmbedder
-from student_clap.data.clap_embedder import (
-    N_FFT as TEACHER_N_FFT, HOP_LENGTH_STFT as TEACHER_HOP_LENGTH_STFT,
-    N_MELS as TEACHER_N_MELS, F_MIN as TEACHER_F_MIN, F_MAX as TEACHER_F_MAX,
-)
 from student_clap.data.mel_cache import MelSpectrogramCache
 from student_clap.preprocessing.audio_segmentation import (
     segment_audio, SAMPLE_RATE, SEGMENT_LENGTH, HOP_LENGTH
@@ -55,8 +51,10 @@ class StudentCLAPDataset:
         self.split = split
         self.epoch = epoch
         
-        # Extract configs
+        # Extract configs — student / teacher mel params from nested keys
         self.audio_config = config['audio']
+        self.student_audio = config['audio']['student']
+        self.teacher_audio = config['audio']['teacher']
         self.paths_config = config['paths']
         self.dataset_config = config.get('dataset', {})
         
@@ -68,12 +66,17 @@ class StudentCLAPDataset:
         self.song_loader = LocalSongLoader(data_path)
 
         # Initialize CLAP embedder for teacher embeddings (ONNX or PyTorch).
-        # Ensure teacher uses the same `segment_batch_size` configured for the student.
+        # Pass teacher mel params from config so there are no hardcoded constants.
         teacher_model_path = self.paths_config['teacher_model']
         seg_bs = self.config.get('model', {}).get('segment_batch_size', 1)
         use_amp = self.config.get('training', {}).get('use_amp', False)
         logger.info(f"🔧 Teacher segment_batch_size: {seg_bs}, use_amp: {use_amp}")
-        self.clap_embedder = CLAPEmbedder(teacher_model_path, segment_batch_size=seg_bs, use_amp=use_amp)
+        self.clap_embedder = CLAPEmbedder(
+            teacher_model_path,
+            segment_batch_size=seg_bs,
+            use_amp=use_amp,
+            teacher_audio_config=self.teacher_audio,
+        )
 
         # Initialize mel spectrogram cache (stores both mel specs and embeddings)
         mel_cache_path = self.paths_config.get('mel_cache', './cache/mel_spectrograms.db')
@@ -143,9 +146,8 @@ class StudentCLAPDataset:
         re-loaded from disk — the caller already loaded it (single-load
         optimisation).
 
-        Uses the correct teacher CLAP mel params (64 bins, n_fft=1024,
-        hop=480, fmin=50).  Returns (mel, audio_length) where mel is
-        (1, 64, time_frames).
+        Uses teacher CLAP mel params from ``config.yaml`` (audio.teacher).
+        Returns (mel, audio_length) where mel is (1, n_mels, time_frames).
         """
         if audio_data is None:
             audio_data, audio_length = self._load_audio(audio_path)
@@ -153,11 +155,11 @@ class StudentCLAPDataset:
         teacher_mel = compute_mel_spectrogram(
             audio_data,
             sr=self.audio_config['sample_rate'],
-            n_mels=TEACHER_N_MELS,
-            n_fft=TEACHER_N_FFT,
-            hop_length=TEACHER_HOP_LENGTH_STFT,
-            fmin=TEACHER_F_MIN,
-            fmax=TEACHER_F_MAX,
+            n_mels=self.teacher_audio['n_mels'],
+            n_fft=self.teacher_audio['n_fft'],
+            hop_length=self.teacher_audio['hop_length_stft'],
+            fmin=self.teacher_audio['fmin'],
+            fmax=self.teacher_audio['fmax'],
         )
         return teacher_mel, audio_length
 
@@ -170,11 +172,11 @@ class StudentCLAPDataset:
         return compute_mel_spectrogram_batch(
             raw_segments,
             sr=self.audio_config['sample_rate'],
-            n_mels=self.audio_config['n_mels'],
-            n_fft=self.audio_config['n_fft'],
-            hop_length=self.audio_config['hop_length_stft'],
-            fmin=self.audio_config['fmin'],
-            fmax=self.audio_config['fmax'],
+            n_mels=self.student_audio['n_mels'],
+            n_fft=self.student_audio['n_fft'],
+            hop_length=self.student_audio['hop_length_stft'],
+            fmin=self.student_audio['fmin'],
+            fmax=self.student_audio['fmax'],
         )
 
     def _apply_mel_augmentation(self, mel, seed=None):
@@ -327,7 +329,7 @@ class StudentCLAPDataset:
                         segment_length=self.audio_config['segment_length'],
                         hop_length=self.audio_config['hop_length'],
                         sample_rate=self.audio_config['sample_rate'],
-                        hop_length_stft=self.audio_config['hop_length_stft'],
+                        hop_length_stft=self.student_audio['hop_length_stft'],
                     )
                     teacher_mel_segs = self.mel_cache.extract_overlapped_segments(
                         teacher_full_mel,
@@ -335,7 +337,7 @@ class StudentCLAPDataset:
                         segment_length=self.audio_config['segment_length'],
                         hop_length=self.audio_config['hop_length'],
                         sample_rate=self.audio_config['sample_rate'],
-                        hop_length_stft=TEACHER_HOP_LENGTH_STFT,
+                        hop_length_stft=self.teacher_audio['hop_length_stft'],
                     )
 
                     # Free full mel arrays — only segmented copies are needed from here
@@ -426,7 +428,7 @@ class StudentCLAPDataset:
                     segment_length=self.audio_config['segment_length'],
                     hop_length=self.audio_config['hop_length'],
                     sample_rate=self.audio_config['sample_rate'],
-                    hop_length_stft=self.audio_config['hop_length_stft']
+                    hop_length_stft=self.student_audio['hop_length_stft']
                 )
                 del full_mel  # Free decompressed full mel — only segments needed
                 
@@ -484,11 +486,11 @@ class StudentCLAPDataset:
                             full_mel_spec = compute_full_mel_spectrogram(
                                 audio_data_loaded,
                                 sr=self.audio_config['sample_rate'],
-                                n_mels=self.audio_config['n_mels'],
-                                n_fft=self.audio_config['n_fft'],
-                                hop_length=self.audio_config['hop_length_stft'],
-                                fmin=self.audio_config['fmin'],
-                                fmax=self.audio_config['fmax']
+                                n_mels=self.student_audio['n_mels'],
+                                n_fft=self.student_audio['n_fft'],
+                                hop_length=self.student_audio['hop_length_stft'],
+                                fmin=self.student_audio['fmin'],
+                                fmax=self.student_audio['fmax']
                             )
                             self.mel_cache.put(item['item_id'], full_mel_spec, audio_length=audio_length_loaded)
 
@@ -528,7 +530,7 @@ class StudentCLAPDataset:
                                 segment_length=self.audio_config['segment_length'],
                                 hop_length=self.audio_config['hop_length'],
                                 sample_rate=self.audio_config['sample_rate'],
-                                hop_length_stft=self.audio_config['hop_length_stft'],
+                                hop_length_stft=self.student_audio['hop_length_stft'],
                             )
                             teacher_mel_segs = self.mel_cache.extract_overlapped_segments(
                                 teacher_full_mel,
@@ -536,7 +538,7 @@ class StudentCLAPDataset:
                                 segment_length=self.audio_config['segment_length'],
                                 hop_length=self.audio_config['hop_length'],
                                 sample_rate=self.audio_config['sample_rate'],
-                                hop_length_stft=TEACHER_HOP_LENGTH_STFT,
+                                hop_length_stft=self.teacher_audio['hop_length_stft'],
                             )
 
                             # Free full mel arrays — only segmented copies are needed from here
@@ -626,7 +628,7 @@ class StudentCLAPDataset:
                             segment_length=self.audio_config['segment_length'],
                             hop_length=self.audio_config['hop_length'],
                             sample_rate=self.audio_config['sample_rate'],
-                            hop_length_stft=self.audio_config['hop_length_stft']
+                            hop_length_stft=self.student_audio['hop_length_stft']
                         )
                         del full_mel  # Free decompressed full mel — only segments needed
 
@@ -677,7 +679,7 @@ class StudentCLAPDataset:
             'sample_rate': self.audio_config['sample_rate'],
             'segment_length': self.audio_config['segment_length'],
             'hop_length': self.audio_config['hop_length'],
-            'embedding_dim': 512
+            'embedding_dim': self.config['model']['embedding_dim']
         }
         
         # Add mel cache stats

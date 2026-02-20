@@ -70,13 +70,13 @@ class StudentCLAPAudio(nn.Module):
         super().__init__()
         self.config = config
 
-        # Audio preprocessing params
+        # Audio preprocessing params — student mel settings from config.yaml
         self.sample_rate = config['audio']['sample_rate']
-        self.n_mels = config['audio']['n_mels']
-        self.n_fft = config['audio']['n_fft']
-        self.hop_length = config['audio']['hop_length_stft']
-        self.fmin = config['audio']['fmin']
-        self.fmax = config['audio']['fmax']
+        self.n_mels = config['audio']['student']['n_mels']
+        self.n_fft = config['audio']['student']['n_fft']
+        self.hop_length = config['audio']['student']['hop_length_stft']
+        self.fmin = config['audio']['student']['fmin']
+        self.fmax = config['audio']['student']['fmax']
 
         # Model params
         self.embedding_dim = config['model']['embedding_dim']
@@ -270,13 +270,13 @@ class FusionStudentCLAPAudio(nn.Module):
         super().__init__()
         self.config = config
 
-        # Audio preprocessing params (delegated from config)
+        # Audio preprocessing params — student mel settings from config.yaml
         self.sample_rate = config['audio']['sample_rate']
-        self.n_mels = config['audio']['n_mels']
-        self.n_fft = config['audio']['n_fft']
-        self.hop_length = config['audio']['hop_length_stft']
-        self.fmin = config['audio']['fmin']
-        self.fmax = config['audio']['fmax']
+        self.n_mels = config['audio']['student']['n_mels']
+        self.n_fft = config['audio']['student']['n_fft']
+        self.hop_length = config['audio']['student']['hop_length_stft']
+        self.fmin = config['audio']['student']['fmin']
+        self.fmax = config['audio']['student']['fmax']
         self.embedding_dim = config['model']['embedding_dim']
         self.segment_batch_size = config['model'].get('segment_batch_size', 10)
         self.use_gradient_checkpointing = config['model'].get('use_gradient_checkpointing', False)
@@ -1080,7 +1080,7 @@ class StudentCLAPTrainer:
         """
         self.model.eval()
 
-        dummy_input = torch.randn(1, 1, 128, 1000, device=self.device)
+        dummy_input = torch.randn(1, 1, self.model.n_mels, 1000, device=self.device)
 
         torch.onnx.export(
             self.model,

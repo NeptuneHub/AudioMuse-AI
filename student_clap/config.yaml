@@ -3,13 +3,22 @@ distillation:
   text_enabled: false
 audio:
   sample_rate: 48000
-  segment_length: 480000
-  hop_length: 240000
-  n_mels: 128
-  n_fft: 2048
-  hop_length_stft: 480
-  fmin: 0
-  fmax: 14000
+  segment_length: 480000   # 10 seconds at 48kHz
+  hop_length: 240000       # 5 seconds (50% overlap)
+  # Student mel-spectrogram params (EfficientAT)
+  student:
+    n_mels: 128
+    n_fft: 2048
+    hop_length_stft: 480
+    fmin: 0
+    fmax: 14000
+  # Teacher mel-spectrogram params (HTSAT-base / laion_clap)
+  teacher:
+    n_mels: 64
+    n_fft: 1024
+    hop_length_stft: 320
+    fmin: 50
+    fmax: 14000
 
 model:
   embedding_dim: 512
@@ -34,7 +43,7 @@ model_text:
 
 training:
   use_amp: false               # Use bfloat16 mixed precision for forward passes (model weights stay FP32)
-  augmentation_enabled: false  # Set to false to disable all spectrogram augmentations
+  augmentation_enabled: true  # Set to false to disable all spectrogram augmentations
   batch_size: 64
   gradient_accumulation_steps: 1
   learning_rate: 0.003 # Original: 0.003
@@ -56,8 +65,8 @@ training:
   save_every: 1
   export_onnx_every_epoch: true  # If true, export audio ONNX model after every epoch (can be slow)
   # Mixup augmentation: alpha parameter for Beta(alpha, alpha). 0 disables Mixup
-  mixup_alpha: 0
-  global_mixup: false  # If true, mix at segment level across all songs (zero data loss); if false, old song-level mixup
+  mixup_alpha: 0.1
+  global_mixup: true  # If true, mix at segment level across all songs (zero data loss); if false, old song-level mixup
   # Loss function: "mse", "cosine", or "kl". Cosine/KL disable MSE and semantic.
   # "kl": KL divergence on softmax distributions (Beyer-style distillation), temperature from logit_scale
   loss_function: "cosine"
@@ -74,7 +83,7 @@ training:
   normalize_embeddings: false
   lambda_semantic: 0.1  # Weight for semantic alignment loss (query-based distillation)
   semantic_temperature: 1  # Temperature for KLD softmax (lower = sharper peaks, forces ranking)
-  use_teacher_embedding_cache: true  # If false, always recompute teacher embeddings from (augmented) mel; mel cache still used
+  use_teacher_embedding_cache: false # If false, always recompute teacher embeddings from (augmented) mel; mel cache still used
   lr_scheduler:
     use_cosine_annealing: false  # If true, use CosineAnnealingLR instead of ReduceLROnPlateau in Stage 1
     mode: 'max'             # monitor metric to maximize (we monitor validation cosine)

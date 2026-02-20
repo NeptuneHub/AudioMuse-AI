@@ -17,7 +17,14 @@ import sys
 import argparse
 import numpy as np
 import librosa
+import yaml
 import onnxruntime as ort
+
+# ── Load config.yaml (single source of truth for mel params) ────────────
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_config_path = os.path.join(_script_dir, "config.yaml")
+with open(_config_path, "r") as _f:
+    _config = yaml.safe_load(_f)
 
 # ── Text queries to evaluate (easy to extend) ──────────────────────────
 TEXT_QUERIES = [
@@ -37,24 +44,26 @@ TEXT_QUERIES = [
     "Ambient song"
 ]
 
-# ── Audio constants ─────────────────────────────────────────────────────
-SAMPLE_RATE = 48000
-SEGMENT_LENGTH = 480000   # 10 seconds
-HOP_LENGTH = 240000       # 5 seconds (50 % overlap)
+# ── Audio constants (from config.yaml) ──────────────────────────────────
+SAMPLE_RATE = _config['audio']['sample_rate']
+SEGMENT_LENGTH = _config['audio']['segment_length']
+HOP_LENGTH = _config['audio']['hop_length']
 
-# Teacher mel-spec params (HTSAT-base)
-TEACHER_N_FFT = 1024
-TEACHER_HOP = 320
-TEACHER_N_MELS = 64
-TEACHER_FMIN = 50
-TEACHER_FMAX = 14000
+# Teacher mel-spec params (from config.yaml audio.teacher)
+_teacher = _config['audio']['teacher']
+TEACHER_N_FFT = _teacher['n_fft']
+TEACHER_HOP = _teacher['hop_length_stft']
+TEACHER_N_MELS = _teacher['n_mels']
+TEACHER_FMIN = _teacher['fmin']
+TEACHER_FMAX = _teacher['fmax']
 
-# Student mel-spec params (EfficientAT)
-STUDENT_N_FFT = 2048
-STUDENT_HOP = 480
-STUDENT_N_MELS = 128
-STUDENT_FMIN = 0
-STUDENT_FMAX = 14000
+# Student mel-spec params (from config.yaml audio.student)
+_student = _config['audio']['student']
+STUDENT_N_FFT = _student['n_fft']
+STUDENT_HOP = _student['hop_length_stft']
+STUDENT_N_MELS = _student['n_mels']
+STUDENT_FMIN = _student['fmin']
+STUDENT_FMAX = _student['fmax']
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -206,7 +215,7 @@ def main():
     parser = argparse.ArgumentParser(description="Student CLAP final evaluation")
     script_dir = os.path.dirname(os.path.abspath(__file__))
     parser.add_argument("--songs-dir", default=os.path.join(script_dir, "..", "test", "songs"))
-    parser.add_argument("--student-model", default=os.path.join(script_dir, "models", "model_epoch_3.onnx"))
+    parser.add_argument("--student-model", default=os.path.join(script_dir, "models", "model_epoch_9.onnx"))
     parser.add_argument("--teacher-audio-model", default=os.path.join(script_dir, "..", "model", "clap_audio_model.onnx"))
     parser.add_argument("--teacher-text-model", default=os.path.join(script_dir, "..", "model", "clap_text_model.onnx"))
     args = parser.parse_args()
