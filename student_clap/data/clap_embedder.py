@@ -48,7 +48,7 @@ class CLAPEmbedder:
         if teacher_audio_config is None:
             logger.warning("No teacher_audio_config provided — using HTSAT-base defaults")
             teacher_audio_config = {
-                'n_fft': 1024, 'hop_length_stft': 320, 'n_mels': 64,
+                'n_fft': 1024, 'hop_length_stft': 480, 'n_mels': 64,
                 'fmin': 50, 'fmax': 14000,
             }
         self.n_fft = teacher_audio_config['n_fft']
