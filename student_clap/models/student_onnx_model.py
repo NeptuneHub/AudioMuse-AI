@@ -257,10 +257,16 @@ class FusionStudentCLAPAudio(nn.Module):
 
     Architecture (Beyer et al., 2022 — Residual Knowledge Distillation):
         mel -> specialist(frozen, full model) -> 512-dim L2-normed (identity skip-connection)
-        mel -> student_backbone(trainable, mn04_as) -> backbone_dim
+        mel -> student_backbone(trainable) -> backbone_dim
                 -> MLP(backbone_dim -> 512 -> 512, LayerNorm) -> L2-normalize -> projected
         gate  = sigmoid(alpha)  where alpha is a 512-dim per-dimension learnable parameter
         fused = L2-normalize(specialist_emb + gate * projected)
+
+    Backbone options (config ``model.fusion_backbone``):
+        - ``"efficientat"`` (default): EfficientAT MobileNet (mn04_as, ~0.98M params)
+        - ``"deit_tiny"``: DeiT-tiny ViT (facebook/deit-tiny-patch16-224, ~5.7M params,
+          ImageNet pretrained).  Student mel (128×T) is bilinear-resized to 224×224
+          inside forward(); patch embedding is adapted from 3→1 channel automatically.
 
     The specialist embedding passes through untouched (no bottleneck).
     The student MLP learns a residual delta on the unit sphere; the per-dimension gate
@@ -304,25 +310,13 @@ class FusionStudentCLAPAudio(nn.Module):
         logger.info(f"  Specialist loaded: {specialist_params:,} params (all frozen)")
 
         # --- Student Backbone Only (TRAINABLE, no projection head) ---
-        student_model_name = config['model'].get('student_efficientat_model', config['model']['efficientat_model'])
-        logger.info(f"  Student backbone: {student_model_name}")
-        pretrained = student_model_name if config['model'].get('use_pretrained', True) else None
-        self.student_backbone = get_efficientat_model(
-            num_classes=527,
-            pretrained_name=pretrained,
-            head_type="mlp",
-            se_dims="c",
-            input_dim_f=self.n_mels,
-            input_dim_t=1000,
-        )
-        # Determine backbone output dimension
-        with torch.no_grad():
-            dummy = torch.randn(1, 1, self.n_mels, 1000)
-            _, features = self.student_backbone(dummy)
-            backbone_dim = features.shape[-1]
-        logger.info(f"  Student backbone output dim: {backbone_dim}")
-        student_bb_params = sum(p.numel() for p in self.student_backbone.parameters())
-        logger.info(f"  Student backbone: {student_bb_params:,} params (trainable)")
+        fusion_backbone = config['model'].get('fusion_backbone', 'efficientat')
+        self._use_deit = (fusion_backbone == 'deit_tiny')
+
+        if self._use_deit:
+            backbone_dim = self._build_deit_backbone(config)
+        else:
+            backbone_dim = self._build_efficientat_backbone(config)
 
         # --- Student Projector (TRAINABLE) --- MLP: backbone_dim -> 512 -> 512
         # Last linear is zero-init so student contribution is exactly 0 at start
@@ -352,6 +346,70 @@ class FusionStudentCLAPAudio(nn.Module):
         logger.info(f"  TOTAL: {total_params:,} ({total_params/1e6:.2f}M)")
         logger.info(f"  TRAINABLE: {trainable_params:,} ({trainable_params/1e6:.2f}M)")
 
+    def _build_deit_backbone(self, config: Dict) -> int:
+        """Build DeiT-tiny (ViT) backbone with ImageNet pretrained weights.
+
+        Uses ``timm`` to load ``facebook/deit-tiny-patch16-224`` with automatic
+        3→1 channel adaptation of the patch embedding weights (same technique
+        as the AST — Audio Spectrogram Transformer paper).
+
+        Input mel spectrograms are bilinear-resized to 224×224 in ``forward()``.
+        No separate mel cache or mel parameters are needed.
+
+        Returns:
+            backbone_dim: Feature dimension of the DeiT model (192).
+        """
+        try:
+            import timm
+        except ImportError:
+            raise ImportError(
+                "timm is required for DeiT fusion backbone: pip install timm"
+            )
+
+        use_pretrained = config['model'].get('use_pretrained', True)
+        self.student_backbone = timm.create_model(
+            'deit_tiny_patch16_224',
+            pretrained=use_pretrained,
+            num_classes=0,      # remove classifier head, return pooled features
+            in_chans=1,         # adapt patch embed from 3→1 channel (sum weights)
+        )
+        backbone_dim = self.student_backbone.embed_dim  # 192
+
+        student_bb_params = sum(p.numel() for p in self.student_backbone.parameters())
+        logger.info(f"  Student backbone (DeiT-tiny, ImageNet pretrained): {student_bb_params:,} params (trainable)")
+        logger.info(f"  DeiT input: mel (B, 1, {self.n_mels}, T) → bilinear resize to (B, 1, 224, 224)")
+        logger.info(f"  Student backbone output dim: {backbone_dim}")
+
+        return backbone_dim
+
+    def _build_efficientat_backbone(self, config: Dict) -> int:
+        """Build EfficientAT MobileNet backbone (original fusion path).
+
+        Returns:
+            backbone_dim: Feature dimension of the EfficientAT model.
+        """
+        student_model_name = config['model'].get('student_efficientat_model', config['model']['efficientat_model'])
+        logger.info(f"  Student backbone: {student_model_name}")
+        pretrained = student_model_name if config['model'].get('use_pretrained', True) else None
+        self.student_backbone = get_efficientat_model(
+            num_classes=527,
+            pretrained_name=pretrained,
+            head_type="mlp",
+            se_dims="c",
+            input_dim_f=self.n_mels,
+            input_dim_t=1000,
+        )
+        # Determine backbone output dimension
+        with torch.no_grad():
+            dummy = torch.randn(1, 1, self.n_mels, 1000)
+            _, features = self.student_backbone(dummy)
+            backbone_dim = features.shape[-1]
+        logger.info(f"  Student backbone output dim: {backbone_dim}")
+        student_bb_params = sum(p.numel() for p in self.student_backbone.parameters())
+        logger.info(f"  Student backbone: {student_bb_params:,} params (trainable)")
+
+        return backbone_dim
+
     def train(self, mode: bool = True):
         """Override to keep specialist permanently in eval() mode."""
         super().train(mode)
@@ -372,17 +430,28 @@ class FusionStudentCLAPAudio(nn.Module):
         with torch.no_grad():
             specialist_emb = self.specialist(mel_spec).detach()  # (B, 512) L2-normed
 
-        # Student backbone only (trainable)
-        if mel_spec.dim() == 3:
-            mel_spec = mel_spec.unsqueeze(1)
-        if self.training and self.use_gradient_checkpointing:
-            def backbone_forward(x):
-                return self.student_backbone(x)
-            _, student_features = torch.utils.checkpoint.checkpoint(
-                backbone_forward, mel_spec, use_reentrant=False
-            )
+        # Student backbone (DeiT-tiny or EfficientAT)
+        x = mel_spec.unsqueeze(1) if mel_spec.dim() == 3 else mel_spec  # (B, 1, n_mels, T)
+
+        if self._use_deit:
+            # Resize student mel to DeiT input: (B, 1, 128, T) → (B, 1, 224, 224)
+            x = F.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
+            if self.training and self.use_gradient_checkpointing:
+                student_features = torch.utils.checkpoint.checkpoint(
+                    self.student_backbone, x, use_reentrant=False
+                )
+            else:
+                student_features = self.student_backbone(x)  # (B, 192)
         else:
-            _, student_features = self.student_backbone(mel_spec)  # (B, backbone_dim)
+            # EfficientAT returns (logits, features) tuple
+            if self.training and self.use_gradient_checkpointing:
+                def backbone_forward(inp):
+                    return self.student_backbone(inp)
+                _, student_features = torch.utils.checkpoint.checkpoint(
+                    backbone_forward, x, use_reentrant=False
+                )
+            else:
+                _, student_features = self.student_backbone(x)  # (B, backbone_dim)
 
         # Project to embedding dim, normalize to unit sphere, then gated addition.
         # Normalizing before gating makes the gate interpretable: it blends two unit

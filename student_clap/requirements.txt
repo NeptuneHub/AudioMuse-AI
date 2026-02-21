@@ -40,6 +40,9 @@ psutil
 torchvision>=0.15.0
 importlib_metadata
 
+# DeiT-tiny ViT backbone for fusion model (optional, only needed if fusion_backbone="deit_tiny")
+timm>=0.9.0
+
 # Teacher CLAP (PyTorch .pt backend)
 laion-clap>=1.1.4
 

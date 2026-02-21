@@ -33,7 +33,12 @@ model:
   # Default uses the canonical pretrained key so there is no ambiguity (pass 'dymn10_as' is still accepted)
   efficientat_model: "mn10_as"
   student_efficientat_model: "mn04_as"  # Override for trainable student in fusion mode (null = same as efficientat_model)
-  use_pretrained: true  # Use AudioSet pretrained weights
+  # Fusion backbone: "efficientat" (default, uses student_efficientat_model above) or "deit_tiny"
+  # DeiT-tiny is a Vision Transformer (facebook/deit-tiny-patch16-224) pretrained on ImageNet.
+  # It provides complementary features to the CNN specialist. The existing student mel
+  # (128 bands, hop=480) is resized to 224×224 inside the model — no separate mel cache needed.
+  fusion_backbone: "deit_tiny"
+  use_pretrained: true  # Use AudioSet/ImageNet pretrained weights
   specialist_checkpoint: "../model/checkpoint_epoch_9.pth"  # Frozen specialist for fusion model (set to null to disable)
   use_gradient_checkpointing: true
   segment_batch_size: 5  # Process N segments at a time to reduce memory
