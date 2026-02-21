@@ -256,14 +256,16 @@ class FusionStudentCLAPAudio(nn.Module):
     Gated Residual Fusion: frozen specialist (identity) + trainable student (delta).
 
     Architecture (Beyer et al., 2022 — Residual Knowledge Distillation):
-        mel -> specialist(frozen, full model) -> 512-dim (identity skip-connection)
-        mel -> student_backbone(trainable, mn04_as) -> 384-dim -> Linear(384,512) -> projected
-        fused = specialist_emb + sigmoid(alpha) * projected
-        output = L2-normalize(fused)
+        mel -> specialist(frozen, full model) -> 512-dim L2-normed (identity skip-connection)
+        mel -> student_backbone(trainable, mn04_as) -> backbone_dim
+                -> MLP(backbone_dim -> 512 -> 512, LayerNorm) -> L2-normalize -> projected
+        gate  = sigmoid(alpha)  where alpha is a 512-dim per-dimension learnable parameter
+        fused = L2-normalize(specialist_emb + gate * projected)
 
     The specialist embedding passes through untouched (no bottleneck).
-    The student learns a residual delta, gated by a learnable scalar alpha
-    initialized at -3.0 (sigmoid ≈ 0.047), so the output starts ~95% specialist.
+    The student MLP learns a residual delta on the unit sphere; the per-dimension gate
+    allows each embedding direction to be corrected independently.
+    All learnable params are zero/small-init so output starts as pure specialist.
     """
 
     def __init__(self, config: Dict, specialist_checkpoint_path: str):
