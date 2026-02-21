@@ -409,16 +409,20 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                         perm = np.roll(perm, 1)
                     perm_t = torch.from_numpy(perm).long()
 
-                    # Mix student mel in-place style: create mixed, then free original
-                    mixed_mel = lam * mel_stack + (1.0 - lam) * mel_stack[perm_t]
-                    del mel_stack
+                    # Mix student mel in-place to reduce peak RAM from 3× to 2×
+                    permuted_mel = mel_stack[perm_t].mul_(1.0 - lam)  # in-place scale on the copy
+                    mel_stack.mul_(lam).add_(permuted_mel)             # in-place scale + add
+                    mixed_mel = mel_stack                               # no copy, same tensor
+                    del permuted_mel, mel_stack
 
                     if use_teacher_emb_cache:
                         # --- Cache ON: mix teacher embeddings directly ---
                         teacher_stack = torch.stack(teacher_emb_parts, dim=0)
                         del teacher_emb_parts
-                        mixed_teacher = lam * teacher_stack + (1.0 - lam) * teacher_stack[perm_t]
-                        del teacher_stack
+                        permuted_t = teacher_stack[perm_t].mul_(1.0 - lam)
+                        teacher_stack.mul_(lam).add_(permuted_t)
+                        mixed_teacher = teacher_stack
+                        del permuted_t, teacher_stack
                     else:
                         # --- Cache OFF: mix teacher mel, compute teacher embeddings ---
                         del teacher_emb_parts
@@ -447,8 +451,13 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                                     if np.any(perm == np.arange(min_seg)):
                                         perm = np.roll(perm, 1)
                                 total_segments = min_seg
-                            mixed_tmel = (lam * tmel_stack + (1.0 - lam) * tmel_stack[perm]).astype(np.float32)
-                            del tmel_stack
+                            # In-place numpy mixup to reduce peak RAM
+                            permuted_tmel = tmel_stack[perm]  # copy from fancy indexing
+                            np.multiply(permuted_tmel, 1.0 - lam, out=permuted_tmel)
+                            np.multiply(tmel_stack, lam, out=tmel_stack)
+                            np.add(tmel_stack, permuted_tmel, out=tmel_stack)
+                            mixed_tmel = tmel_stack.astype(np.float32)
+                            del tmel_stack, permuted_tmel
                             if mixed_tmel.ndim == 3:
                                 mixed_tmel = mixed_tmel[:, np.newaxis, :, :]
                             avg_emb, seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_tmel)

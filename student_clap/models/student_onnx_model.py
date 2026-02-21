@@ -455,6 +455,7 @@ class FusionStudentCLAPAudio(nn.Module):
         with torch.no_grad():
             spec_input = mel_spec.to(dtype=self._specialist_dtype)
             specialist_emb = self.specialist(spec_input).float().detach()  # (B, 512) L2-normed
+            del spec_input  # Free bfloat16 copy immediately
 
         # Student backbone (DeiT-tiny or EfficientAT)
         x = mel_spec.unsqueeze(1) if mel_spec.dim() == 3 else mel_spec  # (B, 1, n_mels, T)
@@ -971,6 +972,8 @@ class StudentCLAPTrainer:
                     segment_embeddings_list.append(chunk_embeddings)
 
                 segment_embeddings = torch.cat(segment_embeddings_list, dim=0)
+                del segment_embeddings_list
+                batch['audio_segments'][i] = None  # Free mel for this song
 
                 for seg_idx, seg_emb in enumerate(segment_embeddings):
                     student_embeddings.append(seg_emb.unsqueeze(0))
@@ -997,6 +1000,8 @@ class StudentCLAPTrainer:
                     segment_embeddings_list.append(chunk_embeddings)
 
                 segment_embeddings = torch.cat(segment_embeddings_list, dim=0)
+                del segment_embeddings_list
+                batch['audio_segments'][i] = None  # Free mel for this song
 
                 avg_embedding = torch.mean(segment_embeddings, dim=0, keepdim=True)
                 avg_embedding = F.normalize(avg_embedding, p=2, dim=1)
@@ -1021,6 +1026,8 @@ class StudentCLAPTrainer:
                     segment_embeddings_list.append(chunk_embeddings)
 
                 segment_embeddings = torch.cat(segment_embeddings_list, dim=0)
+                del segment_embeddings_list
+                batch['audio_segments'][i] = None  # Free mel for this song
 
                 for seg_idx, seg_emb in enumerate(segment_embeddings):
                     student_embeddings.append(seg_emb.unsqueeze(0))
@@ -1206,6 +1213,14 @@ class StudentCLAPTrainer:
         """
         self.model.eval()
 
+        # Cast specialist back to float32 for ONNX export — ONNX Runtime
+        # doesn't support bfloat16 Conv ops.  Restored to bfloat16 after export.
+        restored_bf16 = False
+        if isinstance(self.model, FusionStudentCLAPAudio) and self.model._specialist_dtype == torch.bfloat16:
+            self.model.specialist.to(dtype=torch.float32)
+            self.model._specialist_dtype = torch.float32
+            restored_bf16 = True
+
         dummy_input = torch.randn(1, 1, self.model.n_mels, 1000, device=self.device)
 
         torch.onnx.export(
@@ -1229,6 +1244,11 @@ class StudentCLAPTrainer:
         logger.info(f"✅ Successfully exported Student CLAP to ONNX: {output_path}")
 
         self._test_onnx_model(output_path, dummy_input)
+
+        # Restore specialist to bfloat16 for continued training
+        if restored_bf16:
+            self.model.specialist.to(dtype=torch.bfloat16)
+            self.model._specialist_dtype = torch.bfloat16
 
     def _test_onnx_model(self, onnx_path: str, dummy_input: torch.Tensor):
         """Test that the ONNX model produces correct outputs."""
