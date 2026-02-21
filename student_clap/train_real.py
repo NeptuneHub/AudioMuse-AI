@@ -40,6 +40,32 @@ from student_clap.training.evaluation import evaluate_embeddings, print_evaluati
 
 logger = logging.getLogger(__name__)
 
+# RAM safety threshold — if available RAM drops below this, abort the batch
+# and force garbage collection to prevent system freeze (NVIDIA pinned memory
+# makes the OOM killer unreliable on CUDA systems).
+RAM_SAFETY_THRESHOLD_MB = 512  # Keep at least 512 MB free
+
+def check_ram_safety(label: str = "") -> bool:
+    """Return True if RAM is safe, False if critically low.
+    Logs a warning when usage is high and an error if below threshold."""
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        avail_mb = mem.available / (1024 ** 2)
+        if avail_mb < RAM_SAFETY_THRESHOLD_MB:
+            logger.error(
+                f"🚨 RAM CRITICAL ({label}): {avail_mb:.0f} MB available "
+                f"(threshold {RAM_SAFETY_THRESHOLD_MB} MB) — aborting batch to prevent system freeze"
+            )
+            return False
+        elif avail_mb < RAM_SAFETY_THRESHOLD_MB * 2:
+            logger.warning(
+                f"⚠️ RAM LOW ({label}): {avail_mb:.0f} MB available — approaching danger zone"
+            )
+    except ImportError:
+        pass  # psutil not installed
+    return True
+
 
 def setup_logging(config: dict):
     """Setup logging configuration."""
@@ -308,6 +334,13 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
         stage_num = config.get('current_stage', 1)
         logger.info(f"🔥 BATCH {num_batches + 1}/{total_batches} (EPOCH {epoch}/{config['training']['epochs']}) [STAGE {stage_num}, LR {lr_str}{temp_str}]: Training on {len(batch_data)} songs...")
 
+        # 🚨 RAM safety check before heavy computation (prevents system freeze)
+        if not check_ram_safety(f"batch {num_batches + 1} start"):
+            import gc; gc.collect()
+            if torch.cuda.is_available(): torch.cuda.empty_cache()
+            logger.error("⏭️ Skipping batch due to critically low RAM")
+            continue
+
         try:
             # --- Linear LR warmup for epoch 1 (if enabled) ---
             if epoch == 1 and config['training'].get('warmup_enabled', True):
@@ -356,6 +389,12 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                             teacher_emb_parts.append(t_emb)
 
                 # Concatenate student segments into one tensor (no extra copy vs stacking a flat list)
+                # 🚨 RAM check before the big concatenation (~100MB for batch_size=64)
+                if not check_ram_safety("global mixup concat"):
+                    del student_parts, teacher_emb_parts
+                    if 'audio_segments' in batch: del batch['audio_segments']
+                    import gc; gc.collect()
+                    raise RuntimeError("Skipping batch: RAM critically low before global mixup concatenation")
                 mel_stack = torch.cat(student_parts, dim=0)  # (total_segments, 1, 128, T)
                 del student_parts
                 # Free batch student data immediately — mel_stack is the only reference now
@@ -546,6 +585,15 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             
         except Exception as e:
             logger.error(f"❌ Training failed on batch {num_batches + 1}: {e}")
+            # After CUDA OOM the allocator still holds fragmented blocks — if we
+            # just `continue`, every subsequent batch will OOM too.  Zero gradients
+            # and flush the cache so the next batch has a chance to succeed.
+            if "out of memory" in str(e).lower() or "CUDA" in str(e):
+                trainer.optimizer.zero_grad(set_to_none=True)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                import gc; gc.collect()
+                logger.warning("🧹 Cleared CUDA cache after OOM — next batch may succeed")
             continue
         
         logger.info(f"─" * 60)
@@ -1099,6 +1147,11 @@ def train(config_path: str, resume: str = None):
             except Exception as e:
                 logger.warning(f"⚠️ Error enforcing stage from epoch on resume: {e}")
 
+            # Free the checkpoint dict — all data has been loaded into model/optimizer/scheduler
+            del checkpoint
+            gc.collect()
+            logger.info("   🧹 Freed checkpoint dict from RAM")
+
             if start_epoch > (config['training']['epochs'] + config['training'].get('stage2_epochs', 0)):
                 logger.info(f"🎉 Audio training already completed! (reached {config['training']['epochs'] + config['training'].get('stage2_epochs', 0)} epochs)")
                 final_onnx_path = Path(config['paths']['final_model'])
@@ -1125,6 +1178,9 @@ def train(config_path: str, resume: str = None):
                 logger.warning(f"⚠️ Could not restore text scheduler state: {e}")
             start_epoch = checkpoint['epoch'] + 1
             logger.info(f"✅ Successfully resumed text from epoch {checkpoint['epoch']}")
+            del checkpoint
+            gc.collect()
+            logger.info("   🧹 Freed text checkpoint dict from RAM")
             if start_epoch > config['training']['epochs']:
                 logger.info(f"🎉 Text training already completed! (reached {config['training']['epochs']} epochs)")
                 # Export final text ONNX model to /student_clap/models/final_text_model.onnx

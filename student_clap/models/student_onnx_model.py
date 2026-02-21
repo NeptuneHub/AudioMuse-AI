@@ -303,6 +303,7 @@ class FusionStudentCLAPAudio(nn.Module):
             logger.info(f"  Specialist architecture from checkpoint: {specialist_config['model']['efficientat_model']}")
         self.specialist = StudentCLAPAudio(specialist_config)
         self.specialist.load_state_dict(ckpt['model_state_dict'], strict=False)
+        del ckpt  # Free checkpoint dict from RAM (~70-100 MB with optimizer state)
         for param in self.specialist.parameters():
             param.requires_grad = False
         self.specialist.eval()
@@ -1131,7 +1132,10 @@ class StudentCLAPTrainer:
             self.optimizer.zero_grad()
 
         total_segments = mixed_mel.shape[0]
-        mixed_mel = mixed_mel.to(self.device)
+        # Keep mixed_mel on CPU — only move each chunk to GPU right before
+        # forward, then free it.  With batch_size=64 the full tensor is ~100 MB;
+        # keeping it on GPU wastes VRAM during backward while only one 5-segment
+        # chunk is needed at a time.
         mixed_teacher = mixed_teacher.to(self.device)
 
         # Process all segments through the model in chunks
@@ -1139,11 +1143,15 @@ class StudentCLAPTrainer:
         student_emb_list = []
         for chunk_start in range(0, total_segments, chunk_size):
             chunk_end = min(chunk_start + chunk_size, total_segments)
-            chunk = mixed_mel[chunk_start:chunk_end]
+            chunk = mixed_mel[chunk_start:chunk_end].to(self.device)
             with torch.amp.autocast(device_type=self.amp_device_type, dtype=torch.bfloat16, enabled=self.use_amp):
                 chunk_emb = self.model.forward(chunk)
+            del chunk  # Free GPU copy of this chunk immediately
             chunk_emb = chunk_emb.float()  # Back to FP32 for loss
             student_emb_list.append(chunk_emb)
+
+        # Free the CPU mel tensor — all chunks have been forwarded
+        del mixed_mel
 
         student_embeddings = torch.cat(student_emb_list, dim=0)
 
