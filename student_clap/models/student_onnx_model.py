@@ -322,17 +322,28 @@ class FusionStudentCLAPAudio(nn.Module):
         student_bb_params = sum(p.numel() for p in self.student_backbone.parameters())
         logger.info(f"  Student backbone: {student_bb_params:,} params (trainable)")
 
-        # --- Student Projector (TRAINABLE) --- simple linear dim alignment
-        # Zero-init so student contribution is exactly 0 at start (output = pure specialist)
-        self.student_projector = nn.Linear(backbone_dim, self.embedding_dim, bias=False)
-        nn.init.zeros_(self.student_projector.weight)
-        proj_params = self.student_projector.weight.numel()
-        logger.info(f"  Student projector ({backbone_dim}->{self.embedding_dim}): {proj_params:,} params (zero-init)")
+        # --- Student Projector (TRAINABLE) --- MLP: backbone_dim -> 512 -> 512
+        # Last linear is zero-init so student contribution is exactly 0 at start
+        # (output = pure specialist). F.normalize(zeros) = zeros safely.
+        _proj_linear1 = nn.Linear(backbone_dim, self.embedding_dim, bias=False)
+        _proj_linear2 = nn.Linear(self.embedding_dim, self.embedding_dim, bias=False)
+        nn.init.zeros_(_proj_linear2.weight)
+        self.student_projector = nn.Sequential(
+            _proj_linear1,
+            nn.GELU(),
+            _proj_linear2,
+            nn.LayerNorm(self.embedding_dim),
+        )
+        proj_params = sum(p.numel() for p in self.student_projector.parameters())
+        logger.info(f"  Student projector MLP ({backbone_dim}->512->512): {proj_params:,} params (last linear zero-init)")
 
-        # --- Learnable Gating (TRAINABLE) ---
-        # sigmoid(-3.0) ≈ 0.047 => output starts ~95% specialist
-        self.alpha = nn.Parameter(torch.tensor(-3.0))
-        logger.info(f"  Gating alpha init: {self.alpha.item():.1f} (sigmoid={torch.sigmoid(self.alpha).item():.4f})")
+        # --- Learnable Gating (TRAINABLE) --- per-dimension gate (512 independent scalars)
+        # Each embedding dimension gets its own gate, allowing the student to contribute
+        # more in specific semantic directions (e.g. vocal timbre, energy) without
+        # contaminating dimensions where the specialist is already strong.
+        # sigmoid(-3.0) ≈ 0.047 => all dims start at ~95% specialist
+        self.alpha = nn.Parameter(torch.full((self.embedding_dim,), -3.0))
+        logger.info(f"  Gating alpha: {self.embedding_dim} per-dim gates, init=-3.0 (sigmoid≈{torch.sigmoid(self.alpha[0]).item():.4f})")
 
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -371,9 +382,13 @@ class FusionStudentCLAPAudio(nn.Module):
         else:
             _, student_features = self.student_backbone(mel_spec)  # (B, backbone_dim)
 
-        # Project to embedding dim + gated addition
-        projected = self.student_projector(student_features)  # (B, 512)
-        gate = torch.sigmoid(self.alpha)
+        # Project to embedding dim, normalize to unit sphere, then gated addition.
+        # Normalizing before gating makes the gate interpretable: it blends two unit
+        # vectors, so sigmoid(alpha) directly controls the contribution magnitude.
+        # F.normalize is safe on the zero vector (returns zeros, not NaN) so the
+        # zero-init guarantee holds at the start of training.
+        projected = F.normalize(self.student_projector(student_features), p=2, dim=1)  # (B, 512)
+        gate = torch.sigmoid(self.alpha)  # (512,) per-dimension
         fused = specialist_emb + gate * projected
 
         return F.normalize(fused, p=2, dim=1)

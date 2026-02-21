@@ -146,6 +146,19 @@ print('Reset logit_scale to 2.6592')
 "
 ```
 
+Clear Adamw optimizer
+```
+python -c "
+import torch
+ck = torch.load('student_clap/checkpoints/checkpoint_epoch_9.pth', map_location='cpu')
+ck.pop('optimizer_state_dict', None)
+ck.pop('scheduler_state_dict', None)
+ck['patience_counter'] = 0
+torch.save(ck, 'student_clap/checkpoints/checkpoint_epoch_9_nostate.pth')
+print('Keys saved:', list(ck.keys()))
+"
+```
+
 Check the cosine and val cosine also in subfolder:
 ```
 find student_clap/checkpoints -name "checkpoint_epoch_*.pth" | sort -V | python3 -c '

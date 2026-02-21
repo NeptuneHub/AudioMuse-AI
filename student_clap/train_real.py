@@ -298,10 +298,13 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             logit_val = trainer.model.logit_scale.detach().cpu().item()
             temp_multiplier = math.exp(logit_val)
             temp_str = f", T={temp_multiplier:.2f}"
-        # Log gating alpha for fusion model
+        # Log gating alpha for fusion model (per-dim: show mean/min/max)
         if hasattr(trainer.model, 'alpha'):
-            gate_val = torch.sigmoid(trainer.model.alpha).item()
-            temp_str += f", gate={gate_val:.4f}"
+            gate = torch.sigmoid(trainer.model.alpha.detach())
+            if gate.dim() == 0:
+                temp_str += f", gate={gate.item():.4f}"
+            else:
+                temp_str += f", gate_mean={gate.mean().item():.4f}/min={gate.min().item():.4f}/max={gate.max().item():.4f}"
         stage_num = config.get('current_stage', 1)
         logger.info(f"🔥 BATCH {num_batches + 1}/{total_batches} (EPOCH {epoch}/{config['training']['epochs']}) [STAGE {stage_num}, LR {lr_str}{temp_str}]: Training on {len(batch_data)} songs...")
 
