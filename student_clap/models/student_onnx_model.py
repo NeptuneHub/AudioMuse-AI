@@ -388,12 +388,12 @@ class FusionStudentCLAPAudio(nn.Module):
         backbone_dim = self.student_backbone.embed_dim  # 192
 
         # Enable per-block gradient checkpointing for ViT transformer blocks.
-        # This recomputes activations during backward instead of storing them,
-        # cutting peak activation memory by ~60% (12 blocks × 196 tokens × 192 dim).
-        # Quality is identical — only memory vs compute trade-off.
+        # timm's set_grad_checkpointing does internal per-block checkpointing,
+        # which is used as an INNER optimisation during the recomputation pass
+        # of the OUTER whole-model checkpoint wrapper in forward().
         if self.use_gradient_checkpointing:
             self.student_backbone.set_grad_checkpointing(enable=True)
-            logger.info("  DeiT: per-block gradient checkpointing ENABLED (saves ~60% activation memory)")
+            logger.info("  DeiT: per-block gradient checkpointing ENABLED")
 
         student_bb_params = sum(p.numel() for p in self.student_backbone.parameters())
         logger.info(f"  Student backbone (DeiT-tiny, ImageNet pretrained): {student_bb_params:,} params (trainable)")
@@ -461,9 +461,19 @@ class FusionStudentCLAPAudio(nn.Module):
         if self._use_deit:
             # Resize student mel to DeiT input: (B, 1, 128, T) → (B, 1, 224, 224)
             x = F.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
-            # Per-block gradient checkpointing is set up in _build_deit_backbone
-            # via timm's set_grad_checkpointing — no manual wrapping needed here.
-            student_features = self.student_backbone(x)  # (B, 192)
+            # Wrap entire DeiT in one checkpoint region so the autograd graph
+            # stores only the input tensor (~1 MB per chunk) instead of all 12
+            # blocks' activations (~100 MB per chunk).  With 200+ segments
+            # (batch_size=64) processed in 40 chunks this prevents ~4 GB of
+            # accumulated activation memory.
+            # timm's internal per-block checkpointing (set in _build_deit_backbone)
+            # acts as a nested optimisation during the recomputation pass.
+            if self.training and self.use_gradient_checkpointing:
+                student_features = torch.utils.checkpoint.checkpoint(
+                    self.student_backbone, x, use_reentrant=False
+                )
+            else:
+                student_features = self.student_backbone(x)  # (B, 192)
         else:
             # EfficientAT returns (logits, features) tuple
             if self.training and self.use_gradient_checkpointing:
