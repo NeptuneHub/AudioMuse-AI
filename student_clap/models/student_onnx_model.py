@@ -115,10 +115,13 @@ class StudentCLAPAudio(nn.Module):
             input_dim_t=1000,  # Will be dynamically handled
         )
 
-        # Backwards compatibility aliases used in older code/checkpoints
-        # Keep `base` and `phinet` pointing to the same backbone reference
-        self.base = self.backbone
-        self.phinet = self.backbone
+        # Backwards compatibility: register `base` and `phinet` as non-module
+        # attributes so old checkpoint keys are accepted by load_state_dict
+        # (strict=False) but state_dict() doesn't serialize them a second time.
+        # Using object.__setattr__ bypasses nn.Module.__setattr__ which would
+        # register them as submodules and triple the saved weights on disk.
+        object.__setattr__(self, 'base', self.backbone)
+        object.__setattr__(self, 'phinet', self.backbone)
 
         # Expose what pretrained was actually loaded by the backbone (if any)
         loaded = getattr(self.backbone, '_loaded_pretrained', None)

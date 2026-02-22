@@ -65,7 +65,7 @@ def main():
         logger.error('Provided file does not look like a training checkpoint (no model_state_dict).')
         raise SystemExit(1)
 
-    trainer.model.load_state_dict(ckpt['model_state_dict'])
+    trainer.model.load_state_dict(ckpt['model_state_dict'], strict=False)
     trainer.model.to(trainer.device)
     trainer.model.eval()
     logger.info(f"Model weights loaded (device={trainer.device})")

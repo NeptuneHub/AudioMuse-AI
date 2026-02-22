@@ -1013,7 +1013,7 @@ def train(config_path: str, resume: str = None):
         try:
             logger.info(f"📂 Loading audio checkpoint: {audio_resume_path}")
             checkpoint = torch.load(audio_resume_path, map_location=trainer.device)
-            trainer.model.load_state_dict(checkpoint['model_state_dict'])
+            trainer.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
 
             # Attempt to restore optimizer state; if missing or failing, keep fresh optimizer and apply config LR/WD
             if 'optimizer_state_dict' in checkpoint:
