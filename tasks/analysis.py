@@ -11,6 +11,7 @@ import logging
 import uuid
 import traceback
 import gc
+from typing import Any
 from pydub import AudioSegment
 from tempfile import NamedTemporaryFile
 
@@ -64,6 +65,7 @@ from .memory_utils import (
     SessionRecycler,
     comprehensive_memory_cleanup
 )
+from util import provider
 
 
 from psycopg2 import OperationalError
@@ -414,25 +416,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     should_cleanup_sessions = False
     
     # Configure provider options for GPU memory management (used for main and secondary models)
-    available_providers = ort.get_available_providers()
-    if 'CUDAExecutionProvider' in available_providers:
-        # Get GPU device ID from environment or default to 0
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-            'cudnn_conv_algo_search': 'EXHAUSTIVE',
-            'do_copy_in_default_stream': True,
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - attempting to use GPU for analysis (device_id={gpu_device_id})")
-    else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
+    provider_options = get_provider_options(cuda_do_copy_in_default_stream=True)
     
     try:
         # Use pre-loaded sessions if provided, otherwise load per-song
@@ -811,22 +795,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         if onnx_sessions is None:
                             logger.info(f"Lazy-loading Essentia models for album: {album_name}")
                             onnx_sessions = {}
-                            available_providers = ort.get_available_providers()
-                            
-                            if 'CUDAExecutionProvider' in available_providers:
-                                gpu_device_id = 0
-                                cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-                                if cuda_visible and cuda_visible != '-1':
-                                    gpu_device_id = 0
-                                cuda_options = {
-                                    'device_id': gpu_device_id,
-                                    'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-                                    'cudnn_conv_algo_search': 'EXHAUSTIVE',      # Find memory-efficient algorithms
-                                    'do_copy_in_default_stream': True,           # Better memory sync
-                                }
-                                provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-                            else:
-                                provider_options = [('CPUExecutionProvider', {})]
+                            provider_options = get_provider_options(
+                                cuda_do_copy_in_default_stream=True)
                             
                             try:
                                 for model_name, model_path in model_paths.items():
@@ -859,22 +829,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             
                             # Recreate sessions
                             onnx_sessions = {}
-                            available_providers = ort.get_available_providers()
-                            
-                            if 'CUDAExecutionProvider' in available_providers:
-                                gpu_device_id = 0
-                                cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-                                if cuda_visible and cuda_visible != '-1':
-                                    gpu_device_id = 0
-                                cuda_options = {
-                                    'device_id': gpu_device_id,
-                                    'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-                                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
-                                    'do_copy_in_default_stream': True,
-                                }
-                                provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-                            else:
-                                provider_options = [('CPUExecutionProvider', {})]
+                            provider_options = get_provider_options(
+                                cuda_do_copy_in_default_stream=True
+                            )
                             
                             try:
                                 for model_name, model_path in model_paths.items():
@@ -1367,3 +1324,34 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             logger.critical(f"FATAL ERROR: Analysis failed: {e}", exc_info=True)
             log_and_update_main(f"❌ Main analysis failed: {e}", current_progress, task_state=TASK_STATUS_FAILURE, error_message=str(e), traceback=traceback.format_exc())
             raise
+
+
+def get_provider_options(cuda_do_copy_in_default_stream: bool = False,
+                         cuda_conv_algo_search_mode: str = 'EXHAUSTIVE') -> list[tuple[str, dict[str, Any]]]:
+    provider_options = [('CPUExecutionProvider', {})]
+    available_providers = provider.get_available_providers()
+    if 'OpenVINOExecutionProvider' in available_providers:
+        vino_options = {
+            'device_type': 'AUTO',
+        }
+        if os.path.exists(os.environ.get('OPENVINO_CONFIG_JSON_PATH', '')):
+            vino_options['load_config'] = os.environ.get('OPENVINO_CONFIG_JSON_PATH')
+        provider_options.insert(0, ('OpenVINOExecutionProvider', vino_options))
+        logger.info("OpenVINO provider available - Attempting to use OpenVINO for analysis...")
+    if 'CUDAExecutionProvider' in available_providers:
+        # Get GPU device ID from environment or default to 0
+        gpu_device_id = 0
+        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+        if cuda_visible and cuda_visible != '-1':
+            gpu_device_id = 0
+        
+        cuda_options = {
+            'device_id': gpu_device_id,
+            'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
+            'cudnn_conv_algo_search': cuda_conv_algo_search_mode,
+        }
+        if cuda_do_copy_in_default_stream:
+            cuda_options['do_copy_in_default_stream'] = True
+        provider_options.insert(0,('CUDAExecutionProvider', cuda_options))
+        logger.info(f"CUDA provider available - attempting to use GPU for analysis (device_id={gpu_device_id})")
+    return provider_options

@@ -128,6 +128,9 @@ COPY requirements/ /app/requirements/
 RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
         echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager, torch+cuda)"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common-noavx2.txt || exit 1; \
+    elif [[ "$BASEIMAGE" =~ ^openvino: ]]; then\
+        echo "OpenVINO base image detected: installing OpenVINO runtime packages (onnxruntime-openvino)" \
+        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/openvino.txt -r /app/requirements/common.txt || exit 1; \
     else \
         echo "CPU base image: installing all packages together for dependency resolution"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/cpu-noavx2.txt -r /app/requirements/common-noavx2.txt || exit 1; \

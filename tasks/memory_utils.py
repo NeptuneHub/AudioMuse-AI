@@ -208,20 +208,16 @@ def reset_onnx_memory_pool() -> bool:
     """
     try:
         import onnxruntime as ort
+        from util import provider
         
         # Force garbage collection first
         gc.collect()
         
         # Determine available providers
-        providers = ort.get_available_providers()
-        preferred_provider = None
-        
-        if 'CUDAExecutionProvider' in providers:
-            preferred_provider = 'CUDAExecutionProvider'
-            logger.debug("Using CUDA provider for ONNX memory pool reset")
-        elif 'CPUExecutionProvider' in providers:
-            preferred_provider = 'CPUExecutionProvider'
-            logger.debug("Using CPU provider for ONNX memory pool reset")
+        providers = provider.get_available_providers()
+        preferred_provider = providers[0]
+        if preferred_provider:
+            logger.debug("Using %s for ONNX memory pool reset", preferred_provider.split('ExecutionProvider')[0])
         else:
             logger.debug("No suitable ONNX provider found for memory pool reset")
             return False
