@@ -266,10 +266,13 @@ class FusionStudentCLAPAudio(nn.Module):
         fused = L2-normalize(specialist_emb + gate * projected)
 
     Backbone options (config ``model.fusion_backbone``):
-        - ``"efficientat"`` (default): EfficientAT MobileNet (mn04_as, ~0.98M params)
+        - ``"efficientat"``: EfficientAT MobileNet (mn04_as, ~0.98M params)
         - ``"deit_tiny"``: DeiT-tiny ViT (facebook/deit-tiny-patch16-224, ~5.7M params,
           ImageNet pretrained).  Student mel (128×T) is bilinear-resized to 224×224
           inside forward(); patch embedding is adapted from 3→1 channel automatically.
+        - ``"mobilevitv2"`` (default): MobileViTv2-050 hybrid CNN+Transformer
+          (apple/mobilevitv2_050.cvnets_in1k, ~1.4M params, ImageNet pretrained).
+          Student mel (128×T) is bilinear-resized to 256×256 inside forward().
 
     The specialist embedding passes through untouched (no bottleneck).
     The student MLP learns a residual delta on the unit sphere; the per-dimension gate
@@ -327,10 +330,12 @@ class FusionStudentCLAPAudio(nn.Module):
 
         # --- Student Backbone Only (TRAINABLE, no projection head) ---
         fusion_backbone = config['model'].get('fusion_backbone', 'efficientat')
-        self._use_deit = (fusion_backbone == 'deit_tiny')
+        self._fusion_backbone = fusion_backbone
 
-        if self._use_deit:
+        if fusion_backbone == 'deit_tiny':
             backbone_dim = self._build_deit_backbone(config)
+        elif fusion_backbone == 'mobilevitv2':
+            backbone_dim = self._build_mobilevitv2_backbone(config)
         else:
             backbone_dim = self._build_efficientat_backbone(config)
 
@@ -406,6 +411,50 @@ class FusionStudentCLAPAudio(nn.Module):
 
         return backbone_dim
 
+    def _build_mobilevitv2_backbone(self, config: Dict) -> int:
+        """Build MobileViTv2-050 backbone with ImageNet pretrained weights.
+
+        Apple's MobileViTv2 (Separable Self-attention for Mobile Vision
+        Transformers) is a lightweight hybrid CNN+Transformer.  The ``_050``
+        variant has ~1.4M params and outputs 256-dim features.
+
+        Input mel spectrograms are bilinear-resized to 256x256 in ``forward()``.
+
+        Returns:
+            backbone_dim: Feature dimension (256).
+        """
+        try:
+            import timm
+        except ImportError:
+            raise ImportError(
+                "timm is required for MobileViTv2 fusion backbone: pip install timm"
+            )
+
+        use_pretrained = config['model'].get('use_pretrained', True)
+        self.student_backbone = timm.create_model(
+            'mobilevitv2_050.cvnets_in1k',
+            pretrained=use_pretrained,
+            num_classes=0,      # remove classifier head, return pooled features
+            in_chans=1,         # adapt first conv from 3→1 channel
+        )
+        # timm returns pooled features when num_classes=0
+        # Determine backbone dim from a dummy forward
+        with torch.no_grad():
+            dummy = torch.randn(1, 1, 256, 256)
+            features = self.student_backbone(dummy)
+            backbone_dim = features.shape[-1]
+
+        if self.use_gradient_checkpointing:
+            self.student_backbone.set_grad_checkpointing(enable=True)
+            logger.info("  MobileViTv2: gradient checkpointing ENABLED")
+
+        student_bb_params = sum(p.numel() for p in self.student_backbone.parameters())
+        logger.info(f"  Student backbone (MobileViTv2-050, ImageNet pretrained): {student_bb_params:,} params (trainable)")
+        logger.info(f"  MobileViTv2 input: mel (B, 1, {self.n_mels}, T) -> bilinear resize to (B, 1, 256, 256)")
+        logger.info(f"  Student backbone output dim: {backbone_dim}")
+
+        return backbone_dim
+
     def _build_efficientat_backbone(self, config: Dict) -> int:
         """Build EfficientAT MobileNet backbone (original fusion path).
 
@@ -460,10 +509,10 @@ class FusionStudentCLAPAudio(nn.Module):
             specialist_emb = self.specialist(spec_input).float().detach()  # (B, 512) L2-normed
             del spec_input  # Free bfloat16 copy immediately
 
-        # Student backbone (DeiT-tiny or EfficientAT)
+        # Student backbone (DeiT-tiny, MobileViTv2, or EfficientAT)
         x = mel_spec.unsqueeze(1) if mel_spec.dim() == 3 else mel_spec  # (B, 1, n_mels, T)
 
-        if self._use_deit:
+        if self._fusion_backbone == 'deit_tiny':
             # Resize student mel to DeiT input: (B, 1, 128, T) → (B, 1, 224, 224)
             x = F.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
             # Wrap entire DeiT in one checkpoint region so the autograd graph
@@ -479,6 +528,15 @@ class FusionStudentCLAPAudio(nn.Module):
                 )
             else:
                 student_features = self.student_backbone(x)  # (B, 192)
+        elif self._fusion_backbone == 'mobilevitv2':
+            # Resize student mel to MobileViTv2 input: (B, 1, 128, T) → (B, 1, 256, 256)
+            x = F.interpolate(x, size=(256, 256), mode='bilinear', align_corners=False)
+            if self.training and self.use_gradient_checkpointing:
+                student_features = torch.utils.checkpoint.checkpoint(
+                    self.student_backbone, x, use_reentrant=False
+                )
+            else:
+                student_features = self.student_backbone(x)  # (B, 256)
         else:
             # EfficientAT returns (logits, features) tuple
             if self.training and self.use_gradient_checkpointing:
