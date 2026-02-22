@@ -194,8 +194,43 @@ jobs:
     permissions:
       packages: write
     steps:
-      - name: Note about temporary tags
+      - name: Delete temporary per-arch tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Temporary build tags (build-amd64-* and build-arm64-*) can be cleaned up"
-          echo "via GitHub Container Registry UI or ghcr.io API if desired."
-          echo "They will be overwritten on the next build."
+          IMAGE="${{ needs.prepare.outputs.image }}"
+          # Extract org/repo and package name from ghcr.io/org/repo format
+          ORG_REPO="${IMAGE#ghcr.io/}"
+          ORG="$(echo "$ORG_REPO" | cut -d/ -f1)"
+          PKG="$(echo "$ORG_REPO" | cut -d/ -f2)"
+
+          for ARCH in amd64 arm64; do
+            TAG="build-${ARCH}-${{ github.sha }}"
+            echo "Deleting temporary tag: ${TAG}..."
+
+            # Find the version ID for this tag
+            VERSION_ID=$(curl -s -H "Authorization: Bearer ${GH_TOKEN}" \
+              "https://api.github.com/orgs/${ORG}/packages/container/${PKG}/versions" \
+              | python3 -c "
+          import sys, json
+          versions = json.load(sys.stdin)
+          for v in versions:
+              tags = v.get('metadata', {}).get('container', {}).get('tags', [])
+              if '${TAG}' in tags:
+                  print(v['id'])
+                  break
+          " 2>/dev/null || echo "")
+
+            if [ -n "$VERSION_ID" ]; then
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                "https://api.github.com/orgs/${ORG}/packages/container/${PKG}/versions/${VERSION_ID}")
+              if [ "$HTTP_CODE" = "204" ]; then
+                echo "✓ Deleted ${TAG} (version ${VERSION_ID})"
+              else
+                echo "⚠ Failed to delete ${TAG} (HTTP ${HTTP_CODE}) — may need manual cleanup"
+              fi
+            else
+              echo "⚠ Tag ${TAG} not found — may already be cleaned up"
+            fi
+          done
