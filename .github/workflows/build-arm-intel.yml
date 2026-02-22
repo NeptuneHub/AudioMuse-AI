@@ -1,10 +1,12 @@
-# This workflow builds and tests a multi-architecture Docker image for both AMD64 and ARM64.
-# It triggers on pushes to the main, devel, and mulan branches, as well as on version tags.
+# This workflow builds and pushes a multi-architecture Docker image for both AMD64 and ARM64.
+# Each architecture is built NATIVELY on its own runner (no QEMU emulation) to avoid
+# "Illegal instruction" crashes caused by QEMU-compiled binaries on real ARM hardware.
+# After both builds complete, a manifest is created to combine them into a single multi-arch tag.
+#
 # Tags are automatically generated based on the triggering event:
-# - main branch -> 'latest'
 # - devel branch -> 'devel'
 # - mulan branch -> 'mulan'
-# - version tags (e.g., v1.2.3) -> version number (e.g., '1.2.3')
+# - version tags (e.g., v1.2.3) -> 'latest' + version number (e.g., '1.2.3')
 
 name: Build, Test, and Push AudioMuse AI Docker Image INTEL and ARM
 
@@ -20,94 +22,168 @@ on:
   # Allow manual runs for debugging or manual pushes
   workflow_dispatch:
 
+env:
+  REGISTRY: ghcr.io
+
 jobs:
-  build-test-and-push:
-    runs-on: ubuntu-latest # Run on a single AMD64 runner
-
-    permissions:
-      contents: read   # Allow checkout to read repository contents
-      packages: write  # Allow pushing packages to GitHub Container Registry
-
+  # ============================================================================
+  # Step 1: Compute image name and tags once (shared by all jobs)
+  # ============================================================================
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.repo_name.outputs.image }}
+      tags: ${{ steps.tags.outputs.tags }}
     steps:
-      - name: Check initial disk space
+      - name: Set lower-case image name
+        id: repo_name
+        run: echo "image=ghcr.io/$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Compute tags
+        id: tags
         run: |
-          echo "Disk space before cleanup:"
-          df -h
-      
-      - name: Free Disk Space (Ubuntu)
+          TAGS=""
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+            TAGS="latest ${VERSION}"
+          elif [[ "${{ github.ref }}" == refs/heads/devel ]]; then
+            TAGS="devel"
+          elif [[ "${{ github.ref }}" == refs/heads/mulan ]]; then
+            TAGS="mulan"
+          fi
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "Tags to build: ${TAGS}"
+
+  # ============================================================================
+  # Step 2: Build each architecture NATIVELY (no QEMU)
+  # ============================================================================
+  build-amd64:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
           swap-storage: false
-          large-packages: true  # Remove large packages (saves ~8-10 GB)
+          large-packages: true
           tool-cache: true
           android: true
           dotnet: true
           haskell: true
           docker-images: true
 
-      - name: Check disk space after cleanup
-        run: |
-          echo "Disk space after cleanup:"
-          df -h
-
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        # QEMU is used for cross-platform builds (e.g., building ARM on an x86 runner)
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
-        # Buildx is a Docker CLI plugin that extends the docker command with the full support of the features provided by Moby BuildKit.
         uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-          driver-opts: image=moby/buildkit:latest
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # This new step uses a shell command to reliably convert the repository name to lower case.
-      - name: Set lower-case repository name
-        id: repo_name
-        run: echo "name=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-
-      # This step uses the lower-case name from the previous step to generate tags.
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ steps.repo_name.outputs.name }}
-          tags: |
-            # When a version tag (refs/tags/v*) is pushed, emit both 'latest' and the semver tag.
-            # We removed direct main branch triggers, so enable latest on tag pushes.
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            # Set 'devel' tag only for the devel branch
-            type=raw,value=devel,enable=${{ github.ref == 'refs/heads/devel' }}
-            # Set 'mulan' tag only for the mulan branch
-            type=raw,value=mulan,enable=${{ github.ref == 'refs/heads/mulan' }}
-            # Use the version number for Git tags (e.g., v1.2.3 -> 1.2.3)
-            type=semver,pattern={{version}}
-
-      - name: Build and push AudioMuse AI Image
-        id: docker_build_and_push
+      - name: Build and push AMD64 image
         uses: docker/build-push-action@v5
         with:
           context: ${{ github.workspace }}
           file: Dockerfile
-          platforms: linux/amd64,linux/arm64 # Build for both Intel and ARM
+          platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}      # Use tags generated by the metadata-action
-          labels: ${{ steps.meta.outputs.labels }}  # Add labels generated by the metadata-action
-          cache-from: type=gha,scope=${{ github.ref_name }}
-          cache-to: type=gha,scope=${{ github.ref_name }},mode=max
+          tags: ${{ needs.prepare.outputs.image }}:build-amd64
+          cache-from: type=gha,scope=amd64-${{ github.ref_name }}
+          cache-to: type=gha,scope=amd64-${{ github.ref_name }},mode=max
 
-      - name: Final cleanup
-        if: always()
+  build-arm64:
+    needs: prepare
+    runs-on: ubuntu-24.04-arm  # Native ARM64 runner — no QEMU emulation
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          swap-storage: false
+          large-packages: true
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          docker-images: true
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ARM64 image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ github.workspace }}
+          file: Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: ${{ needs.prepare.outputs.image }}:build-arm64
+          cache-from: type=gha,scope=arm64-${{ github.ref_name }}
+          cache-to: type=gha,scope=arm64-${{ github.ref_name }},mode=max
+
+  # ============================================================================
+  # Step 3: Merge into a single multi-arch manifest
+  # ============================================================================
+  merge-manifest:
+    needs: [prepare, build-amd64, build-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push multi-arch manifest
         run: |
-          echo "Final disk space:"
-          df -h
+          IMAGE="${{ needs.prepare.outputs.image }}"
+          TAGS="${{ needs.prepare.outputs.tags }}"
+          AMD64="${IMAGE}:build-amd64"
+          ARM64="${IMAGE}:build-arm64"
+
+          for TAG in $TAGS; do
+            echo "Creating manifest for ${IMAGE}:${TAG}..."
+            docker buildx imagetools create \
+              --tag "${IMAGE}:${TAG}" \
+              "${AMD64}" \
+              "${ARM64}"
+            echo "✓ Pushed ${IMAGE}:${TAG}"
+          done
+
+      - name: Verify multi-arch manifest
+        run: |
+          IMAGE="${{ needs.prepare.outputs.image }}"
+          TAGS="${{ needs.prepare.outputs.tags }}"
+          for TAG in $TAGS; do
+            echo "=== Inspecting ${IMAGE}:${TAG} ==="
+            docker buildx imagetools inspect "${IMAGE}:${TAG}"
+          done
+
+  # NOTE: Temporary per-arch tags (build-amd64-*, build-arm64-*) are left in the registry.
+  # They get overwritten on every build, so at most 2 stale tags exist at any time.
+  # Delete them manually from the GitHub Packages UI if desired.
