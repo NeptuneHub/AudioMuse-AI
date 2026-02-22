@@ -22,6 +22,12 @@ on:
   # Allow manual runs for debugging or manual pushes
   workflow_dispatch:
 
+# Prevent concurrent builds for the same branch/tag — a new push cancels the in-progress build.
+# This avoids race conditions where two builds overwrite each other's temporary tags.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
 
@@ -34,6 +40,7 @@ jobs:
     outputs:
       image: ${{ steps.repo_name.outputs.image }}
       tags: ${{ steps.tags.outputs.tags }}
+      suffix: ${{ steps.tags.outputs.suffix }}
     steps:
       - name: Set lower-case image name
         id: repo_name
@@ -43,17 +50,22 @@ jobs:
         id: tags
         run: |
           TAGS=""
+          SUFFIX=""
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             VERSION="${{ github.ref_name }}"
             VERSION="${VERSION#v}"
             TAGS="latest ${VERSION}"
+            SUFFIX="release"
           elif [[ "${{ github.ref }}" == refs/heads/devel ]]; then
             TAGS="devel"
+            SUFFIX="devel"
           elif [[ "${{ github.ref }}" == refs/heads/mulan ]]; then
             TAGS="mulan"
+            SUFFIX="mulan"
           fi
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
-          echo "Tags to build: ${TAGS}"
+          echo "suffix=${SUFFIX}" >> $GITHUB_OUTPUT
+          echo "Tags to build: ${TAGS} (suffix: ${SUFFIX})"
 
   # ============================================================================
   # Step 2: Build each architecture NATIVELY (no QEMU)
@@ -96,7 +108,7 @@ jobs:
           file: Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ needs.prepare.outputs.image }}:build-amd64
+          tags: ${{ needs.prepare.outputs.image }}:build-amd64-${{ needs.prepare.outputs.suffix }}
           cache-from: type=gha,scope=amd64-${{ github.ref_name }}
           cache-to: type=gha,scope=amd64-${{ github.ref_name }},mode=max
 
@@ -138,7 +150,7 @@ jobs:
           file: Dockerfile
           platforms: linux/arm64
           push: true
-          tags: ${{ needs.prepare.outputs.image }}:build-arm64
+          tags: ${{ needs.prepare.outputs.image }}:build-arm64-${{ needs.prepare.outputs.suffix }}
           cache-from: type=gha,scope=arm64-${{ github.ref_name }}
           cache-to: type=gha,scope=arm64-${{ github.ref_name }},mode=max
 
@@ -163,8 +175,8 @@ jobs:
         run: |
           IMAGE="${{ needs.prepare.outputs.image }}"
           TAGS="${{ needs.prepare.outputs.tags }}"
-          AMD64="${IMAGE}:build-amd64"
-          ARM64="${IMAGE}:build-arm64"
+          AMD64="${IMAGE}:build-amd64-${{ needs.prepare.outputs.suffix }}"
+          ARM64="${IMAGE}:build-arm64-${{ needs.prepare.outputs.suffix }}"
 
           for TAG in $TAGS; do
             echo "Creating manifest for ${IMAGE}:${TAG}..."
