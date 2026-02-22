@@ -273,6 +273,9 @@ class FusionStudentCLAPAudio(nn.Module):
         - ``"mobilevitv2"`` (default): MobileViTv2-050 hybrid CNN+Transformer
           (apple/mobilevitv2_050.cvnets_in1k, ~1.4M params, ImageNet pretrained).
           Student mel (128×T) is bilinear-resized to 256×256 inside forward().
+        - ``"edgenext"``: EdgeNeXt-XX-Small hybrid CNN+Transformer with SDTA
+          (~1.16M params, ImageNet pretrained, 168-dim output).
+          Student mel (128×T) is bilinear-resized to 256×256 inside forward().
 
     The specialist embedding passes through untouched (no bottleneck).
     The student MLP learns a residual delta on the unit sphere; the per-dimension gate
@@ -336,6 +339,8 @@ class FusionStudentCLAPAudio(nn.Module):
             backbone_dim = self._build_deit_backbone(config)
         elif fusion_backbone == 'mobilevitv2':
             backbone_dim = self._build_mobilevitv2_backbone(config)
+        elif fusion_backbone == 'edgenext':
+            backbone_dim = self._build_edgenext_backbone(config)
         else:
             backbone_dim = self._build_efficientat_backbone(config)
 
@@ -455,6 +460,49 @@ class FusionStudentCLAPAudio(nn.Module):
 
         return backbone_dim
 
+    def _build_edgenext_backbone(self, config: Dict) -> int:
+        """Build EdgeNeXt-XX-Small backbone with ImageNet pretrained weights.
+
+        EdgeNeXt (CADL'22) is a hybrid CNN-Transformer using Split Depth-wise
+        Transpose Attention (SDTA).  The ``xx_small`` variant has ~1.16M params
+        and outputs 168-dim features.
+
+        Input mel spectrograms are bilinear-resized to 256x256 in ``forward()``.
+
+        Returns:
+            backbone_dim: Feature dimension (168).
+        """
+        try:
+            import timm
+        except ImportError:
+            raise ImportError(
+                "timm is required for EdgeNeXt fusion backbone: pip install timm"
+            )
+
+        use_pretrained = config['model'].get('use_pretrained', True)
+        self.student_backbone = timm.create_model(
+            'edgenext_xx_small',
+            pretrained=use_pretrained,
+            num_classes=0,      # remove classifier head, return pooled features
+            in_chans=1,         # adapt first conv from 3→1 channel
+        )
+        # Determine backbone dim from a dummy forward
+        with torch.no_grad():
+            dummy = torch.randn(1, 1, 256, 256)
+            features = self.student_backbone(dummy)
+            backbone_dim = features.shape[-1]
+
+        if self.use_gradient_checkpointing:
+            self.student_backbone.set_grad_checkpointing(enable=True)
+            logger.info("  EdgeNeXt: gradient checkpointing ENABLED")
+
+        student_bb_params = sum(p.numel() for p in self.student_backbone.parameters())
+        logger.info(f"  Student backbone (EdgeNeXt-XX-Small, ImageNet pretrained): {student_bb_params:,} params (trainable)")
+        logger.info(f"  EdgeNeXt input: mel (B, 1, {self.n_mels}, T) -> bilinear resize to (B, 1, 256, 256)")
+        logger.info(f"  Student backbone output dim: {backbone_dim}")
+
+        return backbone_dim
+
     def _build_efficientat_backbone(self, config: Dict) -> int:
         """Build EfficientAT MobileNet backbone (original fusion path).
 
@@ -528,15 +576,15 @@ class FusionStudentCLAPAudio(nn.Module):
                 )
             else:
                 student_features = self.student_backbone(x)  # (B, 192)
-        elif self._fusion_backbone == 'mobilevitv2':
-            # Resize student mel to MobileViTv2 input: (B, 1, 128, T) → (B, 1, 256, 256)
+        elif self._fusion_backbone in ('mobilevitv2', 'edgenext'):
+            # Resize student mel to 256×256 (MobileViTv2 and EdgeNeXt both use 256×256)
             x = F.interpolate(x, size=(256, 256), mode='bilinear', align_corners=False)
             if self.training and self.use_gradient_checkpointing:
                 student_features = torch.utils.checkpoint.checkpoint(
                     self.student_backbone, x, use_reentrant=False
                 )
             else:
-                student_features = self.student_backbone(x)  # (B, 256)
+                student_features = self.student_backbone(x)  # (B, 256) or (B, 168)
         else:
             # EfficientAT returns (logits, features) tuple
             if self.training and self.use_gradient_checkpointing:
