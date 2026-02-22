@@ -96,7 +96,7 @@ jobs:
           file: Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ needs.prepare.outputs.image }}:build-amd64-${{ github.sha }}
+          tags: ${{ needs.prepare.outputs.image }}:build-amd64
           cache-from: type=gha,scope=amd64-${{ github.ref_name }}
           cache-to: type=gha,scope=amd64-${{ github.ref_name }},mode=max
 
@@ -138,7 +138,7 @@ jobs:
           file: Dockerfile
           platforms: linux/arm64
           push: true
-          tags: ${{ needs.prepare.outputs.image }}:build-arm64-${{ github.sha }}
+          tags: ${{ needs.prepare.outputs.image }}:build-arm64
           cache-from: type=gha,scope=arm64-${{ github.ref_name }}
           cache-to: type=gha,scope=arm64-${{ github.ref_name }},mode=max
 
@@ -163,8 +163,8 @@ jobs:
         run: |
           IMAGE="${{ needs.prepare.outputs.image }}"
           TAGS="${{ needs.prepare.outputs.tags }}"
-          AMD64="${IMAGE}:build-amd64-${{ github.sha }}"
-          ARM64="${IMAGE}:build-arm64-${{ github.sha }}"
+          AMD64="${IMAGE}:build-amd64"
+          ARM64="${IMAGE}:build-arm64"
 
           for TAG in $TAGS; do
             echo "Creating manifest for ${IMAGE}:${TAG}..."
@@ -184,53 +184,6 @@ jobs:
             docker buildx imagetools inspect "${IMAGE}:${TAG}"
           done
 
-  # ============================================================================
-  # Step 4: Clean up temporary per-arch tags
-  # ============================================================================
-  cleanup:
-    needs: [prepare, merge-manifest]
-    runs-on: ubuntu-latest
-    if: always() && needs.merge-manifest.result == 'success'
-    permissions:
-      packages: write
-    steps:
-      - name: Delete temporary per-arch tags
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          IMAGE="${{ needs.prepare.outputs.image }}"
-          # Extract org/repo and package name from ghcr.io/org/repo format
-          ORG_REPO="${IMAGE#ghcr.io/}"
-          ORG="$(echo "$ORG_REPO" | cut -d/ -f1)"
-          PKG="$(echo "$ORG_REPO" | cut -d/ -f2)"
-
-          for ARCH in amd64 arm64; do
-            TAG="build-${ARCH}-${{ github.sha }}"
-            echo "Deleting temporary tag: ${TAG}..."
-
-            # Find the version ID for this tag
-            VERSION_ID=$(curl -s -H "Authorization: Bearer ${GH_TOKEN}" \
-              "https://api.github.com/orgs/${ORG}/packages/container/${PKG}/versions" \
-              | python3 -c "
-          import sys, json
-          versions = json.load(sys.stdin)
-          for v in versions:
-              tags = v.get('metadata', {}).get('container', {}).get('tags', [])
-              if '${TAG}' in tags:
-                  print(v['id'])
-                  break
-          " 2>/dev/null || echo "")
-
-            if [ -n "$VERSION_ID" ]; then
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-                -H "Authorization: Bearer ${GH_TOKEN}" \
-                "https://api.github.com/orgs/${ORG}/packages/container/${PKG}/versions/${VERSION_ID}")
-              if [ "$HTTP_CODE" = "204" ]; then
-                echo "✓ Deleted ${TAG} (version ${VERSION_ID})"
-              else
-                echo "⚠ Failed to delete ${TAG} (HTTP ${HTTP_CODE}) — may need manual cleanup"
-              fi
-            else
-              echo "⚠ Tag ${TAG} not found — may already be cleaned up"
-            fi
-          done
+  # NOTE: Temporary per-arch tags (build-amd64-*, build-arm64-*) are left in the registry.
+  # They get overwritten on every build, so at most 2 stale tags exist at any time.
+  # Delete them manually from the GitHub Packages UI if desired.
