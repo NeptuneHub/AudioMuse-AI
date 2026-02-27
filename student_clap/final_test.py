@@ -15,9 +15,9 @@ Usage:
 import os
 import sys
 import argparse
+import yaml
 import numpy as np
 import librosa
-import yaml
 import onnxruntime as ort
 
 # ── Load config.yaml (single source of truth for mel params) ────────────
@@ -215,7 +215,7 @@ def main():
     parser = argparse.ArgumentParser(description="Student CLAP final evaluation")
     script_dir = os.path.dirname(os.path.abspath(__file__))
     parser.add_argument("--songs-dir", default=os.path.join(script_dir, "..", "test", "songs"))
-    parser.add_argument("--student-model", default=os.path.join(script_dir, "models", "model_epoch_9.onnx"))
+    parser.add_argument("--student-model", default=os.path.join(script_dir, "models", "model_epoch_36.onnx"))
     parser.add_argument("--teacher-audio-model", default=os.path.join(script_dir, "..", "model", "clap_audio_model.onnx"))
     parser.add_argument("--teacher-text-model", default=os.path.join(script_dir, "..", "model", "clap_text_model.onnx"))
     args = parser.parse_args()
