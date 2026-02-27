@@ -655,7 +655,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
     from app_helper import (redis_conn, get_db, save_task_status, get_task_info_from_db,
                      save_track_analysis_and_embedding, save_clap_embedding,
                      get_primary_provider_id, find_existing_analysis_by_file_path,
-                     link_provider_to_existing_track,
+                     link_provider_to_existing_track, link_provider_track,
                      TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import analyze_audio_file as clap_analyze, is_clap_available
     from .mulan_analyzer import analyze_audio_file as mulan_analyze
@@ -824,43 +824,64 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
 
                 # Multi-provider: Check if this track was already analyzed under a different provider's item_id
                 # If so, link to the existing analysis via provider_track instead of re-analyzing
+                # Uses 3-tier lookup: path hash → direct file_path → metadata (title+artist+album)
                 item_file_path = item.get('Path') or item.get('FilePath')
-                if needs_musicnn and item_file_path:
-                    existing_analysis = find_existing_analysis_by_file_path(item_file_path, active_provider_id)
+                if needs_musicnn:
+                    existing_analysis = find_existing_analysis_by_file_path(
+                        item_file_path, active_provider_id,
+                        title=item.get('Name'), artist=item.get('AlbumArtist'), album=album_name
+                    )
                     if existing_analysis and existing_analysis.get('has_musicnn'):
                         source_item_id = existing_analysis.get('item_id')
                         if source_item_id and source_item_id != track_id_str:
-                            if link_provider_to_existing_track(
-                                file_path=item_file_path,
-                                provider_id=active_provider_id,
-                                item_id=track_id_str,
-                                title=item.get('Name'),
-                                artist=item.get('AlbumArtist'),
-                                album=item.get('Album')
-                            ):
-                                logger.info(f"Linked '{track_name_full}' to existing analysis (provider item {source_item_id})")
+                            linked = False
+                            if existing_analysis.get('source') == 'metadata_match':
+                                # Metadata-based match: link directly to existing track_id
+                                # (can't use link_provider_to_existing_track because file paths differ)
+                                existing_track_id = existing_analysis.get('track_id')
+                                if existing_track_id:
+                                    link_provider_track(active_provider_id, existing_track_id, track_id_str,
+                                                        item.get('Name'), item.get('AlbumArtist'), album_name)
+                                    linked = True
+                            else:
+                                # Path-based match: existing flow
+                                linked = link_provider_to_existing_track(
+                                    file_path=item_file_path,
+                                    provider_id=active_provider_id,
+                                    item_id=track_id_str,
+                                    title=item.get('Name'),
+                                    artist=item.get('AlbumArtist'),
+                                    album=album_name
+                                )
+                            if linked:
+                                logger.info(f"Linked '{track_name_full}' to existing analysis "
+                                            f"(source: {existing_analysis.get('source', 'path')}, "
+                                            f"provider item {source_item_id})")
                                 needs_musicnn = False
                                 if needs_clap and existing_analysis.get('has_clap'):
                                     needs_clap = False
                                     logger.info(f"  - CLAP embedding available via canonical track")
 
-                # Album name update now handled in main analysis task. If needed, uncomment below:
-                # try:
-                #     with get_db() as conn, conn.cursor() as cur:
-                #         cur.execute("UPDATE score SET album = %s WHERE item_id = %s", (album_name, track_id_str))
-                #         conn.commit()
-                #     logger.info(f"Updated album name for track '{track_name_full}' to '{album_name}'")
-                # except Exception as e:
-                #     logger.warning(f"Failed to update album name for '{track_name_full}': {e}")
-
                 if not needs_musicnn and not needs_clap and not needs_mulan:
+                    # Update metadata for already-analyzed tracks (rating, year, album_artist, file_path)
+                    try:
+                        with get_db() as conn, conn.cursor() as cur:
+                            cur.execute(
+                                "UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE item_id = %s",
+                                (album_name, item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'),
+                                 item.get('Path') or item.get('FilePath'), track_id_str)
+                            )
+                            conn.commit()
+                    except Exception as e:
+                        logger.warning(f"Failed to update metadata for '{track_name_full}': {e}")
+
                     tracks_skipped_count += 1
                     status_parts = ["MusiCNN: ✓"]
                     if is_clap_available():
                         status_parts.append("CLAP: ✓")
                     if MULAN_ENABLED:
                         status_parts.append("MuLan: ✓")
-                    logger.info(f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)})")
+                    logger.info(f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)}), metadata updated")
                     continue
                 
                 # MODIFIED: Call to download_track simplified. Assumes it gets server details from config.
@@ -1123,16 +1144,18 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
 # MODIFIED: Removed jellyfin_url, jellyfin_user_id, jellyfin_token from signature.
 def run_analysis_task(num_recent_albums, top_n_moods):
     from app import app
-    from app_helper import (redis_conn, get_db, rq_queue_default, save_task_status, get_task_info_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+    from app_helper import (redis_conn, get_db, rq_queue_default, save_task_status, get_task_info_from_db, get_primary_provider_id, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import is_clap_available
     import config  # Import config to access MULAN_ENABLED
 
     MULAN_ENABLED = getattr(config, 'MULAN_ENABLED', False)  # Get MULAN_ENABLED from config
 
     current_job = get_current_job(redis_conn)
-    current_task_id = current_job.id if current_job else str(uuid.uuid4())    
+    current_task_id = current_job.id if current_job else str(uuid.uuid4())
 
     with app.app_context():
+        # Resolve active provider_id for passing to album analysis tasks
+        active_provider_id = get_primary_provider_id()
         if num_recent_albums < 0:
              logger.warning("num_recent_albums is negative, treating as 0 (all albums).")
              num_recent_albums = 0
@@ -1343,7 +1366,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                         track_id_str = str(item['Id'])
                         try:
                             with get_db() as conn, conn.cursor() as cur:
-                                cur.execute("UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE item_id = %s", (album.get('Name'), item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'), item.get('FilePath'), track_id_str))
+                                cur.execute("UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE item_id = %s", (album.get('Name'), item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'), item.get('Path') or item.get('FilePath'), track_id_str))
                                 conn.commit()
                             logger.info(f"[MainAnalysisTask] Updated album/album_artist/year/rating/file_path for track '{item['Name']}' to '{album.get('Name')}' (main task)")
                         except Exception as e:
@@ -1360,7 +1383,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     continue
                 
                 # MODIFIED: Enqueue call for analyze_album_task now passes fewer arguments.
-                job = rq_queue_default.enqueue('tasks.analysis.analyze_album_task', args=(album['Id'], album['Name'], top_n_moods, current_task_id), job_id=str(uuid.uuid4()), job_timeout=-1, retry=Retry(max=3))
+                job = rq_queue_default.enqueue('tasks.analysis.analyze_album_task', args=(album['Id'], album['Name'], top_n_moods, current_task_id), kwargs={'provider_id': active_provider_id}, job_id=str(uuid.uuid4()), job_timeout=-1, retry=Retry(max=3))
                 active_jobs[job.id] = job
                 launched_jobs.append(job)
                 launched_job_ids.add(job.id)  # Track this job ID for reconciliation

@@ -1755,6 +1755,13 @@ def normalize_provider_path(file_path, provider_id=None):
         '/share/',            # NAS style
         '/volume1/music/',    # Synology style
         '/volume1/',          # Synology style
+        '/srv/music/',        # Some Linux systems
+        '/srv/',              # Some Linux systems
+        '/home/music/',       # Home directory music
+        '/storage/music/',    # Some NAS/Android
+        '/opt/music/',        # Some deployments
+        '/nas/music/',        # NAS direct mount
+        '/library/music/',    # macOS-style
     ]
 
     # Strip mount point prefixes (case-insensitive)
@@ -2027,71 +2034,112 @@ def get_all_provider_item_ids_for_track(track_id):
         ]
 
 
-def find_existing_analysis_by_file_path(file_path, provider_id=None):
+def find_existing_analysis_by_file_path(file_path, provider_id=None, title=None, artist=None, album=None):
     """
     Find existing analysis data for a file path using cross-provider matching.
 
     This is used to check if a track has already been analyzed under a different
     provider's item_id, allowing reuse of analysis data in multi-provider setups.
 
+    Uses a 3-tier lookup strategy:
+    1. Hash-based match via track table (fastest, most reliable)
+    2. Direct file_path match in score table (legacy fallback)
+    3. Metadata match by title + artist + album (handles different mount points)
+
     Args:
         file_path: Full or relative path to the audio file
         provider_id: Optional provider ID for provider-specific path normalization
+        title: Optional track title for metadata-based fallback matching
+        artist: Optional artist name for metadata-based fallback matching
+        album: Optional album name for metadata-based fallback matching
 
     Returns:
         dict with item_id and analysis status, or None if not found
     """
-    if not file_path:
-        return None
-
-    file_path_hash = _compute_file_path_hash(file_path, provider_id)
-    if not file_path_hash:
+    if not file_path and not (title and artist and album):
         return None
 
     db = get_db()
     with db.cursor() as cur:
-        # First try via track table (proper linking)
-        cur.execute("""
-            SELECT s.item_id, s.title, s.author,
-                   (s.tempo IS NOT NULL) as has_musicnn,
-                   EXISTS(SELECT 1 FROM embedding e WHERE e.item_id = s.item_id) as has_embedding,
-                   EXISTS(SELECT 1 FROM clap_embedding ce WHERE ce.item_id = s.item_id) as has_clap
-            FROM track t
-            JOIN score s ON s.track_id = t.id
-            WHERE t.file_path_hash = %s
-        """, (file_path_hash,))
-        row = cur.fetchone()
-        if row:
-            return {
-                'item_id': row[0],
-                'title': row[1],
-                'author': row[2],
-                'has_musicnn': row[3],
-                'has_embedding': row[4],
-                'has_clap': row[5],
-                'source': 'track_table'
-            }
+        # Fallback 1 & 2: Hash-based and direct file_path matching (require file_path)
+        if file_path:
+            file_path_hash = _compute_file_path_hash(file_path, provider_id)
 
-        # Fall back to checking score.file_path directly (for legacy data)
-        cur.execute("""
-            SELECT s.item_id, s.title, s.author,
-                   (s.tempo IS NOT NULL) as has_musicnn,
-                   EXISTS(SELECT 1 FROM embedding e WHERE e.item_id = s.item_id) as has_embedding,
-                   EXISTS(SELECT 1 FROM clap_embedding ce WHERE ce.item_id = s.item_id) as has_clap
-            FROM score s
-            WHERE s.file_path = %s
-        """, (file_path,))
-        row = cur.fetchone()
-        if row:
-            return {
-                'item_id': row[0],
-                'title': row[1],
-                'author': row[2],
-                'has_musicnn': row[3],
-                'has_embedding': row[4],
-                'has_clap': row[5],
-                'source': 'score_file_path'
-            }
+            if file_path_hash:
+                # First try via track table (proper linking)
+                cur.execute("""
+                    SELECT s.item_id, s.title, s.author, s.track_id,
+                           (s.tempo IS NOT NULL) as has_musicnn,
+                           EXISTS(SELECT 1 FROM embedding e WHERE e.item_id = s.item_id) as has_embedding,
+                           EXISTS(SELECT 1 FROM clap_embedding ce WHERE ce.item_id = s.item_id) as has_clap
+                    FROM track t
+                    JOIN score s ON s.track_id = t.id
+                    WHERE t.file_path_hash = %s
+                """, (file_path_hash,))
+                row = cur.fetchone()
+                if row:
+                    return {
+                        'item_id': row[0],
+                        'title': row[1],
+                        'author': row[2],
+                        'track_id': row[3],
+                        'has_musicnn': row[4],
+                        'has_embedding': row[5],
+                        'has_clap': row[6],
+                        'source': 'track_table'
+                    }
+
+            # Fall back to checking score.file_path directly (for legacy data)
+            cur.execute("""
+                SELECT s.item_id, s.title, s.author, s.track_id,
+                       (s.tempo IS NOT NULL) as has_musicnn,
+                       EXISTS(SELECT 1 FROM embedding e WHERE e.item_id = s.item_id) as has_embedding,
+                       EXISTS(SELECT 1 FROM clap_embedding ce WHERE ce.item_id = s.item_id) as has_clap
+                FROM score s
+                WHERE s.file_path = %s
+            """, (file_path,))
+            row = cur.fetchone()
+            if row:
+                return {
+                    'item_id': row[0],
+                    'title': row[1],
+                    'author': row[2],
+                    'track_id': row[3],
+                    'has_musicnn': row[4],
+                    'has_embedding': row[5],
+                    'has_clap': row[6],
+                    'source': 'score_file_path'
+                }
+
+        # Fallback 3: Match by title + artist + album metadata
+        # This handles cases where file paths differ across providers
+        # (different mount points, relative vs absolute paths, etc.)
+        if title and artist and album:
+            cur.execute("""
+                SELECT s.item_id, s.title, s.author, s.track_id,
+                       (s.tempo IS NOT NULL) as has_musicnn,
+                       EXISTS(SELECT 1 FROM embedding e WHERE e.item_id = s.item_id) as has_embedding,
+                       EXISTS(SELECT 1 FROM clap_embedding ce WHERE ce.item_id = s.item_id) as has_clap
+                FROM score s
+                WHERE LOWER(s.title) = LOWER(%s)
+                  AND LOWER(s.author) = LOWER(%s)
+                  AND LOWER(s.album) = LOWER(%s)
+                  AND s.track_id IS NOT NULL
+                  AND s.tempo IS NOT NULL
+                LIMIT 1
+            """, (title, artist, album))
+            row = cur.fetchone()
+            if row:
+                return {
+                    'item_id': row[0],
+                    'title': row[1],
+                    'author': row[2],
+                    'track_id': row[3],
+                    'has_musicnn': row[4],
+                    'has_embedding': row[5],
+                    'has_clap': row[6],
+                    'source': 'metadata_match'
+                }
 
         return None
 
@@ -2306,9 +2354,18 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None, extr
             normalized = normalized[7:]
             normalized = unquote(normalized)
         normalized = normalized.replace('\\', '/')
-        # Strip common mount points
-        prefixes = ['/media/music/', '/media/', '/mnt/media/music/', '/mnt/music/',
-                    '/mnt/', '/data/music/', '/data/', '/music/', '/share/', '/volume1/']
+        # Strip common mount points (synced with normalize_provider_path)
+        prefixes = [
+            '/media/music/', '/media/Media/', '/media/',
+            '/mnt/media/music/', '/mnt/media/', '/mnt/music/',
+            '/mnt/data/music/', '/mnt/data/', '/mnt/',
+            '/data/music/', '/data/', '/music/',
+            '/share/music/', '/share/',
+            '/volume1/music/', '/volume1/',
+            '/srv/music/', '/srv/',
+            '/home/music/', '/storage/music/',
+            '/opt/music/', '/nas/music/', '/library/music/',
+        ]
         lower = normalized.lower()
         for prefix in prefixes:
             if lower.startswith(prefix.lower()):
@@ -2354,7 +2411,7 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None, extr
                 'sample_comparisons': [], 'message': 'No matching tracks found between providers',
                 'had_existing_tracks': True}
 
-    # Detect prefix by finding common suffix
+    # Detect prefix by finding common suffix (segment-based for robustness)
     prefix_candidates = {}
     sample_comparisons = []
 
@@ -2379,8 +2436,6 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None, extr
         elif existing_path.lower().endswith(new_path.lower()):
             # The existing path has a prefix (new provider doesn't have it)
             # This means the NEW provider needs no prefix, but existing does
-            prefix_len = len(existing_path) - len(new_path)
-            # In this case, we don't need a prefix for the new provider
             prefix_candidates[''] = prefix_candidates.get('', 0) + 1
 
             sample_comparisons.append({
@@ -2389,6 +2444,30 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None, extr
                 'existing_path': existing_path,
                 'detected_prefix': '(existing has prefix, new does not)'
             })
+        else:
+            # Segment-based longest-common-suffix matching
+            # Handles cases where both providers have residual prefixes
+            # (e.g., "multimedia/music/Artist/Album/song.mp3" vs "music/Artist/Album/song.mp3")
+            new_segments = new_path.lower().split('/')
+            existing_segments = existing_path.lower().split('/')
+
+            common_count = 0
+            for i in range(1, min(len(new_segments), len(existing_segments)) + 1):
+                if new_segments[-i] == existing_segments[-i]:
+                    common_count += 1
+                else:
+                    break
+
+            if common_count >= 2:  # At least 2 matching segments (e.g., album/song)
+                new_prefix = '/'.join(new_path.split('/')[:len(new_segments) - common_count])
+                prefix_candidates[new_prefix] = prefix_candidates.get(new_prefix, 0) + 1
+
+                sample_comparisons.append({
+                    'title': match['title'],
+                    'new_path': new_path,
+                    'existing_path': existing_path,
+                    'detected_prefix': new_prefix
+                })
 
     if not prefix_candidates:
         return {'detected_prefix': '', 'confidence': 'low', 'matches_found': len(matches),
