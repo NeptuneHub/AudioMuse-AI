@@ -170,6 +170,22 @@ def is_multi_provider_enabled():
     return result is True or result == 'true' or result == True
 
 
+def _update_multi_provider_settings():
+    """Auto-set multi_provider_enabled and primary_provider_id based on provider count."""
+    providers = get_providers(enabled_only=True)
+    count = len(providers)
+
+    # Auto-set primary to first provider if not set
+    current_primary = get_setting('primary_provider_id')
+    if (current_primary is None or current_primary == 'null') and count > 0:
+        set_setting('primary_provider_id', providers[0]['id'], 'providers',
+                     'ID of the primary provider for playlist creation')
+
+    # Auto-enable multi-provider when >1 providers, disable when <=1
+    set_setting('multi_provider_enabled', count > 1, 'providers',
+                 'Whether multi-provider mode is enabled')
+
+
 # ##############################################################################
 # PROVIDER MANAGEMENT
 # ##############################################################################
@@ -570,9 +586,11 @@ def create_provider():
             # Update existing provider instead of creating duplicate
             update_provider(existing['id'], name=name, config_data=config_data, enabled=enabled, priority=priority)
             logger.info(f"Updated existing provider {existing['id']} ({provider_type}) instead of creating duplicate")
+            _update_multi_provider_settings()
             return jsonify({'id': existing['id'], 'message': 'Provider updated', 'was_update': True}), 200
 
         provider_id = add_provider(provider_type, name, config_data, enabled, priority)
+        _update_multi_provider_settings()
         return jsonify({'id': provider_id, 'message': 'Provider created'}), 201
     except Exception as e:
         logger.error(f"Error creating provider: {e}")
@@ -629,6 +647,7 @@ def update_provider_endpoint(provider_id):
     )
 
     if success:
+        _update_multi_provider_settings()
         return jsonify({'message': 'Provider updated'})
     return jsonify({'error': 'Update failed'}), 500
 
@@ -654,6 +673,7 @@ def delete_provider_endpoint(provider_id):
     """
     success = delete_provider(provider_id)
     if success:
+        _update_multi_provider_settings()
         return jsonify({'message': 'Provider deleted'})
     return jsonify({'error': 'Provider not found'}), 404
 
@@ -824,6 +844,17 @@ def rescan_provider_paths(provider_id):
         path_format = detect_path_format(sample_tracks)
         prefix_result = detect_music_path_prefix(sample_tracks)
 
+        # Persist path_format into provider config JSONB
+        if path_format and path_format != 'unknown':
+            config_data['path_format'] = path_format
+            db = get_db()
+            with db.cursor() as cur:
+                cur.execute(
+                    "UPDATE provider SET config = config || %s::jsonb WHERE id = %s",
+                    (json.dumps({'path_format': path_format}), provider_id)
+                )
+                db.commit()
+
         current_prefix = config_data.get('music_path_prefix', '')
         suggested_prefix = prefix_result.get('detected_prefix', '')
         prefix_changed = current_prefix != suggested_prefix and prefix_result.get('matches_found', 0) > 0
@@ -885,6 +916,208 @@ def get_provider_libraries():
     except Exception as e:
         logger.error(f"Error fetching libraries for {provider_type}: {e}")
         return jsonify({'error': str(e), 'libraries': []}), 500
+
+
+# ##############################################################################
+# PROVIDER SYNC
+# ##############################################################################
+
+# Config attribute mappings for each provider type, used to temporarily patch
+# config module when calling provider functions with stored DB config.
+_PROVIDER_CONFIG_MAPPING = {
+    'jellyfin': {'url': 'JELLYFIN_URL', 'user_id': 'JELLYFIN_USER_ID', 'token': 'JELLYFIN_TOKEN'},
+    'navidrome': {'url': 'NAVIDROME_URL', 'user': 'NAVIDROME_USER', 'password': 'NAVIDROME_PASSWORD'},
+    'lyrion': {'url': 'LYRION_URL'},
+    'emby': {'url': 'EMBY_URL', 'user_id': 'EMBY_USER_ID', 'token': 'EMBY_TOKEN'},
+    'localfiles': {'music_directory': 'LOCALFILES_MUSIC_DIR'},
+}
+
+
+def _get_all_songs_with_config(provider_type, provider_config):
+    """Get all songs from a provider by temporarily patching config with stored DB values."""
+    from tasks.mediaserver import get_provider_function
+
+    mapping = _PROVIDER_CONFIG_MAPPING.get(provider_type, {})
+    saved = {}
+    for config_key, attr_name in mapping.items():
+        saved[attr_name] = getattr(config, attr_name, '')
+        setattr(config, attr_name, provider_config.get(config_key, ''))
+
+    # Jellyfin/Emby read config.HEADERS (pre-built dict), not individual token attrs
+    saved_headers = getattr(config, 'HEADERS', {})
+    token = provider_config.get('token', '')
+    if provider_type in ('jellyfin', 'emby') and token:
+        config.HEADERS = {"X-Emby-Token": token}
+
+    try:
+        func = get_provider_function(provider_type, 'get_all_songs')
+        return func() if func else []
+    finally:
+        config.HEADERS = saved_headers
+        for attr_name, original_value in saved.items():
+            setattr(config, attr_name, original_value)
+
+
+@setup_bp.route('/api/setup/providers/<int:provider_id>/sync', methods=['POST'])
+def sync_provider(provider_id):
+    """
+    Sync a provider's tracks by matching file paths to existing analyzed tracks.
+    Creates provider_track entries and enriches score metadata from provider data.
+    ---
+    tags:
+      - Setup
+    parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    responses:
+      200:
+        description: Sync results
+      404:
+        description: Provider not found
+    """
+    from app_helper import _compute_file_path_hash, link_provider_track, normalize_provider_path
+
+    provider = get_provider_by_id(provider_id)
+    if not provider:
+        return jsonify({'error': 'Provider not found'}), 404
+
+    provider_type = provider['provider_type']
+    provider_config = provider['config']
+
+    try:
+        # Fetch all songs from the provider using its stored config
+        songs = _get_all_songs_with_config(provider_type, provider_config)
+        if not songs:
+            return jsonify({
+                'message': 'No songs found from provider',
+                'matched': 0,
+                'total': 0,
+                'enriched': 0,
+            })
+
+        db = get_db()
+        matched = 0
+        enriched = 0
+
+        for song in songs:
+            file_path = song.get('Path') or song.get('FilePath')
+            if not file_path:
+                continue
+
+            # Compute hash using the provider's music_path_prefix
+            file_path_hash = _compute_file_path_hash(file_path, provider_id)
+            if not file_path_hash:
+                continue
+
+            # Look up existing track by file_path_hash
+            with db.cursor() as cur:
+                cur.execute("""
+                    SELECT t.id, s.item_id, s.album_artist, s.year, s.rating, s.file_path, s.album
+                    FROM track t
+                    LEFT JOIN score s ON s.track_id = t.id
+                    WHERE t.file_path_hash = %s
+                """, (file_path_hash,))
+                row = cur.fetchone()
+
+            if not row:
+                continue
+
+            track_id, score_item_id = row[0], row[1]
+
+            # Create provider_track link
+            link_provider_track(
+                provider_id, track_id, song.get('Id', ''),
+                title=song.get('Name'),
+                artist=song.get('AlbumArtist') or song.get('Artist'),
+                album=song.get('Album')
+            )
+            matched += 1
+
+            # Metadata enrichment: fill missing score fields from this provider's data
+            if score_item_id:
+                current_album_artist, current_year, current_rating, current_file_path, current_album = row[2], row[3], row[4], row[5], row[6]
+
+                updates = []
+                values = []
+
+                new_album_artist = song.get('OriginalAlbumArtist') or song.get('AlbumArtist')
+                if new_album_artist and not current_album_artist:
+                    updates.append("album_artist = %s")
+                    values.append(new_album_artist)
+
+                new_year = song.get('Year')
+                if new_year and not current_year:
+                    updates.append("year = %s")
+                    values.append(new_year)
+
+                new_rating = song.get('Rating') or song.get('UserRating')
+                if new_rating and (not current_rating or current_rating == 0):
+                    updates.append("rating = %s")
+                    values.append(new_rating)
+
+                new_file_path = normalize_provider_path(file_path, provider_id) or file_path
+                if new_file_path and not current_file_path:
+                    updates.append("file_path = %s")
+                    values.append(new_file_path)
+
+                new_album = song.get('Album')
+                if new_album and not current_album:
+                    updates.append("album = %s")
+                    values.append(new_album)
+
+                if updates:
+                    values.append(score_item_id)
+                    with db.cursor() as cur:
+                        cur.execute(
+                            f"UPDATE score SET {', '.join(updates)} WHERE item_id = %s",
+                            values
+                        )
+                        db.commit()
+                    enriched += 1
+
+        # Detect virtual/non-matching paths and warn the user
+        match_rate = (matched / len(songs)) if songs else 0
+
+        if match_rate < 0.8 and len(songs) > 0:
+            warning = (
+                f"Only {matched}/{len(songs)} tracks matched by file path "
+                f"({match_rate:.0%} match rate). "
+                "This usually means the provider is not reporting real file paths. "
+            )
+            if provider_type == 'navidrome':
+                warning += (
+                    'In Navidrome, enable "Report Real Path" in Settings > Personal > Subsonic, '
+                    f"then call POST /api/setup/providers/{provider_id}/rescan-paths to re-detect paths."
+                )
+            else:
+                warning += (
+                    "Check that the provider's file path settings are configured to report "
+                    f"actual filesystem paths, then call POST /api/setup/providers/{provider_id}/rescan-paths."
+                )
+
+            return jsonify({
+                'warning': warning,
+                'matched': matched,
+                'total': len(songs),
+                'enriched': enriched,
+                'match_rate': round(match_rate, 2),
+                'action_required': 'enable_real_paths',
+                'rescan_url': f'/api/setup/providers/{provider_id}/rescan-paths',
+            })
+
+        return jsonify({
+            'message': f'Synced {matched}/{len(songs)} tracks, enriched {enriched} metadata fields',
+            'matched': matched,
+            'total': len(songs),
+            'enriched': enriched,
+        })
+
+    except Exception as e:
+        logger.error(f"Error syncing provider {provider_id}: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @setup_bp.route('/api/setup/settings', methods=['GET'])

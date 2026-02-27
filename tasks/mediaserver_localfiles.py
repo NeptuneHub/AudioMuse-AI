@@ -388,12 +388,14 @@ def _format_song(file_path: str, base_path: str) -> Dict:
         'AlbumArtist': metadata['album_artist'] or metadata['artist'],
         'Album': metadata['album'],
         'Path': file_path,
+        'FilePath': file_path,  # Alias for analysis.py compatibility
         'RelativePath': normalized_path,
         'TrackNumber': metadata['track_number'],
         'Year': metadata['year'],
         'Genre': metadata['genre'],
         'Duration': metadata['duration'],
         'Rating': metadata.get('rating'),
+        'OriginalAlbumArtist': metadata['album_artist'],  # For analysis.py album_artist update
         'FileSize': file_size,
         'last-modified': file_modified.isoformat() if file_modified else None,
         # For compatibility with other providers

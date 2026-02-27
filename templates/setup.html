@@ -1682,14 +1682,24 @@
                     } else if (pd.message) {
                         resultHTML += `<br><small>${pd.message}</small>`;
                     }
+
+                    // Warn about low-confidence path detection for Navidrome
+                    if (type === 'navidrome' && pd.confidence === 'low' && pd.had_existing_tracks) {
+                        resultHTML += `<div class="test-result warning" style="margin-top: 0.5rem;">
+                            <strong>Warning:</strong> Path matching between Navidrome and existing providers has low confidence.
+                            Cross-provider track matching may not work correctly.
+                            <br><small>Check that Navidrome's <strong>"Report Real Path"</strong> is enabled
+                            (Players &gt; AudioMuse player) and verify the Music Path Prefix is correct.</small>
+                        </div>`;
+                    }
                 }
 
                 // Warn about relative paths for Navidrome in multi-provider setups
-                if (type === 'navidrome' && data.path_format === 'relative' && selectedProviders.length > 1) {
+                if (type === 'navidrome' && data.path_format === 'relative') {
                     resultHTML += `<div class="test-result warning" style="margin-top: 0.5rem;">
                         <strong>Warning:</strong> Navidrome is returning relative file paths.
-                        In a multi-provider setup, this will prevent cross-provider track matching.
-                        <br><small>To fix: In Navidrome, go to Settings &gt; Subsonic &gt; enable <strong>"Report Real Path"</strong>, then re-test the connection.</small>
+                        This will prevent cross-provider track matching.
+                        <br><small>To fix: In Navidrome, go to Players &gt; AudioMuse player &gt; enable <strong>"Report Real Path"</strong>, then re-test the connection.</small>
                     </div>`;
                 }
             }

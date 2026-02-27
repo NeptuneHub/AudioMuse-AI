@@ -234,11 +234,17 @@ async function checkActiveTasks() {
                 else if (['REVOKED', 'CANCELED'].includes(currentStatusUpper)) alertTitle = 'Task Canceled';
                 
                 showMessageBox(alertTitle, alertMessage);
+
+                // Check Navidrome path warning after analysis completes
+                if (['SUCCESS', 'FINISHED'].includes(currentStatusUpper)
+                    && (mainActiveTask.task_type_from_db || '').toLowerCase().includes('analysis')) {
+                    checkNavidromePathWarning();
+                }
             }
             lastPolledTaskDetails[currentTaskId] = { state: currentStatusUpper, ...mainActiveTask };
             disableTaskButtons(true);
             updateCancelButtonState(false);
-            return true; 
+            return true;
         } else if (currentTaskId) {
             const finishedTaskId = currentTaskId;
             const previousDetails = lastPolledTaskDetails[finishedTaskId];
@@ -262,6 +268,12 @@ async function checkActiveTasks() {
                         else if (['REVOKED', 'CANCELED'].includes(upperFinalStatus)) alertTitle = 'Task Canceled';
                         
                         showMessageBox(alertTitle, alertMessage);
+
+                        // Check Navidrome path warning after analysis completes
+                        if (['SUCCESS', 'FINISHED'].includes(upperFinalStatus)
+                            && (finalStatusData.task_type_from_db || '').toLowerCase().includes('analysis')) {
+                            checkNavidromePathWarning();
+                        }
                     }
                     displayTaskStatus(finalStatusData);
                 } else {
@@ -288,6 +300,25 @@ async function checkActiveTasks() {
         updateCancelButtonState(true);
     }
     return false;
+}
+
+async function checkNavidromePathWarning() {
+    try {
+        const response = await fetch('/api/setup/providers');
+        const providerList = await response.json();
+        const navidromeRelative = providerList.find(
+            p => p.provider_type === 'navidrome' && p.enabled && p.config && p.config.path_format === 'relative'
+        );
+        if (navidromeRelative) {
+            showMessageBox('Navidrome Path Warning',
+                'Navidrome is reporting relative file paths. Cross-provider track matching will not work.\n\n' +
+                'To fix: In Navidrome, go to Settings > Personal > Subsonic > enable "Report Real Path", ' +
+                'then go to AudioMuse Settings and click "Rescan Paths" on the Navidrome provider.'
+            );
+        }
+    } catch (e) {
+        console.warn('Could not check Navidrome path format:', e);
+    }
 }
 
 function disableTaskButtons(isDisabled) {

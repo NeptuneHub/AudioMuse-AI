@@ -824,6 +824,7 @@
     let serverInfo = {};
     let isDirty = false;
     let editingProviderId = null;
+    let lastDetectedPathFormat = null;
 
     // Initialize
     document.addEventListener('DOMContentLoaded', async function() {
@@ -916,6 +917,12 @@
                     <button class="btn-danger" onclick="deleteProvider(${p.id})">Delete</button>
                 </div>
                 <div id="rescan-result-${p.id}" class="rescan-result"></div>
+                ${p.provider_type === 'navidrome' && p.config && p.config.path_format === 'relative'
+                    ? `<div class="test-result warning" style="margin-top: 0.5rem; font-size: 0.85rem;">
+                        <strong>Warning:</strong> Relative file paths detected — cross-provider track matching won't work.
+                        <br><small>Enable <strong>"Report Real Path"</strong> in Navidrome Players &gt; AudioMuse player, then click <strong>Rescan Paths</strong>.</small>
+                    </div>`
+                    : ''}
             `;
             list.appendChild(item);
 
@@ -1225,7 +1232,63 @@
             });
             const data = await response.json();
             resultDiv.className = `test-result ${data.success ? 'success' : 'error'}`;
-            resultDiv.textContent = data.message;
+            let resultHTML = escapeHtml(data.message);
+
+            if (data.success) {
+                // Cache path_format for inclusion when saving
+                if (data.path_format) {
+                    lastDetectedPathFormat = data.path_format;
+                }
+
+                // Show prefix detection info
+                const pd = data.prefix_detection;
+                if (pd) {
+                    if (pd.confidence && pd.confidence !== 'none') {
+                        resultHTML += `<br><small>Path prefix detection: ${escapeHtml(pd.confidence)} confidence`;
+                        if (pd.matches_found) {
+                            resultHTML += ` (${pd.matches_found} matching tracks found)`;
+                        }
+                        resultHTML += `</small>`;
+                    } else if (pd.message) {
+                        resultHTML += `<br><small>${escapeHtml(pd.message)}</small>`;
+                    }
+                }
+
+                // Warn about low-confidence path detection for Navidrome
+                if (type === 'navidrome' && pd && pd.confidence === 'low' && pd.had_existing_tracks) {
+                    resultHTML += `<div class="test-result warning" style="margin-top: 0.5rem;">
+                        <strong>Warning:</strong> Path matching between Navidrome and existing providers has low confidence.
+                        Cross-provider track matching may not work correctly.
+                        <br><small>Check that Navidrome's <strong>"Report Real Path"</strong> is enabled
+                        (Players &gt; AudioMuse player) and verify the Music Path Prefix is correct.</small>
+                    </div>`;
+                }
+
+                // Warn about relative paths for Navidrome
+                if (type === 'navidrome' && data.path_format === 'relative') {
+                    resultHTML += `<div class="test-result warning" style="margin-top: 0.5rem;">
+                        <strong>Warning:</strong> Navidrome is returning relative file paths.
+                        This will prevent cross-provider track matching.
+                        <br><small>To fix: In Navidrome, go to Players &gt; AudioMuse player &gt; enable
+                        <strong>"Report Real Path"</strong>, then re-test.</small>
+                    </div>`;
+                }
+
+                // Warn if testing a non-Navidrome provider while an existing Navidrome has relative paths
+                if (type !== 'navidrome') {
+                    const naviRelative = providers.find(
+                        p => p.provider_type === 'navidrome' && p.config && p.config.path_format === 'relative'
+                    );
+                    if (naviRelative) {
+                        resultHTML += `<div class="test-result warning" style="margin-top: 0.5rem;">
+                            <strong>Warning:</strong> Existing Navidrome provider "${escapeHtml(naviRelative.name)}" has relative file paths.
+                            Cross-provider track matching won't work until you enable "Report Real Path" in Navidrome.
+                        </div>`;
+                    }
+                }
+            }
+
+            resultDiv.innerHTML = resultHTML;
 
             // After successful connection test, fetch available libraries
             if (data.success && type !== 'localfiles') {
@@ -1291,6 +1354,11 @@
         const type = document.getElementById('provider-type').value;
         const typeInfo = providerTypes.find(t => t.type === type);
         const config = collectProviderConfig();
+
+        // Include cached path_format for Navidrome providers
+        if (lastDetectedPathFormat && type === 'navidrome') {
+            config.path_format = lastDetectedPathFormat;
+        }
 
         try {
             let response;
@@ -1377,12 +1445,12 @@
                 return;
             }
 
-            let html = `<div class="test-result ${data.path_format === 'relative' && providers.length > 1 ? 'warning' : 'success'}">`;
+            let html = `<div class="test-result ${data.path_format === 'relative' ? 'warning' : 'success'}">`;
             html += `<strong>Path format:</strong> ${data.path_format}`;
 
-            if (data.path_format === 'relative' && providers.length > 1) {
-                html += `<br>Relative paths may prevent cross-provider track matching.`;
-                html += `<br><small>Enable <strong>"Report Real Path"</strong> in Navidrome's Subsonic settings, then rescan again.</small>`;
+            if (data.path_format === 'relative') {
+                html += `<br>Relative paths will prevent cross-provider track matching.`;
+                html += `<br><small>Enable <strong>"Report Real Path"</strong> in Navidrome Players &gt; AudioMuse player, then rescan again.</small>`;
             }
 
             if (data.matches_found > 0) {
@@ -1403,6 +1471,10 @@
             }
 
             resultDiv.innerHTML = html;
+
+            // Reload providers so the persistent warning badge updates
+            await loadProviders();
+            renderProviders();
         } catch (err) {
             resultDiv.innerHTML = `<div class="test-result error">Rescan failed: ${err.message}</div>`;
         }
