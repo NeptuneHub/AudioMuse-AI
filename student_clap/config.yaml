@@ -33,11 +33,15 @@ model:
   # Default uses the canonical pretrained key so there is no ambiguity (pass 'dymn10_as' is still accepted)
   efficientat_model: "mn10_as"
   student_efficientat_model: "mn04_as"  # Override for trainable student in fusion mode (null = same as efficientat_model)
-  # Fusion backbone: "efficientat" (default, uses student_efficientat_model above) or "deit_tiny"
-  # DeiT-tiny is a Vision Transformer (facebook/deit-tiny-patch16-224) pretrained on ImageNet.
-  # It provides complementary features to the CNN specialist. The existing student mel
-  # (128 bands, hop=480) is resized to 224×224 inside the model — no separate mel cache needed.
-  fusion_backbone: "deit_tiny"
+  # Fusion backbone: "efficientat", "deit_tiny", "mobilevitv2", or "edgenext"
+  # - "efficientat": EfficientAT MobileNet CNN (mn04_as, ~0.98M params)
+  # - "deit_tiny": DeiT-tiny ViT (5.7M params, 224×224 input, 192-dim output)
+  # - "mobilevitv2": MobileViTv2-050 hybrid CNN+Transformer (1.4M params, 256×256 input, 256-dim output)
+  # - "edgenext": EdgeNeXt-XX-Small hybrid CNN+SDTA Transformer (1.16M params, 256×256 input, 168-dim output)
+  # All resize the student mel (128 bands) inside the model — no separate mel cache needed.
+  fusion_backbone: "edgenext"
+  # component variant for EdgeNeXt; choose x_small or xx_small
+  edgenext_variant: "edgenext_x_small"
   use_pretrained: true  # Use AudioSet/ImageNet pretrained weights
   specialist_checkpoint: "../model/checkpoint_epoch_9.pth"  # Frozen specialist for fusion model (set to null to disable)
   use_gradient_checkpointing: true
@@ -52,7 +56,7 @@ model_text:
 training:
   use_amp: false               # Use bfloat16 mixed precision for forward passes (model weights stay FP32)
   augmentation_enabled: true  # Set to false to disable all spectrogram augmentations
-  batch_size: 64
+  batch_size: 2
   gradient_accumulation_steps: 1
   learning_rate: 0.003 # Original: 0.003
   warmup_enabled: true  # Linear LR warmup during epoch 1 (from 0 to learning_rate)
@@ -115,7 +119,7 @@ paths:
 dataset:
   fma_path: "/Volumes/USB256/FMA"
   validation_path: "/Volumes/USB256/FMA_VAL"
-  sample_size: 0
+  sample_size: 10
 
 logging:
   level: "INFO"

@@ -480,8 +480,10 @@ class FusionStudentCLAPAudio(nn.Module):
             )
 
         use_pretrained = config['model'].get('use_pretrained', True)
+        # allow variant selection via config key (for example x_small vs xx_small)
+        variant = config['model'].get('edgenext_variant', 'edgenext_xx_small')
         self.student_backbone = timm.create_model(
-            'edgenext_xx_small',
+            variant,
             pretrained=use_pretrained,
             num_classes=0,      # remove classifier head, return pooled features
             in_chans=1,         # adapt first conv from 3→1 channel
