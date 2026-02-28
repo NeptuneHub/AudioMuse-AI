@@ -49,23 +49,20 @@ def _load_audio_model():
     model_path = config.CLAP_AUDIO_MODEL_PATH
     logger.info(f"Loading CLAP audio model from {model_path}...")
 
-    # --- Handle external-data ONNX models (.onnx.data next to .onnx) ---
-    _model_proto = None
-    data_file = model_path + ".data"  # e.g. model_epoch_36.onnx.data
+    # --- External-data ONNX models (.onnx.data next to .onnx) ---
+    # The student model references external data by relative filename
+    # (e.g. "model_epoch_36.onnx.data").  ONNX Runtime resolves this
+    # relative to the model file's directory, so passing the model
+    # *path* (not bytes) is the most portable approach.
+    #
+    # If direct path loading fails (e.g. mismatched data-file name),
+    # fall back to loading everything into memory via the onnx library.
+    data_file = model_path + ".data"
     if not os.path.exists(data_file):
         data_file = os.path.splitext(model_path)[0] + ".data"
-    if os.path.exists(data_file):
-        import onnx as _onnx
+    has_external_data = os.path.exists(data_file)
+    if has_external_data:
         logger.info(f"External data file detected: {data_file}")
-        _model_proto = _onnx.load(model_path, load_external_data=False)
-        data_path = os.path.abspath(data_file)
-        for tensor in _model_proto.graph.initializer:
-            if (tensor.HasField("data_location")
-                    and tensor.data_location == _onnx.TensorProto.EXTERNAL):
-                for entry in tensor.external_data:
-                    if entry.key == "location":
-                        entry.value = data_path
-        logger.info("External data references patched")
 
     # Configure ONNX Runtime session options
     sess_options = ort.SessionOptions()
@@ -106,32 +103,57 @@ def _load_audio_model():
         provider_options = [('CPUExecutionProvider', {})]
         logger.info("CUDA provider not available - using CPU only")
     
-    # Create session — use serialised bytes when external data was patched
-    _model_input = _model_proto.SerializeToString() if _model_proto is not None else model_path
-    try:
-        session = ort.InferenceSession(
-            _model_input,
+    # Create session — pass file path so ORT resolves external data natively
+    def _create_session(model_input, providers, provider_opts):
+        return ort.InferenceSession(
+            model_input,
             sess_options=sess_options,
-            providers=[p[0] for p in provider_options],
-            provider_options=[p[1] for p in provider_options]
+            providers=providers,
+            provider_options=provider_opts,
         )
-        
-        active_provider = session.get_providers()[0]
-        logger.info(f"✓ CLAP audio model loaded successfully")
-            
-    except Exception as e:
-        logger.warning(f"Failed to load with preferred providers: {e}")
-        logger.info("Attempting final CPU-only fallback...")
-        try:
-            session = ort.InferenceSession(
-                _model_input,
-                sess_options=sess_options,
-                providers=['CPUExecutionProvider']
-            )
-            logger.info(f"✓ CLAP audio model loaded successfully (CPU fallback)")
-        except Exception as cpu_error:
-            logger.error(f"Failed to load ONNX audio model even with CPU: {cpu_error}")
-            raise
+
+    preferred_providers = [p[0] for p in provider_options]
+    preferred_opts     = [p[1] for p in provider_options]
+    cpu_providers      = ['CPUExecutionProvider']
+    cpu_opts           = [{}]
+
+    try:
+        # 1) Direct path — ONNX Runtime resolves external data relative to
+        #    the model directory; works on all platforms and CI.
+        session = _create_session(model_path, preferred_providers, preferred_opts)
+        logger.info("✓ CLAP audio model loaded successfully (direct path)")
+
+    except Exception as direct_err:
+        logger.warning(f"Direct path load failed: {direct_err}")
+
+        if has_external_data:
+            # 2) In-memory fallback: load *all* external data into the proto,
+            #    serialize the self-contained blob, and hand it to ORT.
+            #    ~20 MB for the student model — well under the 2 GB protobuf limit.
+            logger.info("Trying in-memory external-data fallback…")
+            try:
+                import onnx as _onnx
+                _model_proto = _onnx.load(model_path, load_external_data=True)
+                _model_bytes = _model_proto.SerializeToString()
+                del _model_proto
+                gc.collect()
+                session = _create_session(_model_bytes, preferred_providers, preferred_opts)
+                logger.info("✓ CLAP audio model loaded (in-memory external data)")
+            except Exception as mem_err:
+                logger.warning(f"In-memory fallback failed: {mem_err}")
+                session = None
+        else:
+            session = None
+
+        # 3) Last-resort CPU-only attempt
+        if session is None:
+            logger.info("Attempting final CPU-only fallback…")
+            try:
+                session = _create_session(model_path, cpu_providers, cpu_opts)
+                logger.info("✓ CLAP audio model loaded (CPU fallback, direct path)")
+            except Exception as cpu_err:
+                logger.error(f"Failed to load ONNX audio model even with CPU: {cpu_err}")
+                raise
     
     if session is None:
         raise RuntimeError("Failed to create audio ONNX session")
