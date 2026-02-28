@@ -78,3 +78,5 @@ student_clap/models/CCMIXTER_SONGS_LICENSE.md
 student_clap/models/INCOMPETECH_SONGS_LICENSE.md
 student_clap/models/MUSOPEN_SONGS_LICENSE.md
 student_clap/models/audiomuseai_clap_auido.data
+student_clap/models/model_epoch_36.onnx.data
+student_clap/models/model_epoch_9.onnx.data
