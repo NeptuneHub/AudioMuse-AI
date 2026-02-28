@@ -523,9 +523,9 @@ def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarr
 
     Returns:
         If CLAP_AUDIO_MEL_TRANSPOSE is False (student, default):
-            shape (1, n_mels, time)   — e.g. (1, 128, T)
+            shape (1, 1, n_mels, time)   — e.g. (1, 1, 128, T)
         If CLAP_AUDIO_MEL_TRANSPOSE is True  (teacher):
-            shape (1, time, n_mels)   — e.g. (1, T, 64)
+            shape (1, 1, time, n_mels)   — e.g. (1, 1, T, 64)
     """
     import librosa
 
@@ -555,12 +555,12 @@ def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarr
     mel = librosa.power_to_db(mel, ref=1.0, amin=1e-10, top_db=None)
 
     if transpose:
-        # Teacher (HTSAT) layout: (time, n_mels)
-        mel = mel.T                        # (time, n_mels)
-        mel = mel[np.newaxis, :, :]        # (1, time, n_mels)
+        # Teacher (HTSAT) layout: (1, 1, time, n_mels)
+        mel = mel.T                                # (time, n_mels)
+        mel = mel[np.newaxis, np.newaxis, :, :]    # (1, 1, time, n_mels)
     else:
-        # Student (EfficientAT) layout: keep (n_mels, time)
-        mel = mel[np.newaxis, :, :]        # (1, n_mels, time)
+        # Student (EfficientAT) layout: (1, 1, n_mels, time)
+        mel = mel[np.newaxis, np.newaxis, :, :]    # (1, 1, n_mels, time)
 
     return mel.astype(np.float32)
 
@@ -568,8 +568,9 @@ def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarr
 def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, int]:
     """
     Analyze an audio file and return CLAP embedding using ONNX Runtime.
-    Segments are processed in configurable batches (CLAP_SEGMENT_BATCH_SIZE,
-    default 10) to balance throughput and memory usage.
+    Segments are processed one at a time (the student model was exported
+    with a fixed batch dimension of 1).  The per-segment embeddings are
+    averaged and L2-normalised to produce a single 512-dim vector.
 
     Args:
         audio_path: Path to audio file
@@ -627,7 +628,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         # batch dimension of 1, so we must feed segments individually.
         all_embs = []
         for seg_idx, seg in enumerate(segments):
-            mel_spec = compute_mel_spectrogram(seg, SAMPLE_RATE)  # (1, n_mels, time)
+            mel_spec = compute_mel_spectrogram(seg, SAMPLE_RATE)  # (1, 1, n_mels, time)
             onnx_inputs = {'mel_spectrogram': mel_spec}
             try:
                 outputs = session.run(None, onnx_inputs)
