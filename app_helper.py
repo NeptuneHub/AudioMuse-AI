@@ -2058,6 +2058,25 @@ def get_all_provider_item_ids_for_track(track_id):
         ]
 
 
+def _normalize_metadata_for_matching(title, artist):
+    """Normalize title and artist strings for fuzzy duplicate matching.
+
+    Strips common variations like (Remastered), [Explicit], leading "the ", etc.
+    Reuses the same regex patterns as clustering_postprocessing.py.
+    """
+    import re
+    t = (title or '').lower().strip()
+    t = re.sub(r'\s*\([^)]*(?:remaster|explicit|clean|radio|edit|version|mix)[^)]*\)', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\s*\[[^\]]*(?:remaster|explicit|clean|radio|edit|version|mix)[^\]]*\]', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\s*-\s*(?:remaster|explicit|clean|radio|edit|version|mix).*?$', '', t, flags=re.IGNORECASE)
+    t = t.strip()
+
+    a = (artist or '').lower().strip()
+    a = re.sub(r'^the\s+', '', a)
+    a = a.strip()
+    return t, a
+
+
 def find_existing_analysis_by_file_path(file_path, provider_id=None, title=None, artist=None, album=None):
     """
     Find existing analysis data for a file path using cross-provider matching.
@@ -2164,6 +2183,34 @@ def find_existing_analysis_by_file_path(file_path, provider_id=None, title=None,
                     'has_clap': row[6],
                     'source': 'metadata_match'
                 }
+
+            # Tier 3b: Normalized metadata match (handles "Remastered", "The Beatles" vs "Beatles", etc.)
+            norm_title, norm_artist = _normalize_metadata_for_matching(title, artist)
+            if norm_title and norm_artist:
+                cur.execute("""
+                    SELECT item_id, title, author, track_id,
+                           (tempo IS NOT NULL) as has_musicnn,
+                           EXISTS(SELECT 1 FROM embedding e WHERE e.item_id = score.item_id) as has_embedding,
+                           EXISTS(SELECT 1 FROM clap_embedding ce WHERE ce.item_id = score.item_id) as has_clap
+                    FROM score
+                    WHERE LOWER(album) = LOWER(%s)
+                      AND track_id IS NOT NULL
+                      AND tempo IS NOT NULL
+                    LIMIT 200
+                """, (album,))
+                for cand in cur.fetchall():
+                    cand_title, cand_artist = _normalize_metadata_for_matching(cand[1], cand[2])
+                    if cand_title == norm_title and cand_artist == norm_artist:
+                        return {
+                            'item_id': cand[0],
+                            'title': cand[1],
+                            'author': cand[2],
+                            'track_id': cand[3],
+                            'has_musicnn': cand[4],
+                            'has_embedding': cand[5],
+                            'has_clap': cand[6],
+                            'source': 'normalized_metadata_match'
+                        }
 
         return None
 

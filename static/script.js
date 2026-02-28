@@ -238,7 +238,7 @@ async function checkActiveTasks() {
                 // Check Navidrome path warning after analysis completes
                 if (['SUCCESS', 'FINISHED'].includes(currentStatusUpper)
                     && (mainActiveTask.task_type_from_db || '').toLowerCase().includes('analysis')) {
-                    checkNavidromePathWarning();
+                    checkProviderHealth();
                 }
             }
             lastPolledTaskDetails[currentTaskId] = { state: currentStatusUpper, ...mainActiveTask };
@@ -272,7 +272,7 @@ async function checkActiveTasks() {
                         // Check Navidrome path warning after analysis completes
                         if (['SUCCESS', 'FINISHED'].includes(upperFinalStatus)
                             && (finalStatusData.task_type_from_db || '').toLowerCase().includes('analysis')) {
-                            checkNavidromePathWarning();
+                            checkProviderHealth();
                         }
                     }
                     displayTaskStatus(finalStatusData);
@@ -302,22 +302,17 @@ async function checkActiveTasks() {
     return false;
 }
 
-async function checkNavidromePathWarning() {
+async function checkProviderHealth() {
     try {
-        const response = await fetch('/api/setup/providers');
-        const providerList = await response.json();
-        const navidromeRelative = providerList.find(
-            p => p.provider_type === 'navidrome' && p.enabled && p.config && p.config.path_format === 'relative'
-        );
-        if (navidromeRelative) {
-            showMessageBox('Navidrome Path Warning',
-                'Navidrome is reporting relative file paths. Cross-provider track matching will not work.\n\n' +
-                'To fix: In Navidrome, go to Settings > Personal > Subsonic > enable "Report Real Path", ' +
-                'then go to AudioMuse Settings and click "Rescan Paths" on the Navidrome provider.'
-            );
+        const response = await fetch('/api/setup/providers/health');
+        const data = await response.json();
+        const warnings = data.warnings || [];
+        if (warnings.length > 0) {
+            const bullets = warnings.map(w => `• ${w.message}`).join('<br>');
+            showMessageBox('Provider Warnings', bullets);
         }
     } catch (e) {
-        console.warn('Could not check Navidrome path format:', e);
+        console.warn('Could not check provider health:', e);
     }
 }
 
@@ -562,6 +557,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         await fetchAndDisplayOverallLastTask();
         updateCancelButtonState(true);
     }
+    checkProviderHealth();
     setInterval(checkActiveTasks, 3000);
 });
 

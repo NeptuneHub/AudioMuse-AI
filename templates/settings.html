@@ -713,6 +713,27 @@
         </div>
     </div>
 
+    <!-- Library Health Section -->
+    <div class="settings-section">
+        <div class="section-header" onclick="toggleSection(this)">
+            <h2><span class="section-icon">&#128269;</span> Library Health</h2>
+            <span class="toggle-icon">&#9660;</span>
+        </div>
+        <div class="section-content collapsed">
+            <p class="section-description">
+                Check your library for duplicate tracks and provider configuration issues.
+            </p>
+
+            <div class="field-group">
+                <button id="check-duplicates-btn" onclick="checkDuplicates()" style="margin-bottom: 1rem;">Check for Duplicates</button>
+                <div id="duplicate-results" style="display: none;">
+                    <div id="duplicate-summary" style="margin-bottom: 1rem; font-weight: 600;"></div>
+                    <div id="duplicate-table-container"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- AI Section -->
     <div class="settings-section">
         <div class="section-header" onclick="toggleSection(this)">
@@ -1644,6 +1665,60 @@
             }
         } catch (err) {
             showToast('Error saving settings: ' + err.message, 'error');
+        }
+    }
+
+    // Library Health
+    async function checkDuplicates() {
+        const btn = document.getElementById('check-duplicates-btn');
+        const resultsDiv = document.getElementById('duplicate-results');
+        const summaryDiv = document.getElementById('duplicate-summary');
+        const tableDiv = document.getElementById('duplicate-table-container');
+
+        btn.disabled = true;
+        btn.textContent = 'Checking...';
+        resultsDiv.style.display = 'none';
+
+        try {
+            const response = await fetch('/api/library/duplicates');
+            const data = await response.json();
+
+            if (data.error) {
+                showToast('Error checking duplicates: ' + data.error, 'error');
+                return;
+            }
+
+            const groups = data.duplicate_groups || [];
+            summaryDiv.textContent = groups.length === 0
+                ? `No duplicates found in ${data.total_score_rows} tracks.`
+                : `Found ${data.total_groups} duplicate group(s) (${data.total_duplicate_rows} rows) out of ${data.total_score_rows} total tracks.`;
+
+            tableDiv.innerHTML = '';
+            if (groups.length > 0) {
+                let html = '<table style="width:100%; border-collapse: collapse; font-size: 0.85rem;">';
+                html += '<tr style="border-bottom: 1px solid var(--border-color);"><th style="text-align:left; padding:0.4rem;">Type</th><th style="text-align:left; padding:0.4rem;">Key</th><th style="text-align:left; padding:0.4rem;">Count</th><th style="text-align:left; padding:0.4rem;">Item IDs</th></tr>';
+                groups.slice(0, 50).forEach(g => {
+                    const itemStr = g.items.map(i => i.title ? `${i.item_id} (${i.title})` : i.item_id).join(', ');
+                    html += `<tr style="border-bottom: 1px solid var(--border-color);">`;
+                    html += `<td style="padding:0.4rem;"><span class="badge ${g.type === 'track_id' ? 'badge-primary' : 'badge-enabled'}">${escapeHtml(g.type)}</span></td>`;
+                    html += `<td style="padding:0.4rem;">${escapeHtml(g.key)}</td>`;
+                    html += `<td style="padding:0.4rem;">${g.count}</td>`;
+                    html += `<td style="padding:0.4rem; word-break: break-all;">${escapeHtml(itemStr)}</td>`;
+                    html += `</tr>`;
+                });
+                if (groups.length > 50) {
+                    html += `<tr><td colspan="4" style="padding:0.4rem; color: var(--text-muted);">... and ${groups.length - 50} more groups</td></tr>`;
+                }
+                html += '</table>';
+                tableDiv.innerHTML = html;
+            }
+
+            resultsDiv.style.display = 'block';
+        } catch (err) {
+            showToast('Error checking duplicates: ' + err.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Check for Duplicates';
         }
     }
 

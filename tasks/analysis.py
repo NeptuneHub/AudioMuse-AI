@@ -670,7 +670,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
         active_provider_id = provider_id if provider_id is not None else get_primary_provider_id()
         initial_details = {"album_name": album_name, "log": [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Album analysis task started."]}
         save_task_status(current_task_id, "album_analysis", TASK_STATUS_STARTED, parent_task_id=parent_task_id, sub_type_identifier=album_id, progress=0, details=initial_details)
-        tracks_analyzed_count, tracks_skipped_count, current_progress_val = 0, 0, 0
+        tracks_analyzed_count, tracks_skipped_count, tracks_linked_count, current_progress_val = 0, 0, 0, 0
         current_task_logs = initial_details["log"]
         
         model_paths = {
@@ -854,6 +854,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
                                     album=album_name
                                 )
                             if linked:
+                                tracks_linked_count += 1
                                 logger.info(f"Linked '{track_name_full}' to existing analysis "
                                             f"(source: {existing_analysis.get('source', 'path')}, "
                                             f"provider item {source_item_id})")
@@ -1092,7 +1093,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
             logger.info("Performing final comprehensive cleanup after album analysis")
             comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
 
-            summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album}
+            summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "tracks_linked": tracks_linked_count, "total_tracks_in_album": total_tracks_in_album}
             log_and_update_album_task(f"Album '{album_name}' analysis complete.", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
             return {"status": "SUCCESS", **summary}
 
@@ -1193,6 +1194,29 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
         try:
             log_and_update_main("🚀 Starting main analysis process...", 0)
+
+            # Pre-analysis provider path validation
+            try:
+                from app_setup import get_provider_by_id
+                provider_config = get_provider_by_id(active_provider_id)
+                if provider_config:
+                    pcfg = provider_config.get('config') or {}
+                    pname = provider_config.get('name') or provider_config.get('provider_type')
+                    if pcfg.get('path_format') == 'relative':
+                        log_and_update_main(
+                            f"⚠️ Warning: Provider '{pname}' uses relative file paths. "
+                            f"Cross-provider track matching will not work.", 0)
+                    if not pcfg.get('music_path_prefix') and provider_config.get('provider_type') not in ('localfiles',):
+                        with get_db() as conn, conn.cursor() as cur:
+                            cur.execute("SELECT COUNT(*) FROM provider_track WHERE provider_id != %s LIMIT 1", (active_provider_id,))
+                            other_count = cur.fetchone()[0]
+                        if other_count > 0:
+                            log_and_update_main(
+                                f"⚠️ Warning: Provider '{pname}' has no music_path_prefix but other providers have tracks. "
+                                f"Run 'Rescan Paths' in Settings for better cross-provider matching.", 0)
+            except Exception as e:
+                logger.warning(f"Pre-analysis path validation failed (non-blocking): {e}")
+
             clean_temp(TEMP_DIR)
             # MODIFIED: Call to get_recent_albums no longer needs server parameters.
             all_albums = get_recent_albums(num_recent_albums)
@@ -1488,7 +1512,25 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             # Top query computation disabled - using default queries from database only
             logger.info('Analysis complete. CLAP text search uses default queries (no auto-regeneration).')
 
-            final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
+            # Sum cross-provider link stats from child tasks
+            total_linked = 0
+            try:
+                from app_helper import get_child_tasks_from_db
+                for ct in get_child_tasks_from_db(current_task_id):
+                    details = ct.get('details') or {}
+                    if isinstance(details, str):
+                        try:
+                            details = json.loads(details)
+                        except (json.JSONDecodeError, TypeError):
+                            details = {}
+                    total_linked += (details.get('final_summary_details') or {}).get('tracks_linked', 0)
+            except Exception as e:
+                logger.warning(f"Could not sum link stats from child tasks: {e}")
+
+            final_message = (
+                f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
+                + (f" Cross-provider links: {total_linked}." if total_linked > 0 else "")
+            )
             log_and_update_main(final_message, 100, task_state=TASK_STATUS_SUCCESS)
             clean_temp(TEMP_DIR)
             return {"status": "SUCCESS", "message": final_message}

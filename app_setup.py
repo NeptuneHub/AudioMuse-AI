@@ -892,6 +892,140 @@ def rescan_provider_paths(provider_id):
         return jsonify({'success': False, 'message': f'Rescan failed: {str(e)}'}), 500
 
 
+@setup_bp.route('/api/setup/providers/health', methods=['GET'])
+def check_provider_health():
+    """Check health of all enabled providers and return warnings."""
+    try:
+        providers = get_providers(enabled_only=True)
+        warnings = []
+
+        # Collect all prefixes to detect mismatches
+        prefixes = {}
+        for p in providers:
+            cfg = p.get('config') or {}
+            prefixes[p['id']] = cfg.get('music_path_prefix', '')
+
+        non_empty_prefixes = {pid: pfx for pid, pfx in prefixes.items() if pfx}
+
+        for p in providers:
+            cfg = p.get('config') or {}
+            pid = p['id']
+            pname = p.get('name') or p.get('provider_type')
+            ptype = p.get('provider_type')
+
+            path_format = cfg.get('path_format', '')
+
+            if path_format == 'relative':
+                warnings.append({
+                    'provider_id': pid, 'provider_name': pname, 'provider_type': ptype,
+                    'level': 'warning',
+                    'message': f'{pname} is reporting relative file paths. Cross-provider track matching will not work.',
+                    'action': 'Enable "Report Real Path" in Navidrome, then Rescan Paths.' if ptype == 'navidrome' else 'Check provider path configuration.',
+                    'action_url': '/settings'
+                })
+            elif not path_format and ptype not in ('localfiles',):
+                warnings.append({
+                    'provider_id': pid, 'provider_name': pname, 'provider_type': ptype,
+                    'level': 'info',
+                    'message': f'{pname} has no path format detected yet. Run "Rescan Paths" after first analysis.',
+                    'action': 'Rescan Paths on the provider in Settings.',
+                    'action_url': '/settings'
+                })
+
+            # Prefix mismatch: this provider has no prefix but others do
+            if non_empty_prefixes and not prefixes.get(pid) and ptype not in ('localfiles',) and path_format != 'relative':
+                if len(providers) > 1:
+                    warnings.append({
+                        'provider_id': pid, 'provider_name': pname, 'provider_type': ptype,
+                        'level': 'warning',
+                        'message': f'{pname} has no music_path_prefix while other providers do. Cross-provider matching may fail.',
+                        'action': 'Run Rescan Paths to auto-detect the prefix.',
+                        'action_url': '/settings'
+                    })
+
+        return jsonify({
+            'warnings': warnings,
+            'provider_count': len(providers),
+            'checked_at': datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Error checking provider health: {e}")
+        return jsonify({'warnings': [], 'provider_count': 0, 'error': str(e)}), 500
+
+
+@setup_bp.route('/api/library/duplicates', methods=['GET'])
+def check_library_duplicates():
+    """Find duplicate tracks in the score table using track_id and metadata matching."""
+    from app_helper import _normalize_metadata_for_matching
+    try:
+        db = get_db()
+        duplicate_groups = []
+
+        with db.cursor() as cur:
+            # Strategy A: track_id duplicates (confirmed, same canonical file)
+            cur.execute("""
+                SELECT track_id, COUNT(*) as cnt
+                FROM score
+                WHERE track_id IS NOT NULL
+                GROUP BY track_id
+                HAVING COUNT(*) > 1
+            """)
+            for track_id, cnt in cur.fetchall():
+                cur.execute(
+                    "SELECT item_id, title, author, album FROM score WHERE track_id = %s ORDER BY item_id",
+                    (track_id,)
+                )
+                rows = cur.fetchall()
+                duplicate_groups.append({
+                    'type': 'track_id',
+                    'key': str(track_id),
+                    'count': cnt,
+                    'items': [{'item_id': r[0], 'title': r[1], 'artist': r[2], 'album': r[3]} for r in rows]
+                })
+
+            # Strategy B: metadata duplicates (suspected)
+            cur.execute("""
+                SELECT LOWER(title), LOWER(author), LOWER(album), COUNT(*) as cnt, array_agg(item_id)
+                FROM score
+                WHERE title IS NOT NULL AND author IS NOT NULL
+                GROUP BY LOWER(title), LOWER(author), LOWER(album)
+                HAVING COUNT(*) > 1
+            """)
+            # Post-filter with normalization to merge variant groups
+            seen_normalized = set()
+            for title_l, author_l, album_l, cnt, item_ids in cur.fetchall():
+                norm_t, norm_a = _normalize_metadata_for_matching(title_l or '', author_l or '')
+                norm_key = (norm_t, norm_a, (album_l or '').strip())
+                if norm_key in seen_normalized:
+                    continue
+                seen_normalized.add(norm_key)
+                # Skip if already covered by track_id duplicates
+                existing_track_id_items = {item for g in duplicate_groups if g['type'] == 'track_id' for item in [i['item_id'] for i in g['items']]}
+                if all(iid in existing_track_id_items for iid in item_ids):
+                    continue
+                duplicate_groups.append({
+                    'type': 'metadata',
+                    'key': f"{title_l} | {author_l} | {album_l}",
+                    'count': cnt,
+                    'items': [{'item_id': iid} for iid in item_ids]
+                })
+
+            # Total score rows for context
+            cur.execute("SELECT COUNT(*) FROM score")
+            total_score_rows = cur.fetchone()[0]
+
+        total_duplicate_rows = sum(g['count'] for g in duplicate_groups)
+        return jsonify({
+            'duplicate_groups': duplicate_groups,
+            'total_groups': len(duplicate_groups),
+            'total_duplicate_rows': total_duplicate_rows,
+            'total_score_rows': total_score_rows
+        })
+    except Exception as e:
+        logger.error(f"Error checking library duplicates: {e}")
+        return jsonify({'error': str(e), 'duplicate_groups': [], 'total_groups': 0}), 500
+
+
 @setup_bp.route('/api/setup/providers/libraries', methods=['POST'])
 def get_provider_libraries():
     """
