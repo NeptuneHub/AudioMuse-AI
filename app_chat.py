@@ -6,15 +6,8 @@ import logging
 
 
 logger = logging.getLogger(__name__)
-# Import AI configuration from the main config.py
-# This assumes config.py is in the same directory as app_chat.py or accessible via Python path.
-from config import (
-    OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME,
-    OPENAI_SERVER_URL, OPENAI_MODEL_NAME, OPENAI_API_KEY, # Import OpenAI config
-    GEMINI_MODEL_NAME, GEMINI_API_KEY, # Import GEMINI_API_KEY from config
-    MISTRAL_MODEL_NAME, MISTRAL_API_KEY,
-    AI_MODEL_PROVIDER, # Default AI provider
-)
+# Import config module - read attributes at call time so runtime updates take effect
+import config
 
 # Create a Blueprint for chat-related routes
 chat_bp = Blueprint('chat_bp', __name__,
@@ -253,7 +246,7 @@ def chat_playlist_api():
         return jsonify({"error": "Missing userInput in request"}), 400
 
     original_user_input = data.get('userInput')
-    ai_provider = data.get('ai_provider', AI_MODEL_PROVIDER).upper()
+    ai_provider = data.get('ai_provider', config.AI_MODEL_PROVIDER).upper()
     ai_model_from_request = data.get('ai_model')
     
     log_messages = []
@@ -277,15 +270,15 @@ def chat_playlist_api():
     # Build AI configuration object
     ai_config = {
         'provider': ai_provider,
-        'ollama_url': data.get('ollama_server_url', OLLAMA_SERVER_URL),
-        'ollama_model': ai_model_from_request or OLLAMA_MODEL_NAME,
-        'openai_url': data.get('openai_server_url', OPENAI_SERVER_URL),
-        'openai_model': ai_model_from_request or OPENAI_MODEL_NAME,
-        'openai_key': data.get('openai_api_key') or OPENAI_API_KEY,
-        'gemini_key': data.get('gemini_api_key') or GEMINI_API_KEY,
-        'gemini_model': ai_model_from_request or GEMINI_MODEL_NAME,
-        'mistral_key': data.get('mistral_api_key') or MISTRAL_API_KEY,
-        'mistral_model': ai_model_from_request or MISTRAL_MODEL_NAME
+        'ollama_url': data.get('ollama_server_url', config.OLLAMA_SERVER_URL),
+        'ollama_model': ai_model_from_request or config.OLLAMA_MODEL_NAME,
+        'openai_url': data.get('openai_server_url', config.OPENAI_SERVER_URL),
+        'openai_model': ai_model_from_request or config.OPENAI_MODEL_NAME,
+        'openai_key': data.get('openai_api_key') or config.OPENAI_API_KEY,
+        'gemini_key': data.get('gemini_api_key') or config.GEMINI_API_KEY,
+        'gemini_model': ai_model_from_request or config.GEMINI_MODEL_NAME,
+        'mistral_key': data.get('mistral_api_key') or config.MISTRAL_API_KEY,
+        'mistral_model': ai_model_from_request or config.MISTRAL_MODEL_NAME
     }
     
     # Validate API keys for cloud providers

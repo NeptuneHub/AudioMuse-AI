@@ -1694,6 +1694,30 @@ def decrypt_provider_config(config_dict):
     return decrypted
 
 
+def encrypt_setting_value(value):
+    """Encrypt a single setting value for storage in app_settings."""
+    if not value or str(value).startswith('gAAAAA'):
+        return value
+    try:
+        f = _get_fernet()
+        return f.encrypt(str(value).encode()).decode()
+    except Exception as e:
+        logger.error(f"Failed to encrypt setting value: {e}")
+        return value
+
+
+def decrypt_setting_value(value):
+    """Decrypt a single setting value retrieved from app_settings."""
+    if not value or not str(value).startswith('gAAAAA'):
+        return value
+    try:
+        f = _get_fernet()
+        return f.decrypt(str(value).encode()).decode()
+    except Exception as e:
+        logger.error(f"Failed to decrypt setting value: {e}")
+        return value
+
+
 # ##############################################################################
 # TRACK LINKING FUNCTIONS - For multi-provider track identity
 # ##############################################################################

@@ -4,7 +4,8 @@ import uuid
 import logging
 import traceback
 
-# Import all necessary configuration variables
+# Import config module - read attributes at call time so runtime updates (e.g. API keys) take effect
+import config
 from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP_DIR, \
     REDIS_URL, DATABASE_URL, MAX_DISTANCE, MAX_SONGS_PER_CLUSTER, MAX_SONGS_PER_ARTIST, NUM_RECENT_ALBUMS, \
     SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_SILHOUETTE, SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ, \
@@ -15,9 +16,9 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
     SPECTRAL_N_CLUSTERS_MIN, SPECTRAL_N_CLUSTERS_MAX, ENABLE_CLUSTERING_EMBEDDINGS, \
     PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, MOOD_LABELS, TOP_N_MOODS, \
     AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, \
-    OPENAI_SERVER_URL, OPENAI_MODEL_NAME, OPENAI_API_KEY, \
-    GEMINI_API_KEY, GEMINI_MODEL_NAME, \
-    TOP_N_PLAYLISTS, MISTRAL_API_KEY, MISTRAL_MODEL_NAME
+    OPENAI_SERVER_URL, OPENAI_MODEL_NAME, \
+    GEMINI_MODEL_NAME, \
+    TOP_N_PLAYLISTS, MISTRAL_MODEL_NAME
 
 # RQ import
 from rq import Retry
@@ -326,11 +327,10 @@ def start_clustering_endpoint():
             "ollama_model_name_param": data.get('ollama_model_name', OLLAMA_MODEL_NAME),
             "openai_server_url_param": data.get('openai_server_url', OPENAI_SERVER_URL),
             "openai_model_name_param": data.get('openai_model_name', OPENAI_MODEL_NAME),
-            "openai_api_key_param": data.get('openai_api_key') or OPENAI_API_KEY,  # Use env var if empty string
-            # This line already falls back to the config value if the request doesn't contain it.
-            "gemini_api_key_param": data.get('gemini_api_key', GEMINI_API_KEY),
+            "openai_api_key_param": data.get('openai_api_key') or config.OPENAI_API_KEY,
+            "gemini_api_key_param": data.get('gemini_api_key') or config.GEMINI_API_KEY,
             "gemini_model_name_param": data.get('gemini_model_name', GEMINI_MODEL_NAME),
-            "mistral_api_key_param": data.get('mistral_api_key', MISTRAL_API_KEY),
+            "mistral_api_key_param": data.get('mistral_api_key') or config.MISTRAL_API_KEY,
             "mistral_model_name_param": data.get('mistral_model_name', MISTRAL_MODEL_NAME),
             "top_n_moods_for_clustering_param": int(data.get('top_n_moods', TOP_N_MOODS)),
             "enable_clustering_embeddings_param": data.get('enable_clustering_embeddings', ENABLE_CLUSTERING_EMBEDDINGS),

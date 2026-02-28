@@ -16,7 +16,7 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request, render_template, redirect, url_for, g
 from functools import wraps
 
-from app_helper import get_db, detect_music_path_prefix, detect_path_format, encrypt_provider_config, decrypt_provider_config
+from app_helper import get_db, detect_music_path_prefix, detect_path_format, encrypt_provider_config, decrypt_provider_config, encrypt_setting_value, decrypt_setting_value
 from tasks.mediaserver import (
     get_available_provider_types,
     get_provider_info,
@@ -30,6 +30,9 @@ import config
 logger = logging.getLogger(__name__)
 
 setup_bp = Blueprint('setup', __name__)
+
+# Keys that must be encrypted at rest and masked in API responses
+SENSITIVE_SETTING_KEYS = {'openai_api_key', 'gemini_api_key', 'mistral_api_key'}
 
 
 # ##############################################################################
@@ -49,6 +52,9 @@ def get_setting(key, default=None):
 
 def set_setting(key, value, category=None, description=None):
     """Set a setting value in the database."""
+    store_value = value
+    if key in SENSITIVE_SETTING_KEYS and value:
+        store_value = encrypt_setting_value(str(value))
     db = get_db()
     with db.cursor() as cur:
         cur.execute("""
@@ -59,7 +65,7 @@ def set_setting(key, value, category=None, description=None):
                 category = COALESCE(EXCLUDED.category, app_settings.category),
                 description = COALESCE(EXCLUDED.description, app_settings.description),
                 updated_at = NOW()
-        """, (key, json.dumps(value), category, description))
+        """, (key, json.dumps(store_value), category, description))
         db.commit()
 
 
@@ -72,6 +78,9 @@ def get_all_settings():
         settings = {}
         for row in rows:
             key, value, category, description = row
+            # Mask sensitive values in API responses
+            if key in SENSITIVE_SETTING_KEYS and value:
+                value = '********'
             # Handle None category - use 'general' as default
             category = category or 'general'
             if category not in settings:
@@ -97,7 +106,10 @@ def apply_settings_to_config():
         'ollama_model_name': 'OLLAMA_MODEL_NAME',
         'openai_server_url': 'OPENAI_SERVER_URL',
         'openai_model_name': 'OPENAI_MODEL_NAME',
+        'openai_api_key': 'OPENAI_API_KEY',
+        'gemini_api_key': 'GEMINI_API_KEY',
         'gemini_model_name': 'GEMINI_MODEL_NAME',
+        'mistral_api_key': 'MISTRAL_API_KEY',
         'mistral_model_name': 'MISTRAL_MODEL_NAME',
         'max_songs_per_artist_playlist': 'MAX_SONGS_PER_ARTIST_PLAYLIST',
         'playlist_energy_arc': 'PLAYLIST_ENERGY_ARC',
@@ -106,6 +118,9 @@ def apply_settings_to_config():
     for db_key, config_attr in mapping.items():
         val = get_setting(db_key)
         if val is not None and val != '':
+            # Decrypt sensitive settings before applying
+            if db_key in SENSITIVE_SETTING_KEYS:
+                val = decrypt_setting_value(str(val))
             existing = getattr(config, config_attr, None)
             if isinstance(existing, bool):
                 val = val in (True, 'true', 'True')
@@ -1158,6 +1173,9 @@ def update_settings():
         return jsonify({'error': 'No data provided'}), 400
 
     for key, value in data.items():
+        # Skip masked sensitive values (user didn't change the key)
+        if key in SENSITIVE_SETTING_KEYS and value == '********':
+            continue
         set_setting(key, value)
 
     # Apply relevant settings to runtime config immediately

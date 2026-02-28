@@ -117,6 +117,35 @@
         border-color: var(--color-primary);
     }
 
+    .password-wrapper {
+        position: relative;
+        display: inline-block;
+        width: 100%;
+        max-width: 400px;
+    }
+
+    .password-wrapper input {
+        padding-right: 3rem !important;
+    }
+
+    .toggle-password {
+        position: absolute;
+        right: 0.5rem;
+        top: 50%;
+        transform: translateY(-50%);
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-size: 1.1rem;
+        color: var(--text-muted);
+        padding: 0.25rem;
+        line-height: 1;
+    }
+
+    .toggle-password:hover {
+        color: var(--text-main);
+    }
+
     .field-group .checkbox-label {
         display: flex;
         align-items: center;
@@ -732,6 +761,14 @@
                     <input type="text" id="openai-model" placeholder="gpt-4" onchange="markDirty()">
                     <div class="field-help">Model name (e.g., gpt-4, gpt-4o, or OpenRouter model IDs)</div>
                 </div>
+                <div class="field-group">
+                    <label for="openai-api-key">API Key</label>
+                    <div class="password-wrapper">
+                        <input type="password" id="openai-api-key" placeholder="sk-..." onchange="markDirty()">
+                        <button type="button" class="toggle-password" onclick="togglePasswordVisibility(this)" title="Show/hide">&#128065;</button>
+                    </div>
+                    <div class="field-help">OpenAI or OpenRouter API key. Leave blank to use environment variable.</div>
+                </div>
             </div>
 
             <div id="gemini-fields" style="display: none;">
@@ -740,6 +777,14 @@
                     <input type="text" id="gemini-model" placeholder="gemini-2.5-pro" onchange="markDirty()">
                     <div class="field-help">Google Gemini model (e.g., gemini-2.5-pro, gemini-2.5-flash)</div>
                 </div>
+                <div class="field-group">
+                    <label for="gemini-api-key">API Key</label>
+                    <div class="password-wrapper">
+                        <input type="password" id="gemini-api-key" placeholder="AI..." onchange="markDirty()">
+                        <button type="button" class="toggle-password" onclick="togglePasswordVisibility(this)" title="Show/hide">&#128065;</button>
+                    </div>
+                    <div class="field-help">Google Gemini API key. Leave blank to use environment variable.</div>
+                </div>
             </div>
 
             <div id="mistral-fields" style="display: none;">
@@ -747,6 +792,14 @@
                     <label for="mistral-model">Mistral Model Name</label>
                     <input type="text" id="mistral-model" placeholder="ministral-3b-latest" onchange="markDirty()">
                     <div class="field-help">Mistral AI model (e.g., ministral-3b-latest, mistral-large-latest)</div>
+                </div>
+                <div class="field-group">
+                    <label for="mistral-api-key">API Key</label>
+                    <div class="password-wrapper">
+                        <input type="password" id="mistral-api-key" placeholder="..." onchange="markDirty()">
+                        <button type="button" class="toggle-password" onclick="togglePasswordVisibility(this)" title="Show/hide">&#128065;</button>
+                    </div>
+                    <div class="field-help">Mistral AI API key. Leave blank to use environment variable.</div>
                 </div>
             </div>
 
@@ -969,8 +1022,11 @@
         if (settings.ollama_model_name) document.getElementById('ollama-model').value = settings.ollama_model_name;
         if (settings.openai_server_url) document.getElementById('openai-url').value = settings.openai_server_url;
         if (settings.openai_model_name) document.getElementById('openai-model').value = settings.openai_model_name;
+        if (settings.openai_api_key) document.getElementById('openai-api-key').value = settings.openai_api_key;
         if (settings.gemini_model_name) document.getElementById('gemini-model').value = settings.gemini_model_name;
+        if (settings.gemini_api_key) document.getElementById('gemini-api-key').value = settings.gemini_api_key;
         if (settings.mistral_model_name) document.getElementById('mistral-model').value = settings.mistral_model_name;
+        if (settings.mistral_api_key) document.getElementById('mistral-api-key').value = settings.mistral_api_key;
 
         // Instant Playlist
         document.getElementById('max-artist-songs').value = settings.max_songs_per_artist_playlist ?? 5;
@@ -990,6 +1046,17 @@
         document.getElementById('openai-fields').style.display = provider === 'OPENAI' ? 'block' : 'none';
         document.getElementById('gemini-fields').style.display = provider === 'GEMINI' ? 'block' : 'none';
         document.getElementById('mistral-fields').style.display = provider === 'MISTRAL' ? 'block' : 'none';
+    }
+
+    function togglePasswordVisibility(btn) {
+        const input = btn.previousElementSibling;
+        if (input.type === 'password') {
+            input.type = 'text';
+            btn.innerHTML = '&#128064;';
+        } else {
+            input.type = 'password';
+            btn.innerHTML = '&#128065;';
+        }
     }
 
     function updateWorkerInfo() {
@@ -1538,8 +1605,11 @@
             ollama_model_name: document.getElementById('ollama-model').value || '',
             openai_server_url: document.getElementById('openai-url').value || '',
             openai_model_name: document.getElementById('openai-model').value || '',
+            openai_api_key: document.getElementById('openai-api-key').value || '',
             gemini_model_name: document.getElementById('gemini-model').value || '',
+            gemini_api_key: document.getElementById('gemini-api-key').value || '',
             mistral_model_name: document.getElementById('mistral-model').value || '',
+            mistral_api_key: document.getElementById('mistral-api-key').value || '',
             // Instant Playlist
             max_songs_per_artist_playlist: parseInt(document.getElementById('max-artist-songs').value) || 5,
             playlist_energy_arc: document.getElementById('energy-arc').checked,

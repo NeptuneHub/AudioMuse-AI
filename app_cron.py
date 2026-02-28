@@ -2,6 +2,7 @@ from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor
 from app_helper import get_db, rq_queue_high, save_task_status, TASK_STATUS_PENDING
 import uuid, time, logging
+import config
 from config import (
     TOP_N_MOODS,
     CLUSTER_ALGORITHM, NUM_CLUSTERS_MIN, NUM_CLUSTERS_MAX,
@@ -13,9 +14,9 @@ from config import (
     SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_SILHOUETTE, SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ,
     SCORE_WEIGHT_PURITY, SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY, SCORE_WEIGHT_OTHER_FEATURE_PURITY,
     AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME,
-    OPENAI_SERVER_URL, OPENAI_MODEL_NAME, OPENAI_API_KEY,
-    GEMINI_API_KEY, GEMINI_MODEL_NAME,
-    MISTRAL_API_KEY, MISTRAL_MODEL_NAME, ENABLE_CLUSTERING_EMBEDDINGS
+    OPENAI_SERVER_URL, OPENAI_MODEL_NAME,
+    GEMINI_MODEL_NAME,
+    MISTRAL_MODEL_NAME, ENABLE_CLUSTERING_EMBEDDINGS
 )
 
 cron_bp = Blueprint('cron_bp', __name__)
@@ -161,10 +162,10 @@ def run_due_cron_jobs():
                         "ollama_model_name_param": OLLAMA_MODEL_NAME,
                         "openai_server_url_param": OPENAI_SERVER_URL,
                         "openai_model_name_param": OPENAI_MODEL_NAME,
-                        "openai_api_key_param": OPENAI_API_KEY,
-                        "gemini_api_key_param": GEMINI_API_KEY,
+                        "openai_api_key_param": config.OPENAI_API_KEY,
+                        "gemini_api_key_param": config.GEMINI_API_KEY,
                         "gemini_model_name_param": GEMINI_MODEL_NAME,
-                        "mistral_api_key_param": MISTRAL_API_KEY,
+                        "mistral_api_key_param": config.MISTRAL_API_KEY,
                         "mistral_model_name_param": MISTRAL_MODEL_NAME,
                         "top_n_moods_for_clustering_param": int(TOP_N_MOODS),
                         "enable_clustering_embeddings_param": bool(ENABLE_CLUSTERING_EMBEDDINGS),
