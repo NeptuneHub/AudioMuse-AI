@@ -217,6 +217,11 @@ RUN ls -lah /app/.cache/huggingface/ && \
 # Copy ONNX models from models stage (small files, no issues)
 COPY --from=models /app/model/*.onnx /app/model/
 
+# Copy the distilled student CLAP audio model (+ external data sidecar)
+# These come from the build context via .dockerignore allowlist
+COPY model/model_epoch_36.onnx      /app/model/model_epoch_36.onnx
+COPY model/model_epoch_36.onnx.data /app/model/model_epoch_36.onnx.data
+
 # Download CLAP split ONNX models directly in runner stage
 # Split models allow loading only what's needed:
 # - Audio model (~268MB): For music analysis in worker containers

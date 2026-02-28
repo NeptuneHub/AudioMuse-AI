@@ -45,6 +45,14 @@ from config import (
     OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY as CONFIG_OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
     AUDIO_LOAD_TIMEOUT # Add this to your config.py, e.g., AUDIO_LOAD_TIMEOUT = 600 (for a 10-minute timeout)
 )
+import config  # module-level import so we can mutate config attributes at runtime
+
+# Allow optional override of the CLAP audio model path via environment variable.
+# Useful when experimenting with alternate ONNX files (e.g. model_epoch_36.onnx).
+if 'CLAP_CUSTOM_AUDIO_MODEL' in os.environ:
+    config.CLAP_AUDIO_MODEL_PATH = os.environ['CLAP_CUSTOM_AUDIO_MODEL']
+    logging.getLogger(__name__).info(
+        f"CLAP audio model path overridden: {config.CLAP_AUDIO_MODEL_PATH}")
 
 
 # Import other project modules

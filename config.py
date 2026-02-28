@@ -267,7 +267,29 @@ EMBEDDING_DIMENSION = 200
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # Split CLAP models: audio model for analysis, text model for search
-CLAP_AUDIO_MODEL_PATH = os.environ.get("CLAP_AUDIO_MODEL_PATH", "/app/model/clap_audio_model.onnx")
+# Default points to the distilled student model (EfficientAT, epoch 36).
+# The companion external-data file (model_epoch_36.onnx.data) must sit next to it.
+# To revert to the original teacher model set CLAP_AUDIO_MODEL_PATH=/app/model/clap_audio_model.onnx
+# and override the mel params (see CLAP_AUDIO_* variables below).
+CLAP_AUDIO_MODEL_PATH = os.environ.get("CLAP_AUDIO_MODEL_PATH", "/app/model/model_epoch_36.onnx")
+# Maximum number of segments to send through the CLAP audio model in one batch.
+# Using a small batch (e.g. 10) reduces ONNX session overhead when many overlapping
+# segments need scoring. This value can be overridden via environment variable.
+CLAP_SEGMENT_BATCH_SIZE = int(os.environ.get("CLAP_SEGMENT_BATCH_SIZE", "10"))
+
+# Mel-spectrogram parameters for the CLAP audio model.
+# Defaults match the distilled student model (EfficientAT, model_epoch_36.onnx).
+# For the original teacher model (clap_audio_model.onnx) override to:
+#   CLAP_AUDIO_N_MELS=64  CLAP_AUDIO_N_FFT=1024  CLAP_AUDIO_HOP_LENGTH=480
+#   CLAP_AUDIO_FMIN=50    CLAP_AUDIO_MEL_TRANSPOSE=true
+CLAP_AUDIO_N_MELS = int(os.environ.get("CLAP_AUDIO_N_MELS", "128"))
+CLAP_AUDIO_N_FFT = int(os.environ.get("CLAP_AUDIO_N_FFT", "2048"))
+CLAP_AUDIO_HOP_LENGTH = int(os.environ.get("CLAP_AUDIO_HOP_LENGTH", "480"))
+CLAP_AUDIO_FMIN = int(os.environ.get("CLAP_AUDIO_FMIN", "0"))
+CLAP_AUDIO_FMAX = int(os.environ.get("CLAP_AUDIO_FMAX", "14000"))
+# Teacher model (HTSAT) transposes mel to (time, mels); student does not.
+CLAP_AUDIO_MEL_TRANSPOSE = os.environ.get("CLAP_AUDIO_MEL_TRANSPOSE", "false").lower() == "true"
+
 CLAP_TEXT_MODEL_PATH = os.environ.get("CLAP_TEXT_MODEL_PATH", "/app/model/clap_text_model.onnx")
 # Legacy path for backward compatibility (unused with split models)
 CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", "/app/model/clap_model.onnx")
