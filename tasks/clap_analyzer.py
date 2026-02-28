@@ -621,36 +621,32 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
                 segments.append(audio_data[-SEGMENT_LENGTH:])
 
         num_segments = len(segments)
-        batch_size = getattr(config, 'CLAP_SEGMENT_BATCH_SIZE', 10)
 
-        # --- inference in batches of segments ---
+        # --- inference one segment at a time ---
+        # The student model (model_epoch_36.onnx) was exported with a fixed
+        # batch dimension of 1, so we must feed segments individually.
         all_embs = []
-        for start_idx in range(0, num_segments, batch_size):
-            batch_segments = segments[start_idx:start_idx + batch_size]
-            # compute mel-spectrograms for the batch
-            mel_specs = [compute_mel_spectrogram(seg, SAMPLE_RATE) for seg in batch_segments]
-            # Each mel_spec is (1, n_mels, time) or (1, time, n_mels).
-            # np.stack → (B, 1, …) which is already (B, channel, …).
-            mel_batch = np.stack(mel_specs, axis=0)  # (B, 1, n_mels, time)
-            onnx_inputs = {'mel_spectrogram': mel_batch}
+        for seg_idx, seg in enumerate(segments):
+            mel_spec = compute_mel_spectrogram(seg, SAMPLE_RATE)  # (1, n_mels, time)
+            onnx_inputs = {'mel_spectrogram': mel_spec}
             try:
                 outputs = session.run(None, onnx_inputs)
-                emb_batch = outputs[0]  # shape (B, 512)
+                emb = outputs[0]  # shape (1, 512)
             except Exception as e:
                 # Handle memory allocation errors with cleanup and retry
                 def cleanup_fn():
                     cleanup_cuda_memory(force=True)
                 def retry_fn():
                     return session.run(None, onnx_inputs)
-                emb_batch = handle_onnx_memory_error(
-                    e, "CLAP batch inference",
+                result = handle_onnx_memory_error(
+                    e, f"CLAP segment {seg_idx}/{num_segments}",
                     cleanup_func=cleanup_fn, retry_func=retry_fn
                 )
-                if emb_batch is not None:
-                    emb_batch = emb_batch[0]
+                if result is not None:
+                    emb = result[0]
                 else:
                     raise
-            all_embs.append(emb_batch)
+            all_embs.append(emb)
 
         if all_embs:
             audio_embeddings = np.vstack(all_embs)
