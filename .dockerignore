@@ -45,7 +45,9 @@ htmlcov/
 
 # Large model files and caches (these are downloaded inside the container)
 model/
-*.onnx
+# Keep the distilled student CLAP model (+ external data sidecar)
+!model/model_epoch_36.onnx
+!model/model_epoch_36.onnx.data
 *.pt
 *.pth
 *.bin

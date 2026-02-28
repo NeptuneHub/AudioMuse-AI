@@ -48,6 +48,9 @@ htmlcov/
 
 # Downloaded ONNX models (from run_worker_macos.sh or similar)
 /model/
+# Keep the distilled student CLAP model (+ external data sidecar)
+!model/model_epoch_36.onnx
+!model/model_epoch_36.onnx.data
 
 # Exported MuLan models
 mulan_model_export/
