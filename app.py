@@ -643,13 +643,17 @@ if __name__ == '__main__':
         if load_clap_cache_from_db():
           logger.info("CLAP text search cache loaded at startup (embeddings only).")
           logger.info("CLAP model will lazy-load on first text search (~1-2s delay, saves 3GB RAM).")
-          
-          # Load top queries from database (default queries only, no computation)
-          has_existing = load_top_queries_from_db()
-          if has_existing:
-            logger.info("Loaded top queries from database (defaults).")
-          else:
-            logger.info("No queries found in database (should not happen - check DB)")
+        else:
+          logger.info("CLAP embeddings not in DB yet — text search will be available after first analysis.")
+        
+        # Load top queries from database regardless of embedding cache status.
+        # These are static text strings (defaults or previously generated) and
+        # do not depend on the embedding cache being loaded.
+        has_existing = load_top_queries_from_db()
+        if has_existing:
+          logger.info("Loaded top queries from database (defaults).")
+        else:
+          logger.info("No queries found in database (should not happen - check DB)")
     except Exception as e:
       logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
     # Load MuLan embeddings cache (model will lazy-load on first use)
