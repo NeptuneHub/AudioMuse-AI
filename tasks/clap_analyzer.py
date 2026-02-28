@@ -591,7 +591,9 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         HOP_LENGTH = 240000       # 5 seconds (50 % overlap)
 
         # --- robust audio loading (pydub fallback) ---
-        audio_data, sr = robust_load_audio(audio_path, target_sr=SAMPLE_RATE)
+        # Lazy import to avoid circular dependency (analysis imports clap_analyzer)
+        from tasks.analysis import robust_load_audio_with_fallback
+        audio_data, sr = robust_load_audio_with_fallback(audio_path, target_sr=SAMPLE_RATE)
 
         if audio_data is None or audio_data.size == 0:
             logger.warning(f"Could not load audio for CLAP analysis: {audio_path}")
