@@ -6,15 +6,8 @@ import logging
 
 
 logger = logging.getLogger(__name__)
-# Import AI configuration from the main config.py
-# This assumes config.py is in the same directory as app_chat.py or accessible via Python path.
-from config import (
-    OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME,
-    OPENAI_SERVER_URL, OPENAI_MODEL_NAME, OPENAI_API_KEY, # Import OpenAI config
-    GEMINI_MODEL_NAME, GEMINI_API_KEY, # Import GEMINI_API_KEY from config
-    MISTRAL_MODEL_NAME, MISTRAL_API_KEY,
-    AI_MODEL_PROVIDER, # Default AI provider
-)
+# Import config module - read attributes at call time so runtime updates take effect
+import config
 
 # Create a Blueprint for chat-related routes
 chat_bp = Blueprint('chat_bp', __name__,
@@ -88,15 +81,16 @@ def chat_config_defaults_api():
     """
     API endpoint to provide default configuration values for the chat interface.
     """
-    # The default_gemini_api_key is no longer sent to the front end for security.
+    # Read from config module attributes (may be overridden by DB settings via apply_settings_to_config)
+    import config as cfg
     return jsonify({
-        "default_ai_provider": AI_MODEL_PROVIDER,
-        "default_ollama_model_name": OLLAMA_MODEL_NAME,
-        "ollama_server_url": OLLAMA_SERVER_URL, # Ollama server URL might be useful for display/info
-        "default_openai_model_name": OPENAI_MODEL_NAME,
-        "openai_server_url": OPENAI_SERVER_URL, # OpenAI server URL for display/info
-        "default_gemini_model_name": GEMINI_MODEL_NAME,
-        "default_mistral_model_name": MISTRAL_MODEL_NAME,
+        "default_ai_provider": cfg.AI_MODEL_PROVIDER,
+        "default_ollama_model_name": cfg.OLLAMA_MODEL_NAME,
+        "ollama_server_url": cfg.OLLAMA_SERVER_URL,
+        "default_openai_model_name": cfg.OPENAI_MODEL_NAME,
+        "openai_server_url": cfg.OPENAI_SERVER_URL,
+        "default_gemini_model_name": cfg.GEMINI_MODEL_NAME,
+        "default_mistral_model_name": cfg.MISTRAL_MODEL_NAME,
     }), 200
 
 @chat_bp.route('/api/chatPlaylist', methods=['POST'])
@@ -252,7 +246,7 @@ def chat_playlist_api():
         return jsonify({"error": "Missing userInput in request"}), 400
 
     original_user_input = data.get('userInput')
-    ai_provider = data.get('ai_provider', AI_MODEL_PROVIDER).upper()
+    ai_provider = data.get('ai_provider', config.AI_MODEL_PROVIDER).upper()
     ai_model_from_request = data.get('ai_model')
     
     log_messages = []
@@ -276,15 +270,15 @@ def chat_playlist_api():
     # Build AI configuration object
     ai_config = {
         'provider': ai_provider,
-        'ollama_url': data.get('ollama_server_url', OLLAMA_SERVER_URL),
-        'ollama_model': ai_model_from_request or OLLAMA_MODEL_NAME,
-        'openai_url': data.get('openai_server_url', OPENAI_SERVER_URL),
-        'openai_model': ai_model_from_request or OPENAI_MODEL_NAME,
-        'openai_key': data.get('openai_api_key') or OPENAI_API_KEY,
-        'gemini_key': data.get('gemini_api_key') or GEMINI_API_KEY,
-        'gemini_model': ai_model_from_request or GEMINI_MODEL_NAME,
-        'mistral_key': data.get('mistral_api_key') or MISTRAL_API_KEY,
-        'mistral_model': ai_model_from_request or MISTRAL_MODEL_NAME
+        'ollama_url': data.get('ollama_server_url', config.OLLAMA_SERVER_URL),
+        'ollama_model': ai_model_from_request or config.OLLAMA_MODEL_NAME,
+        'openai_url': data.get('openai_server_url', config.OPENAI_SERVER_URL),
+        'openai_model': ai_model_from_request or config.OPENAI_MODEL_NAME,
+        'openai_key': data.get('openai_api_key') or config.OPENAI_API_KEY,
+        'gemini_key': data.get('gemini_api_key') or config.GEMINI_API_KEY,
+        'gemini_model': ai_model_from_request or config.GEMINI_MODEL_NAME,
+        'mistral_key': data.get('mistral_api_key') or config.MISTRAL_API_KEY,
+        'mistral_model': ai_model_from_request or config.MISTRAL_MODEL_NAME
     }
     
     # Validate API keys for cloud providers
@@ -327,13 +321,19 @@ def chat_playlist_api():
     # ====================
     # MCP AGENTIC WORKFLOW
     # ====================
-    
+
     log_messages.append("\n🤖 Using MCP Agentic Workflow for playlist generation")
     log_messages.append("Target: 100 songs")
-    
-    # Get MCP tools
+
+    # Get MCP tools and library context
     mcp_tools = get_mcp_tools()
     log_messages.append(f"Available tools: {', '.join([t['name'] for t in mcp_tools])}")
+
+    # Fetch library context for smarter AI prompting
+    from tasks.mcp_server import get_library_context
+    library_context = get_library_context()
+    if library_context.get('total_songs', 0) > 0:
+        log_messages.append(f"Library: {library_context['total_songs']} songs, {library_context['unique_artists']} artists")
     
     # Agentic workflow - AI iteratively calls tools until enough songs
     all_songs = []
@@ -361,56 +361,65 @@ def chat_playlist_api():
         
         # Build context for AI about current state
         if iteration == 0:
-            ai_context = f"""Build a {target_song_count}-song playlist for: "{original_user_input}"
-
-=== STEP 1: ANALYZE INTENT ===
-First, understand what the user wants:
-- Specific song + artist? → Use exact API lookup (song_similarity)
-- Similar to an artist? → Use exact API lookup (artist_similarity)
-- Genre/mood/tempo/energy? → Use exact DB search (search_database)
-- Everything else? → Use AI knowledge (ai_brainstorm)
-
-=== YOUR 4 TOOLS ===
-1. song_similarity(song_title, artist, get_songs) - Exact API: find similar songs (NEEDS both title+artist)
-2. artist_similarity(artist, get_songs) - Exact API: find songs from SIMILAR artists (NOT artist's own songs)
-3. search_database(genres, moods, tempo_min, tempo_max, energy_min, energy_max, key, get_songs) - Exact DB: filter by attributes (COMBINE all filters in ONE call)
-4. ai_brainstorm(user_request, get_songs) - AI knowledge: for ANYTHING else (artist's own songs, trending, era, complex requests)
-
-=== DECISION RULES ===
-"similar to [TITLE] by [ARTIST]" → song_similarity (exact API)
-"songs like [ARTIST]" → artist_similarity (exact API)
-"[GENRE]/[MOOD]/[TEMPO]/[ENERGY]" → search_database (exact DB search)
-"[ARTIST] songs/hits", "trending", "era", etc. → ai_brainstorm (AI knowledge)
-
-=== EXAMPLES ===
-"Similar to Smells Like Teen Spirit by Nirvana" → song_similarity(song_title="Smells Like Teen Spirit", song_artist="Nirvana", get_songs=100)
-"songs like AC/DC" → artist_similarity(artist="AC/DC", get_songs=100)
-"AC/DC songs" → ai_brainstorm(user_request="AC/DC songs", get_songs=100)
-"energetic rock music" → search_database(genres=["rock"], energy_min=0.08, moods=["happy"], get_songs=100)
-"running 120 bpm" → search_database(tempo_min=115, tempo_max=125, energy_min=0.08, get_songs=100)
-"post lunch" → search_database(moods=["relaxed"], energy_min=0.03, energy_max=0.08, tempo_min=80, tempo_max=110, get_songs=100)
-"trending 2025" → ai_brainstorm(user_request="trending 2025", get_songs=100)
-"greatest hits Red Hot Chili Peppers" → ai_brainstorm(user_request="greatest hits RHCP", get_songs=100)
-"Metal like AC/DC + Metallica" → artist_similarity("AC/DC", 50) + artist_similarity("Metallica", 50)
-
-VALID DB VALUES:
-GENRES: rock, pop, metal, jazz, electronic, dance, alternative, indie, punk, blues, hard rock, heavy metal, Hip-Hop, funk, country, soul, 00s, 90s, 80s, 70s, 60s
-MOODS: danceable, aggressive, happy, party, relaxed, sad
-TEMPO: 40-200 BPM | ENERGY: 0.01-0.15
-
-Now analyze the request and call tools:"""
+            # Iteration 0: Just the request - system prompt already has all instructions
+            ai_context = f'Build a {target_song_count}-song playlist for: "{original_user_input}"'
         else:
             songs_needed = target_song_count - current_song_count
             previous_tools_str = ", ".join([f"{t['name']}({t.get('songs', 0)} songs)" for t in tools_used_history])
-            
-            ai_context = f"""User request: {original_user_input}
-Goal: {target_song_count} songs total
-Current: {current_song_count} songs
-Needed: {songs_needed} MORE songs
 
-Previous tools: {previous_tools_str}
+            # Build feedback about what we have so far
+            artist_counts = {}
+            for song in all_songs:
+                a = song.get('artist', 'Unknown')
+                artist_counts[a] = artist_counts.get(a, 0) + 1
+            top_artists = sorted(artist_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+            top_artists_str = ", ".join([f"{a} ({c})" for a, c in top_artists])
 
-Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs."""
+            # Unique artists ratio
+            unique_artists = len(artist_counts)
+            diversity_ratio = round(unique_artists / max(len(all_songs), 1), 2)
+
+            # Genres covered (from actual collected songs' mood_vector)
+            genres_str = "none specifically"
+            collected_ids = [s['item_id'] for s in all_songs]
+            if collected_ids:
+                try:
+                    from tasks.mcp_server import get_db_connection
+                    from psycopg2.extras import DictCursor
+                    db_conn_feedback = get_db_connection()
+                    with db_conn_feedback.cursor(cursor_factory=DictCursor) as cur:
+                        placeholders = ','.join(['%s'] * min(len(collected_ids), 200))
+                        cur.execute(f"""
+                            SELECT unnest(string_to_array(mood_vector, ',')) AS tag
+                            FROM public.score
+                            WHERE item_id IN ({placeholders})
+                            AND mood_vector IS NOT NULL AND mood_vector != ''
+                        """, collected_ids[:200])
+                        genre_freq = {}
+                        for r in cur:
+                            tag = r['tag'].strip()
+                            if ':' in tag:
+                                name = tag.split(':')[0].strip()
+                                if name:
+                                    genre_freq[name] = genre_freq.get(name, 0) + 1
+                        if genre_freq:
+                            top_collected = sorted(genre_freq, key=genre_freq.get, reverse=True)[:8]
+                            genres_str = ", ".join(top_collected)
+                    db_conn_feedback.close()
+                except Exception:
+                    pass
+
+            ai_context = f"""Original request: "{original_user_input}"
+Progress: {current_song_count}/{target_song_count} songs collected. Need {songs_needed} MORE.
+
+What we have so far:
+- Top artists: {top_artists_str}
+- Artist diversity: {unique_artists} unique artists (ratio: {diversity_ratio})
+- Tools used: {previous_tools_str}
+- Genres covered: {genres_str}
+
+Call DIFFERENT tools or parameters to add {songs_needed} more DIVERSE songs.
+Prioritize variety - avoid tools/parameters that duplicate what we already have."""
         
         # AI decides which tools to call
         log_messages.append(f"\n--- AI Decision (Iteration {iteration + 1}) ---")
@@ -419,7 +428,8 @@ Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs.
             user_message=ai_context,
             tools=mcp_tools,
             ai_config=ai_config,
-            log_messages=log_messages
+            log_messages=log_messages,
+            library_context=library_context
         )
         
         if 'error' in tool_calling_result:
@@ -428,8 +438,9 @@ Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs.
             
             # Fallback based on iteration
             if iteration == 0:
-                log_messages.append("\n🔄 Fallback: Trying genre search...")
-                fallback_result = execute_mcp_tool('search_database', {'genres': ['pop', 'rock'], 'get_songs': 100}, ai_config)
+                fallback_genres = library_context.get('top_genres', ['pop', 'rock'])[:2] if library_context else ['pop', 'rock']
+                log_messages.append(f"\n🔄 Fallback: Trying genre search with {fallback_genres}...")
+                fallback_result = execute_mcp_tool('search_database', {'genres': fallback_genres, 'get_songs': 100}, ai_config)
                 if 'songs' in fallback_result:
                     songs = fallback_result['songs']
                     for song in songs:
@@ -451,9 +462,38 @@ Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs.
             break
         
         log_messages.append(f"\n--- Executing {len(tool_calls)} Tool(s) ---")
-        
+
+        # Pre-execution validation (Phase 4A)
+        validated_calls = []
+        for tc in tool_calls:
+            tn = tc.get('name', '')
+            ta = tc.get('arguments', {})
+
+            # song_similarity: reject if title or artist is empty
+            if tn == 'song_similarity':
+                if not ta.get('song_title', '').strip() or not ta.get('song_artist', '').strip():
+                    log_messages.append(f"   ⚠️ Skipping {tn}: empty title or artist")
+                    tools_used_history.append({'name': tn, 'args': ta, 'songs': 0, 'error': True, 'call_index': tool_call_counter})
+                    tool_call_counter += 1
+                    continue
+
+            # search_database: reject if zero filters specified
+            if tn == 'search_database':
+                filter_keys = ['genres', 'moods', 'tempo_min', 'tempo_max', 'energy_min', 'energy_max',
+                               'key', 'scale', 'year_min', 'year_max', 'min_rating', 'album']
+                has_filter = any(ta.get(k) for k in filter_keys)
+                if not has_filter:
+                    log_messages.append(f"   ⚠️ Skipping {tn}: no filters specified (would return random noise)")
+                    tools_used_history.append({'name': tn, 'args': ta, 'songs': 0, 'error': True, 'call_index': tool_call_counter})
+                    tool_call_counter += 1
+                    continue
+
+            validated_calls.append(tc)
+
+        tool_calls = validated_calls
+
         iteration_songs_added = 0
-        
+
         for i, tool_call in enumerate(tool_calls):
             tool_name = tool_call.get('name')
             tool_args = tool_call.get('arguments', {})
@@ -529,6 +569,8 @@ Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs.
                     args_summary.append(f"genres={tool_args['genres']}")
                 if 'moods' in tool_args and tool_args['moods']:
                     args_summary.append(f"moods={tool_args['moods']}")
+                if 'album' in tool_args and tool_args['album']:
+                    args_summary.append(f"album='{tool_args['album']}'")
                 if 'tempo_min' in tool_args or 'tempo_max' in tool_args:
                     tempo_str = f"{tool_args.get('tempo_min', '')}..{tool_args.get('tempo_max', '')}"
                     args_summary.append(f"tempo={tempo_str}")
@@ -625,13 +667,62 @@ Call 1-3 DIFFERENT tools or parameters to get {songs_needed} more diverse songs.
             
             # Truncate if we somehow went over (shouldn't happen)
             final_query_results_list = final_query_results_list[:target_song_count]
-        
+
+        # --- Artist Diversity Enforcement (Phase 3B) ---
+        from config import MAX_SONGS_PER_ARTIST_PLAYLIST
+        max_per_artist = MAX_SONGS_PER_ARTIST_PLAYLIST
+
+        artist_song_counts = {}
+        diverse_list = []
+        overflow_pool = []
+        for song in final_query_results_list:
+            artist = song.get('artist', 'Unknown')
+            artist_song_counts[artist] = artist_song_counts.get(artist, 0) + 1
+            if artist_song_counts[artist] <= max_per_artist:
+                diverse_list.append(song)
+            else:
+                overflow_pool.append(song)
+
+        removed_count = len(final_query_results_list) - len(diverse_list)
+        if removed_count > 0:
+            log_messages.append(f"\n🎨 Artist diversity: removed {removed_count} excess songs (max {max_per_artist}/artist)")
+            # Backfill from overflow with least-represented artists
+            if len(diverse_list) < target_song_count and overflow_pool:
+                # Sort overflow by how underrepresented their artist is
+                diverse_artist_counts = {}
+                for s in diverse_list:
+                    a = s.get('artist', 'Unknown')
+                    diverse_artist_counts[a] = diverse_artist_counts.get(a, 0) + 1
+                overflow_pool.sort(key=lambda s: diverse_artist_counts.get(s.get('artist', ''), 0))
+                backfill_needed = target_song_count - len(diverse_list)
+                diverse_list.extend(overflow_pool[:backfill_needed])
+                if backfill_needed > 0:
+                    log_messages.append(f"   Backfilled {min(backfill_needed, len(overflow_pool))} songs from overflow")
+
+        final_query_results_list = diverse_list
+
+        # --- Song Ordering for Smooth Transitions (Phase 3A) ---
+        try:
+            from tasks.playlist_ordering import order_playlist
+            from config import PLAYLIST_ENERGY_ARC
+
+            song_id_list = [s['item_id'] for s in final_query_results_list]
+            ordered_ids = order_playlist(song_id_list, energy_arc=PLAYLIST_ENERGY_ARC)
+
+            # Rebuild list in new order
+            id_to_song = {s['item_id']: s for s in final_query_results_list}
+            final_query_results_list = [id_to_song[sid] for sid in ordered_ids if sid in id_to_song]
+            log_messages.append(f"\n🎵 Playlist ordered for smooth transitions (tempo/energy/key)")
+        except Exception as e:
+            logger.warning(f"Playlist ordering failed (non-fatal): {e}")
+            log_messages.append(f"\n⚠️ Playlist ordering skipped: {str(e)[:100]}")
+
         final_executed_query_str = f"MCP Agentic ({len(tools_used_history)} tools, {iteration + 1} iterations): {' → '.join(tool_execution_summary)}"
-        
+
         log_messages.append(f"\n✅ SUCCESS! Generated playlist with {len(final_query_results_list)} songs")
         log_messages.append(f"   Total songs collected: {len(all_songs)}")
         if len(all_songs) > target_song_count:
-            log_messages.append(f"   ⚖️ Proportionally sampled {len(all_songs) - target_song_count} excess songs to meet target of {target_song_count}")
+            log_messages.append(f"   Proportionally sampled {len(all_songs) - target_song_count} excess songs to meet target of {target_song_count}")
         log_messages.append(f"   Iterations used: {iteration + 1}/{max_iterations}")
         log_messages.append(f"   Tools called: {len(tools_used_history)}")
         
@@ -765,13 +856,11 @@ def create_media_server_playlist_api():
         return jsonify({"message": "Error: No songs provided to create the playlist."}), 400
 
     try:
-        # MODIFIED: Call the simplified create_instant_playlist function
         created_playlist_info = create_instant_playlist(user_playlist_name, item_ids)
-        
+
         if not created_playlist_info:
             raise Exception("Media server did not return playlist information after creation.")
-            
-        # The created_playlist_info is the full JSON response from the media server
+
         return jsonify({"message": f"Successfully created playlist '{user_playlist_name}' on the media server with ID: {created_playlist_info.get('Id')}"}), 200
 
     except Exception as e:
