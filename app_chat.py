@@ -480,7 +480,7 @@ Prioritize variety - avoid tools/parameters that duplicate what we already have.
             # search_database: reject if zero filters specified
             if tn == 'search_database':
                 filter_keys = ['genres', 'moods', 'tempo_min', 'tempo_max', 'energy_min', 'energy_max',
-                               'key', 'scale', 'year_min', 'year_max', 'min_rating']
+                               'key', 'scale', 'year_min', 'year_max', 'min_rating', 'album']
                 has_filter = any(ta.get(k) for k in filter_keys)
                 if not has_filter:
                     log_messages.append(f"   ⚠️ Skipping {tn}: no filters specified (would return random noise)")
@@ -569,6 +569,8 @@ Prioritize variety - avoid tools/parameters that duplicate what we already have.
                     args_summary.append(f"genres={tool_args['genres']}")
                 if 'moods' in tool_args and tool_args['moods']:
                     args_summary.append(f"moods={tool_args['moods']}")
+                if 'album' in tool_args and tool_args['album']:
+                    args_summary.append(f"album='{tool_args['album']}'")
                 if 'tempo_min' in tool_args or 'tempo_max' in tool_args:
                     tempo_str = f"{tool_args.get('tempo_min', '')}..{tool_args.get('tempo_max', '')}"
                     args_summary.append(f"tempo={tempo_str}")

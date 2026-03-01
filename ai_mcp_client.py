@@ -65,12 +65,14 @@ def _build_system_prompt(tools: List[Dict], library_context: Optional[Dict] = No
         decision_tree.append("3. 'songs by/from/like [ARTIST]'? -> artist_similarity (returns artist's own + similar)")
         decision_tree.append("4. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
         decision_tree.append("5. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
-        decision_tree.append("6. Genre/mood/tempo/energy/year/rating filters? -> search_database (last resort)")
+        decision_tree.append("6. 'songs from [ALBUM]' or 'songs like [ALBUM]'? -> search_database with album filter, OR song_similarity with tracks from the album")
+        decision_tree.append("7. Genre/mood/tempo/energy/year/rating filters? -> search_database (last resort)")
     else:
         decision_tree.append("2. 'songs by/from/like [ARTIST]'? -> artist_similarity (returns artist's own + similar)")
         decision_tree.append("3. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
         decision_tree.append("4. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
-        decision_tree.append("5. Genre/mood/tempo/energy/year/rating filters? -> search_database (last resort)")
+        decision_tree.append("5. 'songs from [ALBUM]' or 'songs like [ALBUM]'? -> search_database with album filter, OR song_similarity with tracks from the album")
+        decision_tree.append("6. Genre/mood/tempo/energy/year/rating filters? -> search_database (last resort)")
 
     decision_text = '\n'.join(decision_tree)
 
@@ -92,6 +94,8 @@ def _build_system_prompt(tools: List[Dict], library_context: Optional[Dict] = No
 8. When a query has BOTH a genre AND a mood from the MOODS list, prefer search_database over text_search:
    - "sad jazz" -> search_database(genres=["jazz"], moods=["sad"])  NOT text_search
    - But "dreamy atmospheric" -> text_search (no specific genre, sound description)
+9. For album requests: use search_database(album="Album Name") to get songs FROM an album,
+   or song_similarity with a known track from the album to find SIMILAR songs
 
 === VALID search_database VALUES ===
 GENRES: {_get_dynamic_genres(library_context)}
@@ -100,7 +104,8 @@ TEMPO: 40-200 BPM
 ENERGY: 0.0 (calm) to 1.0 (intense) - use 0.0-0.35 for low, 0.35-0.65 for medium, 0.65-1.0 for high
 SCALE: major, minor
 YEAR: year_min/year_max (e.g., 1990-1999 for 90s). For decade requests (80s, 90s), prefer year filters over genres.
-RATING: min_rating 1-5 (user's personal ratings)"""
+RATING: min_rating 1-5 (user's personal ratings)
+ALBUM: album name (e.g. 'Abbey Road', 'Thriller') - filters songs from a specific album"""
 
     return prompt
 
@@ -673,7 +678,8 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
                 tool_args.get('scale'),
                 tool_args.get('year_min'),
                 tool_args.get('year_max'),
-                tool_args.get('min_rating')
+                tool_args.get('min_rating'),
+                tool_args.get('album')
             )
         elif tool_name == "ai_brainstorm":
             return _ai_brainstorm_sync(
@@ -908,6 +914,10 @@ def get_mcp_tools() -> List[Dict]:
                     "min_rating": {
                         "type": "integer",
                         "description": "Minimum user rating 1-5"
+                    },
+                    "album": {
+                        "type": "string",
+                        "description": "Album name to filter by (e.g. 'Abbey Road', 'Thriller')"
                     },
                     "get_songs": {
                         "type": "integer",

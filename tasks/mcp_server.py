@@ -206,9 +206,9 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> List
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
             placeholders = ','.join(['%s'] * len(all_artist_names))
             query = f"""
-                SELECT item_id, title, author
+                SELECT item_id, title, author, album
                 FROM (
-                    SELECT DISTINCT item_id, title, author
+                    SELECT DISTINCT item_id, title, author, album
                     FROM public.score
                     WHERE author IN ({placeholders})
                 ) AS distinct_songs
@@ -217,8 +217,8 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> List
             """
             cur.execute(query, all_artist_names + [get_songs])
             results = cur.fetchall()
-        
-        songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
+
+        songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": r.get('album', '')} for r in results]
         log_messages.append(f"Retrieved {len(songs)} songs from original + similar artists")
         
         # Build component_matches to show which songs came from which artist
@@ -319,7 +319,7 @@ List the famous songs by {artist} now:"""
 
                 where_clause = ' OR '.join(or_conditions)
                 cur.execute(f"""
-                    SELECT item_id, title, author
+                    SELECT item_id, title, author, album
                     FROM public.score
                     WHERE author = %s AND ({where_clause})
                 """, [artist] + title_params)
@@ -332,7 +332,8 @@ List the famous songs by {artist} now:"""
                             found_songs.append({
                                 "item_id": row['item_id'],
                                 "title": row['title'],
-                                "artist": row['author']
+                                "artist": row['author'],
+                                "album": row.get('album', '')
                             })
                             seen_ids.add(row['item_id'])
                             break
@@ -342,7 +343,7 @@ List the famous songs by {artist} now:"""
                 exclude_ids = list(seen_ids)
                 if exclude_ids:
                     cur.execute("""
-                        SELECT item_id, title, author
+                        SELECT item_id, title, author, album
                         FROM public.score
                         WHERE author = %s AND item_id != ALL(%s)
                         ORDER BY RANDOM()
@@ -350,7 +351,7 @@ List the famous songs by {artist} now:"""
                     """, (artist, exclude_ids, get_songs - len(found_songs)))
                 else:
                     cur.execute("""
-                        SELECT item_id, title, author
+                        SELECT item_id, title, author, album
                         FROM public.score
                         WHERE author = %s
                         ORDER BY RANDOM()
@@ -362,7 +363,8 @@ List the famous songs by {artist} now:"""
                         found_songs.append({
                             "item_id": r['item_id'],
                             "title": r['title'],
-                            "artist": r['author']
+                            "artist": r['author'],
+                            "album": r.get('album', '')
                         })
                         seen_ids.add(r['item_id'])
         
@@ -440,27 +442,29 @@ def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filt
                 where_clause = ' AND '.join(filter_conditions)
                 
                 sql = f"""
-                    SELECT item_id, title, author
+                    SELECT item_id, title, author, album
                     FROM public.score
                     WHERE item_id IN ({placeholders})
                     AND {where_clause}
                 """
-                
+
                 cur.execute(sql, item_ids + query_params)
                 filtered_results = cur.fetchall()
-            
+
+            # Build album lookup from filtered DB results
+            album_lookup = {r['item_id']: r.get('album', '') for r in filtered_results}
             # Preserve CLAP similarity order for filtered results
             filtered_item_ids = {r['item_id'] for r in filtered_results}
             songs = [
-                {"item_id": r['item_id'], "title": r['title'], "artist": r['author']}
+                {"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": album_lookup.get(r['item_id'], '')}
                 for r in clap_results
                 if r['item_id'] in filtered_item_ids
             ]
-            
+
             log_messages.append(f"Filtered to {len(songs)} songs matching tempo/energy criteria")
         else:
-            # No filters - return CLAP results as-is
-            songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in clap_results]
+            # No filters - return CLAP results as-is (enrich with album from DB)
+            songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": r.get('album', '')} for r in clap_results]
             log_messages.append(f"Retrieved {len(songs)} songs from CLAP")
         
         return {"songs": songs[:get_songs], "message": "\n".join(log_messages)}
@@ -592,7 +596,7 @@ Suggest songs for "{user_request}" now:"""
                     values_params.extend([title.lower(), artist.lower()])
                 values_clause = ', '.join(['(%s, %s)'] * len(valid_items))
                 cur.execute(f"""
-                    SELECT item_id, title, author
+                    SELECT item_id, title, author, album
                     FROM public.score
                     WHERE (LOWER(title), LOWER(author)) IN (VALUES {values_clause})
                 """, values_params)
@@ -614,7 +618,8 @@ Suggest songs for "{user_request}" now:"""
                         found_songs.append({
                             "item_id": result['item_id'],
                             "title": result['title'],
-                            "artist": result['author']
+                            "artist": result['author'],
+                            "album": result.get('album', '')
                         })
                         seen_ids.add(result['item_id'])
                     elif not result:
@@ -641,7 +646,7 @@ Suggest songs for "{user_request}" now:"""
                 if or_conditions:
                     where_clause = ' OR '.join(or_conditions)
                     cur.execute(f"""
-                        SELECT item_id, title, author
+                        SELECT item_id, title, author, album
                         FROM public.score
                         WHERE {where_clause}
                         ORDER BY LENGTH(title) + LENGTH(author)
@@ -660,7 +665,8 @@ Suggest songs for "{user_request}" now:"""
                                     found_songs.append({
                                         "item_id": row['item_id'],
                                         "title": row['title'],
-                                        "artist": row['author']
+                                        "artist": row['author'],
+                                        "album": row.get('album', '')
                                     })
                                     seen_ids.add(row['item_id'])
                                     fuzzy_lookup_order.remove((t_norm, a_norm))
@@ -702,7 +708,7 @@ def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int)
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
             # STEP 1: Try exact match first
             cur.execute("""
-                SELECT item_id, title, author FROM public.score
+                SELECT item_id, title, author, album FROM public.score
                 WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s)
                 LIMIT 1
             """, (song_title, song_artist))
@@ -716,9 +722,9 @@ def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int)
                 artist_normalized = song_artist.replace(' ', '').replace('-', '').replace('‐', '').replace('/', '').replace("'", '')
                 
                 cur.execute("""
-                    SELECT item_id, title, author
+                    SELECT item_id, title, author, album
                     FROM public.score
-                    WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(title, ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') ILIKE %s 
+                    WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(title, ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') ILIKE %s
                       AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(author, ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') ILIKE %s
                     ORDER BY LENGTH(title) + LENGTH(author)
                     LIMIT 1
@@ -752,15 +758,15 @@ def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int)
             with db_conn.cursor(cursor_factory=DictCursor) as cur:
                 placeholders = ','.join(['%s'] * len(similar_ids))
                 cur.execute(f"""
-                    SELECT item_id, title, author
+                    SELECT item_id, title, author, album
                     FROM public.score
                     WHERE item_id IN ({placeholders})
                 """, similar_ids)
                 results = cur.fetchall()
-            
+
             # Sort results by the original Voyager order
             sorted_results = sorted(results, key=lambda r: id_to_order.get(r['item_id'], 999999))
-            songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in sorted_results]
+            songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": r.get('album', '')} for r in sorted_results]
         
         log_messages.append(f"Retrieved {len(songs)} similar songs")
         
@@ -831,7 +837,8 @@ def _database_genre_query_sync(
     scale: Optional[str] = None,
     year_min: Optional[int] = None,
     year_max: Optional[int] = None,
-    min_rating: Optional[int] = None
+    min_rating: Optional[int] = None,
+    album: Optional[str] = None
 ) -> List[Dict]:
     """Synchronous implementation of flexible database search with multiple optional filters.
 
@@ -914,6 +921,11 @@ def _database_genre_query_sync(
                 conditions.append("rating >= %s")
                 params.append(int(min_rating))
 
+            # Album filter
+            if album:
+                conditions.append("LOWER(album) = LOWER(%s)")
+                params.append(album)
+
             where_clause = " AND ".join(conditions) if conditions else "1=1"
             params.append(get_songs)
 
@@ -943,9 +955,9 @@ def _database_genre_query_sync(
                 all_params = score_params + params
 
                 query = f"""
-                    SELECT DISTINCT item_id, title, author
+                    SELECT DISTINCT item_id, title, author, album
                     FROM (
-                        SELECT item_id, title, author,
+                        SELECT item_id, title, author, album,
                                ({relevance_expr}) AS relevance_score
                         FROM public.score
                         WHERE {where_clause}
@@ -956,9 +968,9 @@ def _database_genre_query_sync(
                 cur.execute(query, all_params)
             else:
                 query = f"""
-                    SELECT DISTINCT item_id, title, author
+                    SELECT DISTINCT item_id, title, author, album
                     FROM (
-                        SELECT item_id, title, author
+                        SELECT item_id, title, author, album
                         FROM public.score
                         WHERE {where_clause}
                         ORDER BY RANDOM()
@@ -969,7 +981,7 @@ def _database_genre_query_sync(
 
             results = cur.fetchall()
 
-        songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
+        songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": r.get('album', '')} for r in results]
 
         filters = []
         if genres:
@@ -988,6 +1000,8 @@ def _database_genre_query_sync(
             filters.append(f"year: {year_min or 'any'}-{year_max or 'any'}")
         if min_rating:
             filters.append(f"min_rating: {min_rating}")
+        if album:
+            filters.append(f"album: {album}")
 
         log_messages.append(f"Found {len(songs)} songs matching {', '.join(filters) if filters else 'all criteria'}")
 
@@ -1032,9 +1046,9 @@ def _database_tempo_energy_query_sync(
         
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
             query = f"""
-                SELECT DISTINCT item_id, title, author
+                SELECT DISTINCT item_id, title, author, album
                 FROM (
-                    SELECT item_id, title, author
+                    SELECT item_id, title, author, album
                     FROM public.score
                     WHERE {where_clause}
                     ORDER BY RANDOM()
@@ -1043,10 +1057,10 @@ def _database_tempo_energy_query_sync(
             """
             cur.execute(query, params)
             results = cur.fetchall()
-        
-        songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
+
+        songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": r.get('album', '')} for r in results]
         log_messages.append(f"Found {len(songs)} songs matching tempo/energy criteria")
-        
+
         return {"songs": songs, "message": "\n".join(log_messages)}
     finally:
         db_conn.close()
@@ -1156,9 +1170,9 @@ Return the JSON now:"""
         
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
             query = f"""
-                SELECT DISTINCT item_id, title, author
+                SELECT DISTINCT item_id, title, author, album
                 FROM (
-                    SELECT item_id, title, author
+                    SELECT item_id, title, author, album
                     FROM public.score
                     WHERE {where_clause}
                     ORDER BY RANDOM()
@@ -1167,8 +1181,8 @@ Return the JSON now:"""
             """
             cur.execute(query, params)
             results = cur.fetchall()
-        
-        songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
+
+        songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": r.get('album', '')} for r in results]
         log_messages.append(f"Found {len(songs)} songs matching vibe criteria")
         
         return {"songs": songs, "criteria": criteria, "message": "\n".join(log_messages)}

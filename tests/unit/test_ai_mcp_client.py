@@ -133,18 +133,18 @@ class TestBuildSystemPrompt:
         for t in tools:
             assert t['name'] in prompt
 
-    def test_clap_decision_tree_has_six_steps(self, ai_mcp_client_mod):
-        """With text_search present, decision tree should have 6 numbered steps."""
+    def test_clap_decision_tree_has_seven_steps(self, ai_mcp_client_mod):
+        """With text_search present, decision tree should have 7 numbered steps (includes album)."""
         tools = _make_tools(include_text_search=True)
         prompt = ai_mcp_client_mod._build_system_prompt(tools, None)
-        # The decision tree section should contain step 6
+        # The decision tree section should contain step 7
         lines = prompt.split('\n')
-        decision_lines = [l for l in lines if l.strip().startswith(('1.', '2.', '3.', '4.', '5.', '6.'))]
-        assert any(l.strip().startswith('6.') for l in decision_lines)
+        decision_lines = [l for l in lines if l.strip().startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.'))]
+        assert any(l.strip().startswith('7.') for l in decision_lines)
         assert 'text_search' in prompt
 
-    def test_no_clap_decision_tree_has_five_steps(self, ai_mcp_client_mod):
-        """Without text_search, decision tree should have 5 steps, not 6."""
+    def test_no_clap_decision_tree_has_six_steps(self, ai_mcp_client_mod):
+        """Without text_search, decision tree should have 6 steps (includes album)."""
         tools = _make_tools(include_text_search=False)
         prompt = ai_mcp_client_mod._build_system_prompt(tools, None)
         # Extract only the TOOL SELECTION section lines (numbered decision tree)
@@ -153,8 +153,8 @@ class TestBuildSystemPrompt:
                           if l.strip() and l.strip()[0].isdigit()
                           and l.strip()[1] == '.'
                           and '->' in l]
-        # Should have exactly 5 decision tree entries
-        assert len(decision_lines) == 5
+        # Should have exactly 6 decision tree entries
+        assert len(decision_lines) == 6
         # text_search should NOT appear as a decision tree target
         decision_text = '\n'.join(decision_lines)
         assert '-> text_search' not in decision_text
