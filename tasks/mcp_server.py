@@ -467,6 +467,46 @@ def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filt
             songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": r.get('album', '')} for r in clap_results]
             log_messages.append(f"Retrieved {len(songs)} songs from CLAP")
         
+        # --- Genre keyword filter: remove off-genre CLAP results ---
+        try:
+            _GENRE_KEYWORDS = {
+                'rock', 'metal', 'pop', 'jazz', 'blues', 'country', 'folk', 'punk',
+                'hip-hop', 'rap', 'electronic', 'dance', 'reggae', 'soul', 'funk',
+                'r&b', 'classical', 'indie', 'alternative', 'hard rock', 'heavy metal',
+                'grunge', 'ska', 'latin', 'techno', 'house', 'ambient', 'new wave',
+                'post-punk', 'shoegaze',
+            }
+            desc_lower = description.lower()
+            matched_genres = [g for g in _GENRE_KEYWORDS if g in desc_lower]
+
+            if matched_genres and songs:
+                song_ids = [s['item_id'] for s in songs]
+                with db_conn.cursor(cursor_factory=DictCursor) as cur:
+                    ph = ','.join(['%s'] * len(song_ids))
+                    # Build OR regex for each matched genre
+                    genre_conditions = []
+                    genre_params = []
+                    for g in matched_genres:
+                        genre_conditions.append("mood_vector ~* %s")
+                        genre_params.append(f"(^|,)\\s*{re.escape(g)}:")
+                    genre_where = " OR ".join(genre_conditions)
+                    cur.execute(f"""
+                        SELECT item_id FROM public.score
+                        WHERE item_id IN ({ph})
+                        AND ({genre_where})
+                    """, song_ids + genre_params)
+                    matching_ids = {r['item_id'] for r in cur.fetchall()}
+
+                filtered = [s for s in songs if s['item_id'] in matching_ids]
+                # Only apply if keeps >= 40% of results
+                if len(filtered) >= len(songs) * 0.4:
+                    removed = len(songs) - len(filtered)
+                    if removed > 0:
+                        log_messages.append(f"Genre keyword filter: removed {removed} off-genre songs (keywords: {', '.join(matched_genres[:3])})")
+                    songs = filtered
+        except Exception as e:
+            logger.warning(f"CLAP genre filter failed (non-fatal): {e}")
+
         return {"songs": songs[:get_songs], "message": "\n".join(log_messages)}
     except Exception as e:
         import traceback
@@ -814,9 +854,103 @@ def _song_alchemy_sync(add_items: List[Dict], subtract_items: Optional[List[Dict
             n_results=get_songs
         )
         
-        songs = result.get('results', [])
+        raw_songs = result.get('results', [])
+        # Map DB column 'author' to 'artist' for consistency with other tools
+        songs = [{"item_id": s['item_id'], "title": s['title'], "artist": s.get('author', s.get('artist', '')), "album": s.get('album', '')} for s in raw_songs]
         log_messages.append(f"Retrieved {len(songs)} songs from alchemy")
-        
+
+        # --- Genre-coherence filter: remove off-genre results ---
+        try:
+            if songs and add_items:
+                db_conn_gc = get_db_connection()
+                try:
+                    with db_conn_gc.cursor(cursor_factory=DictCursor) as cur:
+                        # 1. Resolve seed item_ids from add_items
+                        seed_ids = []
+                        for item in add_items:
+                            item_type = item.get('type', 'artist')
+                            item_id_val = item.get('id', '')
+                            if item_type == 'artist':
+                                cur.execute(
+                                    "SELECT item_id FROM public.score WHERE LOWER(author) = LOWER(%s) LIMIT 10",
+                                    (item_id_val,)
+                                )
+                                seed_ids.extend([r['item_id'] for r in cur.fetchall()])
+                            elif item_type == 'song' and ' by ' in item_id_val:
+                                parts = item_id_val.rsplit(' by ', 1)
+                                cur.execute(
+                                    "SELECT item_id FROM public.score WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s) LIMIT 1",
+                                    (parts[0].strip(), parts[1].strip())
+                                )
+                                row = cur.fetchone()
+                                if row:
+                                    seed_ids.append(row['item_id'])
+
+                        if seed_ids:
+                            # 2. Get top 5 genres from seeds by accumulated confidence
+                            ph = ','.join(['%s'] * len(seed_ids))
+                            cur.execute(f"""
+                                SELECT unnest(string_to_array(mood_vector, ',')) AS tag
+                                FROM public.score
+                                WHERE item_id IN ({ph})
+                                AND mood_vector IS NOT NULL AND mood_vector != ''
+                            """, seed_ids)
+                            seed_genre_scores = {}
+                            for r in cur:
+                                tag = r['tag'].strip()
+                                if ':' in tag:
+                                    name, score_str = tag.split(':', 1)
+                                    name = name.strip()
+                                    try:
+                                        seed_genre_scores[name] = seed_genre_scores.get(name, 0) + float(score_str)
+                                    except ValueError:
+                                        pass
+                            top_seed_genres = sorted(seed_genre_scores, key=seed_genre_scores.get, reverse=True)[:5]
+
+                            if top_seed_genres:
+                                # 3. Check genre overlap for result songs
+                                result_ids = [s['item_id'] for s in songs]
+                                ph2 = ','.join(['%s'] * len(result_ids))
+                                cur.execute(f"""
+                                    SELECT item_id, mood_vector
+                                    FROM public.score
+                                    WHERE item_id IN ({ph2})
+                                """, result_ids)
+                                result_genres = {}
+                                for r in cur:
+                                    mv = r['mood_vector'] or ''
+                                    genres_found = {}
+                                    for tag in mv.split(','):
+                                        tag = tag.strip()
+                                        if ':' in tag:
+                                            gname, gscore = tag.split(':', 1)
+                                            try:
+                                                genres_found[gname.strip()] = float(gscore)
+                                            except ValueError:
+                                                pass
+                                    result_genres[r['item_id']] = genres_found
+
+                                # 4. Keep songs with genre overlap (any top-5 seed genre at >= 0.1) or no mood data
+                                filtered = []
+                                for s in songs:
+                                    sid = s['item_id']
+                                    g = result_genres.get(sid, {})
+                                    if not g:
+                                        filtered.append(s)  # no mood data, keep
+                                    elif any(g.get(tg, 0) >= 0.1 for tg in top_seed_genres):
+                                        filtered.append(s)
+
+                                # 5. Safety: only apply if filter keeps >= 40% of results
+                                if len(filtered) >= len(songs) * 0.4:
+                                    removed = len(songs) - len(filtered)
+                                    if removed > 0:
+                                        log_messages.append(f"Genre filter: removed {removed} off-genre songs (seed genres: {', '.join(top_seed_genres[:3])})")
+                                    songs = filtered
+                finally:
+                    db_conn_gc.close()
+        except Exception as e:
+            logger.warning(f"Alchemy genre filter failed (non-fatal): {e}")
+
         return {"songs": songs, "message": "\n".join(log_messages)}
         
     except Exception as e:
@@ -921,10 +1055,10 @@ def _database_genre_query_sync(
                 conditions.append("rating >= %s")
                 params.append(int(min_rating))
 
-            # Album filter
+            # Album filter - use LIKE for fuzzy matching to find variations like "(Remastered)"
             if album:
-                conditions.append("LOWER(album) = LOWER(%s)")
-                params.append(album)
+                conditions.append("LOWER(album) LIKE LOWER(%s)")
+                params.append(f"%{album}%")
 
             where_clause = " AND ".join(conditions) if conditions else "1=1"
             params.append(get_songs)

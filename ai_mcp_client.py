@@ -60,19 +60,19 @@ def _build_system_prompt(tools: List[Dict], library_context: Optional[Dict] = No
     # Build tool decision tree
     decision_tree = []
     decision_tree.append("1. Specific song+artist mentioned? -> song_similarity")
+    decision_tree.append("2. 'songs from [ALBUM]' or 'songs like [ALBUM]'? -> search_database with album filter, OR song_similarity with tracks from the album")
+    decision_tree.append("3. Decade mentioned (80s, 90s, 2000s)? -> ALWAYS include year_min/year_max in search_database (e.g., 80s=1980-1989)")
     if has_text_search:
-        decision_tree.append("2. Instruments (piano, guitar, ukulele) or SOUND DESCRIPTIONS (romantic, dreamy, chill vibes)? -> text_search")
-        decision_tree.append("3. 'songs by/from/like [ARTIST]'? -> artist_similarity (returns artist's own + similar)")
-        decision_tree.append("4. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
-        decision_tree.append("5. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
-        decision_tree.append("6. 'songs from [ALBUM]' or 'songs like [ALBUM]'? -> search_database with album filter, OR song_similarity with tracks from the album")
-        decision_tree.append("7. Genre/mood/tempo/energy/year/rating filters? -> search_database (last resort)")
+        decision_tree.append("4. Instruments (piano, guitar, ukulele) or SOUND DESCRIPTIONS (romantic, dreamy, chill vibes)? -> text_search")
+        decision_tree.append("5. 'songs by/from/like [ARTIST]'? -> artist_similarity (returns artist's own + similar)")
+        decision_tree.append("6. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
+        decision_tree.append("7. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
+        decision_tree.append("8. Genre/mood/tempo/energy/year/rating filters? -> search_database (last resort)")
     else:
-        decision_tree.append("2. 'songs by/from/like [ARTIST]'? -> artist_similarity (returns artist's own + similar)")
-        decision_tree.append("3. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
-        decision_tree.append("4. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
-        decision_tree.append("5. 'songs from [ALBUM]' or 'songs like [ALBUM]'? -> search_database with album filter, OR song_similarity with tracks from the album")
-        decision_tree.append("6. Genre/mood/tempo/energy/year/rating filters? -> search_database (last resort)")
+        decision_tree.append("4. 'songs by/from/like [ARTIST]'? -> artist_similarity (returns artist's own + similar)")
+        decision_tree.append("5. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
+        decision_tree.append("6. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
+        decision_tree.append("7. Genre/mood/tempo/energy/year/rating filters? -> search_database (last resort)")
 
     decision_text = '\n'.join(decision_tree)
 
@@ -85,16 +85,17 @@ def _build_system_prompt(tools: List[Dict], library_context: Optional[Dict] = No
 1. Call one or more tools - each returns songs with item_id, title, and artist
 2. song_similarity REQUIRES both title AND artist - never leave empty
 3. artist_similarity returns the artist's OWN songs + songs from SIMILAR artists
-4. search_database: COMBINE all filters in ONE call. Use for genre/mood/tempo/energy/year/rating
-5. For multiple artists: call artist_similarity once per artist, or use song_alchemy to blend
-6. Prefer tool calls over text explanations
-7. For complex requests, call MULTIPLE tools in ONE turn for better coverage:
+4. search_database: COMBINE all filters in ONE call. For decades (80s, 90s), ALWAYS set year_min/year_max (e.g., 80s=1980-1989)
+5. search_database genres: Use 1-3 SPECIFIC genres, not broad parent genres. 'rock' matches nearly everything - use sub-genres instead (e.g., 'hard rock', 'punk', 'metal'). WRONG: genres=['rock','metal','classic rock','alternative rock'] (too broad). RIGHT: genres=['metal','hard rock'] (specific).
+6. For multiple artists: call artist_similarity once per artist, or use song_alchemy to blend
+7. Prefer tool calls over text explanations
+8. For complex requests, call MULTIPLE tools in ONE turn for better coverage:
    - "relaxing piano jazz" -> text_search("relaxing piano") + search_database(genres=["jazz"])
    - "energetic songs by Metallica and AC/DC" -> artist_similarity("Metallica") + artist_similarity("AC/DC")
-8. When a query has BOTH a genre AND a mood from the MOODS list, prefer search_database over text_search:
+9. When a query has BOTH a genre AND a mood from the MOODS list, prefer search_database over text_search:
    - "sad jazz" -> search_database(genres=["jazz"], moods=["sad"])  NOT text_search
    - But "dreamy atmospheric" -> text_search (no specific genre, sound description)
-9. For album requests: use search_database(album="Album Name") to get songs FROM an album,
+10. For album requests: use search_database(album="Album Name") to get songs FROM an album,
    or song_similarity with a known track from the album to find SIMILAR songs
 
 === VALID search_database VALUES ===
@@ -326,7 +327,7 @@ def _call_openai_with_tools(user_message: str, tools: List[Dict], ai_config: Dic
                 }
             ],
             "tools": functions,
-            "tool_choice": "auto"
+            "tool_choice": "required"
         }
         
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
@@ -414,7 +415,7 @@ def _call_mistral_with_tools(user_message: str, tools: List[Dict], ai_config: Di
                 }
             ],
             tools=mistral_tools,
-            tool_choice="auto"
+            tool_choice="any"
         )
         
         # Extract tool calls
@@ -773,7 +774,7 @@ def get_mcp_tools() -> List[Dict]:
     tools.extend([
         {
             "name": "artist_similarity",
-            "description": f"🥉 PRIORITY #{'3' if CLAP_ENABLED else '2'}: Find songs BY an artist AND similar artists. ✅ USE for: 'songs by/from/like Artist X' including the artist's own songs (call once per artist). ❌ DON'T USE for: 'sounds LIKE multiple artists blended' (use song_alchemy).",
+            "description": f"🥉 PRIORITY #{'5' if CLAP_ENABLED else '4'}: Find songs BY an artist AND similar artists. ✅ USE for: 'songs by/from/like Artist X' including the artist's own songs (call once per artist). ❌ DON'T USE for: 'sounds LIKE multiple artists blended' (use song_alchemy).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -792,7 +793,7 @@ def get_mcp_tools() -> List[Dict]:
         },
         {
             "name": "song_alchemy",
-            "description": f"🏅 PRIORITY #{'4' if CLAP_ENABLED else '3'}: VECTOR ARITHMETIC - Blend or subtract MULTIPLE artists/songs. REQUIRES 2+ items. Keywords: 'meets', 'combined', 'blend', 'mix of', 'but not', 'without'. ✅ BEST for: 'play like A + B' ('play like Iron Maiden, Metallica, Deep Purple'), 'like X but NOT Y', 'Artist A meets Artist B', 'mix of A and B'. ❌ DON'T USE for: single artist (use artist_similarity), genre/mood (use search_database). Examples: 'play like Iron Maiden + Metallica + Deep Purple' = add all 3; 'Beatles but not ballads' = add Beatles, subtract ballads.",
+            "description": f"🏅 PRIORITY #{'6' if CLAP_ENABLED else '5'}: VECTOR ARITHMETIC - Blend or subtract MULTIPLE artists/songs. REQUIRES 2+ items. Keywords: 'meets', 'combined', 'blend', 'mix of', 'but not', 'without'. ✅ BEST for: 'play like A + B' ('play like Iron Maiden, Metallica, Deep Purple'), 'like X but NOT Y', 'Artist A meets Artist B', 'mix of A and B'. ❌ DON'T USE for: single artist (use artist_similarity), genre/mood (use search_database). Examples: 'play like Iron Maiden + Metallica + Deep Purple' = add all 3; 'Beatles but not ballads' = add Beatles, subtract ballads.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -845,7 +846,7 @@ def get_mcp_tools() -> List[Dict]:
         },
         {
             "name": "ai_brainstorm",
-            "description": f"🏅 PRIORITY #{'5' if CLAP_ENABLED else '4'}: AI world knowledge - Use ONLY when other tools CAN'T work. ✅ USE for: named events (Grammy, Billboard, festivals), cultural knowledge (trending, viral, classic hits), historical significance (best of decade, iconic albums), songs NOT in library. ❌ DON'T USE for: artist's own songs (use artist_similarity), 'sounds like' (use song_alchemy), genre/mood (use search_database), instruments/moods (use text_search if available).",
+            "description": f"🏅 PRIORITY #{'7' if CLAP_ENABLED else '6'}: AI world knowledge - Use ONLY when other tools CAN'T work. ✅ USE for: named events (Grammy, Billboard, festivals), cultural knowledge (trending, viral, classic hits), historical significance (best of decade, iconic albums), songs NOT in library. ❌ DON'T USE for: artist's own songs (use artist_similarity), 'sounds like' (use song_alchemy), genre/mood (use search_database), instruments/moods (use text_search if available).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -864,7 +865,7 @@ def get_mcp_tools() -> List[Dict]:
         },
         {
             "name": "search_database",
-            "description": f"🎖️ PRIORITY #{'6' if CLAP_ENABLED else '5'}: MOST GENERAL (last resort) - Search by genre/mood/tempo/energy/year/rating/scale filters. ✅ USE for: genre/mood/tempo combinations when NO specific artists/songs mentioned AND text_search not available/suitable. ❌ DON'T USE if you can use other more specific tools. COMBINE all filters in ONE call!",
+            "description": f"🎖️ PRIORITY #{'8' if CLAP_ENABLED else '7'}: MOST GENERAL (last resort) - Search by genre/mood/tempo/energy/year/rating/scale filters. ✅ USE for: genre/mood/tempo combinations when NO specific artists/songs mentioned AND text_search not available/suitable. ❌ DON'T USE if you can use other more specific tools. COMBINE all filters in ONE call! Use 1-3 SPECIFIC genres (not 'rock' which matches everything).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
