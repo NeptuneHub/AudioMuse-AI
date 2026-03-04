@@ -996,14 +996,19 @@ def _database_genre_query_sync(
             # Genre conditions (OR) - use regex to match whole genre names with confidence scores
             # mood_vector format: "rock:0.82,pop:0.45,indie rock:0.31"
             # We want "rock" to match "rock:0.82" but NOT "indie rock:0.31"
+            # Also enforce minimum confidence threshold (0.55) so weak matches don't leak through
             has_genre_filter = False
+            genre_confidence_threshold = 0.55
             if genres:
                 genre_conditions = []
                 for genre in genres:
-                    # Match genre at start of string or after comma, followed by colon
-                    # PostgreSQL regex: (^|,)\s*rock:
-                    genre_conditions.append("mood_vector ~* %s")
-                    params.append(f"(^|,)\\s*{re.escape(genre)}:")
+                    # Match genre at start of string or after comma, with confidence >= threshold
+                    # Extract the confidence score and check it meets the minimum
+                    genre_conditions.append(
+                        "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
+                    )
+                    params.append(f"(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
+                    params.append(genre_confidence_threshold)
                 conditions.append("(" + " OR ".join(genre_conditions) + ")")
                 has_genre_filter = True
 

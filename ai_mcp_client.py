@@ -97,6 +97,13 @@ def _build_system_prompt(tools: List[Dict], library_context: Optional[Dict] = No
    - But "dreamy atmospheric" -> text_search (no specific genre, sound description)
 10. For album requests: use search_database(album="Album Name") to get songs FROM an album,
    or song_similarity with a known track from the album to find SIMILAR songs
+11. RATING IS A HARD FILTER: If the user asks for rated/starred songs (e.g., "5 star", "highly rated", "my favorites"),
+   you MUST include min_rating in EVERY search_database call. Do NOT use other tools (song_similarity, text_search,
+   artist_similarity, ai_brainstorm) for rated-song requests since they cannot filter by rating.
+   If fewer songs exist than the target, return what's available — do NOT pad with unrated songs.
+12. COMBINE ALL USER FILTERS: When the user specifies multiple criteria (e.g., "rock 5 star songs"), include ALL of them
+   in the SAME search_database call (e.g., genres=["rock"], min_rating=5). Never drop a filter to get more results.
+   If the combination returns few songs, that's OK — return what matches. Quality over quantity.
 
 === VALID search_database VALUES ===
 GENRES: {_get_dynamic_genres(library_context)}

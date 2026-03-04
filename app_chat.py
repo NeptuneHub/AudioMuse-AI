@@ -343,7 +343,8 @@ def chat_playlist_api():
     tool_execution_summary = []
     tools_used_history = []
     tool_call_counter = 0  # Track each tool call separately
-    
+    detected_min_rating = None  # Track if any search_database call used min_rating
+
     max_iterations = 5  # Prevent infinite loops
     target_song_count = 100
     # Over-collect to compensate for post-loop artist diversity cap removal
@@ -361,6 +362,12 @@ def chat_playlist_api():
         # Check if we have enough songs (use inflated collection target)
         if current_song_count >= collection_target:
             log_messages.append(f"✅ Target reached! Stopping iteration.")
+            break
+
+        # When a rating filter was detected, limit to 2 iterations max to prevent
+        # the AI from broadening to unrelated genres to fill the target
+        if detected_min_rating is not None and iteration >= 2:
+            log_messages.append(f"⭐ Rating-filtered request: stopping after {iteration} iterations to preserve filter integrity ({current_song_count} songs).")
             break
         
         # Build context for AI about current state
@@ -440,7 +447,8 @@ What we have so far:
 - Genres covered: {genres_str}
 
 Call DIFFERENT tools or parameters to add {songs_needed} more DIVERSE songs.
-Prioritize variety - avoid tools/parameters that duplicate what we already have."""
+Prioritize variety - avoid tools/parameters that duplicate what we already have.
+IMPORTANT: Do NOT broaden or drop filters from the original request. If the user asked for specific genres + ratings, keep those exact filters. If no more songs match, STOP calling tools."""
 
             # Append failed tools section so AI knows what NOT to repeat
             if failed_tools_details:
@@ -544,9 +552,17 @@ Prioritize variety - avoid tools/parameters that duplicate what we already have.
                 # If still not serializable, convert to string representation
                 log_messages.append(f"   Arguments: {str(tool_args)}")
             
+            # Track rating filter usage
+            if tool_name == 'search_database':
+                mr = tool_args.get('min_rating')
+                if mr is not None and mr != '' and mr != 0:
+                    rating_val = int(mr)
+                    if detected_min_rating is None or rating_val > detected_min_rating:
+                        detected_min_rating = rating_val
+
             # Execute the tool
             tool_result = execute_mcp_tool(tool_name, tool_args, ai_config)
-            
+
             if 'error' in tool_result:
                 log_messages.append(f"   ❌ Error: {tool_result['error']}")
                 tools_used_history.append({'name': tool_name, 'args': tool_args, 'songs': 0, 'error': True, 'call_index': tool_call_counter, 'result_message': tool_result.get('error', '')})
@@ -652,7 +668,10 @@ Prioritize variety - avoid tools/parameters that duplicate what we already have.
 
         # If no new songs were added, decide whether to stop or continue
         if iteration_songs_added == 0:
-            if len(all_songs) >= collection_target * 0.8:
+            if detected_min_rating is not None and len(all_songs) > 0:
+                log_messages.append(f"\n⚠️ Rating-filtered request: no more matching songs found ({len(all_songs)} songs). Stopping.")
+                break
+            elif len(all_songs) >= collection_target * 0.8:
                 log_messages.append(f"\n⚠️ No new songs added ({len(all_songs)} songs, near target). Stopping.")
                 break
             elif len(all_songs) > 0 and iteration >= 2:
@@ -663,6 +682,33 @@ Prioritize variety - avoid tools/parameters that duplicate what we already have.
     
     # Prepare final results
     if all_songs:
+        # --- Phase 0: Post-collection rating filter ---
+        # If the AI used min_rating in any search_database call, enforce it on ALL collected songs
+        if detected_min_rating is not None:
+            from app_helper import get_db
+            from psycopg2.extras import DictCursor
+            try:
+                song_ids = [s['item_id'] for s in all_songs]
+                db_conn = get_db()
+                cur = db_conn.cursor(cursor_factory=DictCursor)
+                # Fetch ratings for all collected songs
+                cur.execute(
+                    "SELECT item_id, rating FROM public.score WHERE item_id = ANY(%s)",
+                    (song_ids,)
+                )
+                rating_map = {row['item_id']: row['rating'] for row in cur.fetchall()}
+                cur.close()
+                db_conn.close()
+
+                before_count = len(all_songs)
+                all_songs = [s for s in all_songs if (rating_map.get(s['item_id']) or 0) >= detected_min_rating]
+                removed = before_count - len(all_songs)
+                if removed > 0:
+                    log_messages.append(f"\n⭐ Rating filter (min {detected_min_rating}): removed {removed} songs below threshold, {len(all_songs)} remain")
+            except Exception as e:
+                logger.warning(f"Post-collection rating filter failed (non-fatal): {e}")
+                log_messages.append(f"\n⚠️ Rating filter skipped: {str(e)[:100]}")
+
         # --- Phase 1: Artist Diversity Cap on full collected pool ---
         max_per_artist = MAX_SONGS_PER_ARTIST_PLAYLIST
         artist_song_counts = {}
