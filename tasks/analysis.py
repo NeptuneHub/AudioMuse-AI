@@ -15,11 +15,6 @@ from pydub import AudioSegment
 from tempfile import NamedTemporaryFile
 
 import librosa
-import onnx
-import onnxruntime as ort
-
-from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
-from sklearn.preprocessing import StandardScaler
 
 # RQ import
 from rq import get_current_job, Retry
@@ -29,10 +24,9 @@ from rq.exceptions import NoSuchJobError
 # Import configuration from the user's provided config file
 from config import (
     TEMP_DIR, MAX_DISTANCE, MAX_SONGS_PER_CLUSTER, MAX_SONGS_PER_ARTIST,
-    GMM_COVARIANCE_TYPE, MOOD_LABELS, EMBEDDING_MODEL_PATH, PREDICTION_MODEL_PATH, ENERGY_MIN, ENERGY_MAX,
+    GMM_COVARIANCE_TYPE, MOOD_LABELS, ENERGY_MIN, ENERGY_MAX, EMBEDDING_DIMENSION,
     TEMPO_MIN_BPM, TEMPO_MAX_BPM, JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, EMBY_URL, EMBY_USER_ID, EMBY_TOKEN, OTHER_FEATURE_LABELS, REDIS_URL, DATABASE_URL,
     OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, AI_MODEL_PROVIDER, GEMINI_API_KEY, GEMINI_MODEL_NAME,
-    DANCEABILITY_MODEL_PATH, AGGRESSIVE_MODEL_PATH, HAPPY_MODEL_PATH, PARTY_MODEL_PATH, RELAXED_MODEL_PATH, SAD_MODEL_PATH,
     SCORE_WEIGHT_SILHOUETTE, SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ,
     SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_PURITY, SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY, SCORE_WEIGHT_OTHER_FEATURE_PURITY,
     MUTATION_KMEANS_COORD_FRACTION, MUTATION_INT_ABS_DELTA, MUTATION_FLOAT_ABS_DELTA,
@@ -43,7 +37,7 @@ from config import (
     LN_OTHER_FEATURES_DIVERSITY_STATS, LN_OTHER_FEATURES_PURITY_STATS,
     STRATIFIED_SAMPLING_TARGET_PERCENTILE,
     OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY as CONFIG_OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
-    AUDIO_LOAD_TIMEOUT # Add this to your config.py, e.g., AUDIO_LOAD_TIMEOUT = 600 (for a 10-minute timeout)
+    AUDIO_LOAD_TIMEOUT
 )
 import config  # module-level import so we can mutate config attributes at runtime
 
@@ -67,9 +61,6 @@ from .mediaserver import get_recent_albums, get_tracks_from_album, download_trac
 # Import memory management utilities
 from .memory_utils import (
     cleanup_cuda_memory, 
-    cleanup_onnx_session, 
-    handle_onnx_memory_error,
-    SessionRecycler,
     comprehensive_memory_cleanup
 )
 
@@ -77,58 +68,6 @@ from .memory_utils import (
 from psycopg2 import OperationalError
 from redis.exceptions import TimeoutError as RedisTimeoutError # Import with an alias
 logger = logging.getLogger(__name__)
-
-# --- Tensor Name Definitions ---
-# Based on a full review of all error logs and the Essentia examples,
-# this is the definitive mapping.
-DEFINED_TENSOR_NAMES = {
-    # Takes spectrograms, outputs embeddings
-    'embedding': {
-        'input': 'model/Placeholder:0',
-        'output': 'model/dense/BiasAdd:0'
-    },
-    # Takes embeddings, outputs mood predictions
-    'prediction': {
-        'input': 'serving_default_model_Placeholder:0',
-        'output': 'PartitionedCall:0'
-    },
-    # Takes a single aggregated embedding, outputs a binary classification
-    'danceable': {
-        'input': 'model/Placeholder:0',
-        'output': 'model/Softmax:0'
-    },
-    'aggressive': {
-        'input': 'model/Placeholder:0',
-        'output': 'model/Softmax:0'
-    },
-    'happy': {
-        'input': 'model/Placeholder:0',
-        'output': 'model/Softmax:0'
-    },
-    'party': {
-        'input': 'model/Placeholder:0',
-        'output': 'model/Softmax:0'
-    },
-    'relaxed': {
-        'input': 'model/Placeholder:0',
-        'output': 'model/Softmax:0'
-    },
-    'sad': {
-        'input': 'model/Placeholder:0',
-        'output': 'model/Softmax:0'
-    }
-}
-
-# --- Class Index Mapping ---
-# Based on confirmed metadata from the user.
-CLASS_INDEX_MAP = {
-    "aggressive": 0,
-    "happy": 0,
-    "relaxed": 1,
-    "sad": 1,
-    "danceable": 0,
-    "party": 1,
-}
 
 
 # --- Utility Functions ---
@@ -146,65 +85,84 @@ def clean_temp(temp_dir):
 
 # --- Core Analysis Functions ---
 
-def _find_onnx_name(candidate_name, names):
-    """Try several heuristics to match a TF-style tensor name to an ONNX input/output name."""
-    if candidate_name in names:
-        return candidate_name
-    # strip trailing :0
-    stripped = candidate_name.split(':')[0]
-    if stripped in names:
-        return stripped
-    # try last part after '/'
-    last = stripped.split('/')[-1]
-    if last in names:
-        return last
-    # try replacing '/' with '_'
-    alt = stripped.replace('/', '_')
-    if alt in names:
-        return alt
-    # fallback: return first name
-    return names[0] if names else None
-
-def run_inference(onnx_session, feed_dict, output_tensor_name=None):
-    """Run inference on an ONNX Runtime session.
-
-    onnx_session: ort.InferenceSession
-    feed_dict: dict mapping possible tensor names to numpy arrays
-    output_tensor_name: optional expected output name (TF-style). If None, use first output.
+def compute_basic_audio_features(audio, sr):
+    """Compute tempo, energy, key, and scale from pre-loaded audio.
+    
+    Args:
+        audio: numpy array of audio samples (any sample rate)
+        sr: sample rate of the audio
+    
+    Returns dict with keys: tempo, energy, key, scale — or None on failure.
     """
-    # Build input name -> value map for ONNX
-    input_meta = onnx_session.get_inputs()
-    input_names = [i.name for i in input_meta]
-    mapped = {}
-    logger.debug(f"ONNX session inputs: {input_names}")
-    for key, val in feed_dict.items():
-        onnx_name = _find_onnx_name(key, input_names)
-        if onnx_name is None:
-            logger.error(f"Could not map input name '{key}' to any ONNX input names: {input_names}")
-            return None
-        mapped[onnx_name] = val
-
-    # Determine outputs
-    output_meta = onnx_session.get_outputs()
-    output_names = [o.name for o in output_meta]
-    logger.debug(f"ONNX session outputs: {output_names}")
-    if output_tensor_name:
-        onnx_output_name = _find_onnx_name(output_tensor_name, output_names)
-    else:
-        onnx_output_name = output_names[0] if output_names else None
-
-    if onnx_output_name is None:
-        logger.error("No ONNX output name available to run inference.")
+    if audio is None or not np.any(audio) or audio.size == 0:
+        logger.warning("Could not compute basic features: audio is empty")
         return None
 
-    # Run and return numpy array
-    result = onnx_session.run([onnx_output_name], mapped)
-    # onnxruntime returns a list of outputs in the same order
-    return result[0] if isinstance(result, list) and len(result) > 0 else result
+    tempo, _ = librosa.beat.beat_track(y=audio, sr=sr)
+    average_energy = np.mean(librosa.feature.rms(y=audio))
 
-def sigmoid(x):
-    """Numerically stable sigmoid function."""
-    return 1 / (1 + np.exp(-x))
+    chroma = librosa.feature.chroma_stft(y=audio, sr=sr)
+    chroma_mean = np.mean(chroma, axis=1)
+    key_vals = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    major_profile = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1])
+    minor_profile = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
+
+    major_correlations = np.array([np.corrcoef(chroma_mean, np.roll(major_profile, i))[0, 1] for i in range(12)])
+    minor_correlations = np.array([np.corrcoef(chroma_mean, np.roll(minor_profile, i))[0, 1] for i in range(12)])
+
+    major_key_idx = np.argmax(major_correlations)
+    minor_key_idx = np.argmax(minor_correlations)
+
+    if major_correlations[major_key_idx] > minor_correlations[minor_key_idx]:
+        musical_key = key_vals[major_key_idx]
+        scale = 'major'
+    else:
+        musical_key = key_vals[minor_key_idx]
+        scale = 'minor'
+
+    # Clean up temporary arrays (don't delete audio — caller owns it)
+    del chroma, chroma_mean
+    gc.collect()
+
+    return {
+        'tempo': float(tempo),
+        'energy': float(average_energy),
+        'key': musical_key,
+        'scale': scale
+    }
+
+
+def compute_clap_moods_and_features(clap_audio_embedding, mood_text_embeddings,
+                                     feature_text_embeddings, mood_labels,
+                                     feature_labels, top_n_moods):
+    """Compute mood vector and other features using CLAP cosine similarity.
+
+    Both the audio embedding and text embeddings must be L2-normalised so that
+    the dot-product equals cosine similarity (range [-1, 1]).
+
+    Returns:
+        (top_moods_dict, other_features_str)
+    """
+    # Cosine similarity (dot product of L2-normalised vectors)
+    mood_scores = clap_audio_embedding @ mood_text_embeddings.T    # (50,)
+    feature_scores = clap_audio_embedding @ feature_text_embeddings.T  # (6,)
+
+    # Map from cosine-similarity [-1, 1] → probability-like [0, 1]
+    mood_probs = (mood_scores + 1.0) / 2.0
+    feature_probs = (feature_scores + 1.0) / 2.0
+
+    moods = {label: float(prob) for label, prob in zip(mood_labels, mood_probs)}
+    top_moods = dict(sorted(moods.items(), key=lambda i: i[1], reverse=True)[:top_n_moods])
+
+    other_features_str = ",".join(
+        f"{feature_labels[i]}:{float(feature_probs[i]):.2f}"
+        for i in range(len(feature_labels))
+    )
+
+    return top_moods, other_features_str
+
+
+# --- RQ Task Definitions ---
 
 def robust_load_audio_with_fallback(file_path, target_sr=16000):
     """
@@ -342,319 +300,6 @@ def rebuild_all_indexes_task():
             logger.error(f"❌ Index rebuild task failed: {e}", exc_info=True)
             return {"status": "FAILURE", "message": str(e)}
 
-def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
-    """
-    Analyzes a single track using ONNX Runtime for inference.
-    
-    Args:
-        file_path: Path to audio file
-        mood_labels_list: List of mood labels
-        model_paths: Dict of model paths
-        onnx_sessions: Optional dict of pre-loaded ONNX sessions (for album-level reuse)
-    """
-    logger.info(f"Starting analysis for: {os.path.basename(file_path)}")
-
-    # --- 1. Load Audio and Compute Basic Features ---
-    audio, sr = robust_load_audio_with_fallback(file_path, target_sr=16000)
-    
-    if audio is None or not np.any(audio) or audio.size == 0:
-        logger.warning(f"Could not load a valid audio signal for {os.path.basename(file_path)} after all attempts. Skipping track.")
-        return None, None
-
-    tempo, _ = librosa.beat.beat_track(y=audio, sr=sr)
-    average_energy = np.mean(librosa.feature.rms(y=audio))
-    
-    # Improved key/scale detection
-    chroma = librosa.feature.chroma_stft(y=audio, sr=sr)
-    chroma_mean = np.mean(chroma, axis=1)
-    key_vals = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-    major_profile = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1])
-    minor_profile = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
-    
-    major_correlations = np.array([np.corrcoef(chroma_mean, np.roll(major_profile, i))[0, 1] for i in range(12)])
-    minor_correlations = np.array([np.corrcoef(chroma_mean, np.roll(minor_profile, i))[0, 1] for i in range(12)])
-
-    major_key_idx = np.argmax(major_correlations)
-    minor_key_idx = np.argmax(minor_correlations)
-
-    if major_correlations[major_key_idx] > minor_correlations[minor_key_idx]:
-        musical_key = key_vals[major_key_idx]
-        scale = 'major'
-    else:
-        musical_key = key_vals[minor_key_idx]
-        scale = 'minor'
-
-
-    # --- 2. Prepare Spectrograms --- 
-    try:
-        # Using the spectrogram settings confirmed to work for the main model
-        n_mels, hop_length, n_fft, frame_size = 96, 256, 512, 187
-        mel_spec = librosa.feature.melspectrogram(y=audio, sr=sr, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels, window='hann', center=False, power=2.0, norm='slaney', htk=False)
-
-
-        log_mel_spec = np.log10(1 + 10000 * mel_spec)
-
-        spec_patches = [log_mel_spec[:, i:i+frame_size] for i in range(0, log_mel_spec.shape[1] - frame_size + 1, frame_size)]
-        if not spec_patches:
-            logger.warning(f"Track too short to create spectrogram patches: {os.path.basename(file_path)}")
-            return None, None
-        
-        transposed_patches = np.array(spec_patches).transpose(0, 2, 1)
-
-        # =================================================================
-        # === START: CORRECT FIX FOR DATA TYPE PRECISION ===
-        # The crash on specific CPUs is due to a float precision mismatch. The model
-        # expects float32, but the array can sometimes be float64. Explicitly casting
-        # to float32 is the correct, minimal fix that preserves all data and
-        # ensures compatibility.
-        final_patches = transposed_patches.astype(np.float32)
-        # === END: CORRECT FIX FOR DATA TYPE PRECISION ===
-        # =================================================================
-
-    except Exception as e:
-        logger.error(f"Spectrogram creation failed for {os.path.basename(file_path)}: {e}", exc_info=True)
-        return None, None
-
-# --- 3. Run Main Models (Embedding and Prediction) ---
-    # Initialize variables for cleanup in finally block - MUST be before try block
-    embedding_sess = None
-    prediction_sess = None
-    should_cleanup_sessions = False
-    
-    # Configure provider options for GPU memory management (used for main and secondary models)
-    available_providers = ort.get_available_providers()
-    if 'CUDAExecutionProvider' in available_providers:
-        # Get GPU device ID from environment or default to 0
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-            'cudnn_conv_algo_search': 'EXHAUSTIVE',
-            'do_copy_in_default_stream': True,
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - attempting to use GPU for analysis (device_id={gpu_device_id})")
-    else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
-    
-    try:
-        # Use pre-loaded sessions if provided, otherwise load per-song
-        if onnx_sessions is not None:
-            embedding_sess = onnx_sessions['embedding']
-            prediction_sess = onnx_sessions['prediction']
-            should_cleanup_sessions = False
-        else:
-            # Load embedding and prediction models with configured providers
-            try:
-                embedding_sess = ort.InferenceSession(
-                    model_paths['embedding'],
-                    providers=[p[0] for p in provider_options],
-                    provider_options=[p[1] for p in provider_options]
-                )
-            except Exception:
-                # Fallback to CPU if preferred providers fail
-                logger.warning(f"Failed to load embedding model with GPU - falling back to CPU")
-                embedding_sess = ort.InferenceSession(
-                    model_paths['embedding'],
-                    providers=['CPUExecutionProvider']
-                )
-            
-            try:
-                prediction_sess = ort.InferenceSession(
-                    model_paths['prediction'],
-                    providers=[p[0] for p in provider_options],
-                    provider_options=[p[1] for p in provider_options]
-                )
-            except Exception:
-                # Fallback to CPU if preferred providers fail
-                logger.warning(f"Failed to load prediction model with GPU - falling back to CPU")
-                prediction_sess = ort.InferenceSession(
-                    model_paths['prediction'],
-                    providers=['CPUExecutionProvider']
-                )
-            should_cleanup_sessions = True
-        
-        embedding_feed_dict = {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches}
-        try:
-            embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
-        except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
-            if "Failed to allocate memory" in str(e):
-                logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during embedding inference, attempting CPU fallback...")
-                
-                # Cleanup old session and recreate with CPU
-                if should_cleanup_sessions:
-                    cleanup_onnx_session(embedding_sess, "embedding")
-                
-                # Use comprehensive cleanup for OOM errors
-                comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
-                
-                # Create CPU session
-                embedding_sess = ort.InferenceSession(
-                    model_paths['embedding'],
-                    providers=['CPUExecutionProvider']
-                )
-                
-                # Retry with CPU session
-                embeddings_per_patch = run_inference(embedding_sess, embedding_feed_dict, DEFINED_TENSOR_NAMES['embedding']['output'])
-                logger.info(f"Successfully completed embedding inference on CPU after OOM")
-            else:
-                raise
-        
-        prediction_feed_dict = {DEFINED_TENSOR_NAMES['prediction']['input']: embeddings_per_patch}
-        try:
-            mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
-        except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
-            if "Failed to allocate memory" in str(e):
-                logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during prediction inference, attempting CPU fallback...")
-                
-                # Cleanup old session and recreate with CPU
-                if should_cleanup_sessions:
-                    cleanup_onnx_session(prediction_sess, "prediction")
-                
-                # Use comprehensive cleanup for OOM errors
-                comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
-                
-                # Create CPU session
-                prediction_sess = ort.InferenceSession(
-                    model_paths['prediction'],
-                    providers=['CPUExecutionProvider']
-                )
-                
-                # Retry with CPU session
-                mood_logits = run_inference(prediction_sess, prediction_feed_dict, DEFINED_TENSOR_NAMES['prediction']['output'])
-                logger.info(f"Successfully completed prediction inference on CPU after OOM")
-            else:
-                raise
-        
-        averaged_logits = np.mean(mood_logits, axis=0)
-        # Apply sigmoid to convert raw model outputs (logits) into probabilities
-        final_mood_predictions = sigmoid(averaged_logits)
-
-        moods = {label: float(score) for label, score in zip(mood_labels_list, final_mood_predictions)}
-
-    except Exception as e:
-        logger.error(f"Main model inference failed for {os.path.basename(file_path)}: {e}", exc_info=True)
-        return None, None
-    finally:
-        # ✅ Always cleanup, even on error
-        if should_cleanup_sessions:
-            try:
-                cleanup_onnx_session(embedding_sess, "embedding")
-                cleanup_onnx_session(prediction_sess, "prediction")
-                cleanup_cuda_memory(force=True)
-                logger.debug(f"Cleaned up sessions for {os.path.basename(file_path)} (error path)")
-            except Exception as cleanup_error:
-                logger.warning(f"Error during cleanup: {cleanup_error}")
-
-        
-    # --- 4. Run Secondary Models ---
-    other_predictions = {}
-
-    for key in ["danceable", "aggressive", "happy", "party", "relaxed", "sad"]:
-        other_sess = None
-        should_cleanup_other = False
-        try:
-            # Use pre-loaded sessions if provided, otherwise load per-song
-            if onnx_sessions is not None:
-                other_sess = onnx_sessions[key]
-                should_cleanup_other = False
-            else:
-                model_path = model_paths[key]
-                # Load model with same provider configuration as main models
-                try:
-                    other_sess = ort.InferenceSession(
-                        model_path,
-                        providers=[p[0] for p in provider_options],
-                        provider_options=[p[1] for p in provider_options]
-                    )
-                except Exception:
-                    # Fallback to CPU if preferred providers fail
-                    logger.warning(f"Failed to load {key} model with GPU - falling back to CPU")
-                    other_sess = ort.InferenceSession(
-                        model_path,
-                        providers=['CPUExecutionProvider']
-                    )
-                should_cleanup_other = True
-            
-            feed_dict = {DEFINED_TENSOR_NAMES[key]['input']: embeddings_per_patch}
-            try:
-                probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
-            except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
-                if "Failed to allocate memory" in str(e):
-                    logger.warning(f"GPU OOM detected for {os.path.basename(file_path)} during {key} inference, attempting CPU fallback...")
-                    
-                    # Cleanup old session and recreate with CPU
-                    if should_cleanup_other:
-                        cleanup_onnx_session(other_sess, key)
-                    
-                    # Use comprehensive cleanup for OOM errors
-                    comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
-                    
-                    # Create CPU session
-                    other_sess = ort.InferenceSession(
-                        model_paths[key],
-                        providers=['CPUExecutionProvider']
-                    )
-                    
-                    # Retry with CPU session
-                    probabilities_per_patch = run_inference(other_sess, feed_dict, DEFINED_TENSOR_NAMES[key]['output'])
-                    logger.info(f"Successfully completed {key} inference on CPU after OOM")
-                else:
-                    raise
-
-            if probabilities_per_patch is None:
-                other_predictions[key] = 0.0
-            else:
-                if isinstance(probabilities_per_patch, np.ndarray) and probabilities_per_patch.ndim == 2 and probabilities_per_patch.shape[1] == 2:
-                    # Using the CLASS_INDEX_MAP to select the correct probability
-                    positive_class_index = CLASS_INDEX_MAP.get(key, 0)
-                    class_probs = probabilities_per_patch[:, positive_class_index]
-                    other_predictions[key] = float(np.mean(class_probs))
-                else:
-                    other_predictions[key] = 0.0
-
-        except Exception as e:
-            logger.error(f"Error predicting '{key}' for {os.path.basename(file_path)}: {e}", exc_info=True)
-            other_predictions[key] = 0.0
-        finally:
-            # Cleanup secondary model session if we loaded it
-            if should_cleanup_other and other_sess is not None:
-                try:
-                    cleanup_onnx_session(other_sess, key)
-                    del other_sess
-                    gc.collect()
-                except Exception as cleanup_error:
-                    logger.warning(f"Error cleaning up {key} session: {cleanup_error}")
-
-    # --- 5. Final Aggregation for Storage ---
-    processed_embeddings = np.mean(embeddings_per_patch, axis=0)
-    
-    # CRITICAL: Clean up large tensors before return
-    try:
-        # Clean up all large intermediate variables
-        del embeddings_per_patch, audio, mel_spec, log_mel_spec, spec_patches, transposed_patches, final_patches
-        del embedding_feed_dict, prediction_feed_dict
-        if 'mood_logits' in locals():
-            del mood_logits
-        if 'averaged_logits' in locals():
-            del averaged_logits
-        import gc
-        gc.collect()
-        # Use comprehensive cleanup for successful analysis
-        comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
-    except Exception as cleanup_error:
-        logger.warning(f"Error during final tensor cleanup: {cleanup_error}")
-
-    return {
-        "tempo": float(tempo), "key": musical_key, "scale": scale,
-        "moods": moods, "energy": float(average_energy), **other_predictions
-    }, processed_embeddings
-
 
 # --- RQ Task Definitions ---
 # MODIFIED: Removed jellyfin_url, jellyfin_user_id, jellyfin_token as they are no longer needed for the function calls.
@@ -675,28 +320,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         save_task_status(current_task_id, "album_analysis", TASK_STATUS_STARTED, parent_task_id=parent_task_id, sub_type_identifier=album_id, progress=0, details=initial_details)
         tracks_analyzed_count, tracks_skipped_count, current_progress_val = 0, 0, 0
         current_task_logs = initial_details["log"]
-        
-        model_paths = {
-            'embedding': EMBEDDING_MODEL_PATH,
-            'prediction': PREDICTION_MODEL_PATH,
-            'danceable': DANCEABILITY_MODEL_PATH,
-            'aggressive': AGGRESSIVE_MODEL_PATH,
-            'happy': HAPPY_MODEL_PATH,
-            'party': PARTY_MODEL_PATH,
-            'relaxed': RELAXED_MODEL_PATH,
-            'sad': SAD_MODEL_PATH
-        }
-        
-        # Essentia models will be lazy-loaded on first song that needs MusiCNN analysis
-        onnx_sessions = None
-        
-        # Initialize SessionRecycler to prevent cumulative memory leaks
-        # Interval depends on PER_SONG_MODEL_RELOAD setting:
-        # - true: Reload every 1 song (aggressive, prevents memory leaks)
-        # - false: Reload every 20 songs (original behavior, faster but may accumulate memory)
-        recycle_interval = 1 if PER_SONG_MODEL_RELOAD else 20
-        session_recycler = SessionRecycler(recycle_interval=recycle_interval)
-        logger.info(f"MusiCNN session recycling: every {recycle_interval} song(s) (PER_SONG_MODEL_RELOAD={PER_SONG_MODEL_RELOAD})")
 
         def log_and_update_album_task(message, progress, **kwargs):
             nonlocal current_progress_val, current_task_logs
@@ -726,10 +349,17 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 return {"status": "SUCCESS", "message": f"No tracks in album {album_name}", "tracks_analyzed": 0}
 
             def get_existing_track_ids(track_ids):
+                """Return track IDs that have a correct-dimension (512) embedding AND complete score data."""
                 if not track_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
                     track_ids_as_strings = [str(id) for id in track_ids]
-                    cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL", (tuple(track_ids_as_strings),))
+                    cur.execute(
+                        "SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id "
+                        "WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL "
+                        "AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL "
+                        "AND octet_length(e.embedding) = %s",
+                        (tuple(track_ids_as_strings), EMBEDDING_DIMENSION * 4)
+                    )
                     return {row[0] for row in cur.fetchall()}
 
             def get_missing_clap_track_ids(track_ids):
@@ -748,10 +378,34 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     existing_mulan_ids = {row[0] for row in cur.fetchall()}
                     return set(track_ids_as_strings) - existing_mulan_ids
 
-            existing_track_ids_set = get_existing_track_ids([str(t['Id']) for t in tracks])
-            missing_clap_ids_set = get_missing_clap_track_ids([str(t['Id']) for t in tracks]) if is_clap_available() else set()
-            missing_mulan_ids_set = get_missing_mulan_track_ids([str(t['Id']) for t in tracks]) if MULAN_ENABLED else set()
+            all_track_id_strs = [str(t['Id']) for t in tracks]
+            existing_track_ids_set = get_existing_track_ids(all_track_id_strs)
+
+            # Determine which tracks already have CLAP embeddings (can be reused without audio re-analysis)
+            existing_clap_ids_set = set(all_track_id_strs) - get_missing_clap_track_ids(all_track_id_strs) if is_clap_available() else set()
+
+            # Determine which tracks already have basic features (tempo, energy, key, scale)
+            existing_basic_feature_ids = set()
+            with get_db() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT item_id FROM score WHERE item_id IN %s "
+                    "AND tempo IS NOT NULL AND energy IS NOT NULL AND key IS NOT NULL AND scale IS NOT NULL",
+                    (tuple(all_track_id_strs),)
+                )
+                existing_basic_feature_ids = {row[0] for row in cur.fetchall()}
+
+            missing_mulan_ids_set = get_missing_mulan_track_ids(all_track_id_strs) if MULAN_ENABLED else set()
             total_tracks_in_album = len(tracks)
+
+            # Get cached CLAP text embeddings (computed once, persists across album jobs)
+            from .clap_analyzer import get_cached_label_text_embeddings
+            mood_text_embs, feature_text_embs = get_cached_label_text_embeddings(MOOD_LABELS, OTHER_FEATURE_LABELS)
+            if mood_text_embs is None:
+                log_and_update_album_task(
+                    f"CLAP text embeddings unavailable — cannot analyze album '{album_name}'.",
+                    100, task_state=TASK_STATUS_FAILURE
+                )
+                return {"status": "FAILURE", "message": "CLAP text embeddings unavailable"}
 
             for idx, item in enumerate(tracks, 1):
                 if current_job:
@@ -781,221 +435,160 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     logger.error(f"Failed to store artist mapping for '{artist_name}': {mapping_error}", exc_info=True)
 
                 track_id_str = str(item['Id'])
-                needs_musicnn = track_id_str not in existing_track_ids_set
-                needs_clap = track_id_str in missing_clap_ids_set
+                needs_reanalysis = track_id_str not in existing_track_ids_set
+                has_clap_embedding = track_id_str in existing_clap_ids_set
+                has_basic_features = track_id_str in existing_basic_feature_ids
                 needs_mulan = track_id_str in missing_mulan_ids_set
 
-                # Album name update now handled in main analysis task. If needed, uncomment below:
-                # try:
-                #     with get_db() as conn, conn.cursor() as cur:
-                #         cur.execute("UPDATE score SET album = %s WHERE item_id = %s", (album_name, track_id_str))
-                #         conn.commit()
-                #     logger.info(f"Updated album name for track '{track_name_full}' to '{album_name}'")
-                # except Exception as e:
-                #     logger.warning(f"Failed to update album name for '{track_name_full}': {e}")
-
-                if not needs_musicnn and not needs_clap and not needs_mulan:
+                if not needs_reanalysis and not needs_mulan:
                     tracks_skipped_count += 1
-                    status_parts = ["MusiCNN: ✓"]
-                    if is_clap_available():
-                        status_parts.append("CLAP: ✓")
+                    status_parts = ["CLAP: ✓"]
                     if MULAN_ENABLED:
                         status_parts.append("MuLan: ✓")
                     logger.info(f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)})")
                     continue
-                
-                # MODIFIED: Call to download_track simplified. Assumes it gets server details from config.
-                path = download_track(TEMP_DIR, item)
-                if not path:
-                    continue
+
+                # Determine whether we need to download the audio file
+                needs_clap_compute = needs_reanalysis and not has_clap_embedding
+                needs_basic_compute = needs_reanalysis and not has_basic_features
+                needs_audio_download = needs_clap_compute or needs_basic_compute or needs_mulan
+
+                path = None
+                if needs_audio_download:
+                    path = download_track(TEMP_DIR, item)
+                    if not path:
+                        tracks_skipped_count += 1
+                        continue
 
                 try:
-                    # Track if we processed anything (MusiCNN or CLAP)
                     track_processed = False
-                    
-                    # MusiCNN analysis (only if needed)
-                    if needs_musicnn:
-                        # Lazy-load Essentia models on first song that needs analysis
-                        if onnx_sessions is None:
-                            logger.info(f"Lazy-loading Essentia models for album: {album_name}")
-                            onnx_sessions = {}
-                            available_providers = ort.get_available_providers()
-                            
-                            if 'CUDAExecutionProvider' in available_providers:
-                                gpu_device_id = 0
-                                cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-                                if cuda_visible and cuda_visible != '-1':
-                                    gpu_device_id = 0
-                                cuda_options = {
-                                    'device_id': gpu_device_id,
-                                    'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-                                    'cudnn_conv_algo_search': 'EXHAUSTIVE',      # Find memory-efficient algorithms
-                                    'do_copy_in_default_stream': True,           # Better memory sync
-                                }
-                                provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
+
+                    if needs_reanalysis:
+                        # --- Load audio ONCE at 48 kHz (used by both CLAP and basic features) ---
+                        audio_48k = None
+                        if path:
+                            audio_48k, _ = robust_load_audio_with_fallback(path, target_sr=48000)
+
+                        # --- Get or compute CLAP audio embedding ---
+                        if has_clap_embedding:
+                            from app_helper import load_clap_embedding
+                            clap_emb = load_clap_embedding(track_id_str)
+                            if clap_emb is None:
+                                logger.warning(f"Failed to load existing CLAP embedding for '{track_name_full}', will recompute")
+                                if audio_48k is None:
+                                    if not path:
+                                        path = download_track(TEMP_DIR, item)
+                                        if not path:
+                                            tracks_skipped_count += 1
+                                            continue
+                                    audio_48k, _ = robust_load_audio_with_fallback(path, target_sr=48000)
+                                clap_emb_result, _, _ = clap_analyze(path, audio_data_48k=audio_48k)
+                                clap_emb = clap_emb_result
                             else:
-                                provider_options = [('CPUExecutionProvider', {})]
-                            
-                            try:
-                                for model_name, model_path in model_paths.items():
-                                    try:
-                                        onnx_sessions[model_name] = ort.InferenceSession(
-                                            model_path,
-                                            providers=[p[0] for p in provider_options],
-                                            provider_options=[p[1] for p in provider_options]
-                                        )
-                                    except Exception:
-                                        onnx_sessions[model_name] = ort.InferenceSession(
-                                            model_path,
-                                            providers=['CPUExecutionProvider']
-                                        )
-                                logger.info(f"✓ Loaded {len(onnx_sessions)} Essentia models for album reuse")
-                            except Exception as e:
-                                logger.error(f"Failed to load Essentia models: {e}")
-                                onnx_sessions = None
-                        
-                        # Check if sessions should be recycled to prevent cumulative memory leaks
-                        if onnx_sessions and session_recycler.should_recycle():
-                            logger.info(f"Recycling ONNX sessions after {session_recycler.get_use_count()} tracks")
-                            
-                            # Cleanup old sessions
-                            for model_name, session in onnx_sessions.items():
-                                cleanup_onnx_session(session, model_name)
-                            
-                            # Use comprehensive cleanup during session recycling
-                            comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
-                            
-                            # Recreate sessions
-                            onnx_sessions = {}
-                            available_providers = ort.get_available_providers()
-                            
-                            if 'CUDAExecutionProvider' in available_providers:
-                                gpu_device_id = 0
-                                cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-                                if cuda_visible and cuda_visible != '-1':
-                                    gpu_device_id = 0
-                                cuda_options = {
-                                    'device_id': gpu_device_id,
-                                    'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-                                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
-                                    'do_copy_in_default_stream': True,
-                                }
-                                provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-                            else:
-                                provider_options = [('CPUExecutionProvider', {})]
-                            
-                            try:
-                                for model_name, model_path in model_paths.items():
-                                    try:
-                                        onnx_sessions[model_name] = ort.InferenceSession(
-                                            model_path,
-                                            providers=[p[0] for p in provider_options],
-                                            provider_options=[p[1] for p in provider_options]
-                                        )
-                                    except Exception:
-                                        onnx_sessions[model_name] = ort.InferenceSession(
-                                            model_path,
-                                            providers=['CPUExecutionProvider']
-                                        )
-                                logger.info(f"✓ Recycled {len(onnx_sessions)} Essentia model sessions")
-                            except Exception as e:
-                                logger.error(f"Failed to recycle Essentia models: {e}")
-                                onnx_sessions = None
-                            
-                            # Mark as recycled
-                            session_recycler.mark_recycled()
-                        
-                        analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions)
-                        if analysis is None:
-                            logger.warning(f"Skipping track {track_name_full} as analysis returned None.")
+                                logger.info(f"  - Reusing existing CLAP embedding for '{track_name_full}'")
+                        else:
+                            clap_emb_result, _, _ = clap_analyze(path, audio_data_48k=audio_48k)
+                            clap_emb = clap_emb_result
+
+                        if clap_emb is None:
+                            logger.warning(f"Skipping track '{track_name_full}' — CLAP embedding unavailable.")
                             tracks_skipped_count += 1
                             continue
-                        
-                        top_moods = dict(sorted(analysis['moods'].items(), key=lambda i: i[1], reverse=True)[:top_n_moods])
-                        other_features = ",".join([f"{k}:{analysis.get(k, 0.0):.2f}" for k in OTHER_FEATURE_LABELS])
-                        
+
+                        # --- Get or compute basic audio features (reuse 48 kHz audio, no reload) ---
+                        if has_basic_features:
+                            from app_helper import load_basic_score_data
+                            basic = load_basic_score_data(track_id_str)
+                            if basic is None:
+                                logger.warning(f"Failed to load basic features for '{track_name_full}', will recompute")
+                                if audio_48k is None:
+                                    if not path:
+                                        path = download_track(TEMP_DIR, item)
+                                        if not path:
+                                            tracks_skipped_count += 1
+                                            continue
+                                    audio_48k, _ = robust_load_audio_with_fallback(path, target_sr=48000)
+                                basic = compute_basic_audio_features(audio_48k, 48000)
+                        else:
+                            basic = compute_basic_audio_features(audio_48k, 48000)
+
+                        if basic is None:
+                            logger.warning(f"Skipping track '{track_name_full}' — basic feature extraction failed.")
+                            tracks_skipped_count += 1
+                            continue
+
+                        # --- Compute mood vector and other features via CLAP cosine similarity ---
+                        top_moods, other_features = compute_clap_moods_and_features(
+                            clap_emb, mood_text_embs, feature_text_embs,
+                            MOOD_LABELS, OTHER_FEATURE_LABELS, top_n_moods
+                        )
+
                         logger.info(f"SUCCESSFULLY ANALYZED '{track_name_full}' (ID: {item['Id']}):")
-                        logger.info(f"  - Tempo: {analysis['tempo']:.2f}, Energy: {analysis['energy']:.4f}, Key: {analysis['key']} {analysis['scale']}")
+                        logger.info(f"  - Tempo: {basic['tempo']:.2f}, Energy: {basic['energy']:.4f}, Key: {basic['key']} {basic['scale']}")
                         logger.info(f"  - Top Moods: {top_moods}")
                         logger.info(f"  - Other Features: {other_features}")
-                        
-                        save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding, energy=analysis['energy'], other_features=other_features, album=item.get('Album', None))
+
+                        # Save to score + embedding tables (512-dim CLAP embedding replaces old MusiCNN)
+                        save_track_analysis_and_embedding(
+                            item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'),
+                            basic['tempo'], basic['key'], basic['scale'], top_moods, clap_emb,
+                            energy=basic['energy'], other_features=other_features,
+                            album=item.get('Album', None)
+                        )
+
+                        # Save CLAP embedding to clap_embedding table AFTER score row exists (FK constraint)
+                        if not has_clap_embedding:
+                            save_clap_embedding(item['Id'], clap_emb)
+                            logger.info(f"  - CLAP embedding saved to clap_embedding table (512-dim)")
+
                         track_processed = True
-                        
-                        # Increment session recycler counter after successful analysis
-                        session_recycler.increment()
-                        
-                        # Aggressive GPU memory cleanup after each MusiCNN analysis
-                        # This prevents gradual VRAM accumulation from ONNX Runtime allocator
+
+                        # Conditionally unload CLAP audio model based on PER_SONG_MODEL_RELOAD
+                        if PER_SONG_MODEL_RELOAD:
+                            from .clap_analyzer import unload_clap_audio_only
+                            unload_clap_audio_only()
+                            logger.debug(f"  - CLAP audio model unloaded after song (PER_SONG_MODEL_RELOAD=true)")
+
+                        # GPU memory cleanup after analysis
                         cleanup_cuda_memory(force=False)
-                    else:
-                        logger.info(f"SKIPPED MusiCNN for '{track_name_full}' (already analyzed)")
-                    
-                    # CLAP analysis (only if enabled AND needed)
-                    if needs_clap and is_clap_available():
-                        logger.info(f"  - Starting CLAP analysis for {track_name_full}...")
-                        try:
-                            clap_embedding, _, _ = clap_analyze(path)
-                            if clap_embedding is not None:
-                                save_clap_embedding(item['Id'], clap_embedding)
-                                logger.info(f"  - CLAP embedding saved (512-dim)")
-                                track_processed = True
-                            
-                            # Conditionally unload CLAP model based on PER_SONG_MODEL_RELOAD
-                            if PER_SONG_MODEL_RELOAD:
-                                from .clap_analyzer import unload_clap_model
-                                unload_clap_model()
-                                logger.debug(f"  - CLAP model unloaded after song (PER_SONG_MODEL_RELOAD=true)")
-                        except Exception as e:
-                            logger.warning(f"  - CLAP analysis failed: {e}")
-                    elif not needs_clap and is_clap_available():
-                        logger.info(f"  - CLAP embedding already exists, skipping")
-                    else:
-                        logger.info(f"  - CLAP skipped: needs_clap={needs_clap}, available={is_clap_available()}")
-                    
+
                     # MuLan analysis (only if enabled AND needed)
                     if needs_mulan and MULAN_ENABLED:
                         logger.info(f"  - Starting MuLan analysis for {track_name_full}...")
                         try:
-                            mulan_embedding, duration, num_segments = mulan_analyze(path)
-                            if mulan_embedding is not None:
-                                from app_helper import save_mulan_embedding
-                                save_mulan_embedding(item['Id'], mulan_embedding)
-                                logger.info(f"  - MuLan embedding saved (512-dim, duration: {duration:.1f}s)")
-                                track_processed = True
+                            if not path:
+                                path = download_track(TEMP_DIR, item)
+                            if path:
+                                mulan_embedding, duration, num_segments = mulan_analyze(path)
+                                if mulan_embedding is not None:
+                                    from app_helper import save_mulan_embedding
+                                    save_mulan_embedding(item['Id'], mulan_embedding)
+                                    logger.info(f"  - MuLan embedding saved (512-dim, duration: {duration:.1f}s)")
+                                    track_processed = True
                         except Exception as e:
                             logger.warning(f"  - MuLan analysis failed: {e}")
                     elif not needs_mulan and MULAN_ENABLED:
                         logger.info(f"  - MuLan embedding already exists, skipping")
-                    
-                    # Count track as analyzed if we processed MusiCNN, CLAP, or MuLan
+
                     if track_processed:
                         tracks_analyzed_count += 1
-                    
+
                 finally:
                     if path and os.path.exists(path):
                         os.remove(path)
-            
-            # Cleanup all models after album analysis to free memory
-            if onnx_sessions:
-                logger.info(f"Cleaning up {len(onnx_sessions)} Essentia model sessions")
-                for model_name, session in onnx_sessions.items():
-                    cleanup_onnx_session(session, model_name)
-                onnx_sessions = None  # Clear reference but don't delete the variable
-                gc.collect()
-            
-            # Cleanup CLAP model if it was loaded during this album
-            from .clap_analyzer import unload_clap_model, is_clap_model_loaded
-            if is_clap_model_loaded():
-                logger.info("Cleaning up CLAP model after album analysis")
-                unload_clap_model()
-            
+
+            # Cleanup CLAP audio model if it was loaded during this album (keep text cache)
+            from .clap_analyzer import unload_clap_audio_only, is_clap_audio_loaded
+            if is_clap_audio_loaded():
+                logger.info("Cleaning up CLAP audio model after album analysis")
+                unload_clap_audio_only()
+
             # Cleanup MuLan model if it was loaded during this album
             from .mulan_analyzer import unload_mulan_model, is_mulan_model_loaded
             if is_mulan_model_loaded():
                 logger.info("Cleaning up MuLan model after album analysis")
                 unload_mulan_model()
-            
+
             # Final comprehensive cleanup after album completion
             logger.info("Performing final comprehensive cleanup after album analysis")
             comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
@@ -1014,16 +607,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             raise
         finally:
             # ✅ Always cleanup, even on error or early return
-            if onnx_sessions:
-                logger.info(f"Cleaning up {len(onnx_sessions)} Essentia model sessions (finally block)")
-                for model_name, session in onnx_sessions.items():
-                    try:
-                        cleanup_onnx_session(session, model_name)
-                    except Exception as e:
-                        logger.warning(f"Error cleaning up {model_name} session: {e}")
-                onnx_sessions = None  # Clear reference but don't delete the variable
-                gc.collect()
-            
             # Cleanup CUDA memory
             try:
                 comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
@@ -1031,12 +614,12 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             except Exception as e:
                 logger.warning(f"Error during final comprehensive cleanup: {e}")
             
-            # Cleanup CLAP model if loaded
+            # Cleanup CLAP audio model if loaded (keep text cache for next album)
             try:
-                from .clap_analyzer import unload_clap_model, is_clap_model_loaded
-                if is_clap_model_loaded():
-                    unload_clap_model()
-                    logger.debug("CLAP model cleanup completed (finally block)")
+                from .clap_analyzer import unload_clap_audio_only, is_clap_audio_loaded
+                if is_clap_audio_loaded():
+                    unload_clap_audio_only()
+                    logger.debug("CLAP audio model cleanup completed (finally block)")
             except Exception as e:
                 logger.warning(f"Error cleaning up CLAP model: {e}")
             
@@ -1112,11 +695,18 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             albums_skipped, albums_launched, albums_completed, last_rebuild_count = 0, 0, 0, 0
 
             def get_existing_track_ids(track_ids):
+                """Return track IDs that have a correct-dimension (512) embedding AND complete score data."""
                 if not track_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
                     # Convert integer track IDs to strings for database comparison
                     track_ids_as_strings = [str(track_id) for track_id in track_ids]
-                    cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL", (tuple(track_ids_as_strings),))
+                    cur.execute(
+                        "SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id "
+                        "WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL "
+                        "AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL "
+                        "AND octet_length(e.embedding) = %s",
+                        (tuple(track_ids_as_strings), EMBEDDING_DIMENSION * 4)
+                    )
                     return {row[0] for row in cur.fetchall()}
 
             def monitor_and_clear_jobs():
@@ -1235,19 +825,10 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 except Exception as e:
                     logger.error(f"Failed to store artist mappings for album '{album.get('Name')}': {e}", exc_info=True)
 
-                # Check if album needs any analysis (MusiCNN OR CLAP OR MuLan)
+                # Check if album needs any analysis (CLAP embedding + moods, or MuLan)
                 try:
                     track_ids = [t['Id'] for t in tracks]
                     existing_count = len(get_existing_track_ids(track_ids))
-                    
-                    # Check CLAP if enabled
-                    needs_clap_analysis = False
-                    if is_clap_available():
-                        with get_db() as conn, conn.cursor() as cur:
-                            track_ids_as_strings = [str(id) for id in track_ids]
-                            cur.execute("SELECT item_id FROM clap_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
-                            existing_clap_ids = {row[0] for row in cur.fetchall()}
-                            needs_clap_analysis = len(existing_clap_ids) < len(tracks)
                     
                     # Check MuLan only if enabled
                     needs_mulan_analysis = False
@@ -1265,8 +846,8 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     albums_skipped += 1
                     continue
 
-                # Skip ONLY if all tracks have MusiCNN AND CLAP (if enabled) AND MuLan (if enabled)
-                if existing_count >= len(tracks) and not needs_clap_analysis and not needs_mulan_analysis:
+                # Skip if all tracks have 512-dim CLAP embedding + complete score AND MuLan (if enabled)
+                if existing_count >= len(tracks) and not needs_mulan_analysis:
                     # Always update album name for all tracks, even if already analyzed
                     for item in tracks:
                         track_id_str = str(item['Id'])
@@ -1280,9 +861,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     albums_skipped += 1
                     checked_album_ids.add(album['Id'])
                     # Build dynamic status message based on enabled features
-                    status_parts = ["MusiCNN"]
-                    if is_clap_available():
-                        status_parts.append("CLAP")
+                    status_parts = ["CLAP"]
                     if MULAN_ENABLED:
                         status_parts.append("MuLan")
                     logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {existing_count}/{len(tracks)} tracks already analyzed ({' + '.join(status_parts)}).")

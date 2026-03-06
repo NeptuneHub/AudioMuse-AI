@@ -260,9 +260,9 @@ MOOD_LABELS = [
 
 TOP_N_MOODS = int(os.environ.get("TOP_N_MOODS", "5"))  # Number of top moods to consider (configurable via env)
 TOP_N_OTHER_FEATURES = int(os.environ.get("TOP_N_OTHER_FEATURES", "2")) # Number of top "other features" to consider for clustering vector
-EMBEDDING_MODEL_PATH = "/app/model/msd-musicnn-1.onnx"
-PREDICTION_MODEL_PATH = "/app/model/msd-msd-musicnn-1.onnx"
-EMBEDDING_DIMENSION = 200
+EMBEDDING_MODEL_PATH = "/app/model/msd-musicnn-1.onnx"  # Legacy – no longer used for analysis
+PREDICTION_MODEL_PATH = "/app/model/msd-msd-musicnn-1.onnx"  # Legacy – no longer used for analysis
+EMBEDDING_DIMENSION = 512  # Now uses CLAP 512-dim embeddings (was 200 for MusiCNN)
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
@@ -312,7 +312,7 @@ CLAP_MINI_BATCH_SIZE = int(os.environ.get("CLAP_MINI_BATCH_SIZE", "1"))
 # - false: MusiCNN reloads every 20 songs, CLAP at album end (faster but may accumulate memory)
 #   Pros: Faster processing (no per-song reload overhead)
 #   Cons: May see gradual VRAM growth on some systems
-PER_SONG_MODEL_RELOAD = os.environ.get("PER_SONG_MODEL_RELOAD", "true").lower() == "true"
+PER_SONG_MODEL_RELOAD = os.environ.get("PER_SONG_MODEL_RELOAD", "false").lower() == "true"
 
 # Category weights for CLAP query generation (affects random query sampling probabilities)
 # Higher weights favor categories where CLAP excels (Genre, Instrumentation)

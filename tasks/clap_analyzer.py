@@ -40,6 +40,9 @@ _text_session = None   # For text search (Flask containers)
 _tokenizer = None
 _cached_dummy_input_ids = None  # Reusable dummy input for audio-only inference
 
+# Module-level cache for label text embeddings (persists across RQ jobs in same worker)
+_label_text_embeddings_cache = None  # dict with 'mood' and 'feature' numpy arrays
+
 
 def _load_audio_model():
     """Load CLAP audio-only ONNX model for music analysis (worker containers)."""
@@ -477,6 +480,33 @@ def unload_clap_model():
         return False
 
 
+def unload_clap_audio_only():
+    """Unload only the CLAP audio model, preserving text session and cached label embeddings.
+    
+    This is used during analysis to free the ~268MB audio model between songs/albums
+    while keeping the text embeddings cache (just numpy arrays, ~114KB) alive.
+    """
+    global _audio_session
+    
+    if _audio_session is None:
+        return False
+    
+    try:
+        _audio_session = None
+        
+        import gc
+        gc.collect()
+        
+        from .memory_utils import cleanup_cuda_memory
+        cleanup_cuda_memory(force=True)
+        
+        logger.info("✓ CLAP audio model unloaded (~268MB freed), text cache preserved")
+        return True
+    except Exception as e:
+        logger.error(f"Error unloading CLAP audio model: {e}")
+        return False
+
+
 def is_clap_model_loaded():
     """Check if any CLAP model is currently loaded in memory."""
     return _audio_session is not None or _text_session is not None
@@ -587,7 +617,7 @@ def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarr
     return mel.astype(np.float32)
 
 
-def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, int]:
+def analyze_audio_file(audio_path: str, audio_data_48k: Optional[np.ndarray] = None) -> Tuple[Optional[np.ndarray], float, int]:
     """
     Analyze an audio file and return CLAP embedding using ONNX Runtime.
     Segments are processed one at a time (the student model was exported
@@ -595,7 +625,8 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
     averaged and L2-normalised to produce a single 512-dim vector.
 
     Args:
-        audio_path: Path to audio file
+        audio_path: Path to audio file (used only if audio_data_48k is None)
+        audio_data_48k: Optional pre-loaded audio at 48 kHz to avoid redundant disk I/O
 
     Returns:
         Tuple of (embedding_vector, duration_seconds, num_segments)
@@ -613,10 +644,13 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         SEGMENT_LENGTH = 480000   # 10 seconds at 48 kHz
         HOP_LENGTH = 240000       # 5 seconds (50 % overlap)
 
-        # --- robust audio loading (pydub fallback) ---
-        # Lazy import to avoid circular dependency (analysis imports clap_analyzer)
-        from tasks.analysis import robust_load_audio_with_fallback
-        audio_data, sr = robust_load_audio_with_fallback(audio_path, target_sr=SAMPLE_RATE)
+        if audio_data_48k is not None:
+            audio_data = audio_data_48k
+        else:
+            # --- robust audio loading (pydub fallback) ---
+            # Lazy import to avoid circular dependency (analysis imports clap_analyzer)
+            from tasks.analysis import robust_load_audio_with_fallback
+            audio_data, sr = robust_load_audio_with_fallback(audio_path, target_sr=SAMPLE_RATE)
 
         if audio_data is None or audio_data.size == 0:
             logger.warning(f"Could not load audio for CLAP analysis: {audio_path}")
@@ -823,3 +857,41 @@ def is_clap_available() -> bool:
     
     # Fall back to legacy combined model
     return os.path.exists(config.CLAP_MODEL_PATH)
+
+
+def get_cached_label_text_embeddings(mood_labels, feature_labels):
+    """Return cached CLAP text embeddings for mood and feature labels.
+    
+    Computes once on first call, then returns the cached numpy arrays
+    for all subsequent calls (persists across RQ jobs in the same worker process).
+    
+    Returns:
+        (mood_text_embs, feature_text_embs) or (None, None) on failure
+    """
+    global _label_text_embeddings_cache
+    
+    if _label_text_embeddings_cache is not None:
+        logger.debug("Using cached CLAP label text embeddings")
+        return _label_text_embeddings_cache['mood'], _label_text_embeddings_cache['feature']
+    
+    all_labels = list(mood_labels) + list(feature_labels)
+    clap_text_embs = get_text_embeddings_batch(all_labels)
+    if clap_text_embs is None:
+        return None, None
+    
+    mood_embs = clap_text_embs[:len(mood_labels)]
+    feature_embs = clap_text_embs[len(mood_labels):]
+    
+    _label_text_embeddings_cache = {'mood': mood_embs, 'feature': feature_embs}
+    logger.info(f"Computed and cached CLAP label text embeddings: {mood_embs.shape[0]} mood + {feature_embs.shape[0]} feature (persists across jobs)")
+    
+    # Unload the text model now — we only needed it for these embeddings
+    global _text_session, _tokenizer
+    if _text_session is not None:
+        _text_session = None
+        _tokenizer = None
+        import gc
+        gc.collect()
+        logger.info("✓ CLAP text model unloaded after caching label embeddings (~478MB freed)")
+    
+    return mood_embs, feature_embs

@@ -528,6 +528,34 @@ def save_clap_embedding(item_id, clap_embedding_vector):
         cur.close()
 
 
+def load_clap_embedding(item_id):
+    """Load a CLAP embedding from the clap_embedding table."""
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT embedding FROM clap_embedding WHERE item_id = %s", (str(item_id),))
+        row = cur.fetchone()
+        if row and row[0]:
+            return np.frombuffer(row[0], dtype=np.float32).copy()
+        return None
+    finally:
+        cur.close()
+
+
+def load_basic_score_data(item_id):
+    """Load basic features (tempo, energy, key, scale, album) from the score table."""
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT tempo, energy, key, scale, album FROM score WHERE item_id = %s", (str(item_id),))
+        row = cur.fetchone()
+        if row:
+            return {'tempo': row[0], 'energy': row[1], 'key': row[2], 'scale': row[3], 'album': row[4]}
+        return None
+    finally:
+        cur.close()
+
+
 def save_mulan_embedding(item_id, mulan_embedding_vector):
     """Saves MuLan embedding for a track."""
     if mulan_embedding_vector is None or (isinstance(mulan_embedding_vector, np.ndarray) and mulan_embedding_vector.size == 0):
