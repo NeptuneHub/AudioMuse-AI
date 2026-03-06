@@ -1,0 +1,17 @@
+# MusiCNN ONNX Export & Embedding Comparison
+#
+# Install with:
+#   pip install -r requirements.txt
+#   pip install --no-deps musicnn
+#
+# The second command is needed because the musicnn PyPI package
+# pins numpy<1.20 which cannot build on Python 3.11+ / Apple Silicon.
+# Installing with --no-deps skips that broken constraint.
+
+numpy>=1.24
+tensorflow>=2.13
+tf2onnx>=1.14.0
+onnx>=1.14.0
+onnxruntime>=1.15.0
+librosa>=0.10.0
+soundfile
