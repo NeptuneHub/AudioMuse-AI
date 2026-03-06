@@ -862,18 +862,37 @@ def is_clap_available() -> bool:
 def get_cached_label_text_embeddings(mood_labels, feature_labels):
     """Return cached CLAP text embeddings for mood and feature labels.
     
-    Computes once on first call, then returns the cached numpy arrays
-    for all subsequent calls (persists across RQ jobs in the same worker process).
+    Uses Redis as cross-process cache so the text model is loaded only ONCE
+    across all forked RQ worker jobs. Subsequent jobs read from Redis (~1ms).
     
     Returns:
         (mood_text_embs, feature_text_embs) or (None, None) on failure
     """
     global _label_text_embeddings_cache
     
+    # 1) In-process cache (same forked process, shouldn't happen but just in case)
     if _label_text_embeddings_cache is not None:
-        logger.debug("Using cached CLAP label text embeddings")
+        logger.debug("Using in-process cached CLAP label text embeddings")
         return _label_text_embeddings_cache['mood'], _label_text_embeddings_cache['feature']
     
+    # 2) Redis cache (persists across forked RQ jobs)
+    try:
+        from app_helper import redis_conn as _redis
+        redis_key = 'clap_label_text_embeddings'
+        cached_data = _redis.get(redis_key)
+        if cached_data is not None:
+            import io
+            buf = io.BytesIO(cached_data)
+            npz = np.load(buf)
+            mood_embs = npz['mood']
+            feature_embs = npz['feature']
+            _label_text_embeddings_cache = {'mood': mood_embs, 'feature': feature_embs}
+            logger.info(f"Loaded CLAP label text embeddings from Redis cache ({len(cached_data)} bytes)")
+            return mood_embs, feature_embs
+    except Exception as e:
+        logger.warning(f"Failed to read CLAP text embeddings from Redis: {e}")
+    
+    # 3) Compute from scratch (first time only)
     all_labels = list(mood_labels) + list(feature_labels)
     clap_text_embs = get_text_embeddings_batch(all_labels)
     if clap_text_embs is None:
@@ -883,7 +902,18 @@ def get_cached_label_text_embeddings(mood_labels, feature_labels):
     feature_embs = clap_text_embs[len(mood_labels):]
     
     _label_text_embeddings_cache = {'mood': mood_embs, 'feature': feature_embs}
-    logger.info(f"Computed and cached CLAP label text embeddings: {mood_embs.shape[0]} mood + {feature_embs.shape[0]} feature (persists across jobs)")
+    
+    # Save to Redis so no other job ever needs to load the text model again
+    try:
+        import io
+        buf = io.BytesIO()
+        np.savez_compressed(buf, mood=mood_embs, feature=feature_embs)
+        _redis.set(redis_key, buf.getvalue())
+        logger.info(f"Cached CLAP label text embeddings to Redis ({buf.tell()} bytes)")
+    except Exception as e:
+        logger.warning(f"Failed to save CLAP text embeddings to Redis: {e}")
+    
+    logger.info(f"Computed CLAP label text embeddings: {mood_embs.shape[0]} mood + {feature_embs.shape[0]} feature")
     
     # Unload the text model now — we only needed it for these embeddings
     global _text_session, _tokenizer
