@@ -4,6 +4,7 @@ Tests the finally blocks that ensure cleanup on all code paths.
 """
 
 import pytest
+import jwt  # ensure PyJWT is available for imported modules
 from unittest.mock import Mock, MagicMock, patch, call
 import numpy as np
 
@@ -126,17 +127,6 @@ class TestAnalyzeTrackMemoryCleanup:
 
 class TestAnalyzeAlbumMemoryCleanup:
     """Test memory cleanup in analyze_album_task function."""
-
-    # ensure a dummy `app` module exists during these tests so that
-    # analyze_album_task's runtime import doesn't require PyJWT or the
-    # real Flask app.
-    @pytest.fixture(autouse=True)
-    def _fake_app_module(self, monkeypatch):
-        import sys, types
-        fake = types.SimpleNamespace(app=Mock(), JobStatus=Mock())
-        monkeypatch.setitem(sys.modules, 'app', fake)
-        yield
-        sys.modules.pop('app', None)
     
     @patch('tasks.analysis.get_tracks_from_album')
     @patch('tasks.analysis.download_track')
