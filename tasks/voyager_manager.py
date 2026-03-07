@@ -1729,54 +1729,78 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
     finally:
         cur.close()
 
-def search_tracks_by_title_and_artist(title_query: str, artist_query: str, limit: int = 15):
+def search_tracks_unified(search_query: str, limit: int = 15):
     """
-    Searches for tracks using partial title and artist names for autocomplete.
+    Deterministic substring search over title, author and album.
+
+    - Accent and case insensitive
+    - Each token must match title, author or album
+    - Ranking priority: title > author > album
     """
+
     from app_helper import get_db
+    from psycopg2.extras import DictCursor
+
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
     results = []
-    try:
-        query_parts = []
-        params = []
-        
-        if title_query and not artist_query:
-            query_parts.append("(title ILIKE %s OR author ILIKE %s)")
-            params.extend([f"%{title_query}%", f"%{title_query}%"])
-        else:
-            if artist_query:
-                query_parts.append("author ILIKE %s")
-                params.append(f"%{artist_query}%")
-                
-            if title_query:
-                query_parts.append("title ILIKE %s")
-                params.append(f"%{title_query}%")
 
-        if not query_parts:
+    try:
+        if not search_query:
             return []
 
-        where_clause = " AND ".join(query_parts)
-        
+        tokens = [t.lower() for t in search_query.strip().split() if t]
+        if not tokens:
+            return []
+
+        where_clauses = []
+        score_clauses = []
+        params = []
+
+        # Filtering
+        for token in tokens:
+            like_pattern = f"%{token}%"
+            where_clauses.append("search_u LIKE unaccent(%s)")
+            params.append(like_pattern)
+
+        # Weighted ordering
+        for token in tokens:
+            like_pattern = f"%{token}%"
+            score_clauses.append("""
+                (CASE WHEN lower(unaccent(title))  LIKE unaccent(%s) THEN 3 ELSE 0 END) +
+                (CASE WHEN lower(unaccent(author)) LIKE unaccent(%s) THEN 2 ELSE 0 END) +
+                (CASE WHEN lower(unaccent(album))  LIKE unaccent(%s) THEN 1 ELSE 0 END)
+            """)
+            params.extend([like_pattern, like_pattern, like_pattern])
+
+        where_sql = " AND ".join(where_clauses)
+        score_sql = " + ".join(score_clauses)
+
         query = f"""
             SELECT item_id, title, author, album
-            FROM score 
-            WHERE {where_clause}
-            ORDER BY author, title 
+            FROM score
+            WHERE {where_sql}
+            ORDER BY ({score_sql}) DESC,
+                     title,
+                     author,
+                     album
             LIMIT %s
         """
+
         params.append(limit)
-        
+
         cur.execute(query, tuple(params))
         results = [dict(row) for row in cur.fetchall()]
 
     except Exception as e:
-        logger.error(f"Error searching tracks with query '{title_query}', '{artist_query}': {e}", exc_info=True)
+        logger.error(
+            f"Error searching tracks with query '{search_query}': {e}",
+            exc_info=True
+        )
     finally:
         cur.close()
-    
-    return results
 
+    return results
 
 def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: dict = None):
     """

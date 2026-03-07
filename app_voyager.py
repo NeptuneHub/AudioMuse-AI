@@ -6,9 +6,9 @@ import logging
 from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT
 from tasks.voyager_manager import (
     find_nearest_neighbors_by_id, 
-  get_max_distance_for_id,
+    get_max_distance_for_id,
     create_playlist_from_ids,
-    search_tracks_by_title_and_artist,
+    search_tracks_unified,
     get_item_id_by_title_and_artist
 )
 
@@ -42,14 +42,9 @@ def search_tracks_endpoint():
     tags:
       - Similarity
     parameters:
-      - name: title
+      - name: search_query
         in: query
-        description: Partial or full title of the track.
-        schema:
-          type: string
-      - name: artist
-        in: query
-        description: Partial or full name of the artist.
+        description: Partial or full elements of songs' titles, artist or album names.
         schema:
           type: string
     responses:
@@ -72,17 +67,16 @@ def search_tracks_endpoint():
                     type: string
                     description: Album name or 'unknown' if missing
     """
-    title_query = request.args.get('title', '', type=str)
-    artist_query = request.args.get('artist', '', type=str)
+    search_query = request.args.get('search_query', '', type=str)
 
-    if not title_query and not artist_query:
+    if not search_query:
         return jsonify([])
 
-    if len(title_query) < 3 and len(artist_query) < 3:
+    if len(search_query) < 3:
         return jsonify([])
 
     try:
-        raw_results = search_tracks_by_title_and_artist(title_query, artist_query)
+        raw_results = search_tracks_unified(search_query)
         results = []
         for r in raw_results:
             # Be defensive in case the source returns non-dict entries
