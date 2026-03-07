@@ -36,3 +36,26 @@ curl -v \
   -H 'Content-Type: application/json' \
   -d '{}'
 ```
+
+## HTTPS
+
+To have a more secure Authentication running everything over HTTPS is needed to avoid that your password go in plain text. This part is something that relay from your infrastracture and not from AudioMuse-AI itself. For example if you're deploy everything on K3S thatr come with Traefik integrated, and you have certmanager with let's encrypt, you can add an IngressRoute like this:
+
+```
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: audiomuse-ingressroute
+  namespace: playlist
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`playlist.192.168.3.169.nip.io`)
+      kind: Rule
+      services:
+        - name: audiomuse-ai-flask-service
+          port: 8000
+  tls:
+    certResolver: letsencrypt-production
+```
