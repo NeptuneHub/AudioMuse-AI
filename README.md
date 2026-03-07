@@ -61,6 +61,18 @@ For a full list of configuration parameter take a look at [PARAMETERS](docs/PARA
 
 For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](docs/ARCHITECTURE.md) page.
 
+## 🔍 Troubleshooting Connection Issues
+
+If the web interface reports **"No new albums"** or if analysis appears to be silently failing, your media server (Jellyfin/Navidrome/Emby) may be unreachable from the container.
+
+**How to verify the connection:**
+Since detailed error messages are suppressed in the UI for security, you must check the backend worker logs to see the specific connection fault:
+
+1. Identify your container name (usually `audiomuse-ai-worker`).
+2. Run the following command:
+   ```bash
+   docker logs audiomuse-ai-worker
+
 **Prerequisites:**
 * Docker and Docker Compose installed
 * A running media server (Jellyfin, Navidrome, Lyrion, or Emby)
