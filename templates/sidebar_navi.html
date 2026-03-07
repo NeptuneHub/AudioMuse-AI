@@ -14,5 +14,5 @@
 <li><a href="{{ url_for('cron_bp.cron_page') }}" {% if active == 'cron' %}class="active"{% endif %}>Scheduled Tasks</a></li>
 <li><button type="button" id="dark-mode-toggle" aria-pressed="false" aria-label="Toggle dark mode">🌙 Dark Mode</button></li>
 {% if auth_enabled %}
-<li><button type="button" id="logout-btn" aria-label="Logout">🔓 Logout</button></li>
+<li><a href="#" id="logout-btn" aria-label="Logout">🔓 Logout</a></li>
 {% endif %}
