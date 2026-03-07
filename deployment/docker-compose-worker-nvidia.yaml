@@ -36,6 +36,10 @@ services:
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
+      API_TOKEN: "${API_TOKEN:-}"
+      AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
+      AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
+      JWT_SECRET: "${JWT_SECRET:-}"
     volumes:
       - temp-audio-worker:/app/temp_audio
     restart: unless-stopped
