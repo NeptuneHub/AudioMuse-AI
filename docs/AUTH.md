@@ -65,4 +65,5 @@ spec:
 Before enabling the authentication be sure that the plugin that use AudioMuse-AI support it.
 
 > Actually Jellyfin plugin `v0.1.51` (for Jellyfin 10.10.7) and `v0.1.52` (for jellyfin 10.11) already added this support
+> 
 > Navidrome plugin is still work in progress.
