@@ -1,11 +1,14 @@
 import os
 import psycopg2
 from psycopg2.extras import DictCursor
-from flask import Flask, jsonify, request, render_template, g
+from flask import Flask, jsonify, request, render_template, g, make_response, redirect, url_for
 import json
 import logging
 import threading
 import time
+import datetime
+import secrets
+import jwt as pyjwt
 
 # RQ imports
 from rq.job import Job, JobStatus
@@ -30,7 +33,8 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
   AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, OPENAI_SERVER_URL, OPENAI_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME, MISTRAL_MODEL_NAME, \
   TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, ALCHEMY_SUBTRACT_DISTANCE, \
   ENABLE_PROXY_FIX, \
-  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN  # --- NEW: Import path distance metric and alchemy defaults ---
+  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN, \
+  AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, API_TOKEN, JWT_SECRET
 
 if ENABLE_PROXY_FIX:
   # Werkzeug import for reverse proxy support
@@ -68,6 +72,19 @@ if ENABLE_PROXY_FIX:
 # Log the application version on startup
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
 
+# --- Authentication Setup ---
+AUTH_ENABLED = bool(AUDIOMUSE_USER and AUDIOMUSE_PASSWORD and API_TOKEN)
+
+# Finalize JWT_SECRET — auto-generate if not configured
+_jwt_secret = JWT_SECRET
+if not _jwt_secret and AUTH_ENABLED:
+    _jwt_secret = secrets.token_hex(32)
+    app.logger.warning(
+        "JWT_SECRET is not set. A random secret has been generated. "
+        "All browser sessions will be invalidated on container restart. "
+        "Set JWT_SECRET in your .env for persistent sessions."
+    )
+
 # --- Context Processor to Inject Version and Feature Flags ---
 @app.context_processor
 def inject_globals():
@@ -76,8 +93,50 @@ def inject_globals():
     return dict(
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
-        mulan_enabled=MULAN_ENABLED
+        mulan_enabled=MULAN_ENABLED,
+        auth_enabled=AUTH_ENABLED,
     )
+
+# --- Authentication Middleware ---
+@app.before_request
+def check_auth():
+    """
+    Enforce authentication on all routes when auth is enabled.
+    Skipped entirely when AUTH_ENABLED is False (legacy mode).
+    Accepts:
+      - Valid JWT in HttpOnly cookie  (browser sessions)
+      - Valid API_TOKEN Bearer header (M2M / scripts)
+    Public routes: /login, /auth, /logout, /static/*
+    """
+    if not AUTH_ENABLED:
+        return  # Auth disabled — zero impact on existing deployments
+
+    # Always allow public routes
+    public = ('/login', '/auth', '/logout')
+    if request.path in public or request.path.startswith('/static/'):
+        return
+
+    # Check 1: valid JWT cookie (browser users)
+    token = request.cookies.get('audiomuse_jwt')
+    if token:
+        try:
+            pyjwt.decode(token, _jwt_secret, algorithms=['HS256'])
+            return  # Valid session
+        except pyjwt.ExpiredSignatureError:
+            pass  # Fall through to 401/redirect
+        except pyjwt.InvalidTokenError:
+            pass  # Fall through to 401/redirect
+
+    # Check 2: valid Bearer token (M2M callers)
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer ') and auth_header[7:] == API_TOKEN:
+        return  # Valid M2M token
+
+    # Not authenticated
+    if request.path.startswith('/api/'):
+        return jsonify({"error": "Unauthorized"}), 401
+    else:
+        return redirect(url_for('login_page'))
 
 # --- Swagger Setup ---
 app.config['SWAGGER'] = {
@@ -98,6 +157,68 @@ with app.app_context():
 
 
 # --- API Endpoints ---
+
+# --- Auth Routes ---
+@app.route('/login')
+def login_page():
+    """Serve the login page. Redirects to / if already authenticated."""
+    if not AUTH_ENABLED:
+        return redirect(url_for('index'))
+    token = request.cookies.get('audiomuse_jwt')
+    if token:
+        try:
+            pyjwt.decode(token, _jwt_secret, algorithms=['HS256'])
+            return redirect(url_for('index'))
+        except pyjwt.InvalidTokenError:
+            pass
+    return render_template('login.html', title='Login — AudioMuse-AI')
+
+@app.route('/auth', methods=['POST'])
+def auth_endpoint():
+    """
+    Validate credentials and issue a JWT session cookie.
+    Body: { "user": "...", "password": "..." }
+    On success: sets HttpOnly JWT cookie, returns 200.
+    On failure: returns 401.
+    The API_TOKEN is NEVER returned in the response body.
+    """
+    if not AUTH_ENABLED:
+        return jsonify({"error": "Auth not configured"}), 404
+
+    data = request.get_json(silent=True) or {}
+    user = data.get('user', '')
+    password = data.get('password', '')
+
+    if user != AUDIOMUSE_USER or password != AUDIOMUSE_PASSWORD:
+        app.logger.warning(f"Failed login attempt for user: {user!r}")
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    # Issue JWT — new token at every login
+    now = datetime.datetime.now(datetime.timezone.utc)
+    payload = {
+        'sub': user,
+        'iat': now,
+        'exp': now + datetime.timedelta(hours=8),
+    }
+    token = pyjwt.encode(payload, _jwt_secret, algorithm='HS256')
+
+    resp = make_response(jsonify({"status": "ok"}), 200)
+    resp.set_cookie(
+        'audiomuse_jwt',
+        token,
+        httponly=True,           # JS cannot read this cookie
+        samesite='Strict',       # CSRF protection
+        secure=False,            # Set to True when behind HTTPS (Caddy/Traefik handle TLS)
+        max_age=8 * 3600         # 8 hours, matches JWT expiry
+    )
+    return resp
+
+@app.route('/logout', methods=['POST'])
+def logout_endpoint():
+    """Clear the JWT session cookie and redirect to /login."""
+    resp = make_response(jsonify({"status": "logged_out"}), 200)
+    resp.delete_cookie('audiomuse_jwt', samesite='Strict')
+    return resp
 
 @app.route('/')
 def index():
