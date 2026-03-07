@@ -59,3 +59,7 @@ spec:
   tls:
     certResolver: letsencrypt-production
 ```
+
+## Plugin 
+
+The Jellyfin and Navidrome support of the API TOKEN is still work in progress. Enabling the authentication layer now will block the functionality of the plugin.
