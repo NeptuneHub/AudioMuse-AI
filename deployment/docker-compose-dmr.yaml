@@ -49,6 +49,10 @@ services:
       OPENAI_SERVER_URL: "http://172.17.0.1:12434/engines/llama.cpp/v1/chat/completions" #This is the API endpoint for local DMR model from within the Docker container. 
       OPENAI_MODEL_NAME: "ai/qwen3:0.6B-Q4_0"
       TEMP_DIR: "/app/temp_audio"
+      API_TOKEN: "${API_TOKEN:-}"
+      AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
+      AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
+      JWT_SECRET: "${JWT_SECRET:-}"
     # Use tmpfs to process audio files in memory for better performance. this reduuces disk I/O but might use more RAM.
     # Mounted directories are not shared between containers, so each container gets its own tmpfs instance.
     # Increase tmpfs size for very large audio files as needed.
@@ -86,6 +90,10 @@ services:
       OPENAI_SERVER_URL: "http://172.17.0.1:12434/engines/llama.cpp/v1/chat/completions" #This is the API endpoint for local DMR model from within the Docker container. 
       OPENAI_MODEL_NAME: "ai/qwen3:0.6B-Q4_0"
       TEMP_DIR: "/app/temp_audio"
+      API_TOKEN: "${API_TOKEN:-}"
+      AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
+      AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
+      JWT_SECRET: "${JWT_SECRET:-}"
     # Use tmpfs to process audio files in memory for better performance. this reduuces disk I/O but might use more RAM.
     # Mounted directories are not shared between containers, so each container gets its own tmpfs instance.
     # Increase tmpfs size for very large audio files as needed.

@@ -51,6 +51,12 @@ data:
   TEMP_DIR: "/app/temp_audio" # Updated to match code changes
   # Timezone applied inside containers. Default is UTC but you may set this in the ConfigMap or via deployment overrides
   TZ: "UTC"
+  # --- Authentication (optional) ---
+  # Set all three to enable authentication. Leave blank to disable (legacy mode).
+  AUDIOMUSE_USER: ""
+  AUDIOMUSE_PASSWORD: ""
+  API_TOKEN: ""
+  JWT_SECRET: ""
 ---
 apiVersion: apps/v1
 kind: Deployment
