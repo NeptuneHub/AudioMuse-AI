@@ -37,6 +37,17 @@ stringData:
   GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE" # Replace with your actual Gemini API Key
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: audiomuse-ai-auth
+  namespace: playlist
+stringData:
+  AUDIOMUSE_USER: ""
+  AUDIOMUSE_PASSWORD: ""
+  API_TOKEN: ""
+  JWT_SECRET: ""
+---
+
 kind: ConfigMap
 metadata:
   name: audiomuse-ai-config
@@ -51,12 +62,6 @@ data:
   TEMP_DIR: "/app/temp_audio" # Updated to match code changes
   # Timezone applied inside containers. Default is UTC but you may set this in the ConfigMap or via deployment overrides
   TZ: "UTC"
-  # --- Authentication (optional) ---
-  # Set all three to enable authentication. Leave blank to disable (legacy mode).
-  AUDIOMUSE_USER: ""
-  AUDIOMUSE_PASSWORD: ""
-  API_TOKEN: ""
-  JWT_SECRET: ""
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -265,6 +270,8 @@ spec:
         envFrom:
         - configMapRef:
             name: audiomuse-ai-config
+        - secretRef:
+            name: audiomuse-ai-auth
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -379,6 +386,8 @@ spec:
         envFrom:
         - configMapRef:
             name: audiomuse-ai-config
+        - secretRef:
+            name: audiomuse-ai-auth
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

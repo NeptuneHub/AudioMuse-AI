@@ -24,6 +24,18 @@ stringData:
   GEMINI_API_KEY: "YOUR-GEMINI_API_KEY"
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: audiomuse-ai-auth
+  namespace: test
+stringData:
+  AUDIOMUSE_USER: ""
+  AUDIOMUSE_PASSWORD: ""
+  API_TOKEN: ""
+  JWT_SECRET: ""
+---
+
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: audiomuse-ai-config
@@ -36,11 +48,6 @@ data:
   REDIS_URL: "redis://redis-service.test:6379/0"
   CLAP_ENABLED: "true" # Enable CLAP text search (set to "false" for slower systems)
   TEMP_DIR: "/app/temp_audio"
-  # Authentication (optional) – leave blank to disable
-  AUDIOMUSE_USER: ""
-  AUDIOMUSE_PASSWORD: ""
-  API_TOKEN: ""
-  JWT_SECRET: ""
   # Timezone for containers; default UTC
   TZ: "UTC"
 ---
@@ -216,6 +223,8 @@ spec:
         envFrom:
         - configMapRef:
             name: audiomuse-ai-config
+        - secretRef:
+            name: audiomuse-ai-auth
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -310,6 +319,8 @@ spec:
         envFrom:
         - configMapRef:
             name: audiomuse-ai-config
+        - secretRef:
+            name: audiomuse-ai-auth
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

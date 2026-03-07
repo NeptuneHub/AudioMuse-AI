@@ -3,8 +3,17 @@
 Authentication is off by default; the server runs in legacy (open) mode when
 any of `AUDIOMUSE_USER`, `AUDIOMUSE_PASSWORD` or `API_TOKEN` are empty.
 
-To enable auth set all three environment variables (for example in a `.env` or
-Kubernetes ConfigMap/secret):
+To enable auth set all three environment variables (for example in a `.env`).
+If you deploy to Kubernetes, **do not place these values in a ConfigMap**; use a
+Secret resource so the credentials aren’t stored in plaintext imagery or git
+history:
+
+```yaml
+AUDIOMUSE_USER=alice
+AUDIOMUSE_PASSWORD=secret123
+API_TOKEN=foo-bar-baz
+JWT_SECRET=<random-string>
+```
 
 ```
 AUDIOMUSE_USER=alice
