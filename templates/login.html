@@ -20,14 +20,19 @@
     <style>
         /* Minimal login card — centered, consistent with app theme */
         body, html {
+            width: 100%;
             height: 100%;
             margin: 0;
             display: flex;
             align-items: center;
             justify-content: center;
+            /* use theme variables so dark mode is respected */
+            background: var(--bg-body, #fff);
+            color: var(--text-main, #000);
         }
         .login-container {
-            background: var(--card-bg, #fff);
+            background: var(--bg-card, #fff);
+            color: var(--text-main, #000);
             border: 1px solid var(--border-color, #ddd);
             border-radius: 8px;
             padding: 2.5rem 2rem;
@@ -42,6 +47,7 @@
             margin: 0;
             font-size: 1.5rem;
             text-align: center;
+            color: inherit;
         }
         .login-container p.subtitle {
             margin: 0;
@@ -61,8 +67,8 @@
             border: 1px solid var(--border-color, #ccc);
             border-radius: 4px;
             font-size: 1rem;
-            background: var(--input-bg, #fff);
-            color: var(--text-color, #222);
+            background: var(--bg-input, #fff);
+            color: var(--text-main, #222);
             box-sizing: border-box;
         }
         .login-container button[type="submit"] {
