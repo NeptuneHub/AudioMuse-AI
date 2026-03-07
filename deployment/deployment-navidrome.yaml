@@ -49,6 +49,11 @@ data:
   REDIS_URL: "redis://redis-service.playlist:6379/0"
   CLAP_ENABLED: "true" # Enable CLAP text search (set to "false" for slower systems)
   TEMP_DIR: "/app/temp_audio"
+  # Authentication (optional) – leave blank to disable
+  AUDIOMUSE_USER: ""
+  AUDIOMUSE_PASSWORD: ""
+  API_TOKEN: ""
+  JWT_SECRET: ""
   # Timezone for containers; default UTC
   TZ: "UTC"
 ---
