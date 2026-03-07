@@ -54,6 +54,11 @@ services:
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       CLAP_ENABLED: "${CLAP_ENABLED:-true}"
       TEMP_DIR: "/app/temp_audio"
+      # Authentication (optional) – leave blank to disable
+      API_TOKEN: "${API_TOKEN:-}"
+      AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
+      AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
+      JWT_SECRET: "${JWT_SECRET:-}"
     volumes:
       - temp-audio-flask:/app/temp_audio
     depends_on:
@@ -99,6 +104,11 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
       TEMP_DIR: "/app/temp_audio"
+      # Authentication (optional) – leave blank to disable
+      API_TOKEN: "${API_TOKEN:-}"
+      AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
+      AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
+      JWT_SECRET: "${JWT_SECRET:-}"
     volumes:
       - temp-audio-worker:/app/temp_audio
     depends_on:

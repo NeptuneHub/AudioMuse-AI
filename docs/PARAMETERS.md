@@ -37,6 +37,16 @@ The **mandatory** parameter that you need to change from the example are this:
 | `MISTRAL_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MISTRAL) Your Mistral API Key.      | *(N/A - from Secret)* |
 | `OPENAI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is OPENAI) Your OpenAI / OpenRouter API Key. | *(N/A - from Secret)* |
 
+The following additional environment variables control authentication.  Leave
+all four empty to disable auth (default).
+
+| Parameter            | Description                                          | Default |
+|----------------------|------------------------------------------------------|---------|
+| `AUDIOMUSE_USER`     | Username for web UI login                            | ``      |
+| `AUDIOMUSE_PASSWORD` | Password for web UI login                            | ``      |
+| `API_TOKEN`          | Bearer token for API/worker requests                 | ``      |
+| `JWT_SECRET`         | HMAC key used to sign session JWTs                   | ``      |
+
 
 These parameters can be left as-is:
 
