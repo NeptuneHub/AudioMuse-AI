@@ -995,6 +995,8 @@ def compute_other_features_from_clap(audio_embedding: np.ndarray, label_embeddin
     pre-computed CLAP text embeddings for each feature label.
     
     Uses cosine similarity (dot product since both embeddings are L2-normalized).
+    Maps from cosine-similarity range [-1, 1] to probability-like [0, 1] using
+    (similarity + 1) / 2  — matching the devel-DCLAP branch behaviour.
     
     Args:
         audio_embedding: 512-dim normalized CLAP audio embedding
@@ -1005,8 +1007,8 @@ def compute_other_features_from_clap(audio_embedding: np.ndarray, label_embeddin
     """
     result = {}
     for label, text_emb in label_embeddings.items():
-        # Cosine similarity = dot product for L2-normalized vectors
+        # Cosine similarity = dot product for L2-normalized vectors (range [-1, 1])
         similarity = float(np.dot(audio_embedding, text_emb))
-        # Clip to [0, 1] range (matching old softmax probability range)
-        result[label] = max(0.0, min(1.0, similarity))
+        # Map cosine similarity [-1, 1] → probability-like [0, 1]
+        result[label] = (similarity + 1.0) / 2.0
     return result

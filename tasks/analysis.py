@@ -489,9 +489,13 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             else:
                 raise
         
-        averaged_logits = np.mean(mood_logits, axis=0)
-        # Apply sigmoid to convert raw model outputs (logits) into probabilities
-        final_mood_predictions = sigmoid(averaged_logits)
+        # Apply sigmoid per-patch first, then average probabilities.
+        # The old Essentia model (msd-msd-musicnn-1.onnx) had sigmoid built into
+        # the ONNX graph, so each patch output was already a probability that got
+        # averaged.  The new musicnn_prediction.onnx outputs raw logits, so we
+        # replicate the old behaviour: sigmoid(each patch) → mean(probabilities).
+        mood_probs_per_patch = sigmoid(mood_logits)          # (num_patches, 50)
+        final_mood_predictions = np.mean(mood_probs_per_patch, axis=0)  # (50,)
 
         moods = {label: float(score) for label, score in zip(mood_labels_list, final_mood_predictions)}
 
@@ -522,8 +526,8 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         del embedding_feed_dict, prediction_feed_dict
         if 'mood_logits' in locals():
             del mood_logits
-        if 'averaged_logits' in locals():
-            del averaged_logits
+        if 'mood_probs_per_patch' in locals():
+            del mood_probs_per_patch
         import gc
         gc.collect()
         # Use comprehensive cleanup for successful analysis
@@ -827,8 +831,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         try:
                             clap_embedding_for_track, _, _ = clap_analyze(path)
                             if clap_embedding_for_track is not None:
-                                save_clap_embedding(item['Id'], clap_embedding_for_track)
-                                logger.info(f"  - CLAP embedding saved (512-dim)")
+                                # NOTE: Don't save CLAP embedding yet — the 'score' row
+                                # must exist first (FK constraint).  We save it after
+                                # save_track_analysis_and_embedding() below.
                                 track_processed = True
                             
                             # Conditionally unload CLAP model based on PER_SONG_MODEL_RELOAD
@@ -869,7 +874,16 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         logger.info(f"  - Top Moods: {top_moods}")
                         logger.info(f"  - Other Features: {other_features}")
                         
+                        # Save MusiCNN score+embedding first (creates the 'score' row)
                         save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), musicnn_analysis['tempo'], musicnn_analysis['key'], musicnn_analysis['scale'], top_moods, musicnn_embedding, energy=musicnn_analysis['energy'], other_features=other_features, album=item.get('Album', None))
+                    
+                    # Save CLAP embedding AFTER score row exists (FK: clap_embedding.item_id → score.item_id)
+                    if clap_embedding_for_track is not None and needs_clap:
+                        try:
+                            save_clap_embedding(item['Id'], clap_embedding_for_track)
+                            logger.info(f"  - CLAP embedding saved (512-dim)")
+                        except Exception as e:
+                            logger.warning(f"  - Failed to save CLAP embedding: {e}")
                     
                     # MuLan analysis (only if enabled AND needed)
                     if needs_mulan and MULAN_ENABLED:
