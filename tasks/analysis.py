@@ -490,8 +490,8 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
                 raise
         
         # Double-sigmoid to replicate old production behaviour:
-        # The old Essentia model (msd-msd-musicnn-1.onnx) had sigmoid built into
-        # its ONNX graph, so each patch output was already a probability [0-1].
+        # The old Essentia-exported model (msd-msd-musicnn-1.onnx) had sigmoid built
+        # into its ONNX graph, so each patch output was already a probability [0-1].
         # The old code then applied sigmoid(mean(those probs)) on top — a
         # "double sigmoid" that pushed values into the ~0.50-0.56 range.
         # The new musicnn_prediction.onnx outputs raw logits, so we replicate
@@ -583,7 +583,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         else:
             logger.info("CLAP not available - other_features will be zeros")
         
-        # Essentia models will be lazy-loaded on first song that needs MusiCNN analysis
+        # MusiCNN models will be lazy-loaded on first song that needs analysis
         onnx_sessions = None
         
         # Initialize SessionRecycler to prevent cumulative memory leaks
@@ -711,9 +711,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     
                     # MusiCNN analysis (only if needed)
                     if needs_musicnn:
-                        # Lazy-load Essentia models on first song that needs analysis
+                        # Lazy-load MusiCNN models on first song that needs analysis
                         if onnx_sessions is None:
-                            logger.info(f"Lazy-loading Essentia models for album: {album_name}")
+                            logger.info(f"Lazy-loading MusiCNN models for album: {album_name}")
                             onnx_sessions = {}
                             available_providers = ort.get_available_providers()
                             
@@ -745,9 +745,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                             model_path,
                                             providers=['CPUExecutionProvider']
                                         )
-                                logger.info(f"✓ Loaded {len(onnx_sessions)} Essentia models for album reuse")
+                                logger.info(f"✓ Loaded {len(onnx_sessions)} MusiCNN models for album reuse")
                             except Exception as e:
-                                logger.error(f"Failed to load Essentia models: {e}")
+                                logger.error(f"Failed to load MusiCNN models: {e}")
                                 onnx_sessions = None
                         
                         # Check if sessions should be recycled to prevent cumulative memory leaks
@@ -793,9 +793,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                             model_path,
                                             providers=['CPUExecutionProvider']
                                         )
-                                logger.info(f"✓ Recycled {len(onnx_sessions)} Essentia model sessions")
+                                logger.info(f"✓ Recycled {len(onnx_sessions)} MusiCNN model sessions")
                             except Exception as e:
-                                logger.error(f"Failed to recycle Essentia models: {e}")
+                                logger.error(f"Failed to recycle MusiCNN models: {e}")
                                 onnx_sessions = None
                             
                             # Mark as recycled
@@ -912,7 +912,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             
             # Cleanup all models after album analysis to free memory
             if onnx_sessions:
-                logger.info(f"Cleaning up {len(onnx_sessions)} Essentia model sessions")
+                logger.info(f"Cleaning up {len(onnx_sessions)} MusiCNN model sessions")
                 for model_name, session in onnx_sessions.items():
                     cleanup_onnx_session(session, model_name)
                 onnx_sessions = None  # Clear reference but don't delete the variable
@@ -949,7 +949,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         finally:
             # ✅ Always cleanup, even on error or early return
             if onnx_sessions:
-                logger.info(f"Cleaning up {len(onnx_sessions)} Essentia model sessions (finally block)")
+                logger.info(f"Cleaning up {len(onnx_sessions)} MusiCNN model sessions (finally block)")
                 for model_name, session in onnx_sessions.items():
                     try:
                         cleanup_onnx_session(session, model_name)
