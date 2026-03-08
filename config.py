@@ -260,8 +260,8 @@ MOOD_LABELS = [
 
 TOP_N_MOODS = int(os.environ.get("TOP_N_MOODS", "5"))  # Number of top moods to consider (configurable via env)
 TOP_N_OTHER_FEATURES = int(os.environ.get("TOP_N_OTHER_FEATURES", "2")) # Number of top "other features" to consider for clustering vector
-EMBEDDING_MODEL_PATH = "/app/model/msd-musicnn-1.onnx"
-PREDICTION_MODEL_PATH = "/app/model/msd-msd-musicnn-1.onnx"
+EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/app/model/musicnn_embedding.onnx")
+PREDICTION_MODEL_PATH = os.environ.get("PREDICTION_MODEL_PATH", "/app/model/musicnn_prediction.onnx")
 EMBEDDING_DIMENSION = 200
 
 # --- CLAP Model Constants (for text search) ---
@@ -382,14 +382,10 @@ ALCHEMY_SUBTRACT_DISTANCE_ANGULAR = float(os.environ.get("ALCHEMY_SUBTRACT_DISTA
 ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN = float(os.environ.get("ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN", "5.0"))
 
 
-# --- Other Essentia Model Paths ---
-# Paths for models used in predict_other_models (VGGish-based)
-DANCEABILITY_MODEL_PATH = os.environ.get("DANCEABILITY_MODEL_PATH", "/app/model/danceability-msd-musicnn-1.onnx") # Example, adjust if different
-AGGRESSIVE_MODEL_PATH = os.environ.get("AGGRESSIVE_MODEL_PATH", "/app/model/mood_aggressive-msd-musicnn-1.onnx")
-HAPPY_MODEL_PATH = os.environ.get("HAPPY_MODEL_PATH", "/app/model/mood_happy-msd-musicnn-1.onnx")
-PARTY_MODEL_PATH = os.environ.get("PARTY_MODEL_PATH", "/app/model/mood_party-msd-musicnn-1.onnx")
-RELAXED_MODEL_PATH = os.environ.get("RELAXED_MODEL_PATH", "/app/model/mood_relaxed-msd-musicnn-1.onnx")
-SAD_MODEL_PATH = os.environ.get("SAD_MODEL_PATH", "/app/model/mood_sad-msd-musicnn-1.onnx")
+# --- Other Feature Labels (computed via CLAP text-audio similarity) ---
+# These features are computed by comparing CLAP audio embeddings against
+# cached CLAP text embeddings for each label (no separate ONNX models needed).
+# Mood-specific models (danceability, mood_aggressive, etc.) have been removed.
 
 # --- Energy Normalization Range ---
 ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.01"))
@@ -399,6 +395,9 @@ ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.15"))
 TEMPO_MIN_BPM = float(os.getenv("TEMPO_MIN_BPM", "40.0"))
 TEMPO_MAX_BPM = float(os.getenv("TEMPO_MAX_BPM", "200.0"))
 OTHER_FEATURE_LABELS = ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']
+
+# Redis cache key for CLAP text embeddings of OTHER_FEATURE_LABELS
+CLAP_OTHER_FEATURES_REDIS_KEY = os.environ.get("CLAP_OTHER_FEATURES_REDIS_KEY", "audiomuse:clap_other_feature_text_embeddings")
 
 # --- Sonic Fingerprint Constants ---
 SONIC_FINGERPRINT_TOP_N_SONGS = int(os.environ.get("SONIC_FINGERPRINT_TOP_N_SONGS", "20"))

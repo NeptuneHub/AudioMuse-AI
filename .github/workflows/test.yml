@@ -28,16 +28,20 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r test/requirements.txt
 
-    - name: Download CLAP models
+    - name: Download models
       run: |
-        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"
+        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"
         mkdir -p test/models
         echo "Downloading CLAP audio model..."
         curl -L "${base_url}/clap_audio_model.onnx" -o "test/models/clap_audio_model.onnx"
         echo "Downloading CLAP text model..."
         curl -L "${base_url}/clap_text_model.onnx" -o "test/models/clap_text_model.onnx"
-        echo "CLAP models downloaded successfully"
-        ls -lh test/models/clap_*.onnx
+        echo "Downloading MusiCNN embedding model..."
+        curl -L "${base_url}/musicnn_embedding.onnx" -o "test/models/musicnn_embedding.onnx"
+        echo "Downloading MusiCNN prediction model..."
+        curl -L "${base_url}/musicnn_prediction.onnx" -o "test/models/musicnn_prediction.onnx"
+        echo "Models downloaded successfully"
+        ls -lh test/models/
 
     - name: Verify test files exist
       run: |

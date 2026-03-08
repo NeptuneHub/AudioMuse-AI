@@ -528,6 +528,27 @@ def save_clap_embedding(item_id, clap_embedding_vector):
         cur.close()
 
 
+def get_clap_embedding(item_id):
+    """Load CLAP embedding for a track from the database.
+    
+    Returns:
+        numpy array (512-dim float32) or None if not found
+    """
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT embedding FROM clap_embedding WHERE item_id = %s", (item_id,))
+        row = cur.fetchone()
+        if row and row[0]:
+            return np.frombuffer(row[0], dtype=np.float32)
+        return None
+    except Exception as e:
+        logger.error(f"Error loading CLAP embedding for {item_id}: {e}")
+        return None
+    finally:
+        cur.close()
+
+
 def save_mulan_embedding(item_id, mulan_embedding_vector):
     """Saves MuLan embedding for a track."""
     if mulan_embedding_vector is None or (isinstance(mulan_embedding_vector, np.ndarray) and mulan_embedding_vector.size == 0):
