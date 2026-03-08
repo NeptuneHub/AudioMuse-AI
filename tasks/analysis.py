@@ -489,13 +489,15 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             else:
                 raise
         
-        # Apply sigmoid per-patch first, then average probabilities.
+        # Double-sigmoid to replicate old production behaviour:
         # The old Essentia model (msd-msd-musicnn-1.onnx) had sigmoid built into
-        # the ONNX graph, so each patch output was already a probability that got
-        # averaged.  The new musicnn_prediction.onnx outputs raw logits, so we
-        # replicate the old behaviour: sigmoid(each patch) → mean(probabilities).
+        # its ONNX graph, so each patch output was already a probability [0-1].
+        # The old code then applied sigmoid(mean(those probs)) on top — a
+        # "double sigmoid" that pushed values into the ~0.50-0.56 range.
+        # The new musicnn_prediction.onnx outputs raw logits, so we replicate
+        # the full old pipeline: sigmoid(logits) → mean → sigmoid.
         mood_probs_per_patch = sigmoid(mood_logits)          # (num_patches, 50)
-        final_mood_predictions = np.mean(mood_probs_per_patch, axis=0)  # (50,)
+        final_mood_predictions = sigmoid(np.mean(mood_probs_per_patch, axis=0))  # (50,)
 
         moods = {label: float(score) for label, score in zip(mood_labels_list, final_mood_predictions)}
 
