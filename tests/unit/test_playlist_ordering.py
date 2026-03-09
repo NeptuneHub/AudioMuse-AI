@@ -10,20 +10,13 @@ Tests verify:
 """
 import pytest
 from unittest.mock import Mock, patch, MagicMock
-import importlib.util
 
-from tests.conftest import make_dict_row, make_mock_connection
+from tests.conftest import _import_module, make_dict_row, make_mock_connection
 
 
 def _load_playlist_ordering():
     """Load playlist_ordering module via importlib to bypass tasks/__init__.py."""
-    spec = importlib.util.spec_from_file_location(
-        'playlist_ordering',
-        'C:/Users/rendy/vscode/AudioMuse-AI/tasks/playlist_ordering.py'
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return _import_module('tasks.playlist_ordering', 'tasks/playlist_ordering.py')
 
 
 class TestKeyDistance:
