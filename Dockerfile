@@ -31,16 +31,12 @@ RUN set -ux; \
     rm -rf /var/lib/apt/lists/*
 
 # Download ONNX models with diagnostics and retry logic
+# v4.0.0-model: Open-source MusiCNN models exported directly from the musicnn project
+# Mood-specific models removed (other features now computed via CLAP text embeddings)
 RUN set -eux; \
     urls=( \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/danceability-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_aggressive-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_happy-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_party-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_relaxed-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_sad-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/msd-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_embedding.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_prediction.onnx" \
     ); \
     mkdir -p /app/model; \
     for u in "${urls[@]}"; do \
@@ -227,7 +223,7 @@ COPY --from=models /app/model/*.onnx /app/model/
 # - Text model (~478MB): For text search in Flask containers
 # - Combined: ~746MB (vs old combined model ~746MB)
 RUN set -eux; \
-    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
     arch=$(uname -m); \
     echo "Architecture detected: $arch - Downloading CLAP split ONNX models..."; \
     \

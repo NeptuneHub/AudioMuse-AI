@@ -276,8 +276,8 @@ class TestAnalyzeAlbumMemoryCleanup:
                 result = analyze_album_task("album_123", "Test Album", 5, None)
         
         # Verify session cleanup was called for all loaded sessions
-        # Should be called 8 times (embedding, prediction, and 6 secondary models)
-        assert mock_session_cleanup.call_count >= 8
+        # Should be called 2 times (embedding + prediction; secondary models removed in v4.0.0)
+        assert mock_session_cleanup.call_count >= 2
         
         # Verify CUDA cleanup was called
         assert mock_cuda_cleanup.called
