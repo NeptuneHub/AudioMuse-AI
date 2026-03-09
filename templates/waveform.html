@@ -71,25 +71,17 @@
         <input type="hidden" id="selected_item_id" name="item_id">
         <div class="param-group">
             <div class="autocomplete-container">
-                <label for="artist_search" class="label-with-tooltip">
-                    Artist:
-                    <span class="info-tooltip" tabindex="0">
-                        <span class="info-icon"></span>
-                        <span class="tooltip-text">Filter by artist name to narrow down your track search. Start typing to see matching artists from your library.</span>
-                    </span>
-                </label>
-                <input type="text" id="artist_search" name="artist_search" placeholder="Start typing artist name..." autocomplete="off">
-            </div>
-
-            <div class="autocomplete-container">
-                <label for="title_search" class="label-with-tooltip">
-                    Track Title:
+                <label for="search_query" class="label-with-tooltip">
+                    Song, Artist or Album name:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
                         <span class="tooltip-text">Search for the song you want to visualize. The waveform shows the audio amplitude over time, helping you see the song's structure (intro, verse, chorus, etc.).</span>
                     </span>
                 </label>
-                <input type="text" id="title_search" name="title_search" placeholder="Start typing track title..." autocomplete="off">
+                <input type="text" id="search_query" name="search_query" placeholder="Start typing..." autocomplete="off">
+                <div id="title_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                <div id="artist_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                <div id="album_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
                 <div id="autocomplete-results" class="autocomplete-results hidden"></div>
             </div>
         </div>
@@ -114,9 +106,11 @@
             let searchTimeout;
 
             const waveformForm = document.getElementById('waveform-form');
-            const artistInput = document.getElementById('artist_search');
-            const titleInput = document.getElementById('title_search');
+            const searchInput = document.getElementById('search_query');
             const selectedItemIdInput = document.getElementById('selected_item_id');
+            const titleDisplayDiv = document.getElementById('title_display');
+            const artistDiv = document.getElementById('artist_display');
+            const albumDiv = document.getElementById('album_display');
             const autocompleteResults = document.getElementById('autocomplete-results');
             const waveformContainer = document.getElementById('waveform-container');
             const waveformCanvas = document.getElementById('waveform-canvas');
@@ -129,16 +123,15 @@
             const handleSearchInput = () => {
                 clearTimeout(searchTimeout);
                 searchTimeout = setTimeout(async () => {
-                    const artistQuery = artistInput.value.trim();
-                    const titleQuery = titleInput.value.trim();
+                    const searchQuery = searchInput.value.trim();
 
-                    if (artistQuery.length < 3 && titleQuery.length < 3) {
+                    if (searchQuery.length < 3) {
                         hideAutocomplete();
                         return;
                     }
 
                     try {
-                        const params = new URLSearchParams({ artist: artistQuery, title: titleQuery });
+                        const params = new URLSearchParams({ search_query: searchQuery });
                         const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
                         const tracks = await response.json();
                         showAutocomplete(tracks);
@@ -173,16 +166,16 @@
             };
 
             const selectTrack = (track) => {
-                artistInput.value = track.author;
-                titleInput.value = track.title;
                 selectedItemIdInput.value = track.item_id;
+                titleDisplayDiv.textContent = 'Title: ' + track.title;
+                artistDiv.textContent = 'Artist: ' + track.author;
+                albumDiv.textContent = 'Album: ' + (track.album || '');
                 // Store album for later use
                 selectedItemIdInput.dataset.album = track.album || '';
                 hideAutocomplete();
             };
 
-            artistInput.addEventListener('input', handleSearchInput);
-            titleInput.addEventListener('input', handleSearchInput);
+            searchInput.addEventListener('input', handleSearchInput);
             document.addEventListener('click', (e) => {
                 if (!e.target.closest('.autocomplete-container')) {
                     hideAutocomplete();
