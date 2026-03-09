@@ -47,6 +47,16 @@ def search_tracks_endpoint():
         description: Partial or full elements of songs' titles, artist or album names.
         schema:
           type: string
+      - name: title
+        in: query
+        description: (Legacy) Partial or full title of the track. Used as fallback when search_query is absent.
+        schema:
+          type: string
+      - name: artist
+        in: query
+        description: (Legacy) Partial or full name of the artist. Used as fallback when search_query is absent.
+        schema:
+          type: string
     responses:
       200:
         description: A list of matching tracks.
@@ -68,6 +78,13 @@ def search_tracks_endpoint():
                     description: Album name or 'unknown' if missing
     """
     search_query = request.args.get('search_query', '', type=str)
+
+    # Backward compatibility: support legacy 'title' and 'artist' params
+    # so external apps using the old API continue to work.
+    if not search_query:
+        legacy_title = request.args.get('title', '', type=str).strip()
+        legacy_artist = request.args.get('artist', '', type=str).strip()
+        search_query = f"{legacy_artist} {legacy_title}".strip()
 
     if not search_query:
         return jsonify([])
