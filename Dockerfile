@@ -202,8 +202,12 @@ RUN set -eux; \
 
 # Copy Python packages from libraries stage
 COPY --from=libraries /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/
+# Copy console entrypoints (gunicorn, etc.) from libraries stage
+COPY --from=libraries /usr/local/bin/ /usr/local/bin/
 # Copy HuggingFace cache (RoBERTa model) from libraries stage
 COPY --from=libraries /app/.cache/huggingface/ /app/.cache/huggingface/
+# Copy console entrypoints (gunicorn, etc.) from libraries stage
+COPY --from=libraries /usr/local/bin/ /usr/local/bin/
 
 # Verify cache was copied correctly
 RUN ls -lah /app/.cache/huggingface/ && \
@@ -384,4 +388,4 @@ ENV PYTHONPATH=/usr/local/lib/python3/dist-packages:/app
 EXPOSE 8000
 
 WORKDIR /workspace
-CMD ["bash", "-c", "if [ -n \"$TZ\" ] && [ -f \"/usr/share/zoneinfo/$TZ\" ]; then ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone; elif [ -n \"$TZ\" ]; then echo \"Warning: timezone '$TZ' not found in /usr/share/zoneinfo\" >&2; fi; if [ \"$SERVICE_TYPE\" = \"worker\" ]; then echo 'Starting worker processes via supervisord...' && /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf; else echo 'Starting web service...' && python3 /app/app.py; fi"]
+CMD ["bash", "-c", "if [ -n \"$TZ\" ] && [ -f \"/usr/share/zoneinfo/$TZ\" ]; then ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone; elif [ -n \"$TZ\" ]; then echo \"Warning: timezone '$TZ' not found in /usr/share/zoneinfo\" >&2; fi; if [ \"$SERVICE_TYPE\" = \"worker\" ]; then echo 'Starting worker processes via supervisord...' && /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf; else echo 'Starting web service...' && gunicorn --bind 0.0.0.0:8000 --workers 1 --timeout 120 app:app; fi"]
