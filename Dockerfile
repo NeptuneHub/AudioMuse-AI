@@ -208,6 +208,8 @@ RUN set -eux; \
 COPY --from=libraries /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/
 # Copy HuggingFace cache (RoBERTa model) from libraries stage
 COPY --from=libraries /app/.cache/huggingface/ /app/.cache/huggingface/
+# Copy console entrypoints (gunicorn, etc.) from libraries stage
+COPY --from=libraries /usr/local/bin/ /usr/local/bin/
 
 # Verify cache was copied correctly
 RUN ls -lah /app/.cache/huggingface/ && \
