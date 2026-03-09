@@ -1198,87 +1198,9 @@ class TestOOMFallback:
         assert 'CPU' in sessions_created
         assert cpu_session_call_count[0] > 0
 
-    @patch('tasks.analysis.ort.InferenceSession')
-    @patch('tasks.analysis.librosa.feature.chroma_stft')
-    @patch('tasks.analysis.librosa.feature.rms')
-    @patch('tasks.analysis.librosa.beat.beat_track')
-    @patch('tasks.analysis.librosa.feature.melspectrogram')
-    @patch('tasks.analysis.robust_load_audio_with_fallback')
-    @patch('tasks.analysis.ort.get_available_providers')
-    def test_secondary_model_oom_fallback_to_cpu(self, mock_providers, mock_audio_load, mock_mel, 
-                                                  mock_beat, mock_rms, mock_chroma, mock_onnx_session):
-        """Test GPU OOM during secondary model inference triggers CPU fallback
-        
-        TESTS: OOM detection and automatic CPU fallback for secondary models
-        """
-        mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        
-        mock_audio = np.random.rand(16000)
-        mock_audio_load.return_value = (mock_audio, 16000)
-        
-        mock_beat.return_value = (120.0, np.array([0, 100]))
-        mock_rms.return_value = np.array([[0.5]])
-        mock_chroma.return_value = np.random.rand(12, 100)
-        mock_mel.return_value = np.random.rand(96, 1000)
-        
-        gpu_session_call_count = [0]
-        cpu_session_call_count = [0]
-        
-        def gpu_run(output_names, feed_dict):
-            gpu_session_call_count[0] += 1
-            # Make secondary models OOM (after embedding and prediction)
-            if gpu_session_call_count[0] > 2:
-                import onnxruntime as ort
-                raise ort.capi.onnxruntime_pybind11_state.RuntimeException(
-                    "Failed to allocate memory"
-                )
-            return [np.random.rand(5, 200) if gpu_session_call_count[0] <= 2 else np.random.rand(5, 2)]
-        
-        def cpu_run(output_names, feed_dict):
-            cpu_session_call_count[0] += 1
-            return [np.random.rand(5, 2)]
-        
-        sessions_created = []
-        
-        def create_session(model_path, providers=None, provider_options=None):
-            mock_session = Mock()
-            mock_input = Mock()
-            mock_input.name = 'input'
-            mock_output = Mock()
-            mock_output.name = 'output'
-            mock_session.get_inputs.return_value = [mock_input]
-            mock_session.get_outputs.return_value = [mock_output]
-            
-            if isinstance(providers, list) and 'CPUExecutionProvider' in providers and len(providers) == 1:
-                mock_session.run.side_effect = cpu_run
-                sessions_created.append('CPU')
-            else:
-                mock_session.run.side_effect = gpu_run
-                sessions_created.append('GPU')
-            
-            return mock_session
-        
-        mock_onnx_session.side_effect = create_session
-        
-        mood_labels = ['happy']
-        model_paths = {
-            'embedding': '/path/to/embedding.onnx',
-            'prediction': '/path/to/prediction.onnx',
-            'danceable': '/path/to/danceable.onnx',
-            'aggressive': '/path/to/aggressive.onnx',
-            'happy': '/path/to/happy.onnx',
-            'party': '/path/to/party.onnx',
-            'relaxed': '/path/to/relaxed.onnx',
-            'sad': '/path/to/sad.onnx'
-        }
-        
-        result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
-        
-        assert result is not None
-        assert embeddings is not None
-        # Verify CPU fallback sessions were created for secondary models
-        assert 'CPU' in sessions_created
-        assert cpu_session_call_count[0] > 0
+    # NOTE: test_secondary_model_oom_fallback_to_cpu was removed because
+    # secondary mood models (danceable, aggressive, etc.) have been replaced
+    # by CLAP text-audio similarity in v4.0.0.
 
     @patch('tasks.analysis.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')

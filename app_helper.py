@@ -83,6 +83,9 @@ def close_db(e=None):
 def init_db():
     db = get_db()
     with db.cursor() as cur:
+        # Enable extensions to fix and assist in searches
+        cur.execute('CREATE EXTENSION IF NOT EXISTS unaccent')
+        cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
         # Create 'score' table
         cur.execute("CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)")
         # Add 'energy' column if not exists
@@ -120,6 +123,17 @@ def init_db():
         if not cur.fetchone()[0]:
             logger.info("Adding 'file_path' column to 'score' table.")
             cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
+        
+        # Add 'search_u' column if not exists (helps search)
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u')")
+        if not cur.fetchone()[0]:
+            logger.info("Creating immutable function to remove accents.")
+            cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
+            logger.info("Adding 'search_u' generated column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN search_u TEXT GENERATED ALWAYS AS (lower(immutable_unaccent(title || ' ' || author || ' ' || album))) STORED;")
+        # Create index on 'score' to assist in searches
+        cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
+
         # Create 'playlist' table
         cur.execute("CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))")
         # Create 'task_status' table
@@ -612,6 +626,27 @@ def save_clap_embedding(item_id, clap_embedding_vector):
         conn.rollback()
         logger.error(f"Error saving CLAP embedding for {item_id}: {e}")
         raise
+    finally:
+        cur.close()
+
+
+def get_clap_embedding(item_id):
+    """Load CLAP embedding for a track from the database.
+    
+    Returns:
+        numpy array (512-dim float32) or None if not found
+    """
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT embedding FROM clap_embedding WHERE item_id = %s", (item_id,))
+        row = cur.fetchone()
+        if row and row[0]:
+            return np.frombuffer(row[0], dtype=np.float32)
+        return None
+    except Exception as e:
+        logger.error(f"Error loading CLAP embedding for {item_id}: {e}")
+        return None
     finally:
         cur.close()
 

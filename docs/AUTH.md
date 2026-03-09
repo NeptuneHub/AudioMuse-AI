@@ -62,4 +62,8 @@ spec:
 
 ## Plugin 
 
-The Jellyfin and Navidrome support of the API TOKEN is still work in progress. Enabling the authentication layer now will block the functionality of the plugin.
+Before enabling the authentication be sure that the plugin that use AudioMuse-AI support it.
+
+> Actually Jellyfin plugin `v0.1.51` (for Jellyfin 10.10.7) and `v0.1.52` (for jellyfin 10.11) already added this support
+> 
+> Navidrome plugin is still work in progress.
