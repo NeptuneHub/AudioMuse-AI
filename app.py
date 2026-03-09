@@ -728,7 +728,10 @@ app.register_blueprint(clap_search_bp)
 app.register_blueprint(mulan_search_bp)
 
 # --- Startup: Load indexes and caches (runs on import, works with both gunicorn and flask dev server) ---
-os.makedirs(TEMP_DIR, exist_ok=True)
+try:
+  os.makedirs(TEMP_DIR, exist_ok=True)
+except OSError:
+  logger.debug(f"Could not create TEMP_DIR '{TEMP_DIR}' (may be running in test/CI environment)")
 
 with app.app_context():
   # --- Initial Voyager Index Load ---
