@@ -48,7 +48,22 @@ def _load_audio_model():
     
     model_path = config.CLAP_AUDIO_MODEL_PATH
     logger.info(f"Loading CLAP audio model from {model_path}...")
-    
+
+    # --- External-data ONNX models (.onnx.data next to .onnx) ---
+    # The student model references external data by relative filename
+    # (e.g. "model_epoch_36.onnx.data").  ONNX Runtime resolves this
+    # relative to the model file's directory, so passing the model
+    # *path* (not bytes) is the most portable approach.
+    #
+    # If direct path loading fails (e.g. mismatched data-file name),
+    # fall back to loading everything into memory via the onnx library.
+    data_file = model_path + ".data"
+    if not os.path.exists(data_file):
+        data_file = os.path.splitext(model_path)[0] + ".data"
+    has_external_data = os.path.exists(data_file)
+    if has_external_data:
+        logger.info(f"External data file detected: {data_file}")
+
     # Configure ONNX Runtime session options
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -88,31 +103,57 @@ def _load_audio_model():
         provider_options = [('CPUExecutionProvider', {})]
         logger.info("CUDA provider not available - using CPU only")
     
-    # Create session
-    try:
-        session = ort.InferenceSession(
-            model_path,
+    # Create session — pass file path so ORT resolves external data natively
+    def _create_session(model_input, providers, provider_opts):
+        return ort.InferenceSession(
+            model_input,
             sess_options=sess_options,
-            providers=[p[0] for p in provider_options],
-            provider_options=[p[1] for p in provider_options]
+            providers=providers,
+            provider_options=provider_opts,
         )
-        
-        active_provider = session.get_providers()[0]
-        logger.info(f"✓ CLAP audio model loaded successfully (~268MB)")
-            
-    except Exception as e:
-        logger.warning(f"Failed to load with preferred providers: {e}")
-        logger.info("Attempting final CPU-only fallback...")
-        try:
-            session = ort.InferenceSession(
-                model_path,
-                sess_options=sess_options,
-                providers=['CPUExecutionProvider']
-            )
-            logger.info(f"✓ CLAP audio model loaded successfully (CPU fallback)")
-        except Exception as cpu_error:
-            logger.error(f"Failed to load ONNX audio model even with CPU: {cpu_error}")
-            raise
+
+    preferred_providers = [p[0] for p in provider_options]
+    preferred_opts     = [p[1] for p in provider_options]
+    cpu_providers      = ['CPUExecutionProvider']
+    cpu_opts           = [{}]
+
+    try:
+        # 1) Direct path — ONNX Runtime resolves external data relative to
+        #    the model directory; works on all platforms and CI.
+        session = _create_session(model_path, preferred_providers, preferred_opts)
+        logger.info("✓ CLAP audio model loaded successfully (direct path)")
+
+    except Exception as direct_err:
+        logger.warning(f"Direct path load failed: {direct_err}")
+
+        if has_external_data:
+            # 2) In-memory fallback: load *all* external data into the proto,
+            #    serialize the self-contained blob, and hand it to ORT.
+            #    ~20 MB for the student model — well under the 2 GB protobuf limit.
+            logger.info("Trying in-memory external-data fallback…")
+            try:
+                import onnx as _onnx
+                _model_proto = _onnx.load(model_path, load_external_data=True)
+                _model_bytes = _model_proto.SerializeToString()
+                del _model_proto
+                gc.collect()
+                session = _create_session(_model_bytes, preferred_providers, preferred_opts)
+                logger.info("✓ CLAP audio model loaded (in-memory external data)")
+            except Exception as mem_err:
+                logger.warning(f"In-memory fallback failed: {mem_err}")
+                session = None
+        else:
+            session = None
+
+        # 3) Last-resort CPU-only attempt
+        if session is None:
+            logger.info("Attempting final CPU-only fallback…")
+            try:
+                session = _create_session(model_path, cpu_providers, cpu_opts)
+                logger.info("✓ CLAP audio model loaded (CPU fallback, direct path)")
+            except Exception as cpu_err:
+                logger.error(f"Failed to load ONNX audio model even with CPU: {cpu_err}")
+                raise
     
     if session is None:
         raise RuntimeError("Failed to create audio ONNX session")
@@ -499,26 +540,24 @@ def get_tokenizer():
 def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarray:
     """
     Compute log mel-spectrogram from audio waveform.
-    This preprocessing is required for the ONNX model which expects mel-spectrogram input.
-    
-    Args:
-        audio_data: Audio waveform (mono, 48kHz)
-        sr: Sample rate (should be 48000 for CLAP)
-    
+    Parameters are read from config so they match whichever ONNX audio model
+    is active (student or teacher).
+
     Returns:
-        mel_spectrogram: Log mel-spectrogram of shape (1, time_frames, 64)
+        If CLAP_AUDIO_MEL_TRANSPOSE is False (student, default):
+            shape (1, 1, n_mels, time)   — e.g. (1, 1, 128, T)
+        If CLAP_AUDIO_MEL_TRANSPOSE is True  (teacher):
+            shape (1, 1, time, n_mels)   — e.g. (1, 1, T, 64)
     """
     import librosa
-    
-    # CLAP HTSAT-base model parameters (from torchlibrosa)
-    # CRITICAL: These must match exactly or embeddings will be completely different!
-    n_fft = 1024
-    hop_length = 320  # HTSAT uses 320, NOT 480!
-    n_mels = 64
-    f_min = 50  # HTSAT uses 50, NOT 0!
-    f_max = 14000
-    
-    # Compute mel-spectrogram
+
+    n_fft = getattr(config, 'CLAP_AUDIO_N_FFT', 2048)
+    hop_length = getattr(config, 'CLAP_AUDIO_HOP_LENGTH', 480)
+    n_mels = getattr(config, 'CLAP_AUDIO_N_MELS', 128)
+    f_min = getattr(config, 'CLAP_AUDIO_FMIN', 0)
+    f_max = getattr(config, 'CLAP_AUDIO_FMAX', 14000)
+    transpose = getattr(config, 'CLAP_AUDIO_MEL_TRANSPOSE', False)
+
     mel = librosa.feature.melspectrogram(
         y=audio_data,
         sr=sr,
@@ -527,254 +566,133 @@ def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarr
         win_length=n_fft,
         window='hann',
         center=True,
-        pad_mode='reflect',  # HTSAT uses 'reflect', not 'constant'
+        pad_mode='reflect',
         power=2.0,
         n_mels=n_mels,
         fmin=f_min,
         fmax=f_max
     )
-    
-    # Convert to log scale
+
+    # Convert to log scale (dB)
     mel = librosa.power_to_db(mel, ref=1.0, amin=1e-10, top_db=None)
-    
-    # Transpose to (time_frames, mel_bins)
-    mel = mel.T
-    
-    # Add channel dimension: (1, time_frames, 64)
-    mel = mel[np.newaxis, :, :]
-    
+
+    if transpose:
+        # Teacher (HTSAT) layout: (1, 1, time, n_mels)
+        mel = mel.T                                # (time, n_mels)
+        mel = mel[np.newaxis, np.newaxis, :, :]    # (1, 1, time, n_mels)
+    else:
+        # Student (EfficientAT) layout: (1, 1, n_mels, time)
+        mel = mel[np.newaxis, np.newaxis, :, :]    # (1, 1, n_mels, time)
+
     return mel.astype(np.float32)
 
 
 def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, int]:
     """
     Analyze an audio file and return CLAP embedding using ONNX Runtime.
-    Uses ThreadPoolExecutor to process batches in parallel for CPU efficiency.
-    
+    Segments are processed one at a time (the student model was exported
+    with a fixed batch dimension of 1).  The per-segment embeddings are
+    averaged and L2-normalised to produce a single 512-dim vector.
+
     Args:
         audio_path: Path to audio file
-        
+
     Returns:
         Tuple of (embedding_vector, duration_seconds, num_segments)
         Returns (None, 0, 0) if CLAP is disabled or analysis fails
     """
     if not config.CLAP_ENABLED:
         return None, 0, 0
-    
+
     try:
-        import librosa
-        
         # Get audio-only model for music analysis
         session = get_clap_audio_model()
-        
-        # Load audio at CLAP's expected sample rate (48kHz)
+
+        # Audio constants (48 kHz, 10-second segments, 50 % overlap)
         SAMPLE_RATE = 48000
-        SEGMENT_LENGTH = 480000  # 10 seconds at 48kHz
-        HOP_LENGTH = 240000      # 5 seconds (50% overlap)
-        
-        # Use configured AUDIO_LOAD_TIMEOUT if present to limit librosa loading duration
-        try:
-            if AUDIO_LOAD_TIMEOUT is not None:
-                audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True, duration=AUDIO_LOAD_TIMEOUT)
-            else:
-                audio_data, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True)
-        except Exception as e:
-            logger.error(f"Failed to load audio for CLAP analysis ({audio_path}) with AUDIO_LOAD_TIMEOUT={AUDIO_LOAD_TIMEOUT}: {e}")
-            import traceback
-            traceback.print_exc()
-            # Ensure CUDA memory is cleaned up on load failure
-            cleanup_cuda_memory(force=True)
+        SEGMENT_LENGTH = 480000   # 10 seconds at 48 kHz
+        HOP_LENGTH = 240000       # 5 seconds (50 % overlap)
+
+        # --- robust audio loading (pydub fallback) ---
+        # Lazy import to avoid circular dependency (analysis imports clap_analyzer)
+        from tasks.analysis import robust_load_audio_with_fallback
+        audio_data, sr = robust_load_audio_with_fallback(audio_path, target_sr=SAMPLE_RATE)
+
+        if audio_data is None or audio_data.size == 0:
+            logger.warning(f"Could not load audio for CLAP analysis: {audio_path}")
             return None, 0, 0
-        
-        # CRITICAL: Quantize audio to int16 and back (matching PyTorch CLAP preprocessing)
-        # This simulates the precision loss that happens in real-world audio processing
+
+        # Quantize to int16 and back (matching PyTorch CLAP preprocessing)
         audio_data = np.clip(audio_data, -1.0, 1.0)
         audio_data = (audio_data * 32767.0).astype(np.int16)
         audio_data = (audio_data / 32767.0).astype(np.float32)
-        
+
         duration_sec = len(audio_data) / SAMPLE_RATE
-        
-        # Create overlapping segments
+
+        # --- create overlapping segments ---
         segments = []
         total_length = len(audio_data)
-        
+
         if total_length <= SEGMENT_LENGTH:
-            # Pad short audio
             padded = np.pad(audio_data, (0, SEGMENT_LENGTH - total_length), mode='constant')
             segments.append(padded)
         else:
-            # Create overlapping segments
             for start in range(0, total_length - SEGMENT_LENGTH + 1, HOP_LENGTH):
-                segment = audio_data[start:start + SEGMENT_LENGTH]
-                segments.append(segment)
-            
-            # Add final segment if needed
+                segments.append(audio_data[start:start + SEGMENT_LENGTH])
             last_start = len(segments) * HOP_LENGTH
             if last_start < total_length:
-                last_segment = audio_data[-SEGMENT_LENGTH:]
-                segments.append(last_segment)
-        
+                segments.append(audio_data[-SEGMENT_LENGTH:])
+
         num_segments = len(segments)
-        
-        def process_segment(audio_segment):
-            """Compute mel-spectrogram and get embedding for one segment."""
-            # Compute mel-spectrogram
-            mel_spec = compute_mel_spectrogram(audio_segment, SAMPLE_RATE)
-            
-            # Add batch and channel dimensions: (1, 1, time_frames, 64)
-            mel_input = mel_spec[:, np.newaxis, :, :]
-            
-            # Run ONNX inference (audio model only needs mel_spectrogram)
-            onnx_inputs = {
-                'mel_spectrogram': mel_input
-            }
-            
+        logger.info(f"CLAP: Processing {num_segments} segments ({duration_sec:.1f}s audio)")
+
+        # --- inference one segment at a time ---
+        # The student model (model_epoch_36.onnx) was exported with a fixed
+        # batch dimension of 1, so we must feed segments individually.
+        all_embs = []
+        for seg_idx, seg in enumerate(segments):
+            mel_spec = compute_mel_spectrogram(seg, SAMPLE_RATE)  # (1, 1, n_mels, time)
+            onnx_inputs = {'mel_spectrogram': mel_spec}
             try:
                 outputs = session.run(None, onnx_inputs)
-                audio_embedding = outputs[0]  # Output is audio_embedding
+                emb = outputs[0]  # shape (1, 512)
             except Exception as e:
                 # Handle memory allocation errors with cleanup and retry
                 def cleanup_fn():
                     cleanup_cuda_memory(force=True)
-                
                 def retry_fn():
                     return session.run(None, onnx_inputs)
-                
                 result = handle_onnx_memory_error(
-                    e,
-                    f"CLAP segment inference",
-                    cleanup_func=cleanup_fn,
-                    retry_func=retry_fn
+                    e, f"CLAP segment {seg_idx}/{num_segments}",
+                    cleanup_func=cleanup_fn, retry_func=retry_fn
                 )
-                
                 if result is not None:
-                    audio_embedding = result[0]
+                    emb = result[0]
                 else:
                     raise
-            
-            return audio_embedding[0]  # Remove batch dimension
-        
-        # Mini-batch processing to reduce GPU memory usage and prevent OOM errors
-        # Process segments in small batches with cleanup between each batch
-        if num_segments < 1:
-            logger.error("No segments to process for CLAP analysis")
-            raise RuntimeError("No segments generated for CLAP analysis")
+            all_embs.append(emb)
 
-        # Get mini-batch size from config (default: 4 segments per batch)
-        MINI_BATCH_SIZE = config.CLAP_MINI_BATCH_SIZE
-        total_batches = (num_segments + MINI_BATCH_SIZE - 1) // MINI_BATCH_SIZE
-        
-        logger.info(f"CLAP: Processing {num_segments} segments in {total_batches} mini-batches of {MINI_BATCH_SIZE}")
+        if all_embs:
+            audio_embeddings = np.vstack(all_embs)
+        else:
+            audio_embeddings = np.zeros((0, config.CLAP_EMBEDDING_DIMENSION), dtype=np.float32)
 
-        all_embeddings_list = []  # Accumulate embeddings from each mini-batch
-        
-        # Process segments in mini-batches
-        for batch_start in range(0, num_segments, MINI_BATCH_SIZE):
-            batch_end = min(batch_start + MINI_BATCH_SIZE, num_segments)
-            batch_segments = segments[batch_start:batch_end]
-            batch_num = (batch_start // MINI_BATCH_SIZE) + 1
-            
-            logger.debug(f"Processing mini-batch {batch_num}/{total_batches} (segments {batch_start+1}-{batch_end})")
-            
-            try:
-                # Step 1: Compute mel-spectrograms for this mini-batch only
-                mel_list = [compute_mel_spectrogram(seg, SAMPLE_RATE) for seg in batch_segments]
-                
-                # Step 2: Stack into mini-batch tensor
-                # Each mel has shape (1, time_frames, 64); add channel dim -> (1,1,time,64), then stack -> (batch,1,time,64)
-                try:
-                    mel_batch = np.concatenate([m[:, np.newaxis, :, :] for m in mel_list], axis=0)
-                except Exception as e:
-                    logger.error(f"Failed to create mel batch for mini-batch {batch_num}: {e}")
-                    # Clean up mel_list before raising
-                    del mel_list
-                    import gc
-                    gc.collect()
-                    raise
+        num_segments = audio_embeddings.shape[0]
+        if num_segments > 0:
+            audio_embedding = np.mean(audio_embeddings, axis=0)
+            audio_embedding = audio_embedding / (np.linalg.norm(audio_embedding) + 1e-9)
+        else:
+            audio_embedding = np.zeros((config.CLAP_EMBEDDING_DIMENSION,), dtype=np.float32)
 
-                # Step 3: ONNX inference on mini-batch
-                onnx_inputs = {'mel_spectrogram': mel_batch}
-                
-                try:
-                    outputs = session.run(None, onnx_inputs)
-                    batch_embeddings = outputs[0]  # shape: (mini_batch_size, embedding_dim)
-                except Exception as e:
-                    # Check if this is a GPU OOM error
-                    if "Failed to allocate memory" in str(e):
-                        logger.warning(f"GPU OOM detected for CLAP mini-batch {batch_num}/{total_batches}, attempting CPU fallback...")
-                        
-                        # Comprehensive cleanup before CPU fallback
-                        comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
-                        
-                        # Recreate session with CPU provider (update global session)
-                        global _audio_session
-                        import onnxruntime as ort
-                        
-                        sess_options = ort.SessionOptions()
-                        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-                        sess_options.log_severity_level = 3
-                        
-                        if not config.CLAP_PYTHON_MULTITHREADS:
-                            # Let ONNX Runtime handle threading (default automatic behaviour)
-                            logger.info("CLAP Audio CPU fallback: Using ONNX Runtime automatic thread management")
-                        else:
-                            sess_options.intra_op_num_threads = 1
-                            sess_options.inter_op_num_threads = 1
-                        
-                        _audio_session = ort.InferenceSession(
-                            config.CLAP_AUDIO_MODEL_PATH,
-                            sess_options=sess_options,
-                            providers=['CPUExecutionProvider']
-                        )
-                        session = _audio_session
-                        
-                        # Retry with CPU session
-                        outputs = session.run(None, onnx_inputs)
-                        batch_embeddings = outputs[0]
-                        logger.info(f"Successfully completed CLAP mini-batch {batch_num} on CPU after OOM")
-                    else:
-                        raise
-                
-                # Step 4: Store embeddings for later averaging
-                all_embeddings_list.append(batch_embeddings)
-                
-                # Step 5: Free memory references (but don't trigger expensive GC yet)
-                del mel_list, mel_batch, onnx_inputs, outputs, batch_embeddings
-            
-            except Exception as e:
-                logger.error(f"Mini-batch {batch_num}/{total_batches} processing failed: {e}")
-                # Cleanup on error
-                cleanup_cuda_memory(force=True)
-                raise
-        
-        # Step 6: Combine all mini-batch embeddings
-        all_embeddings = np.vstack(all_embeddings_list)
-        avg_embedding = np.mean(all_embeddings, axis=0)
-        
-        # Normalize (should already be normalized, but ensure it)
-        avg_embedding = avg_embedding / np.linalg.norm(avg_embedding)
-        
-        # Step 7: Final cleanup AFTER entire song is processed (not per segment/batch)
-        del all_embeddings, all_embeddings_list, segments, audio_data
-        import gc
-        gc.collect()
-        
-        # CUDA cleanup once per song (not per segment)
-        cleanup_cuda_memory(force=False)
-        
-        return avg_embedding, duration_sec, num_segments
-        
+        return audio_embedding, duration_sec, num_segments
+
     except Exception as e:
         logger.error(f"CLAP analysis failed for {audio_path}: {e}")
         import traceback
         traceback.print_exc()
-        
-        # Comprehensive cleanup on error - force cleanup including ONNX pool reset
         comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
-        
         return None, 0, 0
     finally:
-        # Final cleanup even on error
         import gc
         gc.collect()
 
