@@ -9,6 +9,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__))) # Adds the current d
 # If app.py is in a subdirectory like 'app_module' relative to rq_worker.py, you'd adjust:
 # sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app_module'))
 
+# Signal to app.py that we are an RQ worker, so it should skip index loading and background threads
+os.environ['AUDIOMUSE_ROLE'] = 'worker'
+
 # Import Worker from rq
 from rq import Worker
 
