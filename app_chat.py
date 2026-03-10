@@ -3,6 +3,7 @@ from flask import Blueprint, render_template, request, jsonify
 from flasgger import swag_from # Import swag_from
 import json # For JSON serialization of tool arguments
 import logging
+import re
 
 
 logger = logging.getLogger(__name__)
@@ -246,6 +247,11 @@ def chat_playlist_api():
         return jsonify({"error": "Missing userInput in request"}), 400
 
     original_user_input = data.get('userInput')
+    # Detect if user's request mentions ratings (guard against AI hallucinating rating filters)
+    _user_wants_rating = bool(re.search(
+        r'\b(rat(ed|ing|ings)|stars?|⭐|favorit|best[\s-]?rated|top[\s-]?rated|highly[\s-]?rated)\b',
+        original_user_input, re.IGNORECASE
+    ))
     ai_provider = data.get('ai_provider', config.AI_MODEL_PROVIDER).upper()
     ai_model_from_request = data.get('ai_model')
     
@@ -347,27 +353,41 @@ def chat_playlist_api():
 
     max_iterations = 5  # Prevent infinite loops
     target_song_count = 100
-    # Over-collect to compensate for post-loop artist diversity cap removal
+    # Over-collect so artist diversity cap + proportional sampling still yields ~100
     from config import MAX_SONGS_PER_ARTIST_PLAYLIST
-    collection_target = int(target_song_count * 1.5)  # Collect 150, cap will trim to ~100
+    collection_cap = 1000  # Hard ceiling on raw collection
+
+    def _diversified_count(songs, cap):
+        """Count songs that survive the max-per-artist diversity cap."""
+        artist_counts = {}
+        kept = 0
+        for s in songs:
+            a = s.get('artist', 'Unknown')
+            artist_counts[a] = artist_counts.get(a, 0) + 1
+            if artist_counts[a] <= cap:
+                kept += 1
+        return kept
 
     for iteration in range(max_iterations):
-        current_song_count = len(all_songs)
+        usable_song_count = _diversified_count(all_songs, MAX_SONGS_PER_ARTIST_PLAYLIST)
 
         log_messages.append(f"\n{'='*60}")
         log_messages.append(f"ITERATION {iteration + 1}/{max_iterations}")
-        log_messages.append(f"Current progress: {current_song_count}/{collection_target} songs")
+        log_messages.append(f"Current progress: {usable_song_count}/{target_song_count} songs (collected {len(all_songs)})")
         log_messages.append(f"{'='*60}")
 
-        # Check if we have enough songs (use inflated collection target)
-        if current_song_count >= collection_target:
-            log_messages.append(f"✅ Target reached! Stopping iteration.")
+        # Stop if usable (post-diversity) count meets target, or raw count hits hard cap
+        if usable_song_count >= target_song_count:
+            log_messages.append(f"✅ Target reached ({usable_song_count} usable songs)! Stopping.")
+            break
+        if len(all_songs) >= collection_cap:
+            log_messages.append(f"✅ Collection cap reached ({len(all_songs)} raw). Stopping.")
             break
 
         # When a rating filter was detected, limit to 2 iterations max to prevent
         # the AI from broadening to unrelated genres to fill the target
         if detected_min_rating is not None and iteration >= 2:
-            log_messages.append(f"⭐ Rating-filtered request: stopping after {iteration} iterations to preserve filter integrity ({current_song_count} songs).")
+            log_messages.append(f"⭐ Rating-filtered request: stopping after {iteration} iterations to preserve filter integrity ({usable_song_count} usable songs).")
             break
         
         # Build context for AI about current state
@@ -375,7 +395,7 @@ def chat_playlist_api():
             # Iteration 0: Just the request - system prompt already has all instructions
             ai_context = f'Build a {target_song_count}-song playlist for: "{original_user_input}"'
         else:
-            songs_needed = collection_target - current_song_count
+            songs_needed = max(0, target_song_count - usable_song_count)
             tool_strs = []
             failed_tools_details = []
             for t in tools_used_history:
@@ -438,17 +458,20 @@ def chat_playlist_api():
                     pass
 
             ai_context = f"""Original request: "{original_user_input}"
-Progress: {current_song_count}/{collection_target} songs collected. Need {songs_needed} MORE.
+Progress: {usable_song_count}/{target_song_count} songs collected. Need {songs_needed} MORE.
 
 What we have so far:
 - Top artists: {top_artists_str}
 - Artist diversity: {unique_artists} unique artists (ratio: {diversity_ratio})
 - Tools used: {previous_tools_str}
-- Genres covered: {genres_str}
+- Genres already collected (do NOT filter by these unless user asked): {genres_str}
 
 Call DIFFERENT tools or parameters to add {songs_needed} more DIVERSE songs.
 Prioritize variety - avoid tools/parameters that duplicate what we already have.
-IMPORTANT: Do NOT broaden or drop filters from the original request. If the user asked for specific genres + ratings, keep those exact filters. If no more songs match, STOP calling tools."""
+IMPORTANT: ONLY use filters the user EXPLICITLY mentioned in their original request.
+Do NOT invent genres, min_rating, or moods the user didn't ask for.
+If the user asked for specific genres + ratings, keep those exact filters.
+If no more songs match, STOP calling tools — do NOT broaden filters."""
 
             # Append failed tools section so AI knows what NOT to repeat
             if failed_tools_details:
@@ -473,7 +496,7 @@ IMPORTANT: Do NOT broaden or drop filters from the original request. If the user
             if iteration == 0:
                 fallback_genres = library_context.get('top_genres', ['pop', 'rock'])[:2] if library_context else ['pop', 'rock']
                 log_messages.append(f"\n🔄 Fallback: Trying genre search with {fallback_genres}...")
-                fallback_result = execute_mcp_tool('search_database', {'genres': fallback_genres, 'get_songs': 100}, ai_config)
+                fallback_result = execute_mcp_tool('search_database', {'genres': fallback_genres, 'get_songs': 200}, ai_config)
                 if 'songs' in fallback_result:
                     songs = fallback_result['songs']
                     for song in songs:
@@ -512,10 +535,48 @@ IMPORTANT: Do NOT broaden or drop filters from the original request. If the user
                     tool_call_counter += 1
                     continue
 
+            # song_alchemy: requires 2+ add_items; convert single-artist to artist_similarity
+            if tn == 'song_alchemy':
+                add_items = ta.get('add_items', [])
+                if len(add_items) < 2:
+                    # Extract the single artist name and redirect
+                    single_name = None
+                    if add_items:
+                        item = add_items[0]
+                        single_name = item.get('id', item) if isinstance(item, dict) else str(item)
+                    if single_name:
+                        log_messages.append(f"   ⚠️ song_alchemy needs 2+ items, converting to artist_similarity('{single_name}')")
+                        tc['name'] = 'artist_similarity'
+                        tc['arguments'] = {'artist': single_name, 'get_songs': ta.get('get_songs', 200)}
+                        tn = 'artist_similarity'
+                        ta = tc['arguments']
+                    else:
+                        log_messages.append(f"   ⚠️ Skipping {tn}: no add_items provided")
+                        tools_used_history.append({'name': tn, 'args': ta, 'songs': 0, 'error': True, 'call_index': tool_call_counter, 'result_message': 'no add_items'})
+                        tool_call_counter += 1
+                        continue
+
+            # search_database: sanitize hallucinated year boundaries
+            if tn == 'search_database':
+                y_min = ta.get('year_min')
+                y_max = ta.get('year_max')
+                if y_min is not None and int(y_min) < 1900:
+                    log_messages.append(f"   ⚠️ Stripped nonsensical year_min={y_min} from {tn}")
+                    ta.pop('year_min', None)
+                if y_max is not None and int(y_max) < 1900:
+                    log_messages.append(f"   ⚠️ Stripped nonsensical year_max={y_max} from {tn}")
+                    ta.pop('year_max', None)
+
+            # search_database: strip hallucinated min_rating if user didn't ask for ratings
+            if tn == 'search_database' and not _user_wants_rating:
+                if ta.get('min_rating'):
+                    log_messages.append(f"   ⚠️ Stripped hallucinated min_rating={ta['min_rating']} from {tn} (user didn't request rating filter)")
+                    ta.pop('min_rating', None)
+
             # search_database: reject if zero filters specified
             if tn == 'search_database':
                 filter_keys = ['genres', 'moods', 'tempo_min', 'tempo_max', 'energy_min', 'energy_max',
-                               'key', 'scale', 'year_min', 'year_max', 'min_rating', 'album']
+                               'key', 'scale', 'year_min', 'year_max', 'min_rating', 'album', 'artist']
                 has_filter = any(ta.get(k) for k in filter_keys)
                 if not has_filter:
                     log_messages.append(f"   ⚠️ Skipping {tn}: no filters specified (would return random noise)")
@@ -545,6 +606,9 @@ IMPORTANT: Do NOT broaden or drop filters from the original request. If the user
             
             tool_args = convert_to_dict(tool_args)
             
+            # Enforce 200 songs per tool call for better pool diversity
+            tool_args['get_songs'] = 200
+
             log_messages.append(f"\n🔧 Tool {i+1}/{len(tool_calls)}: {tool_name}")
             try:
                 log_messages.append(f"   Arguments: {json.dumps(tool_args, indent=6)}")
@@ -610,6 +674,8 @@ IMPORTANT: Do NOT broaden or drop filters from the original request. If the user
             # Format args for summary - show key parameters only
             args_summary = []
             if tool_name == "search_database":
+                if 'artist' in tool_args and tool_args['artist']:
+                    args_summary.append(f"artist='{tool_args['artist']}'")
                 if 'genres' in tool_args and tool_args['genres']:
                     args_summary.append(f"genres={tool_args['genres']}")
                 if 'moods' in tool_args and tool_args['moods']:
@@ -662,29 +728,30 @@ IMPORTANT: Do NOT broaden or drop filters from the original request. If the user
             tool_summary = f"{tool_name}({args_str}, +{new_songs})" if args_str else f"{tool_name}(+{new_songs})"
             tool_execution_summary.append(tool_summary)
         
+        usable_now = _diversified_count(all_songs, MAX_SONGS_PER_ARTIST_PLAYLIST)
         log_messages.append(f"\n📈 Iteration {iteration + 1} Summary:")
         log_messages.append(f"   Songs added this iteration: {iteration_songs_added}")
-        log_messages.append(f"   Total songs now: {len(all_songs)}/{collection_target}")
+        log_messages.append(f"   Total songs now: {usable_now}/{target_song_count} usable (collected {len(all_songs)})")
 
         # If no new songs were added, decide whether to stop or continue
         if iteration_songs_added == 0:
             if detected_min_rating is not None and len(all_songs) > 0:
-                log_messages.append(f"\n⚠️ Rating-filtered request: no more matching songs found ({len(all_songs)} songs). Stopping.")
+                log_messages.append(f"\n⚠️ Rating-filtered request: no more matching songs found ({usable_now} usable). Stopping.")
                 break
-            elif len(all_songs) >= collection_target * 0.8:
-                log_messages.append(f"\n⚠️ No new songs added ({len(all_songs)} songs, near target). Stopping.")
+            elif usable_now >= target_song_count:
+                log_messages.append(f"\n⚠️ No new songs added ({usable_now} usable, target reached). Stopping.")
                 break
             elif len(all_songs) > 0 and iteration >= 2:
-                log_messages.append(f"\n⚠️ No new songs added ({len(all_songs)} songs, diminishing returns). Stopping.")
+                log_messages.append(f"\n⚠️ No new songs added ({usable_now} usable, diminishing returns). Stopping.")
                 break
             else:
-                log_messages.append(f"\n⚠️ No new songs, but only {len(all_songs)}/{collection_target}. Continuing...")
+                log_messages.append(f"\n⚠️ No new songs, but only {usable_now}/{target_song_count} usable. Continuing...")
     
     # Prepare final results
     if all_songs:
         # --- Phase 0: Post-collection rating filter ---
-        # If the AI used min_rating in any search_database call, enforce it on ALL collected songs
-        if detected_min_rating is not None:
+        # Only enforce rating filter if the USER explicitly asked for ratings
+        if detected_min_rating is not None and _user_wants_rating:
             from app_helper import get_db
             from psycopg2.extras import DictCursor
             try:

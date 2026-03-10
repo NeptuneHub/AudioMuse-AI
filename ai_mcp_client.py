@@ -60,19 +60,21 @@ def _build_system_prompt(tools: List[Dict], library_context: Optional[Dict] = No
     # Build tool decision tree
     decision_tree = []
     decision_tree.append("1. Specific song+artist mentioned? -> song_similarity")
-    decision_tree.append("2. 'songs from [ALBUM]' or 'songs like [ALBUM]'? -> search_database with album filter, OR song_similarity with tracks from the album")
-    decision_tree.append("3. Decade mentioned (80s, 90s, 2000s)? -> ALWAYS include year_min/year_max in search_database (e.g., 80s=1980-1989)")
+    decision_tree.append("2. 'top/best/greatest/hits/famous/popular' + artist? -> ai_brainstorm (cultural knowledge about iconic tracks)")
+    decision_tree.append("3. 'songs from [ALBUM]' or 'songs like [ALBUM]'? -> search_database with album filter, OR song_similarity with tracks from the album")
+    decision_tree.append("4. 'songs BY/FROM [ARTIST]' (exact catalog)? -> search_database(artist='Artist Name'). Call ONCE per artist.")
+    decision_tree.append("5. Decade mentioned (80s, 90s, 2000s)? -> ALWAYS include year_min/year_max in search_database (e.g., 80s=1980-1989)")
     if has_text_search:
-        decision_tree.append("4. Instruments (piano, guitar, ukulele) or SOUND DESCRIPTIONS (romantic, dreamy, chill vibes)? -> text_search")
-        decision_tree.append("5. 'songs by/from/like [ARTIST]'? -> artist_similarity (returns artist's own + similar)")
-        decision_tree.append("6. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
-        decision_tree.append("7. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
-        decision_tree.append("8. Genre/mood/tempo/energy/year/rating filters? -> search_database (last resort)")
+        decision_tree.append("6. Instruments (piano, guitar, ukulele) or SOUND DESCRIPTIONS (romantic, dreamy, chill vibes)? -> text_search")
+        decision_tree.append("7. 'songs LIKE/SIMILAR TO [ARTIST]' (discover similar)? -> artist_similarity (returns artist's own + similar artists' songs)")
+        decision_tree.append("8. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
+        decision_tree.append("9. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
+        decision_tree.append("10. Genre/mood/tempo/energy/year/rating filters? -> search_database")
     else:
-        decision_tree.append("4. 'songs by/from/like [ARTIST]'? -> artist_similarity (returns artist's own + similar)")
-        decision_tree.append("5. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
-        decision_tree.append("6. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
-        decision_tree.append("7. Genre/mood/tempo/energy/year/rating filters? -> search_database (last resort)")
+        decision_tree.append("6. 'songs LIKE/SIMILAR TO [ARTIST]' (discover similar)? -> artist_similarity (returns artist's own + similar artists' songs)")
+        decision_tree.append("7. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
+        decision_tree.append("8. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
+        decision_tree.append("9. Genre/mood/tempo/energy/year/rating filters? -> search_database")
 
     decision_text = '\n'.join(decision_tree)
 
@@ -84,14 +86,18 @@ def _build_system_prompt(tools: List[Dict], library_context: Optional[Dict] = No
 === RULES ===
 1. Call one or more tools - each returns songs with item_id, title, and artist
 2. song_similarity REQUIRES both title AND artist - never leave empty
-3. artist_similarity returns the artist's OWN songs + songs from SIMILAR artists
+3. search_database(artist='...') returns ONLY songs BY that artist. artist_similarity returns songs BY + FROM SIMILAR artists.
+   - "songs from Madonna" -> search_database(artist="Madonna")  (exact catalog)
+   - "songs like Madonna" -> artist_similarity("Madonna")  (discover similar)
+   - "top songs of Madonna" -> ai_brainstorm  (cultural knowledge)
 4. search_database: COMBINE all filters in ONE call. For decades (80s, 90s), ALWAYS set year_min/year_max (e.g., 80s=1980-1989)
 5. search_database genres: Use 1-3 SPECIFIC genres, not broad parent genres. 'rock' matches nearly everything - use sub-genres instead (e.g., 'hard rock', 'punk', 'metal'). WRONG: genres=['rock','metal','classic rock','alternative rock'] (too broad). RIGHT: genres=['metal','hard rock'] (specific).
-6. For multiple artists: call artist_similarity once per artist, or use song_alchemy to blend
+6. For multiple artists: call search_database(artist='...') once per artist for exact catalog, or use song_alchemy to blend their vibes
 7. Prefer tool calls over text explanations
 8. For complex requests, call MULTIPLE tools in ONE turn for better coverage:
    - "relaxing piano jazz" -> text_search("relaxing piano") + search_database(genres=["jazz"])
-   - "energetic songs by Metallica and AC/DC" -> artist_similarity("Metallica") + artist_similarity("AC/DC")
+   - "energetic songs by Metallica and AC/DC" -> search_database(artist="Metallica") + search_database(artist="AC/DC")
+   - "songs from Blink-182 and Green Day" -> search_database(artist="Blink-182") + search_database(artist="Green Day")
 9. When a query has BOTH a genre AND a mood from the MOODS list, prefer search_database over text_search:
    - "sad jazz" -> search_database(genres=["jazz"], moods=["sad"])  NOT text_search
    - But "dreamy atmospheric" -> text_search (no specific genre, sound description)
@@ -104,6 +110,14 @@ def _build_system_prompt(tools: List[Dict], library_context: Optional[Dict] = No
 12. COMBINE ALL USER FILTERS: When the user specifies multiple criteria (e.g., "rock 5 star songs"), include ALL of them
    in the SAME search_database call (e.g., genres=["rock"], min_rating=5). Never drop a filter to get more results.
    If the combination returns few songs, that's OK — return what matches. Quality over quantity.
+13. STRICT FILTER FIDELITY: ONLY use parameters the user explicitly mentioned. Do NOT invent or add filters on your own.
+   - "songs from 2020-2025" → ONLY year_min=2020, year_max=2025. Do NOT add genres or min_rating.
+   - "2026 songs" or "songs from 2026" → year_min=2026, year_max=2026. Do NOT set year_min=1.
+   - "songs after 2010" → ONLY year_min=2010. Do NOT set year_max.
+   - "rock songs" → genres=["rock"]. Do NOT add min_rating or year filters.
+   - "my 5 star jazz" → genres=["jazz"], min_rating=5. Keep BOTH.
+   If the user didn't mention ratings, do NOT use min_rating. If the user didn't mention genres, do NOT add genres.
+   If the user mentioned ONE year, do NOT invent the other year boundary.
 
 === VALID search_database VALUES ===
 GENRES: {_get_dynamic_genres(library_context)}
@@ -111,8 +125,9 @@ MOODS: {_get_dynamic_moods(library_context)}
 TEMPO: 40-200 BPM
 ENERGY: 0.0 (calm) to 1.0 (intense) - use 0.0-0.35 for low, 0.35-0.65 for medium, 0.65-1.0 for high
 SCALE: major, minor
-YEAR: year_min/year_max (e.g., 1990-1999 for 90s). For decade requests (80s, 90s), prefer year filters over genres.
+YEAR: year_min and/or year_max. Use BOTH only for ranges (e.g., 1990-1999 for 90s). Use ONLY year_min for "from/since/after YEAR". Use ONLY year_max for "before/until YEAR". For a single year ("2026 songs"), set year_min=2026 AND year_max=2026. Do NOT invent the other boundary.
 RATING: min_rating 1-5 (user's personal ratings)
+ARTIST: artist name (e.g. 'Madonna', 'Blink-182') - returns ONLY songs by this artist
 ALBUM: album name (e.g. 'Abbey Road', 'Thriller') - filters songs from a specific album"""
 
     return prompt
@@ -474,12 +489,13 @@ def _call_ollama_with_tools(user_message: str, tools: List[Dict], ai_config: Dic
 
         # Build a few examples for Ollama's JSON output format
         examples = []
-        examples.append('"Similar to By the Way by Red Hot Chili Peppers"\n{{"tool_calls": [{{"name": "song_similarity", "arguments": {{"song_title": "By the Way", "song_artist": "Red Hot Chili Peppers", "get_songs": 100}}}}]}}')
+        examples.append('"Similar to By the Way by Red Hot Chili Peppers"\n{{"tool_calls": [{{"name": "song_similarity", "arguments": {{"song_title": "By the Way", "song_artist": "Red Hot Chili Peppers", "get_songs": 200}}}}]}}')
         if has_text_search:
-            examples.append('"calm piano song"\n{{"tool_calls": [{{"name": "text_search", "arguments": {{"description": "calm piano", "get_songs": 100}}}}]}}')
-        examples.append('"songs like blink-182"\n{{"tool_calls": [{{"name": "artist_similarity", "arguments": {{"artist": "blink-182", "get_songs": 100}}}}]}}')
-        examples.append('"blink-182 songs"\n{{"tool_calls": [{{"name": "artist_similarity", "arguments": {{"artist": "blink-182", "get_songs": 100}}}}]}}')
-        examples.append('"energetic rock"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"genres": ["rock"], "energy_min": 0.65, "get_songs": 100}}}}]}}')
+            examples.append('"calm piano song"\n{{"tool_calls": [{{"name": "text_search", "arguments": {{"description": "calm piano", "get_songs": 200}}}}]}}')
+        examples.append('"songs from blink-182 and Green Day"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"artist": "blink-182", "get_songs": 200}}}}, {{"name": "search_database", "arguments": {{"artist": "Green Day", "get_songs": 200}}}}]}}')
+        examples.append('"songs like blink-182"\n{{"tool_calls": [{{"name": "artist_similarity", "arguments": {{"artist": "blink-182", "get_songs": 200}}}}]}}')
+        examples.append('"top songs of Madonna"\n{{"tool_calls": [{{"name": "ai_brainstorm", "arguments": {{"user_request": "top songs of Madonna", "get_songs": 200}}}}]}}')
+        examples.append('"energetic rock"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"genres": ["rock"], "energy_min": 0.65, "get_songs": 200}}}}]}}')
         examples_text = "\n\n".join(examples)
 
         prompt = f"""{system_prompt}
@@ -618,20 +634,20 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
             return _artist_similarity_api_sync(
                 tool_args['artist'],
                 15,  # count - hardcoded
-                tool_args.get('get_songs', 100)
+                tool_args.get('get_songs', 200)
             )
         elif tool_name == "text_search":
             return _text_search_sync(
                 tool_args['description'],
                 tool_args.get('tempo_filter'),
                 tool_args.get('energy_filter'),
-                tool_args.get('get_songs', 100)
+                tool_args.get('get_songs', 200)
             )
         elif tool_name == "song_similarity":
             return _song_similarity_api_sync(
                 tool_args['song_title'],
                 tool_args['song_artist'],
-                tool_args.get('get_songs', 100)
+                tool_args.get('get_songs', 200)
             )
         elif tool_name == "song_alchemy":
             # Handle both formats: ["artist1", "artist2"] or [{"type": "artist", "id": "artist1"}]
@@ -658,7 +674,7 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
             return _song_alchemy_sync(
                 add_items,
                 subtract_items,
-                tool_args.get('get_songs', 100)
+                tool_args.get('get_songs', 200)
             )
         elif tool_name == "search_database":
             # Convert normalized energy (0-1) to raw energy scale
@@ -676,7 +692,7 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
 
             return _database_genre_query_sync(
                 tool_args.get('genres'),
-                tool_args.get('get_songs', 100),
+                tool_args.get('get_songs', 200),
                 tool_args.get('moods'),
                 tool_args.get('tempo_min'),
                 tool_args.get('tempo_max'),
@@ -687,13 +703,14 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
                 tool_args.get('year_min'),
                 tool_args.get('year_max'),
                 tool_args.get('min_rating'),
-                tool_args.get('album')
+                tool_args.get('album'),
+                tool_args.get('artist')
             )
         elif tool_name == "ai_brainstorm":
             return _ai_brainstorm_sync(
                 tool_args['user_request'],
                 ai_config,
-                tool_args.get('get_songs', 100)
+                tool_args.get('get_songs', 200)
             )
         else:
             return {"error": f"Unknown tool: {tool_name}"}
@@ -738,7 +755,7 @@ def get_mcp_tools() -> List[Dict]:
                     "get_songs": {
                         "type": "integer",
                         "description": "Number of songs",
-                        "default": 100
+                        "default": 200
                     }
                 },
                 "required": ["song_title", "song_artist"]
@@ -771,7 +788,7 @@ def get_mcp_tools() -> List[Dict]:
                     "get_songs": {
                         "type": "integer",
                         "description": "Number of songs",
-                        "default": 100
+                        "default": 200
                     }
                 },
                 "required": ["description"]
@@ -792,7 +809,7 @@ def get_mcp_tools() -> List[Dict]:
                     "get_songs": {
                         "type": "integer",
                         "description": "Number of songs",
-                        "default": 100
+                        "default": 200
                     }
                 },
                 "required": ["artist"]
@@ -845,7 +862,7 @@ def get_mcp_tools() -> List[Dict]:
                     "get_songs": {
                         "type": "integer",
                         "description": "Number of songs",
-                        "default": 100
+                        "default": 200
                     }
                 },
                 "required": ["add_items"]
@@ -864,7 +881,7 @@ def get_mcp_tools() -> List[Dict]:
                     "get_songs": {
                         "type": "integer",
                         "description": "Number of songs",
-                        "default": 100
+                        "default": 200
                     }
                 },
                 "required": ["user_request"]
@@ -927,10 +944,14 @@ def get_mcp_tools() -> List[Dict]:
                         "type": "string",
                         "description": "Album name to filter by (e.g. 'Abbey Road', 'Thriller')"
                     },
+                    "artist": {
+                        "type": "string",
+                        "description": "Artist name - returns ONLY songs BY this artist (e.g. 'Madonna', 'Blink-182')"
+                    },
                     "get_songs": {
                         "type": "integer",
                         "description": "Number of songs",
-                        "default": 100
+                        "default": 200
                     }
                 }
             }

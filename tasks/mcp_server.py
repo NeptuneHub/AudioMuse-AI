@@ -972,7 +972,8 @@ def _database_genre_query_sync(
     year_min: Optional[int] = None,
     year_max: Optional[int] = None,
     min_rating: Optional[int] = None,
-    album: Optional[str] = None
+    album: Optional[str] = None,
+    artist: Optional[str] = None
 ) -> List[Dict]:
     """Synchronous implementation of flexible database search with multiple optional filters.
 
@@ -1065,6 +1066,16 @@ def _database_genre_query_sync(
                 conditions.append("LOWER(album) LIKE LOWER(%s)")
                 params.append(f"%{album}%")
 
+            # Artist filter - fuzzy match: strip hyphens/dashes/slashes/apostrophes
+            # Handles 'Blink-182' (hyphen) vs 'blink‐182' (en-dash) in the database
+            if artist:
+                conditions.append("""
+                    LOWER(REPLACE(REPLACE(REPLACE(REPLACE(author, '-', ''), '‐', ''), '/', ''), '''', ''))
+                    =
+                    LOWER(REPLACE(REPLACE(REPLACE(REPLACE(%s, '-', ''), '‐', ''), '/', ''), '''', ''))
+                """)
+                params.append(artist)
+
             where_clause = " AND ".join(conditions) if conditions else "1=1"
             params.append(get_songs)
 
@@ -1141,6 +1152,8 @@ def _database_genre_query_sync(
             filters.append(f"min_rating: {min_rating}")
         if album:
             filters.append(f"album: {album}")
+        if artist:
+            filters.append(f"artist: {artist}")
 
         log_messages.append(f"Found {len(songs)} songs matching {', '.join(filters) if filters else 'all criteria'}")
 
