@@ -16,7 +16,7 @@ ftfy
 flasgger
 sqlglot
 google-genai==1.57.0
-mistralai
+mistralai>=1.11.1,<2.0.0
 umap-learn
 pydub
 python-mpd2
