@@ -1462,7 +1462,6 @@ The Text Search functionality is configured by the following environment variabl
 
 * `CLAP_AUDIO_MODEL_PATH`: Filesystem path to the audio ONNX model (default `/app/model/model_epoch_36.onnx`). Uses the DCLAP distilled student model. The companion `.onnx.data` file must be in the same directory.
 * `CLAP_TEXT_MODEL_PATH`: Filesystem path to the text ONNX model (default `/app/model/clap_text_model.onnx`). Used by Flask for search queries.
-* `CLAP_MODEL_PATH`: Legacy path for combined model (not used with split architecture, kept for backward compatibility).
 * `CLAP_EMBEDDING_DIMENSION`: Expected embedding vector size (fixed at 512 for LAION CLAP models). Used for validation.
 
 #### **ONNX Runtime Configuration**

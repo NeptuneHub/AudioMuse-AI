@@ -272,10 +272,6 @@ CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # To revert to the original teacher model set CLAP_AUDIO_MODEL_PATH=/app/model/clap_audio_model.onnx
 # and override the mel params (see CLAP_AUDIO_* variables below).
 CLAP_AUDIO_MODEL_PATH = os.environ.get("CLAP_AUDIO_MODEL_PATH", "/app/model/model_epoch_36.onnx")
-# Maximum number of segments to send through the CLAP audio model in one batch.
-# Using a small batch (e.g. 10) reduces ONNX session overhead when many overlapping
-# segments need scoring. This value can be overridden via environment variable.
-CLAP_SEGMENT_BATCH_SIZE = int(os.environ.get("CLAP_SEGMENT_BATCH_SIZE", "10"))
 
 # Mel-spectrogram parameters for the CLAP audio model.
 # Defaults match the distilled student model (EfficientAT, model_epoch_36.onnx).
@@ -291,17 +287,11 @@ CLAP_AUDIO_FMAX = int(os.environ.get("CLAP_AUDIO_FMAX", "14000"))
 CLAP_AUDIO_MEL_TRANSPOSE = os.environ.get("CLAP_AUDIO_MEL_TRANSPOSE", "false").lower() == "true"
 
 CLAP_TEXT_MODEL_PATH = os.environ.get("CLAP_TEXT_MODEL_PATH", "/app/model/clap_text_model.onnx")
-# Legacy path for backward compatibility (unused with split models)
-CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", "/app/model/clap_model.onnx")
 CLAP_EMBEDDING_DIMENSION = 512
 # CPU threading for CLAP analysis:
 # - False (default): Use ONNX internal threading (auto-detects all CPU cores, recommended)
 # - True: Use Python ThreadPoolExecutor with auto-calculated threads: (physical_cores - 1) + (logical_cores // 2)
 CLAP_PYTHON_MULTITHREADS = os.environ.get("CLAP_PYTHON_MULTITHREADS", "False").lower() == "true"
-# Mini-batch size for CLAP segment processing (reduces GPU memory usage)
-# Note: The DCLAP student model has a fixed batch dimension of 1,
-# so segments are always processed one at a time regardless of this setting.
-CLAP_MINI_BATCH_SIZE = int(os.environ.get("CLAP_MINI_BATCH_SIZE", "1"))
 
 # Model reloading strategy to prevent GPU VRAM accumulation
 # - true (default): Unload both MusiCNN and CLAP models after each song
