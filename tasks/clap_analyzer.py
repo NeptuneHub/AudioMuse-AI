@@ -717,8 +717,6 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
     dict label→embedding) so callers in ``tasks/analysis.py`` continue to work
     without modification.
     """
-    import json
-    
     if not config.CLAP_ENABLED:
         logger.warning("CLAP is disabled, cannot compute other feature text embeddings")
         return None
