@@ -239,97 +239,6 @@ def _load_text_model():
     return session
 
 
-def _load_onnx_model():
-    """DEPRECATED: Load combined CLAP ONNX model (for backward compatibility)."""
-    import onnxruntime as ort
-    import gc
-    
-    logger.warning("DEPRECATED: Using legacy combined CLAP model. Consider updating to split models.")
-    logger.info(f"Loading CLAP ONNX model from {config.CLAP_MODEL_PATH}...")
-    
-    # Configure ONNX Runtime session options
-    sess_options = ort.SessionOptions()
-    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    sess_options.log_severity_level = 3  # 0=Verbose, 1=Info, 2=Warning, 3=Error, 4=Fatal
-    
-    # Threading configuration based on CLAP_PYTHON_MULTITHREADS:
-    # - False (default): Let ONNX Runtime decide optimal thread count automatically
-    # - True: Disable ONNX threading (set to 1), use Python ThreadPoolExecutor instead
-    if not config.CLAP_PYTHON_MULTITHREADS:
-        # Let ONNX Runtime handle threading automatically (optimal for most cases)
-        # import psutil
-        # logical_cores = psutil.cpu_count(logical=True) or 4
-        # num_threads = max(1, logical_cores - 2)  # All cores minus 2, minimum 1
-        # sess_options.intra_op_num_threads = num_threads
-        # sess_options.inter_op_num_threads = num_threads
-        # logger.info(f"CLAP: Using {num_threads} threads ({logical_cores} logical cores - 2)")
-        logger.info("CLAP: Using ONNX Runtime automatic thread management")
-    else:
-        # Python ThreadPoolExecutor will handle threading - disable ONNX threading
-        sess_options.intra_op_num_threads = 1  # Single-threaded ONNX operations
-        sess_options.inter_op_num_threads = 1  # Single-threaded ONNX operations
-        logger.info("CLAP: Using Python threading (auto-calculated threads), ONNX single-threaded")
-    
-    # GPU support: ONNX Runtime handles CUDA availability internally
-    # If CUDA fails, it automatically falls back to CPU
-    session = None
-    
-    # Configure provider options with GPU memory management
-    available_providers = ort.get_available_providers()
-    if 'CUDAExecutionProvider' in available_providers:
-        # Get GPU device ID from environment or default to 0
-        # Docker sets NVIDIA_VISIBLE_DEVICES, CUDA runtime uses CUDA_VISIBLE_DEVICES
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            # If CUDA_VISIBLE_DEVICES is set, use first device (already mapped to 0)
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
-    else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
-    
-    # Create session with determined providers
-    try:
-        session = ort.InferenceSession(
-            config.CLAP_MODEL_PATH,
-            sess_options=sess_options,
-            providers=[p[0] for p in provider_options],
-            provider_options=[p[1] for p in provider_options]
-        )
-        
-        active_provider = session.get_providers()[0]
-        logger.info(f"✓ CLAP ONNX model loaded successfully")
-            
-    except Exception as e:
-        # Final fallback: force CPU-only
-        logger.warning(f"Failed to load with preferred providers: {e}")
-        logger.info("Attempting final CPU-only fallback...")
-        try:
-            session = ort.InferenceSession(
-                config.CLAP_MODEL_PATH,
-                sess_options=sess_options,
-                providers=['CPUExecutionProvider']
-            )
-            logger.info(f"✓ CLAP ONNX model loaded successfully (CPU fallback)")
-        except Exception as cpu_error:
-            logger.error(f"Failed to load ONNX model even with CPU: {cpu_error}")
-            raise
-    
-    if session is None:
-        raise RuntimeError("Failed to create ONNX session")
-    
-    gc.collect()
-    return session
-
-
 def _load_tokenizer():
     """Load RoBERTa tokenizer for text processing."""
     from transformers import AutoTokenizer
@@ -393,52 +302,6 @@ def initialize_clap_text_model():
         return True
     except Exception as e:
         logger.error(f"Failed to initialize CLAP text model: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-def initialize_clap_model():
-    """Initialize CLAP ONNX model if enabled and not already loaded.
-    
-    DEPRECATED: For backward compatibility. Use initialize_clap_audio_model() or
-    initialize_clap_text_model() instead to load only what you need.
-    """
-    global _audio_session, _text_session, _tokenizer
-    
-    if not config.CLAP_ENABLED:
-        logger.info("CLAP is disabled in config. Skipping model initialization.")
-        return False
-    
-    # Try split models first
-    if os.path.exists(config.CLAP_AUDIO_MODEL_PATH) and os.path.exists(config.CLAP_TEXT_MODEL_PATH):
-        logger.warning("DEPRECATED: initialize_clap_model() called but split models available.")
-        logger.warning("Consider using initialize_clap_audio_model() or initialize_clap_text_model() instead.")
-        
-        # Load both for backward compatibility
-        audio_ok = initialize_clap_audio_model()
-        text_ok = initialize_clap_text_model()
-        return audio_ok and text_ok
-    
-    # Fall back to legacy combined model
-    if _audio_session is not None or _text_session is not None:
-        logger.debug("CLAP model already initialized.")
-        return True
-    
-    if not os.path.exists(config.CLAP_MODEL_PATH):
-        logger.error(f"CLAP model not found at {config.CLAP_MODEL_PATH}")
-        return False
-    
-    try:
-        # Load legacy combined model into both slots
-        combined_session = _load_onnx_model()
-        _audio_session = combined_session
-        _text_session = combined_session
-        _tokenizer = _load_tokenizer()
-        logger.info("CLAP ONNX model initialized successfully (legacy combined model).")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to initialize CLAP ONNX model: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -536,21 +399,6 @@ def get_clap_text_model():
         if not initialize_clap_text_model():
             raise RuntimeError("Failed to initialize CLAP text model")
     return _text_session
-
-
-def get_clap_model():
-    """DEPRECATED: Get the global CLAP ONNX session. Use get_clap_audio_model() or get_clap_text_model() instead."""
-    # For backward compatibility, return audio model if available
-    if _audio_session is not None:
-        return _audio_session
-    if _text_session is not None:
-        return _text_session
-    
-    logger.warning("DEPRECATED: get_clap_model() called. Use get_clap_audio_model() or get_clap_text_model()")
-    logger.info("Lazy-loading CLAP model on first use (saves RAM at startup)...")
-    if not initialize_clap_model():
-        raise RuntimeError("Failed to initialize CLAP model")
-    return _audio_session or _text_session
 
 
 def get_tokenizer():
@@ -846,12 +694,8 @@ def is_clap_available() -> bool:
     if not config.CLAP_ENABLED:
         return False
     
-    # Check if split models exist (preferred)
-    if os.path.exists(config.CLAP_AUDIO_MODEL_PATH) and os.path.exists(config.CLAP_TEXT_MODEL_PATH):
-        return True
-    
-    # Fall back to legacy combined model
-    return os.path.exists(config.CLAP_MODEL_PATH)
+    # Check if split models exist
+    return os.path.exists(config.CLAP_AUDIO_MODEL_PATH) and os.path.exists(config.CLAP_TEXT_MODEL_PATH)
 
 
 # --- CLAP-based Other Features (replaces mood-specific ONNX models) ---
@@ -872,19 +716,6 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
     The external API remains unchanged (takes a redis connection, returns a
     dict label→embedding) so callers in ``tasks/analysis.py`` continue to work
     without modification.
-    """
-    """
-    Get CLAP text embeddings for OTHER_FEATURE_LABELS, using Redis cache.
-    
-    On first call, computes text embeddings for each label in OTHER_FEATURE_LABELS
-    (e.g., 'danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad') using the
-    CLAP text model and caches them in Redis. Subsequent calls load from cache.
-    
-    Args:
-        redis_conn: Redis connection instance
-        
-    Returns:
-        Dict mapping label -> numpy array (512-dim normalized embedding), or None if failed
     """
     import json
     
