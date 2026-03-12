@@ -34,7 +34,8 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * Version 0.8.0 finaly out of BETA and with new CLAP model that enable the search of song by text that contains genre, instruments and moods. 
+> * **Version 0.9.0** introduce the new DCLAP model, for a faster analysis. **IMPORTANT**: it need to start from a clean db and a new analysis. Learn more on the release note.
+> * **Version 0.8.13** introduce the authentication layer. It start initially disabled by default. Learn more on the release note.
 
 ## Disclaimer
 
@@ -177,12 +178,11 @@ AudioMuse AI is built upon a robust stack of open-source technologies:
 * [**Flask:**](https://flask.palletsprojects.com/) Provides the lightweight web interface for user interaction and API endpoints.  
 * [**Redis Queue (RQ):**](https://redis.io/glossary/redis-queue/) A simple Python library for queueing jobs and processing them in the background with Redis.
 * [**Supervisord:**](https://supervisord.org/) Supervisor is a client/server system that allows its users to monitor and control a number of processes on UNIX-like operating systems.
-* [**Essentia-tensorflow**](https://essentia.upf.edu/) An open-source library for audio analysis, feature extraction, and music information retrieval. (used only until version v0.5.0-beta)
 * [**MusiCNN (Music Convolutional Neural Network)**](https://github.com/jordipons/musicnn) Open-source MusiCNN models exported directly to ONNX for feature extraction and mood prediction (used from v4.0.0, replaces Essentia-exported models).
 * [**Librosa**](https://github.com/librosa/librosa) Library for audio analysis, feature extraction, and music information retrieval. (used from version v0.6.0-beta)
-* [**CLAP (Contrastive Language-Audio Pretraining)**](https://github.com/LAION-AI/CLAP) Neural network for audio-text matching, enabling natural language music search and text-based playlist generation.
+* [**LAION CLAP (Contrastive Language-Audio Pretraining)**](https://github.com/LAION-AI/CLAP) Neural network for audio-text matching, enabling natural language music search and text-based playlist generation.
+* [**Distilled CLAP (DCLAP)**](https://github.com/NeptuneHub/AudioMuse-AI-DCLAP) Distilled lightweight version of LAION CLAP.
 * [**ONNX**](https://onnx.ai/) Open Neural Network Exchange format and [ONNX Runtime](https://onnxruntime.ai/) for fast, portable, cross-platform model inference. **(Used from v0.7.0-beta, replaces TensorFlow)**
-* [**Tensorflow**](https://www.tensorflow.org/) Platform developed by Google for building, training, and deploying machine learning and deep learning models. **(Used only in versions before v0.7.0-beta)**
 * [**scikit-learn**](https://scikit-learn.org/) Utilized for machine learning algorithms:
 * [**voyager**](https://github.com/spotify/voyager) Approximate Nearest Neighbors used for the /similarity interface. Used from v0.6.3-beta
 * [**PostgreSQL:**](https://www.postgresql.org/) A powerful, open-source relational database used for persisting:  
