@@ -183,7 +183,6 @@ AudioMuse AI is built upon a robust stack of open-source technologies:
 * [**LAION CLAP (Contrastive Language-Audio Pretraining)**](https://github.com/LAION-AI/CLAP) Neural network for audio-text matching, enabling natural language music search and text-based playlist generation.
 * [**Distilled CLAP (DCLAP)**](https://github.com/NeptuneHub/AudioMuse-AI-DCLAP) Distilled lightweight version of LAION CLAP.
 * [**ONNX**](https://onnx.ai/) Open Neural Network Exchange format and [ONNX Runtime](https://onnxruntime.ai/) for fast, portable, cross-platform model inference. **(Used from v0.7.0-beta, replaces TensorFlow)**
-* [**Tensorflow**](https://www.tensorflow.org/) Platform developed by Google for building, training, and deploying machine learning and deep learning models. **(Used only in versions before v0.7.0-beta)**
 * [**scikit-learn**](https://scikit-learn.org/) Utilized for machine learning algorithms:
 * [**voyager**](https://github.com/spotify/voyager) Approximate Nearest Neighbors used for the /similarity interface. Used from v0.6.3-beta
 * [**PostgreSQL:**](https://www.postgresql.org/) A powerful, open-source relational database used for persisting:  
