@@ -60,7 +60,7 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
     Returns:
         str: The extracted playlist name from the model's response, or an error message.
     """
-    # Detect which format to use: OpenAI chat-completions (messages array) vs Ollama generate (prompt string).
+    # Detect which format to use: OpenAI chat-completions (messages array) vs Ollama generate (prompt string). fix 360
     is_openai_format = AI_MODEL_PROVIDER == "OPENAI"
 
     headers = {
