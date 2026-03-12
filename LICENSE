@@ -633,7 +633,7 @@ you agree to the following terms:
    - License: CC BY-NC-SA 4.0 (Non-Commercial)
    - Official Project: https://github.com/MTG/essentia-models
 
-2. LAION-CLAP MODELS:
+2. LAION-CLAP MODELS (Audio and Text Head):
    - License: CC0 1.0 (Public Domain)
    - Official Project: https://github.com/LAION-AI/CLAP
 
@@ -644,7 +644,11 @@ the following terms:
    - License: ISC
    - Official Project: https://github.com/jordipons/musicnn
 
-2. AudioMuse-AI-DCLAP MODELS:
+2. LAION-CLAP MODEL (only Text Head):
+   - License: CC0 1.0 (Public Domain)
+   - Official Project: https://github.com/LAION-AI/CLAP
+
+3. AudioMuse-AI-DCLAP MODELS (only Audio Head):
    - License: AGPLv3
    - Official Project: https://github.com/NeptuneHub/AudioMuse-AI-DCLAP
 
