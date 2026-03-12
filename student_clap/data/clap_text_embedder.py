@@ -3,6 +3,7 @@ import logging
 import numpy as np
 import onnxruntime as ort
 from typing import List
+from util import provider
 
 logger = logging.getLogger(__name__)
 
@@ -13,15 +14,10 @@ class CLAPTextEmbedder:
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_options.log_severity_level = 3
-        available_providers = ort.get_available_providers()
-        if 'CUDAExecutionProvider' in available_providers:
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            logger.info(f"CLAP text model loaded: {model_path}")
-            logger.info(f"✅ Using CUDA for ONNX teacher text model")
-        else:
-            providers = ['CPUExecutionProvider']
-            logger.info(f"CLAP text model loaded: {model_path}")
-            logger.info(f"✅ Using CPU for ONNX teacher text model")
+        available_providers = provider.get_available_providers()
+        logger.info(f"CLAP text model loaded: {model_path}")
+        logger.info(f"✅ Using %s for ONNX teacher text model",
+                    [provider.split('ExecutionProvider')[0] for provider in available_providers])
         self.session = ort.InferenceSession(
             model_path,
             sess_options=sess_options,
