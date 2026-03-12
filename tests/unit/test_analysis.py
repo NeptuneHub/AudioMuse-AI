@@ -1198,6 +1198,10 @@ class TestOOMFallback:
         assert 'CPU' in sessions_created
         assert cpu_session_call_count[0] > 0
 
+    # NOTE: test_secondary_model_oom_fallback_to_cpu was removed because
+    # secondary mood models (danceable, aggressive, etc.) have been replaced
+    # by CLAP text-audio similarity in v4.0.0.
+
     @patch('tasks.analysis.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')
     @patch('tasks.analysis.librosa.feature.rms')

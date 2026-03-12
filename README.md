@@ -24,7 +24,7 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 * **Song Alchemy**: Mix your ideal vibe, mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and a 2D preview. Export the final selection directly to your media server.
 * **Text Search**: search your song with simple text that can contains mood, instruments and genre like calm piano songs.
 
-More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [FAQ](docs/FAQ.md), [GPU DEPLOYMENT](docs/GPU.md), [HARDWARE REQUIREMENTS](docs/HARDWARE.md) and [CONFIGURATION PARAMETERS](docs/PARAMETERS.md) can be found in the [docs folder](docs).
+More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [FAQ](docs/FAQ.md), [GPU DEPLOYMENT](docs/GPU.md), [HARDWARE REQUIREMENTS](docs/HARDWARE.md), [CONFIGURATION PARAMETERS](docs/PARAMETERS.md) [AUTHENTICATION](docs/AUTH.md) and can be found in the [docs folder](docs).
 
 **The full list or AudioMuse-AI related repository are:** 
   > * [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI): the core application, it run Flask and Worker containers to actually run all the feature;
@@ -109,7 +109,12 @@ For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](d
    ```bash
    docker compose -f deployment/docker-compose.yaml up -d
    ```
+> Remember to get the correct version for your Music Server.
 
+> docker-compose.yaml is for Jellyfin.
+> You also have docker-compose-navidrome.yaml, docker-compose-lyrion.yaml, dokcer-compose-emby.yaml
+
+> Other example are for advanced deployment.
 4. **Access the application:**
    Open your browser at `http://localhost:8000`
 
@@ -122,6 +127,8 @@ For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](d
 ```bash
 docker compose -f deployment/docker-compose.yaml down
 ```
+
+> NOTE: by default AudioMuse-AI is deployed WITHOUT authentication layer and its suited only for LOCAL deployment. If you want to configure it have a look to the  [AUTHENTICATION](docs/AUTH.md) docs. If you enable the Authentication Layer, you need to be sure that any plugin used support and use the AudioMuse-AI API TOKEN
 
 ## **Hardware Requirements**
 
@@ -171,7 +178,7 @@ AudioMuse AI is built upon a robust stack of open-source technologies:
 * [**Redis Queue (RQ):**](https://redis.io/glossary/redis-queue/) A simple Python library for queueing jobs and processing them in the background with Redis.
 * [**Supervisord:**](https://supervisord.org/) Supervisor is a client/server system that allows its users to monitor and control a number of processes on UNIX-like operating systems.
 * [**Essentia-tensorflow**](https://essentia.upf.edu/) An open-source library for audio analysis, feature extraction, and music information retrieval. (used only until version v0.5.0-beta)
-* [**MusicNN Tensorflow Audio Models from Essentia**](https://essentia.upf.edu/models.html) Leverages pre-trained MusicNN models for feature extraction and prediction. More details and models.
+* [**MusiCNN (Music Convolutional Neural Network)**](https://github.com/jordipons/musicnn) Open-source MusiCNN models exported directly to ONNX for feature extraction and mood prediction (used from v4.0.0, replaces Essentia-exported models).
 * [**Librosa**](https://github.com/librosa/librosa) Library for audio analysis, feature extraction, and music information retrieval. (used from version v0.6.0-beta)
 * [**CLAP (Contrastive Language-Audio Pretraining)**](https://github.com/LAION-AI/CLAP) Neural network for audio-text matching, enabling natural language music search and text-based playlist generation.
 * [**ONNX**](https://onnx.ai/) Open Neural Network Exchange format and [ONNX Runtime](https://onnxruntime.ai/) for fast, portable, cross-platform model inference. **(Used from v0.7.0-beta, replaces TensorFlow)**

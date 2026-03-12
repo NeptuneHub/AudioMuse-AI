@@ -35,3 +35,5 @@ httpx
 voyager==2.1.0
 transformers==4.57.3
 sentencepiece==0.2.1
+PyJWT>=2.8.0
+gunicorn

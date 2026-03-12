@@ -44,6 +44,11 @@ services:
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
       TEMP_DIR: "/app/temp_audio"
+      # Authentication (optional) – leave blank to disable
+      API_TOKEN: "${API_TOKEN:-}"
+      AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
+      AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
+      JWT_SECRET: "${JWT_SECRET:-}"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
       CLAP_PYTHON_MULTITHREADS: "${CLAP_PYTHON_MULTITHREADS:-false}"
     volumes:

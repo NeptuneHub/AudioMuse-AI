@@ -97,11 +97,14 @@ def _validate_analysis_result(result, expected, track_name, tol=1e-3):
     assert result.get('scale') == expected['scale'], \
         f"{track_name}: scale mismatch: {result.get('scale')} != {expected['scale']}"
 
-    # Other scalar features
-    for k in ['energy', 'danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']:
-        assert k in result, f"{track_name}: missing feature: {k}"
-        assert abs(float(result[k]) - expected[k]) <= tol, \
-            f"{track_name}: feature {k} mismatch: {result[k]} != {expected[k]}"
+    # Energy check
+    assert 'energy' in result, f"{track_name}: missing feature: energy"
+    assert abs(float(result['energy']) - expected['energy']) <= tol, \
+        f"{track_name}: feature energy mismatch: {result['energy']} != {expected['energy']}"
+
+    # Note: other features (danceable, aggressive, happy, party, relaxed, sad)
+    # are no longer returned by analyze_track. They are now computed via CLAP
+    # text-audio similarity in analyze_album_task.
 
     # Moods: compare each expected mood
     got_moods = result.get('moods', {})
@@ -128,9 +131,7 @@ def test_real_analysis_runs_and_returns_expected_shape():
     project_root = Path(__file__).resolve().parents[1]
     models_dir = project_root / 'test' / 'models'
     required = [
-        'msd-musicnn-1.onnx', 'msd-msd-musicnn-1.onnx', 'danceability-msd-musicnn-1.onnx',
-        'mood_aggressive-msd-musicnn-1.onnx', 'mood_happy-msd-musicnn-1.onnx',
-        'mood_party-msd-musicnn-1.onnx', 'mood_relaxed-msd-musicnn-1.onnx', 'mood_sad-msd-musicnn-1.onnx'
+        'musicnn_embedding.onnx', 'musicnn_prediction.onnx',
     ]
     missing = [p for p in required if not (models_dir / p).exists()]
     if missing:
@@ -153,14 +154,8 @@ def test_real_analysis_runs_and_returns_expected_shape():
     importlib.reload(analysis)
 
     model_paths = {
-        'embedding': str(models_dir / 'msd-musicnn-1.onnx'),
-        'prediction': str(models_dir / 'msd-msd-musicnn-1.onnx'),
-        'danceable': str(models_dir / 'danceability-msd-musicnn-1.onnx'),
-        'aggressive': str(models_dir / 'mood_aggressive-msd-musicnn-1.onnx'),
-        'happy': str(models_dir / 'mood_happy-msd-musicnn-1.onnx'),
-        'party': str(models_dir / 'mood_party-msd-musicnn-1.onnx'),
-        'relaxed': str(models_dir / 'mood_relaxed-msd-musicnn-1.onnx'),
-        'sad': str(models_dir / 'mood_sad-msd-musicnn-1.onnx'),
+        'embedding': str(models_dir / 'musicnn_embedding.onnx'),
+        'prediction': str(models_dir / 'musicnn_prediction.onnx'),
     }
 
     # Print existence info (helpful when running the test)

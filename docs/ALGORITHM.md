@@ -250,8 +250,8 @@ This is the heart of the analysis, using librosa and onnxruntime.
 4. **ONNX Model Inference (Main Models):**  
    * **Embedding:** Loads the model from EMBEDDING\_MODEL\_PATH to generate embeddings\_per\_patch.  
    * **Mood Prediction:** Loads the model from PREDICTION\_MODEL\_PATH and feeds it the embeddings\_per\_patch to get mood probabilities.  
-5. **ONNX Model Inference (Secondary Models):**  
-   * It loops through other models (e.g., DANCEABILITY\_MODEL\_PATH, AGGRESSIVE\_MODEL\_PATH, etc.) and feeds them the *same* embeddings\_per\_patch to get scores for other features.  
+5. **CLAP-based Other Features:**  
+   * Pre-computed CLAP text embeddings for feature labels (danceable, aggressive, happy, party, relaxed, sad) are loaded from Redis cache. During CLAP audio analysis, cosine similarity between the audio embedding and each text embedding yields a score per feature.  
 6. **Final Output:**  
    * Returns an analysis dictionary (with scalars like tempo, energy, and mood scores) and a single averaged processed\_embeddings vector for the entire track. This vector is what gets stored in the embedding table and indexed by Voyager.
 
@@ -285,9 +285,9 @@ The Song Analysis functionality is configured by the following environment varia
 #### **Model & Analysis Parameters**
 
 * TOP\_N\_MOODS: The default number of top-scoring moods to save in the score.mood\_vector column.  
-* EMBEDDING\_MODEL\_PATH: Filesystem path to the main msd-musicnn-1.onnx model (generates embeddings).  
-* PREDICTION\_MODEL\_PATH: Filesystem path to the msd-msd-musicnn-1.onnx model (generates mood predictions from embeddings).  
-* DANCEABILITY\_MODEL\_PATH, AGGRESSIVE\_MODEL\_PATH, HAPPY\_MODEL\_PATH, PARTY\_MODEL\_PATH, RELAXED\_MODEL\_PATH, SAD\_MODEL\_PATH: Paths to the secondary models that generate "other features".
+* EMBEDDING\_MODEL\_PATH: Filesystem path to the musicnn\_embedding.onnx model (generates embeddings).  
+* PREDICTION\_MODEL\_PATH: Filesystem path to the musicnn\_prediction.onnx model (generates mood predictions from embeddings).  
+* Other features (danceable, aggressive, happy, party, relaxed, sad) are now computed via CLAP text-audio similarity — no separate model paths needed. Text embeddings for these labels are cached in Redis on first use.
 
 Additional analysis tuning & normalization constants
 

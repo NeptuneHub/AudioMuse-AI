@@ -46,17 +46,12 @@
 
 
         <div id="map-status" style="margin-left:12px;color:var(--text-muted)"></div>
-        <!-- Minimal search UI: Artist and Title (autocomplete + highlight) -->
+        <!-- Minimal search UI: unified Song, Artist or Album (autocomplete + highlight) -->
         <div class="map-search-row">
             <div class="map-search-col">
-                <label for="artist_search_map" style="font-size:12px;color:var(--text-sub)">Artist</label>
-                <input id="artist_search_map" class="map-search-input" type="text" placeholder="Artist name..." autocomplete="off">
-                <div id="artist_autocomplete_results" class="autocomplete-results hidden" style="background:var(--bg-card);border:1px solid var(--border-color);max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
-            </div>
-            <div class="map-search-col">
-                <label for="title_search_map" style="font-size:12px;color:var(--text-sub)">Title</label>
-                <input id="title_search_map" class="map-search-input" type="text" placeholder="Track title..." autocomplete="off">
-                <div id="title_autocomplete_results" class="autocomplete-results hidden" style="background:var(--bg-card);border:1px solid var(--border-color);max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
+                <label for="search_query_map" style="font-size:12px;color:var(--text-sub)">Song, Artist or Album</label>
+                <input id="search_query_map" class="map-search-input" type="text" placeholder="Start typing..." autocomplete="off">
+                <div id="map_autocomplete_results" class="autocomplete-results hidden" style="background:var(--bg-card);border:1px solid var(--border-color);max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
             </div>
             <div class="map-search-col button-col">
                 <label style="font-size:12px;color:transparent">&nbsp;</label>
@@ -620,7 +615,7 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
 </script>
 
 <script>
-// Minimal autocomplete and highlight logic for map search controls (connected artist+title + single Search)
+// Minimal autocomplete and highlight logic for map search controls (unified search field)
 (function(){
     let selectedItemId = null;
 
@@ -646,15 +641,12 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
             div.style.padding = '6px'; div.style.cursor = 'pointer'; div.style.borderBottom = '1px solid var(--border-color)';
             div.innerHTML = `<div style="font-weight:600">${t.title || '(unknown)'}</div><div style="font-size:12px;color:var(--text-muted)">${t.author || ''}</div><div style="font-size:12px;color:var(--text-muted)">${t.album ? t.album : ''}</div>`;
             div.addEventListener('click', ()=>{
-                // When an item is selected from either artist or title list, fill both fields and set the single selectedItemId
+                // When an item is selected, set the selectedItemId
                 selectedItemId = t.item_id;
-                const a = document.getElementById('artist_search_map');
-                const ti = document.getElementById('title_search_map');
-                if (a) a.value = t.author || '';
-                if (ti) ti.value = t.title || '';
-                // hide both result containers
-                try { document.getElementById('artist_autocomplete_results').classList.add('hidden'); } catch(e){}
-                try { document.getElementById('title_autocomplete_results').classList.add('hidden'); } catch(e){}
+                const searchEl = document.getElementById('search_query_map');
+                if (searchEl) searchEl.value = `${t.title || ''} — ${t.author || ''}`;
+                // hide result container
+                try { document.getElementById('map_autocomplete_results').classList.add('hidden'); } catch(e){}
                 // NOTE: do NOT add to selection here — user requested adding only when tapping the Search button
             });
             c.appendChild(div);
@@ -662,20 +654,11 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
         c.classList.remove('hidden');
     }
 
-    const handleArtistInput = debounce(async ()=>{
-        const artistQ = document.getElementById('artist_search_map').value.trim();
-        const titleQ = document.getElementById('title_search_map').value.trim();
-        if (artistQ.length < 2 && titleQ.length < 2){ document.getElementById('artist_autocomplete_results').classList.add('hidden'); return; }
-        const list = await searchTracks({ artist: artistQ, title: titleQ, n: 50 });
-        showResults(list, 'artist_autocomplete_results');
-    }, 250);
-
-    const handleTitleInput = debounce(async ()=>{
-        const artistQ = document.getElementById('artist_search_map').value.trim();
-        const titleQ = document.getElementById('title_search_map').value.trim();
-        if (artistQ.length < 2 && titleQ.length < 2){ document.getElementById('title_autocomplete_results').classList.add('hidden'); return; }
-        const list = await searchTracks({ artist: artistQ, title: titleQ, n: 50 });
-        showResults(list, 'title_autocomplete_results');
+    const handleSearchInput = debounce(async ()=>{
+        const searchQ = document.getElementById('search_query_map').value.trim();
+        if (searchQ.length < 2){ document.getElementById('map_autocomplete_results').classList.add('hidden'); return; }
+        const list = await searchTracks({ search_query: searchQ, n: 50 });
+        showResults(list, 'map_autocomplete_results');
     }, 250);
 
     function removeExistingHighlight(){
@@ -766,33 +749,29 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
 
     // Wire inputs/buttons
     try{
-        document.getElementById('artist_search_map').addEventListener('input', handleArtistInput);
-        document.getElementById('title_search_map').addEventListener('input', handleTitleInput);
+        document.getElementById('search_query_map').addEventListener('input', handleSearchInput);
         document.getElementById('map_search_btn').addEventListener('click', async ()=>{
-            // If user selected an item from autocomplete, use it. Otherwise run a combined search and pick first.
+            // If user selected an item from autocomplete, use it. Otherwise run a unified search and pick first.
             if (selectedItemId) {
                 try { if (!window._plotSelection) window._plotSelection = []; if (!window._plotSelection.includes(String(selectedItemId))) window._plotSelection.push(String(selectedItemId)); renderSelectionPanel(); } catch(e){}
                 highlightSongById(selectedItemId);
                 return;
             }
-            const artistQ = document.getElementById('artist_search_map').value.trim();
-            const titleQ = document.getElementById('title_search_map').value.trim();
-            if (artistQ.length < 1 && titleQ.length < 1) { document.getElementById('map-status').textContent = 'Enter artist or title to search'; return; }
-            const list = await searchTracks({ artist: artistQ, title: titleQ, n: 20 });
+            const searchQ = document.getElementById('search_query_map').value.trim();
+            if (searchQ.length < 1) { document.getElementById('map-status').textContent = 'Enter song, artist or album to search'; return; }
+            const list = await searchTracks({ search_query: searchQ, n: 20 });
             if (!list || list.length === 0) { document.getElementById('map-status').textContent = 'No matches found'; return; }
             const t = list[0];
-            // set fields and selected id
+            // set field and selected id
             selectedItemId = t.item_id;
-            document.getElementById('artist_search_map').value = t.author || '';
-            document.getElementById('title_search_map').value = t.title || '';
+            document.getElementById('search_query_map').value = `${t.title || ''} — ${t.author || ''}`;
             // add to selection and highlight (Search click triggers add)
             try { if (!window._plotSelection) window._plotSelection = []; if (!window._plotSelection.includes(String(t.item_id))) window._plotSelection.push(String(t.item_id)); renderSelectionPanel(); } catch(e){}
             highlightSongById(t.item_id);
         });
         // clicking outside should hide results
         document.addEventListener('click', (e)=>{
-            if (!e.target.closest('#artist_search_map') && !e.target.closest('#artist_autocomplete_results')) document.getElementById('artist_autocomplete_results').classList.add('hidden');
-            if (!e.target.closest('#title_search_map') && !e.target.closest('#title_autocomplete_results')) document.getElementById('title_autocomplete_results').classList.add('hidden');
+            if (!e.target.closest('#search_query_map') && !e.target.closest('#map_autocomplete_results')) document.getElementById('map_autocomplete_results').classList.add('hidden');
         });
     } catch(e){ console.warn('map search init failed', e); }
 })();

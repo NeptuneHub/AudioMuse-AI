@@ -855,3 +855,109 @@ def is_clap_available() -> bool:
     
     # Fall back to legacy combined model
     return os.path.exists(config.CLAP_MODEL_PATH)
+
+
+# --- CLAP-based Other Features (replaces mood-specific ONNX models) ---
+
+def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
+    """
+    Get CLAP text embeddings for OTHER_FEATURE_LABELS, using Redis cache.
+    
+    On first call, computes text embeddings for each label in OTHER_FEATURE_LABELS
+    (e.g., 'danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad') using the
+    CLAP text model and caches them in Redis. Subsequent calls load from cache.
+    
+    Args:
+        redis_conn: Redis connection instance
+        
+    Returns:
+        Dict mapping label -> numpy array (512-dim normalized embedding), or None if failed
+    """
+    import json
+    
+    if not config.CLAP_ENABLED:
+        logger.warning("CLAP is disabled, cannot compute other feature text embeddings")
+        return None
+    
+    cache_key = config.CLAP_OTHER_FEATURES_REDIS_KEY
+    
+    # Try loading from Redis cache
+    try:
+        cached = redis_conn.get(cache_key)
+        if cached is not None:
+            cached_data = json.loads(cached)
+            result = {label: np.array(emb, dtype=np.float32) for label, emb in cached_data.items()}
+            # Verify all labels are present
+            missing = [l for l in config.OTHER_FEATURE_LABELS if l not in result]
+            if not missing:
+                logger.info(f"Loaded CLAP other feature text embeddings from Redis cache ({len(result)} labels)")
+                return result
+            else:
+                logger.warning(f"Cached embeddings missing labels: {missing}. Recomputing...")
+    except Exception as e:
+        logger.warning(f"Failed to load CLAP text embeddings from Redis: {e}")
+    
+    # Compute text embeddings for each label
+    logger.info(f"Computing CLAP text embeddings for OTHER_FEATURE_LABELS: {config.OTHER_FEATURE_LABELS}")
+    
+    try:
+        # Use batch text embedding for efficiency
+        embeddings = get_text_embeddings_batch(config.OTHER_FEATURE_LABELS)
+        
+        if embeddings is None:
+            logger.error("Failed to compute batch text embeddings for other feature labels")
+            return None
+        
+        result = {}
+        for i, label in enumerate(config.OTHER_FEATURE_LABELS):
+            result[label] = embeddings[i]
+        
+        # Cache in Redis (no expiry - these are stable model outputs)
+        try:
+            cache_data = {label: emb.tolist() for label, emb in result.items()}
+            redis_conn.set(cache_key, json.dumps(cache_data))
+            logger.info(f"Cached CLAP other feature text embeddings in Redis ({len(result)} labels)")
+        except Exception as e:
+            logger.warning(f"Failed to cache CLAP text embeddings in Redis: {e}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to compute CLAP text embeddings for other features: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+    finally:
+        # Unload text model after computing (worker only needs audio model)
+        global _text_session, _tokenizer
+        if _text_session is not None:
+            _text_session = None
+            _tokenizer = None
+            import gc
+            gc.collect()
+            logger.info("Unloaded CLAP text model after computing other feature embeddings")
+
+
+def compute_other_features_from_clap(audio_embedding: np.ndarray, label_embeddings: dict) -> dict:
+    """
+    Compute other feature scores by comparing a CLAP audio embedding against
+    pre-computed CLAP text embeddings for each feature label.
+    
+    Uses cosine similarity (dot product since both embeddings are L2-normalized).
+    Maps from cosine-similarity range [-1, 1] to probability-like [0, 1] using
+    (similarity + 1) / 2  — matching the devel-DCLAP branch behaviour.
+    
+    Args:
+        audio_embedding: 512-dim normalized CLAP audio embedding
+        label_embeddings: Dict mapping label -> 512-dim normalized text embedding
+        
+    Returns:
+        Dict mapping label -> float score in [0, 1]
+    """
+    result = {}
+    for label, text_emb in label_embeddings.items():
+        # Cosine similarity = dot product for L2-normalized vectors (range [-1, 1])
+        similarity = float(np.dot(audio_embedding, text_emb))
+        # Map cosine similarity [-1, 1] → probability-like [0, 1]
+        result[label] = (similarity + 1.0) / 2.0
+    return result
