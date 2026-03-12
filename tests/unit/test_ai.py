@@ -81,6 +81,7 @@ class TestCleanPlaylistName:
 class TestGetOpenAICompatiblePlaylistName:
     """Tests for OpenAI-compatible API function"""
 
+    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.requests.post')
     @patch('ai.time.sleep')
     def test_openai_format_success(self, mock_sleep, mock_post):
@@ -196,6 +197,7 @@ class TestGetOpenAICompatiblePlaylistName:
         # Should still extract the valid chunk
         assert result == "Valid"
 
+    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.requests.post')
     def test_openrouter_headers(self, mock_post):
         """Test OpenRouter-specific headers are added"""
@@ -221,6 +223,7 @@ class TestGetOpenAICompatiblePlaylistName:
         assert "HTTP-Referer" in headers
         assert "X-Title" in headers
 
+    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.requests.post')
     @patch('ai.time.sleep')
     def test_rate_limit_retry_with_exponential_backoff(self, mock_sleep, mock_post):
@@ -254,6 +257,7 @@ class TestGetOpenAICompatiblePlaylistName:
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 5 in sleep_calls  # Exponential backoff for attempt 0
 
+    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     @patch('ai.time.sleep')
@@ -304,6 +308,7 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'max_tokens' not in second_call_data
         assert second_call_data.get('max_completion_tokens') == 8000
 
+    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     @patch('ai.time.sleep')
@@ -368,6 +373,7 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'max_tokens' not in third_call_data
         assert 'max_completion_tokens' not in third_call_data
 
+    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     @patch('ai.time.sleep')
@@ -421,6 +427,7 @@ class TestGetOpenAICompatiblePlaylistName:
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list if call[0][0] >= 5]
         assert len(sleep_calls) >= 1  # At least one sleep for rate limit
 
+    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     @patch('ai.time.sleep')
@@ -482,6 +489,7 @@ class TestGetOpenAICompatiblePlaylistName:
         # Should be exactly 3 calls total
         assert mock_post.call_count == 3
 
+    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     def test_existing_max_tokens_fallback_still_works(self, mock_post, mock_env):
@@ -527,6 +535,7 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'max_tokens' not in second_call_data
         assert second_call_data.get('max_completion_tokens') == 8000
 
+    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     def test_ultra_minimal_fallback_requires_proper_error_code(self, mock_post, mock_env):

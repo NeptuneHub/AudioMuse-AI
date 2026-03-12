@@ -30,10 +30,13 @@ jobs:
 
     - name: Download models
       run: |
+        dclap_url="https://github.com/NeptuneHub/AudioMuse-AI-DCLAP/releases/download/v1"
         base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"
         mkdir -p test/models
-        echo "Downloading CLAP audio model..."
-        curl -L "${base_url}/clap_audio_model.onnx" -o "test/models/clap_audio_model.onnx"
+        echo "Downloading DCLAP audio model..."
+        curl -L "${dclap_url}/model_epoch_36.onnx" -o "test/models/model_epoch_36.onnx"
+        echo "Downloading DCLAP audio model data..."
+        curl -L "${dclap_url}/model_epoch_36.onnx.data" -o "test/models/model_epoch_36.onnx.data"
         echo "Downloading CLAP text model..."
         curl -L "${base_url}/clap_text_model.onnx" -o "test/models/clap_text_model.onnx"
         echo "Downloading MusiCNN embedding model..."

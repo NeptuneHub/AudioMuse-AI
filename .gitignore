@@ -51,6 +51,10 @@ nul
 # Downloaded ONNX models (from run_worker_macos.sh or similar)
 /model/
 
+# Test models (downloaded by CI workflow from GitHub Releases)
+test/models/*.onnx
+test/models/*.onnx.data
+
 # Exported MuLan models
 mulan_model_export/
 

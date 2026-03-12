@@ -11,7 +11,9 @@
 #      pytest test/test_clap_analysis_integration.py -s -q
 #
 # Note: Test audio files should be in test/songs/
-#       CLAP ONNX models (clap_audio_model.onnx and clap_text_model.onnx) should be in test/models/
+#       CLAP ONNX models:
+#         - DCLAP audio: model_epoch_36.onnx + model_epoch_36.onnx.data in test/models/
+#         - Text: clap_text_model.onnx in test/models/
 import sys
 import types
 from pathlib import Path
@@ -39,34 +41,35 @@ def test_clap_analysis_runs_and_shows_output():
     """
     
     # Expected cosine similarities for each track and query
-    # These are the reference values that must be maintained
+    # NOTE: These values are for the DCLAP distilled student model (model_epoch_36.onnx).
+    # They will differ from the original teacher CLAP model values.
     expected_similarities = {
         'Art Flower - Art Flower - Creamy Snowflakes.mp3': {
-            'rock': 0.333237,
-            'classic piano song': 0.043963,
-            'electro': 0.153350,
-            'acoustic': 0.129170
+            'rock': 0.328612,
+            'classic piano song': 0.056155,
+            'electro': 0.171881,
+            'acoustic': 0.142844,
         },
         'Aaron Dunn - Minuet - Notebook for Anna Magdalena.mp3': {
-            'rock': 0.113808,
-            'classic piano song': 0.389167,
-            'electro': 0.078039,
-            'acoustic': 0.246442
+            'rock': 0.121994,
+            'classic piano song': 0.405505,
+            'electro': 0.080324,
+            'acoustic': 0.274541,
         },
         "Michael Hawley - Sonata 'Waldstein', Op. 53 - II. Introduzione-Adagio molto.mp3": {
-            'rock': 0.095823,
-            'classic piano song': 0.349463,
-            'electro': 0.042161,
-            'acoustic': 0.066694
-        }
+            'rock': 0.123132,
+            'classic piano song': 0.445012,
+            'electro': 0.052204,
+            'acoustic': 0.116278,
+        },
     }
     project_root = Path(__file__).resolve().parents[1]
     models_dir = project_root / 'test' / 'models'
-    clap_audio_model = models_dir / 'clap_audio_model.onnx'
+    clap_audio_model = models_dir / 'model_epoch_36.onnx'
     clap_text_model = models_dir / 'clap_text_model.onnx'
     
     if not clap_audio_model.exists():
-        pytest.skip(f"CLAP audio model not present in test/models: {clap_audio_model}")
+        pytest.skip(f"DCLAP audio model not present in test/models: {clap_audio_model}")
     
     if not clap_text_model.exists():
         pytest.skip(f"CLAP text model not present in test/models: {clap_text_model}")

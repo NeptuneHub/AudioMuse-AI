@@ -772,13 +772,14 @@ if not _is_worker:
         if load_clap_cache_from_db():
           logger.info("CLAP text search cache loaded at startup (embeddings only).")
           logger.info("CLAP model will lazy-load on first text search (~1-2s delay, saves 3GB RAM).")
-          
-          # Load top queries from database (default queries only, no computation)
-          has_existing = load_top_queries_from_db()
-          if has_existing:
-            logger.info("Loaded top queries from database (defaults).")
-          else:
-            logger.info("No queries found in database (should not happen - check DB)")
+        
+        # Load top queries from database (default queries only, no computation)
+        # This must run even if no CLAP embeddings exist yet (first startup)
+        has_existing = load_top_queries_from_db()
+        if has_existing:
+          logger.info("Loaded top queries from database (defaults).")
+        else:
+          logger.info("No queries found in database (should not happen - check DB)")
     except Exception as e:
       logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
     # Load MuLan embeddings cache (model will lazy-load on first use)
@@ -790,13 +791,14 @@ if not _is_worker:
         if load_mulan_cache_from_db():
           logger.info("MuLan text search cache loaded at startup (embeddings only).")
           logger.info("MuLan models will lazy-load on first text search.")
-          
-          # Load top queries from database
-          has_existing = load_mulan_top_queries_from_db()
-          if has_existing:
-            logger.info("Loaded MuLan top queries from database (defaults).")
-          else:
-            logger.info("No MuLan queries found in database (defaults inserted)")
+        
+        # Load top queries from database
+        # This must run even if no MuLan embeddings exist yet (first startup)
+        has_existing = load_mulan_top_queries_from_db()
+        if has_existing:
+          logger.info("Loaded MuLan top queries from database (defaults).")
+        else:
+          logger.info("No MuLan queries found in database (defaults inserted)")
     except Exception as e:
       logger.debug(f"MuLan cache not loaded at startup (may be disabled or failed): {e}")
 

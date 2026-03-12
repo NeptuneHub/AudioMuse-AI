@@ -1370,9 +1370,9 @@ The Text Search system is architected around two core components: CLAP embedding
 CLAP embeddings are generated as part of the song analysis pipeline, running in parallel with mood/embedding extraction.
 
 1. **Model Architecture:** The system uses split ONNX CLAP models:
-   * **Audio model** (`clap_audio_model.onnx`, ~268MB): Loaded in worker containers during analysis to generate embeddings from audio files.
-   * **Text model** (`clap_text_model.onnx`, ~478MB): Loaded in Flask containers during search to generate embeddings from text queries.
-   * This split architecture saves memory—workers only load audio, Flask only loads text (vs. ~746MB combined).
+   * **Audio model** (`model_epoch_36.onnx`, ~20MB): Distilled DCLAP student model loaded in worker containers during analysis to generate embeddings from audio files. Requires companion file `model_epoch_36.onnx.data` in the same directory.
+   * **Text model** (`clap_text_model.onnx`, ~478MB): Original LAION CLAP text encoder loaded in Flask containers during search to generate embeddings from text queries.
+   * This split architecture saves memory—workers only load audio, Flask only loads text.
 2. **Audio Processing (analyze_track in tasks/analysis.py):**
    * After loading audio with librosa, if `CLAP_ENABLED=true`, the system calls `get_clap_audio_embedding` from `tasks.clap_analyzer`.
    * Audio is resampled to 48kHz mono and converted to a mel-spectrogram.
@@ -1460,9 +1460,8 @@ The Text Search functionality is configured by the following environment variabl
 
 #### **CLAP Model Paths**
 
-* `CLAP_AUDIO_MODEL_PATH`: Filesystem path to the audio ONNX model (default `/app/model/clap_audio_model.onnx`). Used by workers during analysis.
+* `CLAP_AUDIO_MODEL_PATH`: Filesystem path to the audio ONNX model (default `/app/model/model_epoch_36.onnx`). Uses the DCLAP distilled student model. The companion `.onnx.data` file must be in the same directory.
 * `CLAP_TEXT_MODEL_PATH`: Filesystem path to the text ONNX model (default `/app/model/clap_text_model.onnx`). Used by Flask for search queries.
-* `CLAP_MODEL_PATH`: Legacy path for combined model (not used with split architecture, kept for backward compatibility).
 * `CLAP_EMBEDDING_DIMENSION`: Expected embedding vector size (fixed at 512 for LAION CLAP models). Used for validation.
 
 #### **ONNX Runtime Configuration**
