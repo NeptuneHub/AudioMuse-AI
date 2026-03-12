@@ -34,7 +34,8 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * Version 0.8.0 finaly out of BETA and with new CLAP model that enable the search of song by text that contains genre, instruments and moods. 
+> * **Version 0.9.0** introduce the new DCLAP model, for a faster analysis. **IMPORTANT**: it need to start from a clean db and a new analysis. Learn more on the release note.
+> * **Version 0.8.13** introduce the authentication layer. It start initially disabled by default. Learn more on the release note.
 
 ## Disclaimer
 
