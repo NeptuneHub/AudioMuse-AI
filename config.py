@@ -267,21 +267,31 @@ EMBEDDING_DIMENSION = 200
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # Split CLAP models: audio model for analysis, text model for search
-CLAP_AUDIO_MODEL_PATH = os.environ.get("CLAP_AUDIO_MODEL_PATH", "/app/model/clap_audio_model.onnx")
+# Default points to the distilled student model (EfficientAT, epoch 36).
+# The companion external-data file (model_epoch_36.onnx.data) must sit next to it.
+# To revert to the original teacher model set CLAP_AUDIO_MODEL_PATH=/app/model/clap_audio_model.onnx
+# and override the mel params (see CLAP_AUDIO_* variables below).
+CLAP_AUDIO_MODEL_PATH = os.environ.get("CLAP_AUDIO_MODEL_PATH", "/app/model/model_epoch_36.onnx")
+
+# Mel-spectrogram parameters for the CLAP audio model.
+# Defaults match the distilled student model (EfficientAT, model_epoch_36.onnx).
+# For the original teacher model (clap_audio_model.onnx) override to:
+#   CLAP_AUDIO_N_MELS=64  CLAP_AUDIO_N_FFT=1024  CLAP_AUDIO_HOP_LENGTH=480
+#   CLAP_AUDIO_FMIN=50    CLAP_AUDIO_MEL_TRANSPOSE=true
+CLAP_AUDIO_N_MELS = int(os.environ.get("CLAP_AUDIO_N_MELS", "128"))
+CLAP_AUDIO_N_FFT = int(os.environ.get("CLAP_AUDIO_N_FFT", "2048"))
+CLAP_AUDIO_HOP_LENGTH = int(os.environ.get("CLAP_AUDIO_HOP_LENGTH", "480"))
+CLAP_AUDIO_FMIN = int(os.environ.get("CLAP_AUDIO_FMIN", "0"))
+CLAP_AUDIO_FMAX = int(os.environ.get("CLAP_AUDIO_FMAX", "14000"))
+# Teacher model (HTSAT) transposes mel to (time, mels); student does not.
+CLAP_AUDIO_MEL_TRANSPOSE = os.environ.get("CLAP_AUDIO_MEL_TRANSPOSE", "false").lower() == "true"
+
 CLAP_TEXT_MODEL_PATH = os.environ.get("CLAP_TEXT_MODEL_PATH", "/app/model/clap_text_model.onnx")
-# Legacy path for backward compatibility (unused with split models)
-CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", "/app/model/clap_model.onnx")
 CLAP_EMBEDDING_DIMENSION = 512
 # CPU threading for CLAP analysis:
 # - False (default): Use ONNX internal threading (auto-detects all CPU cores, recommended)
 # - True: Use Python ThreadPoolExecutor with auto-calculated threads: (physical_cores - 1) + (logical_cores // 2)
 CLAP_PYTHON_MULTITHREADS = os.environ.get("CLAP_PYTHON_MULTITHREADS", "False").lower() == "true"
-# Mini-batch size for CLAP segment processing (reduces GPU memory usage)
-# - 4 (default): Safe for 4GB GPU, processes 4 segments at a time
-# - 8: Good for 6GB+ GPU, faster but uses more memory
-# - 1: Ultra-safe sequential processing (slowest, minimal memory)
-# Note: Set to 1 for deterministic embeddings (ONNX model has batch-sensitive operations)
-CLAP_MINI_BATCH_SIZE = int(os.environ.get("CLAP_MINI_BATCH_SIZE", "1"))
 
 # Model reloading strategy to prevent GPU VRAM accumulation
 # - true (default): Unload both MusiCNN and CLAP models after each song

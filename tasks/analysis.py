@@ -838,11 +838,15 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                 # save_track_analysis_and_embedding() below.
                                 track_processed = True
                             
-                            # Conditionally unload CLAP model based on PER_SONG_MODEL_RELOAD
+                            # Conditionally unload CLAP audio model between songs when
+                            # PER_SONG_MODEL_RELOAD is true.  We only drop the audio
+                            # session, keeping the text model and its cached label
+                            # embeddings alive (much smaller footprint and faster to
+                            # reload later).
                             if PER_SONG_MODEL_RELOAD:
-                                from .clap_analyzer import unload_clap_model
-                                unload_clap_model()
-                                logger.debug(f"  - CLAP model unloaded after song (PER_SONG_MODEL_RELOAD=true)")
+                                from .clap_analyzer import unload_clap_audio_only
+                                unload_clap_audio_only()
+                                logger.debug(f"  - CLAP audio model unloaded after song (PER_SONG_MODEL_RELOAD=true)")
                         except Exception as e:
                             logger.warning(f"  - CLAP analysis failed: {e}")
                     elif not needs_clap and is_clap_available():

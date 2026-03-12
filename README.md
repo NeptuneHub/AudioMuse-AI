@@ -157,7 +157,7 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
   Development build from the **devel** branch.
   May be unstable — **for testing and development only.**
 
-* **`:vX.Y.Z`** (e.g. `:v1.0.0`, `:v0.1.4-alpha`)
+* **`:X.Y.Z`** (e.g. `:1.0.0`, `:0.1.4-alpha`)
   Immutable images built from **Git release tags**.
   **Ideal for reproducible or pinned deployments.**
 
