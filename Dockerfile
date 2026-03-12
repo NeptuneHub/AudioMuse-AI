@@ -139,7 +139,7 @@ RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
 # These are the text encoders needed by laion-clap library for text embeddings
 # and T5 for MuLan text encoding
 RUN set -eux; \
-    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
     hf_models="huggingface_models.tar.gz"; \
     cache_dir="/app/.cache/huggingface"; \
     echo "Downloading HuggingFace models (~985MB)..."; \
