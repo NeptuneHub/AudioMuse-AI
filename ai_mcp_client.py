@@ -38,6 +38,13 @@ def call_ai_with_mcp_tools(
         return _call_mistral_with_tools(user_message, tools, ai_config, log_messages)
     elif provider == "OLLAMA":
         return _call_ollama_with_tools(user_message, tools, ai_config, log_messages)
+    elif provider == "MINIMAX":
+        # MiniMax uses an OpenAI-compatible API, reuse the OpenAI tool calling path
+        minimax_config = dict(ai_config)
+        minimax_config['openai_url'] = ai_config.get('minimax_url', 'https://api.minimax.io/v1/chat/completions')
+        minimax_config['openai_key'] = ai_config.get('minimax_key')
+        minimax_config['openai_model'] = ai_config.get('minimax_model', 'MiniMax-M2.5')
+        return _call_openai_with_tools(user_message, tools, minimax_config, log_messages)
     else:
         return {"error": f"Unsupported AI provider: {provider}"}
 

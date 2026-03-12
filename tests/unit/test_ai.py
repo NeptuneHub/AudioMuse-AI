@@ -829,6 +829,33 @@ class TestGetAIPlaylistName:
         assert result == "OpenAI Playlist"
         mock_openai.assert_called_once()
 
+    @patch('ai.get_openai_compatible_playlist_name')
+    def test_routes_to_minimax(self, mock_openai_compat):
+        """Test provider routing to MiniMax (uses OpenAI-compatible API)"""
+        mock_openai_compat.return_value = "MiniMax Playlist"
+
+        result = get_ai_playlist_name(
+            provider="MINIMAX",
+            ollama_url="",
+            ollama_model_name="",
+            gemini_api_key="",
+            gemini_model_name="",
+            mistral_api_key="",
+            mistral_model_name="",
+            prompt_template=creative_prompt_template,
+            feature1="electronic",
+            feature2="chill",
+            feature3="ambient",
+            song_list=[{"title": "Track", "author": "Artist"}],
+            other_feature_scores_dict={},
+            minimax_server_url="https://api.minimax.io/v1/chat/completions",
+            minimax_model_name="MiniMax-M2.5",
+            minimax_api_key="test-key"
+        )
+
+        assert result == "MiniMax Playlist"
+        mock_openai_compat.assert_called_once()
+
     def test_handles_none_provider(self):
         """Test handling of NONE provider"""
         result = get_ai_playlist_name(

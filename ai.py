@@ -376,10 +376,11 @@ def get_mistral_playlist_name(mistral_api_key, model_name, full_prompt, skip_del
         return "Error: AI service is currently unavailable."
 
 # --- General AI Call Function (for chat multi-step) ---
-def call_ai_for_chat(provider, prompt, ollama_url=None, ollama_model_name=None, 
+def call_ai_for_chat(provider, prompt, ollama_url=None, ollama_model_name=None,
                      gemini_api_key=None, gemini_model_name=None,
                      mistral_api_key=None, mistral_model_name=None,
-                     openai_server_url=None, openai_model_name=None, openai_api_key=None):
+                     openai_server_url=None, openai_model_name=None, openai_api_key=None,
+                     minimax_server_url=None, minimax_model_name=None, minimax_api_key=None):
     """
     Generic function to call any AI provider with a given prompt.
     Returns the raw text response from the AI.
@@ -401,11 +402,15 @@ def call_ai_for_chat(provider, prompt, ollama_url=None, ollama_model_name=None,
         if not mistral_api_key or not mistral_model_name:
             return "Error: Mistral configuration missing"
         return get_mistral_playlist_name(mistral_api_key, mistral_model_name, prompt, skip_delay=True)
+    elif provider == "MINIMAX":
+        if not minimax_server_url or not minimax_model_name or not minimax_api_key:
+            return "Error: MiniMax configuration missing"
+        return get_openai_compatible_playlist_name(minimax_server_url, minimax_model_name, prompt, minimax_api_key, skip_delay=True)
     else:
         return "Error: Invalid AI provider"
 
 # --- General AI Naming Function ---
-def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key, gemini_model_name, mistral_api_key, mistral_model_name, prompt_template, feature1, feature2, feature3, song_list, other_feature_scores_dict, openai_server_url=None, openai_model_name=None, openai_api_key=None):
+def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key, gemini_model_name, mistral_api_key, mistral_model_name, prompt_template, feature1, feature2, feature3, song_list, other_feature_scores_dict, openai_server_url=None, openai_model_name=None, openai_api_key=None, minimax_server_url=None, minimax_model_name=None, minimax_api_key=None):
     """
     Selects and calls the appropriate AI model based on the provider.
     Constructs the full prompt including new features.
@@ -477,6 +482,10 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
             name = get_gemini_playlist_name(gemini_api_key, gemini_model_name, current_prompt)
         elif provider == "MISTRAL":
             name = get_mistral_playlist_name(mistral_api_key, mistral_model_name, current_prompt)
+        elif provider == "MINIMAX":
+            if not minimax_server_url or not minimax_model_name or not minimax_api_key:
+                return "Error: MiniMax configuration is incomplete. Please provide server URL, model name, and API key."
+            name = get_openai_compatible_playlist_name(minimax_server_url, minimax_model_name, current_prompt, minimax_api_key)
         # else: provider is NONE or invalid, name remains "AI Naming Skipped"
 
         # Apply length check and return final name or error

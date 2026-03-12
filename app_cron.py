@@ -15,7 +15,8 @@ from config import (
     AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME,
     OPENAI_SERVER_URL, OPENAI_MODEL_NAME, OPENAI_API_KEY,
     GEMINI_API_KEY, GEMINI_MODEL_NAME,
-    MISTRAL_API_KEY, MISTRAL_MODEL_NAME, ENABLE_CLUSTERING_EMBEDDINGS
+    MISTRAL_API_KEY, MISTRAL_MODEL_NAME, ENABLE_CLUSTERING_EMBEDDINGS,
+    MINIMAX_API_KEY, MINIMAX_MODEL_NAME, MINIMAX_SERVER_URL
 )
 
 cron_bp = Blueprint('cron_bp', __name__)
@@ -166,6 +167,9 @@ def run_due_cron_jobs():
                         "gemini_model_name_param": GEMINI_MODEL_NAME,
                         "mistral_api_key_param": MISTRAL_API_KEY,
                         "mistral_model_name_param": MISTRAL_MODEL_NAME,
+                        "minimax_api_key_param": MINIMAX_API_KEY,
+                        "minimax_model_name_param": MINIMAX_MODEL_NAME,
+                        "minimax_server_url_param": MINIMAX_SERVER_URL,
                         "top_n_moods_for_clustering_param": int(TOP_N_MOODS),
                         "enable_clustering_embeddings_param": bool(ENABLE_CLUSTERING_EMBEDDINGS),
                     }

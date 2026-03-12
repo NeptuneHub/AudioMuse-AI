@@ -269,7 +269,8 @@ def run_clustering_task(
     mistral_api_key_param, mistral_model_name_param,
     top_n_moods_for_clustering_param,
     top_n_playlists_param, # *** NEW: Accept Top N parameter ***
-    enable_clustering_embeddings_param):
+    enable_clustering_embeddings_param,
+    minimax_api_key_param=None, minimax_model_name_param=None, minimax_server_url_param=None):
     """
     Main entry point for the clustering process.
     Orchestrates data preparation, batch job creation, result aggregation, and playlist creation.
@@ -512,7 +513,10 @@ def run_clustering_task(
                 openai_server_url_param, openai_model_name_param, openai_api_key_param,
                 gemini_api_key_param, gemini_model_name_param,
                 mistral_api_key_param, mistral_model_name_param,
-                enable_clustering_embeddings_param
+                enable_clustering_embeddings_param,
+                minimax_key=minimax_api_key_param,
+                minimax_model=minimax_model_name_param,
+                minimax_url=minimax_server_url_param
             )
 
             _log_and_update("Deleting existing automatic playlists...", 97)
@@ -843,7 +847,7 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
     logger.info(f"Enqueued batch job {new_job.id} for runs {start_run}-{start_run + num_iterations - 1}.")
 
 
-def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_model, openai_url, openai_model, openai_key, gemini_key, gemini_model, mistral_key, mistral_model, embeddings_used):
+def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_model, openai_url, openai_model, openai_key, gemini_key, gemini_model, mistral_key, mistral_model, embeddings_used, minimax_key=None, minimax_model=None, minimax_url=None):
     """
     Uses AI to name playlists and formats them for creation.
     Returns a dictionary mapping final playlist names to lists of song tuples (id, title, author).
@@ -858,7 +862,7 @@ def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_mod
             continue
 
         final_name = original_name
-        if ai_provider in ["OLLAMA", "OPENAI", "GEMINI", "MISTRAL"]:
+        if ai_provider in ["OLLAMA", "OPENAI", "GEMINI", "MISTRAL", "MINIMAX"]:
             try:
                 # Simplified feature extraction for AI prompt
                 name_parts = original_name.split('_')
@@ -876,7 +880,10 @@ def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_mod
                     centroids.get(original_name, {}),
                     openai_server_url=openai_url,
                     openai_model_name=openai_model,
-                    openai_api_key=openai_key
+                    openai_api_key=openai_key,
+                    minimax_server_url=minimax_url,
+                    minimax_model_name=minimax_model,
+                    minimax_api_key=minimax_key
                 )
                 if ai_name and "Error" not in ai_name:
                     final_name = ai_name.strip().replace("\n", " ")

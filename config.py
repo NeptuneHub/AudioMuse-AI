@@ -65,7 +65,7 @@ MIN_PLAYLIST_SIZE_FOR_TOP_N = int(os.environ.get("MIN_PLAYLIST_SIZE_FOR_TOP_N", 
 
 # --- Algorithm Choose Constants (Read from Environment Variables) ---
 CLUSTER_ALGORITHM = os.environ.get("CLUSTER_ALGORITHM", "kmeans") # accepted dbscan, kmeans, gmm, or spectral
-AI_MODEL_PROVIDER = os.environ.get("AI_MODEL_PROVIDER", "NONE").upper() # Accepted: OLLAMA, OPENAI, GEMINI, MISTRAL, NONE
+AI_MODEL_PROVIDER = os.environ.get("AI_MODEL_PROVIDER", "NONE").upper() # Accepted: OLLAMA, OPENAI, GEMINI, MISTRAL, MINIMAX, NONE
 ENABLE_CLUSTERING_EMBEDDINGS = os.environ.get("ENABLE_CLUSTERING_EMBEDDINGS", "True").lower() == "true"
 
 # --- GPU Acceleration for Clustering (Optional, requires NVIDIA GPU and RAPIDS cuML) ---
@@ -217,6 +217,11 @@ GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro") # Defa
 
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "YOUR-GEMINI-API-KEY-HERE")
 MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
+
+# MiniMax API (OpenAI-compatible) - https://www.minimaxi.com/
+MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY", "YOUR-MINIMAX-API-KEY-HERE")
+MINIMAX_MODEL_NAME = os.environ.get("MINIMAX_MODEL_NAME", "MiniMax-M2.5")
+MINIMAX_SERVER_URL = os.environ.get("MINIMAX_SERVER_URL", "https://api.minimax.io/v1/chat/completions")
 
 # AI Request Timeout Configuration
 # Timeout in seconds for AI API requests. Increase this value if using slower hardware or larger models.

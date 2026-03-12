@@ -13,6 +13,7 @@ from config import (
     OPENAI_SERVER_URL, OPENAI_MODEL_NAME, OPENAI_API_KEY, # Import OpenAI config
     GEMINI_MODEL_NAME, GEMINI_API_KEY, # Import GEMINI_API_KEY from config
     MISTRAL_MODEL_NAME, MISTRAL_API_KEY,
+    MINIMAX_API_KEY, MINIMAX_MODEL_NAME, MINIMAX_SERVER_URL, # Import MiniMax config
     AI_MODEL_PROVIDER, # Default AI provider
 )
 
@@ -77,6 +78,12 @@ def chat_home():
                             'default_mistral_model_name': {
                                 'type': 'string', 'example': 'ministral-3b-latest'
                             },
+                            'default_minimax_model_name': {
+                                'type': 'string', 'example': 'MiniMax-M2.5'
+                            },
+                            'minimax_server_url': {
+                                'type': 'string', 'example': 'https://api.minimax.io/v1/chat/completions'
+                            },
                         }
                     }
                 }
@@ -97,6 +104,8 @@ def chat_config_defaults_api():
         "openai_server_url": OPENAI_SERVER_URL, # OpenAI server URL for display/info
         "default_gemini_model_name": GEMINI_MODEL_NAME,
         "default_mistral_model_name": MISTRAL_MODEL_NAME,
+        "default_minimax_model_name": MINIMAX_MODEL_NAME,
+        "minimax_server_url": MINIMAX_SERVER_URL,
     }), 200
 
 @chat_bp.route('/api/chatPlaylist', methods=['POST'])
@@ -119,9 +128,9 @@ def chat_config_defaults_api():
                         },
                         'ai_provider': {
                             'type': 'string',
-                            'description': 'The AI provider to use (OLLAMA, OPENAI, GEMINI, MISTRAL, NONE). Defaults to server config.',
+                            'description': 'The AI provider to use (OLLAMA, OPENAI, GEMINI, MISTRAL, MINIMAX, NONE). Defaults to server config.',
                             'example': 'GEMINI',
-                            'enum': ['OLLAMA', 'OPENAI', 'GEMINI', "MISTRAL", 'NONE']
+                            'enum': ['OLLAMA', 'OPENAI', 'GEMINI', 'MISTRAL', 'MINIMAX', 'NONE']
                         },
                         'ai_model': {
                             'type': 'string',
@@ -149,6 +158,14 @@ def chat_config_defaults_api():
                         'mistral_api_key': {
                             'type': 'string',
                             'description': 'Custom Mistral API key (optional, defaults to server configuration).',
+                        },
+                        'minimax_api_key': {
+                            'type': 'string',
+                            'description': 'Custom MiniMax API key (optional, defaults to server configuration).',
+                        },
+                        'minimax_server_url': {
+                            'type': 'string',
+                            'description': 'Custom MiniMax server URL (optional, defaults to https://api.minimax.io/v1/chat/completions).',
                         }
                     }
                 }
@@ -243,6 +260,8 @@ def chat_playlist_api():
         data_for_log['mistral_api_key'] = 'API-KEY'
     if 'openai_api_key' in data_for_log and data_for_log['openai_api_key']:
         data_for_log['openai_api_key'] = 'API-KEY'
+    if 'minimax_api_key' in data_for_log and data_for_log['minimax_api_key']:
+        data_for_log['minimax_api_key'] = 'API-KEY'
     logger.debug("chat_playlist_api called. Raw request data: %s", data_for_log)
     
     from app_helper import get_db
@@ -284,7 +303,10 @@ def chat_playlist_api():
         'gemini_key': data.get('gemini_api_key') or GEMINI_API_KEY,
         'gemini_model': ai_model_from_request or GEMINI_MODEL_NAME,
         'mistral_key': data.get('mistral_api_key') or MISTRAL_API_KEY,
-        'mistral_model': ai_model_from_request or MISTRAL_MODEL_NAME
+        'mistral_model': ai_model_from_request or MISTRAL_MODEL_NAME,
+        'minimax_url': data.get('minimax_server_url', MINIMAX_SERVER_URL),
+        'minimax_key': data.get('minimax_api_key') or MINIMAX_API_KEY,
+        'minimax_model': ai_model_from_request or MINIMAX_MODEL_NAME
     }
     
     # Validate API keys for cloud providers
@@ -320,6 +342,18 @@ def chat_playlist_api():
             "original_request": original_user_input,
             "ai_provider_used": ai_provider,
             "ai_model_selected": ai_config.get('mistral_model'),
+            "executed_query": None,
+            "query_results": None
+        }}), 400
+
+    if ai_provider == "MINIMAX" and (not ai_config['minimax_key'] or ai_config['minimax_key'] == "YOUR-MINIMAX-API-KEY-HERE"):
+        error_msg = "Error: MiniMax API key is missing. Please provide a valid API key."
+        log_messages.append(error_msg)
+        return jsonify({"response": {
+            "message": "\n".join(log_messages),
+            "original_request": original_user_input,
+            "ai_provider_used": ai_provider,
+            "ai_model_selected": ai_config.get('minimax_model'),
             "executed_query": None,
             "query_results": None
         }}), 400

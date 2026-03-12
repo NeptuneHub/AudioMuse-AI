@@ -17,7 +17,8 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
     AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, \
     OPENAI_SERVER_URL, OPENAI_MODEL_NAME, OPENAI_API_KEY, \
     GEMINI_API_KEY, GEMINI_MODEL_NAME, \
-    TOP_N_PLAYLISTS, MISTRAL_API_KEY, MISTRAL_MODEL_NAME
+    TOP_N_PLAYLISTS, MISTRAL_API_KEY, MISTRAL_MODEL_NAME, \
+    MINIMAX_API_KEY, MINIMAX_MODEL_NAME, MINIMAX_SERVER_URL
 
 # RQ import
 from rq import Retry
@@ -332,6 +333,9 @@ def start_clustering_endpoint():
             "gemini_model_name_param": data.get('gemini_model_name', GEMINI_MODEL_NAME),
             "mistral_api_key_param": data.get('mistral_api_key', MISTRAL_API_KEY),
             "mistral_model_name_param": data.get('mistral_model_name', MISTRAL_MODEL_NAME),
+            "minimax_api_key_param": data.get('minimax_api_key', MINIMAX_API_KEY),
+            "minimax_model_name_param": data.get('minimax_model_name', MINIMAX_MODEL_NAME),
+            "minimax_server_url_param": data.get('minimax_server_url', MINIMAX_SERVER_URL),
             "top_n_moods_for_clustering_param": int(data.get('top_n_moods', TOP_N_MOODS)),
             "enable_clustering_embeddings_param": data.get('enable_clustering_embeddings', ENABLE_CLUSTERING_EMBEDDINGS),
         },

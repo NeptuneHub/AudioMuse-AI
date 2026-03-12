@@ -35,7 +35,10 @@ def call_ai_step(step_name, prompt, ai_config, log_messages):
         mistral_model_name=ai_config.get('mistral_model'),
         openai_server_url=ai_config.get('openai_url'),
         openai_model_name=ai_config.get('openai_model'),
-        openai_api_key=ai_config.get('openai_key')
+        openai_api_key=ai_config.get('openai_key'),
+        minimax_server_url=ai_config.get('minimax_url'),
+        minimax_model_name=ai_config.get('minimax_model'),
+        minimax_api_key=ai_config.get('minimax_key')
     )
     
     if raw_response.startswith("Error:"):
@@ -1350,7 +1353,10 @@ Generate the SQL query now:
         mistral_model_name=ai_config.get('mistral_model'),
         openai_server_url=ai_config.get('openai_url'),
         openai_model_name=ai_config.get('openai_model'),
-        openai_api_key=ai_config.get('openai_key')
+        openai_api_key=ai_config.get('openai_key'),
+        minimax_server_url=ai_config.get('minimax_url'),
+        minimax_model_name=ai_config.get('minimax_model'),
+        minimax_api_key=ai_config.get('minimax_key')
     )
     
     if raw_sql.startswith("Error:"):

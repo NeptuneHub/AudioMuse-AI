@@ -50,6 +50,9 @@ services:
       OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
+      MINIMAX_API_KEY: "${MINIMAX_API_KEY}"
+      MINIMAX_MODEL_NAME: "${MINIMAX_MODEL_NAME}"
+      MINIMAX_SERVER_URL: "${MINIMAX_SERVER_URL}"
       CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
       TEMP_DIR: "/app/temp_audio"
     volumes:
@@ -90,6 +93,9 @@ services:
       OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
+      MINIMAX_API_KEY: "${MINIMAX_API_KEY}"
+      MINIMAX_MODEL_NAME: "${MINIMAX_MODEL_NAME}"
+      MINIMAX_SERVER_URL: "${MINIMAX_SERVER_URL}"
       CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"

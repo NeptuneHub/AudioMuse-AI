@@ -187,6 +187,7 @@ AudioMuse AI is built upon a robust stack of open-source technologies:
 * [**voyager**](https://github.com/spotify/voyager) Approximate Nearest Neighbors used for the /similarity interface. Used from v0.6.3-beta
 * [**PostgreSQL:**](https://www.postgresql.org/) A powerful, open-source relational database used for persisting:  
 * [**Ollama**](https://ollama.com/) Enables self-hosting of various open-source Large Language Models (LLMs) for tasks like intelligent playlist naming.
+* [**MiniMax**](https://www.minimaxi.com/) Cloud-based AI provider with OpenAI-compatible API, offering models like MiniMax-M2.5 for intelligent playlist naming and chat features.
 * [**Docker / OCI-compatible Containers**](https://www.docker.com/) – The entire application is packaged as a container, ensuring consistent and portable deployment across environments.
 
 ## **How To Contribute**

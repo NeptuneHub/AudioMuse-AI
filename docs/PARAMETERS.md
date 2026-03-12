@@ -36,6 +36,7 @@ The **mandatory** parameter that you need to change from the example are this:
 | `GEMINI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is GEMINI) Your Google Gemini API Key. | *(N/A - from Secret)* |
 | `MISTRAL_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MISTRAL) Your Mistral API Key.      | *(N/A - from Secret)* |
 | `OPENAI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is OPENAI) Your OpenAI / OpenRouter API Key. | *(N/A - from Secret)* |
+| `MINIMAX_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MINIMAX) Your MiniMax API Key.      | *(N/A - from Secret)* |
 
 The following additional environment variables control authentication.  Leave
 all four empty to disable auth (default).
@@ -144,7 +145,7 @@ These are the default parameters used when launching analysis or clustering task
 | `PCA_COMPONENTS_MIN`                        | Min PCA components (0 to disable).                                                        | `0`                                    |
 | `PCA_COMPONENTS_MAX`                        | Max PCA components (e.g., `8` for feature vectors, `199` for embeddings).                 | `199`                                  |
 | **AI Naming (*)**                           |                                                                                            |                                        |
-| `AI_MODEL_PROVIDER`                         | AI provider: `OLLAMA`, `GEMINI`, `MISTRAL`, `OpenAI` or `NONE`.                           | `NONE`                                 |
+| `AI_MODEL_PROVIDER`                         | AI provider: `OLLAMA`, `GEMINI`, `MISTRAL`, `OPENAI`, `MINIMAX` or `NONE`.                | `NONE`                                 |
 | `AI_REQUEST_TIMEOUT_SECONDS`                | Timeout (in seconds) for AI API requests. Increase for slower hardware or larger models.  | `300`                                  |
 | `TOP_N_ELITES`                              | Number of best solutions kept as elites.                                                  | `10`                                   |
 | `SAMPLING_PERCENTAGE_CHANGE_PER_RUN`        | Percentage of songs to swap out in the stratified sample between runs (0.0 to 1.0).       | `0.2`                                  |
@@ -156,6 +157,8 @@ These are the default parameters used when launching analysis or clustering task
 | `MISTRAL_MODEL_NAME`                        | Mistral model to use (if `AI_MODEL_PROVIDER` is MISTRAL).                                 | `ministral-3b-latest`                  |
 | `OPENAI_MODEL_NAME`                         | OpenAI or OpenRouter model to use (if `AI_MODEL_PROVIDER` is OPENAI).                     | `openai/gpt-4`                          |
 | `OPENAI_SERVER_URL`                         | URL for OpenAI / OpenRouter (if `AI_MODEL_PROVIDER` is OPENAI).                          | `https://openrouter.ai/api/v1/chat/completions` |
+| `MINIMAX_MODEL_NAME`                        | MiniMax model to use (if `AI_MODEL_PROVIDER` is MINIMAX).                                 | `MiniMax-M2.5`                         |
+| `MINIMAX_SERVER_URL`                        | URL for MiniMax API (if `AI_MODEL_PROVIDER` is MINIMAX).                                  | `https://api.minimax.io/v1/chat/completions` |
 | **Scoring Weights**                         |                                                                                            |                                        |
 | `SCORE_WEIGHT_DIVERSITY`                    | Weight for inter-playlist mood diversity.                                                 | `2.0`                                  |
 | `SCORE_WEIGHT_PURITY`                       | Weight for playlist purity (intra-playlist mood consistency).                             | `1.0`                                  |
@@ -171,11 +174,12 @@ The **AI model** tested for Clustering naming and for the instant playlist funct
 * llama3.1:8b
 * gemini-2.5-pro
 * gemini-1.5-flash-latest
+* MiniMax-M2.5
 
 different model could have different parameter and don't work.
 
-For selhosting we suggest llama, instead for cloud genini.
+For selhosting we suggest llama, instead for cloud genini or MiniMax.
 
-**(*)** For using GEMINI API you need to have a Google account, a free account can be used if needed. Same goes for Mistral. Instead if you want to self-host Ollama here you can find a deployment example:
+**(*)** For using GEMINI API you need to have a Google account, a free account can be used if needed. Same goes for Mistral. For MiniMax, get an API key from [minimaxi.com](https://www.minimaxi.com/). Instead if you want to self-host Ollama here you can find a deployment example:
 
 * https://github.com/NeptuneHub/k3s-supreme-waffle/tree/main/ollama
