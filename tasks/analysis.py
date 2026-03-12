@@ -1331,8 +1331,11 @@ def get_provider_options(cuda_do_copy_in_default_stream: bool = False,
     provider_options = [('CPUExecutionProvider', {})]
     available_providers = provider.get_available_providers()
     if 'OpenVINOExecutionProvider' in available_providers:
+        device_type = os.environ.get('OPENVINO_DEVICE_TYPE', 'GPU')
         vino_options = {
-            'device_type': 'AUTO',
+            'device_type': device_type,
+            'num_of_threads': int(os.environ.get('OPENVINO_NUM_OF_THREADS', '2')),
+            'num_streams': int(os.environ.get('OPENVINO_NUM_STREAMS', '1'))
         }
         if os.path.exists(os.environ.get('OPENVINO_CONFIG_JSON_PATH', '')):
             vino_options['load_config'] = os.environ.get('OPENVINO_CONFIG_JSON_PATH')
