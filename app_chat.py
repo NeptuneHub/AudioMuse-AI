@@ -798,23 +798,34 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
             # Not enough songs after diversity cap — use all, then backfill from overflow
             final_query_results_list = list(diversified_pool)
             if len(final_query_results_list) < target_song_count and diversity_overflow:
-                # Backfill from overflow with least-represented artists, respecting cap
-                diverse_artist_counts = {}
-                for s in final_query_results_list:
-                    a = s.get('artist', 'Unknown')
-                    diverse_artist_counts[a] = diverse_artist_counts.get(a, 0) + 1
-                diversity_overflow.sort(key=lambda s: diverse_artist_counts.get(s.get('artist', ''), 0))
-                backfill_added = 0
-                for song in diversity_overflow:
-                    if len(final_query_results_list) >= target_song_count:
-                        break
-                    artist = song.get('artist', 'Unknown')
-                    if diverse_artist_counts.get(artist, 0) < max_per_artist:
-                        final_query_results_list.append(song)
-                        diverse_artist_counts[artist] = diverse_artist_counts.get(artist, 0) + 1
-                        backfill_added += 1
-                if backfill_added > 0:
-                    log_messages.append(f"   Backfilled {backfill_added} songs from overflow (respecting {max_per_artist}/artist cap)")
+                # Progressive cap relaxation: raise per-artist cap until we hit target or exhaust overflow
+                current_cap = max_per_artist
+                while len(final_query_results_list) < target_song_count and diversity_overflow:
+                    current_cap += 1
+                    # Recount artists in current final list
+                    diverse_artist_counts = {}
+                    for s in final_query_results_list:
+                        a = s.get('artist', 'Unknown')
+                        diverse_artist_counts[a] = diverse_artist_counts.get(a, 0) + 1
+                    # Try to add overflow songs that fit the raised cap
+                    still_overflow = []
+                    backfill_added = 0
+                    for song in diversity_overflow:
+                        if len(final_query_results_list) >= target_song_count:
+                            still_overflow.append(song)
+                            continue
+                        artist = song.get('artist', 'Unknown')
+                        if diverse_artist_counts.get(artist, 0) < current_cap:
+                            final_query_results_list.append(song)
+                            diverse_artist_counts[artist] = diverse_artist_counts.get(artist, 0) + 1
+                            backfill_added += 1
+                        else:
+                            still_overflow.append(song)
+                    diversity_overflow = still_overflow
+                    if backfill_added == 0:
+                        break  # No progress at this cap level, stop
+                if current_cap > max_per_artist:
+                    log_messages.append(f"   Progressive cap relaxation: {max_per_artist} → {current_cap}/artist to reach {len(final_query_results_list)} songs")
         else:
             # More diversified songs than target — sample proportionally by tool call
             songs_by_call = {}

@@ -63,7 +63,8 @@ def _build_system_prompt(tools: List[Dict], library_context: Optional[Dict] = No
     decision_tree.append("2. 'top/best/greatest/hits/famous/popular' + artist? -> ai_brainstorm (cultural knowledge about iconic tracks)")
     decision_tree.append("3. 'songs from [ALBUM]' or 'songs like [ALBUM]'? -> search_database with album filter, OR song_similarity with tracks from the album")
     decision_tree.append("4. 'songs BY/FROM [ARTIST]' (exact catalog)? -> search_database(artist='Artist Name'). Call ONCE per artist.")
-    decision_tree.append("5. Decade mentioned (80s, 90s, 2000s)? -> ALWAYS include year_min/year_max in search_database (e.g., 80s=1980-1989)")
+    decision_tree.append("5a. Specific year mentioned (e.g., '2026 songs', 'from 2024')? -> search_database with year_min=YEAR AND year_max=YEAR (BOTH the same year)")
+    decision_tree.append("5b. Decade mentioned (80s, 90s, 2000s)? -> ALWAYS include year_min/year_max in search_database (e.g., 80s=1980-1989)")
     if has_text_search:
         decision_tree.append("6. Instruments (piano, guitar, ukulele) or SOUND DESCRIPTIONS (romantic, dreamy, chill vibes)? -> text_search")
         decision_tree.append("7. 'songs LIKE/SIMILAR TO [ARTIST]' (discover similar)? -> artist_similarity (returns artist's own + similar artists' songs)")
@@ -496,6 +497,8 @@ def _call_ollama_with_tools(user_message: str, tools: List[Dict], ai_config: Dic
         examples.append('"songs like blink-182"\n{{"tool_calls": [{{"name": "artist_similarity", "arguments": {{"artist": "blink-182", "get_songs": 200}}}}]}}')
         examples.append('"top songs of Madonna"\n{{"tool_calls": [{{"name": "ai_brainstorm", "arguments": {{"user_request": "top songs of Madonna", "get_songs": 200}}}}]}}')
         examples.append('"energetic rock"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"genres": ["rock"], "energy_min": 0.65, "get_songs": 200}}}}]}}')
+        examples.append('"2026 songs"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"year_min": 2026, "year_max": 2026, "get_songs": 200}}}}]}}')
+        examples.append('"90s pop"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"genres": ["pop"], "year_min": 1990, "year_max": 1999, "get_songs": 200}}}}]}}')
         examples_text = "\n\n".join(examples)
 
         prompt = f"""{system_prompt}
@@ -513,6 +516,9 @@ Return ONLY a valid JSON object with this EXACT format:
 
 === EXAMPLES ===
 {examples_text}
+
+IMPORTANT: ONLY include parameters the user explicitly asked for. Do NOT invent extra filters (genres, ratings, moods, energy) the user never mentioned.
+For a specific year like "2026 songs", set BOTH year_min and year_max to 2026 (NOT year_min=1).
 
 Now analyze this request and return ONLY the JSON:
 Request: "{user_message}"
