@@ -1729,7 +1729,7 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
     finally:
         cur.close()
 
-def search_tracks_unified(search_query: str, limit: int = 15):
+def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0):
     """
     Deterministic substring search over title, author and album.
 
@@ -1784,10 +1784,11 @@ def search_tracks_unified(search_query: str, limit: int = 15):
                      title,
                      author,
                      album
-            LIMIT %s
+            LIMIT %s OFFSET %s
         """
 
         params.append(limit)
+        params.append(offset)
 
         cur.execute(query, tuple(params))
         results = [dict(row) for row in cur.fetchall()]

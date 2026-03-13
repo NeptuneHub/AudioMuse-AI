@@ -116,6 +116,10 @@
             let currentTrackIds = [];
             let currentTracks = [];
             let searchTimeout;
+            const PAGE_SIZE = 20;
+            let autocompleteOffset = 0;
+            let autocompleteQuery = '';
+            let isLoadingMore = false;
 
             const similarityForm = document.getElementById('similarity-form');
             const playlistForm = document.getElementById('playlist-form');
@@ -139,11 +143,15 @@
                         return;
                     }
 
+                    autocompleteQuery = searchQuery;
+                    autocompleteOffset = 0;
+
                     try {
-                        const params = new URLSearchParams({ search_query: searchQuery });
+                        const params = new URLSearchParams({ search_query: searchQuery, start: 0, end: PAGE_SIZE });
                         const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
                         const tracks = await response.json();
-                        showAutocomplete(tracks);
+                        autocompleteOffset = tracks.length;
+                        showAutocomplete(tracks, false);
                     } catch (error) {
                         console.error('Autocomplete search error:', error);
                         hideAutocomplete();
@@ -151,9 +159,31 @@
                 }, 300); // Debounce requests by 300ms
             };
 
-            const showAutocomplete = (tracks) => {
-                autocompleteResults.innerHTML = '';
-                if (tracks.length === 0) {
+            const loadMoreResults = async () => {
+                if (isLoadingMore) return;
+                isLoadingMore = true;
+                try {
+                    const params = new URLSearchParams({ search_query: autocompleteQuery, start: autocompleteOffset, end: autocompleteOffset + PAGE_SIZE });
+                    const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
+                    const tracks = await response.json();
+                    if (tracks.length > 0) {
+                        autocompleteOffset += tracks.length;
+                        showAutocomplete(tracks, true);
+                    }
+                } catch (error) {
+                    console.error('Load more error:', error);
+                } finally {
+                    isLoadingMore = false;
+                }
+            };
+
+            const showAutocomplete = (tracks, append) => {
+                if (!append) autocompleteResults.innerHTML = '';
+                // Remove existing sentinel if any
+                const existingSentinel = autocompleteResults.querySelector('.autocomplete-load-more');
+                if (existingSentinel) existingSentinel.remove();
+
+                if (tracks.length === 0 && !append) {
                     autocompleteResults.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
                 } else {
                     tracks.forEach(track => {
@@ -163,6 +193,20 @@
                         itemDiv.addEventListener('click', () => selectTrack(track));
                         autocompleteResults.appendChild(itemDiv);
                     });
+                    // Add infinite scroll sentinel if we got a full page
+                    if (tracks.length >= PAGE_SIZE) {
+                        const sentinel = document.createElement('div');
+                        sentinel.className = 'autocomplete-load-more autocomplete-item';
+                        sentinel.innerHTML = '<em>Loading more...</em>';
+                        autocompleteResults.appendChild(sentinel);
+                        const observer = new IntersectionObserver((entries) => {
+                            if (entries[0].isIntersecting) {
+                                observer.disconnect();
+                                loadMoreResults();
+                            }
+                        }, { root: autocompleteResults });
+                        observer.observe(sentinel);
+                    }
                 }
                 autocompleteResults.classList.remove('hidden');
             };

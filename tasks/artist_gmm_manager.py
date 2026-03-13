@@ -1116,7 +1116,7 @@ def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = N
     return results[:n]
 
 
-def search_artists_by_name(query: str, limit: int = 15) -> List[Dict]:
+def search_artists_by_name(query: str, limit: int = 20, offset: int = 0) -> List[Dict]:
     """
     Search for artists by name (for autocomplete).
     Returns both artist name and ID if available.
@@ -1124,6 +1124,7 @@ def search_artists_by_name(query: str, limit: int = 15) -> List[Dict]:
     Args:
         query: Search query string
         limit: Maximum number of results
+        offset: Number of results to skip (for pagination)
         
     Returns: List of dictionaries with artist information including artist_id
     """
@@ -1146,8 +1147,8 @@ def search_artists_by_name(query: str, limit: int = 15) -> List[Dict]:
             WHERE author ILIKE %s AND author IS NOT NULL AND author != ''
             GROUP BY author
             ORDER BY track_count DESC, author
-            LIMIT %s
-        """, (query_pattern, limit))
+            LIMIT %s OFFSET %s
+        """, (query_pattern, limit, offset))
         
         results = []
         for author, track_count in cur.fetchall():

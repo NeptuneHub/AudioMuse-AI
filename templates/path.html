@@ -212,40 +212,87 @@
             const viewRangeBtn = document.getElementById('view-range-btn');
             const viewDiffBtn = document.getElementById('view-diff-btn');
 
+            const PAGE_SIZE = 20;
+
             const setupAutocomplete = (searchInputEl, resultsEl, idEl, displayTitleEl, displayArtistEl, displayAlbumEl) => {
-                const handleSearch = async () => {
-                    const searchQuery = searchInputEl.value.trim();
-                    if (searchQuery.length < 3) {
-                        resultsEl.classList.add('hidden');
-                        return;
-                    }
+                let acOffset = 0;
+                let acQuery = '';
+                let acLoading = false;
+                let debounceTimer;
+
+                const loadMore = async () => {
+                    if (acLoading) return;
+                    acLoading = true;
                     try {
-                        const params = new URLSearchParams({ search_query: searchQuery });
+                        const params = new URLSearchParams({ search_query: acQuery, start: acOffset, end: acOffset + PAGE_SIZE });
                         const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
                         const tracks = await response.json();
-                        resultsEl.innerHTML = '';
-                        if (tracks.length === 0) {
-                            resultsEl.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
-                        } else {
-                            tracks.forEach(track => {
-                                const itemDiv = document.createElement('div');
-                                itemDiv.className = 'autocomplete-item';
-                                itemDiv.innerHTML = `<div class="title">${track.title}</div><div class="artist">${track.author}</div><div class="album">${track.album ? track.album : ''}</div>`;
-                                itemDiv.addEventListener('click', () => {
-                                    displayTitleEl.textContent = 'Title: ' + track.title;
-                                    displayArtistEl.textContent = 'Artist: ' + track.author;
-                                    displayAlbumEl.textContent = 'Album: ' + (track.album || '');
-                                    idEl.value = track.item_id;
-                                    resultsEl.classList.add('hidden');
-                                });
-                                resultsEl.appendChild(itemDiv);
-                            });
+                        if (tracks.length > 0) {
+                            acOffset += tracks.length;
+                            appendResults(tracks);
                         }
-                        resultsEl.classList.remove('hidden');
                     } catch (error) {
-                        console.error('Autocomplete search error:', error);
-                        resultsEl.classList.add('hidden');
+                        console.error('Load more error:', error);
+                    } finally {
+                        acLoading = false;
                     }
+                };
+
+                const appendResults = (tracks) => {
+                    const existingSentinel = resultsEl.querySelector('.autocomplete-load-more');
+                    if (existingSentinel) existingSentinel.remove();
+                    tracks.forEach(track => {
+                        const itemDiv = document.createElement('div');
+                        itemDiv.className = 'autocomplete-item';
+                        itemDiv.innerHTML = `<div class="title">${track.title}</div><div class="artist">${track.author}</div><div class="album">${track.album ? track.album : ''}</div>`;
+                        itemDiv.addEventListener('click', () => {
+                            displayTitleEl.textContent = 'Title: ' + track.title;
+                            displayArtistEl.textContent = 'Artist: ' + track.author;
+                            displayAlbumEl.textContent = 'Album: ' + (track.album || '');
+                            idEl.value = track.item_id;
+                            resultsEl.classList.add('hidden');
+                        });
+                        resultsEl.appendChild(itemDiv);
+                    });
+                    if (tracks.length >= PAGE_SIZE) {
+                        const sentinel = document.createElement('div');
+                        sentinel.className = 'autocomplete-load-more autocomplete-item';
+                        sentinel.innerHTML = '<em>Loading more...</em>';
+                        resultsEl.appendChild(sentinel);
+                        const observer = new IntersectionObserver((entries) => {
+                            if (entries[0].isIntersecting) { observer.disconnect(); loadMore(); }
+                        }, { root: resultsEl });
+                        observer.observe(sentinel);
+                    }
+                };
+
+                const handleSearch = async () => {
+                    clearTimeout(debounceTimer);
+                    debounceTimer = setTimeout(async () => {
+                        const searchQuery = searchInputEl.value.trim();
+                        if (searchQuery.length < 3) {
+                            resultsEl.classList.add('hidden');
+                            return;
+                        }
+                        acQuery = searchQuery;
+                        acOffset = 0;
+                        try {
+                            const params = new URLSearchParams({ search_query: searchQuery, start: 0, end: PAGE_SIZE });
+                            const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
+                            const tracks = await response.json();
+                            resultsEl.innerHTML = '';
+                            acOffset = tracks.length;
+                            if (tracks.length === 0) {
+                                resultsEl.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
+                            } else {
+                                appendResults(tracks);
+                            }
+                            resultsEl.classList.remove('hidden');
+                        } catch (error) {
+                            console.error('Autocomplete search error:', error);
+                            resultsEl.classList.add('hidden');
+                        }
+                    }, 300);
                 };
                 searchInputEl.addEventListener('input', handleSearch);
             };

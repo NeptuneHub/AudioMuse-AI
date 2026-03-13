@@ -618,6 +618,10 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
 // Minimal autocomplete and highlight logic for map search controls (unified search field)
 (function(){
     let selectedItemId = null;
+    const PAGE_SIZE = 20;
+    let acOffset = 0;
+    let acQuery = '';
+    let acLoading = false;
 
     function debounce(fn, wait){ let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), wait); }; }
 
@@ -630,34 +634,67 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
         } catch(e){ console.debug('searchTracks failed', e); return []; }
     }
 
-    function showResults(list, containerId){
+    function appendResults(list, containerId){
         const c = document.getElementById(containerId);
         if (!c) return;
-        c.innerHTML = '';
-        if (!list || list.length === 0){ c.innerHTML = '<div style="padding:6px;color:var(--text-muted)">No results</div>'; c.classList.remove('hidden'); return; }
-        for (const t of list.slice(0,50)){
+        const existingSentinel = c.querySelector('.autocomplete-load-more');
+        if (existingSentinel) existingSentinel.remove();
+        if (!list || list.length === 0) return;
+        for (const t of list){
             const div = document.createElement('div');
             div.className = 'autocomplete-item';
             div.style.padding = '6px'; div.style.cursor = 'pointer'; div.style.borderBottom = '1px solid var(--border-color)';
             div.innerHTML = `<div style="font-weight:600">${t.title || '(unknown)'}</div><div style="font-size:12px;color:var(--text-muted)">${t.author || ''}</div><div style="font-size:12px;color:var(--text-muted)">${t.album ? t.album : ''}</div>`;
             div.addEventListener('click', ()=>{
-                // When an item is selected, set the selectedItemId
                 selectedItemId = t.item_id;
                 const searchEl = document.getElementById('search_query_map');
                 if (searchEl) searchEl.value = `${t.title || ''} — ${t.author || ''}`;
-                // hide result container
                 try { document.getElementById('map_autocomplete_results').classList.add('hidden'); } catch(e){}
-                // NOTE: do NOT add to selection here — user requested adding only when tapping the Search button
             });
             c.appendChild(div);
         }
+        if (list.length >= PAGE_SIZE) {
+            const sentinel = document.createElement('div');
+            sentinel.className = 'autocomplete-load-more autocomplete-item';
+            sentinel.style.padding = '6px'; sentinel.style.textAlign = 'center'; sentinel.style.color = 'var(--text-muted)';
+            sentinel.innerHTML = '<em>Loading more...</em>';
+            c.appendChild(sentinel);
+            const observer = new IntersectionObserver((entries) => {
+                if (entries[0].isIntersecting) { observer.disconnect(); loadMore(); }
+            }, { root: c });
+            observer.observe(sentinel);
+        }
+    }
+
+    async function loadMore(){
+        if (acLoading) return;
+        acLoading = true;
+        try {
+            const list = await searchTracks({ search_query: acQuery, start: acOffset, end: acOffset + PAGE_SIZE });
+            if (list.length > 0) {
+                acOffset += list.length;
+                appendResults(list, 'map_autocomplete_results');
+            }
+        } catch(e){ console.error('Load more error:', e); }
+        finally { acLoading = false; }
+    }
+
+    function showResults(list, containerId){
+        const c = document.getElementById(containerId);
+        if (!c) return;
+        c.innerHTML = '';
+        if (!list || list.length === 0){ c.innerHTML = '<div style="padding:6px;color:var(--text-muted)">No results</div>'; c.classList.remove('hidden'); return; }
+        appendResults(list, containerId);
         c.classList.remove('hidden');
     }
 
     const handleSearchInput = debounce(async ()=>{
         const searchQ = document.getElementById('search_query_map').value.trim();
         if (searchQ.length < 2){ document.getElementById('map_autocomplete_results').classList.add('hidden'); return; }
-        const list = await searchTracks({ search_query: searchQ, n: 50 });
+        acQuery = searchQ;
+        acOffset = 0;
+        const list = await searchTracks({ search_query: searchQ, start: 0, end: PAGE_SIZE });
+        acOffset = list.length;
         showResults(list, 'map_autocomplete_results');
     }, 250);
 
