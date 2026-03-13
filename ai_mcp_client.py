@@ -557,7 +557,11 @@ Return ONLY the JSON object with tool_calls array:"""
             "stream": False,
             "format": "json"
         }
-        
+
+        # Always disable thinking for reasoning models (Qwen 3.5, DeepSeek-R1, etc.)
+        # Thinking output breaks JSON parsing when format: "json" is set
+        payload["think"] = False
+
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
         log_messages.append(f"Using timeout: {timeout} seconds for Ollama request")
         with httpx.Client(timeout=timeout) as client:
@@ -574,6 +578,14 @@ Return ONLY the JSON object with tool_calls array:"""
         # Try to extract JSON
         try:
             cleaned = response_text.strip()
+
+            # Safety net: strip <think>...</think> blocks from reasoning models
+            # Even with think:false, some models may still include thinking output
+            import re
+            cleaned = re.sub(r'<think>.*?</think>', '', cleaned, flags=re.DOTALL).strip()
+            # Also strip if there's an unclosed <think> tag (partial thinking output)
+            if '<think>' in cleaned:
+                cleaned = cleaned.split('</think>')[-1].strip() if '</think>' in cleaned else re.sub(r'<think>.*', '', cleaned, flags=re.DOTALL).strip()
             
             log_messages.append(f"Ollama raw response (first 300 chars): {cleaned[:300]}")
             

@@ -97,6 +97,9 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                 "temperature": 0.7
             }
         }
+        # Always disable thinking for reasoning models (Qwen 3.5, DeepSeek-R1, etc.)
+        # Thinking output breaks JSON parsing and disrupts playlist generation
+        payload["think"] = False
 
     max_retries = 3
     base_delay = 5
