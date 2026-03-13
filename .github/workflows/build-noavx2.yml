@@ -81,6 +81,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ steps.repo_name.outputs.name }}
+          flavor: |
+            latest=false
           tags: |
             # Tag push: 1.2.3-noavx2 + latest-noavx2
             type=raw,value=latest-noavx2,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
