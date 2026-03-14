@@ -26,16 +26,16 @@ from flask import Flask
 @pytest.fixture
 def app():
     """Create a Flask app with the chat blueprint registered."""
-    with patch('app_chat.OLLAMA_SERVER_URL', 'http://localhost:11434'), \
-         patch('app_chat.OLLAMA_MODEL_NAME', 'test-model'), \
-         patch('app_chat.OPENAI_SERVER_URL', 'http://localhost'), \
-         patch('app_chat.OPENAI_MODEL_NAME', 'gpt-4'), \
-         patch('app_chat.OPENAI_API_KEY', ''), \
-         patch('app_chat.GEMINI_MODEL_NAME', 'gemini-pro'), \
-         patch('app_chat.GEMINI_API_KEY', ''), \
-         patch('app_chat.MISTRAL_MODEL_NAME', 'mistral-7b'), \
-         patch('app_chat.MISTRAL_API_KEY', ''), \
-         patch('app_chat.AI_MODEL_PROVIDER', 'OLLAMA'):
+    with patch('config.OLLAMA_SERVER_URL', 'http://localhost:11434'), \
+         patch('config.OLLAMA_MODEL_NAME', 'test-model'), \
+         patch('config.OPENAI_SERVER_URL', 'http://localhost'), \
+         patch('config.OPENAI_MODEL_NAME', 'gpt-4'), \
+         patch('config.OPENAI_API_KEY', ''), \
+         patch('config.GEMINI_MODEL_NAME', 'gemini-pro'), \
+         patch('config.GEMINI_API_KEY', ''), \
+         patch('config.MISTRAL_MODEL_NAME', 'mistral-7b'), \
+         patch('config.MISTRAL_API_KEY', ''), \
+         patch('config.AI_MODEL_PROVIDER', 'OLLAMA'):
         from app_chat import chat_bp
         flask_app = Flask(__name__)
         flask_app.register_blueprint(chat_bp)

@@ -232,26 +232,31 @@ class TestAnalyzeAlbumMemoryCleanup:
     ):
         """Test that ONNX sessions are cleaned up after successful album analysis."""
         from tasks.analysis import analyze_album_task
-        
+
         # Setup mocks
         mock_get_job.return_value = None
         mock_get_tracks.return_value = [
             {'Id': '1', 'Name': 'Track 1', 'AlbumArtist': 'Artist 1', 'ArtistId': 'artist1'}
         ]
         mock_download.return_value = "/tmp/track.mp3"
-        
-        # Mock database
+
+        # Mock database - must work as context manager (with get_db() as conn)
         mock_conn = MagicMock()
         mock_cur = MagicMock()
+        mock_conn.__enter__ = Mock(return_value=mock_conn)
+        mock_conn.__exit__ = Mock(return_value=False)
         mock_conn.cursor.return_value = mock_cur
+        mock_cur.__enter__ = Mock(return_value=mock_cur)
+        mock_cur.__exit__ = Mock(return_value=False)
         mock_cur.fetchall.return_value = []  # No existing tracks
+        mock_cur.fetchone.return_value = None
         mock_get_db.return_value = mock_conn
-        
+
         # Mock ONNX sessions
         mock_ort.get_available_providers.return_value = ['CPUExecutionProvider']
         mock_session = MagicMock()
         mock_ort.InferenceSession.return_value = mock_session
-        
+
         # Mock analyze_track to return results
         mock_analyze.return_value = (
             {
@@ -269,15 +274,17 @@ class TestAnalyzeAlbumMemoryCleanup:
             },
             np.random.randn(200)
         )
-        
-        # Call function
-        with patch('tasks.clap_analyzer.is_clap_available', return_value=False):
-            with patch('config.MULAN_ENABLED', False):
-                result = analyze_album_task("album_123", "Test Album", 5, None)
-        
+
+        # Call function - mock multi-provider functions added in this branch
+        with patch('tasks.clap_analyzer.is_clap_available', return_value=False), \
+             patch('config.MULAN_ENABLED', False), \
+             patch('app_helper.find_existing_analysis_by_file_path', return_value=None), \
+             patch('app_helper_artist.upsert_artist_mapping'):
+            result = analyze_album_task("album_123", "Test Album", 5, None)
+
         # Verify session cleanup was called for all loaded sessions
         # Should be called 2 times (embedding + prediction; secondary models removed in v4.0.0)
         assert mock_session_cleanup.call_count >= 2
-        
+
         # Verify CUDA cleanup was called
         assert mock_cuda_cleanup.called
