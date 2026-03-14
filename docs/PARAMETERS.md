@@ -172,6 +172,12 @@ The **AI model** tested for Clustering naming and for the instant playlist funct
 * gemini-2.5-pro
 * gemini-1.5-flash-latest
 
+For **selhosting AI** with Ollama this are the one that worked best (in order):
+1. qwen3.5:9b (largest tested)
+2. qwen3.5:4b
+3. gemma3:4b
+4. ministral-3:3b (this one is the fastest)
+
 different model could have different parameter and don't work.
 
 For selhosting we suggest llama, instead for cloud genini.
