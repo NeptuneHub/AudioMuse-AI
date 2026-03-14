@@ -389,7 +389,21 @@ def chat_playlist_api():
         if detected_min_rating is not None and iteration >= 2:
             log_messages.append(f"⭐ Rating-filtered request: stopping after {iteration} iterations to preserve filter integrity ({usable_song_count} usable songs).")
             break
-        
+
+        # Year-only queries: stop after 2 iterations to prevent irrelevant padding
+        if iteration >= 2:
+            successful_tools = [t for t in tools_used_history if t.get('songs', 0) > 0]
+            if successful_tools and all(
+                t.get('name') == 'search_database' and
+                ('year_min' in t.get('args', {}) or 'year_max' in t.get('args', {})) and
+                'genres' not in t.get('args', {}) and
+                'artist' not in t.get('args', {}) and
+                'moods' not in t.get('args', {})
+                for t in successful_tools
+            ):
+                log_messages.append(f"📅 Year-filtered request: stopping after {iteration} iterations ({usable_song_count} usable songs).")
+                break
+
         # Build context for AI about current state
         if iteration == 0:
             # Iteration 0: Just the request - system prompt already has all instructions
@@ -466,8 +480,8 @@ What we have so far:
 - Tools used: {previous_tools_str}
 - Genres already collected (do NOT filter by these unless user asked): {genres_str}
 
-Call DIFFERENT tools or parameters to add {songs_needed} more DIVERSE songs.
-Prioritize variety - avoid tools/parameters that duplicate what we already have.
+Call DIFFERENT tools or parameters to add {songs_needed} more songs RELEVANT to the original request.
+Prioritize variety of artists/songs WITHIN the same genre/theme — do NOT add unrelated genres.
 IMPORTANT: ONLY use filters the user EXPLICITLY mentioned in their original request.
 Do NOT invent genres, min_rating, or moods the user didn't ask for.
 If the user asked for specific genres + ratings, keep those exact filters.
@@ -699,6 +713,8 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
                     args_summary.append(f"valence={valence_str}")
                 if 'key' in tool_args:
                     args_summary.append(f"key={tool_args['key']}")
+                if 'scale' in tool_args:
+                    args_summary.append(f"scale={tool_args['scale']}")
                 if 'year_min' in tool_args or 'year_max' in tool_args:
                     year_str = f"{tool_args.get('year_min', '')}..{tool_args.get('year_max', '')}"
                     args_summary.append(f"year={year_str}")

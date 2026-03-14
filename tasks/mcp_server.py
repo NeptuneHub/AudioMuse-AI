@@ -321,7 +321,7 @@ List the famous songs by {artist} now:"""
                 cur.execute(f"""
                     SELECT item_id, title, author, album
                     FROM public.score
-                    WHERE author = %s AND ({where_clause})
+                    WHERE LOWER(author) = LOWER(%s) AND ({where_clause})
                 """, [artist] + title_params)
                 rows = cur.fetchall()
 
@@ -905,7 +905,7 @@ def _song_alchemy_sync(add_items: List[Dict], subtract_items: Optional[List[Dict
                                         seed_genre_scores[name] = seed_genre_scores.get(name, 0) + float(score_str)
                                     except ValueError:
                                         pass
-                            top_seed_genres = sorted(seed_genre_scores, key=seed_genre_scores.get, reverse=True)[:5]
+                            top_seed_genres = sorted(seed_genre_scores, key=seed_genre_scores.get, reverse=True)[:3]
 
                             if top_seed_genres:
                                 # 3. Check genre overlap for result songs
@@ -937,7 +937,7 @@ def _song_alchemy_sync(add_items: List[Dict], subtract_items: Optional[List[Dict
                                     g = result_genres.get(sid, {})
                                     if not g:
                                         filtered.append(s)  # no mood data, keep
-                                    elif any(g.get(tg, 0) >= 0.1 for tg in top_seed_genres):
+                                    elif any(g.get(tg, 0) >= 0.2 for tg in top_seed_genres):
                                         filtered.append(s)
 
                                 # 5. Safety: only apply if filter keeps >= 40% of results

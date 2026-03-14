@@ -71,11 +71,13 @@ def _build_system_prompt(tools: List[Dict], library_context: Optional[Dict] = No
         decision_tree.append("8. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
         decision_tree.append("9. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
         decision_tree.append("10. Genre/mood/tempo/energy/year/rating filters? -> search_database")
+        decision_tree.append("11. 'minor key', 'major key', 'in minor', 'in major'? -> search_database with scale='minor' or scale='major' (NOT genres — 'minor' is a musical scale, not a genre)")
     else:
         decision_tree.append("6. 'songs LIKE/SIMILAR TO [ARTIST]' (discover similar)? -> artist_similarity (returns artist's own + similar artists' songs)")
         decision_tree.append("7. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
         decision_tree.append("8. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
         decision_tree.append("9. Genre/mood/tempo/energy/year/rating filters? -> search_database")
+        decision_tree.append("10. 'minor key', 'major key', 'in minor', 'in major'? -> search_database with scale='minor' or scale='major' (NOT genres — 'minor' is a musical scale, not a genre)")
 
     decision_text = '\n'.join(decision_tree)
 
@@ -90,7 +92,7 @@ def _build_system_prompt(tools: List[Dict], library_context: Optional[Dict] = No
 3. search_database(artist='...') returns ONLY songs BY that artist. artist_similarity returns songs BY + FROM SIMILAR artists.
    - "songs from Madonna" -> search_database(artist="Madonna")  (exact catalog)
    - "songs like Madonna" -> artist_similarity("Madonna")  (discover similar)
-   - "top songs of Madonna" -> ai_brainstorm  (cultural knowledge)
+   - "top songs of Madonna" -> ai_brainstorm + search_database(artist="Madonna")  (cultural knowledge + catalog)
 4. search_database: COMBINE all filters in ONE call. For decades (80s, 90s), ALWAYS set year_min/year_max (e.g., 80s=1980-1989)
 5. search_database genres: Use 1-3 SPECIFIC genres, not broad parent genres. 'rock' matches nearly everything - use sub-genres instead (e.g., 'hard rock', 'punk', 'metal'). WRONG: genres=['rock','metal','classic rock','alternative rock'] (too broad). RIGHT: genres=['metal','hard rock'] (specific).
 6. For multiple artists: call search_database(artist='...') once per artist for exact catalog, or use song_alchemy to blend their vibes
@@ -129,7 +131,7 @@ GENRES: {_get_dynamic_genres(library_context)}
 MOODS: {_get_dynamic_moods(library_context)}
 TEMPO: 40-200 BPM
 ENERGY: 0.0 (calm) to 1.0 (intense) - use 0.0-0.35 for low, 0.35-0.65 for medium, 0.65-1.0 for high
-SCALE: major, minor
+SCALE: major, minor (IMPORTANT: "minor key" or "major key" → use scale="minor" or scale="major", NOT genres)
 YEAR: year_min and/or year_max. Use BOTH only for ranges (e.g., 1990-1999 for 90s). Use ONLY year_min for "from/since/after YEAR". Use ONLY year_max for "before/until YEAR". For a single year ("2026 songs"), set year_min=2026 AND year_max=2026. Do NOT invent the other boundary.
 RATING: min_rating 1-5 (user's personal ratings)
 ARTIST: artist name (e.g. 'Madonna', 'Blink-182') - returns ONLY songs by this artist
@@ -499,10 +501,11 @@ def _call_ollama_with_tools(user_message: str, tools: List[Dict], ai_config: Dic
             examples.append('"calm piano song"\n{{"tool_calls": [{{"name": "text_search", "arguments": {{"description": "calm piano", "get_songs": 200}}}}]}}')
         examples.append('"songs from blink-182 and Green Day"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"artist": "blink-182", "get_songs": 200}}}}, {{"name": "search_database", "arguments": {{"artist": "Green Day", "get_songs": 200}}}}]}}')
         examples.append('"songs like blink-182"\n{{"tool_calls": [{{"name": "artist_similarity", "arguments": {{"artist": "blink-182", "get_songs": 200}}}}]}}')
-        examples.append('"top songs of Madonna"\n{{"tool_calls": [{{"name": "ai_brainstorm", "arguments": {{"user_request": "top songs of Madonna", "get_songs": 200}}}}]}}')
+        examples.append('"top songs of Madonna"\n{{"tool_calls": [{{"name": "ai_brainstorm", "arguments": {{"user_request": "top songs of Madonna", "get_songs": 200}}}}, {{"name": "search_database", "arguments": {{"artist": "Madonna", "get_songs": 200}}}}]}}')
         examples.append('"energetic rock"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"genres": ["rock"], "energy_min": 0.65, "get_songs": 200}}}}]}}')
         examples.append('"2026 songs"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"year_min": 2026, "year_max": 2026, "get_songs": 200}}}}]}}')
         examples.append('"90s pop"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"genres": ["pop"], "year_min": 1990, "year_max": 1999, "get_songs": 200}}}}]}}')
+        examples.append('"songs in minor key"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"scale": "minor", "get_songs": 200}}}}]}}')
         examples.append('"sounds like Iron Maiden and Metallica combined"\n{{"tool_calls": [{{"name": "song_alchemy", "arguments": {{"add_items": [{{"type": "artist", "id": "Iron Maiden"}}, {{"type": "artist", "id": "Metallica"}}], "get_songs": 200}}}}]}}')
         examples.append('"mix of Daft Punk and Gorillaz"\n{{"tool_calls": [{{"name": "song_alchemy", "arguments": {{"add_items": [{{"type": "artist", "id": "Daft Punk"}}, {{"type": "artist", "id": "Gorillaz"}}], "get_songs": 200}}}}]}}')
         examples_text = "\n\n".join(examples)
@@ -528,6 +531,8 @@ WRONG: "2026 songs" -> adding genres, min_rating, or moods (user only asked for 
 WRONG: "electronic music" -> adding min_rating or year filters (user only asked for genre!)
 WRONG: "songs from 2020-2025" -> adding genres (user only asked for years!)
 CORRECT: Only include filters the user EXPLICITLY mentioned. Nothing extra.
+WRONG: "songs in minor key" -> using genres or text_search (user asked for musical scale, not genre!)
+CORRECT: "songs in minor key" -> search_database(scale="minor")
 
 IMPORTANT: ONLY include parameters the user explicitly asked for. Do NOT invent extra filters (genres, ratings, moods, energy) the user never mentioned.
 For a specific year like "2026 songs", set BOTH year_min and year_max to 2026 (NOT year_min=1).
@@ -618,6 +623,10 @@ Request: "{user_message}"
                 # Single tool call as object, wrap it
                 tool_calls = [parsed]
                 log_messages.append(f"⚠️ Got single tool call object (expected object with tool_calls array)")
+            elif isinstance(parsed, dict) and 'tool' in parsed and 'arguments' in parsed:
+                # Thinking models (e.g. Qwen 3.5) sometimes return {"tool": "name", "arguments": {...}}
+                tool_calls = [{"name": parsed["tool"], "arguments": parsed["arguments"]}]
+                log_messages.append(f"⚠️ Remapped {{'tool','arguments'}} → {{'name','arguments'}} format")
             else:
                 log_messages.append(f"⚠️ Unexpected JSON structure: {type(parsed)}, keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'N/A'}")
                 return {"error": "Ollama response missing 'tool_calls' field"}
