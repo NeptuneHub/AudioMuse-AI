@@ -16,7 +16,7 @@ ftfy
 flasgger
 sqlglot
 google-genai==1.57.0
-mistralai
+mistralai>=1.11.1,<2.0.0
 umap-learn 
 # Use pozalabs fork to avoid Python 3.12 SyntaxWarning until upstream releases a proper fix (see: https://github.com/jiaaro/pydub/issues/801)
 pozalabs-pydub==0.37.0
@@ -35,3 +35,6 @@ voyager==2.1.0
 transformers==4.57.3
 sentencepiece==0.2.1
 cryptography
+PyJWT>=2.8.0
+gunicorn
+zstandard

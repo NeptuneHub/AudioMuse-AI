@@ -42,7 +42,7 @@ flasgger
 umap-learn
 python-mpd2
 google-genai==1.57.0
-mistralai
+mistralai>=1.11.1,<2.0.0
 
 # Notes:
 # - ffmpeg (system binary) is NOT included here — keep pydub/ffmpeg calls stubbed or

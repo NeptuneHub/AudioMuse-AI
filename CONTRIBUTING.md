@@ -4,9 +4,9 @@ Thank you for considering a contribution to AudioMuse-AI. Open-source projects t
 
 The vision of AudioMuse-AI is to bring Sonic Analysis open and free to the higher number of user possible. So each change should aim to bring it more usebul from more and more users.
 
-The project is currently in a BETA release stage. This means there is a wealth of opportunity to make a significant and lasting impact. Whether it involves fixing a bug, implementing a new feature, or improving the documentation, your contributions are essential to the project's growth and stability.
-
 Remember that contributing not only means develop code, also suggest new feature, highlight a bug or just share your feedback (good or bad is always important) by an [issue](https://github.com/NeptuneHub/AudioMuse-AI/issues) is also contributing.
+
+Multiple information can be found in the [docs](docs/) folder.
 
 ## High-Level Architecture
 To contribute effectively, it is crucial to understand that AudioMuse-AI is not a monolithic program. It is a multi-service, containerized application designed for robustness, scalability, and a clear separation of concerns. This architecture is composed of several core components that work in concert.
@@ -94,6 +94,9 @@ When submitting a pull request, ensure:
   * *(Basically, test each function in the integrated front-end menu at least once)*
 * **License compliance:** Your code must align with AudioMuse-AI's license
 * **CPU Compatibility:** AudioMuse-AI supports both Intel and ARM CPUs, including older Intel processors. PRs that introduce dependencies breaking compatibility with older CPUs will not be merged
+* **Documentation:** If needed, update the documentation
+
+> Important: Prefear opening small PR, focused on specific functionality that directly add value. Avoid to change multiple unrelated functionality to facilitate test.
 
 ### How to Open a Draft PR
 1. Push your branch to your fork

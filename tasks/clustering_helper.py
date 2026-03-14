@@ -652,7 +652,12 @@ def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
 # --- Other Helpers ---
 
 def get_job_result_safely(job_id, parent_task_id, task_type="child task"):
-    """Safely retrieves the result of an RQ job, checking both RQ and the database."""
+    """Safely retrieves the result of an RQ job, checking both RQ and the database.
+    
+    Always returns a dict with the same shape as the batch function's return value
+    (contains 'status', 'best_result_from_batch', 'iterations_completed_in_batch',
+    'final_subset_track_ids') so the caller can use a single code path, or None on failure.
+    """
     # Local imports to prevent circular dependency
     from app import app, JobStatus
     from app_helper import redis_conn, get_task_info_from_db, TASK_STATUS_SUCCESS
@@ -668,7 +673,18 @@ def get_job_result_safely(job_id, parent_task_id, task_type="child task"):
             if task_info and task_info.get('status') in [TASK_STATUS_SUCCESS, JobStatus.FINISHED]:
                 try:
                     details = json.loads(task_info.get('details'))
-                    return details.get('full_best_result_from_batch') or details.get('full_result')
+                    # The DB stores the batch's internal details dict (with keys like
+                    # 'full_best_result_from_batch', 'iterations_completed_in_batch', etc.)
+                    # which is a DIFFERENT shape from the batch function's return value.
+                    # Wrap it in the same envelope so the caller doesn't need special handling.
+                    batch_result = details.get('full_best_result_from_batch') or details.get('full_result')
+                    if batch_result:
+                        return {
+                            "status": "SUCCESS",
+                            "best_result_from_batch": batch_result,
+                            "iterations_completed_in_batch": details.get("iterations_completed_in_batch", 0),
+                            "final_subset_track_ids": details.get("final_subset_track_ids", [])
+                        }
                 except (json.JSONDecodeError, TypeError):
                     logger.warning(f"Could not parse result from DB for job {job_id}")
     return None

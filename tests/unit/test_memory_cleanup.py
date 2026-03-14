@@ -3,8 +3,15 @@ Unit tests for memory cleanup in tasks/analysis.py
 Tests the finally blocks that ensure cleanup on all code paths.
 """
 
-import pytest
+import sys
 from unittest.mock import Mock, MagicMock, patch, call
+
+# Ensure a 'jwt' module exists in sys.modules so that `import jwt as pyjwt`
+# in app.py succeeds even when PyJWT is not installed (e.g. CI unit-test env).
+if "jwt" not in sys.modules:
+    sys.modules["jwt"] = MagicMock()
+
+import pytest
 import numpy as np
 
 
@@ -269,8 +276,8 @@ class TestAnalyzeAlbumMemoryCleanup:
                 result = analyze_album_task("album_123", "Test Album", 5, None)
         
         # Verify session cleanup was called for all loaded sessions
-        # Should be called 8 times (embedding, prediction, and 6 secondary models)
-        assert mock_session_cleanup.call_count >= 8
+        # Should be called 2 times (embedding + prediction; secondary models removed in v4.0.0)
+        assert mock_session_cleanup.call_count >= 2
         
         # Verify CUDA cleanup was called
         assert mock_cuda_cleanup.called

@@ -20,10 +20,19 @@ def search_artists():
     from tasks.artist_gmm_manager import search_artists_by_name
     
     query = request.args.get('query', '')
-    limit = int(request.args.get('limit', 15))
-    
+
+    # Pagination: start / end (0-based). Defaults to first 20 results.
+    start = request.args.get('start', 0, type=int)
+    end = request.args.get('end', None, type=int)
+    if start < 0:
+        start = 0
+    if end is not None and end <= start:
+        return jsonify([])
+    limit = (end - start) if end is not None else 20
+    offset = start
+
     try:
-        results = search_artists_by_name(query, limit)
+        results = search_artists_by_name(query, limit=limit, offset=offset)
         return jsonify(results)
     except Exception as e:
         logger.exception("Artist search failed")

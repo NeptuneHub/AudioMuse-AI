@@ -266,6 +266,11 @@
         const selectedArtistInfo = document.getElementById('selected-artist-info');
 
         // --- Autocomplete Logic ---
+        const PAGE_SIZE = 20;
+        let autocompleteOffset = 0;
+        let autocompleteQuery = '';
+        let isLoadingMore = false;
+
         const handleSearchInput = () => {
             clearTimeout(searchTimeout);
             searchTimeout = setTimeout(async () => {
@@ -276,11 +281,15 @@
                     return;
                 }
 
+                autocompleteQuery = query;
+                autocompleteOffset = 0;
+
                 try {
-                    const params = new URLSearchParams({ query: query });
+                    const params = new URLSearchParams({ query: query, start: 0, end: PAGE_SIZE });
                     const response = await fetch(`{{ url_for('artist_similarity_bp.search_artists_endpoint') }}?${params}`);
                     const artists = await response.json();
-                    showAutocomplete(artists);
+                    autocompleteOffset = artists.length;
+                    showAutocomplete(artists, false);
                 } catch (error) {
                     console.error('Autocomplete search error:', error);
                     hideAutocomplete();
@@ -288,9 +297,30 @@
             }, 300);
         };
 
-        const showAutocomplete = (artists) => {
-            autocompleteResults.innerHTML = '';
-            if (artists.length === 0) {
+        const loadMoreResults = async () => {
+            if (isLoadingMore) return;
+            isLoadingMore = true;
+            try {
+                const params = new URLSearchParams({ query: autocompleteQuery, start: autocompleteOffset, end: autocompleteOffset + PAGE_SIZE });
+                const response = await fetch(`{{ url_for('artist_similarity_bp.search_artists_endpoint') }}?${params}`);
+                const artists = await response.json();
+                if (artists.length > 0) {
+                    autocompleteOffset += artists.length;
+                    showAutocomplete(artists, true);
+                }
+            } catch (error) {
+                console.error('Load more error:', error);
+            } finally {
+                isLoadingMore = false;
+            }
+        };
+
+        const showAutocomplete = (artists, append) => {
+            if (!append) autocompleteResults.innerHTML = '';
+            const existingSentinel = autocompleteResults.querySelector('.autocomplete-load-more');
+            if (existingSentinel) existingSentinel.remove();
+
+            if (artists.length === 0 && !append) {
                 autocompleteResults.innerHTML = '<div class="autocomplete-item"><em>No artists found</em></div>';
             } else {
                 artists.forEach(artist => {
@@ -303,6 +333,19 @@
                     itemDiv.addEventListener('click', () => selectArtist(artist.artist));
                     autocompleteResults.appendChild(itemDiv);
                 });
+                if (artists.length >= PAGE_SIZE) {
+                    const sentinel = document.createElement('div');
+                    sentinel.className = 'autocomplete-load-more autocomplete-item';
+                    sentinel.innerHTML = '<em>Loading more...</em>';
+                    autocompleteResults.appendChild(sentinel);
+                    const observer = new IntersectionObserver((entries) => {
+                        if (entries[0].isIntersecting) {
+                            observer.disconnect();
+                            loadMoreResults();
+                        }
+                    }, { root: autocompleteResults });
+                    observer.observe(sentinel);
+                }
             }
             autocompleteResults.classList.remove('hidden');
         };

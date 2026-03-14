@@ -82,6 +82,11 @@ services:
       CLAP_ENABLED: "${CLAP_ENABLED:-true}"
       # GPU clustering - disabled for CPU worker
       USE_GPU_CLUSTERING: "false"
+      # Authentication
+      API_TOKEN: "${API_TOKEN:-}"
+      AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
+      AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
+      JWT_SECRET: "${JWT_SECRET:-}"
       # Worker tuning
       RQ_MAX_JOBS: "${RQ_MAX_JOBS:-50}"
       RQ_MAX_JOBS_HIGH: "${RQ_MAX_JOBS_HIGH:-100}"

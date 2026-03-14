@@ -23,7 +23,7 @@ def _get_artist_gmm_vectors_and_weights(artist_identifier: str) -> Tuple[List[np
     Get GMM component centroids and weights for an artist.
     Returns: (list of mean vectors, list of component weights)
     """
-    from tasks.artist_gmm_manager import artist_gmm_params, load_artist_index_for_querying
+    from tasks.artist_gmm_manager import artist_gmm_params, load_artist_index_for_querying, reverse_artist_map
     from app_helper_artist import get_artist_name_by_id
     
     # Ensure artist index is loaded
@@ -41,6 +41,22 @@ def _get_artist_gmm_vectors_and_weights(artist_identifier: str) -> Tuple[List[np
         artist_name = resolved_name
     
     gmm = artist_gmm_params.get(artist_name)
+
+    # Fuzzy fallback: normalize away hyphens, en-dashes, spaces, slashes, apostrophes
+    # Handles "Blink-182" (hyphen) vs "blink‐182" (en-dash) in GMM index
+    if not gmm and reverse_artist_map:
+        def _normalize(s: str) -> str:
+            return s.lower().replace(' ', '').replace('-', '').replace('\u2010', '').replace('/', '').replace("'", '')
+
+        query_norm = _normalize(artist_name)
+        for gmm_artist in reverse_artist_map:
+            if _normalize(gmm_artist) == query_norm:
+                gmm = artist_gmm_params.get(gmm_artist)
+                if gmm:
+                    logger.info(f"Fuzzy GMM match: '{artist_name}' → '{gmm_artist}'")
+                    artist_name = gmm_artist
+                    break
+
     if not gmm:
         logger.warning(f"No GMM found for artist '{artist_name}'")
         return [], []

@@ -111,6 +111,10 @@ services:
       # Flask doesn't need CLAP models - workers handle that
       CLAP_ENABLED: "false"
       TEMP_DIR: "/app/temp_audio"
+      API_TOKEN: "${API_TOKEN:-}"
+      AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
+      AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
+      JWT_SECRET: "${JWT_SECRET:-}"
     volumes:
       - temp-audio-flask:/app/temp_audio
       - ${MUSIC_PATH:-./music}:/music:ro

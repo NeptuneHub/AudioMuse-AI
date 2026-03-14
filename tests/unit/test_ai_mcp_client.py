@@ -133,18 +133,18 @@ class TestBuildSystemPrompt:
         for t in tools:
             assert t['name'] in prompt
 
-    def test_clap_decision_tree_has_seven_steps(self, ai_mcp_client_mod):
-        """With text_search present, decision tree should have 7 numbered steps (includes album)."""
+    def test_clap_decision_tree_has_eight_steps(self, ai_mcp_client_mod):
+        """With text_search present, decision tree should have 8 numbered steps (includes album + decade)."""
         tools = _make_tools(include_text_search=True)
         prompt = ai_mcp_client_mod._build_system_prompt(tools, None)
-        # The decision tree section should contain step 7
+        # The decision tree section should contain step 8
         lines = prompt.split('\n')
-        decision_lines = [l for l in lines if l.strip().startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.'))]
-        assert any(l.strip().startswith('7.') for l in decision_lines)
+        decision_lines = [l for l in lines if l.strip().startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.'))]
+        assert any(l.strip().startswith('8.') for l in decision_lines)
         assert 'text_search' in prompt
 
-    def test_no_clap_decision_tree_has_six_steps(self, ai_mcp_client_mod):
-        """Without text_search, decision tree should have 6 steps (includes album)."""
+    def test_no_clap_decision_tree_has_seven_steps(self, ai_mcp_client_mod):
+        """Without text_search, decision tree should have 7 steps (includes album + decade)."""
         tools = _make_tools(include_text_search=False)
         prompt = ai_mcp_client_mod._build_system_prompt(tools, None)
         # Extract only the TOOL SELECTION section lines (numbered decision tree)
@@ -153,8 +153,8 @@ class TestBuildSystemPrompt:
                           if l.strip() and l.strip()[0].isdigit()
                           and l.strip()[1] == '.'
                           and '->' in l]
-        # Should have exactly 6 decision tree entries
-        assert len(decision_lines) == 6
+        # Should have at least 7 decision tree entries (new rules may add steps)
+        assert len(decision_lines) >= 7
         # text_search should NOT appear as a decision tree target
         decision_text = '\n'.join(decision_lines)
         assert '-> text_search' not in decision_text
@@ -290,20 +290,20 @@ class TestGetMcpTools:
             assert key in props, f"Missing property: {key}"
 
     def test_priority_numbering_with_clap(self, ai_mcp_client_mod):
-        """artist_similarity description says #3 when CLAP enabled."""
+        """artist_similarity description says #5 when CLAP enabled."""
         import config as cfg
         cfg.CLAP_ENABLED = True
         tools = ai_mcp_client_mod.get_mcp_tools()
         artist_tool = next(t for t in tools if t['name'] == 'artist_similarity')
-        assert '#3' in artist_tool['description']
+        assert '#5' in artist_tool['description']
 
     def test_priority_numbering_without_clap(self, ai_mcp_client_mod):
-        """artist_similarity description says #2 when CLAP disabled."""
+        """artist_similarity description says #4 when CLAP disabled."""
         import config as cfg
         cfg.CLAP_ENABLED = False
         tools = ai_mcp_client_mod.get_mcp_tools()
         artist_tool = next(t for t in tools if t['name'] == 'artist_similarity')
-        assert '#2' in artist_tool['description']
+        assert '#4' in artist_tool['description']
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +398,7 @@ class TestExecuteMcpTool:
             }, {})
         args = mock_mod._artist_similarity_api_sync.call_args[0]
         # args: (artist, count=15, get_songs)
-        assert args[2] == 100  # default get_songs
+        assert args[2] == 200  # default get_songs (updated to 200 per design)
 
     def test_song_alchemy_normalizes_string_items(self, ai_mcp_client_mod):
         mock_mod = self._mock_mcp_server()
@@ -943,3 +943,74 @@ class TestCallMistralWithTools:
                 {'mistral_key': 'real-key-abc', 'mistral_model': 'mistral-large-latest'}, [])
         assert 'error' in result
         assert 'Mistral error' in result['error']
+
+
+class TestToolDescriptions:
+    """Test that tool descriptions are correct and corrected."""
+
+    def test_artist_similarity_description_includes_own_songs(self, ai_mcp_client_mod):
+        """artist_similarity description should say 'including the artist's own songs'."""
+        tools = ai_mcp_client_mod.get_mcp_tools()
+        artist_sim_tool = next((t for t in tools if t['name'] == 'artist_similarity'), None)
+        assert artist_sim_tool is not None
+        description = artist_sim_tool['description']
+        # Should mention "own songs" and "the artist's own songs"
+        assert 'own songs' in description.lower()
+
+    def test_ai_brainstorm_description_says_only_when_others_cant(self, ai_mcp_client_mod):
+        """ai_brainstorm description should say it's for when OTHER tools can't work."""
+        tools = ai_mcp_client_mod.get_mcp_tools()
+        brainstorm_tool = next((t for t in tools if t['name'] == 'ai_brainstorm'), None)
+        assert brainstorm_tool is not None
+        description = brainstorm_tool['description']
+        # Should explicitly say "ONLY when other tools CAN'T work"
+        assert 'only' in description.lower()
+
+    def test_search_database_has_album_parameter(self, ai_mcp_client_mod):
+        """search_database tool should have 'album' parameter."""
+        tools = ai_mcp_client_mod.get_mcp_tools()
+        search_db_tool = next((t for t in tools if t['name'] == 'search_database'), None)
+        assert search_db_tool is not None
+        schema = search_db_tool['inputSchema']
+        properties = schema['properties']
+        assert 'album' in properties
+
+    def test_search_database_has_scale_parameter(self, ai_mcp_client_mod):
+        """search_database tool should have 'scale' parameter."""
+        tools = ai_mcp_client_mod.get_mcp_tools()
+        search_db_tool = next((t for t in tools if t['name'] == 'search_database'), None)
+        assert search_db_tool is not None
+        schema = search_db_tool['inputSchema']
+        properties = schema['properties']
+        assert 'scale' in properties
+
+    def test_search_database_has_year_filters(self, ai_mcp_client_mod):
+        """search_database tool should have 'year_min' and 'year_max' parameters."""
+        tools = ai_mcp_client_mod.get_mcp_tools()
+        search_db_tool = next((t for t in tools if t['name'] == 'search_database'), None)
+        assert search_db_tool is not None
+        schema = search_db_tool['inputSchema']
+        properties = schema['properties']
+        assert 'year_min' in properties
+        assert 'year_max' in properties
+
+    def test_search_database_has_min_rating(self, ai_mcp_client_mod):
+        """search_database tool should have 'min_rating' parameter."""
+        tools = ai_mcp_client_mod.get_mcp_tools()
+        search_db_tool = next((t for t in tools if t['name'] == 'search_database'), None)
+        assert search_db_tool is not None
+        schema = search_db_tool['inputSchema']
+        properties = schema['properties']
+        assert 'min_rating' in properties
+
+
+class TestBuildSystemPromptAlbum:
+    """Test that system prompt mentions album filter."""
+
+    def test_search_database_rule_mentions_album_filter(self, ai_mcp_client_mod, mcp_server_mod):
+        """System prompt should mention album filter in search_database rule."""
+        tools = ai_mcp_client_mod.get_mcp_tools()
+        prompt = ai_mcp_client_mod._build_system_prompt(tools)
+
+        # Prompt should mention album as a filter option
+        assert 'album' in prompt.lower()

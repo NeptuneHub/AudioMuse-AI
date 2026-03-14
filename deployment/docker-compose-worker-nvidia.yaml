@@ -88,6 +88,11 @@ services:
       RQ_MAX_JOBS_HIGH: "${RQ_MAX_JOBS_HIGH:-100}"
       RQ_LOGGING_LEVEL: "${RQ_LOGGING_LEVEL:-INFO}"
       TEMP_DIR: "/app/temp_audio"
+      # Authentication
+      API_TOKEN: "${API_TOKEN:-}"
+      AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
+      AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
+      JWT_SECRET: "${JWT_SECRET:-}"
       # NVIDIA GPU settings
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_GPU_ID:-0}"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"

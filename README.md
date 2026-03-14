@@ -24,7 +24,7 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 * **Song Alchemy**: Mix your ideal vibe, mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and a 2D preview. Export the final selection directly to your media server.
 * **Text Search**: search your song with simple text that can contains mood, instruments and genre like calm piano songs.
 
-More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [FAQ](docs/FAQ.md), [GPU DEPLOYMENT](docs/GPU.md), [HARDWARE REQUIREMENTS](docs/HARDWARE.md) and [CONFIGURATION PARAMETERS](docs/PARAMETERS.md) can be found in the [docs folder](docs).
+More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [FAQ](docs/FAQ.md), [GPU DEPLOYMENT](docs/GPU.md), [HARDWARE REQUIREMENTS](docs/HARDWARE.md), [CONFIGURATION PARAMETERS](docs/PARAMETERS.md) [AUTHENTICATION](docs/AUTH.md) and can be found in the [docs folder](docs).
 
 **The full list or AudioMuse-AI related repository are:** 
   > * [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI): the core application, it run Flask and Worker containers to actually run all the feature;
@@ -34,7 +34,8 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * Version 0.8.0 finaly out of BETA and with new CLAP model that enable the search of song by text that contains genre, instruments and moods. 
+> * **Version 0.9.0** introduce the new DCLAP model, for a faster analysis. **IMPORTANT**: it need to start from a clean db and a new analysis. Learn more on the release note.
+> * **Version 0.8.13** introduce the authentication layer. It start initially disabled by default. Learn more on the release note.
 
 ## Disclaimer
 
@@ -116,7 +117,12 @@ For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](d
    ```bash
    docker compose -f deployment/docker-compose.yaml up -d
    ```
+> Remember to get the correct version for your Music Server.
 
+> docker-compose.yaml is for Jellyfin.
+> You also have docker-compose-navidrome.yaml, docker-compose-lyrion.yaml, dokcer-compose-emby.yaml
+
+> Other example are for advanced deployment.
 4. **Access the application:**
    Open your browser at `http://localhost:8000`
 
@@ -177,6 +183,8 @@ AudioMuse-AI now stores additional metadata for each track:
 - **rating**: User rating on 0-5 scale (from tags or media server)
 - **file_path**: Normalized file path for cross-provider linking
 
+> NOTE: by default AudioMuse-AI is deployed WITHOUT authentication layer and its suited only for LOCAL deployment. If you want to configure it have a look to the  [AUTHENTICATION](docs/AUTH.md) docs. If you enable the Authentication Layer, you need to be sure that any plugin used support and use the AudioMuse-AI API TOKEN
+
 ## **Hardware Requirements**
 
 AudioMuse-AI has been tested on:
@@ -204,7 +212,7 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
   Development build from the **devel** branch.
   May be unstable — **for testing and development only.**
 
-* **`:vX.Y.Z`** (e.g. `:v1.0.0`, `:v0.1.4-alpha`)
+* **`:X.Y.Z`** (e.g. `:1.0.0`, `:0.1.4-alpha`)
   Immutable images built from **Git release tags**.
   **Ideal for reproducible or pinned deployments.**
 
@@ -224,12 +232,11 @@ AudioMuse AI is built upon a robust stack of open-source technologies:
 * [**Flask:**](https://flask.palletsprojects.com/) Provides the lightweight web interface for user interaction and API endpoints.  
 * [**Redis Queue (RQ):**](https://redis.io/glossary/redis-queue/) A simple Python library for queueing jobs and processing them in the background with Redis.
 * [**Supervisord:**](https://supervisord.org/) Supervisor is a client/server system that allows its users to monitor and control a number of processes on UNIX-like operating systems.
-* [**Essentia-tensorflow**](https://essentia.upf.edu/) An open-source library for audio analysis, feature extraction, and music information retrieval. (used only until version v0.5.0-beta)
-* [**MusicNN Tensorflow Audio Models from Essentia**](https://essentia.upf.edu/models.html) Leverages pre-trained MusicNN models for feature extraction and prediction. More details and models.
+* [**MusiCNN (Music Convolutional Neural Network)**](https://github.com/jordipons/musicnn) Open-source MusiCNN models exported directly to ONNX for feature extraction and mood prediction (used from v4.0.0, replaces Essentia-exported models).
 * [**Librosa**](https://github.com/librosa/librosa) Library for audio analysis, feature extraction, and music information retrieval. (used from version v0.6.0-beta)
-* [**CLAP (Contrastive Language-Audio Pretraining)**](https://github.com/LAION-AI/CLAP) Neural network for audio-text matching, enabling natural language music search and text-based playlist generation.
+* [**LAION CLAP (Contrastive Language-Audio Pretraining)**](https://github.com/LAION-AI/CLAP) Neural network for audio-text matching, enabling natural language music search and text-based playlist generation.
+* [**Distilled CLAP (DCLAP)**](https://github.com/NeptuneHub/AudioMuse-AI-DCLAP) Distilled lightweight version of LAION CLAP.
 * [**ONNX**](https://onnx.ai/) Open Neural Network Exchange format and [ONNX Runtime](https://onnxruntime.ai/) for fast, portable, cross-platform model inference. **(Used from v0.7.0-beta, replaces TensorFlow)**
-* [**Tensorflow**](https://www.tensorflow.org/) Platform developed by Google for building, training, and deploying machine learning and deep learning models. **(Used only in versions before v0.7.0-beta)**
 * [**scikit-learn**](https://scikit-learn.org/) Utilized for machine learning algorithms:
 * [**voyager**](https://github.com/spotify/voyager) Approximate Nearest Neighbors used for the /similarity interface. Used from v0.6.3-beta
 * [**PostgreSQL:**](https://www.postgresql.org/) A powerful, open-source relational database used for persisting:  

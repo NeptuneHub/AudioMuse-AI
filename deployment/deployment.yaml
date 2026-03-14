@@ -37,6 +37,17 @@ stringData:
   GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE" # Replace with your actual Gemini API Key
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: audiomuse-ai-auth
+  namespace: playlist
+stringData:
+  AUDIOMUSE_USER: ""
+  AUDIOMUSE_PASSWORD: ""
+  API_TOKEN: ""
+  JWT_SECRET: ""
+---
+
 kind: ConfigMap
 metadata:
   name: audiomuse-ai-config
@@ -259,6 +270,8 @@ spec:
         envFrom:
         - configMapRef:
             name: audiomuse-ai-config
+        - secretRef:
+            name: audiomuse-ai-auth
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -373,6 +386,8 @@ spec:
         envFrom:
         - configMapRef:
             name: audiomuse-ai-config
+        - secretRef:
+            name: audiomuse-ai-auth
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

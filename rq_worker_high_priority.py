@@ -5,6 +5,9 @@ import logging
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# Signal to app.py that we are an RQ worker, so it should skip index loading and background threads
+os.environ['AUDIOMUSE_ROLE'] = 'worker'
+
 from rq import Worker
 
 try:

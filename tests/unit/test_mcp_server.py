@@ -275,7 +275,7 @@ class TestDatabaseGenreQuery:
         return conn, cur
 
     def test_genre_filter_builds_regex_condition(self):
-        """Verify the SQL contains the regex pattern for genre matching."""
+        """Verify the SQL uses SUBSTRING with regex pattern for genre matching."""
         mod = _import_mcp_server()
         conn, cur = self._setup_mock_conn()
 
@@ -285,7 +285,7 @@ class TestDatabaseGenreQuery:
         call_args = cur.execute.call_args
         sql = call_args[0][0]
         params = call_args[0][1] if len(call_args[0]) > 1 else []
-        assert "~*" in sql  # PostgreSQL case-insensitive regex
+        assert "SUBSTRING(mood_vector FROM" in sql  # PostgreSQL regex extraction
         found_regex = any("rock:" in str(p) for p in params) if params else False
         assert found_regex or "rock" in sql
 

@@ -52,7 +52,7 @@ LOCALFILES_PLAYLIST_DIR = os.environ.get("LOCALFILES_PLAYLIST_DIR", "/music/play
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v0.9.0"
+APP_VERSION = "v0.9.2"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -261,28 +261,38 @@ MOOD_LABELS = [
 
 TOP_N_MOODS = int(os.environ.get("TOP_N_MOODS", "5"))  # Number of top moods to consider (configurable via env)
 TOP_N_OTHER_FEATURES = int(os.environ.get("TOP_N_OTHER_FEATURES", "2")) # Number of top "other features" to consider for clustering vector
-EMBEDDING_MODEL_PATH = "/app/model/msd-musicnn-1.onnx"
-PREDICTION_MODEL_PATH = "/app/model/msd-msd-musicnn-1.onnx"
+EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/app/model/musicnn_embedding.onnx")
+PREDICTION_MODEL_PATH = os.environ.get("PREDICTION_MODEL_PATH", "/app/model/musicnn_prediction.onnx")
 EMBEDDING_DIMENSION = 200
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # Split CLAP models: audio model for analysis, text model for search
-CLAP_AUDIO_MODEL_PATH = os.environ.get("CLAP_AUDIO_MODEL_PATH", "/app/model/clap_audio_model.onnx")
+# Default points to the distilled student model (EfficientAT, epoch 36).
+# The companion external-data file (model_epoch_36.onnx.data) must sit next to it.
+# To revert to the original teacher model set CLAP_AUDIO_MODEL_PATH=/app/model/clap_audio_model.onnx
+# and override the mel params (see CLAP_AUDIO_* variables below).
+CLAP_AUDIO_MODEL_PATH = os.environ.get("CLAP_AUDIO_MODEL_PATH", "/app/model/model_epoch_36.onnx")
+
+# Mel-spectrogram parameters for the CLAP audio model.
+# Defaults match the distilled student model (EfficientAT, model_epoch_36.onnx).
+# For the original teacher model (clap_audio_model.onnx) override to:
+#   CLAP_AUDIO_N_MELS=64  CLAP_AUDIO_N_FFT=1024  CLAP_AUDIO_HOP_LENGTH=480
+#   CLAP_AUDIO_FMIN=50    CLAP_AUDIO_MEL_TRANSPOSE=true
+CLAP_AUDIO_N_MELS = int(os.environ.get("CLAP_AUDIO_N_MELS", "128"))
+CLAP_AUDIO_N_FFT = int(os.environ.get("CLAP_AUDIO_N_FFT", "2048"))
+CLAP_AUDIO_HOP_LENGTH = int(os.environ.get("CLAP_AUDIO_HOP_LENGTH", "480"))
+CLAP_AUDIO_FMIN = int(os.environ.get("CLAP_AUDIO_FMIN", "0"))
+CLAP_AUDIO_FMAX = int(os.environ.get("CLAP_AUDIO_FMAX", "14000"))
+# Teacher model (HTSAT) transposes mel to (time, mels); student does not.
+CLAP_AUDIO_MEL_TRANSPOSE = os.environ.get("CLAP_AUDIO_MEL_TRANSPOSE", "false").lower() == "true"
+
 CLAP_TEXT_MODEL_PATH = os.environ.get("CLAP_TEXT_MODEL_PATH", "/app/model/clap_text_model.onnx")
-# Legacy path for backward compatibility (unused with split models)
-CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", "/app/model/clap_model.onnx")
 CLAP_EMBEDDING_DIMENSION = 512
 # CPU threading for CLAP analysis:
 # - False (default): Use ONNX internal threading (auto-detects all CPU cores, recommended)
 # - True: Use Python ThreadPoolExecutor with auto-calculated threads: (physical_cores - 1) + (logical_cores // 2)
 CLAP_PYTHON_MULTITHREADS = os.environ.get("CLAP_PYTHON_MULTITHREADS", "False").lower() == "true"
-# Mini-batch size for CLAP segment processing (reduces GPU memory usage)
-# - 4 (default): Safe for 4GB GPU, processes 4 segments at a time
-# - 8: Good for 6GB+ GPU, faster but uses more memory
-# - 1: Ultra-safe sequential processing (slowest, minimal memory)
-# Note: Set to 1 for deterministic embeddings (ONNX model has batch-sensitive operations)
-CLAP_MINI_BATCH_SIZE = int(os.environ.get("CLAP_MINI_BATCH_SIZE", "1"))
 
 # Model reloading strategy to prevent GPU VRAM accumulation
 # - true (default): Unload both MusiCNN and CLAP models after each song
@@ -347,6 +357,8 @@ VOYAGER_METRIC = os.environ.get("VOYAGER_METRIC", "angular") # Options: 'angular
 VOYAGER_EF_CONSTRUCTION = int(os.environ.get("VOYAGER_EF_CONSTRUCTION", "1024"))
 VOYAGER_M = int(os.environ.get("VOYAGER_M", "64"))
 VOYAGER_QUERY_EF = int(os.environ.get("VOYAGER_QUERY_EF", "1024"))
+VOYAGER_MAX_PART_SIZE_MB = int(os.environ.get("VOYAGER_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for voyager index storage
+ARTIST_INDEX_MAX_PART_SIZE_MB = int(os.environ.get("ARTIST_INDEX_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for artist index storage
 
 # --- Pathfinding Constants ---
 # The distance metric to use for pathfinding. Options: 'angular', 'euclidean'.
@@ -381,14 +393,10 @@ ALCHEMY_SUBTRACT_DISTANCE_ANGULAR = float(os.environ.get("ALCHEMY_SUBTRACT_DISTA
 ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN = float(os.environ.get("ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN", "5.0"))
 
 
-# --- Other Essentia Model Paths ---
-# Paths for models used in predict_other_models (VGGish-based)
-DANCEABILITY_MODEL_PATH = os.environ.get("DANCEABILITY_MODEL_PATH", "/app/model/danceability-msd-musicnn-1.onnx") # Example, adjust if different
-AGGRESSIVE_MODEL_PATH = os.environ.get("AGGRESSIVE_MODEL_PATH", "/app/model/mood_aggressive-msd-musicnn-1.onnx")
-HAPPY_MODEL_PATH = os.environ.get("HAPPY_MODEL_PATH", "/app/model/mood_happy-msd-musicnn-1.onnx")
-PARTY_MODEL_PATH = os.environ.get("PARTY_MODEL_PATH", "/app/model/mood_party-msd-musicnn-1.onnx")
-RELAXED_MODEL_PATH = os.environ.get("RELAXED_MODEL_PATH", "/app/model/mood_relaxed-msd-musicnn-1.onnx")
-SAD_MODEL_PATH = os.environ.get("SAD_MODEL_PATH", "/app/model/mood_sad-msd-musicnn-1.onnx")
+# --- Other Feature Labels (computed via CLAP text-audio similarity) ---
+# These features are computed by comparing CLAP audio embeddings against
+# cached CLAP text embeddings for each label (no separate ONNX models needed).
+# Mood-specific models (danceability, mood_aggressive, etc.) have been removed.
 
 # --- Energy Normalization Range ---
 ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.01"))
@@ -398,6 +406,9 @@ ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.15"))
 TEMPO_MIN_BPM = float(os.getenv("TEMPO_MIN_BPM", "40.0"))
 TEMPO_MAX_BPM = float(os.getenv("TEMPO_MAX_BPM", "200.0"))
 OTHER_FEATURE_LABELS = ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']
+
+# Redis cache key for CLAP text embeddings of OTHER_FEATURE_LABELS
+CLAP_OTHER_FEATURES_REDIS_KEY = os.environ.get("CLAP_OTHER_FEATURES_REDIS_KEY", "audiomuse:clap_other_feature_text_embeddings")
 
 # --- Sonic Fingerprint Constants ---
 SONIC_FINGERPRINT_TOP_N_SONGS = int(os.environ.get("SONIC_FINGERPRINT_TOP_N_SONGS", "20"))
@@ -458,8 +469,19 @@ ENABLE_PROXY_FIX = os.environ.get("ENABLE_PROXY_FIX", "False").lower() == "true"
 # --- Credential Encryption ---
 ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY', '')
 
+
 # --- Instant Playlist Optimization ---
 # Max songs from a single artist in the instant playlist (diversity enforcement)
 MAX_SONGS_PER_ARTIST_PLAYLIST = int(os.environ.get("MAX_SONGS_PER_ARTIST_PLAYLIST", "5"))
 # Enable energy-arc shaping for playlist ordering (gentle start -> peak -> cool down)
 PLAYLIST_ENERGY_ARC = os.environ.get("PLAYLIST_ENERGY_ARC", "False").lower() == "true"
+
+# --- Authentication ---
+# Set all three to enable authentication. Leave any blank to disable (legacy mode).
+AUDIOMUSE_USER = os.environ.get("AUDIOMUSE_USER", "")
+AUDIOMUSE_PASSWORD = os.environ.get("AUDIOMUSE_PASSWORD", "")
+API_TOKEN = os.environ.get("API_TOKEN", "")
+
+# JWT secret for signing session tokens. Auto-generated if not set (sessions lost on restart).
+# Note: the warning for missing JWT_SECRET is emitted in app.py after logging is configured
+JWT_SECRET = os.environ.get("JWT_SECRET", "")

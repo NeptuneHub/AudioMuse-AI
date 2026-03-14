@@ -1,11 +1,14 @@
 import os
 import psycopg2
 from psycopg2.extras import DictCursor
-from flask import Flask, jsonify, request, render_template, redirect, url_for, g
+from flask import Flask, jsonify, request, render_template, g, make_response, redirect, url_for
 import json
 import logging
 import threading
 import time
+import datetime
+import secrets
+import jwt as pyjwt
 
 # RQ imports
 from rq.job import Job, JobStatus
@@ -31,7 +34,8 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
   AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, OPENAI_SERVER_URL, OPENAI_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME, MISTRAL_MODEL_NAME, \
   TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, ALCHEMY_SUBTRACT_DISTANCE, \
   ENABLE_PROXY_FIX, \
-  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN  # --- NEW: Import path distance metric and alchemy defaults ---
+  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN, \
+  AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, API_TOKEN, JWT_SECRET
 
 if ENABLE_PROXY_FIX:
   # Werkzeug import for reverse proxy support
@@ -69,6 +73,19 @@ if ENABLE_PROXY_FIX:
 # Log the application version on startup
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
 
+# --- Authentication Setup ---
+AUTH_ENABLED = bool(AUDIOMUSE_USER and AUDIOMUSE_PASSWORD and API_TOKEN)
+
+# Finalize JWT_SECRET — auto-generate if not configured
+_jwt_secret = JWT_SECRET
+if not _jwt_secret and AUTH_ENABLED:
+    _jwt_secret = secrets.token_hex(32)
+    app.logger.warning(
+        "JWT_SECRET is not set. A random secret has been generated. "
+        "All browser sessions will be invalidated on container restart. "
+        "Set JWT_SECRET in your .env for persistent sessions."
+    )
+
 # --- Context Processor to Inject Version and Feature Flags ---
 @app.context_processor
 def inject_globals():
@@ -77,8 +94,50 @@ def inject_globals():
     return dict(
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
-        mulan_enabled=MULAN_ENABLED
+        mulan_enabled=MULAN_ENABLED,
+        auth_enabled=AUTH_ENABLED,
     )
+
+# --- Authentication Middleware ---
+@app.before_request
+def check_auth():
+    """
+    Enforce authentication on all routes when auth is enabled.
+    Skipped entirely when AUTH_ENABLED is False (legacy mode).
+    Accepts:
+      - Valid JWT in HttpOnly cookie  (browser sessions)
+      - Valid API_TOKEN Bearer header (M2M / scripts)
+    Public routes: /login, /auth, /logout, /static/*
+    """
+    if not AUTH_ENABLED:
+        return  # Auth disabled — zero impact on existing deployments
+
+    # Always allow public routes
+    public = ('/login', '/auth', '/logout')
+    if request.path in public or request.path.startswith('/static/'):
+        return
+
+    # Check 1: valid JWT cookie (browser users)
+    token = request.cookies.get('audiomuse_jwt')
+    if token:
+        try:
+            pyjwt.decode(token, _jwt_secret, algorithms=['HS256'])
+            return  # Valid session
+        except pyjwt.ExpiredSignatureError:
+            pass  # Fall through to 401/redirect
+        except pyjwt.InvalidTokenError:
+            pass  # Fall through to 401/redirect
+
+    # Check 2: valid Bearer token (M2M callers)
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer ') and auth_header[7:] == API_TOKEN:
+        return  # Valid M2M token
+
+    # Not authenticated
+    if request.path.startswith('/api/'):
+        return jsonify({"error": "Unauthorized"}), 401
+    else:
+        return redirect(url_for('login_page'))
 
 # --- Swagger Setup ---
 app.config['SWAGGER'] = {
@@ -99,6 +158,68 @@ with app.app_context():
 
 
 # --- API Endpoints ---
+
+# --- Auth Routes ---
+@app.route('/login')
+def login_page():
+    """Serve the login page. Redirects to / if already authenticated."""
+    if not AUTH_ENABLED:
+        return redirect(url_for('index'))
+    token = request.cookies.get('audiomuse_jwt')
+    if token:
+        try:
+            pyjwt.decode(token, _jwt_secret, algorithms=['HS256'])
+            return redirect(url_for('index'))
+        except pyjwt.InvalidTokenError:
+            pass
+    return render_template('login.html', title='Login — AudioMuse-AI')
+
+@app.route('/auth', methods=['POST'])
+def auth_endpoint():
+    """
+    Validate credentials and issue a JWT session cookie.
+    Body: { "user": "...", "password": "..." }
+    On success: sets HttpOnly JWT cookie, returns 200.
+    On failure: returns 401.
+    The API_TOKEN is NEVER returned in the response body.
+    """
+    if not AUTH_ENABLED:
+        return jsonify({"error": "Auth not configured"}), 404
+
+    data = request.get_json(silent=True) or {}
+    user = data.get('user', '')
+    password = data.get('password', '')
+
+    if user != AUDIOMUSE_USER or password != AUDIOMUSE_PASSWORD:
+        app.logger.warning(f"Failed login attempt for user: {user!r}")
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    # Issue JWT — new token at every login
+    now = datetime.datetime.now(datetime.timezone.utc)
+    payload = {
+        'sub': user,
+        'iat': now,
+        'exp': now + datetime.timedelta(hours=8),
+    }
+    token = pyjwt.encode(payload, _jwt_secret, algorithm='HS256')
+
+    resp = make_response(jsonify({"status": "ok"}), 200)
+    resp.set_cookie(
+        'audiomuse_jwt',
+        token,
+        httponly=True,           # JS cannot read this cookie
+        samesite='Strict',       # CSRF protection
+        secure=False,            # Set to True when behind HTTPS (Caddy/Traefik handle TLS)
+        max_age=8 * 3600         # 8 hours, matches JWT expiry
+    )
+    return resp
+
+@app.route('/logout', methods=['POST'])
+def logout_endpoint():
+    """Clear the JWT session cookie and redirect to /login."""
+    resp = make_response(jsonify({"status": "logged_out"}), 200)
+    resp.delete_cookie('audiomuse_jwt', samesite='Strict')
+    return resp
 
 @app.route('/')
 def index():
@@ -285,18 +406,9 @@ def cancel_task_endpoint(task_id):
       404:
         description: Task ID not found in the database.
     """
-    db_task_info = get_task_info_from_db(task_id)
-    if not db_task_info:
-        return jsonify({"message": f"Task {task_id} not found in database.", "task_id": task_id}), 404
-
-    if db_task_info.get('status') in [TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]:
-        return jsonify({"message": f"Task {task_id} is already in a terminal state ({db_task_info.get('status')}) and cannot be cancelled.", "task_id": task_id}), 400
-
+    # Always perform cancel when the endpoint is invoked. No early returns.
     cancelled_count = cancel_job_and_children_recursive(task_id, reason=f"Cancellation requested for task {task_id} via API.")
-
-    if cancelled_count > 0:
-        return jsonify({"message": f"Task {task_id} and its children cancellation initiated. {cancelled_count} total jobs affected.", "task_id": task_id, "cancelled_jobs_count": cancelled_count}), 200
-    return jsonify({"message": "Task could not be cancelled (e.g., already completed or not found in active state).", "task_id": task_id}), 400
+    return jsonify({"message": f"Task {task_id} cancellation requested. {cancelled_count} cancellation actions attempted.", "task_id": task_id, "cancelled_jobs_count": cancelled_count}), 200
 
 
 @app.route('/api/cancel_all/<task_type_prefix>', methods=['POST'])
@@ -625,9 +737,17 @@ app.register_blueprint(clap_search_bp)
 app.register_blueprint(mulan_search_bp)
 app.register_blueprint(setup_bp)  # Setup wizard
 
-if __name__ == '__main__':
-  os.makedirs(TEMP_DIR, exist_ok=True)
+# --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
+# RQ workers import app.py but should NOT load indexes or start background threads.
+# The env var AUDIOMUSE_ROLE is set to 'worker' by rq_worker.py / rq_worker_high_priority.py.
+_is_worker = os.environ.get('AUDIOMUSE_ROLE') == 'worker'
 
+try:
+  os.makedirs(TEMP_DIR, exist_ok=True)
+except OSError:
+  logger.debug(f"Could not create TEMP_DIR '{TEMP_DIR}' (may be running in test/CI environment)")
+
+if not _is_worker:
   with app.app_context():
     # --- Apply DB settings to runtime config ---
     try:
@@ -678,13 +798,14 @@ if __name__ == '__main__':
         if load_clap_cache_from_db():
           logger.info("CLAP text search cache loaded at startup (embeddings only).")
           logger.info("CLAP model will lazy-load on first text search (~1-2s delay, saves 3GB RAM).")
-          
-          # Load top queries from database (default queries only, no computation)
-          has_existing = load_top_queries_from_db()
-          if has_existing:
-            logger.info("Loaded top queries from database (defaults).")
-          else:
-            logger.info("No queries found in database (should not happen - check DB)")
+        
+        # Load top queries from database (default queries only, no computation)
+        # This must run even if no CLAP embeddings exist yet (first startup)
+        has_existing = load_top_queries_from_db()
+        if has_existing:
+          logger.info("Loaded top queries from database (defaults).")
+        else:
+          logger.info("No queries found in database (should not happen - check DB)")
     except Exception as e:
       logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
     # Load MuLan embeddings cache (model will lazy-load on first use)
@@ -696,22 +817,21 @@ if __name__ == '__main__':
         if load_mulan_cache_from_db():
           logger.info("MuLan text search cache loaded at startup (embeddings only).")
           logger.info("MuLan models will lazy-load on first text search.")
-          
-          # Load top queries from database
-          has_existing = load_mulan_top_queries_from_db()
-          if has_existing:
-            logger.info("Loaded MuLan top queries from database (defaults).")
-          else:
-            logger.info("No MuLan queries found in database (defaults inserted)")
+        
+        # Load top queries from database
+        # This must run even if no MuLan embeddings exist yet (first startup)
+        has_existing = load_mulan_top_queries_from_db()
+        if has_existing:
+          logger.info("Loaded MuLan top queries from database (defaults).")
+        else:
+          logger.info("No MuLan queries found in database (defaults inserted)")
     except Exception as e:
       logger.debug(f"MuLan cache not loaded at startup (may be disabled or failed): {e}")
-    # Initialize map JSON cache once at startup (reads DB one time)
-    # Run this in a background daemon thread so the Flask process doesn't block on the heavy DB read.
+
     def _start_map_init_background():
       try:
         from app_map import init_map_cache
         logger.info('Starting background map JSON cache build.')
-        # Ensure we run the heavy cache build inside an application context
         with app.app_context():
           init_map_cache()
         logger.info('Background map JSON cache build finished.')
@@ -721,7 +841,8 @@ if __name__ == '__main__':
     t = threading.Thread(target=_start_map_init_background, daemon=True)
     t.start()
 
-  # --- Start Background Listener Thread ---
+# --- Start Background Listener Thread (Flask server only) ---
+if not _is_worker:
   listener_thread = threading.Thread(target=listen_for_index_reloads, daemon=True)
   listener_thread.start()
 
@@ -741,5 +862,8 @@ if __name__ == '__main__':
 
   cron_thread = threading.Thread(target=_cron_manager_loop, daemon=True)
   cron_thread.start()
+else:
+  logger.info('Running as RQ worker — skipping index loading, Redis listener, and cron thread.')
 
+if __name__ == '__main__':
   app.run(debug=False, host='0.0.0.0', port=8000)

@@ -37,6 +37,16 @@ The **mandatory** parameter that you need to change from the example are this:
 | `MISTRAL_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MISTRAL) Your Mistral API Key.      | *(N/A - from Secret)* |
 | `OPENAI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is OPENAI) Your OpenAI / OpenRouter API Key. | *(N/A - from Secret)* |
 
+The following additional environment variables control authentication.  Leave
+all four empty to disable auth (default).
+
+| Parameter            | Description                                          | Default |
+|----------------------|------------------------------------------------------|---------|
+| `AUDIOMUSE_USER`     | Username for web UI login                            | ``      |
+| `AUDIOMUSE_PASSWORD` | Password for web UI login                            | ``      |
+| `API_TOKEN`          | Bearer token for API/worker requests                 | ``      |
+| `JWT_SECRET`         | HMAC key used to sign session JWTs                   | ``      |
+
 
 These parameters can be left as-is:
 
@@ -162,9 +172,13 @@ The **AI model** tested for Clustering naming and for the instant playlist funct
 * gemini-2.5-pro
 * gemini-1.5-flash-latest
 
-different model could have different parameter and don't work.
+For **selhosting AI** with Ollama this are the one that worked best (in order):
+1. qwen3.5:9b (largest tested)
+2. qwen3.5:4b
+3. gemma3:4b
+4. ministral-3:3b (this one is the fastest)
 
-For selhosting we suggest llama, instead for cloud genini.
+different model could have different parameter and don't work.
 
 **(*)** For using GEMINI API you need to have a Google account, a free account can be used if needed. Same goes for Mistral. Instead if you want to self-host Ollama here you can find a deployment example:
 
