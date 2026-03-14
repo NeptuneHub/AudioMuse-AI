@@ -95,6 +95,8 @@ RUN set -ux; \
             supervisor procps \
             gcc g++ \
             git vim redis-tools strace iputils-ping \
+            $(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then echo libnvinfer10; fi) \
+            $(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then echo libnvinfer-plugin10; fi) \
             "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)"; then \
             break; \
         fi; \
@@ -125,10 +127,10 @@ COPY requirements/ /app/requirements/
 # Note: --index-strategy unsafe-best-match resolves conflicts between pypi.nvidia.com and pypi.org
 RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
         echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager, torch+cuda)"; \
-        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
+        UV_HTTP_TIMEOUT=600 uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
     else \
         echo "CPU base image: installing all packages together for dependency resolution"; \
-        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/cpu.txt -r /app/requirements/common.txt || exit 1; \
+        UV_HTTP_TIMEOUT=600 uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/cpu.txt -r /app/requirements/common.txt || exit 1; \
     fi \
     && echo "Verifying psycopg2 installation..." \
     && python3 -c "import psycopg2; print('psycopg2 OK')" \

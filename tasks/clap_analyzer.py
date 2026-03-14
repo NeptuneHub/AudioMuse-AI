@@ -26,6 +26,7 @@ from typing import Tuple, Optional
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
 
 import config
+from tasks.onnx_providers import build_ort_provider_options, split_provider_options, log_provider_selection
 try:
     from config import AUDIO_LOAD_TIMEOUT
 except Exception:
@@ -88,23 +89,12 @@ def _load_audio_model():
     session = None
     
     # Configure provider options with GPU memory management
-    available_providers = ort.get_available_providers()
-    if 'CUDAExecutionProvider' in available_providers:
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
-    else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
+    provider_options, available_providers = build_ort_provider_options(
+        ort,
+        cuda_algo_search='DEFAULT',
+        include_copy_stream=False,
+    )
+    log_provider_selection(logger, "CLAP audio", provider_options, available_providers)
     
     # Create session — pass file path so ORT resolves external data natively
     def _create_session(model_input, providers, provider_opts):
@@ -115,8 +105,7 @@ def _load_audio_model():
             provider_options=provider_opts,
         )
 
-    preferred_providers = [p[0] for p in provider_options]
-    preferred_opts     = [p[1] for p in provider_options]
+    preferred_providers, preferred_opts = split_provider_options(provider_options)
     cpu_providers      = ['CPUExecutionProvider']
     cpu_opts           = [{}]
 
@@ -187,32 +176,21 @@ def _load_text_model():
     
     # Text model typically runs on CPU in Flask containers
     session = None
-    available_providers = ort.get_available_providers()
-    
-    if 'CUDAExecutionProvider' in available_providers:
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
-    else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
+    provider_options, available_providers = build_ort_provider_options(
+        ort,
+        cuda_algo_search='DEFAULT',
+        include_copy_stream=False,
+    )
+    providers, provider_opts = split_provider_options(provider_options)
+    log_provider_selection(logger, "CLAP text", provider_options, available_providers)
     
     # Create session
     try:
         session = ort.InferenceSession(
             model_path,
             sess_options=sess_options,
-            providers=[p[0] for p in provider_options],
-            provider_options=[p[1] for p in provider_options]
+            providers=providers,
+            provider_options=provider_opts
         )
         
         active_provider = session.get_providers()[0]

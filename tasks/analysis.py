@@ -63,6 +63,11 @@ from .memory_utils import (
     SessionRecycler,
     comprehensive_memory_cleanup
 )
+from .onnx_providers import (
+    build_ort_provider_options,
+    split_provider_options,
+    log_provider_selection,
+)
 
 
 from psycopg2 import OperationalError
@@ -380,25 +385,13 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     should_cleanup_sessions = False
     
     # Configure provider options for GPU memory management (used for main and secondary models)
-    available_providers = ort.get_available_providers()
-    if 'CUDAExecutionProvider' in available_providers:
-        # Get GPU device ID from environment or default to 0
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-            'cudnn_conv_algo_search': 'EXHAUSTIVE',
-            'do_copy_in_default_stream': True,
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - attempting to use GPU for analysis (device_id={gpu_device_id})")
-    else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
+    provider_options, available_providers = build_ort_provider_options(
+        ort,
+        cuda_algo_search='EXHAUSTIVE',
+        include_copy_stream=True,
+    )
+    providers, provider_opts = split_provider_options(provider_options)
+    log_provider_selection(logger, "MusiCNN", provider_options, available_providers)
     
     try:
         # Use pre-loaded sessions if provided, otherwise load per-song
@@ -411,8 +404,8 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             try:
                 embedding_sess = ort.InferenceSession(
                     model_paths['embedding'],
-                    providers=[p[0] for p in provider_options],
-                    provider_options=[p[1] for p in provider_options]
+                    providers=providers,
+                    provider_options=provider_opts
                 )
             except Exception:
                 # Fallback to CPU if preferred providers fail
@@ -425,8 +418,8 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
             try:
                 prediction_sess = ort.InferenceSession(
                     model_paths['prediction'],
-                    providers=[p[0] for p in provider_options],
-                    provider_options=[p[1] for p in provider_options]
+                    providers=providers,
+                    provider_options=provider_opts
                 )
             except Exception:
                 # Fallback to CPU if preferred providers fail
@@ -715,30 +708,21 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         if onnx_sessions is None:
                             logger.info(f"Lazy-loading MusiCNN models for album: {album_name}")
                             onnx_sessions = {}
-                            available_providers = ort.get_available_providers()
-                            
-                            if 'CUDAExecutionProvider' in available_providers:
-                                gpu_device_id = 0
-                                cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-                                if cuda_visible and cuda_visible != '-1':
-                                    gpu_device_id = 0
-                                cuda_options = {
-                                    'device_id': gpu_device_id,
-                                    'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-                                    'cudnn_conv_algo_search': 'EXHAUSTIVE',      # Find memory-efficient algorithms
-                                    'do_copy_in_default_stream': True,           # Better memory sync
-                                }
-                                provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-                            else:
-                                provider_options = [('CPUExecutionProvider', {})]
+                            provider_options, available_providers = build_ort_provider_options(
+                                ort,
+                                cuda_algo_search='EXHAUSTIVE',
+                                include_copy_stream=True,
+                            )
+                            providers, provider_opts = split_provider_options(provider_options)
+                            log_provider_selection(logger, "MusiCNN lazy-load", provider_options, available_providers)
                             
                             try:
                                 for model_name, model_path in model_paths.items():
                                     try:
                                         onnx_sessions[model_name] = ort.InferenceSession(
                                             model_path,
-                                            providers=[p[0] for p in provider_options],
-                                            provider_options=[p[1] for p in provider_options]
+                                            providers=providers,
+                                            provider_options=provider_opts
                                         )
                                     except Exception:
                                         onnx_sessions[model_name] = ort.InferenceSession(
@@ -763,30 +747,21 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             
                             # Recreate sessions
                             onnx_sessions = {}
-                            available_providers = ort.get_available_providers()
-                            
-                            if 'CUDAExecutionProvider' in available_providers:
-                                gpu_device_id = 0
-                                cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-                                if cuda_visible and cuda_visible != '-1':
-                                    gpu_device_id = 0
-                                cuda_options = {
-                                    'device_id': gpu_device_id,
-                                    'arena_extend_strategy': 'kSameAsRequested',  # Prevent memory fragmentation
-                                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
-                                    'do_copy_in_default_stream': True,
-                                }
-                                provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-                            else:
-                                provider_options = [('CPUExecutionProvider', {})]
+                            provider_options, available_providers = build_ort_provider_options(
+                                ort,
+                                cuda_algo_search='EXHAUSTIVE',
+                                include_copy_stream=True,
+                            )
+                            providers, provider_opts = split_provider_options(provider_options)
+                            log_provider_selection(logger, "MusiCNN recycle", provider_options, available_providers)
                             
                             try:
                                 for model_name, model_path in model_paths.items():
                                     try:
                                         onnx_sessions[model_name] = ort.InferenceSession(
                                             model_path,
-                                            providers=[p[0] for p in provider_options],
-                                            provider_options=[p[1] for p in provider_options]
+                                            providers=providers,
+                                            provider_options=provider_opts
                                         )
                                     except Exception:
                                         onnx_sessions[model_name] = ort.InferenceSession(

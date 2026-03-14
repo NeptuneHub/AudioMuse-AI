@@ -43,6 +43,7 @@ services:
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
+      USE_TENSORRT: "${USE_TENSORRT:-false}" # Prefer TensorRT EP for ONNX Runtime when available
       TEMP_DIR: "/app/temp_audio"
       # Authentication (optional) – leave blank to disable
       API_TOKEN: "${API_TOKEN:-}"

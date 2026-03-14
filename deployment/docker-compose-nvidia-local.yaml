@@ -57,6 +57,7 @@ services:
       OLLAMA_SERVER_URL: "${OLLAMA_SERVER_URL:-http://192.168.1.71:11434/api/generate}"
       OLLAMA_MODEL_NAME: "${OLLAMA_MODEL_NAME:-qwen3:1.7b}"
       CLAP_ENABLED: "${CLAP_ENABLED:-true}"
+      USE_TENSORRT: "${USE_TENSORRT:-false}"
       TEMP_DIR: "/app/temp_audio"
       # Authentication (optional) – leave blank to disable
       API_TOKEN: "${API_TOKEN:-}"
@@ -106,6 +107,7 @@ services:
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       CLAP_ENABLED: "${CLAP_ENABLED:-true}"
+      USE_TENSORRT: "${USE_TENSORRT:-false}"
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"

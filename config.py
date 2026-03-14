@@ -71,6 +71,11 @@ ENABLE_CLUSTERING_EMBEDDINGS = os.environ.get("ENABLE_CLUSTERING_EMBEDDINGS", "T
 # --- GPU Acceleration for Clustering (Optional, requires NVIDIA GPU and RAPIDS cuML) ---
 USE_GPU_CLUSTERING = os.environ.get("USE_GPU_CLUSTERING", "False").lower() == "true"
 
+# --- TensorRT Execution Provider for ONNX Runtime (Optional, NVIDIA builds only) ---
+# When true and TensorRT libraries are available, ONNX Runtime will prefer
+# TensorrtExecutionProvider before CUDAExecutionProvider.
+USE_TENSORRT = os.environ.get("USE_TENSORRT", "False").lower() == "true"
+
 # --- DBSCAN Only Constants (Ranges for Evolutionary Approach) ---
 # Default ranges for DBSCAN parameters
 DBSCAN_EPS_MIN = float(os.getenv("DBSCAN_EPS_MIN", "0.1"))

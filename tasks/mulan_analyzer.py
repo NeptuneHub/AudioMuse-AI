@@ -21,6 +21,7 @@ import config
 from typing import Tuple, Optional
 from transformers import AutoTokenizer
 from tasks.memory_utils import cleanup_cuda_memory, cleanup_onnx_session, handle_onnx_memory_error
+from tasks.onnx_providers import build_ort_provider_options, split_provider_options, log_provider_selection
 
 logger = logging.getLogger(__name__)
 
@@ -65,20 +66,22 @@ def _load_mulan_models(load_text_models=False):
         # logger.info(f"MuLan: Using {num_threads} threads ({logical_cores} logical cores - 2)")
         logger.info("MuLan: Using ONNX Runtime automatic thread management")
         
-        # Select execution provider (CPU or CUDA)
-        providers = ['CPUExecutionProvider']
-        if ort.get_available_providers() and 'CUDAExecutionProvider' in ort.get_available_providers():
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            logger.info("CUDA available - using GPU acceleration")
-        else:
-            logger.info("Using CPU execution")
+        # Select execution providers (TensorRT/CUDA/CPU)
+        provider_options, available_providers = build_ort_provider_options(
+            ort,
+            cuda_algo_search='DEFAULT',
+            include_copy_stream=False,
+        )
+        providers, provider_opts = split_provider_options(provider_options)
+        log_provider_selection(logger, "MuLan", provider_options, available_providers)
         
         # Load audio encoder (with external data file)
         logger.info(f"Loading audio encoder: {config.AUDIO_MODEL_PATH}")
         _audio_session = ort.InferenceSession(
             config.AUDIO_MODEL_PATH,
             sess_options=sess_options,
-            providers=providers
+            providers=providers,
+            provider_options=provider_opts,
         )
         
         # Load text encoder and tokenizer only if requested (Flask search mode)
@@ -92,7 +95,8 @@ def _load_mulan_models(load_text_models=False):
             _text_session = ort.InferenceSession(
                 config.TEXT_MODEL_PATH,
                 sess_options=sess_options,
-                providers=providers
+                providers=providers,
+                provider_options=provider_opts,
             )
             
             # Load tokenizer from extracted directory (uses transformers for compatibility)
@@ -172,15 +176,20 @@ def initialize_mulan_text_models():
         # sess_options.intra_op_num_threads = num_threads
         # sess_options.inter_op_num_threads = num_threads
         
-        providers = ['CPUExecutionProvider']
-        if ort.get_available_providers() and 'CUDAExecutionProvider' in ort.get_available_providers():
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        provider_options, available_providers = build_ort_provider_options(
+            ort,
+            cuda_algo_search='DEFAULT',
+            include_copy_stream=False,
+        )
+        providers, provider_opts = split_provider_options(provider_options)
+        log_provider_selection(logger, "MuLan text", provider_options, available_providers)
         
         # Load text encoder
         _text_session = ort.InferenceSession(
             config.TEXT_MODEL_PATH,
             sess_options=sess_options,
-            providers=providers
+            providers=providers,
+            provider_options=provider_opts,
         )
         
         # Load tokenizer

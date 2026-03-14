@@ -25,6 +25,21 @@ We suggest **8GB VRAM** on GPU, with less you can experience the NON BLOCKING Ou
 3. Ensure NVIDIA Container Toolkit is installed on your host
 4. Use docker-compose files with GPU support (e.g., `docker-compose-nvidia.yaml` or `docker-compose-worker-nvidia.yaml`)
 
+**TensorRT (optional ONNX acceleration):**
+
+NVIDIA images now include TensorRT runtime libraries required by ONNX Runtime.
+TensorRT remains **opt-in** to avoid changing existing behavior.
+
+Set in your `.env` file:
+
+```
+USE_TENSORRT=true
+```
+
+When enabled and available, ONNX Runtime provider order becomes:
+`TensorrtExecutionProvider -> CUDAExecutionProvider -> CPUExecutionProvider`.
+If TensorRT cannot be used, inference falls back automatically.
+
 **Performance Impact:**
 - **KMeans**: 10-50x faster than CPU
 - **DBSCAN**: 5-100x faster than CPU

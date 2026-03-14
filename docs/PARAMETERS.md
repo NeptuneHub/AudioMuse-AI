@@ -84,6 +84,7 @@ These are the default parameters used when launching analysis or clustering task
 | `CLUSTERING_RUNS`                           | Iterations for Monte Carlo evolutionary search.                                                                           | `1000`          |
 | `TOP_N_PLAYLISTS`                           | POST Clustering it keep only the top N diverse playlist.                                                                  | `8`             |
 | `USE_GPU_CLUSTERING`                        | When true enalbe the use of GPU on K-Means, DBSCAN and PCA                                                                | `false`         |
+| `USE_TENSORRT`                              | When true and TensorRT is available (NVIDIA images), ONNX Runtime prefers TensorRT EP before CUDA for MusiCNN/CLAP/MuLan | `false`         |
 | **Similarity General**                      |                                                                                                                           |                 |
 | `INDEX_NAME`                                | Name of the index, no need to change.                                                                                     | `music_library` |
 | `VOYAGER_EF_CONSTRUCTION`                   | Number of element analyzed to create the neighbor list in the index.                                                      | `1024`          |

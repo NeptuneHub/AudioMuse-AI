@@ -79,7 +79,9 @@ def test_onnx_runtime():
         import onnxruntime as ort
         providers = ort.get_available_providers()
         has_cuda = 'CUDAExecutionProvider' in providers
+        has_tensorrt = 'TensorrtExecutionProvider' in providers
         print_result("ONNX Runtime GPU", has_cuda, f"Providers: {providers}")
+        print_result("TensorRT EP available", has_tensorrt, "Set USE_TENSORRT=true to prefer TensorRT")
 
         # Test actual session creation with CUDA
         if has_cuda:
