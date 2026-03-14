@@ -149,8 +149,22 @@ def test_clap_analysis_runs_and_shows_output():
             all_passed = True
             
             for query in test_queries:
-                text_embedding = get_text_embedding(query)
-                
+                # try once, then retry once on failure
+                text_embedding = None
+                last_exc = None
+                for attempt in range(2):
+                    try:
+                        text_embedding = get_text_embedding(query)
+                        last_exc = None
+                        break
+                    except Exception as e:
+                        last_exc = e
+                        # small pause if second try will be attempted
+                        if attempt == 0:
+                            continue
+                if last_exc is not None:
+                    pytest.fail(f"CLAP text model unavailable after retry: {last_exc}")
+
                 if text_embedding is None:
                     print(f'  {query:25s} - Failed to compute text embedding')
                     pytest.fail(f'{track_name}: Failed to compute text embedding for query "{query}"')

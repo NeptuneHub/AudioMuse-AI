@@ -881,7 +881,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         logger.info(f"  - Other Features: {other_features}")
                         
                         # Save MusiCNN score+embedding first (creates the 'score' row)
-                        save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), musicnn_analysis['tempo'], musicnn_analysis['key'], musicnn_analysis['scale'], top_moods, musicnn_embedding, energy=musicnn_analysis['energy'], other_features=other_features, album=item.get('Album', None))
+                        save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), musicnn_analysis['tempo'], musicnn_analysis['key'], musicnn_analysis['scale'], top_moods, musicnn_embedding, energy=musicnn_analysis['energy'], other_features=other_features, album=item.get('Album', None), album_artist=item.get('OriginalAlbumArtist', None), year=item.get('Year'), rating=item.get('Rating'), file_path=item.get('FilePath'))
                     
                     # Save CLAP embedding AFTER score row exists (FK: clap_embedding.item_id → score.item_id)
                     if clap_embedding_for_track is not None and needs_clap:
@@ -1210,9 +1210,9 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                         track_id_str = str(item['Id'])
                         try:
                             with get_db() as conn, conn.cursor() as cur:
-                                cur.execute("UPDATE score SET album = %s WHERE item_id = %s", (album.get('Name'), track_id_str))
+                                cur.execute("UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE item_id = %s", (album.get('Name'), item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'), item.get('FilePath'), track_id_str))
                                 conn.commit()
-                            logger.info(f"[MainAnalysisTask] Updated album name for track '{item['Name']}' to '{album.get('Name')}' (main task)")
+                            logger.info(f"[MainAnalysisTask] Updated album/album_artist/year/rating/file_path for track '{item['Name']}' to '{album.get('Name')}' (main task)")
                         except Exception as e:
                             logger.warning(f"[MainAnalysisTask] Failed to update album name for '{item['Name']}': {e}")
                     albums_skipped += 1

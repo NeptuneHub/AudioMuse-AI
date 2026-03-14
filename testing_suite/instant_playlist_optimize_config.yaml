@@ -1,0 +1,252 @@
+# Instant Playlist - Optimization Test Config
+# Single instance, iterative testing to improve prompt + code quality
+
+instance:
+  api_url: "http://localhost:8000"
+
+test_config:
+  timeout_per_request: 300
+  retry_on_error: 1
+  retry_delay: 5
+
+models:
+  # --- OpenRouter models ---
+  - provider: "openrouter"
+    name: "Claude Sonnet 4.6"
+    model_id: "anthropic/claude-sonnet-4.6"
+    enabled: false
+
+  - provider: "openrouter"
+    name: "Claude 4.5 Haiku"
+    model_id: "anthropic/claude-haiku-4.5"
+    enabled: false
+
+  - provider: "openrouter"
+    name: "Gemini 3 Flash"
+    model_id: "google/gemini-3-flash-preview"
+    enabled: false
+
+  - provider: "openrouter"
+    name: "GPT-4o Mini"
+    model_id: "openai/gpt-4o-mini"
+    enabled: false
+
+  # --- Ollama models ---
+  # Benchmark #1: 0.960 agent score, perfect restraint
+  - provider: "ollama"
+    name: "Qwen 3 1.7B"
+    model_id: "qwen3:1.7b"
+    url: "http://192.168.1.71:11434/api/generate"
+    enabled: false
+
+  # Benchmark #2: 0.920, fastest model (1.6s), perfect restraint
+  - provider: "ollama"
+    name: "LFM 2.5 1.2B"
+    model_id: "lfm2.5-thinking:1.2b"
+    url: "http://192.168.1.71:11434/api/generate"
+    enabled: false
+
+  # Benchmark #4: 0.800, perfect restraint
+  - provider: "ollama"
+    name: "Qwen 2.5 1.5B"
+    model_id: "qwen2.5:1.5b"
+    url: "http://192.168.1.71:11434/api/generate"
+    enabled: false
+
+  # Rank 3: avg 2.7, 21.7s avg response
+  - provider: "ollama"
+    name: "Ministral 3 3B"
+    model_id: "ministral-3:3b"
+    url: "http://192.168.1.71:11434/api/generate"
+    enabled: true
+
+  # Benchmark #7: 0.780, perfect restraint
+  - provider: "ollama"
+    name: "Phi 4 Mini 3.8B"
+    model_id: "phi4-mini:3.8b"
+    url: "http://192.168.1.71:11434/api/generate"
+    enabled: false
+
+  # Benchmark #10: 0.660, high action but 0.000 restraint
+  - provider: "ollama"
+    name: "Llama 3.2 3B"
+    model_id: "llama3.2:3b"
+    url: "http://192.168.1.71:11434/api/generate"
+    enabled: false
+
+  # Rank 1: avg 2.9, 6.3s avg response (fastest top model)
+  - provider: "ollama"
+    name: "Gemma 3 4B"
+    model_id: "gemma3:4b"
+    url: "http://192.168.1.71:11434/api/generate"
+    enabled: true
+
+  - provider: "ollama"
+    name: "Qwen 3.5 0.8B"
+    model_id: "qwen3.5:0.8b"
+    url: "http://192.168.1.71:11434/api/generate"
+    enabled: false
+
+  - provider: "ollama"
+    name: "Qwen 3.5 2B"
+    model_id: "qwen3.5:2b"
+    url: "http://192.168.1.71:11434/api/generate"
+    enabled: false
+
+  # Rank 3: avg 2.7, 57.4s avg response
+  - provider: "ollama"
+    name: "Qwen 3.5 4B"
+    model_id: "qwen3.5:4b"
+    url: "http://192.168.1.71:11434/api/generate"
+    enabled: true
+
+  # Rank 1: avg 2.9, 46.7s avg response
+  - provider: "ollama"
+    name: "Qwen 3.5 9B"
+    model_id: "qwen3.5:9b"
+    url: "http://192.168.1.71:11434/api/generate"
+    enabled: true
+
+test_prompts:
+  # ===== BUG FIX VALIDATION =====
+  # These test the 4 bugs we just fixed
+
+  # Bug 1: Year filter - was setting year_min=1, year_max=2026
+  - prompt: "2026 songs"
+    category: "year_filter"
+    expected:
+      min_songs: 50
+      expected_tools: ["search_database"]
+      must_have_filter: ["year="]
+      no_extra_filters: true
+      allowed_filters: ["year_min", "year_max"]
+
+  - prompt: "give me 100 songs from 2026"
+    category: "year_filter"
+    expected:
+      min_songs: 80
+      expected_tools: ["search_database"]
+      must_have_filter: ["year="]
+      no_extra_filters: true
+      allowed_filters: ["year_min", "year_max"]
+
+  - prompt: "songs from 2024"
+    category: "year_filter"
+    expected:
+      min_songs: 30
+      expected_tools: ["search_database"]
+      must_have_filter: ["year="]
+
+  - prompt: "90s rock"
+    category: "year_filter"
+    expected:
+      expected_tools: ["search_database"]
+      must_have_filter: ["year="]
+
+  # Bug 2: Random rating filter added
+  - prompt: "electronic music"
+    category: "no_extra_filter"
+    expected:
+      expected_tools: ["search_database"]
+      no_extra_filters: true
+      allowed_filters: ["genres"]
+
+  # Bug 3: Random genre filter added
+  - prompt: "songs from 2020-2025"
+    category: "no_extra_filter"
+    expected:
+      expected_tools: ["search_database"]
+      no_extra_filters: true
+      allowed_filters: ["year_min", "year_max"]
+
+  # Bug 4: Per-artist cap reducing results below 100
+  - prompt: "2026 songs"
+    category: "artist_cap"
+    expected:
+      min_songs: 80
+
+  # ===== TOOL SELECTION =====
+
+  - prompt: "Songs similar to By the Way by Red Hot Chili Peppers"
+    category: "song_similarity"
+    expected:
+      expected_tools: ["song_similarity"]
+      min_songs: 50
+
+  - prompt: "calm piano music"
+    category: "text_search"
+    expected:
+      expected_tools: ["text_search"]
+      min_songs: 50
+
+  - prompt: "songs like AC/DC"
+    category: "artist_similarity"
+    expected:
+      expected_tools: ["artist_similarity"]
+      min_songs: 50
+
+  - prompt: "songs from blink-182"
+    category: "artist_filter"
+    expected:
+      expected_tools: ["search_database"]
+
+  - prompt: "top songs of Madonna"
+    category: "ai_brainstorm"
+    expected:
+      expected_tools: ["ai_brainstorm"]
+
+  - prompt: "sounds like Iron Maiden and Metallica combined"
+    category: "song_alchemy"
+    expected:
+      expected_tools: ["song_alchemy"]
+      min_songs: 50
+
+  # ===== FILTER COMBINATIONS =====
+
+  - prompt: "rock 5 star songs"
+    category: "combined_filter"
+    expected:
+      expected_tools: ["search_database"]
+      must_have_filter: ["min_rating"]
+
+  - prompt: "sad jazz songs"
+    category: "combined_filter"
+    expected:
+      expected_tools: ["search_database"]
+
+  - prompt: "fast metal songs"
+    category: "combined_filter"
+    expected:
+      expected_tools: ["search_database"]
+
+  - prompt: "songs in minor key"
+    category: "scale_filter"
+    expected:
+      expected_tools: ["search_database"]
+
+  # ===== COMPLEX / MULTI-TOOL =====
+
+  - prompt: "energetic rock music for working out"
+    category: "multi_tool"
+    expected:
+      min_songs: 50
+
+  - prompt: "mix of Daft Punk and Gorillaz"
+    category: "song_alchemy"
+    expected:
+      expected_tools: ["song_alchemy"]
+      min_songs: 50
+
+  - prompt: "High-energy metal and hard rock from 2000-2015, in minor scale, between 120-180 BPM"
+    category: "multi_filter"
+    expected:
+      expected_tools: ["search_database"]
+      must_have_filter: ["year="]
+
+  - prompt: "songs similar to Metallica, I want a huge playlist with lots of variety"
+    category: "diversity_stress"
+    expected:
+      min_songs: 80
+
+output:
+  directory: "testing_suite/reports/optimization"
