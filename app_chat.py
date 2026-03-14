@@ -514,11 +514,17 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
         
         # Execute the tools AI selected
         tool_calls = tool_calling_result.get('tool_calls', [])
-        
+
         if not tool_calls:
             log_messages.append("⚠️ AI returned no tool calls. Stopping iteration.")
             break
-        
+
+        # Cap tool calls per iteration to prevent pathological looping (some small models emit 30+ identical calls)
+        MAX_TOOL_CALLS_PER_ITERATION = 10
+        if len(tool_calls) > MAX_TOOL_CALLS_PER_ITERATION:
+            log_messages.append(f"⚠️ AI returned {len(tool_calls)} tool calls, capping to {MAX_TOOL_CALLS_PER_ITERATION}")
+            tool_calls = tool_calls[:MAX_TOOL_CALLS_PER_ITERATION]
+
         log_messages.append(f"\n--- Executing {len(tool_calls)} Tool(s) ---")
 
         # Pre-execution validation (Phase 4A)
@@ -693,6 +699,11 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
                     args_summary.append(f"valence={valence_str}")
                 if 'key' in tool_args:
                     args_summary.append(f"key={tool_args['key']}")
+                if 'year_min' in tool_args or 'year_max' in tool_args:
+                    year_str = f"{tool_args.get('year_min', '')}..{tool_args.get('year_max', '')}"
+                    args_summary.append(f"year={year_str}")
+                if 'min_rating' in tool_args:
+                    args_summary.append(f"min_rating={tool_args['min_rating']}")
             elif tool_name in ["artist_similarity", "artist_hits"]:
                 if 'artist' in tool_args or 'artist_name' in tool_args:
                     artist = tool_args.get('artist') or tool_args.get('artist_name')

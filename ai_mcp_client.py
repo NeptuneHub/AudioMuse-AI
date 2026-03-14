@@ -66,7 +66,7 @@ def _build_system_prompt(tools: List[Dict], library_context: Optional[Dict] = No
     decision_tree.append("5a. Specific year mentioned (e.g., '2026 songs', 'from 2024')? -> search_database with year_min=YEAR AND year_max=YEAR (BOTH the same year)")
     decision_tree.append("5b. Decade mentioned (80s, 90s, 2000s)? -> ALWAYS include year_min/year_max in search_database (e.g., 80s=1980-1989)")
     if has_text_search:
-        decision_tree.append("6. Instruments (piano, guitar, ukulele) or SOUND DESCRIPTIONS (romantic, dreamy, chill vibes)? -> text_search")
+        decision_tree.append("6. Instruments (piano, guitar, ukulele) or SOUND DESCRIPTIONS (romantic, dreamy, chill vibes)? -> text_search (ONLY for audio/sound descriptions — NEVER pass years, artist names, or metadata like '2026 songs')")
         decision_tree.append("7. 'songs LIKE/SIMILAR TO [ARTIST]' (discover similar)? -> artist_similarity (returns artist's own + similar artists' songs)")
         decision_tree.append("8. MULTIPLE artists blended ('A meets B', 'A + B', 'like A and B combined') OR negation ('X but not Y', 'X without Y')? -> song_alchemy (REQUIRES 2+ items)")
         decision_tree.append("9. Songs NOT in library, trending, award winners (Grammy, Billboard), cultural knowledge? -> ai_brainstorm")
@@ -119,6 +119,10 @@ def _build_system_prompt(tools: List[Dict], library_context: Optional[Dict] = No
    - "my 5 star jazz" → genres=["jazz"], min_rating=5. Keep BOTH.
    If the user didn't mention ratings, do NOT use min_rating. If the user didn't mention genres, do NOT add genres.
    If the user mentioned ONE year, do NOT invent the other year boundary.
+14. ACCEPT SMALL PLAYLISTS: If search_database with a year/artist/rating filter returns few results, that means the library
+   has limited content matching that criteria. Do NOT pad the playlist by dropping filters or using text_search with metadata
+   queries (e.g., "2026 songs"). text_search is for AUDIO DESCRIPTIONS ONLY (instruments, moods, textures). STOP and return
+   what you have rather than diluting with irrelevant songs.
 
 === VALID search_database VALUES ===
 GENRES: {_get_dynamic_genres(library_context)}
@@ -499,6 +503,8 @@ def _call_ollama_with_tools(user_message: str, tools: List[Dict], ai_config: Dic
         examples.append('"energetic rock"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"genres": ["rock"], "energy_min": 0.65, "get_songs": 200}}}}]}}')
         examples.append('"2026 songs"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"year_min": 2026, "year_max": 2026, "get_songs": 200}}}}]}}')
         examples.append('"90s pop"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"genres": ["pop"], "year_min": 1990, "year_max": 1999, "get_songs": 200}}}}]}}')
+        examples.append('"sounds like Iron Maiden and Metallica combined"\n{{"tool_calls": [{{"name": "song_alchemy", "arguments": {{"add_items": [{{"type": "artist", "id": "Iron Maiden"}}, {{"type": "artist", "id": "Metallica"}}], "get_songs": 200}}}}]}}')
+        examples.append('"mix of Daft Punk and Gorillaz"\n{{"tool_calls": [{{"name": "song_alchemy", "arguments": {{"add_items": [{{"type": "artist", "id": "Daft Punk"}}, {{"type": "artist", "id": "Gorillaz"}}], "get_songs": 200}}}}]}}')
         examples_text = "\n\n".join(examples)
 
         prompt = f"""{system_prompt}
@@ -516,6 +522,12 @@ Return ONLY a valid JSON object with this EXACT format:
 
 === EXAMPLES ===
 {examples_text}
+
+=== COMMON MISTAKES (DO NOT DO THESE) ===
+WRONG: "2026 songs" -> adding genres, min_rating, or moods (user only asked for year!)
+WRONG: "electronic music" -> adding min_rating or year filters (user only asked for genre!)
+WRONG: "songs from 2020-2025" -> adding genres (user only asked for years!)
+CORRECT: Only include filters the user EXPLICITLY mentioned. Nothing extra.
 
 IMPORTANT: ONLY include parameters the user explicitly asked for. Do NOT invent extra filters (genres, ratings, moods, energy) the user never mentioned.
 For a specific year like "2026 songs", set BOTH year_min and year_max to 2026 (NOT year_min=1).
@@ -535,19 +547,35 @@ Request: "{user_message}"
         # Thinking output breaks JSON parsing when format: "json" is set
         payload["think"] = False
 
+
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
         log_messages.append(f"Using timeout: {timeout} seconds for Ollama request")
         with httpx.Client(timeout=timeout) as client:
             response = client.post(ollama_url, json=payload)
             response.raise_for_status()
             result = response.json()
-        
+
         # Parse response
         if 'response' not in result:
             return {"error": "Invalid Ollama response"}
-        
+
         response_text = result['response']
-        
+
+        # Thinking models (e.g. Qwen 3.5) return empty response with format=json.
+        # Retry without format constraint — their response field will have clean JSON
+        # and the thinking/reasoning stays in the separate 'thinking' field.
+        if not response_text and result.get('thinking'):
+            log_messages.append(f"ℹ️ Thinking model detected — retrying without format=json")
+            payload.pop("format", None)
+            with httpx.Client(timeout=timeout) as client:
+                response = client.post(ollama_url, json=payload)
+                response.raise_for_status()
+                result = response.json()
+            response_text = result.get('response', '')
+            # Strip <think> tags from thinking model output
+            if response_text and '</think>' in response_text:
+                response_text = response_text.split('</think>', 1)[-1].strip()
+
         # Try to extract JSON
         try:
             cleaned = response_text.strip()
@@ -597,13 +625,30 @@ Request: "{user_message}"
             if not isinstance(tool_calls, list):
                 tool_calls = [tool_calls]
             
-            # Validate tool calls structure
+            # Validate tool calls structure and strip empty/default values
             valid_calls = []
             for tc in tool_calls:
                 if isinstance(tc, dict) and 'name' in tc:
                     # Ensure arguments is a dict
                     if 'arguments' not in tc:
                         tc['arguments'] = {}
+                    # Strip empty/default values that small models hallucinate
+                    args = tc['arguments']
+                    keys_to_remove = []
+                    for k, v in args.items():
+                        if v is None or v == '' or v == [] or v == {}:
+                            keys_to_remove.append(k)
+                        elif k == 'tempo_min' and v == 0:
+                            keys_to_remove.append(k)
+                        elif k == 'tempo_max' and v == 0:
+                            keys_to_remove.append(k)
+                        elif k == 'energy_min' and v == 0:
+                            keys_to_remove.append(k)
+                        elif k == 'min_rating' and v == 0:
+                            keys_to_remove.append(k)
+                    for k in keys_to_remove:
+                        log_messages.append(f"   🧹 Stripped empty/default arg '{k}={args[k]}' from {tc['name']}")
+                        del args[k]
                     valid_calls.append(tc)
                 else:
                     log_messages.append(f"⚠️ Skipping invalid tool call: {tc}")
@@ -655,8 +700,14 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
                 tool_args.get('get_songs', 200)
             )
         elif tool_name == "text_search":
+            # Guard: reject metadata-only queries that CLAP can't handle meaningfully
+            desc = tool_args.get('description', '')
+            import re as _re
+            # Match queries that are purely year-based (e.g., "2026 songs", "1990 music", "songs from 2024")
+            if _re.match(r'^(songs?\s+(from\s+)?)?(\d{4})\s*(songs?|music|tracks?)?$', desc.strip(), _re.IGNORECASE):
+                return {"songs": [], "message": f"text_search rejected: '{desc}' is a metadata query (year), not an audio description. Use search_database with year_min/year_max instead."}
             return _text_search_sync(
-                tool_args['description'],
+                desc,
                 tool_args.get('tempo_filter'),
                 tool_args.get('energy_filter'),
                 tool_args.get('get_songs', 200)
