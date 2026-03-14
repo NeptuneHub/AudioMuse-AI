@@ -180,8 +180,6 @@ For **selhosting AI** with Ollama this are the one that worked best (in order):
 
 different model could have different parameter and don't work.
 
-For selhosting we suggest llama, instead for cloud genini.
-
 **(*)** For using GEMINI API you need to have a Google account, a free account can be used if needed. Same goes for Mistral. Instead if you want to self-host Ollama here you can find a deployment example:
 
 * https://github.com/NeptuneHub/k3s-supreme-waffle/tree/main/ollama
