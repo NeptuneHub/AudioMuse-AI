@@ -92,8 +92,18 @@ def search_tracks_endpoint():
     if len(search_query) < 3:
         return jsonify([])
 
+    # Pagination: start / end (0-based). Defaults to first 20 results.
+    start = request.args.get('start', 0, type=int)
+    end = request.args.get('end', None, type=int)
+    if start < 0:
+        start = 0
+    if end is not None and end <= start:
+        return jsonify([])
+    limit = (end - start) if end is not None else 20
+    offset = start
+
     try:
-        raw_results = search_tracks_unified(search_query)
+        raw_results = search_tracks_unified(search_query, limit=limit, offset=offset)
         results = []
         for r in raw_results:
             # Be defensive in case the source returns non-dict entries
