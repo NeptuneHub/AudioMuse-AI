@@ -48,9 +48,7 @@ if 'tasks.mediaserver' not in sys.modules:
 def app():
     """Create a Flask app with the setup blueprint registered."""
     with patch('app_setup.get_db') as _mock_get_db, \
-         patch('app_setup.detect_music_path_prefix') as _mock_detect, \
-         patch('app_setup.encrypt_provider_config', side_effect=lambda x: x), \
-         patch('app_setup.decrypt_provider_config', side_effect=lambda x: x):
+         patch('app_setup.detect_music_path_prefix') as _mock_detect:
         from app_setup import setup_bp
         flask_app = Flask(__name__)
         flask_app.register_blueprint(setup_bp)

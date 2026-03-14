@@ -16,7 +16,7 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request, render_template, redirect, url_for, g
 from functools import wraps
 
-from app_helper import get_db, detect_music_path_prefix, detect_path_format, encrypt_provider_config, decrypt_provider_config, encrypt_setting_value, decrypt_setting_value
+from app_helper import get_db, detect_music_path_prefix, detect_path_format
 from tasks.mediaserver import (
     get_available_provider_types,
     get_provider_info,
@@ -52,9 +52,6 @@ def get_setting(key, default=None):
 
 def set_setting(key, value, category=None, description=None):
     """Set a setting value in the database."""
-    store_value = value
-    if key in SENSITIVE_SETTING_KEYS and value:
-        store_value = encrypt_setting_value(str(value))
     db = get_db()
     with db.cursor() as cur:
         cur.execute("""
@@ -65,7 +62,7 @@ def set_setting(key, value, category=None, description=None):
                 category = COALESCE(EXCLUDED.category, app_settings.category),
                 description = COALESCE(EXCLUDED.description, app_settings.description),
                 updated_at = NOW()
-        """, (key, json.dumps(store_value), category, description))
+        """, (key, json.dumps(value), category, description))
         db.commit()
 
 
@@ -118,9 +115,6 @@ def apply_settings_to_config():
     for db_key, config_attr in mapping.items():
         val = get_setting(db_key)
         if val is not None and val != '':
-            # Decrypt sensitive settings before applying
-            if db_key in SENSITIVE_SETTING_KEYS:
-                val = decrypt_setting_value(str(val))
             existing = getattr(config, config_attr, None)
             if isinstance(existing, bool):
                 val = val in (True, 'true', 'True')
@@ -233,7 +227,7 @@ def get_providers(enabled_only=False):
                 'id': row[0],
                 'provider_type': row[1],
                 'name': row[2],
-                'config': decrypt_provider_config(row[3]),  # JSONB is automatically parsed, decrypt sensitive fields
+                'config': row[3],  # JSONB is automatically parsed by psycopg2
                 'enabled': row[4],
                 'priority': row[5],
                 'created_at': row[6].isoformat() if row[6] else None,
@@ -266,7 +260,7 @@ def get_provider_by_id(provider_id):
                 'id': row[0],
                 'provider_type': row[1],
                 'name': row[2],
-                'config': decrypt_provider_config(row[3]),
+                'config': row[3],
                 'enabled': row[4],
                 'priority': row[5],
             }
@@ -276,13 +270,12 @@ def get_provider_by_id(provider_id):
 def add_provider(provider_type, name, config_data, enabled=True, priority=0):
     """Add a new provider configuration."""
     db = get_db()
-    encrypted_config = encrypt_provider_config(config_data)
     with db.cursor() as cur:
         cur.execute("""
             INSERT INTO provider (provider_type, name, config, enabled, priority)
             VALUES (%s, %s, %s, %s, %s)
             RETURNING id
-        """, (provider_type, name, json.dumps(encrypted_config), enabled, priority))
+        """, (provider_type, name, json.dumps(config_data), enabled, priority))
         provider_id = cur.fetchone()[0]
         db.commit()
         return provider_id
@@ -299,7 +292,7 @@ def update_provider(provider_id, name=None, config_data=None, enabled=None, prio
         values.append(name)
     if config_data is not None:
         updates.append("config = %s")
-        values.append(json.dumps(encrypt_provider_config(config_data)))
+        values.append(json.dumps(config_data))
     if enabled is not None:
         updates.append("enabled = %s")
         values.append(enabled)

@@ -268,7 +268,7 @@ pip install -r testing_suite/requirements.txt
 | 3.2.5 | New columns nullable | Auto | Check existing rows | New columns are NULL for old data |
 | 3.2.6 | Re-analysis populates new fields | Manual | Run analysis on existing library | New fields populated |
 | 3.2.7 | Cross-provider file_path linking | Auto | Analyze same track via 2 providers | `find_existing_analysis_by_file_path()` finds match |
-| 3.2.8 | Analysis reuse via file_path | Auto | Mock existing analysis, add new provider | `copy_analysis_to_new_item()` copies instead of re-analyzing |
+| 3.2.8 | Analysis reuse via file_path | Auto | Mock existing analysis, add new provider | `link_provider_to_existing_track()` links instead of re-analyzing |
 
 ### 3.3 Provider CRUD API
 

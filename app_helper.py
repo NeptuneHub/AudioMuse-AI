@@ -273,8 +273,6 @@ def init_db():
                 file_path_hash VARCHAR(64) NOT NULL UNIQUE,
                 file_path TEXT NOT NULL,
                 normalized_path TEXT,
-                file_size BIGINT,
-                file_modified TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -342,9 +340,6 @@ def init_db():
                 ('setup_version', '"1.0"', 'system', 'Version of the setup wizard last completed'),
                 ('multi_provider_enabled', 'false', 'providers', 'Whether multi-provider mode is enabled'),
                 ('primary_provider_id', 'null', 'providers', 'ID of the primary provider for playlist creation'),
-                ('max_songs_per_artist_playlist', '5', 'ai', 'Max songs per artist in instant playlists'),
-                ('playlist_energy_arc', 'false', 'ai', 'Enable energy arc shaping for playlist ordering'),
-                ('ai_request_timeout', '300', 'ai', 'AI request timeout in seconds'),
             ]
             for key, value, category, description in default_settings:
                 cur.execute("""
@@ -499,33 +494,6 @@ def init_db():
             except Exception as e:
                 db.rollback()
                 logger.warning(f"Score dedup migration failed (will retry next startup): {e}")
-
-        # Migration: Encrypt existing unencrypted provider configs
-        cur.execute("SELECT value FROM app_settings WHERE key = 'migration_encrypt_provider_configs_done'")
-        if not cur.fetchone():
-            try:
-                cur.execute("SELECT id, config FROM provider")
-                for row in cur.fetchall():
-                    provider_id, pconfig = row
-                    if pconfig and isinstance(pconfig, dict):
-                        needs_encrypt = any(
-                            k in pconfig and pconfig[k] and not str(pconfig[k]).startswith('gAAAAA')
-                            for k in SENSITIVE_CONFIG_KEYS
-                        )
-                        if needs_encrypt:
-                            encrypted = encrypt_provider_config(pconfig)
-                            cur.execute("UPDATE provider SET config = %s WHERE id = %s",
-                                        (json.dumps(encrypted), provider_id))
-                cur.execute("""
-                    INSERT INTO app_settings (key, value, updated_at)
-                    VALUES ('migration_encrypt_provider_configs_done', 'true', NOW())
-                    ON CONFLICT (key) DO NOTHING
-                """)
-                db.commit()
-                logger.info("Encrypted existing provider configs")
-            except Exception as e:
-                db.rollback()
-                logger.warning(f"Provider config encryption migration failed: {e}")
 
         db.commit()
 
@@ -1701,98 +1669,6 @@ def set_primary_provider(provider_id):
         db.commit()
 
 
-# ##############################################################################
-# CREDENTIAL ENCRYPTION
-# ##############################################################################
-
-SENSITIVE_CONFIG_KEYS = {'token', 'password', 'api_key'}
-
-def _get_fernet():
-    """Get or create a Fernet cipher using ENCRYPTION_KEY from config/env."""
-    from cryptography.fernet import Fernet
-    import config as _config
-    key = getattr(_config, 'ENCRYPTION_KEY', None) or os.environ.get('ENCRYPTION_KEY')
-    if not key:
-        # Check app_settings for a previously generated key
-        db = get_db()
-        with db.cursor() as cur:
-            cur.execute("SELECT value FROM app_settings WHERE key = 'encryption_key'")
-            row = cur.fetchone()
-            if row and row[0]:
-                key = row[0] if isinstance(row[0], str) else str(row[0])
-                # Strip JSON quotes if present
-                key = key.strip('"')
-        if not key:
-            # Auto-generate and persist
-            key = Fernet.generate_key().decode()
-            db = get_db()
-            with db.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO app_settings (key, value, updated_at)
-                    VALUES ('encryption_key', %s, NOW())
-                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-                """, (json.dumps(key),))
-                db.commit()
-            logger.info("Generated and stored new encryption key")
-    return Fernet(key.encode() if isinstance(key, str) else key)
-
-
-def encrypt_provider_config(config_dict):
-    """Encrypt sensitive fields in a provider config dict before storage."""
-    if not config_dict or not isinstance(config_dict, dict):
-        return config_dict
-    encrypted = dict(config_dict)
-    try:
-        f = _get_fernet()
-        for k in SENSITIVE_CONFIG_KEYS:
-            if k in encrypted and encrypted[k] and not str(encrypted[k]).startswith('gAAAAA'):
-                encrypted[k] = f.encrypt(str(encrypted[k]).encode()).decode()
-    except Exception as e:
-        logger.error(f"Failed to encrypt provider config: {e}")
-    return encrypted
-
-
-def decrypt_provider_config(config_dict):
-    """Decrypt sensitive fields in a provider config dict after retrieval."""
-    if not config_dict or not isinstance(config_dict, dict):
-        return config_dict
-    decrypted = dict(config_dict)
-    try:
-        f = _get_fernet()
-        for k in SENSITIVE_CONFIG_KEYS:
-            if k in decrypted and decrypted[k] and str(decrypted[k]).startswith('gAAAAA'):
-                try:
-                    decrypted[k] = f.decrypt(str(decrypted[k]).encode()).decode()
-                except Exception:
-                    pass  # Not encrypted or wrong key, leave as-is
-    except Exception as e:
-        logger.error(f"Failed to decrypt provider config: {e}")
-    return decrypted
-
-
-def encrypt_setting_value(value):
-    """Encrypt a single setting value for storage in app_settings."""
-    if not value or str(value).startswith('gAAAAA'):
-        return value
-    try:
-        f = _get_fernet()
-        return f.encrypt(str(value).encode()).decode()
-    except Exception as e:
-        logger.error(f"Failed to encrypt setting value: {e}")
-        return value
-
-
-def decrypt_setting_value(value):
-    """Decrypt a single setting value retrieved from app_settings."""
-    if not value or not str(value).startswith('gAAAAA'):
-        return value
-    try:
-        f = _get_fernet()
-        return f.decrypt(str(value).encode()).decode()
-    except Exception as e:
-        logger.error(f"Failed to decrypt setting value: {e}")
-        return value
-
 
 # ##############################################################################
 # TRACK LINKING FUNCTIONS - For multi-provider track identity
@@ -1925,7 +1801,7 @@ def _compute_file_path_hash(file_path, provider_id=None):
     return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
 
-def get_or_create_track(file_path, file_size=None, file_modified=None, provider_id=None):
+def get_or_create_track(file_path, provider_id=None):
     """
     Get or create a track record based on file path.
 
@@ -1934,8 +1810,6 @@ def get_or_create_track(file_path, file_size=None, file_modified=None, provider_
 
     Args:
         file_path: Full or relative path to the audio file
-        file_size: Optional file size in bytes
-        file_modified: Optional file modification timestamp
         provider_id: Optional provider ID for path normalization (uses music_path_prefix from config)
 
     Returns:
@@ -1961,29 +1835,18 @@ def get_or_create_track(file_path, file_size=None, file_modified=None, provider_
 
         if row:
             track_id = row[0]
-            # Update file info and normalized_path if provided
-            updates = ["updated_at = NOW()"]
-            values = []
-            if file_size is not None:
-                updates.append("file_size = %s")
-                values.append(file_size)
-            if file_modified is not None:
-                updates.append("file_modified = %s")
-                values.append(file_modified)
-            # Always update normalized_path to latest
-            updates.append("normalized_path = %s")
-            values.append(normalized_path)
-            values.append(track_id)
-            cur.execute(f"UPDATE track SET {', '.join(updates)} WHERE id = %s", values)
+            # Update normalized_path to latest
+            cur.execute("UPDATE track SET normalized_path = %s, updated_at = NOW() WHERE id = %s",
+                        (normalized_path, track_id))
             db.commit()
             return track_id
 
-        # Create new track with normalized_path
+        # Create new track
         cur.execute("""
-            INSERT INTO track (file_path_hash, file_path, normalized_path, file_size, file_modified)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO track (file_path_hash, file_path, normalized_path)
+            VALUES (%s, %s, %s)
             RETURNING id
-        """, (file_path_hash, file_path, normalized_path, file_size, file_modified))
+        """, (file_path_hash, file_path, normalized_path))
         track_id = cur.fetchone()[0]
         db.commit()
         return track_id
@@ -2069,7 +1932,7 @@ def get_track_by_file_path(file_path):
     db = get_db()
     with db.cursor() as cur:
         cur.execute("""
-            SELECT t.id, t.file_path, t.file_path_hash, t.file_size, t.file_modified,
+            SELECT t.id, t.file_path, t.file_path_hash,
                    s.item_id, s.title, s.author, s.album, s.tempo, s.key, s.scale,
                    s.mood_vector, s.energy, s.other_features
             FROM track t
@@ -2082,18 +1945,16 @@ def get_track_by_file_path(file_path):
                 'track_id': row[0],
                 'file_path': row[1],
                 'file_path_hash': row[2],
-                'file_size': row[3],
-                'file_modified': row[4],
-                'item_id': row[5],
-                'title': row[6],
-                'author': row[7],
-                'album': row[8],
-                'tempo': row[9],
-                'key': row[10],
-                'scale': row[11],
-                'mood_vector': row[12],
-                'energy': row[13],
-                'other_features': row[14],
+                'item_id': row[3],
+                'title': row[4],
+                'author': row[5],
+                'album': row[6],
+                'tempo': row[7],
+                'key': row[8],
+                'scale': row[9],
+                'mood_vector': row[10],
+                'energy': row[11],
+                'other_features': row[12],
             }
         return None
 
@@ -2295,9 +2156,8 @@ def link_provider_to_existing_track(file_path, provider_id, item_id, title=None,
     """
     Link a new provider's item_id to an already-analyzed track via provider_track.
 
-    Unlike copy_analysis_to_new_item(), this does NOT duplicate score/embedding rows.
-    It only creates a provider_track mapping so the provider's item_id resolves
-    to the existing canonical track.
+    Does NOT duplicate score/embedding rows — only creates a provider_track mapping
+    so the provider's item_id resolves to the existing canonical track.
 
     Args:
         file_path: File path of the track (used to find/create the track record)
@@ -2321,82 +2181,6 @@ def link_provider_to_existing_track(file_path, provider_id, item_id, title=None,
         return True
     except Exception as e:
         logger.error(f"Failed to link provider track for {item_id}: {e}")
-        return False
-
-
-def copy_analysis_to_new_item(source_item_id, target_item_id, file_path=None, provider_id=None):
-    """
-    DEPRECATED: Use link_provider_to_existing_track() instead.
-
-    Copy analysis data from one item_id to another.
-    This duplicates score + embedding rows, which wastes storage and causes
-    duplicate Voyager index entries. Kept temporarily for migration.
-
-    Args:
-        source_item_id: The item_id that has existing analysis
-        target_item_id: The new item_id to copy analysis to
-        file_path: Optional file path for track linking
-        provider_id: Optional provider ID for track linking
-
-    Returns:
-        True if analysis was copied successfully, False otherwise
-    """
-    if not source_item_id or not target_item_id:
-        return False
-
-    if source_item_id == target_item_id:
-        return True  # Nothing to copy
-
-    db = get_db()
-    try:
-        with db.cursor() as cur:
-            # Copy score data
-            cur.execute("""
-                INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector,
-                                   energy, other_features, album, album_artist, year, rating, file_path, track_id)
-                SELECT %s, title, author, tempo, key, scale, mood_vector,
-                       energy, other_features, album, album_artist, year, rating, file_path, track_id
-                FROM score WHERE item_id = %s
-                ON CONFLICT (item_id) DO NOTHING
-            """, (target_item_id, source_item_id))
-
-            # Copy embedding
-            cur.execute("""
-                INSERT INTO embedding (item_id, embedding)
-                SELECT %s, embedding FROM embedding WHERE item_id = %s
-                ON CONFLICT (item_id) DO NOTHING
-            """, (target_item_id, source_item_id))
-
-            # Copy CLAP embedding if exists
-            cur.execute("""
-                INSERT INTO clap_embedding (item_id, embedding)
-                SELECT %s, embedding FROM clap_embedding WHERE item_id = %s
-                ON CONFLICT (item_id) DO NOTHING
-            """, (target_item_id, source_item_id))
-
-            # Copy MuLan embedding if exists
-            cur.execute("""
-                INSERT INTO mulan_embedding (item_id, embedding)
-                SELECT %s, embedding FROM mulan_embedding WHERE item_id = %s
-                ON CONFLICT (item_id) DO NOTHING
-            """, (target_item_id, source_item_id))
-
-            db.commit()
-
-            # Create track linking for the new item
-            if file_path:
-                track_id = get_or_create_track(file_path, provider_id=provider_id)
-                if track_id:
-                    update_score_track_id(target_item_id, track_id)
-                    if provider_id is not None:
-                        link_provider_track(provider_id, track_id, target_item_id)
-
-            logger.info(f"Copied analysis from {source_item_id} to {target_item_id}")
-            return True
-
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to copy analysis from {source_item_id} to {target_item_id}: {e}")
         return False
 
 

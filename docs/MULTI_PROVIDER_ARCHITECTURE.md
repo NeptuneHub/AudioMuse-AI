@@ -57,8 +57,7 @@ CREATE TABLE track (
     id SERIAL PRIMARY KEY,
     file_path_hash VARCHAR(64) NOT NULL UNIQUE,  -- SHA-256 of normalized relative path
     file_path TEXT NOT NULL,                      -- Original file path for display
-    file_size BIGINT,                             -- For change detection
-    file_modified TIMESTAMP,                      -- For change detection
+    normalized_path TEXT,                         -- Normalized relative path
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

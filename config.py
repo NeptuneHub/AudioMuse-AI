@@ -466,10 +466,6 @@ MOOD_SIMILARITY_ENABLE = os.environ.get("MOOD_SIMILARITY_ENABLE", "False").lower
 # }
 ENABLE_PROXY_FIX = os.environ.get("ENABLE_PROXY_FIX", "False").lower() == "true"
 
-# --- Credential Encryption ---
-ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY', '')
-
-
 # --- Instant Playlist Optimization ---
 # Max songs from a single artist in the instant playlist (diversity enforcement)
 MAX_SONGS_PER_ARTIST_PLAYLIST = int(os.environ.get("MAX_SONGS_PER_ARTIST_PLAYLIST", "5"))
