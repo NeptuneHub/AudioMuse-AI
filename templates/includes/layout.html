@@ -53,6 +53,120 @@
     {% block bodyAdditions %}
         {# body additions from template will be set here #}
     {% endblock %}
+
+    <script>
+    /**
+     * Shared provider health banner system.
+     * Fetches provider health warnings and renders them into a container element.
+     *
+     * @param {string} containerId - DOM element ID to render the banner into
+     * @param {Object} options - Configuration options
+     * @param {boolean} options.onCritical - Callback when critical issues found: fn(issues)
+     * @param {boolean} options.onClear - Callback when no critical issues: fn()
+     * @returns {Promise<{hasCritical: boolean, hasWarning: boolean, warnings: Array}>}
+     */
+    async function fetchAndRenderHealthBanner(containerId, options = {}) {
+        const container = document.getElementById(containerId);
+        if (!container) return { hasCritical: false, hasWarning: false, warnings: [] };
+
+        try {
+            const resp = await fetch('/api/setup/providers/health');
+            if (!resp.ok) {
+                container.innerHTML = '';
+                return { hasCritical: false, hasWarning: false, warnings: [] };
+            }
+
+            const data = await resp.json();
+            const warnings = data.warnings || [];
+
+            if (warnings.length === 0) {
+                container.innerHTML = '';
+                if (options.onClear) options.onClear();
+                return { hasCritical: false, hasWarning: false, warnings: [] };
+            }
+
+            const criticals = warnings.filter(w => w.level === 'critical');
+            const warns = warnings.filter(w => w.level === 'warning');
+            const infos = warnings.filter(w => w.level === 'info');
+
+            let html = '';
+
+            if (criticals.length > 0) {
+                html += '<div class="health-banner health-banner-critical" style="background: #fee2e2; border: 2px solid #dc2626; border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">';
+                html += '<strong style="color: #dc2626; font-size: 1.05em;">Provider Path Issue — Action Required</strong>';
+                criticals.forEach(w => {
+                    html += '<div style="margin-top: 0.5rem; color: #991b1b;">';
+                    html += _escapeHtml(w.message);
+                    if (w.recovery_steps && w.recovery_steps.length > 0) {
+                        html += '<ol style="margin: 0.5rem 0 0 1.2rem; padding: 0;">';
+                        w.recovery_steps.forEach(step => {
+                            html += '<li style="margin-bottom: 0.25rem;">' + _escapeHtml(step) + '</li>';
+                        });
+                        html += '</ol>';
+                    } else if (w.action) {
+                        html += '<div style="margin-top: 0.3rem; font-size: 0.9em;">' + _escapeHtml(w.action) + '</div>';
+                    }
+                    html += '</div>';
+                });
+                html += '</div>';
+            }
+
+            if (warns.length > 0) {
+                html += '<div class="health-banner health-banner-warning" style="background: #fef9c3; border: 2px solid #ca8a04; border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">';
+                html += '<strong style="color: #92400e;">Provider Warning</strong>';
+                warns.forEach(w => {
+                    html += '<div style="margin-top: 0.5rem; color: #78350f;">';
+                    html += _escapeHtml(w.message);
+                    if (w.action) {
+                        html += ' <span style="font-size: 0.9em;">— ' + _escapeHtml(w.action) + '</span>';
+                    }
+                    html += '</div>';
+                });
+                html += '</div>';
+            }
+
+            if (infos.length > 0) {
+                html += '<div class="health-banner health-banner-info" style="background: #dbeafe; border: 1px solid #3b82f6; border-radius: 8px; padding: 0.75rem; margin-bottom: 1rem;">';
+                infos.forEach(w => {
+                    html += '<div style="color: #1e40af; font-size: 0.9em;">';
+                    html += _escapeHtml(w.message);
+                    if (w.action) {
+                        html += ' <span style="font-size: 0.9em;">— ' + _escapeHtml(w.action) + '</span>';
+                    }
+                    html += '</div>';
+                });
+                html += '</div>';
+            }
+
+            container.innerHTML = html;
+
+            const result = {
+                hasCritical: criticals.length > 0,
+                hasWarning: warns.length > 0,
+                warnings: warnings
+            };
+
+            if (result.hasCritical && options.onCritical) {
+                options.onCritical(criticals);
+            } else if (options.onClear) {
+                options.onClear();
+            }
+
+            return result;
+        } catch (err) {
+            console.warn('Health banner fetch failed:', err);
+            container.innerHTML = '';
+            return { hasCritical: false, hasWarning: false, warnings: [] };
+        }
+    }
+
+    function _escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    </script>
 </body>
 </html>
 {% block postHTMLScripts %}

@@ -304,12 +304,46 @@ async function checkActiveTasks() {
 
 async function checkProviderHealth() {
     try {
-        const response = await fetch('/api/setup/providers/health');
-        const data = await response.json();
-        const warnings = data.warnings || [];
-        if (warnings.length > 0) {
-            const bullets = warnings.map(w => `• ${w.message}`).join('<br>');
-            showMessageBox('Provider Warnings', bullets);
+        // Render health banner above the Start Analysis button
+        if (typeof fetchAndRenderHealthBanner === 'function') {
+            const result = await fetchAndRenderHealthBanner('analysis-health-banner', {
+                onCritical: function(criticals) {
+                    // Disable Start Analysis button when critical issues exist
+                    if (startAnalysisBtn) {
+                        startAnalysisBtn.disabled = true;
+                        startAnalysisBtn.style.backgroundColor = '#93C5FD';
+                        startAnalysisBtn.style.cursor = 'not-allowed';
+                        startAnalysisBtn.title = 'Fix provider path issues in Settings before running analysis';
+                    }
+                },
+                onClear: function() {
+                    // Re-enable Start Analysis button when no critical issues
+                    if (startAnalysisBtn && !currentTaskId) {
+                        startAnalysisBtn.disabled = false;
+                        startAnalysisBtn.style.backgroundColor = '';
+                        startAnalysisBtn.style.cursor = '';
+                        startAnalysisBtn.title = '';
+                    }
+                }
+            });
+            // Show message box for first-time warnings (but not on every poll)
+            if (result.hasWarning || result.hasCritical) {
+                const warnings = result.warnings || [];
+                const criticals = warnings.filter(w => w.level === 'critical');
+                if (criticals.length > 0) {
+                    const bullets = criticals.map(w => `• ${w.message}`).join('<br>');
+                    showMessageBox('Provider Path Issue', bullets);
+                }
+            }
+        } else {
+            // Fallback: use the old message-box-only approach
+            const response = await fetch('/api/setup/providers/health');
+            const data = await response.json();
+            const warnings = data.warnings || [];
+            if (warnings.length > 0) {
+                const bullets = warnings.map(w => `• ${w.message}`).join('<br>');
+                showMessageBox('Provider Warnings', bullets);
+            }
         }
     } catch (e) {
         console.warn('Could not check provider health:', e);
@@ -438,6 +472,24 @@ async function startTask(taskType) {
             displayTaskStatus({ task_id: result.task_id, task_type: result.task_type, state: 'PENDING', progress: 0, details: 'Task enqueued.' });
             lastPolledTaskDetails[result.task_id] = { state: 'PENDING', task_type: result.task_type, task_id: result.task_id };
             updateCancelButtonState(false);
+        } else if (response.status === 409 && result.error === 'provider_path_issue') {
+            // Provider path issue — show detailed error and refresh health banner
+            let msg = result.message || 'Provider path issues detected.';
+            if (result.issues && result.issues.length > 0) {
+                msg += '<br><br>';
+                result.issues.forEach(issue => {
+                    msg += `<strong>${issue.provider_name}:</strong> ${issue.message}<br>`;
+                    if (issue.instructions) {
+                        msg += '<ol style="margin: 0.3rem 0 0.5rem 1.2rem;">';
+                        issue.instructions.forEach(step => { msg += `<li>${step}</li>`; });
+                        msg += '</ol>';
+                    }
+                });
+            }
+            showMessageBox('Analysis Blocked', msg);
+            checkProviderHealth(); // Refresh the health banner
+            disableTaskButtons(false);
+            updateCancelButtonState(true);
         } else {
             throw new Error(result.message || 'Failed to start task.');
         }
