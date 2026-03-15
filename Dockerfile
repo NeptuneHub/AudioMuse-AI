@@ -189,6 +189,8 @@ RUN set -eux; \
 # ============================================================================
 FROM base AS runner
 
+ARG BASE_IMAGE
+
 ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
@@ -367,6 +369,20 @@ RUN set -eux; \
 
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app
+
+# Pre-generate TensorRT-compatible CLAP model on NVIDIA images so runtime has
+# zero manual setup (clap_analyzer auto-detects *_trt.onnx when USE_TENSORRT=true).
+RUN set -eux; \
+    if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
+        python3 /app/tools/prepare_clap_trt.py \
+            --source /app/model/model_epoch_36.onnx \
+            --output /app/model/model_epoch_36_trt.onnx \
+            --force; \
+        ls -lh /app/model/model_epoch_36_trt.onnx; \
+    else \
+        echo "CPU base image detected: skipping CLAP TRT model preparation"; \
+    fi
+
 COPY deployment/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # ============================================================================

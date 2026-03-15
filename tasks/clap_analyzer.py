@@ -54,6 +54,39 @@ def _load_audio_model():
     logger.info(f"Loading CLAP audio model from {model_path}...")
 
     # --- External-data ONNX models (.onnx.data next to .onnx) ---
+    # -----------------------------------------------------------------------
+    # TensorRT-compatible model selection
+    # -----------------------------------------------------------------------
+    # The DCLAP student model (model_epoch_36.onnx) contains a dynamic Loop
+    # + ConcatFromSequence subgraph that TRT cannot parse.  A pre-simplified
+    # copy with all sequence ops folded into static Slice/Concat nodes is
+    # produced by ``tools/prepare_clap_trt.py`` and saved alongside the
+    # original as ``<stem>_trt.onnx``.
+    #
+    # When USE_TENSORRT=true:
+    #   • _trt.onnx present  → use it with full TRT provider chain
+    #   • _trt.onnx absent   → warn, strip TRT from providers, use CUDA/CPU
+    #
+    # The env var CLAP_AUDIO_MODEL_PATH_TRT can override the default
+    # ``<stem>_trt.onnx`` path explicitly.
+    _trt_model_path: str | None = None
+    if config.USE_TENSORRT:
+        _trt_default = (
+            os.path.splitext(model_path)[0] + "_trt.onnx"
+        )
+        _trt_override = os.environ.get("CLAP_AUDIO_MODEL_PATH_TRT", "")
+        _trt_candidate = _trt_override if _trt_override else _trt_default
+        if os.path.exists(_trt_candidate):
+            _trt_model_path = _trt_candidate
+            logger.info(f"TRT-simplified CLAP model found: {_trt_model_path}")
+        else:
+            logger.warning(
+                "USE_TENSORRT=true but TRT-compatible CLAP model not found at "
+                f"{_trt_candidate}.  "
+                "Run `python3 /app/tools/prepare_clap_trt.py` once to generate it.  "
+                "Continuing with CUDA/CPU for CLAP (TRT will not be used)."
+            )
+
     # The student model references external data by relative filename
     # (e.g. "model_epoch_36.onnx.data").  ONNX Runtime resolves this
     # relative to the model file's directory, so passing the model
@@ -89,10 +122,14 @@ def _load_audio_model():
     session = None
     
     # Configure provider options with GPU memory management
+    # If USE_TENSORRT but no _trt.onnx: exclude TRT from the provider list so
+    # ORT never attempts to parse the incompatible original model with TRT.
+    _force_skip_trt = config.USE_TENSORRT and _trt_model_path is None
     provider_options, available_providers = build_ort_provider_options(
         ort,
         cuda_algo_search='DEFAULT',
         include_copy_stream=False,
+        force_skip_tensorrt=_force_skip_trt,
     )
     log_provider_selection(logger, "CLAP audio", provider_options, available_providers)
     
@@ -110,10 +147,15 @@ def _load_audio_model():
     cpu_opts           = [{}]
 
     try:
-        # 1) Direct path — ONNX Runtime resolves external data relative to
-        #    the model directory; works on all platforms and CI.
-        session = _create_session(model_path, preferred_providers, preferred_opts)
-        logger.info("✓ CLAP audio model loaded successfully (direct path)")
+        # 1a) TRT-simplified model — use it directly (no external data file).
+        if _trt_model_path:
+            session = _create_session(_trt_model_path, preferred_providers, preferred_opts)
+            logger.info(f"✓ CLAP audio model loaded (TRT-simplified, {_trt_model_path})")
+        else:
+            # 1b) Direct path — ONNX Runtime resolves external data relative to
+            #     the model directory; works on all platforms and CI.
+            session = _create_session(model_path, preferred_providers, preferred_opts)
+            logger.info("✓ CLAP audio model loaded successfully (direct path)")
 
     except Exception as direct_err:
         logger.warning(f"Direct path load failed: {direct_err}")

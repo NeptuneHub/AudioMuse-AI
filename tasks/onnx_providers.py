@@ -7,13 +7,29 @@ def build_ort_provider_options(
     ort_module,
     cuda_algo_search='EXHAUSTIVE',
     include_copy_stream=True,
+    force_skip_tensorrt=False,
 ):
     """Build ordered ONNX Runtime providers with options.
 
     Provider preference order:
-    1. TensorRT (optional, via USE_TENSORRT=true)
+    1. TensorRT (optional, via USE_TENSORRT=true and *not* force_skip_tensorrt)
     2. CUDA
     3. CPU
+
+    Parameters
+    ----------
+    ort_module:
+        The ``onnxruntime`` module (passed explicitly so callers can inject a
+        stub in unit tests).
+    cuda_algo_search:
+        cuDNN conv-algorithm search strategy ('EXHAUSTIVE', 'DEFAULT', …).
+    include_copy_stream:
+        Whether to add ``do_copy_in_default_stream`` to the CUDA options.
+    force_skip_tensorrt:
+        When *True* TensorRT is excluded from the provider list even if
+        ``USE_TENSORRT=true`` and the provider is registered.  Used by
+        ``clap_analyzer`` when the TRT-compatible model file is absent so that
+        ORT never attempts to parse the incompatible original model with TRT.
     """
     available_providers = ort_module.get_available_providers() or []
 
@@ -24,7 +40,7 @@ def build_ort_provider_options(
 
     provider_options = []
 
-    if USE_TENSORRT and 'TensorrtExecutionProvider' in available_providers:
+    if USE_TENSORRT and not force_skip_tensorrt and 'TensorrtExecutionProvider' in available_providers:
         provider_options.append(('TensorrtExecutionProvider', {'device_id': gpu_device_id}))
 
     if 'CUDAExecutionProvider' in available_providers:
