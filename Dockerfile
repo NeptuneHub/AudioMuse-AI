@@ -97,6 +97,7 @@ RUN set -ux; \
             git vim redis-tools strace iputils-ping \
             $(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then echo libnvinfer10; fi) \
             $(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then echo libnvinfer-plugin10; fi) \
+            $(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then echo libnvonnxparsers10; fi) \
             "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)"; then \
             break; \
         fi; \
