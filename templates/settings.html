@@ -606,6 +606,8 @@
                 <div class="field-help">Used by default for API calls without provider specification</div>
             </div>
 
+            <div id="settings-health-banner"></div>
+
             <div class="provider-list" id="provider-list">
                 <!-- Populated by JS -->
             </div>
@@ -911,6 +913,10 @@
         renderProviders();
         applySettings();
         updateWorkerInfo();
+        // Load health banner for provider path warnings
+        if (typeof fetchAndRenderHealthBanner === 'function') {
+            fetchAndRenderHealthBanner('settings-health-banner');
+        }
     });
 
     // Data loading
@@ -988,9 +994,12 @@
                     <button onclick="editProvider(${p.id})">Edit</button>
                     <button onclick="toggleProvider(${p.id}, ${!p.enabled})">${p.enabled ? 'Disable' : 'Enable'}</button>
                     ${p.provider_type === 'navidrome' ? `<button onclick="rescanPaths(${p.id})">Rescan Paths</button>` : ''}
+                    ${p.provider_type === 'navidrome' && p.config && p.config.path_format !== 'relative'
+                        ? `<button onclick="rehashTracks(${p.id})">Rehash Tracks</button>` : ''}
                     <button class="btn-danger" onclick="deleteProvider(${p.id})">Delete</button>
                 </div>
                 <div id="rescan-result-${p.id}" class="rescan-result"></div>
+                <div id="rehash-result-${p.id}" class="rescan-result"></div>
                 ${p.provider_type === 'navidrome' && p.config && p.config.path_format === 'relative'
                     ? `<div class="test-result warning" style="margin-top: 0.5rem; font-size: 0.85rem;">
                         <strong>Warning:</strong> Relative file paths detected — cross-provider track matching won't work.
@@ -1563,8 +1572,54 @@
             // Reload providers so the persistent warning badge updates
             await loadProviders();
             renderProviders();
+            // Refresh health banner after path rescan
+            if (typeof fetchAndRenderHealthBanner === 'function') {
+                fetchAndRenderHealthBanner('settings-health-banner');
+            }
         } catch (err) {
             resultDiv.innerHTML = `<div class="test-result error">Rescan failed: ${err.message}</div>`;
+        }
+    }
+
+    async function rehashTracks(providerId) {
+        const resultDiv = document.getElementById(`rehash-result-${providerId}`);
+        resultDiv.innerHTML = '<div class="test-result">Enqueuing rehash task...</div>';
+
+        try {
+            const response = await fetch(`/api/setup/providers/${providerId}/rehash-tracks`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await response.json();
+
+            if (response.status === 409) {
+                let html = `<div class="test-result warning">${data.message || 'Cannot rehash yet.'}`;
+                if (data.instructions) {
+                    html += '<ol style="margin: 0.5rem 0 0 1.2rem;">';
+                    data.instructions.forEach(step => { html += `<li>${step}</li>`; });
+                    html += '</ol>';
+                }
+                html += '</div>';
+                resultDiv.innerHTML = html;
+                return;
+            }
+
+            if (!response.ok) {
+                resultDiv.innerHTML = `<div class="test-result error">${data.error || data.message || 'Rehash failed'}</div>`;
+                return;
+            }
+
+            resultDiv.innerHTML = `<div class="test-result success">
+                <strong>Rehash task enqueued</strong> (Task ID: ${data.task_id})
+                <br><small>Track identity records will be updated in the background. Check the Analysis page for task progress.</small>
+            </div>`;
+
+            // Refresh health banner after enqueuing
+            if (typeof fetchAndRenderHealthBanner === 'function') {
+                fetchAndRenderHealthBanner('settings-health-banner');
+            }
+        } catch (err) {
+            resultDiv.innerHTML = `<div class="test-result error">Rehash failed: ${err.message}</div>`;
         }
     }
 

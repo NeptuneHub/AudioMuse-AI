@@ -393,6 +393,40 @@ def validate_provider_config(provider_type: str, config_data: dict) -> tuple:
     return len(errors) == 0, errors
 
 
+def _detect_and_persist_path_format(provider_id, provider_type, config_data):
+    """
+    Auto-detect path format (absolute vs relative) for a provider and persist it.
+
+    Called during provider creation (both GUI and .env) to ensure all providers
+    have their path_format detected. This enables health checks and pre-analysis
+    validation to work consistently regardless of how the provider was configured.
+    """
+    if provider_type == 'localfiles':
+        return  # Local files always have absolute paths
+
+    try:
+        sample_tracks = get_sample_tracks_from_provider(provider_type, config_data, limit=10)
+        if sample_tracks:
+            path_format = detect_path_format(sample_tracks)
+            if path_format and path_format != 'unknown':
+                db = get_db()
+                with db.cursor() as cur:
+                    cur.execute(
+                        "UPDATE provider SET config = config || %s::jsonb WHERE id = %s",
+                        (json.dumps({'path_format': path_format}), provider_id)
+                    )
+                    db.commit()
+                logger.info(f"Auto-detected path format for provider {provider_id}: {path_format}")
+                if path_format == 'relative' and provider_type == 'navidrome':
+                    logger.warning(
+                        f"Provider {provider_id} ({provider_type}) is reporting relative paths. "
+                        f'Enable "Report Real Path" in Navidrome Players > AudioMuse player '
+                        f"for cross-provider track matching to work."
+                    )
+    except Exception as e:
+        logger.warning(f"Auto-detect path format failed for provider {provider_id} (non-blocking): {e}")
+
+
 def create_default_provider_from_env():
     """
     Create a default provider from environment variables if no providers exist.
@@ -443,6 +477,10 @@ def create_default_provider_from_env():
     name = f"{PROVIDER_TYPES[provider_type]['name']} (Default)"
     provider_id = add_provider(provider_type, name, config_data, enabled=True, priority=100)
     logger.info(f"Created default provider from environment: {provider_type} (id={provider_id})")
+
+    # Auto-detect path format for the new provider
+    _detect_and_persist_path_format(provider_id, provider_type, config_data)
+
     return provider_id
 
 
@@ -598,6 +636,8 @@ def create_provider():
             return jsonify({'id': existing['id'], 'message': 'Provider updated', 'was_update': True}), 200
 
         provider_id = add_provider(provider_type, name, config_data, enabled, priority)
+        # Auto-detect path format for the new provider
+        _detect_and_persist_path_format(provider_id, provider_type, config_data)
         _update_multi_provider_settings()
         return jsonify({'id': provider_id, 'message': 'Provider created'}), 201
     except Exception as e:
@@ -814,6 +854,81 @@ def test_provider_config():
     return jsonify(result)
 
 
+@setup_bp.route('/api/setup/providers/<int:provider_id>/rehash-tracks', methods=['POST'])
+def rehash_provider_tracks(provider_id):
+    """
+    Rehash all track identity records for a provider.
+
+    After a Navidrome user enables "Report Real Path", this endpoint enqueues
+    a background task that re-fetches current paths from the provider API and
+    updates all track records (file_path_hash, normalized_path). This fixes
+    stale track identity data created when the setting was off.
+    ---
+    tags:
+      - Setup
+    parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    responses:
+      202:
+        description: Rehash task enqueued
+      404:
+        description: Provider not found
+      409:
+        description: Provider still has relative paths (must fix setting first)
+    """
+    from app_helper import rq_queue_high, save_task_status, TASK_STATUS_PENDING
+
+    provider = get_provider_by_id(provider_id)
+    if not provider:
+        return jsonify({'error': 'Provider not found'}), 404
+
+    config_data = provider.get('config') or {}
+    provider_name = provider.get('name') or provider.get('provider_type')
+
+    # Block if paths are still relative (user needs to fix setting first)
+    if config_data.get('path_format') == 'relative':
+        return jsonify({
+            'error': 'provider_still_relative',
+            'message': (
+                f'{provider_name} is still reporting relative paths. '
+                f'Enable "Report Real Path" in Navidrome and run "Rescan Paths" first.'
+            ),
+            'instructions': [
+                'In Navidrome, go to Players > AudioMuse player',
+                'Toggle "Report Real Path" to enabled',
+                'Click "Rescan Paths" on this provider in Settings',
+                'Then try "Rehash Tracks" again'
+            ]
+        }), 409
+
+    import uuid
+    from rq import Retry
+
+    job_id = str(uuid.uuid4())
+    save_task_status(job_id, "rehash_tracks", TASK_STATUS_PENDING,
+                     details={"message": f"Rehash task enqueued for {provider_name}."})
+
+    job = rq_queue_high.enqueue(
+        'tasks.rehash.rehash_provider_tracks_task',
+        args=(provider_id,),
+        job_id=job_id,
+        description=f"Rehash Tracks for {provider_name}",
+        retry=Retry(max=2),
+        job_timeout=-1
+    )
+
+    return jsonify({
+        'task_id': job.id,
+        'task_type': 'rehash_tracks',
+        'status': job.get_status(),
+        'message': f'Rehash task enqueued for {provider_name}'
+    }), 202
+
+
 @setup_bp.route('/api/setup/providers/<int:provider_id>/rescan-paths', methods=['POST'])
 def rescan_provider_paths(provider_id):
     """
@@ -887,10 +1002,17 @@ def rescan_provider_paths(provider_id):
 
 @setup_bp.route('/api/setup/providers/health', methods=['GET'])
 def check_provider_health():
-    """Check health of all enabled providers and return warnings."""
+    """Check health of all enabled providers and return warnings.
+
+    Warning levels:
+    - 'critical': Blocks analysis, requires immediate action (e.g., wrong Navidrome first)
+    - 'warning': Important issue that may cause problems (e.g., relative paths in multi-provider)
+    - 'info': Informational, non-blocking (e.g., single-provider relative paths)
+    """
     try:
         providers = get_providers(enabled_only=True)
         warnings = []
+        is_multi_provider = len(providers) > 1
 
         # Collect all prefixes to detect mismatches
         prefixes = {}
@@ -899,6 +1021,24 @@ def check_provider_health():
             prefixes[p['id']] = cfg.get('music_path_prefix', '')
 
         non_empty_prefixes = {pid: pfx for pid, pfx in prefixes.items() if pfx}
+
+        # Check for "wrong Navidrome first" scenario:
+        # Navidrome with relative paths AND already has analyzed tracks in DB
+        navidrome_has_analyzed_tracks = {}
+        db = get_db()
+        for p in providers:
+            if p.get('provider_type') == 'navidrome':
+                cfg = p.get('config') or {}
+                if cfg.get('path_format') == 'relative':
+                    with db.cursor() as cur:
+                        cur.execute("""
+                            SELECT COUNT(*) FROM provider_track pt
+                            JOIN score s ON pt.track_id = s.track_id
+                            WHERE pt.provider_id = %s AND s.tempo IS NOT NULL
+                            LIMIT 1
+                        """, (p['id'],))
+                        count = cur.fetchone()[0]
+                        navidrome_has_analyzed_tracks[p['id']] = count > 0
 
         for p in providers:
             cfg = p.get('config') or {}
@@ -909,13 +1049,45 @@ def check_provider_health():
             path_format = cfg.get('path_format', '')
 
             if path_format == 'relative':
-                warnings.append({
-                    'provider_id': pid, 'provider_name': pname, 'provider_type': ptype,
-                    'level': 'warning',
-                    'message': f'{pname} is reporting relative file paths. Cross-provider track matching will not work.',
-                    'action': 'Enable "Report Real Path" in Navidrome, then Rescan Paths.' if ptype == 'navidrome' else 'Check provider path configuration.',
-                    'action_url': '/settings'
-                })
+                # Check if this is the "wrong Navidrome first" scenario (critical)
+                if ptype == 'navidrome' and navidrome_has_analyzed_tracks.get(pid):
+                    warnings.append({
+                        'provider_id': pid, 'provider_name': pname, 'provider_type': ptype,
+                        'level': 'critical',
+                        'message': (
+                            f'{pname} was configured without "Report Real Path" and already has analyzed tracks. '
+                            f'Existing track file paths are unreliable. Adding more providers will create duplicates.'
+                        ),
+                        'action': 'Enable "Report Real Path" in Navidrome, then Rescan Paths, then Rehash Tracks.',
+                        'action_url': '/settings',
+                        'recovery_steps': [
+                            'In Navidrome, go to Players > AudioMuse player',
+                            'Toggle "Report Real Path" to enabled',
+                            'In AudioMuse-AI Settings, click "Rescan Paths" on this provider',
+                            'Then click "Rehash Tracks" to update all track identity records'
+                        ]
+                    })
+                elif is_multi_provider:
+                    # Multi-provider with relative paths (blocking for analysis)
+                    warnings.append({
+                        'provider_id': pid, 'provider_name': pname, 'provider_type': ptype,
+                        'level': 'critical' if ptype == 'navidrome' else 'warning',
+                        'message': f'{pname} is reporting relative file paths. Cross-provider track matching will not work.',
+                        'action': 'Enable "Report Real Path" in Navidrome, then Rescan Paths.' if ptype == 'navidrome' else 'Check provider path configuration.',
+                        'action_url': '/settings'
+                    })
+                else:
+                    # Single provider with relative paths (non-blocking info)
+                    warnings.append({
+                        'provider_id': pid, 'provider_name': pname, 'provider_type': ptype,
+                        'level': 'info',
+                        'message': (
+                            f'{pname} is reporting relative file paths. This is fine for a single provider, '
+                            f'but you must enable "Report Real Path" before adding more providers.'
+                        ),
+                        'action': 'Enable "Report Real Path" in Navidrome Players > AudioMuse player.' if ptype == 'navidrome' else 'Check provider path configuration.',
+                        'action_url': '/settings'
+                    })
             elif not path_format and ptype not in ('localfiles',):
                 warnings.append({
                     'provider_id': pid, 'provider_name': pname, 'provider_type': ptype,
@@ -927,7 +1099,7 @@ def check_provider_health():
 
             # Prefix mismatch: this provider has no prefix but others do
             if non_empty_prefixes and not prefixes.get(pid) and ptype not in ('localfiles',) and path_format != 'relative':
-                if len(providers) > 1:
+                if is_multi_provider:
                     warnings.append({
                         'provider_id': pid, 'provider_name': pname, 'provider_type': ptype,
                         'level': 'warning',
@@ -939,6 +1111,7 @@ def check_provider_health():
         return jsonify({
             'warnings': warnings,
             'provider_count': len(providers),
+            'is_multi_provider': is_multi_provider,
             'checked_at': datetime.utcnow().isoformat()
         })
     except Exception as e:
@@ -1008,11 +1181,37 @@ def check_library_duplicates():
             total_score_rows = cur.fetchone()[0]
 
         total_duplicate_rows = sum(g['count'] for g in duplicate_groups)
+
+        # Check if duplicates may be caused by Navidrome path configuration
+        path_config_warning = None
+        if duplicate_groups:
+            providers = get_providers(enabled_only=True)
+            navidrome_relative = [
+                p for p in providers
+                if p.get('provider_type') == 'navidrome'
+                and (p.get('config') or {}).get('path_format') == 'relative'
+            ]
+            if navidrome_relative and len(providers) > 1:
+                pname = navidrome_relative[0].get('name') or 'Navidrome'
+                path_config_warning = {
+                    'message': (
+                        f'Duplicates may be caused by {pname} reporting virtual file paths '
+                        f'instead of real filesystem paths.'
+                    ),
+                    'action': (
+                        f'Enable "Report Real Path" in Navidrome Players > AudioMuse player, '
+                        f'then run Rescan Paths and Rehash Tracks in Settings.'
+                    ),
+                    'provider_name': pname,
+                    'provider_id': navidrome_relative[0]['id']
+                }
+
         return jsonify({
             'duplicate_groups': duplicate_groups,
             'total_groups': len(duplicate_groups),
             'total_duplicate_rows': total_duplicate_rows,
-            'total_score_rows': total_score_rows
+            'total_score_rows': total_score_rows,
+            'path_config_warning': path_config_warning
         })
     except Exception as e:
         logger.error(f"Error checking library duplicates: {e}")

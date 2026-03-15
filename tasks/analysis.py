@@ -1129,17 +1129,46 @@ def run_analysis_task(num_recent_albums, top_n_moods):
         try:
             log_and_update_main("🚀 Starting main analysis process...", 0)
 
-            # Pre-analysis provider path validation
+            # Pre-analysis provider path validation (hard stop in multi-provider setups)
             try:
-                from app_setup import get_provider_by_id
+                from app_setup import get_provider_by_id, get_providers
                 provider_config = get_provider_by_id(active_provider_id)
+                all_providers = get_providers(enabled_only=True)
+                is_multi_provider = len(all_providers) > 1
+
                 if provider_config:
                     pcfg = provider_config.get('config') or {}
                     pname = provider_config.get('name') or provider_config.get('provider_type')
+
                     if pcfg.get('path_format') == 'relative':
-                        log_and_update_main(
-                            f"⚠️ Warning: Provider '{pname}' uses relative file paths. "
-                            f"Cross-provider track matching will not work.", 0)
+                        if is_multi_provider:
+                            # Hard stop: multi-provider with relative paths will create duplicates
+                            error_msg = (
+                                f"Analysis aborted: Provider '{pname}' uses relative file paths in a multi-provider setup. "
+                                f"This will create duplicate tracks. Enable 'Report Real Path' in Navidrome "
+                                f"(Players > AudioMuse player), then run 'Rescan Paths' in Settings."
+                            )
+                            log_and_update_main(error_msg, 0, task_state=TASK_STATUS_FAILURE)
+                            return {"status": "FAILURE", "message": error_msg}
+                        else:
+                            # Single provider: warn but continue
+                            log_and_update_main(
+                                f"⚠️ Warning: Provider '{pname}' uses relative file paths. "
+                                f"Cross-provider track matching will not work if you add more providers.", 0)
+
+                    # Also check if any OTHER provider has relative paths (safety net)
+                    if is_multi_provider:
+                        for p in all_providers:
+                            p_cfg = p.get('config') or {}
+                            if p['id'] != active_provider_id and p_cfg.get('path_format') == 'relative':
+                                p_name = p.get('name') or p.get('provider_type')
+                                error_msg = (
+                                    f"Analysis aborted: Provider '{p_name}' has relative file paths in a multi-provider setup. "
+                                    f"Fix this provider's path configuration in Settings before running analysis."
+                                )
+                                log_and_update_main(error_msg, 0, task_state=TASK_STATUS_FAILURE)
+                                return {"status": "FAILURE", "message": error_msg}
+
                     if not pcfg.get('music_path_prefix') and provider_config.get('provider_type') not in ('localfiles',):
                         with get_db() as conn, conn.cursor() as cur:
                             cur.execute("SELECT COUNT(*) FROM provider_track WHERE provider_id != %s LIMIT 1", (active_provider_id,))

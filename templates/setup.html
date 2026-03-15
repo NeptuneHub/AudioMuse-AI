@@ -991,6 +991,8 @@
                 providers will share analysis data.
             </p>
 
+            <div id="setup-health-banner"></div>
+
             <div class="provider-grid" id="provider-grid">
                 <!-- Populated by JS -->
             </div>
@@ -1232,6 +1234,10 @@
         setupHardwareOptions();
         setupDeploymentOptions();
         applyExistingSettings();
+        // Load health banner for existing provider path warnings
+        if (typeof fetchAndRenderHealthBanner === 'function') {
+            fetchAndRenderHealthBanner('setup-health-banner');
+        }
     });
 
     async function loadSetupStatus() {

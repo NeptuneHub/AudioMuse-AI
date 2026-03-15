@@ -1781,6 +1781,35 @@ def normalize_provider_path(file_path, provider_id=None):
     return result.lower() if result else None
 
 
+def get_path_quality(file_path):
+    """
+    Assess the quality/reliability of a file path for cross-provider matching.
+
+    Returns:
+        'reliable': Absolute path (starts with / or file://) — real filesystem path
+        'unreliable': Relative path (no leading /) — likely Navidrome virtual path
+        'empty': No path provided
+    """
+    if not file_path:
+        return 'empty'
+
+    path = file_path.strip()
+
+    # file:// URLs are always absolute/reliable
+    if path.startswith('file://'):
+        return 'reliable'
+
+    # Windows absolute paths (C:\..., D:\...)
+    if len(path) > 2 and path[1] == ':' and path[2] in ('\\', '/'):
+        return 'reliable'
+
+    # Unix absolute paths
+    if path.startswith('/'):
+        return 'reliable'
+
+    return 'unreliable'
+
+
 def _compute_file_path_hash(file_path, provider_id=None):
     """
     Compute SHA-256 hash of normalized file path for track identity.
