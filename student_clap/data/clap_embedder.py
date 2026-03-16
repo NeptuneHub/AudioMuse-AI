@@ -522,7 +522,7 @@ class MuLanEmbedder:
                 import torch
                 batch_t = torch.from_numpy(batch_np).to(self.device)
                 with torch.no_grad():
-                    out = self.model.get_audio_latents(batch_t)
+                    out = self.model.extract_audio_latents(batch_t)
 
                 out_np = out.float().cpu().numpy()
                 for emb in out_np:

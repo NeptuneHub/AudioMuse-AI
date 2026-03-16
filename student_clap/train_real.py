@@ -434,6 +434,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                             mixed_raw = mixed_raw.reshape(mixed_raw.shape[0], -1)
 
                         # Resample to MuLan base rate (24kHz)
+                        from student_clap.data.dataset import _resample_to_target
                         resampled = [
                             _resample_to_target(seg, orig_sr=config['audio']['sample_rate'], target_sr=24000)
                             for seg in mixed_raw
