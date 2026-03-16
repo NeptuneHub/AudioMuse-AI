@@ -8,6 +8,7 @@ and pairs with student mel-spectrograms for knowledge distillation training.
 import os
 import sys
 import logging
+import math
 import numpy as np
 import torch
 # torchaudio removed — unified on librosa for audio loading to avoid
@@ -16,6 +17,28 @@ import librosa
 import soundfile as sf
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
+
+
+def _resample_to_target(seg: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+    """Resample a 1D NumPy audio segment without requiring resampy.
+
+    Tries scipy.signal.resample_poly first (fast, good quality).
+    Falls back to librosa.resample if scipy is missing.
+    """
+    if orig_sr == target_sr:
+        return seg.astype(np.float32)
+
+    try:
+        from scipy.signal import resample_poly
+
+        gcd = math.gcd(orig_sr, target_sr)
+        up = target_sr // gcd
+        down = orig_sr // gcd
+        out = resample_poly(seg, up, down)
+        return out.astype(np.float32)
+    except Exception:
+        # Avoid requiring resampy (librosa default); use best effort
+        return librosa.resample(seg, orig_sr=orig_sr, target_sr=target_sr, res_type='kaiser_best').astype(np.float32)
 
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -369,7 +392,7 @@ class StudentCLAPDataset:
                     try:
                         # Resample to 24k for MuLan
                         resampled = [
-                            librosa.resample(seg, orig_sr=self.audio_config['sample_rate'], target_sr=MuLanEmbedder.DEFAULT_SAMPLE_RATE, res_type='kaiser_fast')
+                            _resample_to_target(seg, orig_sr=self.audio_config['sample_rate'], target_sr=MuLanEmbedder.DEFAULT_SAMPLE_RATE)
                             for seg in segments
                         ]
                         teacher_embedding, _, _, teacher_segment_embeddings = self.teacher_embedder.compute_embeddings_from_audio(resampled)
