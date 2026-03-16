@@ -881,7 +881,27 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         logger.info(f"  - Other Features: {other_features}")
                         
                         # Save MusiCNN score+embedding first (creates the 'score' row)
-                        save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), musicnn_analysis['tempo'], musicnn_analysis['key'], musicnn_analysis['scale'], top_moods, musicnn_embedding, energy=musicnn_analysis['energy'], other_features=other_features, album=item.get('Album', None), album_artist=item.get('OriginalAlbumArtist', None), year=item.get('Year'), rating=item.get('Rating'), file_path=item.get('FilePath'))
+                        # NOTE: `item` keys come from the media server API and may be lowercase (e.g. Navidrome).
+                        # Use both variants to avoid missing metadata and ensure `search_u` can be generated.
+                        album_value = item.get('Album') or item.get('album')
+                        album_artist_value = item.get('OriginalAlbumArtist') or item.get('originalAlbumArtist') or item.get('album_artist')
+                        save_track_analysis_and_embedding(
+                            item['Id'],
+                            item['Name'],
+                            item.get('AlbumArtist', 'Unknown'),
+                            musicnn_analysis['tempo'],
+                            musicnn_analysis['key'],
+                            musicnn_analysis['scale'],
+                            top_moods,
+                            musicnn_embedding,
+                            energy=musicnn_analysis['energy'],
+                            other_features=other_features,
+                            album=album_value,
+                            album_artist=album_artist_value,
+                            year=item.get('Year'),
+                            rating=item.get('Rating'),
+                            file_path=item.get('FilePath')
+                        )
                     
                     # Save CLAP embedding AFTER score row exists (FK: clap_embedding.item_id → score.item_id)
                     if clap_embedding_for_track is not None and needs_clap:

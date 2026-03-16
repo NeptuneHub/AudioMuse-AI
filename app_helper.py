@@ -130,7 +130,8 @@ def init_db():
             logger.info("Creating immutable function to remove accents.")
             cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
             logger.info("Adding 'search_u' generated column to 'score' table.")
-            cur.execute("ALTER TABLE score ADD COLUMN search_u TEXT GENERATED ALWAYS AS (lower(immutable_unaccent(title || ' ' || author || ' ' || album))) STORED;")
+            # Use concat_ws to gracefully handle NULL fields (avoids NULL result when any component is NULL)
+            cur.execute("ALTER TABLE score ADD COLUMN search_u TEXT GENERATED ALWAYS AS (lower(immutable_unaccent(concat_ws(' ', title, author, album)))) STORED;")
         # Create index on 'score' to assist in searches
         cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
 
