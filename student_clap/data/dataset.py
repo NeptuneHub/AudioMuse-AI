@@ -395,7 +395,8 @@ class StudentCLAPDataset:
                             _resample_to_target(seg, orig_sr=self.audio_config['sample_rate'], target_sr=MuLanEmbedder.DEFAULT_SAMPLE_RATE)
                             for seg in segments
                         ]
-                        teacher_embedding, _, _, teacher_segment_embeddings = self.teacher_embedder.compute_embeddings_from_audio(resampled)
+                        # NOTE: compute_embeddings_from_audio returns (avg_emb, segment_embs)
+                        teacher_embedding, teacher_segment_embeddings = self.teacher_embedder.compute_embeddings_from_audio(resampled)
                     except Exception as e:
                         logger.error(f"⚠️ Failed to compute MuLan embeddings for {item['item_id']}: {e}")
                         teacher_embedding = None

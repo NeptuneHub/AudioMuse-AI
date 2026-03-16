@@ -427,14 +427,15 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                     # from the same augmented + mixed waveform.  Mixup happens in waveform space.
                     if not teacher_requires_mel:
                         # Build a list of raw audio segments for MuLan (already in mixed_mel)
-                        # Ensure we have numpy (mixed_mel is torch tensor)
                         mixed_raw = mixed_mel.cpu().numpy()
-                        if mixed_raw.ndim == 3:
-                            mixed_raw = mixed_raw[:, 0, :] if mixed_raw.shape[1] == 1 else mixed_raw
+
+                        # Collapse any extra dims (channel, mel, etc.) into flat waveform
+                        if mixed_raw.ndim > 2:
+                            mixed_raw = mixed_raw.reshape(mixed_raw.shape[0], -1)
 
                         # Resample to MuLan base rate (24kHz)
                         resampled = [
-                            librosa.resample(seg, orig_sr=config['audio']['sample_rate'], target_sr=24000, res_type='kaiser_fast')
+                            _resample_to_target(seg, orig_sr=config['audio']['sample_rate'], target_sr=24000)
                             for seg in mixed_raw
                         ]
 
