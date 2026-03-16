@@ -208,6 +208,21 @@ class StudentCLAPDataset:
             mel_aug = mel_aug + np.random.normal(0, noise_level, mel_aug.shape).astype(np.float32)
         return mel_aug, f"gain={gain:.3f}, noise={'yes' if add_noise else 'no'}"
 
+    def _apply_audio_augmentation(self, audio_segments, seed=None):
+        """Apply gain + additive noise to raw audio segments (waveform).
+
+        Supports both single-segment (1D) and multi-segment (2D) inputs.
+        """
+        if seed is not None:
+            np.random.seed(seed)
+        gain = np.random.uniform(0.8, 1.2)
+        aug = audio_segments * gain
+        add_noise = np.random.rand() < 0.5
+        if add_noise:
+            noise_level = np.random.uniform(0.001, 0.01)
+            aug = aug + np.random.normal(0, noise_level, aug.shape).astype(np.float32)
+        return aug, f"gain={gain:.3f}, noise={'yes' if add_noise else 'no'}"
+
     def _apply_specaugment(self, mel_aug):
         """Apply SpecAugment (time shift, freq masking, time masking) to mel.
 
@@ -308,7 +323,61 @@ class StudentCLAPDataset:
                        f"{len(tasks_to_process)} need analysis")
             
             batch = []
-            
+
+            # If teacher is MuLan (raw waveform), we want the student to receive
+            # the same augmented raw audio (so augmentation/mixup is shared).
+            # This bypasses the mel cache / mel-spectrogram pipeline.
+            if not teacher_requires_mel:
+                for item in batch_items:
+                    audio_path = item['file_path']
+
+                    # Load and resample to student sample rate (usually 48k)
+                    try:
+                        audio_data, audio_length = self._load_audio(audio_path)
+                    except Exception as e:
+                        logger.warning(f"⚠️ Skipping {item['item_id']} — cannot load audio: {e}")
+                        continue
+
+                    # Segment audio (10s windows with 5s overlap)
+                    segments = segment_audio(
+                        audio_data,
+                        sample_rate=self.audio_config['sample_rate'],
+                        segment_length=self.audio_config['segment_length'],
+                        hop_length=self.audio_config['hop_length'],
+                    )
+
+                    # Apply augmentation once (shared between student & teacher)
+                    if self.config.get('training', {}).get('augmentation_enabled', True):
+                        seed = np.random.randint(0, 2**31)
+                        segments, _ = self._apply_audio_augmentation(segments, seed=seed)
+
+                    # Compute teacher embeddings from raw (MuLan expects 24k)
+                    try:
+                        # Resample to 24k for MuLan
+                        resampled = [
+                            librosa.resample(seg, orig_sr=self.audio_config['sample_rate'], target_sr=MuLanEmbedder.DEFAULT_SAMPLE_RATE, res_type='kaiser_fast')
+                            for seg in segments
+                        ]
+                        teacher_embedding, _, _, teacher_segment_embeddings = self.teacher_embedder.compute_embeddings_from_audio(resampled)
+                    except Exception as e:
+                        logger.error(f"⚠️ Failed to compute MuLan embeddings for {item['item_id']}: {e}")
+                        teacher_embedding = None
+                        teacher_segment_embeddings = None
+
+                    batch.append({
+                        'item_id': item['item_id'],
+                        'title': item['title'],
+                        'author': item.get('author', 'Unknown'),
+                        'audio_path': audio_path,
+                        'audio_segments': np.stack(segments, axis=0),  # (num_segs, samples)
+                        'teacher_embedding': teacher_embedding,
+                        'teacher_segment_embeddings': teacher_segment_embeddings,
+                        'num_segments': len(segments)
+                    })
+
+                yield batch
+                continue
+
             # 1. Process cached (extract segments from full mel at runtime)
             for item, mel_result in tasks_cached:
                 full_mel, audio_length = mel_result

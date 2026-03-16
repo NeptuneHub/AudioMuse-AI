@@ -15,6 +15,7 @@ import argparse
 import numpy as np
 import torch
 import time
+import librosa
 from pathlib import Path
 from tqdm import tqdm
 from dotenv import load_dotenv
@@ -359,6 +360,9 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                 # building an intermediate per-segment list (avoids an extra copy).
                 use_teacher_emb_cache = config['training'].get('use_teacher_embedding_cache', True)
 
+                if not teacher_requires_mel:
+                    logger.info("[GLOBAL MIXUP][MULAN] Mixing raw waveform (student+teacher share the same augmented audio input)")
+
                 # Build flat tensors directly from the batch (no intermediate list)
                 student_parts = []
                 teacher_emb_parts = []   # only used when cache ON
@@ -419,20 +423,39 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                     mixed_mel = mel_stack                               # no copy, same tensor
                     del permuted_mel, mel_stack
 
-                    if use_teacher_emb_cache:
-                        # --- Cache ON: mix teacher embeddings directly ---
-                        teacher_stack = torch.stack(teacher_emb_parts, dim=0)
-                        del teacher_emb_parts
-                        permuted_t = teacher_stack[perm_t].mul_(1.0 - lam)
-                        teacher_stack.mul_(lam).add_(permuted_t)
-                        mixed_teacher = teacher_stack
-                        del permuted_t, teacher_stack
+                    # If teacher uses raw waveform (MuLan), we must compute teacher embeddings
+                    # from the same augmented + mixed waveform.  Mixup happens in waveform space.
+                    if not teacher_requires_mel:
+                        # Build a list of raw audio segments for MuLan (already in mixed_mel)
+                        # Ensure we have numpy (mixed_mel is torch tensor)
+                        mixed_raw = mixed_mel.cpu().numpy()
+                        if mixed_raw.ndim == 3:
+                            mixed_raw = mixed_raw[:, 0, :] if mixed_raw.shape[1] == 1 else mixed_raw
+
+                        # Resample to MuLan base rate (24kHz)
+                        resampled = [
+                            librosa.resample(seg, orig_sr=config['audio']['sample_rate'], target_sr=24000, res_type='kaiser_fast')
+                            for seg in mixed_raw
+                        ]
+
+                        # Compute MuLan embeddings from resampled segments
+                        _, seg_embs = dataset.teacher_embedder.compute_embeddings_from_audio(resampled)
+                        mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
                     else:
-                        # --- Cache OFF: mix teacher mel, compute teacher embeddings ---
-                        del teacher_emb_parts
-                        # Free batch teacher mel data — we'll use our own concat
-                        if 'teacher_mel_segments' in batch:
-                            del batch['teacher_mel_segments']
+                        if use_teacher_emb_cache:
+                            # --- Cache ON: mix teacher embeddings directly ---
+                            teacher_stack = torch.stack(teacher_emb_parts, dim=0)
+                            del teacher_emb_parts
+                            permuted_t = teacher_stack[perm_t].mul_(1.0 - lam)
+                            teacher_stack.mul_(lam).add_(permuted_t)
+                            mixed_teacher = teacher_stack
+                            del permuted_t, teacher_stack
+                        else:
+                            # --- Cache OFF: mix teacher mel, compute teacher embeddings ---
+                            del teacher_emb_parts
+                            # Free batch teacher mel data — we'll use our own concat
+                            if 'teacher_mel_segments' in batch:
+                                del batch['teacher_mel_segments']
 
                         if len(teacher_mel_parts) > 0:
                             tmel_stack = np.concatenate(teacher_mel_parts, axis=0)  # (total, 1, 64, T)

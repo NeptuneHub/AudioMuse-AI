@@ -155,15 +155,23 @@ class StudentCLAPAudio(nn.Module):
         logger.info(f"  Output embedding dim: {self.embedding_dim}")
 
     def forward(self, mel_spec: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass through student model.
+        """Forward pass through student model.
+
+        Supports both mel-spectrogram and raw waveform input.
 
         Args:
-            mel_spec: Mel-spectrogram of shape (batch, 1, n_mels, time) or (batch, n_mels, time)
+            mel_spec: Either:
+              - mel spectrogram: (batch, 1, n_mels, time) or (batch, n_mels, time)
+              - raw waveform: (batch, samples) at `self.sample_rate`
 
         Returns:
             embeddings: L2-normalized embeddings of shape (batch, 512)
         """
+        # If input is raw waveform (batch, samples), convert to mel first.
+        if mel_spec.dim() == 2:
+            # Convert PCM waveform to mel spectrogram (same as preprocessing)
+            mel_spec = self.compute_mel_spectrogram(mel_spec)
+
         # Ensure correct input shape: (batch, 1, n_mels, time)
         if mel_spec.dim() == 3:
             mel_spec = mel_spec.unsqueeze(1)  # Add channel dimension
