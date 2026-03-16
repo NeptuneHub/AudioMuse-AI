@@ -107,7 +107,10 @@ training:
 
 
 paths:
-  teacher_model: "../model/clap_audio_model.pt"
+  # Teacher audio model (MuLan) for distillation.
+  # NOTE: This should be the ONNX audio encoder (e.g., model/mulan/mulan_audio_encoder.onnx).
+  teacher_model: "../model/mulan/mulan_audio_encoder.onnx"
+  teacher_model_type: "mulan"  # Options: 'clap' (default) or 'mulan'
   teacher_model_text: "../model/clap_text_model.pt"
   mel_cache: "/Volumes/audiomuse/student_clap_cache/mel_spectrograms.db"
   checkpoints: "./checkpoints"

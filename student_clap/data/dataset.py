@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from student_clap.data.local_song_loader import LocalSongLoader
-from student_clap.data.clap_embedder import CLAPEmbedder
+from student_clap.data.clap_embedder import CLAPEmbedder, MuLanEmbedder
 from student_clap.data.mel_cache import MelSpectrogramCache
 from student_clap.preprocessing.audio_segmentation import (
     segment_audio, SAMPLE_RATE, SEGMENT_LENGTH, HOP_LENGTH
@@ -65,18 +65,28 @@ class StudentCLAPDataset:
             data_path = self.dataset_config['validation_path']
         self.song_loader = LocalSongLoader(data_path)
 
-        # Initialize CLAP embedder for teacher embeddings (ONNX or PyTorch).
-        # Pass teacher mel params from config so there are no hardcoded constants.
+        # Initialize teacher embedder (CLAP or MuLan) for teacher embeddings.
         teacher_model_path = self.paths_config['teacher_model']
+        teacher_model_type = self.paths_config.get('teacher_model_type', 'clap').lower()
         seg_bs = self.config.get('model', {}).get('segment_batch_size', 1)
         use_amp = self.config.get('training', {}).get('use_amp', False)
         logger.info(f"🔧 Teacher segment_batch_size: {seg_bs}, use_amp: {use_amp}")
-        self.clap_embedder = CLAPEmbedder(
-            teacher_model_path,
-            segment_batch_size=seg_bs,
-            use_amp=use_amp,
-            teacher_audio_config=self.teacher_audio,
-        )
+
+        if teacher_model_type == 'mulan':
+            logger.info(f"🔧 Using MuLan teacher model: {teacher_model_path}")
+            self.teacher_embedder = MuLanEmbedder(
+                teacher_model_path,
+                segment_batch_size=seg_bs,
+                use_amp=use_amp,
+            )
+        else:
+            logger.info(f"🔧 Using CLAP teacher model: {teacher_model_path}")
+            self.teacher_embedder = CLAPEmbedder(
+                teacher_model_path,
+                segment_batch_size=seg_bs,
+                use_amp=use_amp,
+                teacher_audio_config=self.teacher_audio,
+            )
 
         # Initialize mel spectrogram cache (stores both mel specs and embeddings)
         mel_cache_path = self.paths_config.get('mel_cache', './cache/mel_spectrograms.db')
@@ -244,6 +254,11 @@ class StudentCLAPDataset:
             Batch of samples (list of dicts)
         """
         indices = np.arange(len(self))
+
+        # Some teacher models (e.g. MuLan) operate on raw audio waveforms
+        # rather than mel-spectrogram inputs.  This affects how we compute
+        # teacher embeddings when the cache is turned off.
+        teacher_requires_mel = getattr(self.teacher_embedder, 'requires_mel', True)
         
         if shuffle:
             np.random.shuffle(indices)
@@ -380,16 +395,23 @@ class StudentCLAPDataset:
                             f"time_mask={'yes' if time_masked else 'no'}"
                         )
 
-                    # --- teacher embeddings from augmented teacher mel ---
+                    # --- teacher embeddings (may be CLAP or MuLan) ---
                     teacher_embedding = None
                     teacher_segment_embeddings = None
+                    teacher_mel_segments_out = None
                     if not skip_teacher:
                         try:
-                            teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_mel(teacher_aug)
-                            teacher_embedding = teacher_emb
-                            teacher_segment_embeddings = teacher_seg_embs
+                            if teacher_requires_mel:
+                                teacher_emb, teacher_seg_embs = self.teacher_embedder.compute_embeddings_from_mel(teacher_aug)
+                                teacher_embedding = teacher_emb
+                                teacher_segment_embeddings = teacher_seg_embs
+                                teacher_mel_segments_out = teacher_aug
+                            else:
+                                # MuLan expects raw audio. Recompute from file (cached embeddings may be invalid).
+                                teacher_embedding, _, _, teacher_seg_embs = self.teacher_embedder.analyze_audio(item['file_path'])
+                                teacher_segment_embeddings = teacher_seg_embs
                         except Exception as e:
-                            logger.error(f"[CACHE-OFF] Failed to compute teacher from mel for {item['item_id']}: {e}")
+                            logger.error(f"[CACHE-OFF] Failed to compute teacher embeddings for {item['item_id']}: {e}")
 
                     mel_tensor = torch.from_numpy(mel_aug).float()
                     batch.append({
@@ -398,7 +420,7 @@ class StudentCLAPDataset:
                         'author': item.get('author', 'Unknown'),
                         'audio_path': 'cached',
                         'audio_segments': mel_tensor,
-                        'teacher_mel_segments': teacher_aug,
+                        'teacher_mel_segments': teacher_mel_segments_out,
                         'teacher_embedding': teacher_embedding,
                         'teacher_segment_embeddings': teacher_segment_embeddings,
                         'num_segments': mel_aug.shape[0],
@@ -505,6 +527,53 @@ class StudentCLAPDataset:
                                 continue
                             full_mel, audio_length = cached_mel_result
 
+                            # When teacher does not require mel inputs (e.g. MuLan), we
+                            # compute teacher embeddings directly from the raw audio file.
+                            if not teacher_requires_mel:
+                                teacher_embedding, _, _, teacher_segment_embeddings = self.teacher_embedder.analyze_audio(audio_path)
+                                if teacher_embedding is None:
+                                    logger.error(f"Teacher analysis failed for {item['title']}")
+                                    continue
+                                if teacher_segment_embeddings and (use_teacher_emb_cache or self.split != 'train'):
+                                    self.mel_cache.put_segment_embeddings(item['item_id'], teacher_segment_embeddings)
+
+                                # Extract student mel segments for this item
+                                mel_specs = self.mel_cache.extract_overlapped_segments(
+                                    full_mel,
+                                    audio_length=audio_length,
+                                    segment_length=self.audio_config['segment_length'],
+                                    hop_length=self.audio_config['hop_length'],
+                                    sample_rate=self.audio_config['sample_rate'],
+                                    hop_length_stft=self.student_audio['hop_length_stft'],
+                                )
+                                del full_mel
+
+                                # Apply mel augmentations (student only)
+                                if augmentation_enabled:
+                                    mel_aug, aug_log = self._apply_mel_augmentation(mel_specs)
+                                    mel_aug, freq_masked, time_masked = self._apply_specaugment(mel_aug)
+                                    logger.info(
+                                        f"[AUGMENT-DUAL] Epoch {self.epoch} (train, new): {aug_log}, "
+                                        f"freq_mask={'yes' if freq_masked else 'no'}, "
+                                        f"time_mask={'yes' if time_masked else 'no'}"
+                                    )
+                                else:
+                                    mel_aug = mel_specs
+
+                                mel_tensor = torch.from_numpy(mel_aug).float()
+                                batch.append({
+                                    'item_id': item['item_id'],
+                                    'title': item['title'],
+                                    'author': item.get('author', 'Unknown'),
+                                    'audio_path': audio_path,
+                                    'audio_segments': mel_tensor,
+                                    'teacher_mel_segments': None,
+                                    'teacher_embedding': teacher_embedding,
+                                    'teacher_segment_embeddings': teacher_segment_embeddings,
+                                    'num_segments': mel_aug.shape[0],
+                                })
+                                continue
+
                             # teacher mel (from cache or compute & cache)
                             teacher_mel_result = self.mel_cache.get_teacher_mel(item['item_id'])
                             if teacher_mel_result is not None:
@@ -578,16 +647,23 @@ class StudentCLAPDataset:
                                     f"time_mask={'yes' if time_masked else 'no'}"
                                 )
 
-                            # teacher embeddings from augmented teacher mel
+                            # teacher embeddings (CLAP or MuLan)
                             teacher_embedding = None
                             teacher_segment_embeddings = None
+                            teacher_mel_segments_out = None
                             if not skip_teacher:
                                 try:
-                                    teacher_emb, teacher_seg_embs = self.clap_embedder.compute_embeddings_from_mel(teacher_aug)
-                                    teacher_embedding = teacher_emb
-                                    teacher_segment_embeddings = teacher_seg_embs
+                                    if teacher_requires_mel:
+                                        teacher_emb, teacher_seg_embs = self.teacher_embedder.compute_embeddings_from_mel(teacher_aug)
+                                        teacher_embedding = teacher_emb
+                                        teacher_segment_embeddings = teacher_seg_embs
+                                        teacher_mel_segments_out = teacher_aug
+                                    else:
+                                        # MuLan expects raw audio; compute embeddings from file path
+                                        teacher_embedding, _, _, teacher_seg_embs = self.teacher_embedder.analyze_audio(audio_path)
+                                        teacher_segment_embeddings = teacher_seg_embs
                                 except Exception as e:
-                                    logger.error(f"[CACHE-OFF] Failed to compute teacher from mel for {item['item_id']}: {e}")
+                                    logger.error(f"[CACHE-OFF] Failed to compute teacher embeddings for {item['item_id']}: {e}")
 
                             mel_tensor = torch.from_numpy(mel_aug).float()
                             batch.append({
@@ -596,7 +672,7 @@ class StudentCLAPDataset:
                                 'author': item.get('author', 'Unknown'),
                                 'audio_path': audio_path,
                                 'audio_segments': mel_tensor,
-                                'teacher_mel_segments': teacher_aug,
+                                'teacher_mel_segments': teacher_mel_segments_out,
                                 'teacher_embedding': teacher_embedding,
                                 'teacher_segment_embeddings': teacher_segment_embeddings,
                                 'num_segments': mel_aug.shape[0],
@@ -611,9 +687,9 @@ class StudentCLAPDataset:
                             teacher_segment_embeddings = cached_segment_embeddings
                             teacher_embedding = self.mel_cache.get_averaged_embedding(item['item_id'])
                         else:
-                            teacher_embedding, duration_sec, num_segments, teacher_segment_embeddings = self.clap_embedder.analyze_audio(audio_path)
+                            teacher_embedding, duration_sec, num_segments, teacher_segment_embeddings = self.teacher_embedder.analyze_audio(audio_path)
                             if teacher_embedding is None:
-                                logger.error(f"CLAP analysis failed for {item['title']}")
+                                logger.error(f"Teacher analysis failed for {item['title']}")
                                 continue
                             if teacher_segment_embeddings and (use_teacher_emb_cache or self.split != 'train'):
                                 self.mel_cache.put_segment_embeddings(item['item_id'], teacher_segment_embeddings)

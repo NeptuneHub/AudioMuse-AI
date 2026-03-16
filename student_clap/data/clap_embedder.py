@@ -12,6 +12,8 @@ import librosa
 import onnxruntime as ort
 from typing import Dict, Tuple, Optional
 
+from student_clap.preprocessing.audio_segmentation import segment_audio
+
 logger = logging.getLogger(__name__)
 
 # Audio segmentation defaults (shared between student and teacher)
@@ -64,6 +66,9 @@ class CLAPEmbedder:
             self.segment_batch_size = max(1, int(segment_batch_size))
         except Exception:
             self.segment_batch_size = 1
+
+        # Indicates whether the teacher expects mel spectrogram inputs.
+        self.requires_mel = True
 
         # Backend selection by file extension
         lower = model_path.lower()
@@ -375,13 +380,11 @@ class CLAPEmbedder:
             return None, None
 
     def compute_embeddings_from_audio(self, audio_segments: list) -> Tuple[Optional[np.ndarray], Optional[list]]:
-        """
-        Compute CLAP embeddings from raw audio waveform segments using the
-        teacher mel-spectrogram parameters configured in ``config.yaml``
-        (read at init time via *teacher_audio_config*).
+        """Compute CLAP embeddings from raw audio waveform segments.
 
-        Use this instead of compute_embeddings_from_mel when raw audio is
-        available to avoid feeding student-format mel to the teacher.
+        This wraps :meth:`compute_embeddings_from_mel` by converting raw audio
+        segments to the teacher CLAP mel format (using the configured
+        teacher mel parameters).
 
         Args:
             audio_segments: list of np.ndarray, each shape (n_samples,) at 48kHz
@@ -398,4 +401,132 @@ class CLAPEmbedder:
             return self.compute_embeddings_from_mel(mel_batch)
         except Exception as e:
             logger.error(f"Failed to compute embeddings from audio segments: {e}")
+            return None, None
+
+
+class MuLanEmbedder:
+    """Embedder for MuLan audio encoder ONNX model.
+
+    MuLan (via MuQ) expects raw audio waveforms sampled at 24kHz and operates
+    directly on the waveform (no mel spectrogram).
+
+    This class mirrors the API of :class:`CLAPEmbedder` (e.g. ``analyze_audio``
+    and ``compute_embeddings_from_audio``) so it can be swapped in with minimal
+    dataset changes.
+    """
+
+    DEFAULT_SAMPLE_RATE = 24000
+    DEFAULT_SEGMENT_LENGTH = 240000  # 10 seconds at 24kHz
+    DEFAULT_HOP_LENGTH = 120000      # 5 seconds (50% overlap)
+
+    def __init__(self, model_path: str, segment_batch_size: int = 1, use_amp: bool = False):
+        """Initialize MuLan embedder.
+
+        Args:
+            model_path: Path to MuLan ONNX audio encoder (.onnx)
+            segment_batch_size: Number of segments to run in a single forward pass
+            use_amp: Ignored for MuLan (always uses fp32)
+        """
+        self.segment_batch_size = max(1, int(segment_batch_size))
+        self.use_amp = False  # MuLan inference should use fp32 to avoid NaNs
+        # MuLan expects raw waveform, not mel spectrograms
+        self.requires_mel = False
+
+        if not os.path.exists(model_path):
+            raise RuntimeError(f"MuLan ONNX model not found: {model_path}")
+
+        import onnxruntime as ort
+
+        sess_options = ort.SessionOptions()
+        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess_options.log_severity_level = 3
+
+        available_providers = ort.get_available_providers()
+        if 'CUDAExecutionProvider' in available_providers:
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+            logger.info(f"MuLan model loaded: {model_path}")
+            logger.info("✅ Using CUDAExecutionProvider for MuLan ONNX model")
+        elif 'MetalExecutionProvider' in available_providers:
+            providers = ['MetalExecutionProvider', 'CPUExecutionProvider']
+            logger.info(f"MuLan model loaded: {model_path}")
+            logger.info("✅ Using MetalExecutionProvider (onnxruntime-metal) for MuLan ONNX model")
+        elif 'CoreMLExecutionProvider' in available_providers:
+            providers = ['CoreMLExecutionProvider', 'CPUExecutionProvider']
+            logger.info(f"MuLan model loaded: {model_path}")
+            logger.info("✅ Using CoreMLExecutionProvider for MuLan ONNX model")
+        else:
+            providers = ['CPUExecutionProvider']
+            logger.info(f"MuLan model loaded: {model_path}")
+            logger.info("✅ Using CPUExecutionProvider for MuLan ONNX model")
+
+        self.session = ort.InferenceSession(
+            model_path,
+            sess_options=sess_options,
+            providers=providers
+        )
+
+    def analyze_audio(self, audio_path: str) -> Tuple[Optional[np.ndarray], float, int, Optional[list]]:
+        """Analyze an audio file and return averaged embedding + per-segment embeddings."""
+        try:
+            # Load at MuLan's expected rate (24kHz)
+            audio_data, sr = librosa.load(audio_path, sr=self.DEFAULT_SAMPLE_RATE, mono=True)
+            duration_sec = len(audio_data) / self.DEFAULT_SAMPLE_RATE
+
+            segments = segment_audio(
+                audio_data,
+                sample_rate=self.DEFAULT_SAMPLE_RATE,
+                segment_length=self.DEFAULT_SEGMENT_LENGTH,
+                hop_length=self.DEFAULT_HOP_LENGTH,
+            )
+
+            avg_emb, segment_embs = self.compute_embeddings_from_audio(segments)
+            return avg_emb, duration_sec, len(segments), segment_embs
+        except Exception as e:
+            logger.error(f"Failed to analyze {audio_path}: {e}")
+            return None, 0, 0, None
+
+    def compute_embeddings_from_audio(self, audio_segments: list) -> Tuple[Optional[np.ndarray], Optional[list]]:
+        """Compute MuLan embeddings from raw audio segments.
+
+        Args:
+            audio_segments: List of numpy arrays, each shaped (n_samples,) at 24kHz
+
+        Returns:
+            Tuple of (averaged_embedding, list_of_segment_embeddings)
+        """
+        try:
+            if not audio_segments:
+                return None, None
+
+            # Ensure all segments are float32 and correct length
+            processed = []
+            for seg in audio_segments:
+                seg = np.asarray(seg, dtype=np.float32)
+                if len(seg) != self.DEFAULT_SEGMENT_LENGTH:
+                    # Pad or truncate to match expected length
+                    if len(seg) < self.DEFAULT_SEGMENT_LENGTH:
+                        seg = np.pad(seg, (0, self.DEFAULT_SEGMENT_LENGTH - len(seg)), mode='constant')
+                    else:
+                        seg = seg[:self.DEFAULT_SEGMENT_LENGTH]
+                processed.append(seg)
+
+            batched = np.stack(processed, axis=0)  # (num_segments, segment_length)
+
+            segment_embeddings = []
+            for start in range(0, batched.shape[0], self.segment_batch_size):
+                end = min(start + self.segment_batch_size, batched.shape[0])
+                batch_np = batched[start:end].astype(np.float32)
+                outputs = self.session.run(None, {'wavs': batch_np})
+                batch_embs = outputs[0]
+                for emb in batch_embs:
+                    segment_embeddings.append(emb.astype(np.float32))
+
+            avg_emb = np.mean(segment_embeddings, axis=0).astype(np.float32)
+            norm = np.linalg.norm(avg_emb)
+            if norm > 0:
+                avg_emb = avg_emb / norm
+
+            return avg_emb, segment_embeddings
+        except Exception as e:
+            logger.error(f"Failed to compute MuLan embeddings from audio segments: {e}")
             return None, None

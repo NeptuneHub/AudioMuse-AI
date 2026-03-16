@@ -123,16 +123,16 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
     # Resolve teacher backend/device/provider for clearer logs (audio teacher)
     teacher_descr = 'n/a'
     try:
-        clap = getattr(dataset, 'clap_embedder', None)
-        if clap is None:
+        teacher = getattr(dataset, 'teacher_embedder', None)
+        if teacher is None:
             teacher_descr = 'missing'
         else:
-            backend = getattr(clap, '_backend', 'onnx')
+            backend = getattr(teacher, '_backend', 'onnx')
             if backend == 'torch':
-                tdev = getattr(clap, '_device', None)
+                tdev = getattr(teacher, '_device', None)
                 teacher_descr = f"pt/{tdev}"
             else:
-                sess = getattr(clap, 'session', None)
+                sess = getattr(teacher, 'session', None)
                 provs = []
                 try:
                     provs = sess.get_providers() if sess is not None else []
@@ -142,6 +142,9 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                 teacher_descr = f"onnx/{provider}"
     except Exception:
         teacher_descr = 'unknown'
+
+    # Determine if teacher expects mel inputs (CLAP) or raw audio (MuLan)
+    teacher_requires_mel = getattr(getattr(dataset, 'teacher_embedder', None), 'requires_mel', True)
 
     logger.info(f"🚀 REAL ONNX TRAINING - Epoch {epoch}/{config['training']['epochs']} | StudentDevice: {device} | Teacher: {teacher_descr} | LR: {lr} | WD: {wd}")
     
@@ -240,7 +243,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
 
                     use_teacher_emb_cache = config['training'].get('use_teacher_embedding_cache', True)
 
-                    if use_teacher_emb_cache:
+                    if use_teacher_emb_cache or (not teacher_requires_mel):
                         embA = batch['teacher_embeddings'][i]
                         embB = batch['teacher_embeddings'][j]
                         if isinstance(embA, np.ndarray):
@@ -274,24 +277,24 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                         else:
                             mixed_teacher_segment_embs.append(None)
                     else:
-                        # When teacher embedding cache is disabled, mix teacher mel
-                        # segments and compute teacher embeddings from the mixed mel.
+                        # When teacher embedding cache is disabled and teacher expects mel,
+                        # mix teacher mel segments and compute teacher embeddings from the mixed mel.
                         try:
                             tmelA = batch.get('teacher_mel_segments', [None] * bsz)[i]
                             tmelB = batch.get('teacher_mel_segments', [None] * bsz)[j]
                             if tmelA is not None and tmelB is not None:
                                 min_tseg = min(len(tmelA), len(tmelB))
                                 mixed_tmel = (lam * tmelA[:min_tseg] + (1.0 - lam) * tmelB[:min_tseg]).astype(np.float32)
-                                # Teacher embeddings from mixed teacher mel
-                                teacher_emb, teacher_seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_tmel)
+                                teacher_emb, teacher_seg_embs = dataset.teacher_embedder.compute_embeddings_from_mel(mixed_tmel)
                             else:
                                 # Fallback: teacher mel not available, use student mel
                                 mixed_np = mixed_seg_t.detach().cpu().numpy()
                                 if mixed_np.ndim == 3:
                                     mixed_np = mixed_np[:, np.newaxis, :, :]
-                                teacher_emb, teacher_seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_np)
+                                teacher_emb, teacher_seg_embs = dataset.teacher_embedder.compute_embeddings_from_mel(mixed_np)
+
                             if teacher_emb is None:
-                                raise RuntimeError("CLAP failed to compute embeddings for mixed mel")
+                                raise RuntimeError("Teacher failed to compute embeddings for mixed mel")
                             mixed_teacher.append(torch.from_numpy(teacher_emb).float().to(device))
                             if teacher_seg_embs is not None:
                                 mixed_teacher_segment_embs.append([torch.from_numpy(x).float().to(device) for x in teacher_seg_embs])
@@ -369,11 +372,8 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                         mel_segs = mel_segs.cpu()
                     student_parts.append(mel_segs)  # already (num_segs, 1, 128, T)
 
-                    if not use_teacher_emb_cache:
-                        tmel_list = batch.get('teacher_mel_segments', [])
-                        if i < len(tmel_list) and tmel_list[i] is not None:
-                            teacher_mel_parts.append(tmel_list[i])  # numpy (num_segs, 1, 64, T)
-                    else:
+                    if use_teacher_emb_cache or (not teacher_requires_mel):
+                        # For cached embeddings (or raw-audio teacher) we can mix at the embedding level.
                         teacher_seg_embs = batch['teacher_segment_embeddings'][i]
                         teacher_song_emb = batch['teacher_embeddings'][i]
                         n_segs = mel_segs.shape[0]
@@ -387,6 +387,10 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                             if isinstance(t_emb, torch.Tensor):
                                 t_emb = t_emb.cpu()
                             teacher_emb_parts.append(t_emb)
+                    else:
+                        tmel_list = batch.get('teacher_mel_segments', [])
+                        if i < len(tmel_list) and tmel_list[i] is not None:
+                            teacher_mel_parts.append(tmel_list[i])  # numpy (num_segs, 1, 64, T)
 
                 # Concatenate student segments into one tensor (no extra copy vs stacking a flat list)
                 # 🚨 RAM check before the big concatenation (~100MB for batch_size=64)
@@ -460,7 +464,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                             del tmel_stack, permuted_tmel
                             if mixed_tmel.ndim == 3:
                                 mixed_tmel = mixed_tmel[:, np.newaxis, :, :]
-                            avg_emb, seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_tmel)
+                            avg_emb, seg_embs = dataset.teacher_embedder.compute_embeddings_from_mel(mixed_tmel)
                             del mixed_tmel
                             mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
                         else:
@@ -469,7 +473,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                             mixed_np = mixed_mel.numpy()
                             if mixed_np.ndim == 3:
                                 mixed_np = mixed_np[:, np.newaxis, :, :]
-                            avg_emb, seg_embs = dataset.clap_embedder.compute_embeddings_from_mel(mixed_np)
+                            avg_emb, seg_embs = dataset.teacher_embedder.compute_embeddings_from_mel(mixed_np)
                             mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
                     del perm_t
 

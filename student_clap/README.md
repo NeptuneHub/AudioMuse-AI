@@ -1,12 +1,13 @@
 # Student CLAP: Lightweight Audio Encoder
 
-This is a standalone project that try to do a distillation process of LAION CLAP:
-- https://github.com/LAION-AI/CLAP
+This is a standalone project that tries to distill a lightweight audio encoder from a larger teacher model.
 
-by using as teacher the pretrained model: 
+By default it distills from LAION CLAP (https://github.com/LAION-AI/CLAP) using the pretrained teacher:
 - music_audioset_epoch_15_esc_90.14.pt
 
-and following the tinyCLAP distillation approch for the AUDIO part:
+You can also distill from MuLan's audio encoder (ONNX) by setting `paths.teacher_model_type: "mulan"` and pointing `paths.teacher_model` to the MuLan ONNX file (e.g. `model/mulan/mulan_audio_encoder.onnx`).
+
+The distillation approach is based on tinyCLAP for the audio part:
 - https://github.com/fpaissan/tinyCLAP
 
 but using the efficentat model (mn10_as):
