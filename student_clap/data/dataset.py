@@ -211,17 +211,31 @@ class StudentCLAPDataset:
     def _apply_audio_augmentation(self, audio_segments, seed=None):
         """Apply gain + additive noise to raw audio segments (waveform).
 
-        Supports both single-segment (1D) and multi-segment (2D) inputs.
+        Supports either:
+          - a single numpy array (1D)
+          - a list of numpy arrays (one per segment)
+
+        Returns a list of augmented segments (same structure as input).
         """
         if seed is not None:
             np.random.seed(seed)
         gain = np.random.uniform(0.8, 1.2)
-        aug = audio_segments * gain
         add_noise = np.random.rand() < 0.5
-        if add_noise:
-            noise_level = np.random.uniform(0.001, 0.01)
-            aug = aug + np.random.normal(0, noise_level, aug.shape).astype(np.float32)
-        return aug, f"gain={gain:.3f}, noise={'yes' if add_noise else 'no'}"
+        noise_level = np.random.uniform(0.001, 0.01) if add_noise else 0.0
+
+        def augment_array(arr: np.ndarray) -> np.ndarray:
+            arr = np.asarray(arr, dtype=np.float32)
+            out = arr * gain
+            if add_noise:
+                out = out + np.random.normal(0, noise_level, out.shape).astype(np.float32)
+            return out
+
+        if isinstance(audio_segments, list):
+            augmented = [augment_array(a) for a in audio_segments]
+        else:
+            augmented = augment_array(audio_segments)
+
+        return augmented, f"gain={gain:.3f}, noise={'yes' if add_noise else 'no'}"
 
     def _apply_specaugment(self, mel_aug):
         """Apply SpecAugment (time shift, freq masking, time masking) to mel.
