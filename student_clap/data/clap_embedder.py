@@ -405,10 +405,11 @@ class CLAPEmbedder:
 
 
 class MuLanEmbedder:
-    """Embedder for MuLan audio encoder ONNX model.
+    """Embedder for MuLan audio encoder (PyTorch via MuQ).
 
-    MuLan (via MuQ) expects raw audio waveforms sampled at 24kHz and operates
-    directly on the waveform (no mel spectrogram).
+    This uses the original MuLan PyTorch implementation (MuQ) and avoids
+    exporting/loading ONNX models. It accepts raw audio waveforms at 24kHz and
+    outputs 512-d normalized embeddings.
 
     This class mirrors the API of :class:`CLAPEmbedder` (e.g. ``analyze_audio``
     and ``compute_embeddings_from_audio``) so it can be swapped in with minimal
@@ -419,56 +420,58 @@ class MuLanEmbedder:
     DEFAULT_SEGMENT_LENGTH = 240000  # 10 seconds at 24kHz
     DEFAULT_HOP_LENGTH = 120000      # 5 seconds (50% overlap)
 
-    def __init__(self, model_path: str, segment_batch_size: int = 1, use_amp: bool = False):
+    def __init__(self, model_path: str = "OpenMuQ/MuQ-MuLan-large", segment_batch_size: int = 1, use_amp: bool = False):
         """Initialize MuLan embedder.
 
         Args:
-            model_path: Path to MuLan ONNX audio encoder (.onnx)
-            segment_batch_size: Number of segments to run in a single forward pass
-            use_amp: Ignored for MuLan (always uses fp32)
+            model_path: HuggingFace model name or local path for MuQMuLan.
+            segment_batch_size: Number of segments to run in a single forward pass.
+            use_amp: Ignored for MuLan (always uses fp32).
         """
         self.segment_batch_size = max(1, int(segment_batch_size))
         self.use_amp = False  # MuLan inference should use fp32 to avoid NaNs
-        # MuLan expects raw waveform, not mel spectrograms
-        self.requires_mel = False
+        self.requires_mel = False  # MuLan works on raw audio
 
-        if not os.path.exists(model_path):
-            raise RuntimeError(f"MuLan ONNX model not found: {model_path}")
+        try:
+            from muq import MuQMuLan
+            import torch
+        except Exception as e:
+            raise RuntimeError(f"MuLan PyTorch backend requires `muq` and `torch`: {e}")
 
-        import onnxruntime as ort
-
-        sess_options = ort.SessionOptions()
-        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        sess_options.log_severity_level = 3
-
-        available_providers = ort.get_available_providers()
-        if 'CUDAExecutionProvider' in available_providers:
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            logger.info(f"MuLan model loaded: {model_path}")
-            logger.info("✅ Using CUDAExecutionProvider for MuLan ONNX model")
-        elif 'MetalExecutionProvider' in available_providers:
-            providers = ['MetalExecutionProvider', 'CPUExecutionProvider']
-            logger.info(f"MuLan model loaded: {model_path}")
-            logger.info("✅ Using MetalExecutionProvider (onnxruntime-metal) for MuLan ONNX model")
-        elif 'CoreMLExecutionProvider' in available_providers:
-            providers = ['CoreMLExecutionProvider', 'CPUExecutionProvider']
-            logger.info(f"MuLan model loaded: {model_path}")
-            logger.info("✅ Using CoreMLExecutionProvider for MuLan ONNX model")
+        # If user supplied an ONNX path, switch to the PyTorch MuLan model
+        # (this avoids needing .onnx.data files and avoids ONNXRuntime issues).
+        if model_path and (model_path.endswith('.onnx') or model_path.endswith('.onnx.data')):
+            logger.warning(
+                "MuLanEmbedder: detected ONNX path, switching to MuLan PyTorch model "
+                "(set teacher_model to 'OpenMuQ/MuQ-MuLan-large' or a local MuQ repo instead)."
+            )
+            self.model_name_or_path = "OpenMuQ/MuQ-MuLan-large"
         else:
-            providers = ['CPUExecutionProvider']
-            logger.info(f"MuLan model loaded: {model_path}")
-            logger.info("✅ Using CPUExecutionProvider for MuLan ONNX model")
+            self.model_name_or_path = model_path or "OpenMuQ/MuQ-MuLan-large"
 
-        self.session = ort.InferenceSession(
-            model_path,
-            sess_options=sess_options,
-            providers=providers
-        )
+        try:
+            self.model = MuQMuLan.from_pretrained(self.model_name_or_path)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load MuLan model '{self.model_name_or_path}': {e}")
+
+        self.model.eval()
+
+        # Prefer CUDA -> MPS -> CPU
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+
+        self.device = device
+        self.model.to(self.device)
+
+        logger.info(f"✅ Using MuLan PyTorch backend on device: {self.device}")
 
     def analyze_audio(self, audio_path: str) -> Tuple[Optional[np.ndarray], float, int, Optional[list]]:
         """Analyze an audio file and return averaged embedding + per-segment embeddings."""
         try:
-            # Load at MuLan's expected rate (24kHz)
             audio_data, sr = librosa.load(audio_path, sr=self.DEFAULT_SAMPLE_RATE, mono=True)
             duration_sec = len(audio_data) / self.DEFAULT_SAMPLE_RATE
 
@@ -498,12 +501,11 @@ class MuLanEmbedder:
             if not audio_segments:
                 return None, None
 
-            # Ensure all segments are float32 and correct length
+            # Ensure all segments are float32 and expected length
             processed = []
             for seg in audio_segments:
                 seg = np.asarray(seg, dtype=np.float32)
                 if len(seg) != self.DEFAULT_SEGMENT_LENGTH:
-                    # Pad or truncate to match expected length
                     if len(seg) < self.DEFAULT_SEGMENT_LENGTH:
                         seg = np.pad(seg, (0, self.DEFAULT_SEGMENT_LENGTH - len(seg)), mode='constant')
                     else:
@@ -516,9 +518,14 @@ class MuLanEmbedder:
             for start in range(0, batched.shape[0], self.segment_batch_size):
                 end = min(start + self.segment_batch_size, batched.shape[0])
                 batch_np = batched[start:end].astype(np.float32)
-                outputs = self.session.run(None, {'wavs': batch_np})
-                batch_embs = outputs[0]
-                for emb in batch_embs:
+
+                import torch
+                batch_t = torch.from_numpy(batch_np).to(self.device)
+                with torch.no_grad():
+                    out = self.model.get_audio_latents(batch_t)
+
+                out_np = out.float().cpu().numpy()
+                for emb in out_np:
                     segment_embeddings.append(emb.astype(np.float32))
 
             avg_emb = np.mean(segment_embeddings, axis=0).astype(np.float32)

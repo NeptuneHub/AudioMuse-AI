@@ -5,7 +5,7 @@ This is a standalone project that tries to distill a lightweight audio encoder f
 By default it distills from LAION CLAP (https://github.com/LAION-AI/CLAP) using the pretrained teacher:
 - music_audioset_epoch_15_esc_90.14.pt
 
-You can also distill from MuLan's audio encoder (ONNX) by setting `paths.teacher_model_type: "mulan"` and pointing `paths.teacher_model` to the MuLan ONNX file (e.g. `model/mulan/mulan_audio_encoder.onnx`).
+You can also distill from MuLan's audio encoder (PyTorch via MuQ) by setting `paths.teacher_model_type: "mulan"` and pointing `paths.teacher_model` to a MuQ model identifier such as `OpenMuQ/MuQ-MuLan-large`.
 
 The distillation approach is based on tinyCLAP for the audio part:
 - https://github.com/fpaissan/tinyCLAP

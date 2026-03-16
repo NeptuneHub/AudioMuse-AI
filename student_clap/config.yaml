@@ -95,7 +95,7 @@ training:
   normalize_embeddings: false
   lambda_semantic: 0.1  # Weight for semantic alignment loss (query-based distillation)
   semantic_temperature: 1  # Temperature for KLD softmax (lower = sharper peaks, forces ranking)
-  use_teacher_embedding_cache: false # If false, always recompute teacher embeddings from (augmented) mel; mel cache still used
+  use_teacher_embedding_cache: false # If false, always recompute both mel and teacher embeddings every epoch (no cache)
   lr_scheduler:
     use_cosine_annealing: false  # If true, use CosineAnnealingLR instead of ReduceLROnPlateau in Stage 1
     mode: 'max'             # monitor metric to maximize (we monitor validation cosine)
@@ -108,8 +108,9 @@ training:
 
 paths:
   # Teacher audio model (MuLan) for distillation.
-  # NOTE: This should be the ONNX audio encoder (e.g., model/mulan/mulan_audio_encoder.onnx).
-  teacher_model: "../model/mulan/mulan_audio_encoder.onnx"
+  # NOTE: This should be a MuQ-MuLan model identifier (e.g. "OpenMuQ/MuQ-MuLan-large")
+  #       or a local MuQ model path. The code no longer relies on ONNX exports.
+  teacher_model: "OpenMuQ/MuQ-MuLan-large"
   teacher_model_type: "mulan"  # Options: 'clap' (default) or 'mulan'
   teacher_model_text: "../model/clap_text_model.pt"
   mel_cache: "/Volumes/audiomuse/student_clap_cache/mel_spectrograms.db"

@@ -120,6 +120,7 @@ class StudentCLAPDataset:
         tcache = self.config.get('training', {}).get('use_teacher_embedding_cache', True)
         logger.info(f"🔧 Teacher embedding cache enabled: {tcache}")
 
+
         # Load songs from directory
         logger.info(f"Loading songs for '{split}' from {data_path}...")
         sample_size = self.dataset_config.get('sample_size')
@@ -311,10 +312,10 @@ class StudentCLAPDataset:
         # rather than mel-spectrogram inputs.  This affects how we compute
         # teacher embeddings when the cache is turned off.
         teacher_requires_mel = getattr(self.teacher_embedder, 'requires_mel', True)
-        
+
         if shuffle:
             np.random.shuffle(indices)
-            
+
         for start_idx in range(0, len(self), batch_size):
             end_idx = min(start_idx + batch_size, len(self))
             batch_indices = indices[start_idx:end_idx]
@@ -323,7 +324,62 @@ class StudentCLAPDataset:
             
             # Prepare batch items
             batch_items = [self.items[idx] for idx in batch_indices]
-            
+            batch = []
+
+            # If teacher embedding cache is disabled, recompute everything every epoch.
+            # This also bypasses any mel cache (no mel lookups or writes).
+            cache_enabled = self.config.get('training', {}).get('use_teacher_embedding_cache', True)
+            if not cache_enabled and self.split == 'train':
+                augmentation_enabled = self.config.get('training', {}).get('augmentation_enabled', True)
+                for item in batch_items:
+                    audio_path = item['file_path']
+                    try:
+                        audio_data, audio_length = self._load_audio(audio_path)
+                    except Exception as e:
+                        logger.warning(f"⚠️ Skipping {item['item_id']} — cannot load audio: {e}")
+                        continue
+
+                    segments = segment_audio(
+                        audio_data,
+                        sample_rate=self.audio_config['sample_rate'],
+                        segment_length=self.audio_config['segment_length'],
+                        hop_length=self.audio_config['hop_length'],
+                    )
+
+                    if augmentation_enabled:
+                        seed = np.random.randint(0, 2**31)
+                        segments, _ = self._apply_audio_augmentation(segments, seed=seed)
+
+                    # Student mel is computed from the (possibly augmented) segments.
+                    student_mels = self._compute_student_mel_from_segments(segments)
+                    student_mel_tensor = torch.from_numpy(student_mels).float()
+
+                    # Teacher embeddings (MuLan expects 24k; CLAP expects 48k)
+                    if teacher_requires_mel:
+                        # CLAP embedder will compute mel internally from raw audio.
+                        teacher_embedding, teacher_segment_embeddings = self.teacher_embedder.compute_embeddings_from_audio(segments)
+                    else:
+                        # MuLan expects 24k; resample if needed.
+                        resampled = [
+                            _resample_to_target(seg, orig_sr=self.audio_config['sample_rate'], target_sr=MuLanEmbedder.DEFAULT_SAMPLE_RATE)
+                            for seg in segments
+                        ]
+                        teacher_embedding, teacher_segment_embeddings = self.teacher_embedder.compute_embeddings_from_audio(resampled)
+
+                    batch.append({
+                        'item_id': item['item_id'],
+                        'title': item['title'],
+                        'author': item.get('author', 'Unknown'),
+                        'audio_path': audio_path,
+                        'audio_segments': student_mel_tensor,
+                        'teacher_embedding': teacher_embedding,
+                        'teacher_segment_embeddings': teacher_segment_embeddings,
+                        'num_segments': student_mels.shape[0],
+                    })
+
+                yield batch
+                continue
+
             # Check cache status and categorize
             tasks_to_process = []
             tasks_cached = []
