@@ -158,15 +158,27 @@ class StudentCLAPDataset:
         Returns:
             (audio_data, audio_length) where audio_data is a 1-D float32
             numpy array at ``self.audio_config['sample_rate']``.
+
+        Notes:
+            - We use `soundfile` to validate the file first; if it fails we skip it.
+            - Then we use `librosa.load` (which uses soundfile) so we keep the
+              same behavior as before this MuLan change.
         """
         try:
             sf.info(audio_path)
-        except Exception:
-            raise RuntimeError(f"File not readable by soundfile: {audio_path}")
-        audio_data, _ = librosa.load(
-            audio_path, sr=self.audio_config['sample_rate'], mono=True
-        )
-        return audio_data, len(audio_data)
+        except Exception as e:
+            raise RuntimeError(f"File not readable by soundfile: {audio_path} ({e})")
+
+        try:
+            audio_data, _ = librosa.load(
+                audio_path,
+                sr=self.audio_config['sample_rate'],
+                mono=True,
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to load audio with librosa: {audio_path} ({e})")
+
+        return audio_data.astype(np.float32), len(audio_data)
 
     def _compute_full_teacher_mel(
         self,
