@@ -1721,7 +1721,7 @@ def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0):
         score_sql = " + ".join(score_clauses)
 
         query = f"""
-            SELECT item_id, title, author, album, album_artist
+            SELECT item_id, title, author, album, album_artist, file_path
             FROM score
             WHERE {where_sql}
             ORDER BY ({score_sql}) DESC,

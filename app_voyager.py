@@ -76,6 +76,9 @@ def search_tracks_endpoint():
                   album:
                     type: string
                     description: Album name or 'unknown' if missing
+                  file_path:
+                    type: string
+                    description: File path of the track (null if not available)
     """
     search_query = request.args.get('search_query', '', type=str)
 
@@ -114,7 +117,8 @@ def search_tracks_endpoint():
                     'title': r.get('title'),
                     'author': r.get('author'),
                     'album': album,
-                    'album_artist': (r.get('album_artist') or '').strip() or 'unknown'
+                    'album_artist': (r.get('album_artist') or '').strip() or 'unknown',
+                    'file_path': r.get('file_path')
                 })
             else:
                 results.append({'item_id': None, 'title': None, 'author': None, 'album': 'unknown'})
@@ -184,6 +188,9 @@ def get_similar_tracks_endpoint():
                   album:
                     type: string
                     description: Album name or 'unknown' if missing
+                  file_path:
+                    type: string
+                    description: File path of the track (null if not available)
                   distance:
                     type: number
       400:
@@ -258,6 +265,7 @@ def get_similar_tracks_endpoint():
                     "author": track_info['author'],
                     "album": (track_info.get('album') or 'unknown'),
                     "album_artist": (track_info.get('album_artist') or 'unknown'),
+                    "file_path": track_info.get('file_path'),
                     "distance": distance_map[neighbor_id]
                 })
 
@@ -317,7 +325,8 @@ def get_track_endpoint():
         "title": d.get('title'),
         "author": d.get('author'),
         "album": (d.get('album') or 'unknown'),
-        "album_artist": (d.get('album_artist') or 'unknown')
+        "album_artist": (d.get('album_artist') or 'unknown'),
+        "file_path": d.get('file_path')
     }), 200
   except Exception as e:
     logger.error(f"Unexpected error fetching track {item_id}: {e}", exc_info=True)
@@ -434,3 +443,178 @@ def get_enabled_providers():
     except Exception as e:
         logger.error(f"Failed to get enabled providers: {e}", exc_info=True)
         return jsonify({'error': 'Failed to load providers'}), 500
+
+
+@voyager_bp.route('/api/track_by_path', methods=['GET'])
+def get_track_by_path_endpoint():
+    """
+    Look up a track by its file path.
+    ---
+    tags:
+      - Tracks
+    parameters:
+      - name: path
+        in: query
+        required: true
+        description: The file path to look up (exact or normalized match).
+        schema:
+          type: string
+    responses:
+      200:
+        description: Track metadata for the matching file path.
+      400:
+        description: Missing path parameter.
+      404:
+        description: No track found for the given path.
+    """
+    file_path = request.args.get('path', '').strip()
+    if not file_path:
+        return jsonify({"error": "Missing 'path' query parameter."}), 400
+
+    try:
+        from app_helper import get_db, normalize_provider_path
+        from psycopg2.extras import DictCursor
+
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=DictCursor)
+
+        # Try both original and normalized path
+        normalized = normalize_provider_path(file_path)
+        paths_to_check = [file_path]
+        if normalized and normalized != file_path:
+            paths_to_check.append(normalized)
+
+        try:
+            cur.execute("""
+                SELECT item_id, title, author, album, album_artist, tempo, key, scale,
+                       mood_vector, energy, other_features, year, rating, file_path
+                FROM score
+                WHERE file_path = ANY(%s)
+                LIMIT 1
+            """, (paths_to_check,))
+            row = cur.fetchone()
+        finally:
+            cur.close()
+
+        if not row:
+            return jsonify({"error": f"No track found for path: {file_path}"}), 404
+
+        d = dict(row)
+        return jsonify({
+            "item_id": d.get('item_id'),
+            "title": d.get('title'),
+            "author": d.get('author'),
+            "album": (d.get('album') or 'unknown'),
+            "album_artist": (d.get('album_artist') or 'unknown'),
+            "tempo": d.get('tempo'),
+            "key": d.get('key'),
+            "scale": d.get('scale'),
+            "mood_vector": d.get('mood_vector'),
+            "energy": d.get('energy'),
+            "other_features": d.get('other_features'),
+            "year": d.get('year'),
+            "rating": d.get('rating'),
+            "file_path": d.get('file_path')
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error looking up track by path '{file_path}': {e}", exc_info=True)
+        return jsonify({"error": "An unexpected error occurred."}), 500
+
+
+@voyager_bp.route('/api/tracks_by_paths', methods=['POST'])
+def get_tracks_by_paths_endpoint():
+    """
+    Batch look up tracks by file paths.
+    ---
+    tags:
+      - Tracks
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              paths:
+                type: array
+                items:
+                  type: string
+                description: List of file paths to look up.
+    responses:
+      200:
+        description: Object mapping each requested path to its track data (or null if not found).
+      400:
+        description: Bad request.
+    """
+    data = request.get_json()
+    if not data or not isinstance(data.get('paths'), list):
+        return jsonify({"error": "Request body must contain a 'paths' array."}), 400
+
+    paths = [p.strip() for p in data['paths'] if isinstance(p, str) and p.strip()]
+    if not paths:
+        return jsonify({}), 200
+
+    # Cap batch size to prevent abuse
+    MAX_BATCH = 500
+    if len(paths) > MAX_BATCH:
+        return jsonify({"error": f"Too many paths. Maximum is {MAX_BATCH}."}), 400
+
+    try:
+        from app_helper import get_db, normalize_provider_path
+        from psycopg2.extras import DictCursor
+
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=DictCursor)
+
+        # Build lookup set: original + normalized for each path
+        all_lookup_paths = []
+        path_to_original = {}  # maps normalized/original DB path back to the user's requested path
+        for p in paths:
+            all_lookup_paths.append(p)
+            path_to_original[p.lower()] = p
+            normalized = normalize_provider_path(p)
+            if normalized and normalized != p:
+                all_lookup_paths.append(normalized)
+                path_to_original[normalized.lower()] = p
+
+        try:
+            cur.execute("""
+                SELECT item_id, title, author, album, album_artist, tempo, key, scale,
+                       mood_vector, energy, other_features, year, rating, file_path
+                FROM score
+                WHERE file_path = ANY(%s)
+            """, (all_lookup_paths,))
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+
+        # Build result keyed by the original requested path
+        result = {p: None for p in paths}
+        for row in rows:
+            d = dict(row)
+            db_path = (d.get('file_path') or '').lower()
+            original_key = path_to_original.get(db_path)
+            if original_key and original_key in result:
+                result[original_key] = {
+                    "item_id": d.get('item_id'),
+                    "title": d.get('title'),
+                    "author": d.get('author'),
+                    "album": (d.get('album') or 'unknown'),
+                    "album_artist": (d.get('album_artist') or 'unknown'),
+                    "tempo": d.get('tempo'),
+                    "key": d.get('key'),
+                    "scale": d.get('scale'),
+                    "mood_vector": d.get('mood_vector'),
+                    "energy": d.get('energy'),
+                    "other_features": d.get('other_features'),
+                    "year": d.get('year'),
+                    "rating": d.get('rating'),
+                    "file_path": d.get('file_path')
+                }
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        logger.error(f"Error in batch track lookup by paths: {e}", exc_info=True)
+        return jsonify({"error": "An unexpected error occurred."}), 500
