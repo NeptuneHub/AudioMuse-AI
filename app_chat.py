@@ -784,15 +784,13 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
             try:
                 song_ids = [s['item_id'] for s in all_songs]
                 db_conn = get_db()
-                cur = db_conn.cursor(cursor_factory=DictCursor)
-                # Fetch ratings for all collected songs
-                cur.execute(
-                    "SELECT item_id, rating FROM public.score WHERE item_id = ANY(%s)",
-                    (song_ids,)
-                )
-                rating_map = {row['item_id']: row['rating'] for row in cur.fetchall()}
-                cur.close()
-                db_conn.close()
+                with db_conn.cursor(cursor_factory=DictCursor) as cur:
+                    # Fetch ratings for all collected songs
+                    cur.execute(
+                        "SELECT item_id, rating FROM public.score WHERE item_id = ANY(%s)",
+                        (song_ids,)
+                    )
+                    rating_map = {row['item_id']: row['rating'] for row in cur.fetchall()}
 
                 before_count = len(all_songs)
                 all_songs = [s for s in all_songs if (rating_map.get(s['item_id']) or 0) >= detected_min_rating]

@@ -991,12 +991,12 @@
                     </div>
                 </div>
                 <div class="provider-actions">
-                    <button onclick="editProvider(${p.id})">Edit</button>
-                    <button onclick="toggleProvider(${p.id}, ${!p.enabled})">${p.enabled ? 'Disable' : 'Enable'}</button>
-                    ${p.provider_type === 'navidrome' ? `<button onclick="rescanPaths(${p.id})">Rescan Paths</button>` : ''}
+                    <button onclick="editProvider(${parseInt(p.id, 10)})">Edit</button>
+                    <button onclick="toggleProvider(${parseInt(p.id, 10)}, ${!p.enabled})">${p.enabled ? 'Disable' : 'Enable'}</button>
+                    ${p.provider_type === 'navidrome' ? `<button onclick="rescanPaths(${parseInt(p.id, 10)})">Rescan Paths</button>` : ''}
                     ${p.provider_type === 'navidrome' && p.config && p.config.path_format !== 'relative'
-                        ? `<button onclick="rehashTracks(${p.id})">Rehash Tracks</button>` : ''}
-                    <button class="btn-danger" onclick="deleteProvider(${p.id})">Delete</button>
+                        ? `<button onclick="rehashTracks(${parseInt(p.id, 10)})">Rehash Tracks</button>` : ''}
+                    <button class="btn-danger" onclick="deleteProvider(${parseInt(p.id, 10)})">Delete</button>
                 </div>
                 <div id="rescan-result-${p.id}" class="rescan-result"></div>
                 <div id="rehash-result-${p.id}" class="rescan-result"></div>
@@ -1254,20 +1254,24 @@
             const value = existingConfig[field.name] || field.default || '';
 
             let inputHtml = '';
+            const escapedValue = escapeHtml(value);
+            const escapedName = escapeHtml(field.name);
+            const escapedDefault = escapeHtml(field.default || '');
+            const escapedLabel = escapeHtml(field.label);
             if (field.type === 'password') {
-                inputHtml = `<input type="password" id="field-${field.name}" value="${value}" placeholder="${field.default || ''}">`;
+                inputHtml = `<input type="password" id="field-${escapedName}" value="${escapedValue}" placeholder="${escapedDefault}">`;
             } else if (field.type === 'boolean') {
-                inputHtml = `<label class="checkbox-label"><input type="checkbox" id="field-${field.name}" ${value ? 'checked' : ''}><span>${field.label}</span></label>`;
+                inputHtml = `<label class="checkbox-label"><input type="checkbox" id="field-${escapedName}" ${value ? 'checked' : ''}><span>${escapedLabel}</span></label>`;
             } else if (field.type === 'number') {
-                inputHtml = `<input type="number" id="field-${field.name}" value="${value}">`;
+                inputHtml = `<input type="number" id="field-${escapedName}" value="${escapedValue}">`;
             } else {
-                inputHtml = `<input type="text" id="field-${field.name}" value="${value}" placeholder="${field.default || ''}">`;
+                inputHtml = `<input type="text" id="field-${escapedName}" value="${escapedValue}" placeholder="${escapedDefault}">`;
             }
 
             div.innerHTML = `
-                ${field.type !== 'boolean' ? `<label for="field-${field.name}">${field.label}${field.required ? ' *' : ''}</label>` : ''}
+                ${field.type !== 'boolean' ? `<label for="field-${escapedName}">${escapedLabel}${field.required ? ' *' : ''}</label>` : ''}
                 ${inputHtml}
-                ${field.description ? `<div class="field-help">${field.description}</div>` : ''}
+                ${field.description ? `<div class="field-help">${escapeHtml(field.description)}</div>` : ''}
             `;
             container.appendChild(div);
         });
@@ -1435,8 +1439,8 @@
                 html += `<label>
                     <input type="checkbox" ${isChecked ? 'checked' : ''}
                            class="library-checkbox"
-                           data-library-name="${lib.name}">
-                    ${lib.name}
+                           data-library-name="${escapeHtml(lib.name)}">
+                    ${escapeHtml(lib.name)}
                 </label>`;
             });
             html += '<div class="library-note">Uncheck libraries you don\'t want to scan. All checked = scan everything.</div>';
@@ -1538,12 +1542,12 @@
             const data = await response.json();
 
             if (!data.success) {
-                resultDiv.innerHTML = `<div class="test-result error">${data.message}</div>`;
+                resultDiv.innerHTML = `<div class="test-result error">${escapeHtml(data.message)}</div>`;
                 return;
             }
 
             let html = `<div class="test-result ${data.path_format === 'relative' ? 'warning' : 'success'}">`;
-            html += `<strong>Path format:</strong> ${data.path_format}`;
+            html += `<strong>Path format:</strong> ${escapeHtml(data.path_format)}`;
 
             if (data.path_format === 'relative') {
                 html += `<br>Relative paths will prevent cross-provider track matching.`;
@@ -1551,23 +1555,35 @@
             }
 
             if (data.matches_found > 0) {
-                html += `<br><strong>Prefix:</strong> "${data.suggested_prefix}" (${data.confidence} confidence, ${data.matches_found} matches)`;
+                html += `<br><strong>Prefix:</strong> "${escapeHtml(data.suggested_prefix)}" (${escapeHtml(data.confidence)} confidence, ${parseInt(data.matches_found, 10)} matches)`;
                 if (data.current_prefix !== undefined) {
-                    html += `<br><strong>Current prefix:</strong> "${data.current_prefix}"`;
+                    html += `<br><strong>Current prefix:</strong> "${escapeHtml(data.current_prefix)}"`;
                 }
             }
 
             html += `</div>`;
 
             if (data.prefix_changed) {
+                const safePrefix = escapeHtml(data.suggested_prefix);
                 html += `<div class="rescan-actions">
-                    <button onclick="updateProviderPrefix(${providerId}, '${data.suggested_prefix.replace(/'/g, "\\'")}')">
-                        Apply Prefix "${data.suggested_prefix}"
+                    <button data-provider-id="${providerId}" data-prefix="${safePrefix}" class="apply-prefix-btn">
+                        Apply Prefix "${safePrefix}"
                     </button>
                 </div>`;
             }
 
             resultDiv.innerHTML = html;
+
+            // Bind click handler for the apply-prefix button (avoids inline onclick with user data)
+            const applyBtn = resultDiv.querySelector('.apply-prefix-btn');
+            if (applyBtn) {
+                applyBtn.addEventListener('click', () => {
+                    updateProviderPrefix(
+                        parseInt(applyBtn.dataset.providerId, 10),
+                        data.suggested_prefix  // use original unescaped value for the API call
+                    );
+                });
+            }
 
             // Reload providers so the persistent warning badge updates
             await loadProviders();
@@ -1577,7 +1593,7 @@
                 fetchAndRenderHealthBanner('settings-health-banner');
             }
         } catch (err) {
-            resultDiv.innerHTML = `<div class="test-result error">Rescan failed: ${err.message}</div>`;
+            resultDiv.innerHTML = `<div class="test-result error">Rescan failed: ${escapeHtml(err.message)}</div>`;
         }
     }
 

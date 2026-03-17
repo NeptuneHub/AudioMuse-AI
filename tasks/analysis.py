@@ -1197,8 +1197,21 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 with get_db() as conn, conn.cursor() as cur:
                     # Convert integer track IDs to strings for database comparison
                     track_ids_as_strings = [str(track_id) for track_id in track_ids]
+                    # Path 1: Direct match in score
                     cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL", (tuple(track_ids_as_strings),))
-                    return {row[0] for row in cur.fetchall()}
+                    found = {row[0] for row in cur.fetchall()}
+                    # Path 2: provider_track chain (secondary providers linked without row duplication)
+                    remaining = set(track_ids_as_strings) - found
+                    if remaining:
+                        cur.execute("""
+                            SELECT pt.item_id FROM provider_track pt
+                            JOIN score s ON pt.track_id = s.track_id
+                            JOIN embedding e ON s.item_id = e.item_id
+                            WHERE pt.item_id IN %s AND s.other_features IS NOT NULL
+                            AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL
+                        """, (tuple(remaining),))
+                        found.update(row[0] for row in cur.fetchall())
+                    return found
 
             def monitor_and_clear_jobs():
                 """Monitor active RQ jobs and keep `albums_completed` in sync.
@@ -1321,22 +1334,44 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     track_ids = [t['Id'] for t in tracks]
                     existing_count = len(get_existing_track_ids(track_ids))
                     
-                    # Check CLAP if enabled
+                    # Check CLAP if enabled (includes provider_track chain for multi-provider)
                     needs_clap_analysis = False
                     if is_clap_available():
                         with get_db() as conn, conn.cursor() as cur:
                             track_ids_as_strings = [str(id) for id in track_ids]
+                            # Direct match
                             cur.execute("SELECT item_id FROM clap_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
                             existing_clap_ids = {row[0] for row in cur.fetchall()}
+                            # Provider_track chain for linked secondary provider tracks
+                            remaining_clap = set(track_ids_as_strings) - existing_clap_ids
+                            if remaining_clap:
+                                cur.execute("""
+                                    SELECT pt.item_id FROM provider_track pt
+                                    JOIN score s ON pt.track_id = s.track_id
+                                    JOIN clap_embedding ce ON s.item_id = ce.item_id
+                                    WHERE pt.item_id IN %s
+                                """, (tuple(remaining_clap),))
+                                existing_clap_ids.update(row[0] for row in cur.fetchall())
                             needs_clap_analysis = len(existing_clap_ids) < len(tracks)
-                    
-                    # Check MuLan only if enabled
+
+                    # Check MuLan only if enabled (includes provider_track chain for multi-provider)
                     needs_mulan_analysis = False
                     if MULAN_ENABLED:
                         with get_db() as conn, conn.cursor() as cur:
                             track_ids_as_strings = [str(id) for id in track_ids]
+                            # Direct match
                             cur.execute("SELECT item_id FROM mulan_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
                             existing_mulan_ids = {row[0] for row in cur.fetchall()}
+                            # Provider_track chain for linked secondary provider tracks
+                            remaining_mulan = set(track_ids_as_strings) - existing_mulan_ids
+                            if remaining_mulan:
+                                cur.execute("""
+                                    SELECT pt.item_id FROM provider_track pt
+                                    JOIN score s ON pt.track_id = s.track_id
+                                    JOIN mulan_embedding me ON s.item_id = me.item_id
+                                    WHERE pt.item_id IN %s
+                                """, (tuple(remaining_mulan),))
+                                existing_mulan_ids.update(row[0] for row in cur.fetchall())
                             needs_mulan_analysis = len(existing_mulan_ids) < len(tracks)
                     
                 except Exception as e:

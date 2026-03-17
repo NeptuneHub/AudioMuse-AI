@@ -41,14 +41,27 @@ SUPPORTED_FORMATS = {'.mp3', '.flac', '.ogg', '.m4a', '.mp4', '.wav', '.wma', '.
 # ##############################################################################
 
 def get_config(overrides: Dict = None) -> Dict:
-    """Get local file provider configuration from environment or defaults."""
+    """Get local file provider configuration from config module, then environment, then defaults.
+
+    The config module attributes are checked first so that _get_all_songs_with_config()
+    in app_setup.py can temporarily patch them for multi-provider sync.
+    """
     cfg = {
-        'music_directory': os.environ.get('LOCALFILES_MUSIC_DIRECTORY', '/music'),
-        'supported_formats': os.environ.get('LOCALFILES_FORMATS', ','.join(SUPPORTED_FORMATS)).split(','),
-        'scan_subdirectories': os.environ.get('LOCALFILES_SCAN_SUBDIRS', 'true').lower() == 'true',
+        'music_directory': getattr(config, 'LOCALFILES_MUSIC_DIRECTORY', None)
+                           or os.environ.get('LOCALFILES_MUSIC_DIRECTORY', '/music'),
+        'supported_formats': getattr(config, 'LOCALFILES_FORMATS', None)
+                             or os.environ.get('LOCALFILES_FORMATS', ','.join(SUPPORTED_FORMATS)),
+        'scan_subdirectories': getattr(config, 'LOCALFILES_SCAN_SUBDIRS', None),
         'use_embedded_metadata': os.environ.get('LOCALFILES_USE_METADATA', 'true').lower() == 'true',
-        'playlist_directory': os.environ.get('LOCALFILES_PLAYLIST_DIR', '/music/playlists'),
+        'playlist_directory': getattr(config, 'LOCALFILES_PLAYLIST_DIR', None)
+                              or os.environ.get('LOCALFILES_PLAYLIST_DIR', '/music/playlists'),
     }
+    # Handle supported_formats: ensure it's a list
+    if isinstance(cfg['supported_formats'], str):
+        cfg['supported_formats'] = cfg['supported_formats'].split(',')
+    # Handle scan_subdirectories: could be bool (from config) or None (fallback to env)
+    if cfg['scan_subdirectories'] is None:
+        cfg['scan_subdirectories'] = os.environ.get('LOCALFILES_SCAN_SUBDIRS', 'true').lower() == 'true'
     if overrides:
         cfg.update(overrides)
     return cfg
@@ -683,9 +696,22 @@ def create_playlist(base_name: str, item_ids: List[str], config_override: Dict =
         logger.error("No valid tracks found for playlist")
         return None
 
+    # Sanitize base_name to prevent path traversal
+    safe_base_name = os.path.basename(base_name)
+    if not safe_base_name:
+        logger.error("Invalid playlist base_name")
+        return None
+
     # Write M3U file
-    playlist_name = f"{base_name}.m3u"
+    playlist_name = f"{safe_base_name}.m3u"
     playlist_path = os.path.join(playlist_dir, playlist_name)
+
+    # Verify resolved path stays within playlist_dir (prevent symlink traversal)
+    real_path = os.path.realpath(playlist_path)
+    real_dir = os.path.realpath(playlist_dir)
+    if not real_path.startswith(real_dir + os.sep) and real_path != real_dir:
+        logger.warning(f"Path traversal attempt blocked in create_playlist: {base_name}")
+        return None
 
     try:
         with open(playlist_path, 'w', encoding='utf-8') as f:
@@ -706,7 +732,20 @@ def delete_playlist(playlist_id: str) -> bool:
     cfg = get_config()
     playlist_dir = cfg['playlist_directory']
 
-    playlist_path = os.path.join(playlist_dir, playlist_id)
+    # Sanitize playlist_id: strip path separators to prevent path traversal
+    safe_id = os.path.basename(playlist_id)
+    if not safe_id or safe_id != playlist_id:
+        logger.warning(f"Rejected playlist_id with path components: {playlist_id}")
+        return False
+
+    playlist_path = os.path.join(playlist_dir, safe_id)
+
+    # Verify resolved path stays within playlist_dir
+    real_path = os.path.realpath(playlist_path)
+    real_dir = os.path.realpath(playlist_dir)
+    if not real_path.startswith(real_dir + os.sep) and real_path != real_dir:
+        logger.warning(f"Path traversal attempt blocked: {playlist_id}")
+        return False
 
     if not os.path.exists(playlist_path):
         logger.warning(f"Playlist file not found: {playlist_path}")
@@ -714,7 +753,7 @@ def delete_playlist(playlist_id: str) -> bool:
 
     try:
         os.remove(playlist_path)
-        logger.info(f"Deleted playlist: {playlist_id}")
+        logger.info(f"Deleted playlist: {safe_id}")
         return True
     except Exception as e:
         logger.error(f"Error deleting playlist: {e}")

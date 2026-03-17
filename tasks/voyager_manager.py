@@ -327,7 +327,11 @@ def build_and_store_voyager_index(db_conn=None):
                    e.item_id, e.embedding
             FROM embedding e
             JOIN score s ON e.item_id = s.item_id
-            ORDER BY COALESCE(s.track_id::text, e.item_id), s.item_id
+            ORDER BY COALESCE(s.track_id::text, e.item_id),
+                     CASE WHEN EXISTS (
+                         SELECT 1 FROM provider_track pt WHERE pt.item_id = e.item_id
+                     ) THEN 1 ELSE 0 END,
+                     s.item_id
         """)
         all_embeddings = cur.fetchall()
 
@@ -534,30 +538,13 @@ def _filter_by_distance(song_results: list, db_conn):
     item_ids = [s['item_id'] for s in song_results]
     details_map = {}
     
-    # Process DB queries in batches
-    def fetch_details_batch(id_batch):
-        batch_details = {}
-        with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)", (id_batch,))
-            rows = cur.fetchall()
-            for row in rows:
-                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author']}
-        return batch_details
-    
-    # Split item_ids into batches for parallel DB queries
-    id_batches = [item_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)]
-    
-    if len(id_batches) > 1:
-        # Use parallel DB queries for large datasets
-        executor = _get_thread_pool()
-        future_to_batch = {executor.submit(fetch_details_batch, batch): batch for batch in id_batches}
-        
-        for future in as_completed(future_to_batch):
-            batch_details = future.result()
-            details_map.update(batch_details)
-    else:
-        # Use single query for small datasets
-        details_map = fetch_details_batch(item_ids)
+    # Fetch all details sequentially (db_conn is not thread-safe)
+    with db_conn.cursor(cursor_factory=DictCursor) as cur:
+        for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS):
+            batch = item_ids[i:i + BATCH_SIZE_DB_OPS]
+            cur.execute("SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)", (batch,))
+            for row in cur.fetchall():
+                details_map[row['item_id']] = {'title': row['title'], 'author': row['author']}
 
     threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if VOYAGER_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
     metric_name = 'Angular' if VOYAGER_METRIC == 'angular' else 'Euclidean'
@@ -625,29 +612,13 @@ def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song
     item_ids = [r['item_id'] for r in song_results]
     item_details = {}
     
-    def fetch_details_batch(id_batch):
-        batch_details = {}
-        with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT item_id, title, author, album FROM score WHERE item_id = ANY(%s)", (id_batch,))
-            rows = cur.fetchall()
-            for row in rows:
-                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
-        return batch_details
-
-    # Split item_ids into batches for parallel DB queries
-    id_batches = [item_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)]
-
-    if len(id_batches) > 1:
-        # Use parallel DB queries for large datasets
-        executor = _get_thread_pool()
-        future_to_batch = {executor.submit(fetch_details_batch, batch): batch for batch in id_batches}
-
-        for future in as_completed(future_to_batch):
-            batch_details = future.result()
-            item_details.update(batch_details)
-    else:
-        # Use single query for small datasets
-        item_details = fetch_details_batch(item_ids)
+    # Fetch all details sequentially (db_conn is not thread-safe)
+    with db_conn.cursor(cursor_factory=DictCursor) as cur:
+        for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS):
+            batch = item_ids[i:i + BATCH_SIZE_DB_OPS]
+            cur.execute("SELECT item_id, title, author, album FROM score WHERE item_id = ANY(%s)", (batch,))
+            for row in cur.fetchall():
+                item_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
 
     unique_songs = []
 
@@ -739,33 +710,16 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
         candidate_ids = [s['item_id'] for s in song_results]
         candidate_mood_features = {}
         
-        # Process DB queries in batches for better performance
-        def fetch_mood_features_batch(id_batch):
-            batch_features = {}
-            with db_conn.cursor(cursor_factory=DictCursor) as cur:
-                cur.execute("SELECT item_id, other_features FROM score WHERE item_id = ANY(%s)", (id_batch,))
-                rows = cur.fetchall()
-                for row in rows:
+        # Fetch all mood features sequentially (db_conn is not thread-safe)
+        with db_conn.cursor(cursor_factory=DictCursor) as cur:
+            for i in range(0, len(candidate_ids), BATCH_SIZE_DB_OPS):
+                batch = candidate_ids[i:i + BATCH_SIZE_DB_OPS]
+                cur.execute("SELECT item_id, other_features FROM score WHERE item_id = ANY(%s)", (batch,))
+                for row in cur.fetchall():
                     if row['other_features']:
                         parsed_features = _parse_mood_features(row['other_features'])
                         if parsed_features:
-                            batch_features[row['item_id']] = parsed_features
-            return batch_features
-        
-        # Split candidate_ids into batches
-        id_batches = [candidate_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(candidate_ids), BATCH_SIZE_DB_OPS)]
-        
-        if len(id_batches) > 1:
-            # Use parallel DB queries for large datasets
-            executor = _get_thread_pool()
-            future_to_batch = {executor.submit(fetch_mood_features_batch, batch): batch for batch in id_batches}
-            
-            for future in as_completed(future_to_batch):
-                batch_features = future.result()
-                candidate_mood_features.update(batch_features)
-        else:
-            # Use single query for small datasets
-            candidate_mood_features = fetch_mood_features_batch(candidate_ids)
+                            candidate_mood_features[row['item_id']] = parsed_features
 
     # Filter by mood similarity
     mood_features = ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']
@@ -1594,29 +1548,13 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
     item_ids = [r['item_id'] for r in distance_filtered_results]
     item_details = {}
     
-    def fetch_details_batch(id_batch):
-        batch_details = {}
-        with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT item_id, title, author, album FROM score WHERE item_id = ANY(%s)", (id_batch,))
-            rows = cur.fetchall()
-            for row in rows:
-                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
-        return batch_details
-
-    # Split item_ids into batches for parallel DB queries
-    id_batches = [item_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)]
-
-    if len(id_batches) > 1:
-        # Use parallel DB queries for large datasets
-        executor = _get_thread_pool()
-        future_to_batch = {executor.submit(fetch_details_batch, batch): batch for batch in id_batches}
-
-        for future in as_completed(future_to_batch):
-            batch_details = future.result()
-            item_details.update(batch_details)
-    else:
-        # Use single query for small datasets
-        item_details = fetch_details_batch(item_ids)
+    # Fetch all details sequentially (db_conn is not thread-safe)
+    with db_conn.cursor(cursor_factory=DictCursor) as cur:
+        for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS):
+            batch = item_ids[i:i + BATCH_SIZE_DB_OPS]
+            cur.execute("SELECT item_id, title, author, album FROM score WHERE item_id = ANY(%s)", (batch,))
+            for row in cur.fetchall():
+                item_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
 
     unique_songs_by_content = []
     added_songs_details = []

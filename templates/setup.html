@@ -1448,16 +1448,16 @@
 
             html += `
                 <div class="config-field">
-                    <label for="ai-config-${field.name}">
-                        ${field.label}${field.required ? ' *' : ''}
+                    <label for="ai-config-${escapeHtml(field.name)}">
+                        ${escapeHtml(field.label)}${field.required ? ' *' : ''}
                     </label>
                     <input type="${field.type === 'password' ? 'password' : 'text'}"
-                           id="ai-config-${field.name}"
-                           value="${displayValue}"
-                           placeholder="${placeholder}"
-                           data-ai-field="${field.name}"
+                           id="ai-config-${escapeHtml(field.name)}"
+                           value="${escapeHtml(displayValue)}"
+                           placeholder="${escapeHtml(placeholder)}"
+                           data-ai-field="${escapeHtml(field.name)}"
                            ${field.required ? 'required' : ''}>
-                    <div class="field-help">${field.description || ''}</div>
+                    <div class="field-help">${escapeHtml(field.description || '')}</div>
                 </div>
             `;
         });
@@ -1487,10 +1487,10 @@
 
             card.innerHTML = `
                 <div class="provider-name">
-                    ${provider.name}
+                    ${escapeHtml(provider.name)}
                     <span class="provider-check">&#10003;</span>
                 </div>
-                <div class="provider-desc">${provider.description}</div>
+                <div class="provider-desc">${escapeHtml(provider.description)}</div>
             `;
 
             grid.appendChild(card);
@@ -1532,14 +1532,14 @@
 
             const configDiv = document.createElement('div');
             configDiv.className = 'provider-config visible';
-            configDiv.innerHTML = `<h4>${provider.name} Configuration</h4>`;
+            configDiv.innerHTML = `<h4>${escapeHtml(provider.name)} Configuration</h4>`;
 
             // Add provider setup guide if available
             const guide = PROVIDER_GUIDES[type];
             if (guide) {
                 const guideEl = document.createElement('details');
                 guideEl.className = 'provider-guide';
-                guideEl.innerHTML = `<summary>How to use AudioMuse-AI with ${provider.name}</summary><div class="guide-content">${guide}</div>`;
+                guideEl.innerHTML = `<summary>How to use AudioMuse-AI with ${escapeHtml(provider.name)}</summary><div class="guide-content">${guide}</div>`;
                 configDiv.appendChild(guideEl);
             }
 
@@ -1555,50 +1555,55 @@
                     (field.name === 'music_directory' || field.name === 'playlist_directory');
 
                 let inputHtml = '';
+                const safeName = escapeHtml(field.name);
+                const safeLabel = escapeHtml(field.label);
+                const safeDesc = escapeHtml(field.description || '');
+                const safeDefault = escapeHtml(field.default || '');
+
                 if (field.type === 'password') {
-                    inputHtml = `<input type="password" id="config-${type}-${field.name}"
-                                 placeholder="${field.default || ''}"
-                                 data-provider="${type}" data-field="${field.name}">`;
+                    inputHtml = `<input type="password" id="config-${type}-${safeName}"
+                                 placeholder="${safeDefault}"
+                                 data-provider="${type}" data-field="${safeName}">`;
                 } else if (field.type === 'boolean') {
                     // Render inline with label
                     fieldDiv.innerHTML = `
-                        <label for="config-${type}-${field.name}" style="display:flex;align-items:center;gap:8px;">
-                            ${field.label}${field.required ? ' *' : ''}
-                            <input type="checkbox" id="config-${type}-${field.name}"
+                        <label for="config-${type}-${safeName}" style="display:flex;align-items:center;gap:8px;">
+                            ${safeLabel}${field.required ? ' *' : ''}
+                            <input type="checkbox" id="config-${type}-${safeName}"
                                  ${field.default ? 'checked' : ''}
-                                 data-provider="${type}" data-field="${field.name}"
+                                 data-provider="${type}" data-field="${safeName}"
                                  style="width:auto;margin:0;">
                         </label>
-                        <div class="field-help">${field.description || ''}</div>
+                        <div class="field-help">${safeDesc}</div>
                     `;
                     form.appendChild(fieldDiv);
                     return; // skip the default innerHTML below
                 } else if (field.type === 'number') {
-                    inputHtml = `<input type="number" id="config-${type}-${field.name}"
-                                 value="${field.default || ''}"
-                                 data-provider="${type}" data-field="${field.name}">`;
+                    inputHtml = `<input type="number" id="config-${type}-${safeName}"
+                                 value="${safeDefault}"
+                                 data-provider="${type}" data-field="${safeName}">`;
                 } else if (isLocalFilesDirectory) {
                     // Path field with browse button (only for localfiles directories)
                     inputHtml = `<div class="input-with-browse">
-                                    <input type="text" id="config-${type}-${field.name}"
-                                         value="${field.default || ''}"
-                                         placeholder="${field.default || ''}"
-                                         data-provider="${type}" data-field="${field.name}">
-                                    <button type="button" class="browse-btn" onclick="openBrowseModal('config-${type}-${field.name}')">Browse</button>
+                                    <input type="text" id="config-${type}-${safeName}"
+                                         value="${safeDefault}"
+                                         placeholder="${safeDefault}"
+                                         data-provider="${type}" data-field="${safeName}">
+                                    <button type="button" class="browse-btn" onclick="openBrowseModal('config-${type}-${safeName}')">Browse</button>
                                  </div>`;
                 } else {
-                    inputHtml = `<input type="text" id="config-${type}-${field.name}"
-                                 value="${field.default || ''}"
-                                 placeholder="${field.default || ''}"
-                                 data-provider="${type}" data-field="${field.name}">`;
+                    inputHtml = `<input type="text" id="config-${type}-${safeName}"
+                                 value="${safeDefault}"
+                                 placeholder="${safeDefault}"
+                                 data-provider="${type}" data-field="${safeName}">`;
                 }
 
                 fieldDiv.innerHTML = `
-                    <label for="config-${type}-${field.name}">
-                        ${field.label}${field.required ? ' *' : ''}
+                    <label for="config-${type}-${safeName}">
+                        ${safeLabel}${field.required ? ' *' : ''}
                     </label>
                     ${inputHtml}
-                    <div class="field-help">${field.description || ''}</div>
+                    <div class="field-help">${safeDesc}</div>
                 `;
 
                 form.appendChild(fieldDiv);
@@ -1653,7 +1658,7 @@
             resultDiv.className = `test-result ${data.success ? 'success' : 'error'}`;
 
             // Build result message with prefix detection info
-            let resultHTML = `<strong>${data.success ? 'Success' : 'Failed'}:</strong> ${data.message}`;
+            let resultHTML = `<strong>${data.success ? 'Success' : 'Failed'}:</strong> ${escapeHtml(data.message)}`;
 
             // Handle successful test
             if (data.success) {
@@ -1674,19 +1679,19 @@
                         const prefixInput = document.querySelector(`[data-provider="${type}"][data-field="music_path_prefix"]`);
                         if (prefixInput && !prefixInput.value) {
                             prefixInput.value = data.suggested_prefix;
-                            resultHTML += `<br><small>Auto-filled path prefix: "${data.suggested_prefix}"</small>`;
+                            resultHTML += `<br><small>Auto-filled path prefix: "${escapeHtml(data.suggested_prefix)}"</small>`;
                         }
                     }
 
                     // Show prefix detection details
                     if (pd.confidence && pd.confidence !== 'none') {
-                        resultHTML += `<br><small>Path prefix detection: ${pd.confidence} confidence`;
+                        resultHTML += `<br><small>Path prefix detection: ${escapeHtml(pd.confidence)} confidence`;
                         if (pd.matches_found) {
-                            resultHTML += ` (${pd.matches_found} matching tracks found)`;
+                            resultHTML += ` (${parseInt(pd.matches_found, 10)} matching tracks found)`;
                         }
                         resultHTML += `</small>`;
                     } else if (pd.message) {
-                        resultHTML += `<br><small>${pd.message}</small>`;
+                        resultHTML += `<br><small>${escapeHtml(pd.message)}</small>`;
                     }
 
                     // Warn about low-confidence path detection for Navidrome
@@ -1746,8 +1751,8 @@
                 html += `<label>
                     <input type="checkbox" checked
                            data-provider-library="${type}"
-                           data-library-name="${lib.name}">
-                    ${lib.name}
+                           data-library-name="${escapeHtml(lib.name)}">
+                    ${escapeHtml(lib.name)}
                 </label>`;
             });
             html += '<div class="library-note">Uncheck libraries you don\'t want to scan. All checked = scan everything.</div>';
@@ -1885,7 +1890,7 @@
                     <div class="hw-icon">&#9889;</div>
                     <div class="hw-details">
                         <div class="hw-title">NVIDIA GPU Detected</div>
-                        <div class="hw-subtitle">${gpuName || 'CUDA acceleration enabled'}</div>
+                        <div class="hw-subtitle">${escapeHtml(gpuName) || 'CUDA acceleration enabled'}</div>
                         <div class="hw-description">
                             Your system is running with GPU acceleration. Audio analysis will use CUDA
                             for faster ML inference, significantly reducing processing time.
@@ -2054,7 +2059,7 @@
         if (selectedDeployment === 'unified') {
             hardwareLabel = 'Server Hardware (Detected)';
             hardwareValue = selectedHardware === 'nvidia'
-                ? `NVIDIA GPU${serverInfo.gpu_name ? ' (' + serverInfo.gpu_name + ')' : ''}`
+                ? `NVIDIA GPU${serverInfo.gpu_name ? ' (' + escapeHtml(serverInfo.gpu_name) + ')' : ''}`
                 : 'CPU Only';
         } else {
             hardwareLabel = 'Worker Hardware';
@@ -2083,7 +2088,7 @@
             if (modelField) {
                 const modelInput = document.getElementById(`ai-config-${modelField.name}`);
                 if (modelInput && modelInput.value) {
-                    aiProviderSummary += ` (${modelInput.value})`;
+                    aiProviderSummary += ` (${escapeHtml(modelInput.value)})`;
                 }
             }
         }
@@ -2091,19 +2096,19 @@
         summary.innerHTML = `
             <div class="summary-item">
                 <span class="summary-label">Deployment Mode</span>
-                <span class="summary-value">${deploymentInfo}</span>
+                <span class="summary-value">${escapeHtml(deploymentInfo)}</span>
             </div>
             <div class="summary-item">
-                <span class="summary-label">${hardwareLabel}</span>
-                <span class="summary-value">${hardwareValue}</span>
+                <span class="summary-label">${escapeHtml(hardwareLabel)}</span>
+                <span class="summary-value">${escapeHtml(hardwareValue)}</span>
             </div>
             <div class="summary-item">
                 <span class="summary-label">Docker Compose Files</span>
-                <span class="summary-value">${composeFiles.join('<br>')}</span>
+                <span class="summary-value">${composeFiles.map(f => escapeHtml(f)).join('<br>')}</span>
             </div>
             <div class="summary-item">
                 <span class="summary-label">Providers</span>
-                <span class="summary-value">${providerNames || 'None selected'}</span>
+                <span class="summary-value">${escapeHtml(providerNames) || 'None selected'}</span>
             </div>
             <div class="summary-item">
                 <span class="summary-label">CLAP Text Search</span>
@@ -2115,7 +2120,7 @@
             </div>
             <div class="summary-item">
                 <span class="summary-label">AI Playlist Naming</span>
-                <span class="summary-value">${aiProviderSummary}</span>
+                <span class="summary-value">${escapeHtml(aiProviderSummary)}</span>
             </div>
         `;
     }
@@ -2216,7 +2221,7 @@
             const data = await response.json();
 
             if (data.error) {
-                listEl.innerHTML = `<li style="padding: 1rem; color: var(--color-danger);">${data.error}</li>`;
+                listEl.innerHTML = `<li style="padding: 1rem; color: var(--color-danger);">${escapeHtml(data.error)}</li>`;
                 return;
             }
 
@@ -2242,7 +2247,7 @@
                 data.directories.forEach(dir => {
                     const li = document.createElement('li');
                     li.className = 'directory-item' + (dir.accessible === false ? ' inaccessible' : '');
-                    li.innerHTML = `<span class="folder-icon">📁</span> ${dir.name}`;
+                    li.innerHTML = `<span class="folder-icon">📁</span> ${escapeHtml(dir.name)}`;
 
                     if (dir.accessible !== false) {
                         li.onclick = () => loadDirectories(dir.path);
@@ -2257,7 +2262,7 @@
 
         } catch (err) {
             console.error('Error loading directories:', err);
-            listEl.innerHTML = `<li style="padding: 1rem; color: var(--color-danger);">Error loading directories: ${err.message}</li>`;
+            listEl.innerHTML = `<li style="padding: 1rem; color: var(--color-danger);">Error loading directories: ${escapeHtml(err.message)}</li>`;
         }
     }
 

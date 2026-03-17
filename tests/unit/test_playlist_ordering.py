@@ -221,10 +221,17 @@ def _make_mock_db_rows(sd):
         rows.append(row)
     return rows
 
+import contextlib
+
+@contextlib.contextmanager
 def _patch_order_playlist(sd):
     """Patch DB calls for order_playlist.  Pre-register mock modules
     so the lazy imports inside order_playlist() never trigger the heavy
-    tasks/__init__.py import chain."""
+    tasks/__init__.py import chain.
+
+    Uses a context manager to restore sys.modules after the test so
+    mock modules don't leak into subsequent test files.
+    """
     import sys
     rows = _make_mock_db_rows(sd)
     mc = MagicMock()
@@ -232,16 +239,31 @@ def _patch_order_playlist(sd):
     conn = MagicMock()
     conn.cursor.return_value.__enter__ = Mock(return_value=mc)
     conn.cursor.return_value.__exit__ = Mock(return_value=None)
+
+    # Track which modules we insert so we can remove them afterwards
+    _sentinel = object()
+    _saved = {}
+    for mod_name in ('tasks.mcp_server', 'psycopg2', 'psycopg2.extras'):
+        _saved[mod_name] = sys.modules.get(mod_name, _sentinel)
+
     # Pre-register lightweight mocks for modules imported inside order_playlist()
     if 'tasks.mcp_server' not in sys.modules:
-        mock_mcp = MagicMock()
-        sys.modules['tasks.mcp_server'] = mock_mcp
+        sys.modules['tasks.mcp_server'] = MagicMock()
     if 'psycopg2' not in sys.modules:
         sys.modules['psycopg2'] = MagicMock()
     if 'psycopg2.extras' not in sys.modules:
         sys.modules['psycopg2.extras'] = MagicMock()
     sys.modules['tasks.mcp_server'].get_db_connection = Mock(return_value=conn)
-    return patch.object(sys.modules['tasks.mcp_server'], 'get_db_connection', return_value=conn)
+
+    with patch.object(sys.modules['tasks.mcp_server'], 'get_db_connection', return_value=conn):
+        yield
+
+    # Restore sys.modules to pre-test state
+    for mod_name, prev in _saved.items():
+        if prev is _sentinel:
+            sys.modules.pop(mod_name, None)
+        else:
+            sys.modules[mod_name] = prev
 
 
 @pytest.mark.unit

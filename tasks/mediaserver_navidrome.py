@@ -60,7 +60,14 @@ def _get_target_music_folder_ids(provider_config=None):
     target_names_lower = {name.lower() for name in library_names}
 
     # Use the getMusicFolders endpoint to get the available music folders.
-    response = _navidrome_request("getMusicFolders")
+    # Use provider_config credentials if available (multi-provider), otherwise fall back to global config
+    user_creds = None
+    base_url = None
+    if provider_config:
+        if provider_config.get('user') or provider_config.get('password'):
+            user_creds = {'user': provider_config.get('user', ''), 'password': provider_config.get('password', '')}
+        base_url = provider_config.get('url')
+    response = _navidrome_request("getMusicFolders", user_creds=user_creds, base_url=base_url)
     
     if not (response and "musicFolders" in response and "musicFolder" in response["musicFolders"]):
         logger.error("Failed to fetch music folders from Navidrome or response format unexpected.")
@@ -452,7 +459,7 @@ def _create_playlist_batched(playlist_name, item_ids, user_creds=None, base_url=
 
 def create_playlist(base_name, item_ids):
     """Creates a new playlist on Navidrome using admin credentials, with batching."""
-    _create_playlist_batched(base_name, item_ids, user_creds=None)
+    return _create_playlist_batched(base_name, item_ids, user_creds=None)
 
 
 def get_all_playlists():

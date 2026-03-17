@@ -233,15 +233,18 @@ def get_providers(enabled_only=False):
                 'created_at': row[6].isoformat() if row[6] else None,
                 'updated_at': row[7].isoformat() if row[7] else None,
             }
-            # Don't expose sensitive config values
-            if provider['config']:
+            # Don't expose sensitive config values — always remove raw config
+            raw_config = provider.pop('config', None)
+            if raw_config:
                 safe_config = {}
-                for k, v in provider['config'].items():
+                for k, v in raw_config.items():
                     if k in ('password', 'token', 'api_key'):
                         safe_config[k] = '********' if v else None
                     else:
                         safe_config[k] = v
                 provider['config_display'] = safe_config
+            else:
+                provider['config_display'] = {}
             providers.append(provider)
         return providers
 
@@ -685,6 +688,8 @@ def update_provider_endpoint(provider_id):
         is_valid, validation_errors = validate_provider_config(provider['provider_type'], merged_config)
         if not is_valid:
             return jsonify({'error': 'Validation failed', 'details': validation_errors}), 400
+        # Use merged config so partial updates don't wipe existing fields
+        config_data = merged_config
 
     success = update_provider(
         provider_id,
@@ -1270,33 +1275,42 @@ _PROVIDER_CONFIG_MAPPING = {
     'navidrome': {'url': 'NAVIDROME_URL', 'user': 'NAVIDROME_USER', 'password': 'NAVIDROME_PASSWORD'},
     'lyrion': {'url': 'LYRION_URL'},
     'emby': {'url': 'EMBY_URL', 'user_id': 'EMBY_USER_ID', 'token': 'EMBY_TOKEN'},
-    'localfiles': {'music_directory': 'LOCALFILES_MUSIC_DIR'},
+    'localfiles': {'music_directory': 'LOCALFILES_MUSIC_DIRECTORY'},
 }
 
 
+import threading
+_config_patch_lock = threading.Lock()
+
+
 def _get_all_songs_with_config(provider_type, provider_config):
-    """Get all songs from a provider by temporarily patching config with stored DB values."""
+    """Get all songs from a provider by temporarily patching config with stored DB values.
+
+    Uses a lock to prevent concurrent requests from corrupting shared config state.
+    """
     from tasks.mediaserver import get_provider_function
 
     mapping = _PROVIDER_CONFIG_MAPPING.get(provider_type, {})
-    saved = {}
-    for config_key, attr_name in mapping.items():
-        saved[attr_name] = getattr(config, attr_name, '')
-        setattr(config, attr_name, provider_config.get(config_key, ''))
 
-    # Jellyfin/Emby read config.HEADERS (pre-built dict), not individual token attrs
-    saved_headers = getattr(config, 'HEADERS', {})
-    token = provider_config.get('token', '')
-    if provider_type in ('jellyfin', 'emby') and token:
-        config.HEADERS = {"X-Emby-Token": token}
+    with _config_patch_lock:
+        saved = {}
+        for config_key, attr_name in mapping.items():
+            saved[attr_name] = getattr(config, attr_name, '')
+            setattr(config, attr_name, provider_config.get(config_key, ''))
 
-    try:
-        func = get_provider_function(provider_type, 'get_all_songs')
-        return func() if func else []
-    finally:
-        config.HEADERS = saved_headers
-        for attr_name, original_value in saved.items():
-            setattr(config, attr_name, original_value)
+        # Jellyfin/Emby read config.HEADERS (pre-built dict), not individual token attrs
+        saved_headers = getattr(config, 'HEADERS', {})
+        token = provider_config.get('token', '')
+        if provider_type in ('jellyfin', 'emby') and token:
+            config.HEADERS = {"X-Emby-Token": token}
+
+        try:
+            func = get_provider_function(provider_type, 'get_all_songs')
+            return func() if func else []
+        finally:
+            config.HEADERS = saved_headers
+            for attr_name, original_value in saved.items():
+                setattr(config, attr_name, original_value)
 
 
 @setup_bp.route('/api/setup/providers/<int:provider_id>/sync', methods=['POST'])
@@ -1697,31 +1711,25 @@ def browse_directories():
     if '..' in requested_path:
         return jsonify({'error': 'Invalid path'}), 400
 
+    # Restrict browsing to safe root directories only (Docker/Linux mount points)
+    ALLOWED_ROOTS = ['/music', '/data', '/media', '/mnt', '/home', '/srv', '/opt', '/nas']
+
+    if requested_path:
+        real_requested = os.path.realpath(requested_path)
+        if not any(real_requested == root or real_requested.startswith(root + '/') for root in ALLOWED_ROOTS):
+            return jsonify({'error': 'Access denied: path outside allowed directories'}), 403
+
     directories = []
 
     if not requested_path:
-        # Return common root paths for Docker/Linux systems
-        root_paths = ['/music', '/data', '/media', '/mnt', '/home']
-        for path in root_paths:
+        # Return only allowed root paths that exist on this system
+        for path in ALLOWED_ROOTS:
             if os.path.isdir(path):
                 directories.append({
                     'name': path,
                     'path': path,
                     'is_root': True
                 })
-        # Also check if there are any mounted volumes at root
-        try:
-            for item in os.listdir('/'):
-                full_path = f'/{item}'
-                if os.path.isdir(full_path) and item not in ['proc', 'sys', 'dev', 'run', 'tmp', 'var', 'etc', 'usr', 'bin', 'sbin', 'lib', 'lib64', 'boot', 'root']:
-                    if full_path not in [d['path'] for d in directories]:
-                        directories.append({
-                            'name': item,
-                            'path': full_path,
-                            'is_root': True
-                        })
-        except PermissionError:
-            pass
     else:
         # List contents of the requested path
         try:

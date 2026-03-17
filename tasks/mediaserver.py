@@ -443,11 +443,12 @@ def create_playlist(base_name, item_ids):
     """Creates a playlist using admin credentials."""
     if not base_name: raise ValueError("Playlist name is required.")
     if not item_ids: raise ValueError("Track IDs are required.")
-    if config.MEDIASERVER_TYPE == 'jellyfin': jellyfin_create_playlist(base_name, item_ids)
-    elif config.MEDIASERVER_TYPE == 'navidrome': navidrome_create_playlist(base_name, item_ids)
-    elif config.MEDIASERVER_TYPE == 'lyrion': lyrion_create_playlist(base_name, item_ids)
-    elif config.MEDIASERVER_TYPE == 'emby': emby_create_playlist(base_name, item_ids)
-    elif config.MEDIASERVER_TYPE == 'localfiles': localfiles_create_playlist(base_name, item_ids)
+    if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_create_playlist(base_name, item_ids)
+    elif config.MEDIASERVER_TYPE == 'navidrome': return navidrome_create_playlist(base_name, item_ids)
+    elif config.MEDIASERVER_TYPE == 'lyrion': return lyrion_create_playlist(base_name, item_ids)
+    elif config.MEDIASERVER_TYPE == 'emby': return emby_create_playlist(base_name, item_ids)
+    elif config.MEDIASERVER_TYPE == 'localfiles': return localfiles_create_playlist(base_name, item_ids)
+    else: logger.warning(f"create_playlist: unsupported MEDIASERVER_TYPE '{config.MEDIASERVER_TYPE}'"); return None
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     """Creates an instant playlist. Uses user_creds if provided, otherwise admin."""
@@ -969,7 +970,7 @@ def remap_item_ids_for_provider(item_ids: list, target_provider_id: int) -> list
 
     except Exception as e:
         logger.error(f"Error remapping item IDs: {e}")
-        return item_ids
+        return []
 
 
 def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, user_creds=None):

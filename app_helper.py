@@ -130,7 +130,7 @@ def init_db():
             logger.info("Creating immutable function to remove accents.")
             cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
             logger.info("Adding 'search_u' generated column to 'score' table.")
-            cur.execute("ALTER TABLE score ADD COLUMN search_u TEXT GENERATED ALWAYS AS (lower(immutable_unaccent(title || ' ' || author || ' ' || album))) STORED;")
+            cur.execute("ALTER TABLE score ADD COLUMN search_u TEXT GENERATED ALWAYS AS (lower(immutable_unaccent(COALESCE(title, '') || ' ' || COALESCE(author, '') || ' ' || COALESCE(album, '')))) STORED;")
         # Create index on 'score' to assist in searches
         cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
 
@@ -1346,15 +1346,19 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
         except Exception as e_q:
             logger.warning(f"Could not read queue {getattr(q, 'name', '<unknown>')}: {e_q}")
 
-    # Include job ids from RQ job keys (covers started jobs)
+    # Include job ids from RQ job keys (covers started jobs) — use SCAN to avoid blocking Redis
     try:
-        raw_keys = redis_conn.keys('rq:job:*')
-        for k in raw_keys:
-            kstr = k.decode() if isinstance(k, (bytes, bytearray)) else str(k)
-            parts = kstr.split(':')
-            if len(parts) >= 3:
-                jid = ':'.join(parts[2:])
-                job_ids.add(jid)
+        cursor = 0
+        while True:
+            cursor, raw_keys = redis_conn.scan(cursor=cursor, match='rq:job:*', count=100)
+            for k in raw_keys:
+                kstr = k.decode() if isinstance(k, (bytes, bytearray)) else str(k)
+                parts = kstr.split(':')
+                if len(parts) >= 3:
+                    jid = ':'.join(parts[2:])
+                    job_ids.add(jid)
+            if cursor == 0:
+                break
     except Exception as e_keys:
         logger.warning(f"Could not list rq job keys: {e_keys}")
 
@@ -1515,10 +1519,7 @@ def get_track_by_item_id(item_id, provider_id=None):
                        s.tempo, s.key, s.scale, s.mood_vector, s.energy,
                        s.other_features, s.file_path
                 FROM provider_track pt
-                LEFT JOIN score s ON (
-                    pt.item_id = s.item_id OR
-                    (pt.track_id IS NOT NULL AND pt.track_id = s.track_id)
-                )
+                LEFT JOIN score s ON s.track_id = pt.track_id
                 WHERE pt.provider_id = %s AND pt.item_id = %s
             """, (prov_id, item_id))
             row = cur.fetchone()
@@ -1858,27 +1859,21 @@ def get_or_create_track(file_path, provider_id=None):
 
     db = get_db()
     with db.cursor() as cur:
-        # Try to get existing track by normalized path hash
-        cur.execute("SELECT id FROM track WHERE file_path_hash = %s", (file_path_hash,))
-        row = cur.fetchone()
-
-        if row:
-            track_id = row[0]
-            # Update normalized_path to latest
-            cur.execute("UPDATE track SET normalized_path = %s, updated_at = NOW() WHERE id = %s",
-                        (normalized_path, track_id))
-            db.commit()
-            return track_id
-
-        # Create new track
+        # Use INSERT ... ON CONFLICT to handle concurrent workers atomically
         cur.execute("""
             INSERT INTO track (file_path_hash, file_path, normalized_path)
             VALUES (%s, %s, %s)
+            ON CONFLICT (file_path_hash) DO UPDATE SET
+                normalized_path = EXCLUDED.normalized_path,
+                updated_at = NOW()
             RETURNING id
         """, (file_path_hash, file_path, normalized_path))
-        track_id = cur.fetchone()[0]
+        result = cur.fetchone()
+        if not result:
+            logger.error(f"Failed to get or create track for hash {file_path_hash}")
+            return None
         db.commit()
-        return track_id
+        return result[0]
 
 
 def link_provider_track(provider_id, track_id, item_id, title=None, artist=None, album=None):
@@ -1904,6 +1899,13 @@ def link_provider_track(provider_id, track_id, item_id, title=None, artist=None,
 
     db = get_db()
     with db.cursor() as cur:
+        # Delete any existing row that would conflict on the second UNIQUE(provider_id, track_id)
+        # constraint before upserting. This handles the case where a provider already has a
+        # different item_id mapped to this track_id.
+        cur.execute("""
+            DELETE FROM provider_track
+            WHERE provider_id = %s AND track_id = %s AND item_id != %s
+        """, (provider_id, track_id, item_id))
         cur.execute("""
             INSERT INTO provider_track (provider_id, track_id, item_id, title, artist, album, last_synced)
             VALUES (%s, %s, %s, %s, %s, %s, NOW())

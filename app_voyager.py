@@ -433,4 +433,4 @@ def get_enabled_providers():
         return jsonify(providers), 200
     except Exception as e:
         logger.error(f"Failed to get enabled providers: {e}", exc_info=True)
-        return jsonify([]), 200
+        return jsonify({'error': 'Failed to load providers'}), 500

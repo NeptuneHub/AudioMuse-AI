@@ -58,9 +58,14 @@ def _get_target_library_ids(provider_config=None):
     target_names_lower = {name.lower() for name in library_names}
 
     # Use the /Library/VirtualFolders endpoint as it provides the canonical system configuration.
-    url = f"{config.JELLYFIN_URL}/Library/VirtualFolders"
+    # Use provider_config credentials if available (multi-provider), otherwise fall back to global config
+    api_url = (provider_config.get('url') if provider_config else None) or config.JELLYFIN_URL
+    api_headers = config.HEADERS
+    if provider_config and provider_config.get('token'):
+        api_headers = {"X-Emby-Token": provider_config['token']}
+    url = f"{api_url}/Library/VirtualFolders"
     try:
-        r = requests.get(url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
+        r = requests.get(url, headers=api_headers, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         all_libraries = r.json()
 

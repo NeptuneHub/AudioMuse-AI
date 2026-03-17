@@ -318,12 +318,11 @@ def _get_first_player():
                 logger.info(f"Found Lyrion player: {player_id}")
                 return player_id
         
-        # Fallback: try to use a common default or return None
-        logger.warning("No Lyrion players found, using fallback player ID")
-        return "10.42.6.0"  # Use the player from your example as fallback
+        logger.warning("No Lyrion players found — playlist operations may fail")
+        return None
     except Exception as e:
         logger.error(f"Error getting Lyrion player: {e}")
-        return "10.42.6.0"  # Use the player from your example as fallback
+        return None
 
 def _jsonrpc_request(method, params, player_id="", base_url=None):
     """
