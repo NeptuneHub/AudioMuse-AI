@@ -465,9 +465,11 @@ class MuLanEmbedder:
             device = torch.device("cpu")
 
         self.device = device
-        self.model.to(self.device)
+        self._backend = 'torch'
+        self._device = self.device
+        self.model.to(self._device)
 
-        logger.info(f"✅ Using MuLan PyTorch backend on device: {self.device}")
+        logger.info(f"✅ Using MuLan PyTorch backend on device: {self._device}")
 
     def analyze_audio(self, audio_path: str) -> Tuple[Optional[np.ndarray], float, int, Optional[list]]:
         """Analyze an audio file and return averaged embedding + per-segment embeddings."""
