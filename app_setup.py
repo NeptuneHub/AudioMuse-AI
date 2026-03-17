@@ -111,6 +111,7 @@ def apply_settings_to_config():
         'max_songs_per_artist_playlist': 'MAX_SONGS_PER_ARTIST_PLAYLIST',
         'playlist_energy_arc': 'PLAYLIST_ENERGY_ARC',
         'ai_request_timeout': 'AI_REQUEST_TIMEOUT_SECONDS',
+        'gpu_clustering': 'USE_GPU_CLUSTERING',
     }
     for db_key, config_attr in mapping.items():
         val = get_setting(db_key)
@@ -144,7 +145,7 @@ def is_setup_completed():
     configuration via the wizard.
     """
     result = get_setting('setup_completed')
-    if result is True or result == 'true' or result == True:
+    if result is True or result == 'true':
         return True
 
     # Auto-detect env-var configuration for server-based providers
@@ -183,10 +184,19 @@ def _update_multi_provider_settings():
     """Auto-set multi_provider_enabled and primary_provider_id based on provider count."""
     providers = get_providers(enabled_only=True)
     count = len(providers)
+    provider_ids = {p['id'] for p in providers}
 
-    # Auto-set primary to first provider if not set
+    # Auto-set primary to first provider if not set, or fix dangling reference
     current_primary = get_setting('primary_provider_id')
-    if (current_primary is None or current_primary == 'null') and count > 0:
+    needs_reset = (current_primary is None or current_primary == 'null')
+    # Also reset if current primary points to a deleted/disabled provider
+    if current_primary is not None and current_primary != 'null':
+        try:
+            if int(current_primary) not in provider_ids:
+                needs_reset = True
+        except (ValueError, TypeError):
+            needs_reset = True
+    if needs_reset and count > 0:
         set_setting('primary_provider_id', providers[0]['id'], 'providers',
                      'ID of the primary provider for playlist creation')
 
@@ -1020,9 +1030,10 @@ def check_provider_health():
         is_multi_provider = len(providers) > 1
 
         # Collect all prefixes to detect mismatches
+        # Note: get_providers() replaces 'config' with 'config_display' (sensitive values masked)
         prefixes = {}
         for p in providers:
-            cfg = p.get('config') or {}
+            cfg = p.get('config_display') or {}
             prefixes[p['id']] = cfg.get('music_path_prefix', '')
 
         non_empty_prefixes = {pid: pfx for pid, pfx in prefixes.items() if pfx}
@@ -1046,7 +1057,7 @@ def check_provider_health():
                         navidrome_has_analyzed_tracks[p['id']] = count > 0
 
         for p in providers:
-            cfg = p.get('config') or {}
+            cfg = p.get('config_display') or {}
             pid = p['id']
             pname = p.get('name') or p.get('provider_type')
             ptype = p.get('provider_type')
@@ -1286,7 +1297,9 @@ _config_patch_lock = threading.Lock()
 def _get_all_songs_with_config(provider_type, provider_config):
     """Get all songs from a provider by temporarily patching config with stored DB values.
 
-    Uses a lock to prevent concurrent requests from corrupting shared config state.
+    Uses a lock to prevent concurrent requests from corrupting shared config state
+    within a single process. Note: this is still not safe across multiple gunicorn
+    workers, but the sync endpoint is an infrequent admin operation.
     """
     from tasks.mediaserver import get_provider_function
 
@@ -1304,11 +1317,18 @@ def _get_all_songs_with_config(provider_type, provider_config):
         if provider_type in ('jellyfin', 'emby') and token:
             config.HEADERS = {"X-Emby-Token": token}
 
+        # Emby also reads MUSIC_LIBRARIES for library filtering
+        saved_music_libraries = getattr(config, 'MUSIC_LIBRARIES', '')
+        music_libs = provider_config.get('music_libraries', [])
+        if music_libs:
+            config.MUSIC_LIBRARIES = ','.join(music_libs) if isinstance(music_libs, list) else str(music_libs)
+
         try:
             func = get_provider_function(provider_type, 'get_all_songs')
             return func() if func else []
         finally:
             config.HEADERS = saved_headers
+            config.MUSIC_LIBRARIES = saved_music_libraries
             for attr_name, original_value in saved.items():
                 setattr(config, attr_name, original_value)
 
@@ -1430,8 +1450,10 @@ def sync_provider(provider_id):
                             f"UPDATE score SET {', '.join(updates)} WHERE item_id = %s",
                             values
                         )
-                        db.commit()
                     enriched += 1
+
+        # Commit all enrichment updates in one batch
+        db.commit()
 
         # Detect virtual/non-matching paths and warn the user
         match_rate = (matched / len(songs)) if songs else 0
@@ -1512,9 +1534,24 @@ def update_settings():
     if not data:
         return jsonify({'error': 'No data provided'}), 400
 
+    # Allowlist of settings that can be modified via API
+    ALLOWED_SETTING_KEYS = SENSITIVE_SETTING_KEYS | {
+        'ai_provider', 'clap_enabled',
+        'ollama_server_url', 'ollama_model_name',
+        'openai_server_url', 'openai_model_name',
+        'gemini_model_name', 'mistral_model_name',
+        'max_songs_per_artist_playlist', 'playlist_energy_arc',
+        'ai_request_timeout', 'gpu_clustering',
+        'deployment_type', 'hardware_type',
+    }
+
     for key, value in data.items():
         # Skip masked sensitive values (user didn't change the key)
         if key in SENSITIVE_SETTING_KEYS and value == '********':
+            continue
+        # Reject keys not in the allowlist to prevent state manipulation
+        if key not in ALLOWED_SETTING_KEYS:
+            logger.warning(f"Rejecting unknown settings key: {key}")
             continue
         set_setting(key, value)
 
@@ -1601,10 +1638,12 @@ def set_primary_provider():
         return jsonify({'error': 'No data provided'}), 400
 
     provider_id = data.get('provider_id')
-    if provider_id is not None:
-        provider = get_provider_by_id(provider_id)
-        if not provider:
-            return jsonify({'error': 'Provider not found'}), 404
+    if provider_id is None:
+        return jsonify({'error': 'provider_id is required'}), 400
+
+    provider = get_provider_by_id(provider_id)
+    if not provider:
+        return jsonify({'error': 'Provider not found'}), 404
 
     set_setting('primary_provider_id', provider_id, 'providers', 'ID of the primary provider for playlist creation')
 

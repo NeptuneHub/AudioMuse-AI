@@ -61,9 +61,14 @@ def _get_target_library_ids(provider_config=None):
 
     # Compatible with Emby GET /Library/VirtualFolders API (returns a list, not a dict).
     # https://dev.emby.media/reference/RestAPI/LibraryStructureService/getLibraryVirtualfoldersQuery.html
-    url = f"{config.EMBY_URL}/emby/Library/VirtualFolders"
+    # Use provider_config credentials if available (multi-provider), otherwise fall back to global config
+    api_url = (provider_config.get('url') if provider_config else None) or config.EMBY_URL
+    api_headers = config.HEADERS
+    if provider_config and provider_config.get('token'):
+        api_headers = {"X-Emby-Token": provider_config['token']}
+    url = f"{api_url}/emby/Library/VirtualFolders"
     try:
-        r = requests.get(url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
+        r = requests.get(url, headers=api_headers, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
 
         # Emby returns a top-level list of virtual folders
@@ -167,13 +172,12 @@ def get_comprehensive_music_discovery(limit=0):
     return get_recent_music_items(limit)
 
 def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=None):
-    # this is is compatble with Emby
-    # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
-    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     """
     Fetches recent standalone audio tracks that are not properly organized in albums.
     This captures orphaned tracks, loose files, and tracks with missing album metadata.
+    Compatible with Emby: https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     """
+    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     if target_library_ids is not None and isinstance(target_library_ids, set) and not target_library_ids:
         logger.info("Library filtering is active but no matching libraries found. Skipping standalone tracks.")
         return []
@@ -220,7 +224,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
                                 # If parent is not a MusicAlbum, treat track as standalone
                                 if parent_info.get('Type') != 'MusicAlbum':
                                     standalone_tracks.append(track)
-                        except:
+                        except Exception:
                             # If we can't check parent, assume it's standalone to be safe
                             standalone_tracks.append(track)
 
@@ -275,12 +279,12 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
                                     parent_info = parent_r.json()
                                     if parent_info.get('Type') != 'MusicAlbum':
                                         standalone_tracks.append(track)
-                            except:
+                            except Exception:
                                 standalone_tracks.append(track)
 
                     all_tracks.extend(standalone_tracks)
                     start_index += len(tracks_on_page)
-                    
+
                     if not fetch_all and len(all_tracks) >= limit:
                         all_tracks = all_tracks[:limit]
                         break

@@ -123,7 +123,9 @@ def init_db():
         if not cur.fetchone()[0]:
             logger.info("Adding 'file_path' column to 'score' table.")
             cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
-        
+        # Always ensure the index exists (handles installs where column was added without index)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_score_file_path ON score(file_path)")
+
         # Add 'search_u' column if not exists (helps search)
         cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u')")
         if not cur.fetchone()[0]:
@@ -321,12 +323,7 @@ def init_db():
             cur.execute("ALTER TABLE score ADD COLUMN track_id INTEGER REFERENCES track(id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_track_id ON score(track_id)")
 
-        # Add 'file_path' column to 'score' table if not exists (for file identification)
-        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'file_path')")
-        if not cur.fetchone()[0]:
-            logger.info("Adding 'file_path' column to 'score' table.")
-            cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_score_file_path ON score(file_path)")
+        # Note: 'file_path' column and idx_score_file_path index are created earlier in init_db
 
         # Performance indexes for hot queries (brainstorm, artist search)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author_lower ON score(LOWER(author))")
@@ -478,7 +475,10 @@ def init_db():
                         # Delete non-canonical rows (in FK order)
                         non_canonical = [iid for iid in item_ids if iid != canonical_id]
                         if non_canonical:
-                            cur.execute("DELETE FROM mulan_embedding WHERE item_id = ANY(%s)", (non_canonical,))
+                            # Only delete from mulan_embedding if the table exists
+                            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'mulan_embedding')")
+                            if cur.fetchone()[0]:
+                                cur.execute("DELETE FROM mulan_embedding WHERE item_id = ANY(%s)", (non_canonical,))
                             cur.execute("DELETE FROM clap_embedding WHERE item_id = ANY(%s)", (non_canonical,))
                             cur.execute("DELETE FROM embedding WHERE item_id = ANY(%s)", (non_canonical,))
                             cur.execute("DELETE FROM score WHERE item_id = ANY(%s)", (non_canonical,))
@@ -2101,14 +2101,19 @@ def find_existing_analysis_by_file_path(file_path, provider_id=None, title=None,
                     }
 
             # Fall back to checking score.file_path directly (for legacy data)
+            # Try both the original and normalized path since score.file_path may store either
+            normalized_fp = normalize_provider_path(file_path)
+            paths_to_check = [file_path]
+            if normalized_fp and normalized_fp != file_path:
+                paths_to_check.append(normalized_fp)
             cur.execute("""
                 SELECT s.item_id, s.title, s.author, s.track_id,
                        (s.tempo IS NOT NULL) as has_musicnn,
                        EXISTS(SELECT 1 FROM embedding e WHERE e.item_id = s.item_id) as has_embedding,
                        EXISTS(SELECT 1 FROM clap_embedding ce WHERE ce.item_id = s.item_id) as has_clap
                 FROM score s
-                WHERE s.file_path = %s
-            """, (file_path,))
+                WHERE s.file_path = ANY(%s)
+            """, (paths_to_check,))
             row = cur.fetchone()
             if row:
                 return {

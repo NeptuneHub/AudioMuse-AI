@@ -580,11 +580,17 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
             if tn == 'search_database':
                 y_min = ta.get('year_min')
                 y_max = ta.get('year_max')
-                if y_min is not None and int(y_min) < 1900:
-                    log_messages.append(f"   ⚠️ Stripped nonsensical year_min={y_min} from {tn}")
+                try:
+                    if y_min is not None and int(y_min) < 1900:
+                        log_messages.append(f"   ⚠️ Stripped nonsensical year_min={y_min} from {tn}")
+                        ta.pop('year_min', None)
+                except (ValueError, TypeError):
                     ta.pop('year_min', None)
-                if y_max is not None and int(y_max) < 1900:
-                    log_messages.append(f"   ⚠️ Stripped nonsensical year_max={y_max} from {tn}")
+                try:
+                    if y_max is not None and int(y_max) < 1900:
+                        log_messages.append(f"   ⚠️ Stripped nonsensical year_max={y_max} from {tn}")
+                        ta.pop('year_max', None)
+                except (ValueError, TypeError):
                     ta.pop('year_max', None)
 
             # search_database: strip hallucinated min_rating if user didn't ask for ratings
@@ -640,9 +646,12 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
             if tool_name == 'search_database':
                 mr = tool_args.get('min_rating')
                 if mr is not None and mr != '' and mr != 0:
-                    rating_val = int(mr)
-                    if detected_min_rating is None or rating_val > detected_min_rating:
-                        detected_min_rating = rating_val
+                    try:
+                        rating_val = int(mr)
+                        if detected_min_rating is None or rating_val > detected_min_rating:
+                            detected_min_rating = rating_val
+                    except (ValueError, TypeError):
+                        pass
 
             # Execute the tool
             tool_result = execute_mcp_tool(tool_name, tool_args, ai_config)

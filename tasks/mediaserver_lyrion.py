@@ -47,14 +47,14 @@ def _get_target_paths_for_filtering(provider_config=None):
         folder_names_str = ','.join(library_names)
     else:
         folder_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
-    logger.info(f"DEBUG: MUSIC_LIBRARIES config value: '{folder_names_str}'")
+    logger.debug(f"DEBUG: MUSIC_LIBRARIES config value: '{folder_names_str}'")
 
     if not folder_names_str.strip():
-        logger.info("DEBUG: MUSIC_LIBRARIES is empty, no path filtering")
+        logger.debug("DEBUG: MUSIC_LIBRARIES is empty, no path filtering")
         return None
 
     target_paths = {path.strip().lower() for path in folder_names_str.split(',') if path.strip()}
-    logger.info(f"DEBUG: Target paths for filtering: {list(target_paths)}")
+    logger.debug(f"DEBUG: Target paths for filtering: {list(target_paths)}")
     return target_paths
 
 def _try_alternative_lms_calls_for_path(album):
@@ -67,7 +67,7 @@ def _try_alternative_lms_calls_for_path(album):
     if not album_id:
         return None
         
-    logger.info(f"DEBUG: Trying alternative LMS calls for album '{album_title}' (ID: {album_id})")
+    logger.debug(f"DEBUG: Trying alternative LMS calls for album '{album_title}' (ID: {album_id})")
     
     # Method 1: Try 'songinfo' command with track lookup
     try:
@@ -75,15 +75,15 @@ def _try_alternative_lms_calls_for_path(album):
         tracks_response = _jsonrpc_request("titles", [0, 1, f"album_id:{album_id}", "tags:uflocpPa"])
         if tracks_response and "titles_loop" in tracks_response and tracks_response["titles_loop"]:
             first_track = tracks_response["titles_loop"][0]
-            logger.info(f"DEBUG: Track with tags: {first_track}")
+            logger.debug(f"DEBUG: Track with tags: {first_track}")
             
             # Check for path-related fields with tags
             for field in ['url', 'path', 'remote_title', 'u', 'f', 'l', 'o', 'c', 'p', 'P', 'a']:
                 if field in first_track and first_track[field]:
-                    logger.info(f"DEBUG: Found potential path in track field '{field}': {first_track[field]}")
+                    logger.debug(f"DEBUG: Found potential path in track field '{field}': {first_track[field]}")
                     return first_track[field]
     except Exception as e:
-        logger.info(f"DEBUG: Method 1 failed: {e}")
+        logger.debug(f"DEBUG: Method 1 failed: {e}")
     
     # Method 2: Try 'songinfo' command directly on track
     try:
@@ -92,35 +92,35 @@ def _try_alternative_lms_calls_for_path(album):
             track_id = tracks_simple["titles_loop"][0].get('id')
             if track_id:
                 songinfo_response = _jsonrpc_request("songinfo", [0, 20, f"track_id:{track_id}"])
-                logger.info(f"DEBUG: Songinfo response: {songinfo_response}")
+                logger.debug(f"DEBUG: Songinfo response: {songinfo_response}")
                 if songinfo_response and "songinfo_loop" in songinfo_response:
                     for info_item in songinfo_response["songinfo_loop"]:
                         if 'url' in info_item or 'path' in info_item:
-                            logger.info(f"DEBUG: Found path in songinfo: {info_item}")
+                            logger.debug(f"DEBUG: Found path in songinfo: {info_item}")
                             return info_item.get('url') or info_item.get('path')
     except Exception as e:
-        logger.info(f"DEBUG: Method 2 failed: {e}")
+        logger.debug(f"DEBUG: Method 2 failed: {e}")
     
     # Method 3: Try 'browse' command to get folder structure  
     try:
         browse_response = _jsonrpc_request("browse", [0, 1, "item_id:0", "folder_id"])
-        logger.info(f"DEBUG: Browse response: {browse_response}")
+        logger.debug(f"DEBUG: Browse response: {browse_response}")
         # This might give us folder structure information
     except Exception as e:
-        logger.info(f"DEBUG: Method 3 (browse) failed: {e}")
+        logger.debug(f"DEBUG: Method 3 (browse) failed: {e}")
     
     # Method 4: Try getting album with different parameters
     try:
         album_detailed = _jsonrpc_request("albums", [0, 1, f"album_id:{album_id}", "tags:alj"])
-        logger.info(f"DEBUG: Detailed album response: {album_detailed}")
+        logger.debug(f"DEBUG: Detailed album response: {album_detailed}")
         if album_detailed and "albums_loop" in album_detailed:
             for detailed_album in album_detailed["albums_loop"]:
                 for field in ['url', 'path', 'j', 'l', 'a']:  # j=artwork, l=album, a=artist
                     if field in detailed_album and detailed_album[field]:
-                        logger.info(f"DEBUG: Found potential path in detailed album field '{field}': {detailed_album[field]}")
+                        logger.debug(f"DEBUG: Found potential path in detailed album field '{field}': {detailed_album[field]}")
                         return detailed_album[field]
     except Exception as e:
-        logger.info(f"DEBUG: Method 4 failed: {e}")
+        logger.debug(f"DEBUG: Method 4 failed: {e}")
         
     return None
 
@@ -133,25 +133,25 @@ def _album_matches_target_paths(album, target_paths):
         return True  # No filtering
     
     album_title = album.get('album', 'Unknown')
-    logger.info(f"DEBUG: Checking album '{album_title}' - basic album data: {album}")
+    logger.debug(f"DEBUG: Checking album '{album_title}' - basic album data: {album}")
     
     # Try to get path using alternative LMS calls
     album_path = _try_alternative_lms_calls_for_path(album)
     
     if not album_path:
-        logger.info(f"DEBUG: No path found for album '{album_title}' using any method")
+        logger.debug(f"DEBUG: No path found for album '{album_title}' using any method")
         return False
     
     album_path_lower = album_path.lower()
-    logger.info(f"DEBUG: Checking album path '{album_path}' against targets: {list(target_paths)}")
+    logger.debug(f"DEBUG: Checking album path '{album_path}' against targets: {list(target_paths)}")
     
     # Check if the album path contains any of the target paths
     for target_path in target_paths:
         if target_path in album_path_lower:
-            logger.info(f"DEBUG: MATCH found - '{target_path}' in '{album_path_lower}'")
+            logger.debug(f"DEBUG: MATCH found - '{target_path}' in '{album_path_lower}'")
             return True
     
-    logger.info(f"DEBUG: No match for album path '{album_path_lower}'")
+    logger.debug(f"DEBUG: No match for album path '{album_path_lower}'")
     return False
 
 def get_music_libraries(config_dict=None):
@@ -218,19 +218,19 @@ def _get_target_music_folder_ids(provider_config=None):
         # Fallback to global env var
         folder_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
 
-    logger.info(f"DEBUG: MUSIC_LIBRARIES config value: '{folder_names_str}'")
+    logger.debug(f"DEBUG: MUSIC_LIBRARIES config value: '{folder_names_str}'")
 
     if not folder_names_str.strip():
-        logger.info("DEBUG: MUSIC_LIBRARIES is empty, scanning all folders")
+        logger.debug("DEBUG: MUSIC_LIBRARIES is empty, scanning all folders")
         return None
 
     target_names_lower = {name.strip().lower() for name in folder_names_str.split(',') if name.strip()}
-    logger.info(f"DEBUG: Target names/paths to match: {list(target_names_lower)}")
+    logger.debug(f"DEBUG: Target names/paths to match: {list(target_names_lower)}")
 
     # Use the musicfolders command to get the available music folders.
     response = _jsonrpc_request("musicfolders", [0, 999999])
     
-    logger.info(f"DEBUG: Lyrion musicfolders response: {response}")
+    logger.debug(f"DEBUG: Lyrion musicfolders response: {response}")
     
     if not response:
         logger.error("Failed to fetch music folders from Lyrion or response was empty.")
@@ -264,14 +264,14 @@ def _get_target_music_folder_ids(provider_config=None):
             folder_name = folder.get('name') or folder.get('folder')
             folder_path = folder.get('path') or folder.get('url')  # Lyrion may use 'url' for the path
             folder_id = folder.get('id') or folder.get('folder_id')
-            logger.info(f"DEBUG: Processing folder - name: '{folder_name}', path: '{folder_path}', id: '{folder_id}', raw: {folder}")
+            logger.debug(f"DEBUG: Processing folder - name: '{folder_name}', path: '{folder_path}', id: '{folder_id}', raw: {folder}")
             if folder_name and folder_id:
                 folder_info = {'name': folder_name, 'id': folder_id, 'path': folder_path or folder_name}
                 # Map both name and path (if different) to the same folder info
                 folder_map[folder_name.lower()] = folder_info
                 if folder_path and folder_path.lower() != folder_name.lower():
                     folder_map[folder_path.lower()] = folder_info
-                logger.info(f"DEBUG: Added to folder_map - name key: '{folder_name.lower()}', path key: '{folder_path.lower() if folder_path else 'N/A'}'")
+                logger.debug(f"DEBUG: Added to folder_map - name key: '{folder_name.lower()}', path key: '{folder_path.lower() if folder_path else 'N/A'}'")
 
     # --- DIAGNOSTIC LOGGING ---
     # Get unique folder info (since we may have duplicates from name/path mapping)
@@ -283,15 +283,15 @@ def _get_target_music_folder_ids(provider_config=None):
     # Match user's config against the map to find IDs and original names
     found_folders = []
     unfound_names = []
-    logger.info(f"DEBUG: Available folder_map keys: {list(folder_map.keys())}")
+    logger.debug(f"DEBUG: Available folder_map keys: {list(folder_map.keys())}")
     for target_name in target_names_lower:
-        logger.info(f"DEBUG: Looking for target: '{target_name}'")
+        logger.debug(f"DEBUG: Looking for target: '{target_name}'")
         if target_name in folder_map:
             found_folders.append(folder_map[target_name])
-            logger.info(f"DEBUG: FOUND match for '{target_name}': {folder_map[target_name]}")
+            logger.debug(f"DEBUG: FOUND match for '{target_name}': {folder_map[target_name]}")
         else:
             unfound_names.append(target_name)
-            logger.info(f"DEBUG: NO MATCH found for '{target_name}'")
+            logger.debug(f"DEBUG: NO MATCH found for '{target_name}'")
 
     if unfound_names:
         logger.warning(f"Lyrion config specified folder names that were not found: {list(unfound_names)}")
@@ -304,7 +304,7 @@ def _get_target_music_folder_ids(provider_config=None):
     found_info = [f"{folder['name']} (path: {folder['path']})" for folder in found_folders]
 
     logger.info(f"Filtering analysis to {len(music_folder_ids)} Lyrion folders: {found_info}")
-    logger.info(f"DEBUG: Returning folder IDs: {music_folder_ids}")
+    logger.debug(f"DEBUG: Returning folder IDs: {music_folder_ids}")
     return music_folder_ids
 
 def _get_first_player():
@@ -530,28 +530,28 @@ def _try_folder_id_based_filtering(target_paths, limit):
     if not target_paths:
         return None
         
-    logger.info(f"DEBUG: Trying folder-based filtering for paths: {list(target_paths)}")
+    logger.debug(f"DEBUG: Trying folder-based filtering for paths: {list(target_paths)}")
     
     # Try to get music folders with retry and better error handling
     music_folders = None
     for attempt in range(3):
         try:
-            logger.info(f"DEBUG: Attempt {attempt + 1}/3 to get musicfolders")
+            logger.debug(f"DEBUG: Attempt {attempt + 1}/3 to get musicfolders")
             response = _jsonrpc_request("musicfolders", [0, 999])
             if response:
                 music_folders = response
                 break
         except Exception as e:
-            logger.info(f"DEBUG: Musicfolders attempt {attempt + 1} failed: {e}")
+            logger.debug(f"DEBUG: Musicfolders attempt {attempt + 1} failed: {e}")
             if attempt < 2:
                 import time
                 time.sleep(1)
     
     if not music_folders:
-        logger.info("DEBUG: Could not get music folders, cannot use folder-based filtering")
+        logger.debug("DEBUG: Could not get music folders, cannot use folder-based filtering")
         return None
     
-    logger.info(f"DEBUG: Successfully got music folders: {music_folders}")
+    logger.debug(f"DEBUG: Successfully got music folders: {music_folders}")
     
     # Extract folder list
     all_folders = []
@@ -561,7 +561,7 @@ def _try_folder_id_based_filtering(target_paths, limit):
         all_folders = music_folders
     
     if not all_folders:
-        logger.info("DEBUG: No folders found in musicfolders response")
+        logger.debug("DEBUG: No folders found in musicfolders response")
         return None
     
     # Find matching folder IDs - look for folders that contain our target path
@@ -572,29 +572,29 @@ def _try_folder_id_based_filtering(target_paths, limit):
             folder_path = folder.get('path', '') or folder.get('url', '')
             folder_id = folder.get('id', '') or folder.get('folder_id', '')
             
-            logger.info(f"DEBUG: Checking folder - ID: {folder_id}, Name: {folder_name}, Path: {folder_path}")
+            logger.debug(f"DEBUG: Checking folder - ID: {folder_id}, Name: {folder_name}, Path: {folder_path}")
             
             # Check if any target path matches this folder's path
             for target_path in target_paths:
                 if (target_path.lower() in folder_path.lower() or 
                     target_path.lower() in folder_name.lower() or
                     folder_path.lower() in target_path.lower()):
-                    logger.info(f"DEBUG: FOLDER MATCH found - folder '{folder_name}' (path: {folder_path}) matches target '{target_path}'")
+                    logger.debug(f"DEBUG: FOLDER MATCH found - folder '{folder_name}' (path: {folder_path}) matches target '{target_path}'")
                     matching_folder_ids.append(folder_id)
                     break
     
     if not matching_folder_ids:
-        logger.info(f"DEBUG: No matching folders found for target paths: {list(target_paths)}")
+        logger.debug(f"DEBUG: No matching folders found for target paths: {list(target_paths)}")
         return None
     
-    logger.info(f"DEBUG: Using folder IDs for filtering: {matching_folder_ids}")
+    logger.debug(f"DEBUG: Using folder IDs for filtering: {matching_folder_ids}")
     
     # Get albums from matching folders
     albums_found = []
     for folder_id in matching_folder_ids:
         try:
             albums_response = _jsonrpc_request("albums", [0, limit or 100, f"folder_id:{folder_id}", "sort:new"])
-            logger.info(f"DEBUG: Albums response for folder {folder_id}: found {len(albums_response.get('albums_loop', []))} albums" if albums_response else "No response")
+            logger.debug(f"DEBUG: Albums response for folder {folder_id}: found {len(albums_response.get('albums_loop', []))} albums" if albums_response else "No response")
             
             if albums_response and "albums_loop" in albums_response:
                 folder_albums = albums_response["albums_loop"]
@@ -606,7 +606,7 @@ def _try_folder_id_based_filtering(target_paths, limit):
                     break
                     
         except Exception as e:
-            logger.info(f"DEBUG: Failed to get albums for folder {folder_id}: {e}")
+            logger.debug(f"DEBUG: Failed to get albums for folder {folder_id}: {e}")
             continue
     
     return albums_found if albums_found else None

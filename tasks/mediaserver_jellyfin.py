@@ -375,9 +375,15 @@ def create_playlist(base_name, item_ids):
     body = {"Name": base_name, "Ids": item_ids, "UserId": config.JELLYFIN_USER_ID}
     try:
         r = requests.post(url, headers=config.HEADERS, json=body, timeout=REQUESTS_TIMEOUT)
-        if r.ok: logger.info("✅ Created Jellyfin playlist '%s'", base_name)
+        if r.ok:
+            logger.info("Created Jellyfin playlist '%s'", base_name)
+            return r.json()
+        else:
+            logger.warning("Failed to create Jellyfin playlist '%s': HTTP %s", base_name, r.status_code)
+            return None
     except Exception as e:
         logger.error("Exception creating Jellyfin playlist '%s': %s", base_name, e, exc_info=True)
+        return None
 
 def get_all_playlists():
     """Fetches all playlists from Jellyfin using admin credentials."""
@@ -429,7 +435,7 @@ def get_top_played_songs(limit, user_creds=None):
 
         return items
     except Exception as e:
-        logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)
+        logger.error(f"Jellyfin get_top_played_songs failed: {e}", exc_info=True)
         return []
 
 def get_last_played_time(item_id, user_creds=None):

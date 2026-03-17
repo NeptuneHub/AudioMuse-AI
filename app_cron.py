@@ -13,10 +13,7 @@ from config import (
     TOP_N_PLAYLISTS, MIN_SONGS_PER_GENRE_FOR_STRATIFICATION, STRATIFIED_SAMPLING_TARGET_PERCENTILE,
     SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_SILHOUETTE, SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ,
     SCORE_WEIGHT_PURITY, SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY, SCORE_WEIGHT_OTHER_FEATURE_PURITY,
-    AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME,
-    OPENAI_SERVER_URL, OPENAI_MODEL_NAME,
-    GEMINI_MODEL_NAME,
-    MISTRAL_MODEL_NAME, ENABLE_CLUSTERING_EMBEDDINGS
+    ENABLE_CLUSTERING_EMBEDDINGS
 )
 
 cron_bp = Blueprint('cron_bp', __name__)
@@ -97,6 +94,10 @@ def cron_matches_now(expr, ts=None):
         return False
     if not _field_matches(hour, t.tm_hour):
         return False
+    if not _field_matches(dom, t.tm_mday):
+        return False
+    if not _field_matches(month, t.tm_mon):
+        return False
     # day of week: in cron 0=Sun..6=Sat, Python tm_wday 0=Mon..6=Sun -> convert
     py_dow = (t.tm_wday + 1) % 7
     if not _field_matches(dow, py_dow):
@@ -145,8 +146,6 @@ def run_due_cron_jobs():
                         "pca_components_max": int(PCA_COMPONENTS_MAX),
                         "num_clustering_runs": int(CLUSTERING_RUNS),
                         "max_songs_per_cluster_val": int(MAX_SONGS_PER_CLUSTER),
-                        "gmm_n_components_min": int(GMM_N_COMPONENTS_MIN),
-                        "gmm_n_components_max": int(GMM_N_COMPONENTS_MAX),
                         "top_n_playlists_param": int(TOP_N_PLAYLISTS),
                         "min_songs_per_genre_for_stratification_param": int(MIN_SONGS_PER_GENRE_FOR_STRATIFICATION),
                         "stratified_sampling_target_percentile_param": int(STRATIFIED_SAMPLING_TARGET_PERCENTILE),
@@ -157,16 +156,17 @@ def run_due_cron_jobs():
                         "score_weight_purity_param": float(SCORE_WEIGHT_PURITY),
                         "score_weight_other_feature_diversity_param": float(SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY),
                         "score_weight_other_feature_purity_param": float(SCORE_WEIGHT_OTHER_FEATURE_PURITY),
-                        "ai_model_provider_param": AI_MODEL_PROVIDER,
-                        "ollama_server_url_param": OLLAMA_SERVER_URL,
-                        "ollama_model_name_param": OLLAMA_MODEL_NAME,
-                        "openai_server_url_param": OPENAI_SERVER_URL,
-                        "openai_model_name_param": OPENAI_MODEL_NAME,
+                        # Read AI settings at runtime so Settings GUI changes take effect
+                        "ai_model_provider_param": config.AI_MODEL_PROVIDER,
+                        "ollama_server_url_param": config.OLLAMA_SERVER_URL,
+                        "ollama_model_name_param": config.OLLAMA_MODEL_NAME,
+                        "openai_server_url_param": config.OPENAI_SERVER_URL,
+                        "openai_model_name_param": config.OPENAI_MODEL_NAME,
                         "openai_api_key_param": config.OPENAI_API_KEY,
                         "gemini_api_key_param": config.GEMINI_API_KEY,
-                        "gemini_model_name_param": GEMINI_MODEL_NAME,
+                        "gemini_model_name_param": config.GEMINI_MODEL_NAME,
                         "mistral_api_key_param": config.MISTRAL_API_KEY,
-                        "mistral_model_name_param": MISTRAL_MODEL_NAME,
+                        "mistral_model_name_param": config.MISTRAL_MODEL_NAME,
                         "top_n_moods_for_clustering_param": int(TOP_N_MOODS),
                         "enable_clustering_embeddings_param": bool(ENABLE_CLUSTERING_EMBEDDINGS),
                     }

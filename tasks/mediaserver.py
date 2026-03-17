@@ -313,6 +313,9 @@ def delete_automatic_playlists():
     elif config.MEDIASERVER_TYPE == 'emby':
         playlists_to_check = emby_get_all_playlists()
         delete_function = emby_delete_playlist
+    elif config.MEDIASERVER_TYPE == 'localfiles':
+        playlists_to_check = localfiles_get_all_playlists()
+        delete_function = localfiles_delete_playlist
 
     if delete_function:
         for p in playlists_to_check:
@@ -562,7 +565,7 @@ def test_provider_connection(provider_type: str, config_dict: dict = None):
             token = config_dict.get('token') if config_dict else config.EMBY_TOKEN
             if not url or not token:
                 return False, "Emby URL and token are required"
-            resp = requests.get(f"{url.rstrip('/')}/System/Info",
+            resp = requests.get(f"{url.rstrip('/')}/emby/System/Info",
                               headers={"X-Emby-Token": token}, timeout=10)
             if resp.status_code == 200:
                 return True, f"Connected to Emby at {url}"
@@ -663,7 +666,7 @@ def get_sample_tracks_from_provider(provider_type: str, config_dict: dict, limit
             if not url or not user_id or not token:
                 return []
 
-            api_url = f"{url.rstrip('/')}/Users/{user_id}/Items"
+            api_url = f"{url.rstrip('/')}/emby/Users/{user_id}/Items"
             headers = {"X-Emby-Token": token}
             params = {
                 "IncludeItemTypes": "Audio",
@@ -870,7 +873,7 @@ def get_all_playlists_multi_provider(provider_ids=None):
     if provider_ids is None:
         providers = get_providers(enabled_only=True)
     else:
-        providers = [get_provider_by_id(pid) for pid in provider_ids if get_provider_by_id(pid)]
+        providers = [p for p in (get_provider_by_id(pid) for pid in provider_ids) if p]
 
     for provider in providers:
         try:
@@ -1017,7 +1020,7 @@ def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, u
     else:
         # Specific provider IDs
         if isinstance(provider_ids, (list, tuple)):
-            providers = [get_provider_by_id(pid) for pid in provider_ids if get_provider_by_id(pid)]
+            providers = [p for p in (get_provider_by_id(pid) for pid in provider_ids) if p]
         else:
             provider = get_provider_by_id(provider_ids)
             providers = [provider] if provider else []
