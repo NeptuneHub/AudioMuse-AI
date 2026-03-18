@@ -525,8 +525,10 @@ def get_recent_albums(limit: int) -> List[Dict]:
     cfg = get_config()
     music_dir = cfg['music_directory']
 
-    # Always do a full filesystem scan to discover all albums
-    all_songs = get_all_songs()
+    # Use DB cache first to avoid expensive filesystem scan
+    all_songs = _get_songs_from_db()
+    if not all_songs:
+        all_songs = get_all_songs()
     if not all_songs:
         return []
 
@@ -574,7 +576,9 @@ def get_tracks_from_album(album_id: str) -> List[Dict]:
     For local files, album_id is "Artist - Album Name" format.
     Uses DB cache when available to avoid rescanning the filesystem.
     """
-    all_songs = get_all_songs()
+    all_songs = _get_songs_from_db()
+    if not all_songs:
+        all_songs = get_all_songs()
 
     # Filter songs matching this album
     tracks = []

@@ -243,18 +243,16 @@ def get_providers(enabled_only=False):
                 'created_at': row[6].isoformat() if row[6] else None,
                 'updated_at': row[7].isoformat() if row[7] else None,
             }
-            # Don't expose sensitive config values — always remove raw config
-            raw_config = provider.pop('config', None)
-            if raw_config:
-                safe_config = {}
-                for k, v in raw_config.items():
-                    if k in ('password', 'token', 'api_key'):
-                        safe_config[k] = '********' if v else None
-                    else:
-                        safe_config[k] = v
-                provider['config_display'] = safe_config
-            else:
-                provider['config_display'] = {}
+            # Build a display-safe copy of config (masks sensitive values)
+            # Pop raw config to avoid leaking secrets in API responses
+            raw_config = provider.pop('config', None) or {}
+            safe_config = {}
+            for k, v in raw_config.items():
+                if k in ('password', 'token', 'api_key'):
+                    safe_config[k] = '********' if v else None
+                else:
+                    safe_config[k] = v
+            provider['config_display'] = safe_config
             providers.append(provider)
         return providers
 
@@ -1044,7 +1042,7 @@ def check_provider_health():
         db = get_db()
         for p in providers:
             if p.get('provider_type') == 'navidrome':
-                cfg = p.get('config') or {}
+                cfg = p.get('config_display') or {}
                 if cfg.get('path_format') == 'relative':
                     with db.cursor() as cur:
                         cur.execute("""
@@ -1205,7 +1203,7 @@ def check_library_duplicates():
             navidrome_relative = [
                 p for p in providers
                 if p.get('provider_type') == 'navidrome'
-                and (p.get('config') or {}).get('path_format') == 'relative'
+                and (p.get('config_display') or {}).get('path_format') == 'relative'
             ]
             if navidrome_relative and len(providers) > 1:
                 pname = navidrome_relative[0].get('name') or 'Navidrome'

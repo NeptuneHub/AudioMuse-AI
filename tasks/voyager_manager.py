@@ -330,7 +330,7 @@ def build_and_store_voyager_index(db_conn=None):
             ORDER BY COALESCE(s.track_id::text, e.item_id),
                      CASE WHEN EXISTS (
                          SELECT 1 FROM provider_track pt WHERE pt.item_id = e.item_id
-                     ) THEN 1 ELSE 0 END,
+                     ) THEN 0 ELSE 1 END,
                      s.item_id
         """)
         all_embeddings = cur.fetchall()

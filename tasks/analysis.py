@@ -1439,6 +1439,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             from rq import Queue
             default_queue = Queue('default', connection=redis_conn)
             wait_count = 0
+            max_wait_iterations = 720  # 60 minutes at 5s per iteration
             while True:
                 # Count album analysis jobs still running or queued
                 pending_album_jobs = 0
@@ -1460,6 +1461,10 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     break
 
                 wait_count += 1
+                if wait_count >= max_wait_iterations:
+                    logger.warning(f"Timed out waiting for {pending_album_jobs} album analysis job(s) after 60 minutes. Proceeding with index build.")
+                    log_and_update_main(f"Timed out waiting for {pending_album_jobs} stale job(s). Proceeding with index build.", 90)
+                    break
                 if wait_count == 1:
                     log_and_update_main(f"Waiting for {pending_album_jobs} album analysis job(s) from previous run to complete...", 90)
                 elif wait_count % 6 == 0:  # Log every 30 seconds

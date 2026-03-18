@@ -164,11 +164,11 @@ def rehash_provider_tracks_task(provider_id):
 
                             # Re-point any score records that reference the old track_id
                             cur.execute("""
-                                UPDATE score SET track_id = %s
+                                UPDATE score SET track_id = %s, file_path = %s
                                 WHERE track_id = %s AND item_id NOT IN (
                                     SELECT item_id FROM score WHERE track_id = %s
                                 )
-                            """, (existing_track_id, track_id, existing_track_id))
+                            """, (existing_track_id, new_normalized, track_id, existing_track_id))
 
                             # Check if old track_id is still referenced
                             cur.execute("""

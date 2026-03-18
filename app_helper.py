@@ -1899,14 +1899,15 @@ def link_provider_track(provider_id, track_id, item_id, title=None, artist=None,
 
     db = get_db()
     with db.cursor() as cur:
-        # Delete any existing row that would conflict on the second UNIQUE(provider_id, track_id)
-        # constraint before upserting. This handles the case where a provider already has a
-        # different item_id mapped to this track_id.
+        # Atomic CTE: delete conflicting rows and upsert in a single statement.
+        # This avoids a window between DELETE and INSERT where concurrent calls
+        # could hit constraint violations on UNIQUE(provider_id, track_id).
         cur.execute("""
-            DELETE FROM provider_track
-            WHERE provider_id = %s AND track_id = %s AND item_id != %s
-        """, (provider_id, track_id, item_id))
-        cur.execute("""
+            WITH cleared AS (
+                DELETE FROM provider_track
+                WHERE provider_id = %s AND track_id = %s AND item_id != %s
+                RETURNING id
+            )
             INSERT INTO provider_track (provider_id, track_id, item_id, title, artist, album, last_synced)
             VALUES (%s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (provider_id, item_id) DO UPDATE SET
@@ -1916,7 +1917,8 @@ def link_provider_track(provider_id, track_id, item_id, title=None, artist=None,
                 album = COALESCE(EXCLUDED.album, provider_track.album),
                 last_synced = NOW()
             RETURNING id
-        """, (provider_id, track_id, item_id, title, artist, album))
+        """, (provider_id, track_id, item_id,
+              provider_id, track_id, item_id, title, artist, album))
         result = cur.fetchone()
         db.commit()
         return result[0] if result else None
