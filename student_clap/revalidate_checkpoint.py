@@ -115,6 +115,18 @@ def main():
     trainer.model.eval()
     logger.info(f"Model weights loaded (device={trainer.device})")
 
+    # If the loaded weights are in bfloat16 (common when training with AMP),
+    # enable autocast in validation so input dtype matches weights.
+    if any(p.dtype == torch.bfloat16 for p in trainer.model.parameters()):
+        if torch.cuda.is_available():
+            trainer.use_amp = True
+            trainer.amp_device_type = 'cuda'
+            logger.info("Detected bfloat16 weights; enabling AMP autocast for validation")
+        else:
+            # On CPU we can't run bfloat16 convs reliably; cast model back to float32.
+            trainer.model.to(dtype=torch.float32)
+            logger.info("Detected bfloat16 weights but no CUDA available; casting model to float32 for validation")
+
     # If optimizer state exists, optionally restore (not required for validation)
     try:
         if 'optimizer_state_dict' in ckpt:
