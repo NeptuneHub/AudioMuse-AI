@@ -172,6 +172,12 @@ class StudentCLAPAudio(nn.Module):
             # Convert PCM waveform to mel spectrogram (same as preprocessing)
             mel_spec = self.compute_mel_spectrogram(mel_spec)
 
+        # Ensure float32 for the student backbone (weights are float32). This
+        # avoids dtype mismatch when some tensors (e.g. from autocast or other
+        # transformations) are bfloat16.
+        if mel_spec.dtype != torch.float32:
+            mel_spec = mel_spec.float()
+
         # Ensure correct input shape: (batch, 1, n_mels, time)
         if mel_spec.dim() == 3:
             mel_spec = mel_spec.unsqueeze(1)  # Add channel dimension

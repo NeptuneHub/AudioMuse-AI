@@ -707,6 +707,7 @@ def validate_real(trainer: StudentCLAPTrainer,
     
     trainer.model.eval()
     trainer.model.to(trainer.device)
+    logger.info(f"🔍 validate_real: use_amp={getattr(trainer,'use_amp', False)}, amp_device_type={getattr(trainer,'amp_device_type', None)}, device={trainer.device}")
     
     # Collect embeddings
     student_embeddings_list = []
@@ -761,6 +762,10 @@ def validate_real(trainer: StudentCLAPTrainer,
                 for chunk_start in range(0, audio_segments.shape[0], chunk_size):
                     chunk_end = min(chunk_start + chunk_size, audio_segments.shape[0])
                     chunk = audio_segments[chunk_start:chunk_end]
+                    # Move chunk to model device so weights and inputs are on the same device.
+                    chunk = chunk.to(trainer.device)
+                    chunk = chunk.float()  # Ensure float32 input to avoid dtype mismatch with backbone weights
+                    logger.debug(f"    chunk dtype={chunk.dtype}, device={chunk.device}")
                     with torch.amp.autocast(device_type=amp_device_type, dtype=torch.bfloat16, enabled=use_amp):
                         chunk_embeddings = trainer.model(chunk)  # (chunk_size, 512)
                     chunk_embeddings = chunk_embeddings.float()

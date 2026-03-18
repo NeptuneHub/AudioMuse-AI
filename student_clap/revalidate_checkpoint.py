@@ -116,16 +116,27 @@ def main():
     logger.info(f"Model weights loaded (device={trainer.device})")
 
     # If the loaded weights are in bfloat16 (common when training with AMP),
-    # enable autocast in validation so input dtype matches weights.
-    if any(p.dtype == torch.bfloat16 for p in trainer.model.parameters()):
-        if torch.cuda.is_available():
-            trainer.use_amp = True
-            trainer.amp_device_type = 'cuda'
-            logger.info("Detected bfloat16 weights; enabling AMP autocast for validation")
-        else:
-            # On CPU we can't run bfloat16 convs reliably; cast model back to float32.
-            trainer.model.to(dtype=torch.float32)
-            logger.info("Detected bfloat16 weights but no CUDA available; casting model to float32 for validation")
+    # adjust validation run to avoid dtype mismatches.
+    has_bf16 = any(p.dtype == torch.bfloat16 for p in trainer.model.parameters())
+    logger.info(f"Model contains bfloat16 weights: {has_bf16}")
+
+    # If running on MPS, avoid using AMP/autocast entirely (it can produce
+    # mixed-dtype inputs that crash conv layers).  Cast model back to float32.
+    if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
+        trainer.model.to(dtype=torch.float32)
+        trainer.use_amp = False
+        logger.info("Running on MPS: forcing float32 model and disabling AMP/autocast")
+    elif has_bf16 and torch.cuda.is_available():
+        trainer.use_amp = True
+        trainer.amp_device_type = 'cuda'
+        logger.info("Detected bfloat16 weights; enabling AMP autocast for validation on CUDA")
+    elif has_bf16:
+        # On CPU or non-CUDA/MPS, cast back to float32 for safety
+        trainer.model.to(dtype=torch.float32)
+        trainer.use_amp = False
+        logger.info("Detected bfloat16 weights but no CUDA available; casting model to float32 for validation")
+
+    logger.info(f"Validation AMP settings: use_amp={trainer.use_amp}, amp_device_type={getattr(trainer,'amp_device_type',None)}")
 
     # If optimizer state exists, optionally restore (not required for validation)
     try:
