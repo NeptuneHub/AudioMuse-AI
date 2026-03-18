@@ -65,9 +65,28 @@ def main():
                 config['paths'][key] = str(resolved)
     logger.info(f"Loaded config: {config_path} (resolved paths relative to {config_dir})")
 
-    # Build trainer and load model weights
+    # Build trainer (we may override config below if checkpoint contains it)
     trainer = StudentCLAPTrainer(config)
+
     ckpt = torch.load(str(ckpt_path), map_location='cpu')
+
+    # If the checkpoint includes a stored config, merge it to ensure revalidation
+    # uses the same teacher/model settings as training.
+    ckpt_config = ckpt.get('config')
+    if isinstance(ckpt_config, dict):
+        def _merge_dicts(base, override):
+            for k, v in override.items():
+                if isinstance(v, dict) and isinstance(base.get(k), dict):
+                    _merge_dicts(base[k], v)
+                else:
+                    base[k] = v
+            return base
+
+        config = _merge_dicts(config, ckpt_config)
+        logger.info("Merged checkpoint config into current config (ensures teacher/model settings match training)")
+
+        # Rebuild trainer with merged config if the model architecture / settings changed
+        trainer = StudentCLAPTrainer(config)
 
     # Restore model weights
     if 'model_state_dict' not in ckpt:
