@@ -481,37 +481,37 @@ class StudentCLAPDataset:
                         segments, _ = self._apply_audio_augmentation(segments, seed=seed)
 
                     # Compute student mel from the same (augmented) raw segments.
-            # This ensures student input matches what the model expects (mel spectrograms).
-            student_mels = self._compute_student_mel_from_segments(segments)
-            student_mel_tensor = torch.from_numpy(student_mels).float()
+                    # This ensures student input matches what the model expects (mel spectrograms).
+                    student_mels = self._compute_student_mel_from_segments(segments)
+                    student_mel_tensor = torch.from_numpy(student_mels).float()
 
-            # Compute teacher embeddings from raw (MuLan expects 24k)
-            try:
-                # Resample to 24k for MuLan
-                resampled = [
-                    _resample_to_target(seg, orig_sr=self.audio_config['sample_rate'], target_sr=MuLanEmbedder.DEFAULT_SAMPLE_RATE)
-                    for seg in segments
-                ]
-                # NOTE: compute_embeddings_from_audio returns (avg_emb, segment_embs)
-                teacher_embedding, teacher_segment_embeddings = self.teacher_embedder.compute_embeddings_from_audio(resampled)
-            except Exception as e:
-                logger.error(f"⚠️ Failed to compute MuLan embeddings for {item['item_id']}: {e}")
-                teacher_embedding = None
-                teacher_segment_embeddings = None
+                    # Compute teacher embeddings from raw (MuLan expects 24k)
+                    try:
+                        # Resample to 24k for MuLan
+                        resampled = [
+                            _resample_to_target(seg, orig_sr=self.audio_config['sample_rate'], target_sr=MuLanEmbedder.DEFAULT_SAMPLE_RATE)
+                            for seg in segments
+                        ]
+                        # NOTE: compute_embeddings_from_audio returns (avg_emb, segment_embs)
+                        teacher_embedding, teacher_segment_embeddings = self.teacher_embedder.compute_embeddings_from_audio(resampled)
+                    except Exception as e:
+                        logger.error(f"⚠️ Failed to compute MuLan embeddings for {item['item_id']}: {e}")
+                        teacher_embedding = None
+                        teacher_segment_embeddings = None
 
-            batch.append({
-                'item_id': item['item_id'],
-                'title': item['title'],
-                'author': item.get('author', 'Unknown'),
-                'audio_path': audio_path,
-                'audio_segments': student_mel_tensor,
-                'teacher_embedding': teacher_embedding,
-                'teacher_segment_embeddings': teacher_segment_embeddings,
-                'num_segments': student_mels.shape[0]
-            })
+                    batch.append({
+                        'item_id': item['item_id'],
+                        'title': item['title'],
+                        'author': item.get('author', 'Unknown'),
+                        'audio_path': audio_path,
+                        'audio_segments': student_mel_tensor,
+                        'teacher_embedding': teacher_embedding,
+                        'teacher_segment_embeddings': teacher_segment_embeddings,
+                        'num_segments': student_mels.shape[0]
+                    })
 
-        yield batch
-        continue
+                yield batch
+                continue
 
             # 1. Process cached (extract segments from full mel at runtime)
             for item, mel_result in tasks_cached:
