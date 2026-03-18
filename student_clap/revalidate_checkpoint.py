@@ -45,16 +45,25 @@ def main():
         logger.error(f"Checkpoint not found: {ckpt_path}")
         raise SystemExit(1)
 
-    config = yaml.safe_load(open(args.config))
+    # Resolve config path (support running from inside student_clap/ or repo root)
+    config_path = Path(args.config)
+    if not config_path.is_absolute() and not config_path.exists():
+        # Try resolving relative to this script folder (student_clap/)
+        script_dir = Path(__file__).resolve().parent
+        alt = (script_dir / config_path).resolve()
+        if alt.exists():
+            config_path = alt
+
+    config = yaml.safe_load(open(config_path))
     # Resolve any relative paths in config['paths'] relative to the config file location
-    config_file_path = Path(args.config).resolve()
+    config_file_path = config_path.resolve()
     config_dir = config_file_path.parent
     if isinstance(config.get('paths'), dict):
         for key, val in list(config['paths'].items()):
             if isinstance(val, str) and not os.path.isabs(val):
                 resolved = (config_dir / val).resolve()
                 config['paths'][key] = str(resolved)
-    logger.info(f"Loaded config: {args.config} (resolved paths relative to {config_dir})")
+    logger.info(f"Loaded config: {config_path} (resolved paths relative to {config_dir})")
 
     # Build trainer and load model weights
     trainer = StudentCLAPTrainer(config)
