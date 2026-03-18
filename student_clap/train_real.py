@@ -731,7 +731,7 @@ def validate_real(trainer: StudentCLAPTrainer,
                 audio_segments = item['audio_segments']
                 if not isinstance(audio_segments, torch.Tensor):
                     audio_segments = torch.from_numpy(audio_segments)
-                audio_segments = audio_segments.to(device=trainer.device)
+                # Keep audio segments on CPU until we process them in chunks below.
                 batch['audio_segments'].append(audio_segments)
                 batch['teacher_embeddings'].append(item['teacher_embedding'])
                 batch['teacher_segment_embeddings'].append(item.get('teacher_segment_embeddings'))
@@ -745,7 +745,8 @@ def validate_real(trainer: StudentCLAPTrainer,
                 # audio_segments are PRE-COMPUTED mel spectrograms! (num_segments, 1, 128, time)
                 if not isinstance(audio_segments, torch.Tensor):
                     audio_segments = torch.from_numpy(audio_segments)
-                audio_segments = audio_segments.to(device=trainer.device)
+                # Do not move the full song to GPU at once; we will move each chunk below.
+                # This prevents OOM when validation batches contain many segments.
 
                 # ⚠️ SKIP SONGS WITH ONLY 1 SEGMENT - consistent with training behavior
                 if audio_segments.shape[0] < 2:

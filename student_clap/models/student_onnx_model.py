@@ -25,7 +25,7 @@ import logging
 import warnings
 # Silently ignore the torchvision ConvNormActivation deprecation message here (module-level warning)
 warnings.filterwarnings("ignore", message="Don't use ConvNormActivation directly")
-from models.efficientat import get_model as get_efficientat_model
+from .efficientat import get_model as get_efficientat_model
 
 logger = logging.getLogger(__name__)
 
