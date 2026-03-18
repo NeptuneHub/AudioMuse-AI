@@ -38,6 +38,9 @@ def main():
     p.add_argument('--config', default='student_clap/config.yaml', help='Path to config.yaml')
     p.add_argument('--dry-run', action='store_true', help="Don't overwrite the checkpoint file; only print metrics")
     p.add_argument('--update-latest', action='store_true', help='Also write metrics to latest.pth in the same folder')
+    p.add_argument('--teacher-model-type', choices=['clap', 'mulan'], help='Override teacher model type for validation')
+    p.add_argument('--teacher-model', help='Override teacher model path/identifier for validation')
+    p.add_argument('--no-cache', action='store_true', help='Disable mel/teacher cache during validation (forces recompute)')
     args = p.parse_args()
 
     ckpt_path = Path(args.ckpt)
@@ -87,6 +90,20 @@ def main():
 
         # Rebuild trainer with merged config if the model architecture / settings changed
         trainer = StudentCLAPTrainer(config)
+
+    # Apply CLI overrides (useful to force MuLan + disable cache)
+    if args.teacher_model_type:
+        config.setdefault('paths', {})['teacher_model_type'] = args.teacher_model_type
+        logger.info(f"Overriding teacher_model_type to: {args.teacher_model_type}")
+    if args.teacher_model:
+        config.setdefault('paths', {})['teacher_model'] = args.teacher_model
+        logger.info(f"Overriding teacher_model to: {args.teacher_model}")
+    if args.no_cache:
+        config.setdefault('training', {})['use_teacher_embedding_cache'] = False
+        logger.info("Disabling teacher embedding cache for validation (no cached mel/embeddings)")
+
+    # If we changed config via CLI overrides, rebuild trainer to reflect changes
+    trainer = StudentCLAPTrainer(config)
 
     # Restore model weights
     if 'model_state_dict' not in ckpt:
