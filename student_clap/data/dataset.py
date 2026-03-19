@@ -365,8 +365,10 @@ class StudentCLAPDataset:
             # If teacher embedding cache is disabled, recompute everything every epoch.
             # This also bypasses any mel cache (no mel lookups or writes).
             cache_enabled = self.config.get('training', {}).get('use_teacher_embedding_cache', True)
-            if not cache_enabled and self.split == 'train':
-                augmentation_enabled = self.config.get('training', {}).get('augmentation_enabled', True)
+            # Disable augmentation during validation to keep metrics stable.
+            # (We still use the same pipeline for student/teacher, but without random noise/gain.)
+            if not cache_enabled:
+                augmentation_enabled = self.split == 'train' and self.config.get('training', {}).get('augmentation_enabled', True)
                 for item in batch_items:
                     audio_path = item['file_path']
                     try:
@@ -476,7 +478,8 @@ class StudentCLAPDataset:
                     )
 
                     # Apply augmentation once (shared between student & teacher)
-                    if self.config.get('training', {}).get('augmentation_enabled', True):
+                    # Do NOT augment during validation (keeps metrics deterministic).
+                    if self.split == 'train' and self.config.get('training', {}).get('augmentation_enabled', True):
                         seed = np.random.randint(0, 2**31)
                         segments, _ = self._apply_audio_augmentation(segments, seed=seed)
 
@@ -504,6 +507,7 @@ class StudentCLAPDataset:
                         'title': item['title'],
                         'author': item.get('author', 'Unknown'),
                         'audio_path': audio_path,
+                        'raw_audio_segments': np.stack(segments, axis=0),  # (num_segs, samples)
                         'audio_segments': student_mel_tensor,
                         'teacher_embedding': teacher_embedding,
                         'teacher_segment_embeddings': teacher_segment_embeddings,
@@ -517,8 +521,8 @@ class StudentCLAPDataset:
             for item, mel_result in tasks_cached:
                 full_mel, audio_length = mel_result
                 
-                augmentation_enabled = self.config.get('training', {}).get('augmentation_enabled', True)
-                global_mixup = self.config.get('training', {}).get('global_mixup', False)
+                augmentation_enabled = self.split == 'train' and self.config.get('training', {}).get('augmentation_enabled', True)
+                global_mixup = self.split == 'train' and self.config.get('training', {}).get('global_mixup', False)
                 mixup_alpha = self.config.get('training', {}).get('mixup_alpha', 0.0)
                 skip_teacher = global_mixup and mixup_alpha and mixup_alpha > 0
 
@@ -695,8 +699,8 @@ class StudentCLAPDataset:
                         cached_mel_result = self.mel_cache.get_with_audio_length(item['item_id'])
                         cached_segment_embeddings = self.mel_cache.get_segment_embeddings(item['item_id'])
                         
-                        augmentation_enabled = self.config.get('training', {}).get('augmentation_enabled', True)
-                        global_mixup = self.config.get('training', {}).get('global_mixup', False)
+                        augmentation_enabled = self.split == 'train' and self.config.get('training', {}).get('augmentation_enabled', True)
+                        global_mixup = self.split == 'train' and self.config.get('training', {}).get('global_mixup', False)
                         mixup_alpha = self.config.get('training', {}).get('mixup_alpha', 0.0)
                         skip_teacher = global_mixup and mixup_alpha and mixup_alpha > 0
 
