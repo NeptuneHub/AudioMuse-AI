@@ -1275,7 +1275,7 @@ class StudentCLAPTrainer:
         student_emb_list = []
         for chunk_start in range(0, total_segments, chunk_size):
             chunk_end = min(chunk_start + chunk_size, total_segments)
-            chunk = mixed_mel[chunk_start:chunk_end].to(self.device)
+            chunk = mixed_mel[chunk_start:chunk_end].to(self.device).contiguous()
             with torch.amp.autocast(device_type=self.amp_device_type, dtype=torch.bfloat16, enabled=self.use_amp):
                 chunk_emb = self.model.forward(chunk)
             del chunk  # Free GPU copy of this chunk immediately

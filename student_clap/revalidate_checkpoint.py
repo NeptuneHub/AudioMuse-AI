@@ -76,7 +76,24 @@ def main():
     # If the checkpoint includes a stored config, merge it to ensure revalidation
     # uses the same teacher/model settings as training.
     ckpt_config = ckpt.get('config')
+    trained_teacher_type = None
     if isinstance(ckpt_config, dict):
+        # Keep only the config keys that are stable across environments (teacher model + distillation settings).
+        # Avoid overriding dataset paths, checkpoints, logs, etc. that are environment-specific.
+        safe_ckpt_config = {}
+        if 'paths' in ckpt_config and isinstance(ckpt_config['paths'], dict):
+            safe_ckpt_config['paths'] = {}
+            for k in ['teacher_model', 'teacher_model_type']:
+                if k in ckpt_config['paths']:
+                    safe_ckpt_config['paths'][k] = ckpt_config['paths'][k]
+        if 'training' in ckpt_config and isinstance(ckpt_config['training'], dict):
+            safe_ckpt_config['training'] = {}
+            for k in ['use_teacher_embedding_cache', 'global_mixup', 'mixup_alpha', 'augmentation_enabled']:
+                if k in ckpt_config['training']:
+                    safe_ckpt_config['training'][k] = ckpt_config['training'][k]
+        if 'model' in ckpt_config and isinstance(ckpt_config['model'], dict):
+            safe_ckpt_config['model'] = ckpt_config['model']
+
         def _merge_dicts(base, override):
             for k, v in override.items():
                 if isinstance(v, dict) and isinstance(base.get(k), dict):
@@ -85,11 +102,35 @@ def main():
                     base[k] = v
             return base
 
-        config = _merge_dicts(config, ckpt_config)
-        logger.info("Merged checkpoint config into current config (ensures teacher/model settings match training)")
+        # Detect teacher type from checkpoint config (may be missing)
+        trained_paths = ckpt_config.get('paths', {}) if isinstance(ckpt_config.get('paths'), dict) else {}
+        trained_teacher_type = trained_paths.get('teacher_model_type')
+        if trained_teacher_type is None and 'teacher_model' in trained_paths:
+            trained_teacher_model = str(trained_paths['teacher_model']).lower()
+            if any(x in trained_teacher_model for x in ['mulan', 'muq', 'muq-mulan', 'mulan-large']):
+                trained_teacher_type = 'mulan'
+            else:
+                trained_teacher_type = 'clap'
+
+        config = _merge_dicts(config, safe_ckpt_config)
+        logger.info("Merged selected checkpoint config into current config (ensures teacher/model settings match training)")
 
         # Rebuild trainer with merged config if the model architecture / settings changed
         trainer = StudentCLAPTrainer(config)
+
+    # If we know what teacher type the checkpoint was trained with, warn when
+    # the user overrides it to a different teacher (different embedding space).
+    if trained_teacher_type is not None:
+        current_teacher_type = config.get('paths', {}).get('teacher_model_type')
+        if current_teacher_type is None and 'teacher_model' in config.get('paths', {}):
+            tm = str(config['paths']['teacher_model']).lower()
+            current_teacher_type = 'mulan' if any(x in tm for x in ['mulan', 'muq', 'muq-mulan', 'mulan-large']) else 'clap'
+        if current_teacher_type and current_teacher_type != trained_teacher_type:
+            logger.warning(
+                f"⚠️ Checkpoint was trained with teacher_type='{trained_teacher_type}', "
+                f"but validation is configured with teacher_type='{current_teacher_type}'. "
+                "Cosine similarity will NOT be directly comparable (different embedding spaces)."
+            )
 
     # Apply CLI overrides (useful to force MuLan + disable cache)
     if args.teacher_model_type:

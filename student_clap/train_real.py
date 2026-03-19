@@ -423,26 +423,44 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                     mixed_mel = mel_stack                               # no copy, same tensor
                     del permuted_mel, mel_stack
 
-                    # If teacher uses raw waveform (MuLan), we must compute teacher embeddings
-                    # from the same augmented + mixed waveform.  Mixup happens in waveform space.
+                    # If teacher uses raw waveform (MuLan), the mixup must happen in
+                    # raw-audio space and both student + teacher must use the same mixed
+                    # raw waveform.  Previously we were mixing mel spectrograms and then
+                    # treating them as audio, which produces incorrect teacher targets.
                     if not teacher_requires_mel:
-                        # Build a list of raw audio segments for MuLan (already in mixed_mel)
-                        mixed_raw = mixed_mel.cpu().numpy()
+                        # Build a flat raw waveform tensor matching the order of student mel.
+                        raw_parts = []
+                        for i in range(len(batch.get('raw_audio_segments', []))):
+                            raw_segs = batch['raw_audio_segments'][i]
+                            if isinstance(raw_segs, torch.Tensor):
+                                raw_segs = raw_segs.cpu().numpy()
+                            raw_parts.append(raw_segs)
 
-                        # Collapse any extra dims (channel, mel, etc.) into flat waveform
-                        if mixed_raw.ndim > 2:
-                            mixed_raw = mixed_raw.reshape(mixed_raw.shape[0], -1)
+                        raw_stack = np.concatenate(raw_parts, axis=0)  # (total_segments, seg_len)
 
-                        # Resample to MuLan base rate (24kHz)
+                        # Apply the same mixup permutation and lambda to raw audio.
+                        mixed_raw = raw_stack.astype(np.float32)
+                        permuted_raw = mixed_raw[perm] * (1.0 - lam)
+                        mixed_raw = mixed_raw * lam
+                        mixed_raw += permuted_raw
+                        del permuted_raw, raw_stack
+
+                        # Compute student mel from the mixed raw audio.
+                        mixed_mel_np = dataset._compute_student_mel_from_segments(mixed_raw)
+                        mixed_mel = torch.as_tensor(np.ascontiguousarray(mixed_mel_np), dtype=torch.float32)
+                        mixed_mel = mixed_mel.contiguous()
+
+                        # Resample to MuLan base rate (24kHz) and compute teacher embeddings.
                         from student_clap.data.dataset import _resample_to_target
                         resampled = [
                             _resample_to_target(seg, orig_sr=config['audio']['sample_rate'], target_sr=24000)
                             for seg in mixed_raw
                         ]
-
-                        # Compute MuLan embeddings from resampled segments
                         _, seg_embs = dataset.teacher_embedder.compute_embeddings_from_audio(resampled)
                         mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
+
+                        # Free memory
+                        del mixed_raw
                     else:
                         if use_teacher_emb_cache:
                             # --- Cache ON: mix teacher embeddings directly ---
@@ -706,6 +724,12 @@ def validate_real(trainer: StudentCLAPTrainer,
     logger.info(f"🔍 Running REAL validation (Epoch {epoch})...")
     
     trainer.model.eval()
+    # Disable gradient checkpointing during validation to avoid runtime issues on some backends.
+    if hasattr(trainer.model, 'set_gradient_checkpointing'):
+        try:
+            trainer.model.set_gradient_checkpointing(False)
+        except Exception:
+            pass
     trainer.model.to(trainer.device)
     logger.info(f"🔍 validate_real: use_amp={getattr(trainer,'use_amp', False)}, amp_device_type={getattr(trainer,'amp_device_type', None)}, device={trainer.device}")
     
