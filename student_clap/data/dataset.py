@@ -410,6 +410,7 @@ class StudentCLAPDataset:
                         'title': item['title'],
                         'author': item.get('author', 'Unknown'),
                         'audio_path': audio_path,
+                        'raw_audio_segments': np.stack(segments, axis=0),  # for MuLan mixup
                         'audio_segments': student_mel_tensor,
                         'teacher_embedding': teacher_embedding,
                         'teacher_segment_embeddings': teacher_segment_embeddings,

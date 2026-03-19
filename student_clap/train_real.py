@@ -177,6 +177,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
         # Prepare batch for training
         batch = {
             'audio_segments': [],
+            'raw_audio_segments': [],
             'teacher_embeddings': [],
             'teacher_segment_embeddings': [],
             'teacher_mel_segments': [],
@@ -187,6 +188,7 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
             # Get audio segments for this song (already segmented by dataset)
             audio_segments = item['audio_segments']
             batch['audio_segments'].append(audio_segments)
+            batch['raw_audio_segments'].append(item.get('raw_audio_segments'))
             batch['teacher_embeddings'].append(item['teacher_embedding'])
             batch['teacher_segment_embeddings'].append(item.get('teacher_segment_embeddings'))
             batch['teacher_mel_segments'].append(item.get('teacher_mel_segments'))
@@ -405,8 +407,8 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                     raise RuntimeError("Skipping batch: RAM critically low before global mixup concatenation")
                 mel_stack = torch.cat(student_parts, dim=0)  # (total_segments, 1, 128, T)
                 del student_parts
-                # Free batch student data immediately — mel_stack is the only reference now
-                del batch['audio_segments']
+                # Keep batch['audio_segments'] available in case mixup fails and we need
+                # to fall back to standard train_step. (It will be freed later.)
 
                 total_segments = mel_stack.shape[0]
 
@@ -427,97 +429,62 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
                     # raw-audio space and both student + teacher must use the same mixed
                     # raw waveform.  Previously we were mixing mel spectrograms and then
                     # treating them as audio, which produces incorrect teacher targets.
-                    if not teacher_requires_mel:
-                        # Build a flat raw waveform tensor matching the order of student mel.
-                        raw_parts = []
-                        for i in range(len(batch.get('raw_audio_segments', []))):
-                            raw_segs = batch['raw_audio_segments'][i]
-                            if isinstance(raw_segs, torch.Tensor):
-                                raw_segs = raw_segs.cpu().numpy()
-                            raw_parts.append(raw_segs)
+                    try:
+                        if not teacher_requires_mel:
+                            # Build a flat raw waveform tensor matching the order of student mel.
+                            raw_parts = []
+                            for raw_segs in batch.get('raw_audio_segments', []):
+                                if raw_segs is None:
+                                    continue
+                                if isinstance(raw_segs, torch.Tensor):
+                                    raw_segs = raw_segs.cpu().numpy()
+                                if isinstance(raw_segs, np.ndarray) and raw_segs.size == 0:
+                                    continue
+                                raw_parts.append(raw_segs)
 
-                        raw_stack = np.concatenate(raw_parts, axis=0)  # (total_segments, seg_len)
+                            if len(raw_parts) == 0:
+                                raise ValueError("No raw audio segments available")
 
-                        # Apply the same mixup permutation and lambda to raw audio.
-                        mixed_raw = raw_stack.astype(np.float32)
-                        permuted_raw = mixed_raw[perm] * (1.0 - lam)
-                        mixed_raw = mixed_raw * lam
-                        mixed_raw += permuted_raw
-                        del permuted_raw, raw_stack
+                            raw_stack = np.concatenate(raw_parts, axis=0)  # (total_segments, seg_len)
 
-                        # Compute student mel from the mixed raw audio.
-                        mixed_mel_np = dataset._compute_student_mel_from_segments(mixed_raw)
-                        mixed_mel = torch.as_tensor(np.ascontiguousarray(mixed_mel_np), dtype=torch.float32)
-                        mixed_mel = mixed_mel.contiguous()
+                            # Apply the same mixup permutation and lambda to raw audio.
+                            mixed_raw = raw_stack.astype(np.float32)
+                            permuted_raw = mixed_raw[perm] * (1.0 - lam)
+                            mixed_raw = mixed_raw * lam
+                            mixed_raw += permuted_raw
+                            del permuted_raw, raw_stack
 
-                        # Resample to MuLan base rate (24kHz) and compute teacher embeddings.
-                        from student_clap.data.dataset import _resample_to_target
-                        resampled = [
-                            _resample_to_target(seg, orig_sr=config['audio']['sample_rate'], target_sr=24000)
-                            for seg in mixed_raw
-                        ]
-                        _, seg_embs = dataset.teacher_embedder.compute_embeddings_from_audio(resampled)
-                        mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
+                            # Compute student mel from the mixed raw audio.
+                            mixed_mel_np = dataset._compute_student_mel_from_segments(mixed_raw)
+                            mixed_mel = torch.as_tensor(np.ascontiguousarray(mixed_mel_np), dtype=torch.float32)
+                            mixed_mel = mixed_mel.contiguous()
 
-                        # Free memory
-                        del mixed_raw
-                    else:
-                        if use_teacher_emb_cache:
-                            # --- Cache ON: mix teacher embeddings directly ---
-                            teacher_stack = torch.stack(teacher_emb_parts, dim=0)
-                            del teacher_emb_parts
-                            permuted_t = teacher_stack[perm_t].mul_(1.0 - lam)
-                            teacher_stack.mul_(lam).add_(permuted_t)
-                            mixed_teacher = teacher_stack
-                            del permuted_t, teacher_stack
-                        else:
-                            # --- Cache OFF: mix teacher mel, compute teacher embeddings ---
-                            del teacher_emb_parts
-                            # Free batch teacher mel data — we'll use our own concat
-                            if 'teacher_mel_segments' in batch:
-                                del batch['teacher_mel_segments']
-
-                        if len(teacher_mel_parts) > 0:
-                            tmel_stack = np.concatenate(teacher_mel_parts, axis=0)  # (total, 1, 64, T)
-                            del teacher_mel_parts
-                            # Safety: truncate to match student segment count
-                            # (torchaudio vs librosa resamplers may differ by ±1 segment)
-                            if tmel_stack.shape[0] != total_segments:
-                                min_seg = min(tmel_stack.shape[0], total_segments)
-                                logger.warning(
-                                    f"[GLOBAL MIXUP] Segment count mismatch: "
-                                    f"student={total_segments}, teacher={tmel_stack.shape[0]}, "
-                                    f"truncating to {min_seg}"
-                                )
-                                tmel_stack = tmel_stack[:min_seg]
-                                mixed_mel = mixed_mel[:min_seg]
-                                perm = perm[perm < min_seg]  # keep only valid indices
-                                # re-do permutation if truncation broke it
-                                if len(perm) != min_seg:
-                                    perm = np.random.permutation(min_seg)
-                                    if np.any(perm == np.arange(min_seg)):
-                                        perm = np.roll(perm, 1)
-                                total_segments = min_seg
-                            # In-place numpy mixup to reduce peak RAM
-                            permuted_tmel = tmel_stack[perm]  # copy from fancy indexing
-                            np.multiply(permuted_tmel, 1.0 - lam, out=permuted_tmel)
-                            np.multiply(tmel_stack, lam, out=tmel_stack)
-                            np.add(tmel_stack, permuted_tmel, out=tmel_stack)
-                            mixed_tmel = tmel_stack.astype(np.float32)
-                            del tmel_stack, permuted_tmel
-                            if mixed_tmel.ndim == 3:
-                                mixed_tmel = mixed_tmel[:, np.newaxis, :, :]
-                            avg_emb, seg_embs = dataset.teacher_embedder.compute_embeddings_from_mel(mixed_tmel)
-                            del mixed_tmel
+                            # Resample to MuLan base rate (24kHz) and compute teacher embeddings.
+                            from student_clap.data.dataset import _resample_to_target
+                            resampled = [
+                                _resample_to_target(seg, orig_sr=config['audio']['sample_rate'], target_sr=24000)
+                                for seg in mixed_raw
+                            ]
+                            _, seg_embs = dataset.teacher_embedder.compute_embeddings_from_audio(resampled)
                             mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
+
+                            # Free memory
+                            del mixed_raw
                         else:
-                            # Fallback: teacher mel not available, use student mel for teacher
-                            logger.warning("[GLOBAL MIXUP] teacher_mel_segments not available, falling back to student-mel-based teacher")
-                            mixed_np = mixed_mel.numpy()
-                            if mixed_np.ndim == 3:
-                                mixed_np = mixed_np[:, np.newaxis, :, :]
-                            avg_emb, seg_embs = dataset.teacher_embedder.compute_embeddings_from_mel(mixed_np)
-                            mixed_teacher = torch.stack([torch.from_numpy(e).float() for e in seg_embs], dim=0)
+                            raise ValueError("Teacher requires mel");
+
+                    except Exception as e:
+                        # If we cannot compute MuLan embeddings during global mixup, fall back
+                        # to standard (non-global-mixup) training and avoid crashing.
+                        logger.warning(f"[GLOBAL MIXUP] Unable to compute raw-MuLan mixup targets ({e}); falling back to normal training for this batch")
+                        should_log_details = (batch_idx % log_every == 0)
+                        step_metrics = trainer.train_step(batch, compute_diagnostics=should_log_details)
+
+                        # Cleanup and continue to next batch without crashing
+                        if 'perm_t' in locals():
+                            del perm_t
+                        continue
+
                     del perm_t
 
                     logger.info(f"[GLOBAL MIXUP] Applied: alpha={mixup_alpha}, lam={lam:.4f}, "
@@ -655,11 +622,26 @@ def train_epoch_real(trainer: StudentCLAPTrainer,
         logger.info(f"─" * 60)
     
     # Compute averages BEFORE updating scheduler (ReduceLROnPlateau needs the metric)
-    avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
-    avg_mse = total_mse / num_batches if num_batches > 0 else 0.0
-    avg_kl = total_kl / num_batches if num_batches > 0 else 0.0
-    avg_semantic = total_semantic / num_batches if num_batches > 0 else 0.0
-    avg_cosine_sim = total_cosine_sim / num_batches if num_batches > 0 else 0.0
+    if num_batches == 0 or num_songs == 0:
+        logger.warning("⚠️ No songs were processed during training epoch — returning zero metrics")
+        return {
+            'epoch': epoch,
+            'avg_loss': 0.0,
+            'avg_mse': 0.0,
+            'avg_kl': 0.0,
+            'avg_semantic': 0.0,
+            'avg_cosine_sim': 0.0,
+            'num_batches': num_batches,
+            'num_songs': num_songs,
+            'epoch_time': time.time() - epoch_start_time,
+            'learning_rate': trainer.optimizer.param_groups[0]['lr']
+        }
+
+    avg_loss = total_loss / num_batches
+    avg_mse = total_mse / num_batches
+    avg_kl = total_kl / num_batches
+    avg_semantic = total_semantic / num_batches
+    avg_cosine_sim = total_cosine_sim / num_batches
     
     # Scheduler stepping is handled after validation (we want to monitor validation cosine for generalization).
     # Do not step scheduler here on training metric to avoid reducing LR based on training improvements.
@@ -977,6 +959,15 @@ def train(config_path: str, resume: str = None):
     # Initialize trainer with real ONNX model
     logger.info("\n🏗️ Building Student CLAP model...")
     trainer = StudentCLAPTrainer(config)
+
+    # If running on MPS and the model contains bfloat16 weights (specialist),
+    # cast the model to float32 to avoid mismatched input/weight dtype errors.
+    if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
+        has_bf16 = any(p.dtype == torch.bfloat16 for p in trainer.model.parameters())
+        if has_bf16:
+            trainer.model.to(dtype=torch.float32)
+            trainer.use_amp = False
+            logger.info("Running on MPS: forcing float32 model and disabling AMP/autocast")
 
     # Log initial learning rate and weight decay for stage 1 optimizer
     initial_lr = trainer.optimizer.param_groups[0]['lr']
