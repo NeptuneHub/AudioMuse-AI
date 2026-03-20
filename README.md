@@ -48,7 +48,6 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 - [Quick Start Deployment](#quick-start-deployment)
 - [Hardware Requirements](#hardware-requirements)
 - [Docker Image Tagging Strategy](#docker-image-tagging-strategy)
-- [Key Technologies](#key-technologies)
 - [How To Contribute](#how-to-contribute)
 - [Star History](#star-history)
 
@@ -169,25 +168,6 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
 * **`-nvidia`** variants
   Images that support the use of GPU for both Analysis and Clustering.
   **Not recommended** for old GPU.
-
-
-## **Key Technologies**
-
-AudioMuse AI is built upon a robust stack of open-source technologies:
-
-* [**Flask:**](https://flask.palletsprojects.com/) Provides the lightweight web interface for user interaction and API endpoints.  
-* [**Redis Queue (RQ):**](https://redis.io/glossary/redis-queue/) A simple Python library for queueing jobs and processing them in the background with Redis.
-* [**Supervisord:**](https://supervisord.org/) Supervisor is a client/server system that allows its users to monitor and control a number of processes on UNIX-like operating systems.
-* [**MusiCNN (Music Convolutional Neural Network)**](https://github.com/jordipons/musicnn) Open-source MusiCNN models exported directly to ONNX for feature extraction and mood prediction (used from v4.0.0, replaces Essentia-exported models).
-* [**Librosa**](https://github.com/librosa/librosa) Library for audio analysis, feature extraction, and music information retrieval. (used from version v0.6.0-beta)
-* [**LAION CLAP (Contrastive Language-Audio Pretraining)**](https://github.com/LAION-AI/CLAP) Neural network for audio-text matching, enabling natural language music search and text-based playlist generation.
-* [**Distilled CLAP (DCLAP)**](https://github.com/NeptuneHub/AudioMuse-AI-DCLAP) Distilled lightweight version of LAION CLAP.
-* [**ONNX**](https://onnx.ai/) Open Neural Network Exchange format and [ONNX Runtime](https://onnxruntime.ai/) for fast, portable, cross-platform model inference. **(Used from v0.7.0-beta, replaces TensorFlow)**
-* [**scikit-learn**](https://scikit-learn.org/) Utilized for machine learning algorithms:
-* [**voyager**](https://github.com/spotify/voyager) Approximate Nearest Neighbors used for the /similarity interface. Used from v0.6.3-beta
-* [**PostgreSQL:**](https://www.postgresql.org/) A powerful, open-source relational database used for persisting:  
-* [**Ollama**](https://ollama.com/) Enables self-hosting of various open-source Large Language Models (LLMs) for tasks like intelligent playlist naming.
-* [**Docker / OCI-compatible Containers**](https://www.docker.com/) – The entire application is packaged as a container, ensuring consistent and portable deployment across environments.
 
 ## **How To Contribute**
 
