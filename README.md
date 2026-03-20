@@ -24,7 +24,7 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 * **Song Alchemy**: Mix your ideal vibe, mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and a 2D preview. Export the final selection directly to your media server.
 * **Text Search**: search your song with simple text that can contains mood, instruments and genre like calm piano songs.
 
-More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [FAQ](docs/FAQ.md), [GPU DEPLOYMENT](docs/GPU.md), [HARDWARE REQUIREMENTS](docs/HARDWARE.md), [CONFIGURATION PARAMETERS](docs/PARAMETERS.md) [AUTHENTICATION](docs/AUTH.md) and can be found in the [docs folder](docs).
+More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [FAQ](docs/FAQ.md), [GPU DEPLOYMENT](docs/GPU.md), [CONFIGURATION PARAMETERS](docs/PARAMETERS.md) [AUTHENTICATION](docs/AUTH.md) and can be found in the [docs folder](docs).
 
 **The full list or AudioMuse-AI related repository are:** 
   > * [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI): the core application, it run Flask and Worker containers to actually run all the feature;
@@ -132,7 +132,7 @@ docker compose -f deployment/docker-compose.yaml down
 
 ## **Hardware Requirements**
 
-AudioMuse-AI has been tested on:
+AudioMuse-AI has been  on:
 * **Intel**: HP Mini PC with Intel i5-6500, 16 GB RAM and NVMe SSD
 * **ARM**: Raspberry Pi 5, 8 GB RAM and NVMe SSD / Mac Mini M4 16GB / Amphere based VM with 4core 8GB ram
 
@@ -140,8 +140,6 @@ Suggested requirements:
 * CPU: 4-core Intel with AVX2 support (usually produced in 2015 or later) or ARM
 * 8 GB RAM
 * NVME SSD storage
-
-You can check the [Tested Hardware and Configuration](docs/HARDWARE.md) notes to see which hardware has already been validated.
 
 For more information about the GPU deployment requirements have a look to the [GPU](docs/GPU.md) page.
 
