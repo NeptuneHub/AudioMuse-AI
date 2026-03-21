@@ -167,18 +167,27 @@ These are the default parameters used when launching analysis or clustering task
 
 
 The **AI model** tested for Clustering naming and for the instant playlist functionality are:
+
+March 2026:
+* anthropic/claude-sonnet-4.6 (best performing model)
+* anthropic/claude-haiku-4.5
+* google/gemini-3-flash-preview
+
+Earlier:
 * mistral:7b
 * llama3.1:8b
 * gemini-2.5-pro
 * gemini-1.5-flash-latest
 
-For **selhosting AI** with Ollama this are the one that worked best (in order):
-1. qwen3.5:9b (largest tested)
+For **selhosting AI** with Ollama these are the ones that worked best when tested in March 2026 (in order):
+1. qwen3.5:9b (largest tested, best performing)
 2. qwen3.5:4b
 3. gemma3:4b
 4. ministral-3:3b (this one is the fastest)
 
-different model could have different parameter and don't work.
+The models we tested and compared: llama3.1:8b, llama3.2:1b, llama3.2:3b, gemma3:1b, gemma3:4b, qwen3:0.6b, qwen3:1.7b, qwen2.5:1.5b, qwen3.5:0.8b, qwen3.5:2b, qwen3.5:4b,qwen3.5:9b, deepseek-r1:1.5b, phi4-mini:3.8b, ministral-3:3b, lfm2.5-thinking:1.2b
+
+**Please note:** Different models can have different parameters and don't work. Every time you run the promnpt it can give you different results.
 
 **(*)** For using GEMINI API you need to have a Google account, a free account can be used if needed. Same goes for Mistral. Instead if you want to self-host Ollama here you can find a deployment example:
 
