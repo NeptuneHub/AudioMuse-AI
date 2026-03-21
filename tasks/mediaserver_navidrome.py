@@ -388,7 +388,7 @@ def _create_playlist_batched(playlist_name, item_ids, user_creds=None):
     ids_for_creation = item_ids[:NAVIDROME_API_BATCH_SIZE]
     ids_to_add_later = item_ids[NAVIDROME_API_BATCH_SIZE:]
 
-    create_params = {"name": playlist_name, "songId": ids_for_creation}
+    create_params = {"name": playlist_name, "songId": ids_for_creation, "public": "true"}
     create_response = _navidrome_request("createPlaylist", create_params, method='post', user_creds=user_creds)
 
     # --- Extract playlist object directly from the creation response ---
