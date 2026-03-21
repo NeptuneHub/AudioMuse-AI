@@ -965,8 +965,8 @@ class TestNavidromeCreatePlaylist:
         assert result['Name'] == 'Test Playlist'
 
     @patch('tasks.mediaserver_navidrome._navidrome_request')
-    def test_create_playlist_sends_public_flag(self, mock_request):
-        """Should include public flag in createPlaylist call"""
+    def test_create_playlist_sets_public_after_creation(self, mock_request):
+        """Should call updatePlaylist(public=true) right after createPlaylist"""
         from tasks.mediaserver_navidrome import _create_playlist_batched
 
         mock_request.return_value = {
@@ -976,12 +976,18 @@ class TestNavidromeCreatePlaylist:
 
         _create_playlist_batched('Test Playlist', ['song1'])
 
-        # First call is for createPlaylist
+        # First call is createPlaylist
         first_call_args = mock_request.call_args_list[0][0]
         assert first_call_args[0] == 'createPlaylist'
         create_params = first_call_args[1]
-        assert create_params.get('public') == 'true'
-        assert 'isPublic' not in create_params
+        assert create_params.get('public') is None
+
+        # Second call is updatePlaylist(public=true)
+        second_call_args = mock_request.call_args_list[1][0]
+        assert second_call_args[0] == 'updatePlaylist'
+        update_params = second_call_args[1]
+        assert update_params.get('playlistId') == 'new-pl-456'
+        assert update_params.get('public') == 'true'
 
     @patch('tasks.mediaserver_navidrome._navidrome_request')
     def test_returns_none_on_creation_failure(self, mock_request):
