@@ -12,5 +12,6 @@ nav:
   - FAQ: FAQ.md
   - GPU: GPU.md
   - Parameters: PARAMETERS.md
+  - Authentication: AUTH.md
 
 theme: readthedocs
