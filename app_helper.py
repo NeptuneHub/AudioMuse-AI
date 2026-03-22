@@ -2018,6 +2018,77 @@ def update_score_track_id(item_id, track_id):
         db.commit()
 
 
+def resolve_canonical_item_id(item_id):
+    """
+    Resolve a provider-specific item_id to the canonical score.item_id.
+
+    If the item_id already exists in the score table, returns it as-is.
+    Otherwise, looks it up via provider_track → track → score.
+
+    Returns:
+        The canonical item_id from the score table, or None if not found
+    """
+    if not item_id:
+        return None
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT item_id FROM score WHERE item_id = %s", (item_id,))
+        if cur.fetchone():
+            return item_id
+
+        cur.execute("""
+            SELECT s.item_id
+            FROM provider_track pt
+            JOIN score s ON s.track_id = pt.track_id
+            WHERE pt.item_id = %s
+            LIMIT 1
+        """, (item_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def resolve_canonical_artist(artist_query):
+    """
+    Resolve a provider-specific artist_id or name to an artist name
+    for the similarity index.
+
+    Returns:
+        The artist name, or the original query if no resolution found
+    """
+    if not artist_query:
+        return None
+
+    db = get_db()
+    with db.cursor() as cur:
+        # Already an artist name?
+        cur.execute("SELECT DISTINCT author FROM score WHERE LOWER(author) = LOWER(%s) LIMIT 1", (artist_query,))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+
+        # Try artist_mapping table (maps provider artist_id → name)
+        try:
+            cur.execute("SELECT artist_name FROM artist_mapping WHERE artist_id = %s LIMIT 1", (artist_query,))
+            row = cur.fetchone()
+            if row:
+                return row[0]
+        except Exception:
+            pass
+
+        # Try provider_track (artist field)
+        cur.execute("""
+            SELECT DISTINCT pt.artist FROM provider_track pt
+            WHERE pt.item_id = %s AND pt.artist IS NOT NULL
+            LIMIT 1
+        """, (artist_query,))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+
+    return artist_query
+
+
 def get_track_by_file_path(file_path):
     """
     Get track info by file path.

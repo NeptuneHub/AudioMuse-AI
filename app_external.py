@@ -43,11 +43,14 @@ def get_score_endpoint():
         description: Internal server error.
     """
     # Local import to prevent circular dependency
-    from app_helper import get_db
+    from app_helper import get_db, resolve_canonical_item_id
 
     item_id = request.args.get('id')
     if not item_id:
         return jsonify({"error": "Missing 'id' parameter"}), 400
+
+    # Resolve provider-specific item_id to canonical
+    item_id = resolve_canonical_item_id(item_id) or item_id
 
     try:
         db = get_db()
@@ -91,12 +94,15 @@ def get_embedding_endpoint():
         description: Internal server error.
     """
     # Local import to prevent circular dependency
-    from app_helper import get_db
+    from app_helper import get_db, resolve_canonical_item_id
 
     item_id = request.args.get('id')
     if not item_id:
         return jsonify({"error": "Missing 'id' parameter"}), 400
-    
+
+    # Resolve provider-specific item_id to canonical
+    item_id = resolve_canonical_item_id(item_id) or item_id
+
     try:
         db = get_db()
         cur = db.cursor(cursor_factory=DictCursor)

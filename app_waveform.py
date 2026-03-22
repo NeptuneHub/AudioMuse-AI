@@ -185,10 +185,14 @@ def get_waveform_endpoint():
         description: Server error during waveform generation
     """
     item_id = request.args.get('item_id')
-    
+
     if not item_id:
         return jsonify({"error": "Missing 'item_id' parameter"}), 400
-    
+
+    # Resolve provider-specific item_id to canonical
+    from app_helper import resolve_canonical_item_id
+    item_id = resolve_canonical_item_id(item_id) or item_id
+
     # Get track information from database
     db = get_db()
     cur = db.cursor()
