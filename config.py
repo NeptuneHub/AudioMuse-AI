@@ -2,7 +2,25 @@
 import os
 
 # --- Media Server Type ---
-MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby, localfiles
+# Auto-detect provider from env vars if MEDIASERVER_TYPE is not explicitly set.
+# This ensures seamless upgrades: existing users with e.g. JELLYFIN_URL set
+# keep working without adding MEDIASERVER_TYPE to their .env.
+def _detect_mediaserver_type():
+    explicit = os.environ.get("MEDIASERVER_TYPE")
+    if explicit:
+        return explicit.lower()
+    # Auto-detect from provider-specific env vars
+    if os.environ.get("JELLYFIN_URL", ""):
+        return "jellyfin"
+    if os.environ.get("EMBY_URL", ""):
+        return "emby"
+    if os.environ.get("NAVIDROME_URL", ""):
+        return "navidrome"
+    if os.environ.get("LYRION_URL", ""):
+        return "lyrion"
+    return "localfiles"
+
+MEDIASERVER_TYPE = _detect_mediaserver_type()
 
 # --- Jellyfin and DB Constants (Read from Environment Variables first) ---
 

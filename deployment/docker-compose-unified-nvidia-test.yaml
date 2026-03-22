@@ -78,7 +78,7 @@ services:
       TZ: "${TZ:-UTC}"
       # Media Server Configuration
       # Configure via GUI setup wizard or set here for legacy support
-      MEDIASERVER_TYPE: "${MEDIASERVER_TYPE:-localfiles}"
+      MEDIASERVER_TYPE: "${MEDIASERVER_TYPE:-}"
       # Jellyfin (if using)
       JELLYFIN_URL: "${JELLYFIN_URL:-}"
       JELLYFIN_USER_ID: "${JELLYFIN_USER_ID:-}"
@@ -96,8 +96,9 @@ services:
       # Local Files Provider (default)
       LOCALFILES_MUSIC_DIRECTORY: "${LOCALFILES_MUSIC_DIRECTORY:-/music}"
       LOCALFILES_PLAYLIST_DIR: "${LOCALFILES_PLAYLIST_DIR:-/music/playlists}"
-      LOCALFILES_FORMATS: "${LOCALFILES_FORMATS:-.mp3,.flac,.ogg,.m4a,.wav,.wma,.aac,.opus}"
+      LOCALFILES_FORMATS: "${LOCALFILES_FORMATS:-}"
       LOCALFILES_SCAN_SUBDIRS: "${LOCALFILES_SCAN_SUBDIRS:-true}"
+      MUSIC_LIBRARIES: "${MUSIC_LIBRARIES:-}"
       # Database Configuration
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
@@ -111,7 +112,12 @@ services:
       OPENAI_SERVER_URL: "${OPENAI_SERVER_URL:-}"
       OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GEMINI_MODEL_NAME: "${GEMINI_MODEL_NAME:-}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY:-}"
+      MISTRAL_MODEL_NAME: "${MISTRAL_MODEL_NAME:-}"
+      OLLAMA_SERVER_URL: "${OLLAMA_SERVER_URL:-}"
+      OLLAMA_MODEL_NAME: "${OLLAMA_MODEL_NAME:-}"
+      AI_REQUEST_TIMEOUT_SECONDS: "${AI_REQUEST_TIMEOUT_SECONDS:-300}"
       # Authentication
       API_TOKEN: "${API_TOKEN:-}"
       AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
@@ -119,6 +125,8 @@ services:
       JWT_SECRET: "${JWT_SECRET:-}"
       # Features
       CLAP_ENABLED: "${CLAP_ENABLED:-true}"
+      MULAN_ENABLED: "${MULAN_ENABLED:-false}"
+      ENABLE_PROXY_FIX: "${ENABLE_PROXY_FIX:-false}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio
@@ -158,7 +166,7 @@ services:
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_GPU_ID:-0}"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       # Media Server Configuration (same as flask service)
-      MEDIASERVER_TYPE: "${MEDIASERVER_TYPE:-localfiles}"
+      MEDIASERVER_TYPE: "${MEDIASERVER_TYPE:-}"
       JELLYFIN_URL: "${JELLYFIN_URL:-}"
       JELLYFIN_USER_ID: "${JELLYFIN_USER_ID:-}"
       JELLYFIN_TOKEN: "${JELLYFIN_TOKEN:-}"
@@ -171,8 +179,9 @@ services:
       EMBY_TOKEN: "${EMBY_TOKEN:-}"
       LOCALFILES_MUSIC_DIRECTORY: "${LOCALFILES_MUSIC_DIRECTORY:-/music}"
       LOCALFILES_PLAYLIST_DIR: "${LOCALFILES_PLAYLIST_DIR:-/music/playlists}"
-      LOCALFILES_FORMATS: "${LOCALFILES_FORMATS:-.mp3,.flac,.ogg,.m4a,.wav,.wma,.aac,.opus}"
+      LOCALFILES_FORMATS: "${LOCALFILES_FORMATS:-}"
       LOCALFILES_SCAN_SUBDIRS: "${LOCALFILES_SCAN_SUBDIRS:-true}"
+      MUSIC_LIBRARIES: "${MUSIC_LIBRARIES:-}"
       # Database Configuration
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
@@ -186,7 +195,12 @@ services:
       OPENAI_SERVER_URL: "${OPENAI_SERVER_URL:-}"
       OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GEMINI_MODEL_NAME: "${GEMINI_MODEL_NAME:-}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY:-}"
+      MISTRAL_MODEL_NAME: "${MISTRAL_MODEL_NAME:-}"
+      OLLAMA_SERVER_URL: "${OLLAMA_SERVER_URL:-}"
+      OLLAMA_MODEL_NAME: "${OLLAMA_MODEL_NAME:-}"
+      AI_REQUEST_TIMEOUT_SECONDS: "${AI_REQUEST_TIMEOUT_SECONDS:-300}"
       # Authentication
       API_TOKEN: "${API_TOKEN:-}"
       AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
@@ -194,6 +208,7 @@ services:
       JWT_SECRET: "${JWT_SECRET:-}"
       # Features - Enable GPU clustering for NVIDIA
       CLAP_ENABLED: "${CLAP_ENABLED:-true}"
+      MULAN_ENABLED: "${MULAN_ENABLED:-false}"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
