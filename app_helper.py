@@ -509,7 +509,10 @@ def init_db():
                 legacy_rows = cur.fetchall()
 
                 if legacy_rows:
-                    # Determine primary provider for path normalization
+                    # Determine primary provider for provider_track linking (NOT for normalization)
+                    # Use provider_id=None for normalization because music_path_prefix may not
+                    # be configured yet at startup. The analysis skip-path will re-link with
+                    # correct provider-specific normalization when it runs later.
                     cur.execute("SELECT id FROM provider WHERE enabled = true ORDER BY priority DESC, id ASC LIMIT 1")
                     prov_row = cur.fetchone()
                     primary_provider_id = prov_row[0] if prov_row else None
@@ -517,7 +520,7 @@ def init_db():
                     backfill_count = 0
                     for item_id, title, author, album, file_path in legacy_rows:
                         try:
-                            normalized = normalize_provider_path(file_path, provider_id=primary_provider_id)
+                            normalized = normalize_provider_path(file_path, provider_id=None)
                             if not normalized:
                                 continue
                             fph = _hashlib_bt.sha256(normalized.encode('utf-8')).hexdigest()

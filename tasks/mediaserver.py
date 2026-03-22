@@ -1002,8 +1002,11 @@ def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, u
     results = {}
 
     # Determine which providers to use
+    # Always use get_provider_by_id() to get raw config (not config_display with masked passwords)
     if provider_ids == 'all':
-        providers = get_providers(enabled_only=True)
+        display_providers = get_providers(enabled_only=True)
+        providers = [get_provider_by_id(p['id']) for p in display_providers]
+        providers = [p for p in providers if p]
     elif provider_ids is None:
         # Use primary provider or fall back to current config
         primary_id = get_primary_provider_id()
