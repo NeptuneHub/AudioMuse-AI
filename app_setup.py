@@ -1430,7 +1430,7 @@ def _backfill_legacy_tracks(primary_provider_id):
     Returns:
         dict with 'linked' and 'errors' counts
     """
-    from app_helper import get_or_create_track, update_score_track_id, link_provider_track
+    from app_helper import get_or_create_track, link_provider_track
 
     # In the new track_id canonical architecture, score.track_id IS the PK (never NULL).
     # This backfill function is only relevant for pre-migration databases.
@@ -1463,7 +1463,6 @@ def _backfill_legacy_tracks(primary_provider_id):
         try:
             track_id = get_or_create_track(file_path, provider_id=primary_provider_id)
             if track_id:
-                update_score_track_id(item_id, track_id)
                 link_provider_track(primary_provider_id, track_id, item_id,
                                     title=title, artist=author, album=album)
                 linked += 1

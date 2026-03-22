@@ -329,44 +329,6 @@ class TestIterationDeduplication:
         assert new_count == 0
 
 
-# ---------------------------------------------------------------------------
-# Stopping Conditions
-# ---------------------------------------------------------------------------
-
-@pytest.mark.unit
-class TestStoppingConditions:
-    """Test the agentic loop stopping conditions."""
-
-    def test_target_reached_stops(self):
-        """Loop stops when target song count is reached."""
-        target = 100
-        current = 105
-        assert current >= target
-
-    def test_no_tool_calls_stops(self):
-        """Loop stops when AI returns no tool calls."""
-        tool_calls = []
-        assert not tool_calls
-
-    def test_no_new_songs_stops(self):
-        """Loop stops when an iteration adds 0 new songs."""
-        iteration_songs_added = 0
-        assert iteration_songs_added == 0
-
-    def test_max_iterations_stops(self):
-        """Loop stops at max_iterations."""
-        max_iterations = 5
-        for iteration in range(max_iterations):
-            pass
-        assert iteration == max_iterations - 1
-
-    def test_ai_error_stops_after_first_iteration(self):
-        """AI error on iteration > 0 breaks the loop."""
-        iteration = 2
-        error = True
-        should_break = iteration > 0 and error
-        assert should_break
-
 
 # ---------------------------------------------------------------------------
 # API Key Validation

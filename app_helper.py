@@ -1514,32 +1514,6 @@ def get_item_id_for_provider(file_path_or_track_id, provider_id):
         return row[0] if row else None
 
 
-def is_multi_provider_mode():
-    """Check if multi-provider mode is enabled."""
-    db = get_db()
-    with db.cursor() as cur:
-        cur.execute("SELECT value FROM app_settings WHERE key = 'multi_provider_enabled'")
-        row = cur.fetchone()
-        if row:
-            val = row[0]
-            return val is True or val == True or val == 'true'
-        return False
-
-
-def set_primary_provider(provider_id):
-    """Set the primary provider ID."""
-    db = get_db()
-    with db.cursor() as cur:
-        cur.execute("""
-            INSERT INTO app_settings (key, value, category, description, updated_at)
-            VALUES ('primary_provider_id', %s, 'providers', 'ID of the primary provider', NOW())
-            ON CONFLICT (key) DO UPDATE SET
-                value = EXCLUDED.value,
-                updated_at = NOW()
-        """, (str(provider_id) if provider_id is not None else 'null',))
-        db.commit()
-
-
 
 # ##############################################################################
 # TRACK LINKING FUNCTIONS - For multi-provider track identity
@@ -1679,33 +1653,6 @@ def normalize_path_for_provider(file_path, provider_id=None):
 normalize_provider_path = normalize_path_for_provider
 
 
-def get_path_quality(file_path):
-    """
-    Assess the quality/reliability of a file path for cross-provider matching.
-
-    Returns:
-        'reliable': Absolute path (starts with / or file://) — real filesystem path
-        'unreliable': Relative path (no leading /) — likely Navidrome virtual path
-        'empty': No path provided
-    """
-    if not file_path:
-        return 'empty'
-
-    path = file_path.strip()
-
-    # file:// URLs are always absolute/reliable
-    if path.startswith('file://'):
-        return 'reliable'
-
-    # Windows absolute paths (C:\..., D:\...)
-    if len(path) > 2 and path[1] == ':' and path[2] in ('\\', '/'):
-        return 'reliable'
-
-    # Unix absolute paths
-    if path.startswith('/'):
-        return 'reliable'
-
-    return 'unreliable'
 
 
 def _compute_file_path_hash(file_path, provider_id=None):
@@ -1820,12 +1767,6 @@ def link_provider_track(provider_id, track_id, item_id, title=None, artist=None,
         return result[0] if result else None
 
 
-def update_score_track_id(item_id, track_id):
-    """DEPRECATED: No-op in new architecture where track_id IS the score PK.
-    Kept for backward compatibility during migration.
-    """
-    pass
-
 
 def resolve_track_id(external_id):
     """Resolve any external identifier to a canonical track_id integer.
@@ -1858,11 +1799,6 @@ def resolve_track_id(external_id):
         row = cur.fetchone()
         return row[0] if row else None
 
-
-def resolve_canonical_item_id(item_id):
-    """DEPRECATED: Use resolve_track_id() instead. Returns str(track_id) for backward compat."""
-    tid = resolve_track_id(item_id)
-    return str(tid) if tid else None
 
 
 def resolve_canonical_artist(artist_query):
@@ -1957,40 +1893,6 @@ def get_track_by_file_path(file_path):
         return None
 
 
-def get_all_provider_item_ids_for_track(track_id):
-    """
-    Get all provider item_ids linked to a track.
-
-    Args:
-        track_id: The track ID
-
-    Returns:
-        List of dicts with provider_id, item_id, title, artist, album
-    """
-    if not track_id:
-        return []
-
-    db = get_db()
-    with db.cursor() as cur:
-        cur.execute("""
-            SELECT pt.provider_id, pt.item_id, pt.title, pt.artist, pt.album,
-                   p.provider_type, p.name as provider_name
-            FROM provider_track pt
-            JOIN provider p ON p.id = pt.provider_id
-            WHERE pt.track_id = %s
-        """, (track_id,))
-        return [
-            {
-                'provider_id': row[0],
-                'item_id': row[1],
-                'title': row[2],
-                'artist': row[3],
-                'album': row[4],
-                'provider_type': row[5],
-                'provider_name': row[6],
-            }
-            for row in cur.fetchall()
-        ]
 
 
 def _normalize_metadata_for_matching(title, artist):
