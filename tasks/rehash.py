@@ -82,10 +82,11 @@ def rehash_provider_tracks_task(provider_id):
                 return {"status": "FAILURE", "message": "Could not fetch tracks from provider"}
 
             # Build a lookup: item_id -> current file_path from provider
+            # get_sample_tracks_from_provider returns dicts with 'id', 'title', 'artist', 'file_path'
             path_by_item_id = {}
             for t in all_tracks:
-                item_id = t.get('id') or t.get('item_id')
-                file_path = t.get('file_path') or t.get('path') or t.get('Path')
+                item_id = t.get('id')
+                file_path = t.get('file_path')
                 if item_id and file_path:
                     path_by_item_id[str(item_id)] = file_path
 

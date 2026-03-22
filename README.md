@@ -115,14 +115,11 @@ For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](d
 
 3. **Start the services:**
    ```bash
-   docker compose -f deployment/docker-compose.yaml up -d
+   docker compose -f deployment/docker-compose-unified.yaml up -d
    ```
-> Remember to get the correct version for your Music Server.
+   > For NVIDIA GPU acceleration, use `docker-compose-unified-nvidia.yaml` instead.
+   > The unified compose file supports all provider types (Jellyfin, Navidrome, Lyrion, Emby, LocalFiles).
 
-> docker-compose.yaml is for Jellyfin.
-> You also have docker-compose-navidrome.yaml, docker-compose-lyrion.yaml, dokcer-compose-emby.yaml
-
-> Other example are for advanced deployment.
 4. **Access the application:**
    Open your browser at `http://localhost:8000`
 
@@ -133,7 +130,7 @@ For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](d
 
 **Stopping the services:**
 ```bash
-docker compose -f deployment/docker-compose.yaml down
+docker compose -f deployment/docker-compose-unified.yaml down
 ```
 
 ## Multi-Provider Support

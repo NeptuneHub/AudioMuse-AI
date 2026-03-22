@@ -149,15 +149,6 @@ def get_available_provider_types():
 # PROVIDER FACTORY
 # ##############################################################################
 
-# Provider module mapping for dynamic dispatch
-PROVIDER_MODULES = {
-    'jellyfin': 'tasks.mediaserver_jellyfin',
-    'navidrome': 'tasks.mediaserver_navidrome',
-    'lyrion': 'tasks.mediaserver_lyrion',
-    'emby': 'tasks.mediaserver_emby',
-    'localfiles': 'tasks.mediaserver_localfiles',
-}
-
 # Pre-imported function maps for performance (avoid repeated imports)
 _PROVIDER_FUNCTIONS = {
     'jellyfin': {
@@ -254,32 +245,6 @@ def get_provider_function(provider_type: str, function_name: str):
         logger.warning(f"Unknown provider type: {provider_type}")
         return None
     return provider_funcs.get(function_name)
-
-
-def dispatch_to_provider(function_name: str, provider_type: str = None, *args, **kwargs):
-    """
-    Dispatch a function call to the appropriate provider.
-
-    Args:
-        function_name: Name of the function to call
-        provider_type: Optional provider type override (defaults to config.MEDIASERVER_TYPE)
-        *args, **kwargs: Arguments to pass to the function
-
-    Returns:
-        Result of the provider function call
-
-    Usage:
-        songs = dispatch_to_provider('get_all_songs')
-        songs = dispatch_to_provider('get_all_songs', provider_type='navidrome')
-    """
-    if provider_type is None:
-        provider_type = config.MEDIASERVER_TYPE
-
-    func = get_provider_function(provider_type, function_name)
-    if func is None:
-        raise ValueError(f"Function '{function_name}' not found for provider '{provider_type}'")
-
-    return func(*args, **kwargs)
 
 
 # ##############################################################################
@@ -593,7 +558,7 @@ def get_sample_tracks_from_provider(provider_type: str, config_dict: dict, limit
         limit: Maximum number of tracks to fetch
 
     Returns:
-        List of track dicts with keys: title, artist, file_path
+        List of track dicts with keys: id, title, artist, file_path
     """
     import requests
 
@@ -621,6 +586,7 @@ def get_sample_tracks_from_provider(provider_type: str, config_dict: dict, limit
             tracks = []
             for item in items:
                 tracks.append({
+                    'id': item.get('Id'),
                     'title': item.get('Name'),
                     'artist': item.get('AlbumArtist') or (item.get('Artists', [None])[0] if item.get('Artists') else None),
                     'file_path': item.get('Path')
@@ -653,6 +619,7 @@ def get_sample_tracks_from_provider(provider_type: str, config_dict: dict, limit
             tracks = []
             for s in songs:
                 tracks.append({
+                    'id': s.get('id'),
                     'title': s.get('title'),
                     'artist': s.get('artist'),
                     'file_path': s.get('path')
@@ -682,6 +649,7 @@ def get_sample_tracks_from_provider(provider_type: str, config_dict: dict, limit
             tracks = []
             for item in items:
                 tracks.append({
+                    'id': item.get('Id'),
                     'title': item.get('Name'),
                     'artist': item.get('AlbumArtist') or (item.get('Artists', [None])[0] if item.get('Artists') else None),
                     'file_path': item.get('Path')
@@ -709,6 +677,7 @@ def get_sample_tracks_from_provider(provider_type: str, config_dict: dict, limit
             tracks = []
             for t in titles_loop:
                 tracks.append({
+                    'id': t.get('id'),
                     'title': t.get('title'),
                     'artist': t.get('artist'),
                     'file_path': t.get('url')  # Lyrion uses 'url' for file path
@@ -717,6 +686,7 @@ def get_sample_tracks_from_provider(provider_type: str, config_dict: dict, limit
 
         elif provider_type == 'localfiles':
             import os
+            import hashlib as _hashlib
             music_dir = config_dict.get('music_directory')
             if not music_dir or not os.path.isdir(music_dir):
                 return []
@@ -739,7 +709,11 @@ def get_sample_tracks_from_provider(provider_type: str, config_dict: dict, limit
                         parts = rel_path.split(os.sep)
                         artist = parts[0] if len(parts) > 1 else 'Unknown'
                         title = os.path.splitext(parts[-1])[0]
+                        # LocalFiles uses SHA-256 hash of normalized path as item_id
+                        normalized = rel_path.replace(os.sep, '/')
+                        item_id = _hashlib.sha256(normalized.encode('utf-8')).hexdigest()
                         tracks.append({
+                            'id': item_id,
                             'title': title,
                             'artist': artist,
                             'file_path': rel_path
@@ -848,71 +822,6 @@ def _get_provider_config_fields(provider_type: str):
         ],
     }
     return fields.get(provider_type, [])
-
-
-# ##############################################################################
-# MULTI-PROVIDER PLAYLIST FUNCTIONS
-# ##############################################################################
-
-def get_all_playlists_multi_provider(provider_ids=None):
-    """
-    Get playlists from multiple providers with deduplication.
-
-    Args:
-        provider_ids: List of provider IDs to query, or None for all enabled providers
-
-    Returns:
-        List of playlists with provider info, deduplicated by name
-    """
-    from app_setup import get_providers_display as get_providers, get_provider_by_id
-
-    all_playlists = []
-    seen_names = {}  # Track playlist names to detect duplicates
-
-    # Get providers to query
-    if provider_ids is None:
-        providers = get_providers(enabled_only=True)
-    else:
-        providers = [p for p in (get_provider_by_id(pid) for pid in provider_ids) if p]
-
-    for provider in providers:
-        try:
-            provider_type = provider['provider_type']
-            playlists = _get_playlists_for_provider_type(provider_type)
-
-            for playlist in playlists:
-                playlist_name = playlist.get('Name') or playlist.get('name', '')
-                playlist_id = playlist.get('Id') or playlist.get('id', '')
-
-                # Add provider info to playlist
-                playlist['provider_id'] = provider['id']
-                playlist['provider_type'] = provider_type
-                playlist['provider_name'] = provider.get('name', provider_type)
-
-                # Check for duplicates by name
-                if playlist_name in seen_names:
-                    # Mark as duplicate
-                    playlist['is_duplicate'] = True
-                    playlist['duplicate_of_provider'] = seen_names[playlist_name]
-                else:
-                    playlist['is_duplicate'] = False
-                    seen_names[playlist_name] = provider['id']
-
-                all_playlists.append(playlist)
-
-        except Exception as e:
-            logger.warning(f"Failed to get playlists from provider {provider.get('name', 'unknown')}: {e}")
-            continue
-
-    return all_playlists
-
-
-def _get_playlists_for_provider_type(provider_type):
-    """Get playlists for a specific provider type using current config."""
-    func = get_provider_function(provider_type, 'get_all_playlists')
-    if func:
-        return func()
-    return []
 
 
 def remap_item_ids_for_provider(track_ids: list, target_provider_id: int) -> list:
