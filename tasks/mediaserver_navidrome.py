@@ -402,7 +402,11 @@ def _add_to_playlist(playlist_id, item_ids, user_creds=None, base_url=None):
     logger.info(f"Adding {len(item_ids)} songs to Navidrome playlist ID {playlist_id} in batches.")
     for i in range(0, len(item_ids), NAVIDROME_API_BATCH_SIZE):
         batch_ids = item_ids[i:i + NAVIDROME_API_BATCH_SIZE]
-        params = {"playlistId": playlist_id, "songIdToAdd": batch_ids}
+        params = {
+            "playlistId": playlist_id,
+            "songIdToAdd": batch_ids,
+            "public": "true",
+        }
 
         # Note: updatePlaylist uses a POST method.
         response = _navidrome_request("updatePlaylist", params, method='post', user_creds=user_creds, base_url=base_url)
@@ -427,7 +431,10 @@ def _create_playlist_batched(playlist_name, item_ids, user_creds=None, base_url=
     ids_for_creation = item_ids[:NAVIDROME_API_BATCH_SIZE]
     ids_to_add_later = item_ids[NAVIDROME_API_BATCH_SIZE:]
 
-    create_params = {"name": playlist_name, "songId": ids_for_creation}
+    create_params = {
+        "name": playlist_name,
+        "songId": ids_for_creation,
+    }
     create_response = _navidrome_request("createPlaylist", create_params, method='post', user_creds=user_creds, base_url=base_url)
 
     # --- Extract playlist object directly from the creation response ---
@@ -443,6 +450,16 @@ def _create_playlist_batched(playlist_name, item_ids, user_creds=None, base_url=
         return None
 
     logger.info(f"✅ Created Navidrome playlist '{playlist_name}' (ID: {new_playlist_id}) with the first {len(ids_for_creation)} songs.")
+
+    # Immediately update playlist to public (Navidrome requires updatePlaylist for visibility).
+    update_response = _navidrome_request(
+        "updatePlaylist",
+        {"playlistId": new_playlist_id, "public": "true"},
+        method='post',
+        user_creds=user_creds,
+    )
+    if not (update_response and update_response.get("status") == "ok"):
+        logger.error(f"Failed to set playlist '{playlist_name}' public after creation via updatePlaylist.")
 
     # If there are more songs to add, use the ID we just got
     if ids_to_add_later:

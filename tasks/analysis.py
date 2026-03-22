@@ -966,13 +966,17 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
                         logger.info(f"  - Other Features: {other_features}")
                         
                         # Save MusiCNN score+embedding first (creates the 'score' row)
+                        # NOTE: `item` keys come from the media server API and may be lowercase (e.g. Navidrome).
+                        # Use both variants to avoid missing metadata and ensure `search_u` can be generated.
+                        album_value = item.get('Album') or item.get('album')
+                        album_artist_value = item.get('OriginalAlbumArtist') or item.get('originalAlbumArtist') or item.get('album_artist')
                         if track_id:
                             save_track_analysis_and_embedding(
                                 track_id, item['Name'], item.get('AlbumArtist', 'Unknown'),
                                 musicnn_analysis['tempo'], musicnn_analysis['key'], musicnn_analysis['scale'],
                                 top_moods, musicnn_embedding,
                                 energy=musicnn_analysis['energy'], other_features=other_features,
-                                album=item.get('Album', None), album_artist=item.get('OriginalAlbumArtist', None),
+                                album=album_value, album_artist=album_artist_value,
                                 year=item.get('Year'), rating=item.get('Rating'),
                                 file_path=item_file_path,
                                 provider_id=active_provider_id, item_id=track_id_str

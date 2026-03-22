@@ -173,13 +173,47 @@ def init_db():
         # Always ensure the index exists (handles installs where column was added without index)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_score_file_path ON score(file_path)")
 
-        # Add 'search_u' column if not exists (helps search)
-        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u')")
-        if not cur.fetchone()[0]:
-            logger.info("Creating immutable function to remove accents.")
-            cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
-            logger.info("Adding 'search_u' generated column to 'score' table.")
-            cur.execute("ALTER TABLE score ADD COLUMN search_u TEXT GENERATED ALWAYS AS (lower(immutable_unaccent(COALESCE(title, '') || ' ' || COALESCE(author, '') || ' ' || COALESCE(album, '')))) STORED;")
+        # Ensure we have a searchable, accent-stripped `search_u` column.
+        # Postgres does not allow generated columns to call `unaccent()` (it's not marked immutable),
+        # so we store the value in a normal column and keep it in sync via trigger.
+        cur.execute("SELECT is_generated FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u'")
+        row = cur.fetchone()
+        search_u_generated = (row and row[0] == 'ALWAYS')
+
+        if search_u_generated:
+            logger.info("Dropping legacy generated 'search_u' column to replace it with a trigger-updated column.")
+            cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS search_u")
+            row = None
+
+        # Create plain `search_u` column if missing
+        if not row:
+            logger.info("Adding 'search_u' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN search_u TEXT")
+
+        # Create helper function for accent stripping (safe to run multiple times)
+        cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
+
+        # Create/replace trigger function to keep search_u in sync
+        cur.execute("""
+            CREATE OR REPLACE FUNCTION score_search_u_sync() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                NEW.search_u := lower(immutable_unaccent(concat_ws(' ', NEW.title, NEW.author, NEW.album)));
+                RETURN NEW;
+            END;
+            $$;
+        """)
+
+        # Attach trigger to update search_u on insert/update
+        cur.execute("DROP TRIGGER IF EXISTS score_search_u_sync_trigger ON score")
+        cur.execute("""
+            CREATE TRIGGER score_search_u_sync_trigger
+            BEFORE INSERT OR UPDATE ON score
+            FOR EACH ROW
+            EXECUTE FUNCTION score_search_u_sync();
+        """)
+
+        # Backfill existing rows
+        cur.execute("UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL")
         # Create index on 'score' to assist in searches
         cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
 

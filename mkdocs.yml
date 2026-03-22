@@ -11,7 +11,7 @@ nav:
   - Deployment: DEPLOYMENT.md
   - FAQ: FAQ.md
   - GPU: GPU.md
-  - Hardware: HARDWARE.md
   - Parameters: PARAMETERS.md
+  - Authentication: AUTH.md
 
 theme: readthedocs
