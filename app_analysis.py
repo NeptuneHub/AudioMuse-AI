@@ -82,7 +82,7 @@ def start_analysis_endpoint():
     """
     # Local imports to prevent circular dependency at startup
     from app_helper import rq_queue_high, clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING
-    from app_setup import get_providers
+    from app_setup import get_providers_display as get_providers
 
     data = request.json or {}
     num_recent_albums = int(data.get('num_recent_albums', NUM_RECENT_ALBUMS))

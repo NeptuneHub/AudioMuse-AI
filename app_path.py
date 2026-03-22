@@ -3,6 +3,7 @@ from flask import Blueprint, jsonify, request, render_template
 import logging
 from tasks.path_manager import find_path_between_songs
 from config import PATH_DEFAULT_LENGTH, PATH_FIX_SIZE
+from app_helper import resolve_track_id
 import numpy as np
 import math # Import the math module
 
@@ -32,7 +33,14 @@ def find_path_endpoint():
     if not start_song_id or not end_song_id:
         return jsonify({"error": "Both a start and end song must be provided."}), 400
 
-    if start_song_id == end_song_id:
+    # Explicit resolution for non-standard param names (middleware only handles item_id/id)
+    start_track_id = resolve_track_id(start_song_id)
+    end_track_id = resolve_track_id(end_song_id)
+
+    if not start_track_id or not end_track_id:
+        return jsonify({"error": "One or both track IDs could not be resolved."}), 404
+
+    if start_track_id == end_track_id:
         return jsonify({"error": "Start and end songs cannot be the same."}), 400
 
     try:
@@ -43,7 +51,7 @@ def find_path_endpoint():
         else:
             path_fix_size = str(pfs).lower() in ('1', 'true', 'yes', 'y')
 
-        path, total_distance = find_path_between_songs(start_song_id, end_song_id, max_steps, path_fix_size=path_fix_size)
+        path, total_distance = find_path_between_songs(start_track_id, end_track_id, max_steps, path_fix_size=path_fix_size)
 
         if not path:
             return jsonify({"error": f"No path found between the selected songs within {max_steps} steps."}), 404
@@ -73,5 +81,5 @@ def find_path_endpoint():
         })
 
     except Exception as e:
-        logger.error(f"Error finding path between {start_song_id} and {end_song_id}: {e}", exc_info=True)
+        logger.error(f"Error finding path between {start_track_id} and {end_track_id}: {e}", exc_info=True)
         return jsonify({"error": "An unexpected error occurred while finding the path."}), 500

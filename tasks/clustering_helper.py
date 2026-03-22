@@ -129,13 +129,13 @@ def _prepare_iteration_data(item_ids, active_mood_labels, use_embeddings, log_pr
             if use_embeddings:
                 embedding_vec = row_data.get('embedding_vector')
                 if embedding_vec is None or embedding_vec.size == 0:
-                    logger.warning(f"Skipping track {row_data.get('item_id')} due to missing embedding.")
+                    logger.warning(f"Skipping track {row_data.get('track_id', row_data.get('item_id'))} due to missing embedding.")
                     continue
                 X_embed_raw_list.append(embedding_vec)
             X_feat_orig_list.append(feature_vec)
             valid_tracks.append(row_data)
         except (json.JSONDecodeError, TypeError):
-            logger.warning(f"Skipping track {row_data.get('item_id')} due to data parsing error.")
+            logger.warning(f"Skipping track {row_data.get('track_id', row_data.get('item_id'))} due to data parsing error.")
     if not valid_tracks:
         logger.error(f"{log_prefix} Iteration {run_idx}: No valid tracks could be processed.")
         return None, None, None
@@ -411,8 +411,10 @@ def _format_and_score_iteration_result(
                 break
         
         for t_item_info_final in selected_tracks_for_playlist:
-            item_id_val, title_val, author_val = t_item_info_final["row"]["item_id"], t_item_info_final["row"]["title"], t_item_info_final["row"]["author"]
-            filtered_clusters[cid].append((item_id_val, title_val, author_val))
+            track_id_val = t_item_info_final["row"]["track_id"]
+            title_val = t_item_info_final["row"]["title"]
+            author_val = t_item_info_final["row"]["author"]
+            filtered_clusters[cid].append((track_id_val, title_val, author_val))
 
     # --- 2. Format final playlists and centroids ---
     named_playlists, playlist_centroids = {}, {}
@@ -420,7 +422,7 @@ def _format_and_score_iteration_result(
     playlist_to_centroid_vector_map = {}
     unique_predominant_mood_scores = {}
     unique_predominant_other_feature_scores = {}
-    item_id_to_song_index_map = {track_data['item_id']: i for i, track_data in enumerate(valid_tracks)}
+    item_id_to_song_index_map = {track_data['track_id']: i for i, track_data in enumerate(valid_tracks)}
 
     for label_id, songs_list in filtered_clusters.items():
         if songs_list and label_id in centers:
@@ -494,7 +496,7 @@ def _format_and_score_iteration_result(
             if not top_moods: continue
 
             song_purity_scores = []
-            for item_id, _, _ in songs:
+            for item_id, _, _ in songs:  # item_id here is actually track_id from tuple
                 song_idx = item_id_to_song_index_map.get(item_id)
                 if song_idx is not None and song_idx < X_feat_orig.shape[0]:
                     song_feat_vec = X_feat_orig[song_idx]
@@ -701,21 +703,21 @@ def _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=None, perc
     else:
         kept_ids = set()
     
-    id_to_track_map = {t['item_id']: t for g_list in genre_map.values() for t in g_list}
-    for track_id in kept_ids:
-        if track_id in id_to_track_map:
-            new_subset.append(id_to_track_map[track_id])
-            new_ids.add(track_id)
+    id_to_track_map = {t['track_id']: t for g_list in genre_map.values() for t in g_list}
+    for tid in kept_ids:
+        if tid in id_to_track_map:
+            new_subset.append(id_to_track_map[tid])
+            new_ids.add(tid)
 
     for genre in STRATIFIED_GENRES:
         current_genre_count = sum(1 for t in new_subset if _get_track_primary_genre(t) == genre)
         needed = target_per_genre - current_genre_count
         if needed > 0:
-            candidates = [t for t in genre_map.get(genre, []) if t['item_id'] not in new_ids]
+            candidates = [t for t in genre_map.get(genre, []) if t['track_id'] not in new_ids]
             if candidates:
                 added_tracks = random.sample(candidates, min(needed, len(candidates)))
                 new_subset.extend(added_tracks)
-                for t in added_tracks: new_ids.add(t['item_id'])
+                for t in added_tracks: new_ids.add(t['track_id'])
     random.shuffle(new_subset)
     return new_subset
 

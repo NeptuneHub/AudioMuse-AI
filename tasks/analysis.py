@@ -551,6 +551,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
                      save_track_analysis_and_embedding, save_clap_embedding, get_clap_embedding,
                      get_primary_provider_id, find_existing_analysis_by_file_path,
                      link_provider_to_existing_track, link_provider_track,
+                     get_or_create_track,
                      TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import analyze_audio_file as clap_analyze, is_clap_available, get_or_cache_other_feature_text_embeddings, compute_other_features_from_clap
     from .mulan_analyzer import analyze_audio_file as mulan_analyze
@@ -626,68 +627,52 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
                 log_and_update_album_task(f"No tracks found for album: {album_name}", 100, task_state=TASK_STATUS_SUCCESS)
                 return {"status": "SUCCESS", "message": f"No tracks in album {album_name}", "tracks_analyzed": 0}
 
-            def get_existing_track_ids(track_ids):
-                if not track_ids: return set()
+            def get_existing_track_ids(provider_item_ids):
+                """Check which provider item_ids already have complete analysis.
+                Resolves provider item_ids to canonical track_ids via provider_track,
+                then checks score + embedding tables."""
+                if not provider_item_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
-                    track_ids_as_strings = [str(id) for id in track_ids]
-                    # Path 1: Direct match in score
+                    item_id_strs = [str(id) for id in provider_item_ids]
+                    # Resolve provider item_ids → track_ids, then check score+embedding
                     cur.execute("""
-                        SELECT s.item_id FROM score s
-                        JOIN embedding e ON s.item_id = e.item_id
-                        WHERE s.item_id IN %s AND s.other_features IS NOT NULL
+                        SELECT pt.item_id FROM provider_track pt
+                        JOIN score s ON pt.track_id = s.track_id
+                        JOIN embedding e ON s.track_id = e.track_id
+                        WHERE pt.item_id IN %s AND s.other_features IS NOT NULL
                         AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL
-                    """, (tuple(track_ids_as_strings),))
-                    found = {row[0] for row in cur.fetchall()}
-                    # Path 2: provider_track chain (secondary providers linked without row duplication)
-                    remaining = set(track_ids_as_strings) - found
-                    if remaining:
-                        cur.execute("""
-                            SELECT pt.item_id FROM provider_track pt
-                            JOIN score s ON pt.track_id = s.track_id
-                            JOIN embedding e ON s.item_id = e.item_id
-                            WHERE pt.item_id IN %s AND s.other_features IS NOT NULL
-                            AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL
-                        """, (tuple(remaining),))
-                        found.update(row[0] for row in cur.fetchall())
-                    return found
+                    """, (tuple(item_id_strs),))
+                    return {row[0] for row in cur.fetchall()}
 
-            def get_missing_clap_track_ids(track_ids):
-                if not track_ids: return set()
+            def get_missing_clap_track_ids(provider_item_ids):
+                """Find provider item_ids that are missing CLAP embeddings.
+                Resolves via provider_track → track_id → clap_embedding."""
+                if not provider_item_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
-                    track_ids_as_strings = [str(id) for id in track_ids]
-                    # Path 1: Direct match
-                    cur.execute("SELECT item_id FROM clap_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
+                    item_id_strs = [str(id) for id in provider_item_ids]
+                    # Find which item_ids already have CLAP via provider_track chain
+                    cur.execute("""
+                        SELECT pt.item_id FROM provider_track pt
+                        JOIN clap_embedding ce ON pt.track_id = ce.track_id
+                        WHERE pt.item_id IN %s
+                    """, (tuple(item_id_strs),))
                     existing_clap_ids = {row[0] for row in cur.fetchall()}
-                    # Path 2: provider_track chain (linked secondary providers)
-                    remaining = set(track_ids_as_strings) - existing_clap_ids
-                    if remaining:
-                        cur.execute("""
-                            SELECT pt.item_id FROM provider_track pt
-                            JOIN score s ON pt.track_id = s.track_id
-                            JOIN clap_embedding ce ON s.item_id = ce.item_id
-                            WHERE pt.item_id IN %s
-                        """, (tuple(remaining),))
-                        existing_clap_ids.update(row[0] for row in cur.fetchall())
-                    return set(track_ids_as_strings) - existing_clap_ids
+                    return set(item_id_strs) - existing_clap_ids
 
-            def get_missing_mulan_track_ids(track_ids):
-                if not track_ids: return set()
+            def get_missing_mulan_track_ids(provider_item_ids):
+                """Find provider item_ids that are missing MuLan embeddings.
+                Resolves via provider_track → track_id → mulan_embedding."""
+                if not provider_item_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
-                    track_ids_as_strings = [str(id) for id in track_ids]
-                    # Path 1: Direct match
-                    cur.execute("SELECT item_id FROM mulan_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
+                    item_id_strs = [str(id) for id in provider_item_ids]
+                    # Find which item_ids already have MuLan via provider_track chain
+                    cur.execute("""
+                        SELECT pt.item_id FROM provider_track pt
+                        JOIN mulan_embedding me ON pt.track_id = me.track_id
+                        WHERE pt.item_id IN %s
+                    """, (tuple(item_id_strs),))
                     existing_mulan_ids = {row[0] for row in cur.fetchall()}
-                    # Path 2: provider_track chain (linked secondary providers)
-                    remaining = set(track_ids_as_strings) - existing_mulan_ids
-                    if remaining:
-                        cur.execute("""
-                            SELECT pt.item_id FROM provider_track pt
-                            JOIN score s ON pt.track_id = s.track_id
-                            JOIN mulan_embedding me ON s.item_id = me.item_id
-                            WHERE pt.item_id IN %s
-                        """, (tuple(remaining),))
-                        existing_mulan_ids.update(row[0] for row in cur.fetchall())
-                    return set(track_ids_as_strings) - existing_mulan_ids
+                    return set(item_id_strs) - existing_mulan_ids
 
             existing_track_ids_set = get_existing_track_ids([str(t['Id']) for t in tracks])
             missing_clap_ids_set = get_missing_clap_track_ids([str(t['Id']) for t in tracks]) if is_clap_available() else set()
@@ -721,7 +706,12 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
                 except Exception as mapping_error:
                     logger.error(f"Failed to store artist mapping for '{artist_name}': {mapping_error}", exc_info=True)
 
-                track_id_str = str(item['Id'])
+                track_id_str = str(item['Id'])  # Provider-specific item_id
+                item_file_path = item.get('Path') or item.get('FilePath')
+
+                # Get or create canonical track entry (track_id is the integer PK)
+                track_id = get_or_create_track(item_file_path, provider_id=active_provider_id) if item_file_path else None
+
                 needs_musicnn = track_id_str not in existing_track_ids_set
                 needs_clap = track_id_str in missing_clap_ids_set
                 needs_mulan = track_id_str in missing_mulan_ids_set
@@ -729,24 +719,20 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
                 # Multi-provider: Check if this track was already analyzed under a different provider's item_id
                 # If so, link to the existing analysis via provider_track instead of re-analyzing
                 # Uses 3-tier lookup: path hash → direct file_path → metadata (title+artist+album)
-                item_file_path = item.get('Path') or item.get('FilePath')
                 if needs_musicnn:
                     existing_analysis = find_existing_analysis_by_file_path(
                         item_file_path, active_provider_id,
                         title=item.get('Name'), artist=item.get('AlbumArtist'), album=album_name
                     )
                     if existing_analysis and existing_analysis.get('has_musicnn'):
-                        source_item_id = existing_analysis.get('item_id')
-                        if source_item_id and source_item_id != track_id_str:
+                        existing_track_id = existing_analysis.get('track_id')
+                        if existing_track_id:
                             linked = False
                             if existing_analysis.get('source') == 'metadata_match':
                                 # Metadata-based match: link directly to existing track_id
-                                # (can't use link_provider_to_existing_track because file paths differ)
-                                existing_track_id = existing_analysis.get('track_id')
-                                if existing_track_id:
-                                    link_provider_track(active_provider_id, existing_track_id, track_id_str,
-                                                        item.get('Name'), item.get('AlbumArtist'), album_name)
-                                    linked = True
+                                link_provider_track(active_provider_id, existing_track_id, track_id_str,
+                                                    item.get('Name'), item.get('AlbumArtist'), album_name)
+                                linked = True
                             else:
                                 # Path-based match: existing flow
                                 linked = link_provider_to_existing_track(
@@ -759,9 +745,11 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
                                 )
                             if linked:
                                 tracks_linked_count += 1
+                                # Update track_id to point to the existing canonical track
+                                track_id = existing_track_id
                                 logger.info(f"Linked '{track_name_full}' to existing analysis "
                                             f"(source: {existing_analysis.get('source', 'path')}, "
-                                            f"provider item {source_item_id})")
+                                            f"canonical track_id {existing_track_id})")
                                 needs_musicnn = False
                                 if needs_clap and existing_analysis.get('has_clap'):
                                     needs_clap = False
@@ -769,16 +757,24 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
 
                 if not needs_musicnn and not needs_clap and not needs_mulan:
                     # Update metadata for already-analyzed tracks (rating, year, album_artist, file_path)
-                    try:
-                        with get_db() as conn, conn.cursor() as cur:
-                            cur.execute(
-                                "UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE item_id = %s",
-                                (album_name, item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'),
-                                 item.get('Path') or item.get('FilePath'), track_id_str)
-                            )
-                            conn.commit()
-                    except Exception as e:
-                        logger.warning(f"Failed to update metadata for '{track_name_full}': {e}")
+                    if track_id:
+                        try:
+                            with get_db() as conn, conn.cursor() as cur:
+                                cur.execute(
+                                    "UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE track_id = %s",
+                                    (album_name, item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'),
+                                     item_file_path, track_id)
+                                )
+                                conn.commit()
+                        except Exception as e:
+                            logger.warning(f"Failed to update metadata for '{track_name_full}': {e}")
+                    # Ensure provider_track link exists even for skipped tracks
+                    if track_id and active_provider_id:
+                        try:
+                            link_provider_track(active_provider_id, track_id, track_id_str,
+                                                item.get('Name'), item.get('AlbumArtist'), album_name)
+                        except Exception as e:
+                            logger.warning(f"Failed to link provider track for skipped '{track_name_full}': {e}")
 
                     tracks_skipped_count += 1
                     status_parts = ["MusiCNN: ✓"]
@@ -952,7 +948,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
                         elif not needs_clap and clap_label_embeddings is not None:
                             # CLAP embedding already in DB - load it to compute other_features
                             try:
-                                existing_clap = get_clap_embedding(item['Id'])
+                                existing_clap = get_clap_embedding(track_id) if track_id else None
                                 if existing_clap is not None:
                                     other_features_dict = compute_other_features_from_clap(existing_clap, clap_label_embeddings)
                                     other_features = ",".join([f"{k}:{other_features_dict.get(k, 0.0):.2f}" for k in OTHER_FEATURE_LABELS])
@@ -970,24 +966,36 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
                         logger.info(f"  - Other Features: {other_features}")
                         
                         # Save MusiCNN score+embedding first (creates the 'score' row)
-                        save_track_analysis_and_embedding(item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'), musicnn_analysis['tempo'], musicnn_analysis['key'], musicnn_analysis['scale'], top_moods, musicnn_embedding, energy=musicnn_analysis['energy'], other_features=other_features, album=item.get('Album', None), album_artist=item.get('OriginalAlbumArtist', None), year=item.get('Year'), rating=item.get('Rating'), file_path=item.get('Path') or item.get('FilePath'), provider_id=active_provider_id)
+                        if track_id:
+                            save_track_analysis_and_embedding(
+                                track_id, item['Name'], item.get('AlbumArtist', 'Unknown'),
+                                musicnn_analysis['tempo'], musicnn_analysis['key'], musicnn_analysis['scale'],
+                                top_moods, musicnn_embedding,
+                                energy=musicnn_analysis['energy'], other_features=other_features,
+                                album=item.get('Album', None), album_artist=item.get('OriginalAlbumArtist', None),
+                                year=item.get('Year'), rating=item.get('Rating'),
+                                file_path=item_file_path,
+                                provider_id=active_provider_id, item_id=track_id_str
+                            )
+                        else:
+                            logger.warning(f"No track_id for '{track_name_full}' - cannot save analysis (missing file_path?)")
                     
-                    # Save CLAP embedding AFTER score row exists (FK: clap_embedding.item_id → score.item_id)
-                    if clap_embedding_for_track is not None and needs_clap:
+                    # Save CLAP embedding AFTER score row exists (FK: clap_embedding.track_id → score.track_id)
+                    if clap_embedding_for_track is not None and needs_clap and track_id:
                         try:
-                            save_clap_embedding(item['Id'], clap_embedding_for_track)
+                            save_clap_embedding(track_id, clap_embedding_for_track)
                             logger.info(f"  - CLAP embedding saved (512-dim)")
                         except Exception as e:
                             logger.warning(f"  - Failed to save CLAP embedding: {e}")
                     
                     # MuLan analysis (only if enabled AND needed)
-                    if needs_mulan and MULAN_ENABLED:
+                    if needs_mulan and MULAN_ENABLED and track_id:
                         logger.info(f"  - Starting MuLan analysis for {track_name_full}...")
                         try:
                             mulan_embedding, duration, num_segments = mulan_analyze(path)
                             if mulan_embedding is not None:
                                 from app_helper import save_mulan_embedding
-                                save_mulan_embedding(item['Id'], mulan_embedding)
+                                save_mulan_embedding(track_id, mulan_embedding)
                                 logger.info(f"  - MuLan embedding saved (512-dim, duration: {duration:.1f}s)")
                                 track_processed = True
                         except Exception as e:
@@ -1131,9 +1139,9 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
             # Pre-analysis provider path validation (hard stop in multi-provider setups)
             try:
-                from app_setup import get_provider_by_id, get_providers
+                from app_setup import get_provider_by_id, get_providers_raw
                 provider_config = get_provider_by_id(active_provider_id)
-                all_providers = get_providers(enabled_only=True)
+                all_providers = get_providers_raw(enabled_only=True)
                 is_multi_provider = len(all_providers) > 1
 
                 if provider_config:
@@ -1192,26 +1200,22 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             launched_job_ids = set()  # Track job IDs launched in THIS run only
             albums_skipped, albums_launched, albums_completed, last_rebuild_count, total_linked = 0, 0, 0, 0, 0
 
-            def get_existing_track_ids(track_ids):
-                if not track_ids: return set()
+            def get_existing_track_ids(provider_item_ids):
+                """Check which provider item_ids already have complete analysis.
+                Resolves provider item_ids to canonical track_ids via provider_track,
+                then checks score + embedding tables."""
+                if not provider_item_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
-                    # Convert integer track IDs to strings for database comparison
-                    track_ids_as_strings = [str(track_id) for track_id in track_ids]
-                    # Path 1: Direct match in score
-                    cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL", (tuple(track_ids_as_strings),))
-                    found = {row[0] for row in cur.fetchall()}
-                    # Path 2: provider_track chain (secondary providers linked without row duplication)
-                    remaining = set(track_ids_as_strings) - found
-                    if remaining:
-                        cur.execute("""
-                            SELECT pt.item_id FROM provider_track pt
-                            JOIN score s ON pt.track_id = s.track_id
-                            JOIN embedding e ON s.item_id = e.item_id
-                            WHERE pt.item_id IN %s AND s.other_features IS NOT NULL
-                            AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL
-                        """, (tuple(remaining),))
-                        found.update(row[0] for row in cur.fetchall())
-                    return found
+                    item_id_strs = [str(id) for id in provider_item_ids]
+                    # Resolve provider item_ids → track_ids, then check score+embedding
+                    cur.execute("""
+                        SELECT pt.item_id FROM provider_track pt
+                        JOIN score s ON pt.track_id = s.track_id
+                        JOIN embedding e ON s.track_id = e.track_id
+                        WHERE pt.item_id IN %s AND s.other_features IS NOT NULL
+                        AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL
+                    """, (tuple(item_id_strs),))
+                    return {row[0] for row in cur.fetchall()}
 
             def monitor_and_clear_jobs():
                 """Monitor active RQ jobs and keep `albums_completed` in sync.
@@ -1334,44 +1338,30 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     track_ids = [t['Id'] for t in tracks]
                     existing_count = len(get_existing_track_ids(track_ids))
                     
-                    # Check CLAP if enabled (includes provider_track chain for multi-provider)
+                    # Check CLAP if enabled (resolve provider item_ids via provider_track chain)
                     needs_clap_analysis = False
                     if is_clap_available():
                         with get_db() as conn, conn.cursor() as cur:
                             track_ids_as_strings = [str(id) for id in track_ids]
-                            # Direct match
-                            cur.execute("SELECT item_id FROM clap_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
+                            cur.execute("""
+                                SELECT pt.item_id FROM provider_track pt
+                                JOIN clap_embedding ce ON pt.track_id = ce.track_id
+                                WHERE pt.item_id IN %s
+                            """, (tuple(track_ids_as_strings),))
                             existing_clap_ids = {row[0] for row in cur.fetchall()}
-                            # Provider_track chain for linked secondary provider tracks
-                            remaining_clap = set(track_ids_as_strings) - existing_clap_ids
-                            if remaining_clap:
-                                cur.execute("""
-                                    SELECT pt.item_id FROM provider_track pt
-                                    JOIN score s ON pt.track_id = s.track_id
-                                    JOIN clap_embedding ce ON s.item_id = ce.item_id
-                                    WHERE pt.item_id IN %s
-                                """, (tuple(remaining_clap),))
-                                existing_clap_ids.update(row[0] for row in cur.fetchall())
                             needs_clap_analysis = len(existing_clap_ids) < len(tracks)
 
-                    # Check MuLan only if enabled (includes provider_track chain for multi-provider)
+                    # Check MuLan only if enabled (resolve provider item_ids via provider_track chain)
                     needs_mulan_analysis = False
                     if MULAN_ENABLED:
                         with get_db() as conn, conn.cursor() as cur:
                             track_ids_as_strings = [str(id) for id in track_ids]
-                            # Direct match
-                            cur.execute("SELECT item_id FROM mulan_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
+                            cur.execute("""
+                                SELECT pt.item_id FROM provider_track pt
+                                JOIN mulan_embedding me ON pt.track_id = me.track_id
+                                WHERE pt.item_id IN %s
+                            """, (tuple(track_ids_as_strings),))
                             existing_mulan_ids = {row[0] for row in cur.fetchall()}
-                            # Provider_track chain for linked secondary provider tracks
-                            remaining_mulan = set(track_ids_as_strings) - existing_mulan_ids
-                            if remaining_mulan:
-                                cur.execute("""
-                                    SELECT pt.item_id FROM provider_track pt
-                                    JOIN score s ON pt.track_id = s.track_id
-                                    JOIN mulan_embedding me ON s.item_id = me.item_id
-                                    WHERE pt.item_id IN %s
-                                """, (tuple(remaining_mulan),))
-                                existing_mulan_ids.update(row[0] for row in cur.fetchall())
                             needs_mulan_analysis = len(existing_mulan_ids) < len(tracks)
                     
                 except Exception as e:
@@ -1401,25 +1391,31 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                         track_id_str = str(item['Id'])
                         file_path = item.get('Path') or item.get('FilePath')
 
-                        # Update metadata
-                        try:
-                            with get_db() as conn, conn.cursor() as cur:
-                                cur.execute("UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE item_id = %s", (album.get('Name'), item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'), file_path, track_id_str))
-                                conn.commit()
-                        except Exception as e:
-                            logger.warning(f"[MainAnalysisTask] Failed to update metadata for '{item['Name']}': {e}")
+                        # Get or create canonical track_id for metadata update and linking
+                        item_track_id = None
+                        if file_path:
+                            try:
+                                item_track_id = get_or_create_track(file_path, provider_id=active_provider_id)
+                            except Exception as e:
+                                logger.warning(f"[MainAnalysisTask] Failed to get/create track for '{item['Name']}': {e}")
+
+                        # Update metadata using canonical track_id
+                        if item_track_id:
+                            try:
+                                with get_db() as conn, conn.cursor() as cur:
+                                    cur.execute("UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE track_id = %s", (album.get('Name'), item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'), file_path, item_track_id))
+                                    conn.commit()
+                            except Exception as e:
+                                logger.warning(f"[MainAnalysisTask] Failed to update metadata for '{item['Name']}': {e}")
 
                         # Cross-provider linking: only if not already linked for this provider
-                        if active_provider_id and file_path and track_id_str not in already_linked_ids:
+                        if active_provider_id and item_track_id and track_id_str not in already_linked_ids:
                             try:
-                                from app_helper import get_or_create_track, link_provider_track
-                                track_id = get_or_create_track(file_path, provider_id=active_provider_id)
-                                if track_id:
-                                    link_provider_track(active_provider_id, track_id, track_id_str,
-                                                        title=item.get('Name'),
-                                                        artist=item.get('AlbumArtist') or item.get('Artist'),
-                                                        album=album.get('Name'))
-                                    total_linked += 1
+                                link_provider_track(active_provider_id, item_track_id, track_id_str,
+                                                    title=item.get('Name'),
+                                                    artist=item.get('AlbumArtist') or item.get('Artist'),
+                                                    album=album.get('Name'))
+                                total_linked += 1
                             except Exception as e:
                                 logger.warning(f"[MainAnalysisTask] Failed to link provider track for '{item['Name']}': {e}")
                     albums_skipped += 1

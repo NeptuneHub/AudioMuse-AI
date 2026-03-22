@@ -1,6 +1,6 @@
 # app_external.py
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
 from psycopg2.extras import DictCursor
 import numpy as np
 import logging
@@ -42,30 +42,28 @@ def get_score_endpoint():
       500:
         description: Internal server error.
     """
-    # Local import to prevent circular dependency
-    from app_helper import get_db, resolve_canonical_item_id
+    from app_helper import get_db
 
-    item_id = request.args.get('id')
-    if not item_id:
-        return jsonify({"error": "Missing 'id' parameter"}), 400
-
-    # Resolve provider-specific item_id to canonical
-    item_id = resolve_canonical_item_id(item_id) or item_id
+    # Middleware resolves 'id' param to g.track_id
+    track_id = g.get('track_id')
+    if not track_id:
+        return jsonify({"error": "Missing 'id' parameter or track not found"}), 400
 
     try:
         db = get_db()
         cur = db.cursor(cursor_factory=DictCursor)
-        cur.execute("SELECT * FROM score WHERE item_id = %s", (item_id,))
+        cur.execute("SELECT * FROM score WHERE track_id = %s", (track_id,))
         score_data = cur.fetchone()
         cur.close()
 
         if score_data:
-            # Convert DictRow to a standard dictionary for consistent JSON output
-            return jsonify(dict(score_data))
+            result = dict(score_data)
+            result['item_id'] = str(result['track_id'])  # frontend compat
+            return jsonify(result)
         else:
-            return jsonify({"error": f"Score not found for id: {item_id}"}), 404
+            return jsonify({"error": f"Score not found for id: {track_id}"}), 404
     except Exception as e:
-        logger.error(f"Error fetching score for id {item_id}: {e}", exc_info=True)
+        logger.error(f"Error fetching score for track_id {track_id}: {e}", exc_info=True)
         return jsonify({"error": "An internal server error occurred"}), 500
 
 
@@ -93,34 +91,32 @@ def get_embedding_endpoint():
       500:
         description: Internal server error.
     """
-    # Local import to prevent circular dependency
-    from app_helper import get_db, resolve_canonical_item_id
+    from app_helper import get_db
 
-    item_id = request.args.get('id')
-    if not item_id:
-        return jsonify({"error": "Missing 'id' parameter"}), 400
-
-    # Resolve provider-specific item_id to canonical
-    item_id = resolve_canonical_item_id(item_id) or item_id
+    # Middleware resolves 'id' param to g.track_id
+    track_id = g.get('track_id')
+    if not track_id:
+        return jsonify({"error": "Missing 'id' parameter or track not found"}), 400
 
     try:
         db = get_db()
         cur = db.cursor(cursor_factory=DictCursor)
-        cur.execute("SELECT * FROM embedding WHERE item_id = %s", (item_id,))
+        cur.execute("SELECT * FROM embedding WHERE track_id = %s", (track_id,))
         embedding_data = cur.fetchone()
         cur.close()
 
         if embedding_data:
             embedding_dict = dict(embedding_data)
+            embedding_dict['item_id'] = str(embedding_dict['track_id'])  # frontend compat
             if embedding_dict.get('embedding'):
                 # The embedding is stored as BYTEA, convert it back to a list of floats
                 embedding_vector = np.frombuffer(embedding_dict['embedding'], dtype=np.float32)
                 embedding_dict['embedding'] = embedding_vector.tolist()
             return jsonify(embedding_dict)
         else:
-            return jsonify({"error": f"Embedding not found for id: {item_id}"}), 404
+            return jsonify({"error": f"Embedding not found for id: {track_id}"}), 404
     except Exception as e:
-        logger.error(f"Error fetching embedding for id {item_id}: {e}", exc_info=True)
+        logger.error(f"Error fetching embedding for track_id {track_id}: {e}", exc_info=True)
         return jsonify({"error": "An internal server error occurred"}), 500
 
 

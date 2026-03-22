@@ -266,14 +266,14 @@ class TestGenreMapPreparation:
         from tasks.clustering import _prepare_genre_map
         
         rows = [
-            {'item_id': '1', 'mood_vector': 'rock:0.9,pop:0.1'},
-            {'item_id': '2', 'mood_vector': 'rock:0.8,jazz:0.2'},
-            {'item_id': '3', 'mood_vector': 'pop:0.9,rock:0.1'},
-            {'item_id': '4', 'mood_vector': 'jazz:0.7,rock:0.3'}
+            {'track_id': 1, 'mood_vector': 'rock:0.9,pop:0.1'},
+            {'track_id': 2, 'mood_vector': 'rock:0.8,jazz:0.2'},
+            {'track_id': 3, 'mood_vector': 'pop:0.9,rock:0.1'},
+            {'track_id': 4, 'mood_vector': 'jazz:0.7,rock:0.3'}
         ]
-        
+
         genre_map = _prepare_genre_map(rows)
-        
+
         assert 'rock' in genre_map
         assert 'pop' in genre_map
         assert 'jazz' in genre_map
@@ -286,9 +286,9 @@ class TestGenreMapPreparation:
         from tasks.clustering import _prepare_genre_map
         
         rows = [
-            {'item_id': '1', 'mood_vector': ''},
-            {'item_id': '2', 'mood_vector': None},
-            {'item_id': '3', 'title': 'Song'}
+            {'track_id': 1, 'mood_vector': ''},
+            {'track_id': 2, 'mood_vector': None},
+            {'track_id': 3, 'title': 'Song'}
         ]
         
         genre_map = _prepare_genre_map(rows)
@@ -478,18 +478,18 @@ class TestGetVectorsFromDatabase:
         vector2 = np.array([0.4, 0.5, 0.6], dtype=np.float32)
         
         mock_cursor.fetchall.return_value = [
-            {'item_id': 'song1', 'embedding': vector1.tobytes()},
-            {'item_id': 'song2', 'embedding': vector2.tobytes()}
+            {'track_id': 1, 'embedding': vector1.tobytes()},
+            {'track_id': 2, 'embedding': vector2.tobytes()}
         ]
-        
-        item_ids = ['song1', 'song2']
-        result = get_vectors_from_database(item_ids, mock_conn)
-        
+
+        track_ids = [1, 2]
+        result = get_vectors_from_database(track_ids, mock_conn)
+
         assert len(result) == 2
-        assert 'song1' in result
-        assert 'song2' in result
-        np.testing.assert_array_almost_equal(result['song1'], vector1)
-        np.testing.assert_array_almost_equal(result['song2'], vector2)
+        assert 1 in result
+        assert 2 in result
+        np.testing.assert_array_almost_equal(result[1], vector1)
+        np.testing.assert_array_almost_equal(result[2], vector2)
 
     def test_get_vectors_from_database_empty(self):
         """Test with no results"""
@@ -502,7 +502,7 @@ class TestGetVectorsFromDatabase:
         
         mock_cursor.fetchall.return_value = []
         
-        result = get_vectors_from_database(['song1'], mock_conn)
+        result = get_vectors_from_database([1], mock_conn)
         
         assert len(result) == 0
 
@@ -513,42 +513,42 @@ class TestTitleArtistDeduplication:
     def test_title_artist_deduplication_removes_exact_duplicates(self):
         """Test removal of exact title/artist duplicates"""
         from tasks.clustering_postprocessing import apply_title_artist_deduplication
-        
+
         mock_conn = Mock()
         mock_cursor = Mock()
         mock_conn.cursor.return_value.__enter__ = Mock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = Mock(return_value=None)
-        
+
         mock_cursor.fetchall.return_value = [
-            {'item_id': 'song1', 'title': 'Song A', 'author': 'Artist X'},
-            {'item_id': 'song2', 'title': 'Song A', 'author': 'Artist X'},  # Duplicate
-            {'item_id': 'song3', 'title': 'Song B', 'author': 'Artist Y'}
+            {'track_id': 1, 'title': 'Song A', 'author': 'Artist X'},
+            {'track_id': 2, 'title': 'Song A', 'author': 'Artist X'},  # Duplicate
+            {'track_id': 3, 'title': 'Song B', 'author': 'Artist Y'}
         ]
-        
-        songs = [{'item_id': 'song1'}, {'item_id': 'song2'}, {'item_id': 'song3'}]
+
+        songs = [{'item_id': 1}, {'item_id': 2}, {'item_id': 3}]
         result = apply_title_artist_deduplication(songs, mock_conn)
-        
-        # Should keep only 2 songs (song1 and song3)
+
+        # Should keep only 2 songs (track 1 and track 3)
         assert len(result) == 2
         result_ids = [s['item_id'] for s in result]
-        assert 'song1' in result_ids
-        assert 'song3' in result_ids
+        assert 1 in result_ids
+        assert 3 in result_ids
 
     def test_title_artist_deduplication_case_insensitive(self):
         """Test deduplication is case insensitive"""
         from tasks.clustering_postprocessing import apply_title_artist_deduplication
-        
+
         mock_conn = Mock()
         mock_cursor = Mock()
         mock_conn.cursor.return_value.__enter__ = Mock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = Mock(return_value=None)
-        
+
         mock_cursor.fetchall.return_value = [
-            {'item_id': 'song1', 'title': 'Song A', 'author': 'Artist X'},
-            {'item_id': 'song2', 'title': 'SONG A', 'author': 'ARTIST X'},  # Case different
+            {'track_id': 1, 'title': 'Song A', 'author': 'Artist X'},
+            {'track_id': 2, 'title': 'SONG A', 'author': 'ARTIST X'},  # Case different
         ]
-        
-        songs = [{'item_id': 'song1'}, {'item_id': 'song2'}]
+
+        songs = [{'item_id': 1}, {'item_id': 2}]
         result = apply_title_artist_deduplication(songs, mock_conn)
         
         # Should keep only 1 song
@@ -557,19 +557,19 @@ class TestTitleArtistDeduplication:
     def test_title_artist_deduplication_removes_remastered_versions(self):
         """Test removal of remastered/explicit version markers"""
         from tasks.clustering_postprocessing import apply_title_artist_deduplication
-        
+
         mock_conn = Mock()
         mock_cursor = Mock()
         mock_conn.cursor.return_value.__enter__ = Mock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = Mock(return_value=None)
-        
+
         mock_cursor.fetchall.return_value = [
-            {'item_id': 'song1', 'title': 'Song A', 'author': 'Artist X'},
-            {'item_id': 'song2', 'title': 'Song A (Remastered)', 'author': 'Artist X'},
-            {'item_id': 'song3', 'title': 'Song A [Explicit]', 'author': 'Artist X'},
+            {'track_id': 1, 'title': 'Song A', 'author': 'Artist X'},
+            {'track_id': 2, 'title': 'Song A (Remastered)', 'author': 'Artist X'},
+            {'track_id': 3, 'title': 'Song A [Explicit]', 'author': 'Artist X'},
         ]
-        
-        songs = [{'item_id': 'song1'}, {'item_id': 'song2'}, {'item_id': 'song3'}]
+
+        songs = [{'item_id': 1}, {'item_id': 2}, {'item_id': 3}]
         result = apply_title_artist_deduplication(songs, mock_conn)
         
         # Should keep only 1 song (all are same after cleanup)
@@ -578,19 +578,19 @@ class TestTitleArtistDeduplication:
     def test_title_artist_deduplication_preserves_different_songs(self):
         """Test that different songs are preserved"""
         from tasks.clustering_postprocessing import apply_title_artist_deduplication
-        
+
         mock_conn = Mock()
         mock_cursor = Mock()
         mock_conn.cursor.return_value.__enter__ = Mock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = Mock(return_value=None)
-        
+
         mock_cursor.fetchall.return_value = [
-            {'item_id': 'song1', 'title': 'Song A', 'author': 'Artist X'},
-            {'item_id': 'song2', 'title': 'Song B', 'author': 'Artist X'},  # Different title
-            {'item_id': 'song3', 'title': 'Song A', 'author': 'Artist Y'},  # Different artist
+            {'track_id': 1, 'title': 'Song A', 'author': 'Artist X'},
+            {'track_id': 2, 'title': 'Song B', 'author': 'Artist X'},  # Different title
+            {'track_id': 3, 'title': 'Song A', 'author': 'Artist Y'},  # Different artist
         ]
-        
-        songs = [{'item_id': 'song1'}, {'item_id': 'song2'}, {'item_id': 'song3'}]
+
+        songs = [{'item_id': 1}, {'item_id': 2}, {'item_id': 3}]
         result = apply_title_artist_deduplication(songs, mock_conn)
         
         # Should keep all 3 songs

@@ -127,28 +127,29 @@ def identify_and_clean_orphaned_albums_task():
             log_and_update_main("🗄️ Fetching all track IDs from database...", 80)
             with get_db() as conn, conn.cursor() as cur:
                 cur.execute("""
-                    SELECT DISTINCT s.item_id, s.title, s.author 
-                    FROM score s 
-                    JOIN embedding e ON s.item_id = e.item_id
+                    SELECT DISTINCT s.track_id, s.title, s.author
+                    FROM score s
+                    JOIN embedding e ON s.track_id = e.track_id
                 """)
                 database_tracks = cur.fetchall()
             
-            database_track_ids = {row[0] for row in database_tracks}
+            database_track_ids = {str(row[0]) for row in database_tracks}
             log_and_update_main(f"📚 Found {len(database_track_ids)} tracks in database", 85)
-            
+
             # Step 4: Identify orphaned tracks (in database but not on media server)
             orphaned_track_ids = database_track_ids - media_server_track_ids
             log_and_update_main(f"🧹 Identified {len(orphaned_track_ids)} orphaned tracks", 90)
-            
+
             # Step 5: Group orphaned tracks by artist/album for better presentation
             orphaned_albums_info = defaultdict(lambda: {"tracks": [], "track_count": 0})
-            
+
             for track_data in database_tracks:
                 track_id, title, author = track_data
-                if track_id in orphaned_track_ids:
+                if str(track_id) in orphaned_track_ids:
                     album_key = f"{author}" if author else "Unknown Artist"
                     orphaned_albums_info[album_key]["tracks"].append({
-                        "item_id": track_id,
+                        "track_id": track_id,
+                        "item_id": str(track_id),
                         "title": title,
                         "author": author
                     })
@@ -178,7 +179,7 @@ def identify_and_clean_orphaned_albums_task():
                 limited_track_ids = set()
                 for album in orphaned_albums_list:
                     for track in album["tracks"]:
-                        limited_track_ids.add(track["item_id"])
+                        limited_track_ids.add(str(track["track_id"]))
                 orphaned_track_ids = limited_track_ids
             
             if len(orphaned_track_ids) == 0:
@@ -316,27 +317,27 @@ def delete_orphaned_albums_sync(orphaned_track_ids):
             with conn.cursor() as cur:
                 # Delete from embedding table first (foreign key constraint)
                 logger.info(f"Deleting {len(orphaned_track_ids)} tracks from embedding table...")
-                for track_id in orphaned_track_ids:
+                for tid in orphaned_track_ids:
                     try:
-                        cur.execute("DELETE FROM embedding WHERE item_id = %s", (track_id,))
-                        logger.debug(f"Deleted embedding for track ID: {track_id}")
+                        cur.execute("DELETE FROM embedding WHERE track_id = %s", (tid,))
+                        logger.debug(f"Deleted embedding for track ID: {tid}")
                     except Exception as e:
-                        logger.warning(f"Failed to delete embedding for track {track_id}: {e}")
-                        failed_deletions.append({"track_id": track_id, "table": "embedding", "error": str(e)})
-                
+                        logger.warning(f"Failed to delete embedding for track {tid}: {e}")
+                        failed_deletions.append({"track_id": tid, "table": "embedding", "error": str(e)})
+
                 # Delete from score table
                 logger.info(f"Deleting {len(orphaned_track_ids)} tracks from score table...")
-                for track_id in orphaned_track_ids:
+                for tid in orphaned_track_ids:
                     try:
-                        cur.execute("DELETE FROM score WHERE item_id = %s", (track_id,))
+                        cur.execute("DELETE FROM score WHERE track_id = %s", (tid,))
                         if cur.rowcount > 0:
                             deleted_count += 1
-                            logger.debug(f"Deleted score for track ID: {track_id}")
+                            logger.debug(f"Deleted score for track ID: {tid}")
                         else:
-                            logger.warning(f"No score record found for track ID: {track_id}")
+                            logger.warning(f"No score record found for track ID: {tid}")
                     except Exception as e:
-                        logger.warning(f"Failed to delete score for track {track_id}: {e}")
-                        failed_deletions.append({"track_id": track_id, "table": "score", "error": str(e)})
+                        logger.warning(f"Failed to delete score for track {tid}: {e}")
+                        failed_deletions.append({"track_id": tid, "table": "score", "error": str(e)})
                 
                 # Commit the transaction
                 conn.commit()
@@ -347,8 +348,8 @@ def delete_orphaned_albums_sync(orphaned_track_ids):
             with get_db() as conn:
                 with conn.cursor() as cur:
                     # Clean up playlist entries for deleted tracks
-                    for track_id in orphaned_track_ids:
-                        cur.execute("DELETE FROM playlist WHERE item_id = %s", (track_id,))
+                    for tid in orphaned_track_ids:
+                        cur.execute("DELETE FROM playlist WHERE track_id = %s", (tid,))
                     conn.commit()
                     logger.info("Cleaned up playlist references for deleted tracks")
         except Exception as e:

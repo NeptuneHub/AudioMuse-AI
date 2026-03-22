@@ -283,6 +283,10 @@ EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/app/model/musicn
 PREDICTION_MODEL_PATH = os.environ.get("PREDICTION_MODEL_PATH", "/app/model/musicnn_prediction.onnx")
 EMBEDDING_DIMENSION = 200
 
+# --- Path Normalization Version ---
+# Increment when normalize_path_deterministic() algorithm changes to trigger rehashing
+CURRENT_NORM_VERSION = 1
+
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # Split CLAP models: audio model for analysis, text model for search

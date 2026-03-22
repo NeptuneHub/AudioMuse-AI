@@ -52,6 +52,7 @@ from app_helper import (
     save_task_status,
     get_task_info_from_db,
     cancel_job_and_children_recursive,
+    resolve_track_id, add_item_id_to_results,
     TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
 )
@@ -155,6 +156,48 @@ def teardown_db(e=None):
 # This is safe because it doesn't import other application modules.
 with app.app_context():
     init_db()
+
+def skip_id_resolution(f):
+    """Mark an endpoint to skip automatic ID resolution."""
+    f._skip_id_resolution = True
+    return f
+
+@app.before_request
+def resolve_request_ids():
+    """Automatically resolve provider item_ids to canonical track_ids."""
+    # Skip if endpoint opts out
+    if request.endpoint:
+        view_func = app.view_functions.get(request.endpoint)
+        if view_func and getattr(view_func, '_skip_id_resolution', False):
+            return
+
+    # Resolve 'item_id' or 'id' in query params
+    for param in ('item_id', 'id'):
+        val = request.args.get(param)
+        if val:
+            track_id = resolve_track_id(val)
+            if track_id:
+                g.track_id = track_id
+                g.original_item_id = val
+            break
+
+    # Resolve in JSON body (POST/PUT)
+    if request.is_json and request.method in ('POST', 'PUT'):
+        data = request.get_json(silent=True) or {}
+        if 'item_id' in data:
+            track_id = resolve_track_id(data['item_id'])
+            if track_id:
+                g.track_id = track_id
+        # Resolve arrays: track_ids or item_ids
+        for array_key in ('track_ids', 'item_ids'):
+            if array_key in data and isinstance(data[array_key], list):
+                resolved = []
+                for iid in data[array_key]:
+                    tid = resolve_track_id(iid)
+                    if tid:
+                        resolved.append(tid)
+                if resolved:
+                    g.track_ids = resolved
 
 
 # --- API Endpoints ---
@@ -613,12 +656,12 @@ def get_playlists_endpoint():
     from collections import defaultdict # Local import if not used elsewhere globally
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
-    cur.execute("SELECT playlist_name, item_id, title, author FROM playlist ORDER BY playlist_name")
+    cur.execute("SELECT playlist_name, track_id, title, author FROM playlist ORDER BY playlist_name")
     rows = cur.fetchall()
     cur.close()
     playlists_data = defaultdict(list)
     for row in rows:
-        playlists_data[row['playlist_name']].append({"item_id": row['item_id'], "title": row['title'], "author": row['author']})
+        playlists_data[row['playlist_name']].append({"item_id": str(row['track_id']), "title": row['title'], "author": row['author']})
     return jsonify(dict(playlists_data)), 200
 
 

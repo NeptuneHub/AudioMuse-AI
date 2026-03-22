@@ -209,11 +209,14 @@ def _update_multi_provider_settings():
 # PROVIDER MANAGEMENT
 # ##############################################################################
 
-def get_providers(enabled_only=False):
-    """Get all configured providers.
+def _query_providers(enabled_only=False):
+    """Shared query logic for fetching providers from the database.
 
     Args:
         enabled_only: If True, only return enabled providers
+
+    Returns:
+        List of provider dicts with raw 'config' field intact
     """
     db = get_db()
     with db.cursor() as cur:
@@ -243,18 +246,49 @@ def get_providers(enabled_only=False):
                 'created_at': row[6].isoformat() if row[6] else None,
                 'updated_at': row[7].isoformat() if row[7] else None,
             }
-            # Build a display-safe copy of config (masks sensitive values)
-            # Pop raw config to avoid leaking secrets in API responses
-            raw_config = provider.pop('config', None) or {}
-            safe_config = {}
-            for k, v in raw_config.items():
-                if k in ('password', 'token', 'api_key'):
-                    safe_config[k] = '********' if v else None
-                else:
-                    safe_config[k] = v
-            provider['config_display'] = safe_config
             providers.append(provider)
         return providers
+
+
+def get_providers_display(enabled_only=False):
+    """Get all configured providers with sensitive config values masked.
+
+    Returns providers with 'config_display' (masked) instead of raw 'config'.
+    Use this for API responses and any data sent to the frontend.
+
+    Args:
+        enabled_only: If True, only return enabled providers
+    """
+    providers = _query_providers(enabled_only=enabled_only)
+    for provider in providers:
+        # Build a display-safe copy of config (masks sensitive values)
+        # Pop raw config to avoid leaking secrets in API responses
+        raw_config = provider.pop('config', None) or {}
+        safe_config = {}
+        for k, v in raw_config.items():
+            if k in ('password', 'token', 'api_key'):
+                safe_config[k] = '********' if v else None
+            else:
+                safe_config[k] = v
+        provider['config_display'] = safe_config
+    return providers
+
+
+def get_providers_raw(enabled_only=False):
+    """Get all configured providers with raw config (including credentials).
+
+    Returns providers with the original 'config' dict intact.
+    Use this for internal code that needs real credentials (e.g., media server
+    connections, analysis tasks).
+
+    Args:
+        enabled_only: If True, only return enabled providers
+    """
+    return _query_providers(enabled_only=enabled_only)
+
+
+# Backward compatibility alias
+get_providers = get_providers_display
 
 
 def get_provider_by_id(provider_id):
@@ -1077,7 +1111,7 @@ def check_provider_health():
         is_multi_provider = len(providers) > 1
 
         # Collect all prefixes to detect mismatches
-        # Note: get_providers() replaces 'config' with 'config_display' (sensitive values masked)
+        # Note: get_providers()/get_providers_display() replaces 'config' with 'config_display' (sensitive values masked)
         prefixes = {}
         for p in providers:
             cfg = p.get('config_display') or {}
@@ -1204,7 +1238,7 @@ def check_library_duplicates():
             """)
             for track_id, cnt in cur.fetchall():
                 cur.execute(
-                    "SELECT item_id, title, author, album FROM score WHERE track_id = %s ORDER BY item_id",
+                    "SELECT track_id, title, author, album FROM score WHERE track_id = %s",
                     (track_id,)
                 )
                 rows = cur.fetchall()
@@ -1212,7 +1246,7 @@ def check_library_duplicates():
                     'type': 'track_id',
                     'key': str(track_id),
                     'count': cnt,
-                    'items': [{'item_id': r[0], 'title': r[1], 'artist': r[2], 'album': r[3]} for r in rows]
+                    'items': [{'item_id': str(r[0]), 'track_id': r[0], 'title': r[1], 'artist': r[2], 'album': r[3]} for r in rows]
                 })
 
             # Strategy B: metadata duplicates (suspected)
@@ -1398,11 +1432,21 @@ def _backfill_legacy_tracks(primary_provider_id):
     """
     from app_helper import get_or_create_track, update_score_track_id, link_provider_track
 
+    # In the new track_id canonical architecture, score.track_id IS the PK (never NULL).
+    # This backfill function is only relevant for pre-migration databases.
+    # After migration_track_id.py runs, this is a no-op.
     db = get_db()
     linked = 0
     errors = 0
 
     with db.cursor() as cur:
+        # Check if score table still has item_id column (pre-migration)
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'item_id')")
+        has_item_id = cur.fetchone()[0]
+        if not has_item_id:
+            logger.info("Score table already uses track_id PK — backfill not needed")
+            return {'linked': 0, 'errors': 0, 'total': 0}
+
         cur.execute("""
             SELECT item_id, title, author, album, file_path
             FROM score
@@ -1509,7 +1553,7 @@ def sync_provider(provider_id):
             # Look up existing track by file_path_hash
             with db.cursor() as cur:
                 cur.execute("""
-                    SELECT t.id, s.item_id, s.album_artist, s.year, s.rating, s.file_path, s.album
+                    SELECT t.id, s.track_id, s.album_artist, s.year, s.rating, s.file_path, s.album
                     FROM track t
                     LEFT JOIN score s ON s.track_id = t.id
                     WHERE t.file_path_hash = %s
@@ -1519,7 +1563,7 @@ def sync_provider(provider_id):
             if not row:
                 continue
 
-            track_id, score_item_id = row[0], row[1]
+            track_id, score_track_id = row[0], row[1]
 
             # Create provider_track link
             link_provider_track(
@@ -1531,7 +1575,7 @@ def sync_provider(provider_id):
             matched += 1
 
             # Metadata enrichment: fill missing score fields from this provider's data
-            if score_item_id:
+            if score_track_id:
                 current_album_artist, current_year, current_rating, current_file_path, current_album = row[2], row[3], row[4], row[5], row[6]
 
                 updates = []
@@ -1563,10 +1607,10 @@ def sync_provider(provider_id):
                     values.append(new_album)
 
                 if updates:
-                    values.append(score_item_id)
+                    values.append(score_track_id)
                     with db.cursor() as cur:
                         cur.execute(
-                            f"UPDATE score SET {', '.join(updates)} WHERE item_id = %s",
+                            f"UPDATE score SET {', '.join(updates)} WHERE track_id = %s",
                             values
                         )
                     enriched += 1

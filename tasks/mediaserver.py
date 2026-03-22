@@ -864,7 +864,7 @@ def get_all_playlists_multi_provider(provider_ids=None):
     Returns:
         List of playlists with provider info, deduplicated by name
     """
-    from app_setup import get_providers, get_provider_by_id
+    from app_setup import get_providers_display as get_providers, get_provider_by_id
 
     all_playlists = []
     seen_names = {}  # Track playlist names to detect duplicates
@@ -915,74 +915,62 @@ def _get_playlists_for_provider_type(provider_type):
     return []
 
 
-def remap_item_ids_for_provider(item_ids: list, target_provider_id: int) -> list:
+def remap_item_ids_for_provider(track_ids: list, target_provider_id: int) -> list:
     """
-    Remap canonical item IDs (from score) to a target provider's native IDs.
+    Remap track_ids (score PK) to a target provider's native item IDs.
 
-    Uses the provider_track table to resolve canonical item_ids to the target
-    provider's namespace. With single-row-per-track in score, this is the only
-    correct way to remap across providers.
-
-    The lookup chain is:
-      canonical item_id -> score.track_id -> provider_track(target_provider_id) -> target item_id
-
-    Also handles the case where the canonical item_id already belongs to the target provider.
+    Uses the provider_track table to resolve track_ids directly to the target
+    provider's namespace. Since track_id is the PK in the score table, this is
+    a simple direct lookup.
 
     Args:
-        item_ids: List of canonical item IDs (from score table)
+        track_ids: List of track_id integers (score table PK)
         target_provider_id: ID of the target provider
 
     Returns:
-        List of remapped item IDs for the target provider (preserving order, skipping unmatchable)
+        List of provider-specific item IDs (preserving order, skipping unmatchable)
     """
-    if not item_ids or not target_provider_id:
-        return item_ids or []
+    if not track_ids or not target_provider_id:
+        return []
 
     from app_helper import get_db
 
     db = get_db()
     try:
         with db.cursor() as cur:
-            # Single batch query: canonical -> track_id -> target provider's item_id
-            # pt_track: resolves via score.track_id -> provider_track
-            # pt_direct: handles case where canonical item_id IS the target provider's ID
+            # Direct lookup: track_id -> provider_track -> provider's item_id
             cur.execute("""
-                SELECT s.item_id AS canonical_id,
-                       COALESCE(pt_track.item_id, pt_direct.item_id) AS target_id
-                FROM score s
-                LEFT JOIN provider_track pt_track
-                    ON pt_track.track_id = s.track_id AND pt_track.provider_id = %s
-                LEFT JOIN provider_track pt_direct
-                    ON pt_direct.item_id = s.item_id AND pt_direct.provider_id = %s
-                WHERE s.item_id = ANY(%s)
-                  AND (pt_track.item_id IS NOT NULL OR pt_direct.item_id IS NOT NULL)
-            """, (target_provider_id, target_provider_id, item_ids))
+                SELECT pt.track_id, pt.item_id
+                FROM provider_track pt
+                WHERE pt.track_id = ANY(%s)
+                  AND pt.provider_id = %s
+            """, (track_ids, target_provider_id))
 
-            canonical_to_target = {row[0]: row[1] for row in cur.fetchall()}
+            track_to_provider = {row[0]: row[1] for row in cur.fetchall()}
 
         remapped = []
-        for canonical_id in item_ids:
-            target_id = canonical_to_target.get(canonical_id)
+        for tid in track_ids:
+            target_id = track_to_provider.get(tid)
             if target_id:
                 remapped.append(target_id)
             else:
-                logger.debug(f"No mapping for {canonical_id} to provider {target_provider_id}")
+                logger.debug(f"No mapping for track_id {tid} to provider {target_provider_id}")
 
-        logger.info(f"Remapped {len(remapped)} of {len(item_ids)} item IDs for provider {target_provider_id}")
+        logger.info(f"Remapped {len(remapped)} of {len(track_ids)} track IDs for provider {target_provider_id}")
         return remapped
 
     except Exception as e:
-        logger.error(f"Error remapping item IDs: {e}")
+        logger.error(f"Error remapping track IDs: {e}")
         return []
 
 
-def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, user_creds=None):
+def create_playlist_multi_provider(playlist_name, track_ids, provider_ids=None, user_creds=None):
     """
     Create a playlist on one or more providers.
 
     Args:
         playlist_name: Name of the playlist to create
-        item_ids: List of track IDs to add
+        track_ids: List of track_id integers (score table PK)
         provider_ids: List of provider IDs to create playlist on,
                      'all' for all enabled providers,
                      or None for the primary/default provider
@@ -991,12 +979,12 @@ def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, u
     Returns:
         Dict with results for each provider: {provider_id: {'success': bool, 'playlist_id': str, 'error': str}}
     """
-    from app_setup import get_providers, get_provider_by_id
+    from app_setup import get_providers_display as get_providers, get_provider_by_id
     from app_helper import get_primary_provider_id
 
     if not playlist_name:
         raise ValueError("Playlist name is required")
-    if not item_ids:
+    if not track_ids:
         raise ValueError("Track IDs are required")
 
     results = {}
@@ -1014,9 +1002,27 @@ def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, u
             provider = get_provider_by_id(primary_id)
             providers = [provider] if provider else []
         else:
-            # Fall back to creating on current configured provider
+            # No multi-provider setup. Look up provider-specific item_ids
+            # from provider_track for the legacy single-provider config.
             try:
-                created = create_instant_playlist(playlist_name, item_ids, user_creds=user_creds)
+                from app_helper import get_db
+                db = get_db()
+                with db.cursor() as cur:
+                    # Get item_ids from any provider (legacy mode has one)
+                    cur.execute("""
+                        SELECT pt.track_id, pt.item_id
+                        FROM provider_track pt
+                        WHERE pt.track_id = ANY(%s)
+                        ORDER BY pt.provider_id
+                    """, (track_ids,))
+                    track_to_item = {}
+                    for row in cur.fetchall():
+                        if row[0] not in track_to_item:
+                            track_to_item[row[0]] = row[1]
+                remapped_ids = [track_to_item[tid] for tid in track_ids if tid in track_to_item]
+                if not remapped_ids:
+                    return {'default': {'success': False, 'error': 'No valid track IDs after remapping'}}
+                created = create_instant_playlist(playlist_name, remapped_ids, user_creds=user_creds)
                 return {'default': {'success': True, 'playlist_id': created.get('Id') if created else None}}
             except Exception as e:
                 return {'default': {'success': False, 'error': str(e)}}
@@ -1034,9 +1040,9 @@ def create_playlist_multi_provider(playlist_name, item_ids, provider_ids=None, u
         provider_type = provider['provider_type']
 
         try:
-            # ALWAYS remap - canonical item_ids are provider-agnostic
-            remapped_ids = remap_item_ids_for_provider(item_ids, provider_id)
-            logger.info(f"Playlist remap: {len(remapped_ids)} of {len(item_ids)} IDs resolved for provider {provider.get('name')}")
+            # Remap track_ids to provider-specific item_ids
+            remapped_ids = remap_item_ids_for_provider(track_ids, provider_id)
+            logger.info(f"Playlist remap: {len(remapped_ids)} of {len(track_ids)} track IDs resolved for provider {provider.get('name')}")
 
             if not remapped_ids:
                 logger.warning(f"No valid track IDs after remapping for provider {provider.get('name')}")
@@ -1110,7 +1116,7 @@ def get_enabled_providers_for_playlists():
     Returns:
         List of dicts with 'id', 'name', 'type' for each enabled provider
     """
-    from app_setup import get_providers
+    from app_setup import get_providers_display as get_providers
 
     providers = get_providers(enabled_only=True)
     return [

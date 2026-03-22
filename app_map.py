@@ -89,9 +89,9 @@ def build_map_cache():
     cur = conn.cursor()
     try:
         cur.execute("""
-            SELECT s.item_id, s.title, s.author, s.mood_vector, e.embedding
+            SELECT s.track_id, s.title, s.author, s.mood_vector, e.embedding
             FROM score s
-            JOIN embedding e ON s.item_id = e.item_id
+            JOIN embedding e ON s.track_id = e.track_id
         """)
         rows = cur.fetchall()
     finally:
@@ -101,8 +101,8 @@ def build_map_cache():
     ids = []
     embs = []
     for r in rows:
-        # r: item_id, title, author, mood_vector, embedding_blob
-        item_id = r[0]
+        # r: track_id, title, author, mood_vector, embedding_blob
+        track_id = r[0]
         title = r[1]
         author = r[2]
         mood_vector = r[3]
@@ -117,9 +117,9 @@ def build_map_cache():
                 emb = np.array(r[4], dtype=np.float32)
             except Exception:
                 continue
-        ids.append(str(item_id))
+        ids.append(str(track_id))
         embs.append(emb)
-        items.append({'item_id': str(item_id), 'title': title, 'artist': author, 'mood_vector': mood_vector, 'embedding': emb})
+        items.append({'item_id': str(track_id), 'track_id': track_id, 'title': title, 'artist': author, 'mood_vector': mood_vector, 'embedding': emb})
 
     if not items:
         # empty cache
@@ -236,9 +236,9 @@ def _fetch_genre_samples(conn, genre, limit):
     # mood_vector is stored as 'label:score,label2:score' so use ILIKE for simple match
     try:
         cur.execute("""
-            SELECT s.item_id, s.title, s.author, s.mood_vector, s.other_features, e.embedding
+            SELECT s.track_id, s.title, s.author, s.mood_vector, s.other_features, e.embedding
             FROM score s
-            JOIN embedding e ON s.item_id = e.item_id
+            JOIN embedding e ON s.track_id = e.track_id
             WHERE s.mood_vector ILIKE %s
             LIMIT %s
         """, (f"%{genre}%", limit))
@@ -252,7 +252,7 @@ def _rows_to_items(rows):
     items = []
     for r in rows:
         # r is a tuple-like from psycopg2; map by index to be robust
-        item_id = r[0]
+        track_id = r[0]
         title = r[1]
         author = r[2]
         mood_vector = r[3]
@@ -262,7 +262,8 @@ def _rows_to_items(rows):
             continue
         emb = np.frombuffer(embedding_blob, dtype=np.float32)
         items.append({
-            'item_id': item_id,
+            'track_id': track_id,
+            'item_id': str(track_id),
             'title': title,
             'author': author,
             'mood_vector': mood_vector,
