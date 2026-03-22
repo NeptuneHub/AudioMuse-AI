@@ -361,8 +361,25 @@ def init_db():
                 """, (key, value, category, description))
             logger.info("Inserted default app settings")
 
-        # NOTE: Old migrations (case_normalization, dedup_score_rows, backfill_track_table)
-        # have been removed. The migration to track_id-as-PK is handled by migration_track_id.py.
+        # Run canonical track_id migration if not already done.
+        # This converts the old schema (score.item_id TEXT PK) to the new
+        # architecture (score.track_id INTEGER PK). Idempotent — skips if already completed.
+        try:
+            from migration_track_id import run_migration, is_migration_done, MIGRATION_KEY
+            cur.execute("SELECT value FROM app_settings WHERE key = %s", (MIGRATION_KEY,))
+            if not cur.fetchone():
+                logger.info("Running canonical track_id migration...")
+                db.commit()  # Commit pending work before migration
+                if not run_migration():
+                    logger.error("Canonical track_id migration failed! Check logs for details.")
+                else:
+                    logger.info("Canonical track_id migration completed successfully.")
+            else:
+                logger.info("Canonical track_id migration already completed.")
+        except ImportError:
+            logger.warning("migration_track_id.py not found — skipping migration.")
+        except Exception as e:
+            logger.warning(f"Canonical track_id migration check failed: {e}")
 
         db.commit()
 
