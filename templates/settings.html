@@ -994,16 +994,16 @@
                     <button onclick="editProvider(${parseInt(p.id, 10)})">Edit</button>
                     <button onclick="toggleProvider(${parseInt(p.id, 10)}, ${!p.enabled})">${p.enabled ? 'Disable' : 'Enable'}</button>
                     ${p.provider_type === 'navidrome' ? `<button onclick="rescanPaths(${parseInt(p.id, 10)})">Rescan Paths</button>` : ''}
-                    ${p.provider_type === 'navidrome' && p.config && p.config.path_format !== 'relative'
+                    ${p.config_display && p.config_display.needs_rehash
                         ? `<button onclick="rehashTracks(${parseInt(p.id, 10)})">Rehash Tracks</button>` : ''}
                     <button class="btn-danger" onclick="deleteProvider(${parseInt(p.id, 10)})">Delete</button>
                 </div>
                 <div id="rescan-result-${p.id}" class="rescan-result"></div>
                 <div id="rehash-result-${p.id}" class="rescan-result"></div>
-                ${p.provider_type === 'navidrome' && p.config && p.config.path_format === 'relative'
+                ${p.provider_type === 'navidrome' && p.config_display && p.config_display.path_format === 'relative'
                     ? `<div class="test-result warning" style="margin-top: 0.5rem; font-size: 0.85rem;">
                         <strong>Warning:</strong> Relative file paths detected — cross-provider track matching won't work.
-                        <br><small>Enable <strong>"Report Real Path"</strong> in Navidrome Players &gt; AudioMuse player, then click <strong>Rescan Paths</strong>.</small>
+                        <br><small>Enable <strong>"Report Real Path"</strong> in Navidrome Players &gt; AudioMuse-AI player, then click <strong>Rescan Paths</strong>.</small>
                     </div>`
                     : ''}
             `;
@@ -1220,7 +1220,7 @@
         });
         typeSelect.disabled = true; // Can't change type when editing
 
-        updateProviderFields(provider.config);
+        updateProviderFields(provider.config_display);
         document.getElementById('provider-test-result').style.display = 'none';
         const checklistDiv = document.getElementById('provider-library-checklist');
         if (checklistDiv) { checklistDiv.style.display = 'none'; checklistDiv.innerHTML = ''; }
@@ -1332,8 +1332,23 @@
                 body: JSON.stringify({ provider_type: type, config })
             });
             const data = await response.json();
-            resultDiv.className = `test-result ${data.success ? 'success' : 'error'}`;
-            let resultHTML = escapeHtml(data.message);
+            // Determine overall result status
+            let resultStatus = data.success ? 'success' : 'error';
+            const pd = data.prefix_detection;
+            let hasPathWarning = false;
+
+            if (data.success) {
+                if (type === 'navidrome' && data.path_format === 'relative') {
+                    resultStatus = 'error';
+                    hasPathWarning = 'relative';
+                } else if (type === 'navidrome' && pd && pd.confidence === 'low' && pd.had_existing_tracks) {
+                    resultStatus = 'warning';
+                    hasPathWarning = 'low_confidence';
+                }
+            }
+
+            resultDiv.className = `test-result ${resultStatus}`;
+            let resultHTML = `<strong>${data.success ? 'Connected' : 'Failed'}:</strong> ${escapeHtml(data.message)}`;
 
             if (data.success) {
                 // Cache path_format for inclusion when saving
@@ -1341,13 +1356,28 @@
                     lastDetectedPathFormat = data.path_format;
                 }
 
-                // Show prefix detection info
-                const pd = data.prefix_detection;
-                if (pd) {
+                // Show path warning as the main message
+                if (hasPathWarning === 'relative') {
+                    resultHTML += `<br><br><strong>Navidrome is returning relative file paths.</strong>
+                        This will prevent cross-provider track matching.
+                        <br><small>To fix: In Navidrome, go to Players &gt; AudioMuse-AI player &gt; enable
+                        <strong>"Report Real Path"</strong>, then re-test.</small>`;
+                } else if (hasPathWarning === 'low_confidence') {
+                    resultHTML += `<br><br><strong>Path matching has low confidence.</strong>
+                        Cross-provider track matching may not work correctly.
+                        <br><small>Check that Navidrome's <strong>"Report Real Path"</strong> is enabled
+                        (Players &gt; AudioMuse-AI player) and verify the Music Path Prefix is correct.</small>`;
+                }
+
+                // Show prefix detection info (only when no path warning)
+                if (pd && !hasPathWarning) {
                     if (pd.confidence && pd.confidence !== 'none') {
                         resultHTML += `<br><small>Path prefix detection: ${escapeHtml(pd.confidence)} confidence`;
                         if (pd.matches_found) {
                             resultHTML += ` (${pd.matches_found} matching tracks found)`;
+                        }
+                        if (data.existing_prefix_applied) {
+                            resultHTML += ` — auto-configured existing provider prefix: "${escapeHtml(data.existing_prefix_applied)}"`;
                         }
                         resultHTML += `</small>`;
                     } else if (pd.message) {
@@ -1355,30 +1385,10 @@
                     }
                 }
 
-                // Warn about low-confidence path detection for Navidrome
-                if (type === 'navidrome' && pd && pd.confidence === 'low' && pd.had_existing_tracks) {
-                    resultHTML += `<div class="test-result warning" style="margin-top: 0.5rem;">
-                        <strong>Warning:</strong> Path matching between Navidrome and existing providers has low confidence.
-                        Cross-provider track matching may not work correctly.
-                        <br><small>Check that Navidrome's <strong>"Report Real Path"</strong> is enabled
-                        (Players &gt; AudioMuse player) and verify the Music Path Prefix is correct.</small>
-                    </div>`;
-                }
-
-                // Warn about relative paths for Navidrome
-                if (type === 'navidrome' && data.path_format === 'relative') {
-                    resultHTML += `<div class="test-result warning" style="margin-top: 0.5rem;">
-                        <strong>Warning:</strong> Navidrome is returning relative file paths.
-                        This will prevent cross-provider track matching.
-                        <br><small>To fix: In Navidrome, go to Players &gt; AudioMuse player &gt; enable
-                        <strong>"Report Real Path"</strong>, then re-test.</small>
-                    </div>`;
-                }
-
                 // Warn if testing a non-Navidrome provider while an existing Navidrome has relative paths
                 if (type !== 'navidrome') {
                     const naviRelative = providers.find(
-                        p => p.provider_type === 'navidrome' && p.config && p.config.path_format === 'relative'
+                        p => p.provider_type === 'navidrome' && p.config_display && p.config_display.path_format === 'relative'
                     );
                     if (naviRelative) {
                         resultHTML += `<div class="test-result warning" style="margin-top: 0.5rem;">
@@ -1423,8 +1433,8 @@
             let existingLibraries = null;
             if (editingProviderId) {
                 const provider = providers.find(p => p.id === editingProviderId);
-                if (provider && provider.config && provider.config.music_libraries) {
-                    existingLibraries = provider.config.music_libraries;
+                if (provider && provider.config_display && provider.config_display.music_libraries) {
+                    existingLibraries = provider.config_display.music_libraries;
                 }
             }
 
@@ -1551,7 +1561,7 @@
 
             if (data.path_format === 'relative') {
                 html += `<br>Relative paths will prevent cross-provider track matching.`;
-                html += `<br><small>Enable <strong>"Report Real Path"</strong> in Navidrome Players &gt; AudioMuse player, then rescan again.</small>`;
+                html += `<br><small>Enable <strong>"Report Real Path"</strong> in Navidrome Players &gt; AudioMuse-AI player, then rescan again.</small>`;
             }
 
             if (data.matches_found > 0) {
@@ -1647,7 +1657,7 @@
                 return;
             }
 
-            const updatedConfig = { ...provider.config, music_path_prefix: newPrefix };
+            const updatedConfig = { ...(provider.config_display || {}), music_path_prefix: newPrefix };
             const response = await fetch(`/api/setup/providers/${providerId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },

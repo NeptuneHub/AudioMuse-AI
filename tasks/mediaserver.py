@@ -541,7 +541,7 @@ def test_provider_connection(provider_type: str, config_dict: dict = None):
                 return False, "Navidrome URL, user, and password are required"
             salt = secrets.token_hex(8)
             token = hashlib.md5((password + salt).encode()).hexdigest()
-            params = {'u': user, 't': token, 's': salt, 'v': '1.16.1', 'c': 'audiomuse', 'f': 'json'}
+            params = {'u': user, 't': token, 's': salt, 'v': '1.16.1', 'c': 'AudioMuse-AI', 'f': 'json'}
             resp = requests.get(f"{url.rstrip('/')}/rest/ping", params=params, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
