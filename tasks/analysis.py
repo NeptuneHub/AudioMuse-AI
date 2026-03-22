@@ -1570,6 +1570,9 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 if secondary_ids:
                     log_and_update_main(f"Linking tracks for {len(secondary_ids)} secondary provider(s)...", 95)
 
+                # Collect artist_id → artist_name mappings from all secondary providers
+                all_artist_mappings = {}
+
                 for sec_id in secondary_ids:
                     sec_provider = get_provider_by_id(sec_id)
                     if not sec_provider:
@@ -1602,6 +1605,12 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                                                     album=song.get('Album'))
                                 provider_linked += 1
 
+                            # Collect artist_id → name mapping from this provider's songs
+                            artist_name = song.get('AlbumArtist') or song.get('Artist')
+                            artist_id = song.get('ArtistId')
+                            if artist_name and artist_id and artist_id not in all_artist_mappings:
+                                all_artist_mappings[artist_id] = artist_name
+
                         secondary_linked += provider_linked
                         match_rate = provider_linked / len(sec_songs) if sec_songs else 0
                         if match_rate < 0.5 and len(sec_songs) > 10:
@@ -1617,6 +1626,19 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                             logger.info(f"Linked {provider_linked}/{len(sec_songs)} tracks for secondary provider {sec_name}")
                     except Exception as e:
                         logger.warning(f"Failed to sync secondary provider {sec_name}: {e}")
+
+                # Persist artist_id mappings from all secondary providers
+                # Store as additional rows (artist_id is indexed for reverse lookup)
+                if all_artist_mappings:
+                    try:
+                        from app_helper_artist import upsert_artist_mapping_secondary
+                        stored = 0
+                        for aid, aname in all_artist_mappings.items():
+                            if upsert_artist_mapping_secondary(aname, aid):
+                                stored += 1
+                        logger.info(f"Stored {stored} secondary provider artist mappings")
+                    except Exception as e:
+                        logger.warning(f"Failed to store secondary artist mappings: {e}")
 
                 total_linked += secondary_linked
             except Exception as e:

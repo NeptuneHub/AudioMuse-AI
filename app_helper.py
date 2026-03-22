@@ -170,6 +170,9 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'artist_mapping' table to map artist names to media server artist IDs
         cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
+        # Create 'artist_id_lookup' table for secondary provider artist ID resolution
+        # Multiple providers can each store their artist_id → artist_name mapping here
+        cur.execute("CREATE TABLE IF NOT EXISTS artist_id_lookup (artist_id TEXT PRIMARY KEY, artist_name TEXT NOT NULL)")
         # Create 'text_search_queries' table for precomputed CLAP text search queries
         cur.execute("""
             CREATE TABLE IF NOT EXISTS text_search_queries (
@@ -2067,24 +2070,20 @@ def resolve_canonical_artist(artist_query):
         if row:
             return row[0]
 
-        # Try artist_mapping table (maps provider artist_id → name)
+        # Try primary artist_mapping table
+        cur.execute("SELECT artist_name FROM artist_mapping WHERE artist_id = %s LIMIT 1", (artist_query,))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+
+        # Try secondary provider artist_id_lookup table
         try:
-            cur.execute("SELECT artist_name FROM artist_mapping WHERE artist_id = %s LIMIT 1", (artist_query,))
+            cur.execute("SELECT artist_name FROM artist_id_lookup WHERE artist_id = %s LIMIT 1", (artist_query,))
             row = cur.fetchone()
             if row:
                 return row[0]
         except Exception:
             pass
-
-        # Try provider_track (artist field)
-        cur.execute("""
-            SELECT DISTINCT pt.artist FROM provider_track pt
-            WHERE pt.item_id = %s AND pt.artist IS NOT NULL
-            LIMIT 1
-        """, (artist_query,))
-        row = cur.fetchone()
-        if row:
-            return row[0]
 
     return artist_query
 
