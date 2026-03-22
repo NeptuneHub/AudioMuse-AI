@@ -305,42 +305,42 @@ class TestGetVectorById:
     def test_returns_none_when_index_not_loaded(self):
         """Should return None if index not loaded"""
         from tasks.voyager_manager import get_vector_by_id, _get_cached_vector
-        
+
         # Clear the cache first
         _get_cached_vector.cache_clear()
-        
-        result = get_vector_by_id('some-item-id')
-        
+
+        result = get_vector_by_id(123)
+
         assert result is None
 
-    @patch('tasks.voyager_manager.reverse_id_map', {'item-123': 0})
+    @patch('tasks.voyager_manager.reverse_id_map', {123: 0})
     @patch('tasks.voyager_manager.voyager_index')
     def test_returns_vector_when_found(self, mock_index):
-        """Should return vector when item exists"""
+        """Should return vector when track exists"""
         from tasks.voyager_manager import _get_cached_vector
-        
+
         # Clear the cache first
         _get_cached_vector.cache_clear()
-        
+
         expected_vector = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         mock_index.get_vector.return_value = expected_vector
-        
-        result = _get_cached_vector('item-123')
-        
+
+        result = _get_cached_vector(123)
+
         np.testing.assert_array_equal(result, expected_vector)
         mock_index.get_vector.assert_called_once_with(0)
 
     @patch('tasks.voyager_manager.reverse_id_map', {})
     @patch('tasks.voyager_manager.voyager_index', Mock())
     def test_returns_none_when_item_not_in_map(self):
-        """Should return None if item not in reverse_id_map"""
+        """Should return None if track not in reverse_id_map"""
         from tasks.voyager_manager import _get_cached_vector
-        
+
         # Clear the cache first
         _get_cached_vector.cache_clear()
-        
-        result = _get_cached_vector('unknown-item')
-        
+
+        result = _get_cached_vector(999)
+
         assert result is None
 
 
@@ -378,7 +378,7 @@ class TestLoadVoyagerIndex:
             mock_conn.cursor.return_value = mock_cursor
             
             # Mock the database record - use minimal binary data
-            fake_id_map = {0: 'item-1', 1: 'item-2'}
+            fake_id_map = {0: 1, 1: 2}
             mock_cursor.fetchone.return_value = (
                 b'fake_binary_data',  # index_data
                 json.dumps(fake_id_map),  # id_map_json
@@ -424,28 +424,28 @@ class TestFindNearestNeighborsById:
     def test_raises_when_index_not_loaded(self):
         """Should raise RuntimeError if index not loaded"""
         from tasks.voyager_manager import find_nearest_neighbors_by_id
-        
+
         with pytest.raises(RuntimeError, match="Voyager index is not loaded"):
-            find_nearest_neighbors_by_id('item-123', n=10)
+            find_nearest_neighbors_by_id(123, n=10)
 
     @patch('tasks.voyager_manager.voyager_index', Mock())
     @patch('tasks.voyager_manager.id_map', None)
     def test_raises_when_id_map_not_loaded(self):
         """Should raise RuntimeError if id_map not loaded"""
         from tasks.voyager_manager import find_nearest_neighbors_by_id
-        
+
         with pytest.raises(RuntimeError, match="Voyager index is not loaded"):
-            find_nearest_neighbors_by_id('item-123', n=10)
+            find_nearest_neighbors_by_id(123, n=10)
 
     @patch('tasks.voyager_manager.voyager_index', Mock())
-    @patch('tasks.voyager_manager.id_map', {0: 'item-1'})
+    @patch('tasks.voyager_manager.id_map', {0: 1})
     @patch('tasks.voyager_manager.reverse_id_map', None)
     def test_raises_when_reverse_id_map_not_loaded(self):
         """Should raise RuntimeError if reverse_id_map not loaded"""
         from tasks.voyager_manager import find_nearest_neighbors_by_id
-        
+
         with pytest.raises(RuntimeError, match="Voyager index is not loaded"):
-            find_nearest_neighbors_by_id('item-123', n=10)
+            find_nearest_neighbors_by_id(123, n=10)
 
 
 class TestFindNearestNeighborsByVector:
@@ -539,8 +539,8 @@ class TestSearchTracksByTitleAndArtist:
             mock_get_db.return_value = mock_conn
             mock_conn.cursor.return_value = mock_cursor
             mock_cursor.fetchall.return_value = [
-                {'item_id': 'item-1', 'title': 'Test Song', 'author': 'Artist 1'},
-                {'item_id': 'item-2', 'title': 'Song 2', 'author': 'Test Artist'},
+                {'track_id': 1, 'title': 'Test Song', 'author': 'Artist 1', 'album': None, 'album_artist': None, 'file_path': None},
+                {'track_id': 2, 'title': 'Song 2', 'author': 'Test Artist', 'album': None, 'album_artist': None, 'file_path': None},
             ]
 
             from tasks.voyager_manager import search_tracks_unified
@@ -562,7 +562,9 @@ class TestSearchTracksByTitleAndArtist:
             assert "%test%" in params
             # Both items should be returned as they match in either title or author
             assert len(results) == 2
-            assert {r['item_id'] for r in results} == {"item-1", "item-2"}
+            # Results should have both track_id (int) and item_id (str compat)
+            assert {r['track_id'] for r in results} == {1, 2}
+            assert {r['item_id'] for r in results} == {"1", "2"}
 
     def test_search_with_two_keywords(self):
         with patch('app_helper.get_db') as mock_get_db:
@@ -571,8 +573,8 @@ class TestSearchTracksByTitleAndArtist:
             mock_get_db.return_value = mock_conn
             mock_conn.cursor.return_value = mock_cursor
             mock_cursor.fetchall.return_value = [
-                {'item_id': 'item-1', 'title': 'Test Song', 'author': 'Artist 1'},
-                {'item_id': 'item-2', 'title': 'Song 2', 'author': 'Test Artist'},
+                {'track_id': 1, 'title': 'Test Song', 'author': 'Artist 1', 'album': None, 'album_artist': None, 'file_path': None},
+                {'track_id': 2, 'title': 'Song 2', 'author': 'Test Artist', 'album': None, 'album_artist': None, 'file_path': None},
             ]
 
             from tasks.voyager_manager import search_tracks_unified
@@ -595,7 +597,8 @@ class TestSearchTracksByTitleAndArtist:
             assert "%song%" in params
             # Both items should be returned as all keywords match in title or author
             assert len(results) == 2
-            assert {r['item_id'] for r in results} == {"item-1", "item-2"}
+            assert {r['track_id'] for r in results} == {1, 2}
+            assert {r['item_id'] for r in results} == {"1", "2"}
 
     def test_returns_empty_for_no_query(self):
         """Should return empty list when no search terms"""
@@ -613,22 +616,37 @@ class TestSearchTracksByTitleAndArtist:
 
 
 class TestGetItemIdByTitleAndArtist:
-    """Test item ID lookup by title/artist"""
+    """Test track ID lookup by title/artist"""
 
     def test_finds_exact_match(self):
-        """Should find item with exact title/artist match"""
+        """Should find track with exact title/artist match"""
         with patch('app_helper.get_db') as mock_get_db:
             mock_conn = Mock()
             mock_cursor = Mock()
             mock_get_db.return_value = mock_conn
             mock_conn.cursor.return_value = mock_cursor
-            mock_cursor.fetchone.return_value = {'item_id': 'found-item'}
-            
+            mock_cursor.fetchone.return_value = {'track_id': 42}
+
+            from tasks.voyager_manager import get_track_id_by_title_and_artist
+
+            result = get_track_id_by_title_and_artist('Song Title', 'Artist Name')
+
+            assert result == 42
+
+    def test_backward_compat_alias(self):
+        """get_item_id_by_title_and_artist should still work as alias"""
+        with patch('app_helper.get_db') as mock_get_db:
+            mock_conn = Mock()
+            mock_cursor = Mock()
+            mock_get_db.return_value = mock_conn
+            mock_conn.cursor.return_value = mock_cursor
+            mock_cursor.fetchone.return_value = {'track_id': 42}
+
             from tasks.voyager_manager import get_item_id_by_title_and_artist
-            
+
             result = get_item_id_by_title_and_artist('Song Title', 'Artist Name')
-            
-            assert result == 'found-item'
+
+            assert result == 42
 
     def test_returns_none_when_not_found(self):
         """Should return None when no match found"""
@@ -638,11 +656,11 @@ class TestGetItemIdByTitleAndArtist:
             mock_get_db.return_value = mock_conn
             mock_conn.cursor.return_value = mock_cursor
             mock_cursor.fetchone.return_value = None
-            
+
             from tasks.voyager_manager import get_item_id_by_title_and_artist
-            
+
             result = get_item_id_by_title_and_artist('Unknown', 'Unknown')
-            
+
             assert result is None
 
 
@@ -678,52 +696,54 @@ class TestGetMaxDistanceForId:
     def test_raises_when_index_not_loaded(self):
         """Should raise RuntimeError if index not loaded"""
         from tasks.voyager_manager import get_max_distance_for_id
-        
+
         with pytest.raises(RuntimeError, match="Voyager index is not loaded"):
-            get_max_distance_for_id('item-123')
+            get_max_distance_for_id(123)
 
     @patch('tasks.voyager_manager.voyager_index')
-    @patch('tasks.voyager_manager.id_map', {0: 'item-1', 1: 'item-2', 2: 'item-3'})
-    @patch('tasks.voyager_manager.reverse_id_map', {'item-1': 0, 'item-2': 1, 'item-3': 2})
+    @patch('tasks.voyager_manager.id_map', {0: 1, 1: 2, 2: 3})
+    @patch('tasks.voyager_manager.reverse_id_map', {1: 0, 2: 1, 3: 2})
     def test_finds_farthest_item(self, mock_index):
         """Should find the farthest item from target"""
         mock_index.get_vector.return_value = np.array([1.0, 2.0], dtype=np.float32)
         mock_index.query.return_value = (
             [0, 1, 2],  # voyager IDs
-            [0.0, 0.5, 1.5]  # distances - item-3 (id=2) is farthest
+            [0.0, 0.5, 1.5]  # distances - track_id=3 (voy_id=2) is farthest
         )
         mock_index.__len__ = Mock(return_value=3)
-        
+
         from tasks.voyager_manager import get_max_distance_for_id
-        
-        result = get_max_distance_for_id('item-1')
-        
+
+        result = get_max_distance_for_id(1)
+
         assert result['max_distance'] == 1.5
-        assert result['farthest_item_id'] == 'item-3'
+        assert result['farthest_track_id'] == 3
+        assert result['farthest_item_id'] == '3'
 
     @patch('tasks.voyager_manager.voyager_index')
-    @patch('tasks.voyager_manager.id_map', {0: 'item-1'})
-    @patch('tasks.voyager_manager.reverse_id_map', {'item-1': 0})
+    @patch('tasks.voyager_manager.id_map', {0: 1})
+    @patch('tasks.voyager_manager.reverse_id_map', {1: 0})
     def test_single_item_index(self, mock_index):
         """Should handle single-item index"""
         mock_index.get_vector.return_value = np.array([1.0], dtype=np.float32)
         mock_index.query.return_value = ([0], [0.0])  # Only self
         mock_index.__len__ = Mock(return_value=1)
-        
+
         from tasks.voyager_manager import get_max_distance_for_id
-        
-        result = get_max_distance_for_id('item-1')
-        
+
+        result = get_max_distance_for_id(1)
+
         assert result['max_distance'] == 0.0
+        assert result['farthest_track_id'] is None
         assert result['farthest_item_id'] is None
 
     @patch('tasks.voyager_manager.voyager_index')
     @patch('tasks.voyager_manager.id_map', {})
     @patch('tasks.voyager_manager.reverse_id_map', {})
     def test_unknown_item_returns_none(self, mock_index):
-        """Should return None for unknown item"""
+        """Should return None for unknown track"""
         from tasks.voyager_manager import get_max_distance_for_id
-        
-        result = get_max_distance_for_id('unknown-item')
-        
+
+        result = get_max_distance_for_id(999)
+
         assert result is None

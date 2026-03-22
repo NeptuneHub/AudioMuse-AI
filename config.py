@@ -2,7 +2,25 @@
 import os
 
 # --- Media Server Type ---
-MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby, localfiles
+# Auto-detect provider from env vars if MEDIASERVER_TYPE is not explicitly set.
+# This ensures seamless upgrades: existing users with e.g. JELLYFIN_URL set
+# keep working without adding MEDIASERVER_TYPE to their .env.
+def _detect_mediaserver_type():
+    explicit = os.environ.get("MEDIASERVER_TYPE")
+    if explicit:
+        return explicit.lower()
+    # Auto-detect from provider-specific env vars
+    if os.environ.get("JELLYFIN_URL", ""):
+        return "jellyfin"
+    if os.environ.get("EMBY_URL", ""):
+        return "emby"
+    if os.environ.get("NAVIDROME_URL", ""):
+        return "navidrome"
+    if os.environ.get("LYRION_URL", ""):
+        return "lyrion"
+    return "localfiles"
+
+MEDIASERVER_TYPE = _detect_mediaserver_type()
 
 # --- Jellyfin and DB Constants (Read from Environment Variables first) ---
 
@@ -264,6 +282,10 @@ TOP_N_OTHER_FEATURES = int(os.environ.get("TOP_N_OTHER_FEATURES", "2")) # Number
 EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/app/model/musicnn_embedding.onnx")
 PREDICTION_MODEL_PATH = os.environ.get("PREDICTION_MODEL_PATH", "/app/model/musicnn_prediction.onnx")
 EMBEDDING_DIMENSION = 200
+
+# --- Path Normalization Version ---
+# Increment when normalize_path_deterministic() algorithm changes to trigger rehashing
+CURRENT_NORM_VERSION = 1
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"

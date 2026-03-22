@@ -46,8 +46,8 @@ VOYAGER_MAX_PART_SIZE = VOYAGER_MAX_PART_SIZE_MB * 1024 * 1024
 
 # --- Global cache for the loaded Voyager index ---
 voyager_index = None
-id_map = None # {voyager_int_id: item_id_str}
-reverse_id_map = None # {item_id_str: voyager_int_id}
+id_map = None         # {voyager_int_id: track_id_int} — maps Voyager positions to canonical track_ids
+reverse_id_map = None # {track_id_int: voyager_int_id} — inverse mapping for O(1) lookups
 
 
 def _split_bytes(data: bytes, part_size: int) -> list:
@@ -81,15 +81,19 @@ def _shutdown_thread_pool():
 
 # --- LRU cache for frequently accessed vectors ---
 @lru_cache(maxsize=1000)
-def _get_cached_vector(item_id: str) -> np.ndarray | None:
-    """Cached version of get_vector_by_id for better performance."""
+def _get_cached_vector(track_id: int) -> np.ndarray | None:
+    """Cached version of get_vector_by_id for better performance.
+
+    Args:
+        track_id: Canonical integer track_id from the score table.
+    """
     if voyager_index is None or reverse_id_map is None:
         return None
-    
-    voyager_id = reverse_id_map.get(item_id)
+
+    voyager_id = reverse_id_map.get(track_id)
     if voyager_id is None:
         return None
-    
+
     try:
         return voyager_index.get_vector(voyager_id)
     except Exception:
@@ -153,9 +157,8 @@ def load_voyager_index_for_querying(force_reload=False):
         logger.info("Voyager index is already loaded in memory. Skipping reload.")
         return
 
-    # Clear the vector cache when reloading
-    if force_reload:
-        _get_cached_vector.cache_clear()
+    # Always clear the vector cache when loading/reloading to prevent stale None entries
+    _get_cached_vector.cache_clear()
 
     from app_helper import get_db
     logger.info("Attempting to load Voyager index from database into memory...")
@@ -183,7 +186,7 @@ def load_voyager_index_for_querying(force_reload=False):
             loaded_index = voyager.Index.load(index_stream)
             loaded_index.ef = VOYAGER_QUERY_EF
             voyager_index = loaded_index
-            id_map = {int(k): v for k, v in json.loads(id_map_json).items()}
+            id_map = {int(k): int(v) for k, v in json.loads(id_map_json).items()}
             reverse_id_map = {v: k for k, v in id_map.items()}
 
             logger.info(f"Voyager index with {len(id_map)} items loaded successfully into memory.")
@@ -262,7 +265,7 @@ def load_voyager_index_for_querying(force_reload=False):
             except Exception:
                 idx_count = None
 
-            parsed_id_map = {int(k): v for k, v in json.loads(id_map_json_candidate).items()}
+            parsed_id_map = {int(k): int(v) for k, v in json.loads(id_map_json_candidate).items()}
             if idx_count is not None and idx_count != len(parsed_id_map):
                 logger.error(f"Voyager index element count mismatch after reassembly: index.num_elements={idx_count}, id_map={len(parsed_id_map)}. Aborting load.")
                 voyager_index, id_map, reverse_id_map = None, None, None
@@ -321,17 +324,11 @@ def build_and_store_voyager_index(db_conn=None):
 
     cur = db_conn.cursor()
     try:
-        logger.info("Fetching all embeddings from the database (deduplicated by track)...")
+        logger.info("Fetching all embeddings from the database...")
         cur.execute("""
-            SELECT DISTINCT ON (COALESCE(s.track_id::text, e.item_id))
-                   e.item_id, e.embedding
+            SELECT e.track_id, e.embedding
             FROM embedding e
-            JOIN score s ON e.item_id = s.item_id
-            ORDER BY COALESCE(s.track_id::text, e.item_id),
-                     CASE WHEN EXISTS (
-                         SELECT 1 FROM provider_track pt WHERE pt.item_id = e.item_id
-                     ) THEN 0 ELSE 1 END,
-                     s.item_id
+            ORDER BY e.track_id
         """)
         all_embeddings = cur.fetchall()
 
@@ -353,21 +350,21 @@ def build_and_store_voyager_index(db_conn=None):
         vectors_to_add = []
         ids_to_add = []
 
-        for item_id, embedding_blob in all_embeddings:
+        for track_id, embedding_blob in all_embeddings:
             if embedding_blob is None:
-                logger.warning(f"Skipping item_id {item_id}: embedding data is NULL.")
+                logger.warning(f"Skipping track_id {track_id}: embedding data is NULL.")
                 continue
 
             embedding_vector = np.frombuffer(embedding_blob, dtype=np.float32)
 
             if embedding_vector.shape[0] != EMBEDDING_DIMENSION:
-                logger.warning(f"Skipping item_id {item_id}: embedding dimension mismatch. "
+                logger.warning(f"Skipping track_id {track_id}: embedding dimension mismatch. "
                                f"Expected {EMBEDDING_DIMENSION}, got {embedding_vector.shape[0]}.")
                 continue
 
             vectors_to_add.append(embedding_vector)
             ids_to_add.append(voyager_item_index)
-            local_id_map[voyager_item_index] = item_id
+            local_id_map[voyager_item_index] = track_id  # Now stores integer track_id
             voyager_item_index += 1
 
         if not vectors_to_add:
@@ -459,12 +456,15 @@ def build_and_store_voyager_index(db_conn=None):
         except Exception:
             pass
 
-def get_vector_by_id(item_id: str) -> np.ndarray | None:
+def get_vector_by_id(track_id: int) -> np.ndarray | None:
     """
-    Retrieves the embedding vector for a given item_id from the loaded Voyager index.
+    Retrieves the embedding vector for a given track_id from the loaded Voyager index.
     Uses caching for better performance.
+
+    Args:
+        track_id: Canonical integer track_id from the score table.
     """
-    return _get_cached_vector(item_id)
+    return _get_cached_vector(track_id)
 
 def _normalize_string(text: str) -> str:
     """Lowercase and strip whitespace."""
@@ -487,13 +487,13 @@ def _is_same_song(title1, artist1, title2, artist2):
 def _compute_distance_batch(song_batch, lookback_songs, threshold, metric_name, details_map):
     """Compute distances for a batch of songs in parallel."""
     batch_results = []
-    
+
     for current_song in song_batch:
         is_too_close = False
-        current_vector = _get_cached_vector(current_song['item_id'])
+        current_vector = _get_cached_vector(current_song['track_id'])
         if current_vector is None:
             continue
-        
+
         # Check against lookback window
         # Build an effective comparison window that includes the provided lookback
         # plus any songs already accepted in this batch. This avoids the case where
@@ -501,15 +501,15 @@ def _compute_distance_batch(song_batch, lookback_songs, threshold, metric_name, 
         # because they weren't compared to each other.
         combined_recent = list(lookback_songs) + list(batch_results)
         for recent_song in combined_recent:
-            recent_vector = _get_cached_vector(recent_song['item_id'])
+            recent_vector = _get_cached_vector(recent_song['track_id'])
             if recent_vector is None:
                 continue
 
             direct_dist = get_direct_distance(current_vector, recent_vector)
-            
+
             if direct_dist < threshold:
-                current_details = details_map.get(current_song['item_id'], {'title': 'N/A', 'author': 'N/A'})
-                recent_details = details_map.get(recent_song['item_id'], {'title': 'N/A', 'author': 'N/A'})
+                current_details = details_map.get(current_song['track_id'], {'title': 'N/A', 'author': 'N/A'})
+                recent_details = details_map.get(recent_song['track_id'], {'title': 'N/A', 'author': 'N/A'})
                 logger.info(
                     f"Filtering song (DISTANCE FILTER) with {metric_name} distance: '{current_details['title']}' by '{current_details['author']}' "
                     f"due to direct distance of {direct_dist:.4f} from "
@@ -517,10 +517,10 @@ def _compute_distance_batch(song_batch, lookback_songs, threshold, metric_name, 
                 )
                 is_too_close = True
                 break
-        
+
         if not is_too_close:
             batch_results.append(current_song)
-    
+
     return batch_results
 
 def _filter_by_distance(song_results: list, db_conn):
@@ -534,43 +534,43 @@ def _filter_by_distance(song_results: list, db_conn):
     if not song_results:
         return []
 
-    # Fetch all song details in parallel batches
-    item_ids = [s['item_id'] for s in song_results]
+    # Fetch all song details in batches
+    track_ids = [s['track_id'] for s in song_results]
     details_map = {}
-    
+
     # Fetch all details sequentially (db_conn is not thread-safe)
     with db_conn.cursor(cursor_factory=DictCursor) as cur:
-        for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS):
-            batch = item_ids[i:i + BATCH_SIZE_DB_OPS]
-            cur.execute("SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)", (batch,))
+        for i in range(0, len(track_ids), BATCH_SIZE_DB_OPS):
+            batch = track_ids[i:i + BATCH_SIZE_DB_OPS]
+            cur.execute("SELECT track_id, title, author FROM score WHERE track_id = ANY(%s)", (batch,))
             for row in cur.fetchall():
-                details_map[row['item_id']] = {'title': row['title'], 'author': row['author']}
+                details_map[row['track_id']] = {'title': row['title'], 'author': row['author']}
 
     threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if VOYAGER_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
     metric_name = 'Angular' if VOYAGER_METRIC == 'angular' else 'Euclidean'
-    
+
     filtered_songs = []
-    
+
     # For small datasets, use sequential processing
     if len(song_results) <= BATCH_SIZE_VECTOR_OPS:
         for current_song in song_results:
             is_too_close = False
-            current_vector = _get_cached_vector(current_song['item_id'])
+            current_vector = _get_cached_vector(current_song['track_id'])
             if current_vector is None:
                 continue
 
             # Check against the last N songs in the filtered list
             lookback_window = filtered_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]
             for recent_song in lookback_window:
-                recent_vector = _get_cached_vector(recent_song['item_id'])
+                recent_vector = _get_cached_vector(recent_song['track_id'])
                 if recent_vector is None:
                     continue
 
                 direct_dist = get_direct_distance(current_vector, recent_vector)
-                
+
                 if direct_dist < threshold:
-                    current_details = details_map.get(current_song['item_id'], {'title': 'N/A', 'author': 'N/A'})
-                    recent_details = details_map.get(recent_song['item_id'], {'title': 'N/A', 'author': 'N/A'})
+                    current_details = details_map.get(current_song['track_id'], {'title': 'N/A', 'author': 'N/A'})
+                    recent_details = details_map.get(recent_song['track_id'], {'title': 'N/A', 'author': 'N/A'})
                     logger.info(
                         f"Filtering song (DISTANCE FILTER) with {metric_name} distance: '{current_details['title']}' by '{current_details['author']}' "
                         f"due to direct distance of {direct_dist:.4f} from "
@@ -578,7 +578,7 @@ def _filter_by_distance(song_results: list, db_conn):
                     )
                     is_too_close = True
                     break
-            
+
             if not is_too_close:
                 filtered_songs.append(current_song)
     else:
@@ -608,33 +608,33 @@ def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song
     if not song_results:
         return []
 
-    # Fetch song details in parallel batches
-    item_ids = [r['item_id'] for r in song_results]
-    item_details = {}
-    
+    # Fetch song details in batches
+    track_ids = [r['track_id'] for r in song_results]
+    track_details = {}
+
     # Fetch all details sequentially (db_conn is not thread-safe)
     with db_conn.cursor(cursor_factory=DictCursor) as cur:
-        for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS):
-            batch = item_ids[i:i + BATCH_SIZE_DB_OPS]
-            cur.execute("SELECT item_id, title, author, album FROM score WHERE item_id = ANY(%s)", (batch,))
+        for i in range(0, len(track_ids), BATCH_SIZE_DB_OPS):
+            batch = track_ids[i:i + BATCH_SIZE_DB_OPS]
+            cur.execute("SELECT track_id, title, author, album FROM score WHERE track_id = ANY(%s)", (batch,))
             for row in cur.fetchall():
-                item_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
+                track_details[row['track_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
 
     unique_songs = []
 
     # --- PERFORMANCE OPTIMIZATION: Use a set for O(1) lookups ---
     # Store normalized (title, artist) tuples
     added_songs_signatures = set()
-    
+
     # Add the original song to the set to filter it out
     original_title = _normalize_string(original_song_details.get('title'))
     original_author = _normalize_string(original_song_details.get('author'))
     added_songs_signatures.add((original_title, original_author))
 
     for song in song_results:
-        current_details = item_details.get(song['item_id'])
+        current_details = track_details.get(song['track_id'])
         if not current_details:
-            logger.warning(f"Could not find details for item_id {song['item_id']} during deduplication. Skipping.")
+            logger.warning(f"Could not find details for track_id {song['track_id']} during deduplication. Skipping.")
             continue
 
         # --- OPTIMIZATION: Normalize once ---
@@ -655,9 +655,9 @@ def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song
 def _compute_mood_distances_batch(song_batch, target_mood_features, candidate_mood_features, mood_features, mood_threshold):
     """Compute mood distances for a batch of songs in parallel."""
     batch_results = []
-    
+
     for song in song_batch:
-        candidate_features = candidate_mood_features.get(song['item_id'])
+        candidate_features = candidate_mood_features.get(song['track_id'])
         if not candidate_features:
             continue  # Skip songs without mood features
 
@@ -678,7 +678,7 @@ def _compute_mood_distances_batch(song_batch, target_mood_features, candidate_mo
     
     return batch_results
 
-def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn, mood_threshold: float = None):
+def _filter_by_mood_similarity(song_results: list, target_track_id: int, db_conn, mood_threshold: float = None):
     """
     Filters songs by mood similarity using the other_features stored in the database.
     Keeps songs with similar mood features (danceability, aggressive, happy, party, relaxed, sad).
@@ -693,46 +693,46 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
 
     # Get target song mood features
     with db_conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute("SELECT other_features FROM score WHERE item_id = %s", (target_item_id,))
+        cur.execute("SELECT other_features FROM score WHERE track_id = %s", (target_track_id,))
         target_row = cur.fetchone()
         if not target_row or not target_row['other_features']:
-            logger.warning(f"No mood features found for target song {target_item_id}. Skipping mood filtering.")
+            logger.warning(f"No mood features found for target song track_id={target_track_id}. Skipping mood filtering.")
             return song_results
 
         target_mood_features = _parse_mood_features(target_row['other_features'])
         if not target_mood_features:
-            logger.warning(f"Could not parse mood features for target song {target_item_id}. Skipping mood filtering.")
+            logger.warning(f"Could not parse mood features for target song track_id={target_track_id}. Skipping mood filtering.")
             return song_results
 
-        logger.info(f"Target song {target_item_id} mood features: {target_mood_features}")
+        logger.info(f"Target song track_id={target_track_id} mood features: {target_mood_features}")
 
         # Get mood features for all candidate songs in batches
-        candidate_ids = [s['item_id'] for s in song_results]
+        candidate_track_ids = [s['track_id'] for s in song_results]
         candidate_mood_features = {}
-        
+
         # Fetch all mood features sequentially (db_conn is not thread-safe)
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            for i in range(0, len(candidate_ids), BATCH_SIZE_DB_OPS):
-                batch = candidate_ids[i:i + BATCH_SIZE_DB_OPS]
-                cur.execute("SELECT item_id, other_features FROM score WHERE item_id = ANY(%s)", (batch,))
+            for i in range(0, len(candidate_track_ids), BATCH_SIZE_DB_OPS):
+                batch = candidate_track_ids[i:i + BATCH_SIZE_DB_OPS]
+                cur.execute("SELECT track_id, other_features FROM score WHERE track_id = ANY(%s)", (batch,))
                 for row in cur.fetchall():
                     if row['other_features']:
                         parsed_features = _parse_mood_features(row['other_features'])
                         if parsed_features:
-                            candidate_mood_features[row['item_id']] = parsed_features
+                            candidate_mood_features[row['track_id']] = parsed_features
 
     # Filter by mood similarity
     mood_features = ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']
-    
+
     logger.info(f"Starting mood filtering with {len(song_results)} candidates, threshold: {mood_threshold}")
-    
+
     # For small datasets, use sequential processing
     if len(song_results) <= BATCH_SIZE_VECTOR_OPS:
         filtered_songs = []
         for song in song_results:
-            candidate_features = candidate_mood_features.get(song['item_id'])
+            candidate_features = candidate_mood_features.get(song['track_id'])
             if not candidate_features:
-                logger.debug(f"Skipping song {song['item_id']}: no mood features found")
+                logger.debug(f"Skipping song track_id={song['track_id']}: no mood features found")
                 continue
 
             # Calculate mood distance (sum of absolute differences)
@@ -740,11 +740,11 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
                 abs(target_mood_features.get(feature, 0.0) - candidate_features.get(feature, 0.0))
                 for feature in mood_features
             )
-            
+
             # Normalize by number of features
             normalized_mood_distance = mood_distance / len(mood_features)
-            
-            logger.debug(f"Song {song['item_id']} mood distance: {normalized_mood_distance:.4f}, features: {candidate_features}")
+
+            logger.debug(f"Song track_id={song['track_id']} mood distance: {normalized_mood_distance:.4f}, features: {candidate_features}")
             
             if normalized_mood_distance <= mood_threshold:
                 song_with_mood = song.copy()
@@ -790,7 +790,7 @@ def _parse_mood_features(other_features_str: str) -> dict:
 # --- START: RADIUS SIMILARITY RE-IMPLEMENTATION ---
 
 def _radius_walk_get_candidates(
-    target_item_id: str,
+    target_track_id: int,
     anchor_vector: np.ndarray,
     initial_results: list,
     db_conn,
@@ -808,7 +808,7 @@ def _radius_walk_get_candidates(
     5. Pre-calculating and caching vectors and distances to the anchor.
     """
     from app_helper import get_score_data_by_ids
-    
+
     # Follow the same pre-filter order used by the non-radius path:
     # 1) Distance-based de-dup (prepend original)
     # 2) Name/artist dedupe
@@ -822,11 +822,11 @@ def _radius_walk_get_candidates(
 
     # 1) Distance-based filtering: prepend original so the filter can compare against the anchor
     try:
-        original_for_filter = {"item_id": target_item_id, "distance": 0.0}
+        original_for_filter = {"track_id": target_track_id, "item_id": str(target_track_id), "distance": 0.0}
         results_with_original = [original_for_filter] + initial_results
         temp_filtered = _filter_by_distance(results_with_original, db_conn)
         # Remove the original we prepended
-        distance_filtered_results = [s for s in temp_filtered if s['item_id'] != target_item_id]
+        distance_filtered_results = [s for s in temp_filtered if s['track_id'] != target_track_id]
         logger.info(f"Radius walk: distance-based filtering reduced candidates {len(initial_results)} -> {len(distance_filtered_results)}")
     except Exception:
         logger.exception("Radius walk: distance-based pre-filter failed, continuing with original candidate set.")
@@ -846,28 +846,28 @@ def _radius_walk_get_candidates(
         effective_mood = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
         if effective_mood:
             before_mood = len(unique_results_by_song)
-            unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_item_id, db_conn)
+            unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_track_id, db_conn)
             after_mood = len(unique_results_by_song)
             logger.info(f"Radius walk: mood-based filtering reduced candidates {before_mood} -> {after_mood}")
         else:
             logger.debug("Radius walk: mood-based pre-filter disabled by caller/config. Skipping.")
     except Exception:
         logger.exception("Radius walk: mood-based pre-filter failed, continuing without it.")
-    
-    # 3. Fetch item details for remaining candidates and pre-calculate/cache data for the walk
+
+    # 4. Fetch track details for remaining candidates and pre-calculate/cache data for the walk
     candidate_data = []
     if unique_results_by_song:
-        item_ids_to_fetch = [r['item_id'] for r in unique_results_by_song]
+        track_ids_to_fetch = [r['track_id'] for r in unique_results_by_song]
         # Fetch details in batch (uses app_helper get_score_data_by_ids)
         try:
-            track_details_list = get_score_data_by_ids(item_ids_to_fetch)
-            details_map = {d['item_id']: {'title': d.get('title'), 'author': d.get('author'), 'album': d.get('album')} for d in track_details_list}
+            track_details_list = get_score_data_by_ids(track_ids_to_fetch)
+            details_map = {d['track_id']: {'title': d.get('title'), 'author': d.get('author'), 'album': d.get('album')} for d in track_details_list}
         except Exception:
             details_map = {}
 
         for song in unique_results_by_song:
-            item_id = song['item_id']
-            vector = _get_cached_vector(item_id)
+            track_id = song['track_id']
+            vector = _get_cached_vector(track_id)
             if vector is not None:
                 # Normalize vectors to float32 once to avoid repeated casting later
                 try:
@@ -875,21 +875,22 @@ def _radius_walk_get_candidates(
                 except Exception:
                     vector = np.array(vector, dtype=np.float32)
                 dist_to_anchor = get_direct_distance(vector, anchor_vector)
-                info = details_map.get(item_id, {'title': None, 'author': None})
+                info = details_map.get(track_id, {'title': None, 'author': None})
                 candidate_data.append({
-                    "item_id": item_id,
+                    "track_id": track_id,
+                    "item_id": str(track_id),
                     "vector": vector,
                     "dist_anchor": dist_to_anchor,
                     "title": info.get('title'),
                     "author": info.get('author')
                 })
-            
+
     logger.info(f"Radius walk: pre-calculated vectors and distances for {len(candidate_data)} candidates.")
     return candidate_data
 
 
 def _execute_radius_walk(
-    target_item_id: str,
+    target_track_id: int,
     n: int,
     candidate_data: list,
     original_song_details: dict | None = None,
@@ -925,7 +926,7 @@ def _execute_radius_walk(
 
     buckets = []
     for b in raw_buckets:
-        ids = [c['item_id'] for c in b]
+        ids = [c['track_id'] for c in b]
         # Stack vectors into an (m, dim) array for fast vectorized ops
         if b:
             # vectors are already cast to float32 in candidate_data; stack without further casting
@@ -947,9 +948,9 @@ def _execute_radius_walk(
     # --- Step 2: Initialize the walk ---
     
     # We will return n songs, so we need to collect n items.
-    # The playlist_ids will store the final ordered list of item_ids.
+    # The playlist_ids will store the final ordered list of track_ids.
     playlist_ids = []
-    
+
     # used_ids keeps track of candidates already in the playlist for O(1) lookup.
     used_ids = set()
 
@@ -957,16 +958,16 @@ def _execute_radius_walk(
     # This first song (B) is the start of our re-ordered playlist.
     try:
         first_song = candidate_data[0]
-        playlist_ids.append(first_song['item_id'])
-        used_ids.add(first_song['item_id'])
+        playlist_ids.append(first_song['track_id'])
+        used_ids.add(first_song['track_id'])
         current_song_vector = first_song['vector'].astype(np.float32)
-        current_song_id = first_song['item_id']
-        logger.info(f"Radius walk: Starting walk with song {current_song_id}.")
+        current_song_id = first_song['track_id']
+        logger.info(f"Radius walk: Starting walk with song track_id={current_song_id}.")
     except IndexError:
         logger.warning("Radius walk: Candidate data was empty, cannot start walk.")
         return []
 
-    # Maintain a dict of selected item_id -> vector for distance checks during the walk
+    # Maintain a dict of selected track_id -> vector for distance checks during the walk
     selected_vectors = {playlist_ids[0]: current_song_vector}
 
     # Maintain a set of normalized (title, author) signatures for selected songs to prevent name duplicates
@@ -1018,14 +1019,14 @@ def _execute_radius_walk(
     buckets_to_check = min(num_buckets, BUCKETS_TO_SCAN)
 
     # Helper: perform a greedy walk constrained to a single bucket's items.
-    def _walk_single_bucket(bucket_index, start_item_id=None):
+    def _walk_single_bucket(bucket_index, start_track_id=None):
         bucket = buckets[bucket_index]
         items = bucket['items']
         if not items:
             return []
 
         # Build arrays for candidate vectors and metadata
-        cand_ids = [c['item_id'] for c in items]
+        cand_ids = [c['track_id'] for c in items]
         cand_vecs = bucket['vecs']
         cand_anchor = bucket['dist_anchor']
 
@@ -1036,12 +1037,12 @@ def _execute_radius_walk(
 
         subpath = []
 
-        # If a start_item_id is provided and present in this bucket, use it as the first
+        # If a start_track_id is provided and present in this bucket, use it as the first
         # accepted song (if not already used); otherwise pick the nearest available.
         def _find_start_index():
-            if start_item_id:
+            if start_track_id:
                 try:
-                    si = cand_ids.index(start_item_id)
+                    si = cand_ids.index(start_track_id)
                     if remaining[si] and cand_ids[si] not in used_ids:
                         return si
                 except ValueError:
@@ -1203,7 +1204,7 @@ def _execute_radius_walk(
                         artist_bucket_counts[a] = artist_bucket_counts.get(a, 0) + 1
 
             if INSTRUMENT_BUCKET_SKIPS:
-                logger.debug(f"Bucket {bucket_index}: accepted idx={best_i} item_id={cid}")
+                logger.debug(f"Bucket {bucket_index}: accepted idx={best_i} track_id={cid}")
 
         return subpath
 
@@ -1218,7 +1219,7 @@ def _execute_radius_walk(
             start_id = None
             if bi == 0:
                 start_id = playlist_ids[0] if playlist_ids else None
-            sub = _walk_single_bucket(bi, start_item_id=start_id)
+            sub = _walk_single_bucket(bi, start_track_id=start_id)
             processed_buckets += 1
             if len(playlist_ids) >= n:
                 break
@@ -1235,8 +1236,8 @@ def _execute_radius_walk(
     # --- Post-processing: avoid undesirable adjacency ---
     # Ensure we don't have three songs from the same artist in a row after stitching
     def _avoid_triple_adjacent(ids):
-        # Build a lightweight map of item_id -> author from candidate_data (fallbacks to None)
-        id_to_author = {cand['item_id']: cand.get('author') for cand in candidate_data}
+        # Build a lightweight map of track_id -> author from candidate_data (fallbacks to None)
+        id_to_author = {cand['track_id']: cand.get('author') for cand in candidate_data}
         i = 0
         while i <= len(ids) - 3:
             a1 = id_to_author.get(ids[i])
@@ -1270,48 +1271,27 @@ def _execute_radius_walk(
     playlist_ids = _avoid_triple_adjacent(playlist_ids)
 
     # --- Step 5: Finalize and return ---
-    
-    # We now have the re-ordered list of item_ids.
+
+    # We now have the re-ordered list of track_ids.
     # We need to fetch their final distances to the anchor (A) for display.
     # We can re-use the pre-calculated `dist_anchor` for efficiency.
-    
-    # Create a map of item_id -> dist_anchor for all candidates
-    dist_anchor_map = {cand['item_id']: cand['dist_anchor'] for cand in candidate_data}
-    
-    final_results = []
-    for item_id in playlist_ids:
-        # Get the original distance to the anchor song
-        dist_anchor = dist_anchor_map.get(item_id)
-        
-        if dist_anchor is not None:
-            final_results.append({
-                "item_id": item_id,
-                "distance": dist_anchor
-            })
-        else:
-            # Fallback in case something went wrong (should not happen)
-            vec = _get_cached_vector(item_id)
-            anchor_vec = _get_cached_vector(target_item_id)
-            if vec is not None and anchor_vec is not None:
-                final_results.append({
-                    "item_id": item_id,
-                    "distance": get_direct_distance(vec, anchor_vec)
-                })
 
-    # The list is already ordered by the walk. We just return it.
+    # Create a map of track_id -> dist_anchor for all candidates
+    dist_anchor_map = {cand['track_id']: cand['dist_anchor'] for cand in candidate_data}
+
     # Ensure we return exactly n items requested by the caller. Trim if we collected extra.
     playlist_ids = playlist_ids[:n]
-    # Rebuild final_results from the (possibly trimmed) playlist_ids
+    # Build final_results from the (possibly trimmed) playlist_ids
     final_results = []
-    for item_id in playlist_ids:
-        dist_anchor = dist_anchor_map.get(item_id)
+    for tid in playlist_ids:
+        dist_anchor = dist_anchor_map.get(tid)
         if dist_anchor is not None:
-            final_results.append({"item_id": item_id, "distance": dist_anchor})
+            final_results.append({"track_id": tid, "item_id": str(tid), "distance": dist_anchor})
         else:
-            vec = _get_cached_vector(item_id)
-            anchor_vec = _get_cached_vector(target_item_id)
+            vec = _get_cached_vector(tid)
+            anchor_vec = _get_cached_vector(target_track_id)
             if vec is not None and anchor_vec is not None:
-                final_results.append({"item_id": item_id, "distance": get_direct_distance(vec, anchor_vec)})
+                final_results.append({"track_id": tid, "item_id": str(tid), "distance": get_direct_distance(vec, anchor_vec)})
 
     # No final sort by distance is needed.
     return final_results
@@ -1319,11 +1299,17 @@ def _execute_radius_walk(
 # --- END: RADIUS SIMILARITY RE-IMPLEMENTATION ---
 
 
-def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool | None = None, mood_similarity: bool | None = None, radius_similarity: bool | None = None):
+def find_nearest_neighbors_by_id(target_track_id: int, n: int = 10, eliminate_duplicates: bool | None = None, mood_similarity: bool | None = None, radius_similarity: bool | None = None):
     """
-    Finds the N nearest neighbors for a given item_id using the globally cached Voyager index.
+    Finds the N nearest neighbors for a given track_id using the globally cached Voyager index.
     If mood_similarity is True, filters results by mood feature similarity (danceability, aggressive, happy, party, relaxed, sad).
     If radius_similarity is True, re-orders results based on the 70/30 weighted score.
+
+    Args:
+        target_track_id: Canonical integer track_id from the score table.
+
+    Returns:
+        List of dicts with keys: track_id (int), item_id (str, compat), distance (float).
     """
     if voyager_index is None or id_map is None or reverse_id_map is None:
         raise RuntimeError("Voyager index is not loaded in memory. It may be missing, empty, or the server failed to load it on startup.")
@@ -1331,24 +1317,22 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
     from app_helper import get_db, get_score_data_by_ids
     db_conn = get_db()
 
-    target_song_details_list = get_score_data_by_ids([target_item_id])
+    target_song_details_list = get_score_data_by_ids([target_track_id])
     if not target_song_details_list:
-        logger.error(f"Could not retrieve details for the target song {target_item_id}. Aborting neighbor search.")
+        logger.error(f"Could not retrieve details for the target song track_id={target_track_id}. Aborting neighbor search.")
         return []
     target_song_details = target_song_details_list[0]
 
-
-    target_voyager_id = reverse_id_map.get(target_item_id)
+    target_voyager_id = reverse_id_map.get(target_track_id)
     if target_voyager_id is None:
-        logger.warning(f"Target item_id '{target_item_id}' not found in the loaded Voyager index map.")
+        logger.warning(f"Target track_id '{target_track_id}' not found in the loaded Voyager index map.")
         return []
 
     try:
         query_vector = voyager_index.get_vector(target_voyager_id)
     except Exception as e:
-        logger.error(f"Could not retrieve vector for Voyager ID {target_voyager_id} (item_id: {target_item_id}): {e}")
+        logger.error(f"Could not retrieve vector for Voyager ID {target_voyager_id} (track_id: {target_track_id}): {e}")
         return []
-
 
     # If caller didn't supply radius_similarity explicitly (None), use the configured default.
     if radius_similarity is None:
@@ -1396,28 +1380,27 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         else:
              neighbor_voyager_ids, distances = voyager_index.query(query_vector, k=num_to_query)
     except voyager.RecallError as e:
-        logger.warning(f"Voyager RecallError for item '{target_item_id}': {e}. "
+        logger.warning(f"Voyager RecallError for track_id '{target_track_id}': {e}. "
                        "This is expected with small or sparse datasets. Returning empty list.")
         return []
     except Exception as e:
-        logger.error(f"An unexpected error occurred during Voyager query for item '{target_item_id}': {e}", exc_info=True)
+        logger.error(f"An unexpected error occurred during Voyager query for track_id '{target_track_id}': {e}", exc_info=True)
         return []
 
     # --- Initial list of neighbors ---
     initial_results = []
     for voyager_id, dist in zip(neighbor_voyager_ids, distances):
-        item_id = id_map.get(voyager_id)
-        if item_id and item_id != target_item_id:
-            initial_results.append({"item_id": item_id, "distance": float(dist)})
+        neighbor_track_id = id_map.get(voyager_id)
+        if neighbor_track_id is not None and neighbor_track_id != target_track_id:
+            initial_results.append({"track_id": neighbor_track_id, "item_id": str(neighbor_track_id), "distance": float(dist)})
 
     # --- Divert logic for Radius Similarity ---
     if radius_similarity:
-        # Mood similarity is explicitly *disabled* for radius walk, as it's a different discovery mode.
         logger.info(f"Starting Radius Similarity walk for {n} songs...")
-        
+
         # 1. Get the pre-filtered and pre-calculated candidate pool
         candidate_data = _radius_walk_get_candidates(
-            target_item_id=target_item_id,
+            target_track_id=target_track_id,
             anchor_vector=query_vector,
             initial_results=initial_results,
             db_conn=db_conn,
@@ -1425,17 +1408,17 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
             eliminate_duplicates=eliminate_duplicates, # Pass this flag to apply artist cap pre-walk
             mood_similarity=mood_similarity
         )
-        
+
         # 2. Execute the bucketed greedy walk
         # The walk itself will return exactly n items (or fewer if the pool is too small)
         final_results = _execute_radius_walk(
-            target_item_id=target_item_id,
+            target_track_id=target_track_id,
             n=n,
             candidate_data=candidate_data,
             original_song_details=target_song_details,
             eliminate_duplicates=eliminate_duplicates
         )
-        
+
         # 3. Return the results. They are already in the correct "walk" order.
         # No further filtering or sorting is needed.
         return final_results
@@ -1443,45 +1426,45 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
     # --- Standard Logic (No Radius) ---
     else:
         # Apply standard filters
-        
+
         # 1. Prepend original song for distance filtering
-        original_song_for_filtering = {"item_id": target_item_id, "distance": 0.0}
+        original_song_for_filtering = {"track_id": target_track_id, "item_id": str(target_track_id), "distance": 0.0}
         results_with_original = [original_song_for_filtering] + initial_results
-        
+
         # 2. Filter by distance
         temp_filtered_results = _filter_by_distance(results_with_original, db_conn)
-        
+
         # 3. Remove original song and filter by name/artist
-        distance_filtered_results = [song for song in temp_filtered_results if song['item_id'] != target_item_id]
+        distance_filtered_results = [song for song in temp_filtered_results if song['track_id'] != target_track_id]
         unique_results_by_song = _deduplicate_and_filter_neighbors(distance_filtered_results, db_conn, target_song_details)
-        
+
         # 4. Apply mood similarity filtering: caller preference overrides config.
         effective_mood_nonradius = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
         if effective_mood_nonradius:
-            logger.info(f"Mood similarity filtering requested/enabled for target_item_id: {target_item_id}")
-            unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_item_id, db_conn)
+            logger.info(f"Mood similarity filtering requested/enabled for track_id: {target_track_id}")
+            unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_track_id, db_conn)
         else:
             logger.info(f"Mood filtering skipped (mood_similarity={mood_similarity}, MOOD_SIMILARITY_ENABLE={MOOD_SIMILARITY_ENABLE})")
-        
+
         # 5. Apply artist cap (eliminate_duplicates)
         if eliminate_duplicates:
             # If MAX_SONGS_PER_ARTIST <= 0, treat as disabled and skip cap enforcement
             if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
                 final_results = unique_results_by_song
             else:
-                item_ids_to_check = [r['item_id'] for r in unique_results_by_song]
-                
-                track_details_list = get_score_data_by_ids(item_ids_to_check)
-                details_map = {d['item_id']: {'author': d['author']} for d in track_details_list}
+                track_ids_to_check = [r['track_id'] for r in unique_results_by_song]
+
+                track_details_list = get_score_data_by_ids(track_ids_to_check)
+                details_map = {d['track_id']: {'author': d['author']} for d in track_details_list}
 
                 artist_counts = {}
                 final_results = []
                 for song in unique_results_by_song:
-                    song_id = song['item_id']
-                    author = details_map.get(song_id, {}).get('author')
+                    song_track_id = song['track_id']
+                    author = details_map.get(song_track_id, {}).get('author')
 
                     if not author:
-                        logger.warning(f"Could not find author for item_id {song_id} during artist deduplication. Skipping.")
+                        logger.warning(f"Could not find author for track_id {song_track_id} during artist deduplication. Skipping.")
                         continue
 
                     current_count = artist_counts.get(author, 0)
@@ -1497,6 +1480,9 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
 def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool | None = None):
     """
     Finds the N nearest neighbors for a given query vector.
+
+    Returns:
+        List of dicts with keys: track_id (int), item_id (str, compat), distance (float).
     """
     if voyager_index is None or id_map is None:
         raise RuntimeError("Voyager index is not loaded in memory.")
@@ -1536,35 +1522,35 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
         logger.error(f"An unexpected error occurred during Voyager query for synthetic vector: {e}", exc_info=True)
         return []
 
-    initial_results = [
-        {"item_id": id_map.get(voyager_id), "distance": float(dist)}
-        for voyager_id, dist in zip(neighbor_voyager_ids, distances)
-        if id_map.get(voyager_id) is not None
-    ]
+    initial_results = []
+    for voyager_id, dist in zip(neighbor_voyager_ids, distances):
+        neighbor_track_id = id_map.get(voyager_id)
+        if neighbor_track_id is not None:
+            initial_results.append({"track_id": neighbor_track_id, "item_id": str(neighbor_track_id), "distance": float(dist)})
 
     distance_filtered_results = _filter_by_distance(initial_results, db_conn)
 
-    # Fetch item details in parallel batches
-    item_ids = [r['item_id'] for r in distance_filtered_results]
-    item_details = {}
-    
+    # Fetch track details in batches
+    track_ids = [r['track_id'] for r in distance_filtered_results]
+    track_details = {}
+
     # Fetch all details sequentially (db_conn is not thread-safe)
     with db_conn.cursor(cursor_factory=DictCursor) as cur:
-        for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS):
-            batch = item_ids[i:i + BATCH_SIZE_DB_OPS]
-            cur.execute("SELECT item_id, title, author, album FROM score WHERE item_id = ANY(%s)", (batch,))
+        for i in range(0, len(track_ids), BATCH_SIZE_DB_OPS):
+            batch = track_ids[i:i + BATCH_SIZE_DB_OPS]
+            cur.execute("SELECT track_id, title, author, album FROM score WHERE track_id = ANY(%s)", (batch,))
             for row in cur.fetchall():
-                item_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
+                track_details[row['track_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
 
     unique_songs_by_content = []
     added_songs_details = []
     for song in distance_filtered_results:
-        current_details = item_details.get(song['item_id'])
+        current_details = track_details.get(song['track_id'])
         if not current_details:
             continue
 
         is_duplicate = any(_is_same_song(current_details['title'], current_details['author'], added['title'], added['author']) for added in added_songs_details)
-        
+
         if not is_duplicate:
             unique_songs_by_content.append(song)
             added_songs_details.append(current_details)
@@ -1577,7 +1563,7 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
             artist_counts = {}
             final_results = []
             for song in unique_songs_by_content:
-                author = item_details.get(song['item_id'], {}).get('author')
+                author = track_details.get(song['track_id'], {}).get('author')
                 if not author:
                     continue
 
@@ -1591,30 +1577,33 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
     return final_results[:n]
 
 
-def get_max_distance_for_id(target_item_id: str):
+def get_max_distance_for_id(target_track_id: int):
     """
-    Returns the exact maximum distance from the given item to any other item in the loaded voyager index.
-    Returns a dict: { 'max_distance': float, 'farthest_item_id': str | None }
+    Returns the exact maximum distance from the given track to any other item in the loaded voyager index.
+    Returns a dict: { 'max_distance': float, 'farthest_track_id': int | None, 'farthest_item_id': str | None }
     Raises RuntimeError if the index is not loaded.
+
+    Args:
+        target_track_id: Canonical integer track_id from the score table.
     """
     if voyager_index is None or id_map is None or reverse_id_map is None:
         raise RuntimeError("Voyager index is not loaded in memory. It may be missing, empty, or the server failed to load it on startup.")
 
-    target_voyager_id = reverse_id_map.get(target_item_id)
+    target_voyager_id = reverse_id_map.get(target_track_id)
     if target_voyager_id is None:
         return None
 
     try:
         query_vector = voyager_index.get_vector(target_voyager_id)
     except Exception as e:
-        logger.error(f"Could not retrieve vector for Voyager ID {target_voyager_id} (item_id: {target_item_id}): {e}")
+        logger.error(f"Could not retrieve vector for Voyager ID {target_voyager_id} (track_id: {target_track_id}): {e}")
         return None
 
     # Query distances to all items in the index (includes self). This returns a list of neighbor ids and distances.
     try:
         nbrs, dists = voyager_index.query(query_vector, k=len(voyager_index))
     except Exception as e:
-        logger.error(f"Error querying voyager index for max distance of {target_item_id}: {e}", exc_info=True)
+        logger.error(f"Error querying voyager index for max distance of track_id={target_track_id}: {e}", exc_info=True)
         return None
 
     # Find the maximum distance excluding the item itself
@@ -1631,31 +1620,35 @@ def get_max_distance_for_id(target_item_id: str):
 
     if max_d == float('-inf'):
         # No other items in index (single-item index) -> distance 0.0
-        return { 'max_distance': 0.0, 'farthest_item_id': None }
+        return { 'max_distance': 0.0, 'farthest_track_id': None, 'farthest_item_id': None }
 
-    return { 'max_distance': float(max_d), 'farthest_item_id': id_map.get(far_voy) }
+    farthest_track_id = id_map.get(far_voy)
+    return { 'max_distance': float(max_d), 'farthest_track_id': farthest_track_id, 'farthest_item_id': str(farthest_track_id) if farthest_track_id is not None else None }
 
-def get_item_id_by_title_and_artist(title: str, artist: str):
+def get_track_id_by_title_and_artist(title: str, artist: str):
     """
-    Finds the item_id for a title and artist match.
+    Finds the track_id (int) for a title and artist match.
     Uses fuzzy matching (case-insensitive partial match) to handle variations.
+
+    Returns:
+        int track_id on success, None if not found.
     """
     from app_helper import get_db
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
     try:
         # First try exact match (case-insensitive)
-        query = "SELECT item_id FROM score WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s) LIMIT 1"
+        query = "SELECT track_id FROM score WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s) LIMIT 1"
         cur.execute(query, (title, artist))
         result = cur.fetchone()
         if result:
-            return result['item_id']
-        
+            return result['track_id']
+
         # If no exact match, try fuzzy match (partial match on both title and artist)
         query = """
-            SELECT item_id, title, author, 
+            SELECT track_id, title, author,
                    similarity(LOWER(title), LOWER(%s)) + similarity(LOWER(author), LOWER(%s)) AS score
-            FROM score 
+            FROM score
             WHERE LOWER(title) ILIKE LOWER(%s) AND LOWER(author) ILIKE LOWER(%s)
             ORDER BY score DESC
             LIMIT 1
@@ -1664,14 +1657,17 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
         result = cur.fetchone()
         if result:
             logger.info(f"Fuzzy matched '{title}' by '{artist}' to '{result['title']}' by '{result['author']}'")
-            return result['item_id']
-        
+            return result['track_id']
+
         return None
     except Exception as e:
-        logger.error(f"Error fetching item_id for '{title}' by '{artist}': {e}", exc_info=True)
+        logger.error(f"Error fetching track_id for '{title}' by '{artist}': {e}", exc_info=True)
         return None
     finally:
         cur.close()
+
+# Backward compatibility alias
+get_item_id_by_title_and_artist = get_track_id_by_title_and_artist
 
 def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0):
     """
@@ -1721,7 +1717,7 @@ def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0):
         score_sql = " + ".join(score_clauses)
 
         query = f"""
-            SELECT item_id, title, author, album, album_artist, file_path
+            SELECT track_id, title, author, album, album_artist, file_path
             FROM score
             WHERE {where_sql}
             ORDER BY ({score_sql}) DESC,
@@ -1735,7 +1731,11 @@ def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0):
         params.append(offset)
 
         cur.execute(query, tuple(params))
-        results = [dict(row) for row in cur.fetchall()]
+        results = []
+        for row in cur.fetchall():
+            row_dict = dict(row)
+            row_dict['item_id'] = str(row_dict['track_id'])  # frontend compat
+            results.append(row_dict)
 
     except Exception as e:
         logger.error(

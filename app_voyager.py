@@ -1,11 +1,11 @@
 # app_voyager.py
-from flask import Blueprint, jsonify, request, render_template
+from flask import Blueprint, jsonify, request, render_template, g
 import logging
 
 # Import the new config option
 from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT
 from tasks.voyager_manager import (
-    find_nearest_neighbors_by_id, 
+    find_nearest_neighbors_by_id,
     get_max_distance_for_id,
     create_playlist_from_ids,
     search_tracks_unified,
@@ -200,11 +200,8 @@ def get_similar_tracks_endpoint():
       500:
         description: Server error.
     """
-    item_id = request.args.get('item_id')
-    title = request.args.get('title')
-    artist = request.args.get('artist')
     num_neighbors = request.args.get('n', 10, type=int)
-    
+
     eliminate_duplicates_str = request.args.get('eliminate_duplicates')
     if eliminate_duplicates_str is None:
         eliminate_duplicates = SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
@@ -224,21 +221,20 @@ def get_similar_tracks_endpoint():
     else:
         mood_similarity = mood_similarity_str.lower() == 'true'
 
-    target_item_id = None
-
-    if item_id:
-        target_item_id = item_id
-    elif title and artist:
-        resolved_id = get_item_id_by_title_and_artist(title, artist)
-        if not resolved_id:
-            return jsonify({"error": f"Track '{title}' by '{artist}' not found in the database."}), 404
-        target_item_id = resolved_id
-    else:
-        return jsonify({"error": "Request must include either 'item_id' or both 'title' and 'artist'."}), 400
+    # Use track_id resolved by before_request middleware (from item_id or id query param)
+    track_id = g.get('track_id')
+    if not track_id:
+        # Fallback: try title+artist lookup
+        title = request.args.get('title')
+        artist = request.args.get('artist')
+        if title and artist:
+            track_id = get_item_id_by_title_and_artist(title, artist)
+        if not track_id:
+            return jsonify({"error": "Request must include either 'item_id' or both 'title' and 'artist'."}), 400
 
     try:
         neighbor_results = find_nearest_neighbors_by_id(
-            target_item_id, 
+            track_id,
             n=num_neighbors,
             eliminate_duplicates=eliminate_duplicates,
             mood_similarity=mood_similarity,
@@ -247,7 +243,7 @@ def get_similar_tracks_endpoint():
         if not neighbor_results:
             return jsonify({"error": "Target track not found in index or no similar tracks found."}), 404
 
-        from app import get_score_data_by_ids
+        from app_helper import get_score_data_by_ids
 
         neighbor_ids = [n['item_id'] for n in neighbor_results]
         neighbor_details = get_score_data_by_ids(neighbor_ids)
@@ -271,10 +267,10 @@ def get_similar_tracks_endpoint():
 
         return jsonify(final_results)
     except RuntimeError as e:
-        logger.error(f"Runtime error finding neighbors for {target_item_id}: {e}", exc_info=True)
+        logger.error(f"Runtime error finding neighbors for {track_id}: {e}", exc_info=True)
         return jsonify({"error": "The similarity search service is currently unavailable."}), 503
     except Exception as e:
-        logger.error(f"Unexpected error finding neighbors for {target_item_id}: {e}", exc_info=True)
+        logger.error(f"Unexpected error finding neighbors for {track_id}: {e}", exc_info=True)
         return jsonify({"error": "An unexpected error occurred."}), 500
 
 
@@ -285,20 +281,24 @@ def get_max_distance_endpoint():
   Query param: item_id (required)
   Response: { "max_distance": float, "farthest_item_id": str | null }
   """
-  item_id = request.args.get('item_id')
-  if not item_id:
-    return jsonify({"error": "Missing 'item_id' parameter."}), 400
+  # Use track_id resolved by before_request middleware
+  track_id = g.get('track_id')
+  if not track_id:
+    return jsonify({"error": "Missing or unresolvable 'item_id' parameter."}), 400
 
   try:
-    result = get_max_distance_for_id(item_id)
+    result = get_max_distance_for_id(track_id)
     if result is None:
-      return jsonify({"error": f"Item '{item_id}' not found in index or index unavailable."}), 404
+      return jsonify({"error": f"Track '{track_id}' not found in index or index unavailable."}), 404
+    # Ensure farthest_item_id is a string for frontend compatibility
+    if result.get('farthest_item_id') is not None:
+      result['farthest_item_id'] = str(result['farthest_item_id'])
     return jsonify(result)
   except RuntimeError as e:
-    logger.error(f"Runtime error computing max distance for {item_id}: {e}", exc_info=True)
+    logger.error(f"Runtime error computing max distance for {track_id}: {e}", exc_info=True)
     return jsonify({"error": "The similarity search service is currently unavailable."}), 503
   except Exception as e:
-    logger.error(f"Unexpected error computing max distance for {item_id}: {e}", exc_info=True)
+    logger.error(f"Unexpected error computing max distance for {track_id}: {e}", exc_info=True)
     return jsonify({"error": "An unexpected error occurred."}), 500
 
 
@@ -309,16 +309,17 @@ def get_track_endpoint():
   Query param: item_id (required)
   Response: { "item_id": str, "title": str, "author": str, "album": str } or 404
   """
-  item_id = request.args.get('item_id')
-  if not item_id:
-    return jsonify({"error": "Missing 'item_id' parameter."}), 400
+  # Use track_id resolved by before_request middleware
+  track_id = g.get('track_id')
+  if not track_id:
+    return jsonify({"error": "Missing or unresolvable 'item_id' parameter."}), 400
 
   try:
-    from app import get_score_data_by_ids
-    details = get_score_data_by_ids([item_id])
+    from app_helper import get_score_data_by_ids
+    details = get_score_data_by_ids([track_id])
     if not details:
-      return jsonify({"error": f"Item '{item_id}' not found."}), 404
-    # Return only the basic fields
+      return jsonify({"error": f"Track '{track_id}' not found."}), 404
+    # Return only the basic fields; item_id is already str(track_id) from get_score_data_by_ids
     d = details[0]
     return jsonify({
         "item_id": d.get('item_id'),
@@ -329,7 +330,7 @@ def get_track_endpoint():
         "file_path": d.get('file_path')
     }), 200
   except Exception as e:
-    logger.error(f"Unexpected error fetching track {item_id}: {e}", exc_info=True)
+    logger.error(f"Unexpected error fetching track {track_id}: {e}", exc_info=True)
     return jsonify({"error": "An unexpected error occurred."}), 500
 
 @voyager_bp.route('/api/create_playlist', methods=['POST'])
@@ -375,23 +376,13 @@ def create_media_server_playlist():
         logger.info('/api/create_playlist called (unable to serialize payload)')
 
     playlist_name = data.get('playlist_name')
-    track_ids_raw = data.get('track_ids', [])
     provider_ids = data.get('provider_ids')  # Can be 'all', int, or list of ints
 
     if not playlist_name:
         return jsonify({"error": "Missing 'playlist_name'"}), 400
 
-    final_track_ids = []
-    if isinstance(track_ids_raw, list):
-        for item in track_ids_raw:
-            item_id = None
-            if isinstance(item, str):
-                item_id = item
-            elif isinstance(item, dict) and 'item_id' in item:
-                item_id = item['item_id']
-
-            if item_id and item_id not in final_track_ids:
-                final_track_ids.append(item_id)
+    # Use track_ids resolved by before_request middleware (from track_ids or item_ids in JSON body)
+    final_track_ids = g.get('track_ids', [])
 
     if not final_track_ids:
         return jsonify({"error": "No valid track IDs were provided to create the playlist"}), 400
@@ -486,7 +477,7 @@ def get_track_by_path_endpoint():
 
         try:
             cur.execute("""
-                SELECT item_id, title, author, album, album_artist, tempo, key, scale,
+                SELECT track_id, title, author, album, album_artist, tempo, key, scale,
                        mood_vector, energy, other_features, year, rating, file_path
                 FROM score
                 WHERE file_path = ANY(%s)
@@ -501,7 +492,8 @@ def get_track_by_path_endpoint():
 
         d = dict(row)
         return jsonify({
-            "item_id": d.get('item_id'),
+            "item_id": str(d['track_id']),
+            "track_id": d['track_id'],
             "title": d.get('title'),
             "author": d.get('author'),
             "album": (d.get('album') or 'unknown'),
@@ -580,7 +572,7 @@ def get_tracks_by_paths_endpoint():
 
         try:
             cur.execute("""
-                SELECT item_id, title, author, album, album_artist, tempo, key, scale,
+                SELECT track_id, title, author, album, album_artist, tempo, key, scale,
                        mood_vector, energy, other_features, year, rating, file_path
                 FROM score
                 WHERE file_path = ANY(%s)
@@ -597,7 +589,8 @@ def get_tracks_by_paths_endpoint():
             original_key = path_to_original.get(db_path)
             if original_key and original_key in result:
                 result[original_key] = {
-                    "item_id": d.get('item_id'),
+                    "item_id": str(d['track_id']),
+                    "track_id": d['track_id'],
                     "title": d.get('title'),
                     "author": d.get('author'),
                     "album": (d.get('album') or 'unknown'),

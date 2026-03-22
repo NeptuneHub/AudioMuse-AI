@@ -1360,7 +1360,7 @@
             <ol>
                 <li>Log into the Navidrome web interface</li>
                 <li>Go to <strong>Players</strong> in the right sidebar</li>
-                <li>Click on the <strong>AudioMuse</strong> player entry (appears after AudioMuse first connects)</li>
+                <li>Click on the <strong>AudioMuse-AI</strong> player entry (appears after AudioMuse-AI first connects)</li>
                 <li>Toggle <strong>"Report Real Path"</strong> to enabled</li>
             </ol>
             <p>Alternatively, set <code>ND_DEFAULTREPORTREALPATH=true</code> as a Navidrome environment variable to enable this by default for all players.</p>
@@ -1655,10 +1655,26 @@
             });
             const data = await response.json();
 
-            resultDiv.className = `test-result ${data.success ? 'success' : 'error'}`;
+            // Determine overall result status (may be downgraded from success to warning)
+            let resultStatus = data.success ? 'success' : 'error';
+            let hasPathWarning = false;
+
+            // Check for path issues that should downgrade success to warning
+            if (data.success) {
+                const pd = data.prefix_detection;
+                if (type === 'navidrome' && data.path_format === 'relative') {
+                    resultStatus = 'error';
+                    hasPathWarning = 'relative';
+                } else if (type === 'navidrome' && pd && pd.confidence === 'low' && pd.had_existing_tracks) {
+                    resultStatus = 'warning';
+                    hasPathWarning = 'low_confidence';
+                }
+            }
+
+            resultDiv.className = `test-result ${resultStatus}`;
 
             // Build result message with prefix detection info
-            let resultHTML = `<strong>${data.success ? 'Success' : 'Failed'}:</strong> ${escapeHtml(data.message)}`;
+            let resultHTML = `<strong>${data.success ? 'Connected' : 'Failed'}:</strong> ${escapeHtml(data.message)}`;
 
             // Handle successful test
             if (data.success) {
@@ -1670,8 +1686,20 @@
                     testedProviderTracks[type] = data.sample_tracks;
                 }
 
+                // Show path warning as the main message (not nested)
+                if (hasPathWarning === 'relative') {
+                    resultHTML += `<br><br><strong>Navidrome is returning relative file paths.</strong>
+                        This will prevent cross-provider track matching.
+                        <br><small>To fix: In Navidrome, go to Players &gt; AudioMuse-AI player &gt; enable <strong>"Report Real Path"</strong>, then re-test the connection.</small>`;
+                } else if (hasPathWarning === 'low_confidence') {
+                    resultHTML += `<br><br><strong>Path matching has low confidence.</strong>
+                        Cross-provider track matching may not work correctly.
+                        <br><small>Check that Navidrome's <strong>"Report Real Path"</strong> is enabled
+                        (Players &gt; AudioMuse-AI player) and verify the Music Path Prefix is correct.</small>`;
+                }
+
                 // Handle prefix detection result
-                if (data.prefix_detection) {
+                if (data.prefix_detection && !hasPathWarning) {
                     const pd = data.prefix_detection;
 
                     // Auto-fill the music_path_prefix field if prefix detected with confidence
@@ -1689,29 +1717,13 @@
                         if (pd.matches_found) {
                             resultHTML += ` (${parseInt(pd.matches_found, 10)} matching tracks found)`;
                         }
+                        if (data.existing_prefix_applied) {
+                            resultHTML += ` — auto-configured existing provider prefix: "${escapeHtml(data.existing_prefix_applied)}"`;
+                        }
                         resultHTML += `</small>`;
                     } else if (pd.message) {
                         resultHTML += `<br><small>${escapeHtml(pd.message)}</small>`;
                     }
-
-                    // Warn about low-confidence path detection for Navidrome
-                    if (type === 'navidrome' && pd.confidence === 'low' && pd.had_existing_tracks) {
-                        resultHTML += `<div class="test-result warning" style="margin-top: 0.5rem;">
-                            <strong>Warning:</strong> Path matching between Navidrome and existing providers has low confidence.
-                            Cross-provider track matching may not work correctly.
-                            <br><small>Check that Navidrome's <strong>"Report Real Path"</strong> is enabled
-                            (Players &gt; AudioMuse player) and verify the Music Path Prefix is correct.</small>
-                        </div>`;
-                    }
-                }
-
-                // Warn about relative paths for Navidrome in multi-provider setups
-                if (type === 'navidrome' && data.path_format === 'relative') {
-                    resultHTML += `<div class="test-result warning" style="margin-top: 0.5rem;">
-                        <strong>Warning:</strong> Navidrome is returning relative file paths.
-                        This will prevent cross-provider track matching.
-                        <br><small>To fix: In Navidrome, go to Players &gt; AudioMuse player &gt; enable <strong>"Report Real Path"</strong>, then re-test the connection.</small>
-                    </div>`;
                 }
             }
 

@@ -192,7 +192,7 @@ def run_clustering_batch_task(
                     prev_ids=current_sampled_track_ids,
                     percent_change=percentage_change
                 )
-                item_ids_for_iteration = [t['item_id'] for t in current_subset_lightweight_data]
+                item_ids_for_iteration = [t['track_id'] for t in current_subset_lightweight_data]
                 current_sampled_track_ids = list(item_ids_for_iteration)
 
                 if not item_ids_for_iteration:
@@ -374,7 +374,7 @@ def run_clustering_task(
             _log_and_update("Fetching lightweight track data for stratification...", 1)
             db = get_db()
             cur = db.cursor(cursor_factory=DictCursor)
-            cur.execute("SELECT item_id, author, mood_vector FROM score WHERE mood_vector IS NOT NULL AND mood_vector != ''")
+            cur.execute("SELECT track_id, author, mood_vector FROM score WHERE mood_vector IS NOT NULL AND mood_vector != ''")
             lightweight_rows = cur.fetchall()
             cur.close()
 
@@ -408,7 +408,7 @@ def run_clustering_task(
 
             if not _main_task_accumulated_details["last_subset_ids"]:
                 initial_subset_data = _get_stratified_song_subset(genre_map, target_songs_per_genre)
-                _main_task_accumulated_details["last_subset_ids"] = [t['item_id'] for t in initial_subset_data]
+                _main_task_accumulated_details["last_subset_ids"] = [t['track_id'] for t in initial_subset_data]
 
             # Staleness watchdog: if runs_completed hasn't changed for CLUSTERING_BATCH_TIMEOUT_MINUTES,
             # force-complete the task with the best result found so far.
@@ -633,7 +633,7 @@ def _prepare_genre_map(lightweight_rows):
         if row.get('mood_vector'):
             mood_scores = {p.split(':')[0]: float(p.split(':')[1]) for p in row['mood_vector'].split(',') if ':' in p}
             top_genre = max((g for g in STRATIFIED_GENRES if g in mood_scores), key=mood_scores.get, default='__other__')
-            genre_map[top_genre].append({'item_id': row['item_id'], 'mood_vector': row['mood_vector']})
+            genre_map[top_genre].append({'track_id': row['track_id'], 'item_id': str(row['track_id']), 'mood_vector': row['mood_vector']})
     return genre_map
 
 def _calculate_target_songs_per_genre(genre_map, percentile, min_songs):

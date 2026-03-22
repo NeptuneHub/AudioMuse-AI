@@ -65,7 +65,7 @@ services:
       TZ: "${TZ:-UTC}"
       # Media Server Configuration
       # Configure via GUI setup wizard or set here for legacy support
-      MEDIASERVER_TYPE: "${MEDIASERVER_TYPE:-localfiles}"
+      MEDIASERVER_TYPE: "${MEDIASERVER_TYPE:-}"
       # Jellyfin (if using)
       JELLYFIN_URL: "${JELLYFIN_URL:-}"
       JELLYFIN_USER_ID: "${JELLYFIN_USER_ID:-}"
@@ -138,7 +138,7 @@ services:
       SERVICE_TYPE: "worker"
       TZ: "${TZ:-UTC}"
       # Media Server Configuration (same as flask service)
-      MEDIASERVER_TYPE: "${MEDIASERVER_TYPE:-localfiles}"
+      MEDIASERVER_TYPE: "${MEDIASERVER_TYPE:-}"
       JELLYFIN_URL: "${JELLYFIN_URL:-}"
       JELLYFIN_USER_ID: "${JELLYFIN_USER_ID:-}"
       JELLYFIN_TOKEN: "${JELLYFIN_TOKEN:-}"

@@ -1,6 +1,9 @@
-# AudioMuse-AI Unified Docker Compose - NVIDIA GPU Edition
+# AudioMuse-AI Unified Docker Compose - NVIDIA GPU Local Build
 # =============================================================================
-# This deployment file includes NVIDIA GPU acceleration support.
+# This deployment file builds images locally with NVIDIA GPU acceleration support.
+# Use this for development and testing of local changes.
+#
+# For production with pre-built images, use docker-compose-unified-nvidia.yaml
 # For CPU-only systems, use docker-compose-unified.yaml
 #
 # Requirements:
@@ -10,7 +13,7 @@
 #
 # Quick Start:
 #   1. Copy .env.example to .env and configure your settings
-#   2. Run: docker-compose -f docker-compose-unified-nvidia.yaml up -d
+#   2. Build and run: docker-compose -f docker-compose-unified-nvidia-local.yaml up -d --build
 #   3. Open http://localhost:8000 and complete the setup wizard
 #
 # All provider-specific settings are now configured via the GUI setup wizard
@@ -58,10 +61,15 @@ services:
       retries: 3
 
   # ---------------------------------------------------------------------------
-  # AudioMuse-AI Flask Application (Web UI & API) - NVIDIA GPU
+  # AudioMuse-AI Flask Application (Web UI & API) - NVIDIA GPU LOCAL BUILD
   # ---------------------------------------------------------------------------
   audiomuse-ai-flask:
-    image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+    image: audiomuse-ai:local-unified-nvidia
     container_name: audiomuse-ai-flask-app
     ports:
       - "${FRONTEND_PORT:-8000}:8000"
@@ -141,10 +149,15 @@ services:
               capabilities: [gpu]
 
   # ---------------------------------------------------------------------------
-  # AudioMuse-AI Worker (Background Tasks & ML Analysis) - NVIDIA GPU
+  # AudioMuse-AI Worker (Background Tasks & ML Analysis) - NVIDIA GPU LOCAL BUILD
   # ---------------------------------------------------------------------------
   audiomuse-ai-worker:
-    image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+    image: audiomuse-ai:local-unified-nvidia
     container_name: audiomuse-ai-worker-instance
     environment:
       SERVICE_TYPE: "worker"

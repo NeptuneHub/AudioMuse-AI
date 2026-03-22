@@ -217,7 +217,7 @@ def _make_mock_db_rows(sd):
     rows = []
     for iid, data in sd.items():
         row = dict(data)
-        row["item_id"] = iid
+        row["track_id"] = iid
         rows.append(row)
     return rows
 
@@ -275,15 +275,15 @@ class TestOrderPlaylist:
 
     def test_single_song_returns_unchanged(self):
         _, _, op, *_ = _import_ordering()
-        assert op(["song1"]) == ["song1"]
+        assert op([1]) == [1]
 
     def test_two_songs_returns_both(self):
         _, _, op, *_ = _import_ordering()
-        assert op(["song1", "song2"]) == ["song1", "song2"]
+        assert op([1, 2]) == [1, 2]
 
     def test_all_input_songs_in_output(self):
         _, _, op, *_ = _import_ordering()
-        sd = {f"s{i}": {"tempo": 80+i*10, "energy": 0.02+i*0.02, "key": "C", "scale": "major"} for i in range(10)}
+        sd = {i: {"tempo": 80+i*10, "energy": 0.02+i*0.02, "key": "C", "scale": "major"} for i in range(10)}
         ids = list(sd.keys())
         with _patch_order_playlist(sd):
             result = op(ids)
@@ -291,7 +291,7 @@ class TestOrderPlaylist:
 
     def test_no_duplicates_in_output(self):
         _, _, op, *_ = _import_ordering()
-        sd = {f"s{i}": {"tempo": 100+i*5, "energy": 0.05+i*0.01, "key": "G", "scale": "minor"} for i in range(15)}
+        sd = {i: {"tempo": 100+i*5, "energy": 0.05+i*0.01, "key": "G", "scale": "minor"} for i in range(15)}
         ids = list(sd.keys())
         with _patch_order_playlist(sd):
             result = op(ids)
@@ -299,7 +299,7 @@ class TestOrderPlaylist:
 
     def test_starts_from_25th_percentile_energy(self):
         _, _, op, *_ = _import_ordering()
-        sd = {f"s{i}": {"tempo": 120, "energy": 0.02+i*0.01, "key": "C", "scale": "major"} for i in range(8)}
+        sd = {i: {"tempo": 120, "energy": 0.02+i*0.01, "key": "C", "scale": "major"} for i in range(8)}
         ids = list(sd.keys())
         with _patch_order_playlist(sd):
             result = op(ids)
@@ -313,7 +313,7 @@ class TestOrderPlaylist:
         import random
         random.seed(42)
         kl = ["C","G","D","A","E","B","F#","Db","Ab","Eb"]
-        sd = {f"s{i}": {"tempo": 80+i*8, "energy": 0.02+i*0.012, "key": kl[i%10], "scale": "major" if i%2==0 else "minor"} for i in range(12)}
+        sd = {i: {"tempo": 80+i*8, "energy": 0.02+i*0.012, "key": kl[i%10], "scale": "major" if i%2==0 else "minor"} for i in range(12)}
         ids = list(sd.keys())
         with _patch_order_playlist(sd):
             ordered = op(ids)
@@ -329,26 +329,26 @@ class TestOrderPlaylist:
 
     def test_unorderable_songs_appended_at_end(self):
         _, _, op, *_ = _import_ordering()
-        sd = {f"s{i}": {"tempo": 100+i*10, "energy": 0.05+i*0.02, "key": "C", "scale": "major"} for i in range(3)}
-        ids = ["s0", "s1", "s2", "s_missing"]
+        sd = {i: {"tempo": 100+i*10, "energy": 0.05+i*0.02, "key": "C", "scale": "major"} for i in range(3)}
+        ids = [0, 1, 2, 999]
         with _patch_order_playlist(sd):
             result = op(ids)
-        assert result[-1] == "s_missing"
+        assert result[-1] == 999
         assert set(result) == set(ids)
 
     def test_no_db_rows_returns_original_order(self):
         _, _, op, *_ = _import_ordering()
-        ids = ["a", "b", "c"]
+        ids = [10, 20, 30]
         with _patch_order_playlist({}):
             assert op(ids) == ids
 
     def test_only_two_orderable_returns_original(self):
         _, _, op, *_ = _import_ordering()
         sd = {
-            "s0": {"tempo": 100, "energy": 0.05, "key": "C", "scale": "major"},
-            "s1": {"tempo": 110, "energy": 0.06, "key": "G", "scale": "major"},
+            10: {"tempo": 100, "energy": 0.05, "key": "C", "scale": "major"},
+            20: {"tempo": 110, "energy": 0.06, "key": "G", "scale": "major"},
         }
-        ids = ["s0", "s1", "s_no_data"]
+        ids = [10, 20, 999]
         with _patch_order_playlist(sd):
             assert op(ids) == ids
 
@@ -357,7 +357,7 @@ class TestOrderPlaylist:
 class TestEnergyArc:
     def test_energy_arc_false_deterministic(self):
         _, _, op, *_ = _import_ordering()
-        sd = {f"s{i}": {"tempo": 120, "energy": 0.01+i*0.013, "key": "C", "scale": "major"} for i in range(12)}
+        sd = {i: {"tempo": 120, "energy": 0.01+i*0.013, "key": "C", "scale": "major"} for i in range(12)}
         ids = list(sd.keys())
         with _patch_order_playlist(sd):
             r1 = op(ids, energy_arc=False)
@@ -367,7 +367,7 @@ class TestEnergyArc:
 
     def test_energy_arc_true_reshapes_10_plus(self):
         _, _, op, *_ = _import_ordering()
-        sd = {f"s{i}": {"tempo": 120, "energy": 0.01+i*0.013, "key": "C", "scale": "major"} for i in range(12)}
+        sd = {i: {"tempo": 120, "energy": 0.01+i*0.013, "key": "C", "scale": "major"} for i in range(12)}
         ids = list(sd.keys())
         with _patch_order_playlist(sd):
             r_arc = op(ids, energy_arc=True)
@@ -378,7 +378,7 @@ class TestEnergyArc:
 
     def test_energy_arc_skipped_under_10(self):
         _, _, op, *_ = _import_ordering()
-        sd = {f"s{i}": {"tempo": 120, "energy": 0.01+i*0.02, "key": "C", "scale": "major"} for i in range(8)}
+        sd = {i: {"tempo": 120, "energy": 0.01+i*0.02, "key": "C", "scale": "major"} for i in range(8)}
         ids = list(sd.keys())
         with _patch_order_playlist(sd):
             r1 = op(ids, energy_arc=True)
@@ -419,9 +419,9 @@ class TestEdgeCases:
     def test_songs_with_missing_tempo(self):
         _, _, op, *_ = _import_ordering()
         sd = {
-            "s0": {"tempo": None, "energy": 0.05, "key": "C", "scale": "major"},
-            "s1": {"tempo": 120, "energy": 0.06, "key": "G", "scale": "major"},
-            "s2": {"tempo": None, "energy": 0.07, "key": "D", "scale": "minor"},
+            10: {"tempo": None, "energy": 0.05, "key": "C", "scale": "major"},
+            20: {"tempo": 120, "energy": 0.06, "key": "G", "scale": "major"},
+            30: {"tempo": None, "energy": 0.07, "key": "D", "scale": "minor"},
         }
         with _patch_order_playlist(sd):
             assert set(op(list(sd.keys()))) == set(sd.keys())
@@ -429,9 +429,9 @@ class TestEdgeCases:
     def test_songs_with_missing_energy(self):
         _, _, op, *_ = _import_ordering()
         sd = {
-            "s0": {"tempo": 100, "energy": None, "key": "C", "scale": "major"},
-            "s1": {"tempo": 110, "energy": 0.05, "key": "G", "scale": "major"},
-            "s2": {"tempo": 120, "energy": None, "key": "D", "scale": "minor"},
+            10: {"tempo": 100, "energy": None, "key": "C", "scale": "major"},
+            20: {"tempo": 110, "energy": 0.05, "key": "G", "scale": "major"},
+            30: {"tempo": 120, "energy": None, "key": "D", "scale": "minor"},
         }
         with _patch_order_playlist(sd):
             assert set(op(list(sd.keys()))) == set(sd.keys())
@@ -439,9 +439,9 @@ class TestEdgeCases:
     def test_songs_with_missing_key(self):
         _, _, op, *_ = _import_ordering()
         sd = {
-            "s0": {"tempo": 100, "energy": 0.05, "key": None, "scale": None},
-            "s1": {"tempo": 110, "energy": 0.06, "key": "", "scale": ""},
-            "s2": {"tempo": 120, "energy": 0.07, "key": "C", "scale": "major"},
+            10: {"tempo": 100, "energy": 0.05, "key": None, "scale": None},
+            20: {"tempo": 110, "energy": 0.06, "key": "", "scale": ""},
+            30: {"tempo": 120, "energy": 0.07, "key": "C", "scale": "major"},
         }
         with _patch_order_playlist(sd):
             assert set(op(list(sd.keys()))) == set(sd.keys())
@@ -449,16 +449,16 @@ class TestEdgeCases:
     def test_songs_with_all_missing_attributes(self):
         _, _, op, *_ = _import_ordering()
         sd = {
-            "s0": {"tempo": None, "energy": None, "key": None, "scale": None},
-            "s1": {"tempo": None, "energy": None, "key": None, "scale": None},
-            "s2": {"tempo": None, "energy": None, "key": None, "scale": None},
+            10: {"tempo": None, "energy": None, "key": None, "scale": None},
+            20: {"tempo": None, "energy": None, "key": None, "scale": None},
+            30: {"tempo": None, "energy": None, "key": None, "scale": None},
         }
         with _patch_order_playlist(sd):
             assert set(op(list(sd.keys()))) == set(sd.keys())
 
     def test_all_songs_same_bpm_energy_key(self):
         _, _, op, *_ = _import_ordering()
-        sd = {f"s{i}": {"tempo": 120, "energy": 0.08, "key": "C", "scale": "major"} for i in range(6)}
+        sd = {i: {"tempo": 120, "energy": 0.08, "key": "C", "scale": "major"} for i in range(6)}
         ids = list(sd.keys())
         with _patch_order_playlist(sd):
             result = op(ids)
@@ -469,7 +469,7 @@ class TestEdgeCases:
         _, _, op, *_ = _import_ordering()
         n = 120
         keys = ["C","G","D","A","E","B","F#","Db","Ab","Eb","Bb","F"]
-        sd = {f"s{i}": {"tempo": 70+(i*7)%130, "energy": 0.01+(i*0.0012)%0.14, "key": keys[i%12], "scale": "major" if i%2==0 else "minor"} for i in range(n)}
+        sd = {i: {"tempo": 70+(i*7)%130, "energy": 0.01+(i*0.0012)%0.14, "key": keys[i%12], "scale": "major" if i%2==0 else "minor"} for i in range(n)}
         ids = list(sd.keys())
         with _patch_order_playlist(sd):
             result = op(ids)
@@ -480,7 +480,7 @@ class TestEdgeCases:
         _, _, op, *_ = _import_ordering()
         n = 100
         keys = ["C","G","D","A","E","B","F#","Db","Ab","Eb","Bb","F"]
-        sd = {f"s{i}": {"tempo": 80+(i*5)%100, "energy": 0.01+(i*0.0014)%0.14, "key": keys[i%12], "scale": "major" if i%3!=0 else "minor"} for i in range(n)}
+        sd = {i: {"tempo": 80+(i*5)%100, "energy": 0.01+(i*0.0014)%0.14, "key": keys[i%12], "scale": "major" if i%3!=0 else "minor"} for i in range(n)}
         ids = list(sd.keys())
         with _patch_order_playlist(sd):
             result = op(ids, energy_arc=True)
@@ -489,20 +489,20 @@ class TestEdgeCases:
     def test_duplicate_ids_in_input(self):
         _, _, op, *_ = _import_ordering()
         sd = {
-            "s0": {"tempo": 100, "energy": 0.05, "key": "C", "scale": "major"},
-            "s1": {"tempo": 110, "energy": 0.06, "key": "G", "scale": "major"},
-            "s2": {"tempo": 120, "energy": 0.07, "key": "D", "scale": "minor"},
+            10: {"tempo": 100, "energy": 0.05, "key": "C", "scale": "major"},
+            20: {"tempo": 110, "energy": 0.06, "key": "G", "scale": "major"},
+            30: {"tempo": 120, "energy": 0.07, "key": "D", "scale": "minor"},
         }
         with _patch_order_playlist(sd):
-            result = op(["s0", "s1", "s2", "s0"])
+            result = op([10, 20, 30, 10])
         assert len(result) >= 3
 
     def test_zero_tempo_and_energy_songs(self):
         _, _, op, *_ = _import_ordering()
         sd = {
-            "s0": {"tempo": 0, "energy": 0, "key": "C", "scale": "major"},
-            "s1": {"tempo": 0, "energy": 0, "key": "G", "scale": "major"},
-            "s2": {"tempo": 0, "energy": 0, "key": "D", "scale": "minor"},
+            10: {"tempo": 0, "energy": 0, "key": "C", "scale": "major"},
+            20: {"tempo": 0, "energy": 0, "key": "G", "scale": "major"},
+            30: {"tempo": 0, "energy": 0, "key": "D", "scale": "minor"},
         }
         with _patch_order_playlist(sd):
             assert set(op(list(sd.keys()))) == set(sd.keys())

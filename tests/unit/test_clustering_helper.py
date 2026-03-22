@@ -276,14 +276,14 @@ class TestGetStratifiedSongSubset:
 
     def test_stratified_sampling_balances_genres(self):
         """Test that stratified sampling balances genre representation"""
-        # genre_map expects track dictionaries with item_id and mood_vector
+        # genre_map expects track dictionaries with track_id (int) and mood_vector
         genre_map = {
             'Rock': [
-                {'item_id': 'r1', 'mood_vector': 'Rock:0.8,Pop:0.2'},
-                {'item_id': 'r2', 'mood_vector': 'Rock:0.9,Jazz:0.1'},
+                {'track_id': 1, 'item_id': '1', 'mood_vector': 'Rock:0.8,Pop:0.2'},
+                {'track_id': 2, 'item_id': '2', 'mood_vector': 'Rock:0.9,Jazz:0.1'},
             ],
             'Pop': [
-                {'item_id': 'p1', 'mood_vector': 'Pop:0.7,Rock:0.3'},
+                {'track_id': 3, 'item_id': '3', 'mood_vector': 'Pop:0.7,Rock:0.3'},
             ]
         }
         target_per_genre = 2  # Single integer for all genres
@@ -298,24 +298,24 @@ class TestGetStratifiedSongSubset:
         """Test that previously selected IDs are excluded"""
         genre_map = {
             'Rock': [
-                {'item_id': 'r1', 'mood_vector': 'Rock:0.8'},
-                {'item_id': 'r2', 'mood_vector': 'Rock:0.7'},
-                {'item_id': 'r3', 'mood_vector': 'Rock:0.9'},
+                {'track_id': 1, 'item_id': '1', 'mood_vector': 'Rock:0.8'},
+                {'track_id': 2, 'item_id': '2', 'mood_vector': 'Rock:0.7'},
+                {'track_id': 3, 'item_id': '3', 'mood_vector': 'Rock:0.9'},
             ],
             'Pop': [
-                {'item_id': 'p1', 'mood_vector': 'Pop:0.8'},
-                {'item_id': 'p2', 'mood_vector': 'Pop:0.7'},
+                {'track_id': 4, 'item_id': '4', 'mood_vector': 'Pop:0.8'},
+                {'track_id': 5, 'item_id': '5', 'mood_vector': 'Pop:0.7'},
             ]
         }
         target_per_genre = 2
-        prev_ids = ['r1', 'p1']
-        
+        prev_ids = [1, 4]
+
         subset = _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=prev_ids)
-        
+
         # Should not include prev_ids in the subset
-        subset_ids = {track['item_id'] for track in subset}
-        assert 'r1' not in subset_ids
-        assert 'p1' not in subset_ids
+        subset_ids = {track['track_id'] for track in subset}
+        assert 1 not in subset_ids
+        assert 4 not in subset_ids
 
 
 class TestGetTrackPrimaryGenre:

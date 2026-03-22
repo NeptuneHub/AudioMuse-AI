@@ -22,36 +22,36 @@ class TestGenerateSonicFingerprint:
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_generates_fingerprint_with_recent_songs(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test generating fingerprint from recently played songs"""
-        # Mock top played songs
+        # Mock top played songs (Id is provider-specific, converted to str internally)
         mock_top_songs.return_value = [
-            {'Id': 's1'},
-            {'Id': 's2'},
-            {'Id': 's3'}
+            {'Id': '1'},
+            {'Id': '2'},
+            {'Id': '3'}
         ]
-        
-        # Mock track embeddings
+
+        # Mock track embeddings (item_id = str(track_id) for compat)
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([1.0, 0.0, 0.0])},
-            {'item_id': 's2', 'embedding_vector': np.array([0.0, 1.0, 0.0])},
-            {'item_id': 's3', 'embedding_vector': np.array([0.0, 0.0, 1.0])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([1.0, 0.0, 0.0])},
+            {'track_id': 2, 'item_id': '2', 'embedding_vector': np.array([0.0, 1.0, 0.0])},
+            {'track_id': 3, 'item_id': '3', 'embedding_vector': np.array([0.0, 0.0, 1.0])}
         ]
-        
+
         # Mock last played times (all recent)
         mock_last_played.return_value = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-        
+
         # Mock Voyager results
         mock_voyager.return_value = [
-            {'item_id': 's4', 'distance': 0.1},
-            {'item_id': 's5', 'distance': 0.2}
+            {'item_id': '4', 'distance': 0.1},
+            {'item_id': '5', 'distance': 0.2}
         ]
-        
+
         # Generate fingerprint
         result = generate_sonic_fingerprint(num_neighbors=5)
-        
+
         # Should return seed songs + Voyager results
         assert len(result) == 5
         # Seed songs should come first with distance 0.0
-        assert result[0]['item_id'] in ['s1', 's2', 's3']
+        assert result[0]['item_id'] in ['1', '2', '3']
         assert result[0]['distance'] == 0.0
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
@@ -67,7 +67,7 @@ class TestGenerateSonicFingerprint:
     @patch('app_helper.get_tracks_by_ids')
     def test_returns_empty_when_no_embeddings(self, mock_get_tracks, mock_top_songs):
         """Test handling when no tracks have embeddings"""
-        mock_top_songs.return_value = [{'Id': 's1'}, {'Id': 's2'}]
+        mock_top_songs.return_value = [{'Id': '1'}, {'Id': '2'}]
         mock_get_tracks.return_value = []
         
         result = generate_sonic_fingerprint(num_neighbors=10)
@@ -80,15 +80,15 @@ class TestGenerateSonicFingerprint:
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_weights_recent_songs_higher(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test that recently played songs get higher weights"""
-        mock_top_songs.return_value = [{'Id': 's1'}, {'Id': 's2'}]
+        mock_top_songs.return_value = [{'Id': '1'}, {'Id': '2'}]
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([1.0, 0.0])},
-            {'item_id': 's2', 'embedding_vector': np.array([0.0, 1.0])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([1.0, 0.0])},
+            {'track_id': 2, 'item_id': '2', 'embedding_vector': np.array([0.0, 1.0])}
         ]
-        
-        # s1 played 1 day ago, s2 played 60 days ago
+
+        # track 1 played 1 day ago, track 2 played 60 days ago
         def last_played_side_effect(song_id, user_creds=None):
-            if song_id == 's1':
+            if song_id == '1':
                 return (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
             else:
                 return (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
@@ -106,9 +106,9 @@ class TestGenerateSonicFingerprint:
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     def test_truncates_when_seed_songs_exceed_desired_size(self, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test truncation when seed songs exceed desired playlist size"""
-        mock_top_songs.return_value = [{'Id': f's{i}'} for i in range(10)]
+        mock_top_songs.return_value = [{'Id': str(i)} for i in range(10)]
         mock_get_tracks.return_value = [
-            {'item_id': f's{i}', 'embedding_vector': np.random.rand(128)} for i in range(10)
+            {'track_id': i, 'item_id': str(i), 'embedding_vector': np.random.rand(128)} for i in range(10)
         ]
         mock_last_played.return_value = None
         
@@ -123,26 +123,26 @@ class TestGenerateSonicFingerprint:
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_deduplicates_voyager_results(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test that duplicate songs from Voyager are filtered out"""
-        mock_top_songs.return_value = [{'Id': 's1'}, {'Id': 's2'}]
+        mock_top_songs.return_value = [{'Id': '1'}, {'Id': '2'}]
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([1.0, 0.0])},
-            {'item_id': 's2', 'embedding_vector': np.array([0.0, 1.0])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([1.0, 0.0])},
+            {'track_id': 2, 'item_id': '2', 'embedding_vector': np.array([0.0, 1.0])}
         ]
         mock_last_played.return_value = None
-        
-        # Voyager returns s1 again (duplicate) and s3 (new)
+
+        # Voyager returns track 1 again (duplicate) and track 3 (new)
         mock_voyager.return_value = [
-            {'item_id': 's1', 'distance': 0.05},  # Duplicate!
-            {'item_id': 's3', 'distance': 0.1}
+            {'item_id': '1', 'distance': 0.05},  # Duplicate!
+            {'item_id': '3', 'distance': 0.1}
         ]
-        
+
         result = generate_sonic_fingerprint(num_neighbors=5)
-        
-        # Should have s1, s2 (seeds) and s3 (new from Voyager), but not duplicate s1
+
+        # Should have 1, 2 (seeds) and 3 (new from Voyager), but not duplicate 1
         item_ids = [r['item_id'] for r in result]
-        assert item_ids.count('s1') == 1  # Only once
-        assert 's2' in item_ids
-        assert 's3' in item_ids
+        assert item_ids.count('1') == 1  # Only once
+        assert '2' in item_ids
+        assert '3' in item_ids
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
     @patch('app_helper.get_tracks_by_ids')
@@ -150,20 +150,20 @@ class TestGenerateSonicFingerprint:
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_seed_songs_have_zero_distance(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test that seed songs are marked with distance 0.0"""
-        mock_top_songs.return_value = [{'Id': 's1'}]
+        mock_top_songs.return_value = [{'Id': '1'}]
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([1.0])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([1.0])}
         ]
         mock_last_played.return_value = None
-        mock_voyager.return_value = [{'item_id': 's2', 'distance': 0.5}]
-        
+        mock_voyager.return_value = [{'item_id': '2', 'distance': 0.5}]
+
         result = generate_sonic_fingerprint(num_neighbors=2)
-        
+
         # First result should be seed with distance 0.0
-        assert result[0]['item_id'] == 's1'
+        assert result[0]['item_id'] == '1'
         assert result[0]['distance'] == 0.0
         # Second should be from Voyager with real distance
-        assert result[1]['item_id'] == 's2'
+        assert result[1]['item_id'] == '2'
         assert result[1]['distance'] == 0.5
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
@@ -172,9 +172,9 @@ class TestGenerateSonicFingerprint:
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_handles_invalid_last_played_date(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test handling of unparseable last played dates"""
-        mock_top_songs.return_value = [{'Id': 's1'}]
+        mock_top_songs.return_value = [{'Id': '1'}]
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([1.0])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([1.0])}
         ]
         # Invalid date format
         mock_last_played.return_value = "invalid-date"
@@ -192,9 +192,9 @@ class TestGenerateSonicFingerprint:
     def test_passes_user_credentials(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test that user credentials are passed to media server functions"""
         user_creds = {'user_id': 'test_user', 'token': 'test_token'}
-        mock_top_songs.return_value = [{'Id': 's1'}]
+        mock_top_songs.return_value = [{'Id': '1'}]
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([1.0])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([1.0])}
         ]
         mock_last_played.return_value = None
         mock_voyager.return_value = []
@@ -204,7 +204,7 @@ class TestGenerateSonicFingerprint:
         # Verify user_creds were passed
         from unittest.mock import ANY
         mock_top_songs.assert_called_with(limit=ANY, user_creds=user_creds)
-        mock_last_played.assert_called_with('s1', user_creds=user_creds)
+        mock_last_played.assert_called_with('1', user_creds=user_creds)
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
     @patch('app_helper.get_tracks_by_ids')
@@ -212,9 +212,9 @@ class TestGenerateSonicFingerprint:
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_uses_config_default_for_num_neighbors(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test that config default is used when num_neighbors not specified"""
-        mock_top_songs.return_value = [{'Id': 's1'}]
+        mock_top_songs.return_value = [{'Id': '1'}]
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([1.0])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([1.0])}
         ]
         mock_last_played.return_value = None
         mock_voyager.return_value = []
@@ -235,10 +235,10 @@ class TestWeightedAverageCalculation:
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_calculates_weighted_average_correctly(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test that weighted average is calculated and passed to Voyager"""
-        mock_top_songs.return_value = [{'Id': 's1'}, {'Id': 's2'}]
+        mock_top_songs.return_value = [{'Id': '1'}, {'Id': '2'}]
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([1.0, 0.0])},
-            {'item_id': 's2', 'embedding_vector': np.array([0.0, 1.0])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([1.0, 0.0])},
+            {'track_id': 2, 'item_id': '2', 'embedding_vector': np.array([0.0, 1.0])}
         ]
         # Equal recent times = equal weights
         recent_time = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
@@ -264,29 +264,29 @@ class TestWeightedAverageCalculation:
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_skips_songs_without_embeddings(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test that songs without embeddings are skipped"""
-        mock_top_songs.return_value = [{'Id': 's1'}, {'Id': 's2'}]
-        # s2 has no embedding
+        mock_top_songs.return_value = [{'Id': '1'}, {'Id': '2'}]
+        # track 2 has no embedding
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([1.0, 0.0])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([1.0, 0.0])}
         ]
         mock_last_played.return_value = None
         mock_voyager.return_value = []
-        
+
         result = generate_sonic_fingerprint(num_neighbors=1)
-        
-        # Should only include s1
+
+        # Should only include track 1
         assert len(result) == 1
-        assert result[0]['item_id'] == 's1'
+        assert result[0]['item_id'] == '1'
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
     @patch('app_helper.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     def test_returns_empty_when_all_embeddings_invalid(self, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test handling when all embeddings are empty/invalid"""
-        mock_top_songs.return_value = [{'Id': 's1'}]
+        mock_top_songs.return_value = [{'Id': '1'}]
         # Empty embedding vector
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([])}
         ]
         mock_last_played.return_value = None
         
@@ -373,9 +373,9 @@ class TestVoyagerIntegration:
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_voyager_called_with_correct_parameters(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test that Voyager is called with correct n and eliminate_duplicates"""
-        mock_top_songs.return_value = [{'Id': 's1'}]
+        mock_top_songs.return_value = [{'Id': '1'}]
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([1.0])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([1.0])}
         ]
         mock_last_played.return_value = None
         mock_voyager.return_value = []
@@ -394,9 +394,9 @@ class TestVoyagerIntegration:
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_handles_voyager_exception(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test handling of Voyager exceptions"""
-        mock_top_songs.return_value = [{'Id': 's1'}]
+        mock_top_songs.return_value = [{'Id': '1'}]
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([1.0])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([1.0])}
         ]
         mock_last_played.return_value = None
         mock_voyager.side_effect = Exception("Voyager error")
@@ -412,28 +412,28 @@ class TestVoyagerIntegration:
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_combines_seed_and_voyager_results_correctly(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test correct combination of seed songs and Voyager results"""
-        mock_top_songs.return_value = [{'Id': 's1'}, {'Id': 's2'}]
+        mock_top_songs.return_value = [{'Id': '1'}, {'Id': '2'}]
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([1.0])},
-            {'item_id': 's2', 'embedding_vector': np.array([0.5])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([1.0])},
+            {'track_id': 2, 'item_id': '2', 'embedding_vector': np.array([0.5])}
         ]
         mock_last_played.return_value = None
         mock_voyager.return_value = [
-            {'item_id': 's3', 'distance': 0.1},
-            {'item_id': 's4', 'distance': 0.2},
-            {'item_id': 's5', 'distance': 0.3}
+            {'item_id': '3', 'distance': 0.1},
+            {'item_id': '4', 'distance': 0.2},
+            {'item_id': '5', 'distance': 0.3}
         ]
-        
+
         result = generate_sonic_fingerprint(num_neighbors=5)
-        
+
         # Should have 2 seeds + 3 from Voyager = 5 total
         assert len(result) == 5
         # First two should be seeds
         seed_ids = {result[0]['item_id'], result[1]['item_id']}
-        assert seed_ids == {'s1', 's2'}
+        assert seed_ids == {'1', '2'}
         # Last three should be from Voyager
         voyager_ids = {result[2]['item_id'], result[3]['item_id'], result[4]['item_id']}
-        assert voyager_ids == {'s3', 's4', 's5'}
+        assert voyager_ids == {'3', '4', '5'}
 
 
 class TestEdgeCases:
@@ -444,30 +444,30 @@ class TestEdgeCases:
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     def test_handles_tracks_with_partial_embeddings(self, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test handling when some tracks have embeddings and some don't"""
-        mock_top_songs.return_value = [{'Id': 's1'}, {'Id': 's2'}, {'Id': 's3'}]
-        # Only s1 and s3 have valid embeddings
+        mock_top_songs.return_value = [{'Id': '1'}, {'Id': '2'}, {'Id': '3'}]
+        # Only track 1 and 3 have valid embeddings
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([1.0])},
-            {'item_id': 's2'},  # No embedding
-            {'item_id': 's3', 'embedding_vector': np.array([0.5])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([1.0])},
+            {'track_id': 2, 'item_id': '2'},  # No embedding
+            {'track_id': 3, 'item_id': '3', 'embedding_vector': np.array([0.5])}
         ]
         mock_last_played.return_value = None
-        
+
         result = generate_sonic_fingerprint(num_neighbors=2)
-        
-        # Should use s1 and s3 only
+
+        # Should use track 1 and 3 only
         assert len(result) == 2
         item_ids = {r['item_id'] for r in result}
-        assert item_ids == {'s1', 's3'}
+        assert item_ids == {'1', '3'}
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
     @patch('app_helper.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     def test_handles_empty_embedding_vectors(self, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test handling of zero-size embedding vectors"""
-        mock_top_songs.return_value = [{'Id': 's1'}]
+        mock_top_songs.return_value = [{'Id': '1'}]
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([])}  # Empty!
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([])}  # Empty!
         ]
         mock_last_played.return_value = None
         
@@ -481,9 +481,9 @@ class TestEdgeCases:
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     def test_handles_microseconds_truncation(self, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test handling of timestamps with excessive microsecond precision"""
-        mock_top_songs.return_value = [{'Id': 's1'}]
+        mock_top_songs.return_value = [{'Id': '1'}]
         mock_get_tracks.return_value = [
-            {'item_id': 's1', 'embedding_vector': np.array([1.0])}
+            {'track_id': 1, 'item_id': '1', 'embedding_vector': np.array([1.0])}
         ]
         # Timestamp with more than 6 decimal places
         mock_last_played.return_value = "2024-01-15T10:30:00.12345678901234Z"
@@ -499,14 +499,14 @@ class TestEdgeCases:
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_respects_total_desired_size_limit(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
         """Test that result does not exceed total_desired_size"""
-        mock_top_songs.return_value = [{'Id': f's{i}'} for i in range(5)]
+        mock_top_songs.return_value = [{'Id': str(i)} for i in range(5)]
         mock_get_tracks.return_value = [
-            {'item_id': f's{i}', 'embedding_vector': np.random.rand(10)} for i in range(5)
+            {'track_id': i, 'item_id': str(i), 'embedding_vector': np.random.rand(10)} for i in range(5)
         ]
         mock_last_played.return_value = None
         # Voyager returns many results
         mock_voyager.return_value = [
-            {'item_id': f'v{i}', 'distance': 0.1 * i} for i in range(20)
+            {'item_id': str(100 + i), 'distance': 0.1 * i} for i in range(20)
         ]
         
         result = generate_sonic_fingerprint(num_neighbors=10)

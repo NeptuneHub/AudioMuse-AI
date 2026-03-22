@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 # Global in-memory cache
 _MULAN_CACHE = {
     'embeddings': None,  # NumPy array (N, embedding_dim)
-    'metadata': None,    # List of dicts with item_id, title, author
-    'item_ids': None,    # List of item_ids
+    'metadata': None,    # List of dicts with track_id, item_id, title, author
+    'track_ids': None,   # List of track_ids (int)
     'loaded': False
 }
 
@@ -154,14 +154,14 @@ def load_mulan_cache_from_db():
         
         # Fetch all MuLan embeddings with metadata from score table
         cur.execute("""
-            SELECT 
-                me.item_id,
+            SELECT
+                me.track_id,
                 me.embedding,
                 s.title,
                 s.author
             FROM mulan_embedding me
-            JOIN score s ON me.item_id = s.item_id
-            ORDER BY me.item_id
+            JOIN score s ON me.track_id = s.track_id
+            ORDER BY me.track_id
         """)
         
         rows = cur.fetchall()
@@ -175,28 +175,29 @@ def load_mulan_cache_from_db():
         # Build cache structures
         embeddings_list = []
         metadata_list = []
-        item_ids_list = []
-        
+        track_ids_list = []
+
         for row in rows:
-            item_id = row['item_id']
+            track_id = row['track_id']
             embedding_blob = row['embedding']
             title = row['title']
             author = row['author']
-            
+
             # Convert BYTEA to numpy array
             embedding = np.frombuffer(embedding_blob, dtype=np.float32)
-            
+
             if embedding.shape[0] != MULAN_EMBEDDING_DIMENSION:
-                logger.warning(f"Skipping {item_id}: wrong dimension {embedding.shape[0]} (expected {MULAN_EMBEDDING_DIMENSION})")
+                logger.warning(f"Skipping track_id {track_id}: wrong dimension {embedding.shape[0]} (expected {MULAN_EMBEDDING_DIMENSION})")
                 continue
-            
+
             embeddings_list.append(embedding)
             metadata_list.append({
-                'item_id': item_id,
+                'track_id': track_id,
+                'item_id': str(track_id),
                 'title': title,
                 'author': author
             })
-            item_ids_list.append(item_id)
+            track_ids_list.append(track_id)
         
         if not embeddings_list:
             logger.error("No valid MuLan embeddings loaded.")
@@ -206,7 +207,7 @@ def load_mulan_cache_from_db():
         # Convert to NumPy matrix for vectorized operations
         _MULAN_CACHE['embeddings'] = np.vstack(embeddings_list)
         _MULAN_CACHE['metadata'] = metadata_list
-        _MULAN_CACHE['item_ids'] = item_ids_list
+        _MULAN_CACHE['track_ids'] = track_ids_list
         _MULAN_CACHE['loaded'] = True
         
         logger.info(f"MuLan cache loaded: {len(metadata_list)} songs with {MULAN_EMBEDDING_DIMENSION}-dim embeddings in memory")
@@ -248,7 +249,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         limit: Maximum number of results to return
         
     Returns:
-        List of dicts with item_id, title, author, similarity
+        List of dicts with track_id (int), item_id (str), title, author, similarity
     """
     from .mulan_analyzer import get_text_embedding
     from config import MULAN_ENABLED
@@ -300,6 +301,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
                 artist_counts[author_norm] = artist_counts.get(author_norm, 0) + 1
             
             results.append({
+                'track_id': metadata['track_id'],
                 'item_id': metadata['item_id'],
                 'title': metadata['title'],
                 'author': metadata['author'],

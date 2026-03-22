@@ -162,13 +162,17 @@ def rehash_provider_tracks_task(provider_id):
                                 WHERE provider_id = %s AND item_id = %s
                             """, (existing_track_id, provider_id, item_id))
 
-                            # Re-point any score records that reference the old track_id
-                            cur.execute("""
-                                UPDATE score SET track_id = %s, file_path = %s
-                                WHERE track_id = %s AND item_id NOT IN (
-                                    SELECT item_id FROM score WHERE track_id = %s
-                                )
-                            """, (existing_track_id, new_normalized, track_id, existing_track_id))
+                            # In the new schema, track_id IS the score PK.
+                            # If the existing track already has a score row, delete the old one.
+                            # If the existing track has NO score row, re-point the old one.
+                            cur.execute("SELECT 1 FROM score WHERE track_id = %s", (existing_track_id,))
+                            if cur.fetchone():
+                                # Existing track has analysis — delete the duplicate
+                                cur.execute("DELETE FROM score WHERE track_id = %s", (track_id,))
+                            else:
+                                # No analysis for existing track — can't re-key (PK conflict)
+                                # Just delete the orphan score since existing track will get re-analyzed
+                                cur.execute("DELETE FROM score WHERE track_id = %s", (track_id,))
 
                             # Check if old track_id is still referenced
                             cur.execute("""
@@ -220,6 +224,17 @@ def rehash_provider_tracks_task(provider_id):
 
             save_task_status(current_task_id, "rehash_tracks", TASK_STATUS_SUCCESS,
                              progress=100, details=summary)
+
+            # Clear needs_rehash flag now that rehash is complete
+            try:
+                with db.cursor() as cur2:
+                    cur2.execute(
+                        "UPDATE provider SET config = config - 'needs_rehash' WHERE id = %s",
+                        (provider_id,)
+                    )
+                    db.commit()
+            except Exception:
+                pass  # Non-critical — flag will just remain
 
             logger.info(f"Track rehash complete for provider {provider_id}: {summary}")
             return {"status": "SUCCESS", **summary}

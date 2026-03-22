@@ -209,11 +209,14 @@ def _update_multi_provider_settings():
 # PROVIDER MANAGEMENT
 # ##############################################################################
 
-def get_providers(enabled_only=False):
-    """Get all configured providers.
+def _query_providers(enabled_only=False):
+    """Shared query logic for fetching providers from the database.
 
     Args:
         enabled_only: If True, only return enabled providers
+
+    Returns:
+        List of provider dicts with raw 'config' field intact
     """
     db = get_db()
     with db.cursor() as cur:
@@ -243,18 +246,49 @@ def get_providers(enabled_only=False):
                 'created_at': row[6].isoformat() if row[6] else None,
                 'updated_at': row[7].isoformat() if row[7] else None,
             }
-            # Build a display-safe copy of config (masks sensitive values)
-            # Pop raw config to avoid leaking secrets in API responses
-            raw_config = provider.pop('config', None) or {}
-            safe_config = {}
-            for k, v in raw_config.items():
-                if k in ('password', 'token', 'api_key'):
-                    safe_config[k] = '********' if v else None
-                else:
-                    safe_config[k] = v
-            provider['config_display'] = safe_config
             providers.append(provider)
         return providers
+
+
+def get_providers_display(enabled_only=False):
+    """Get all configured providers with sensitive config values masked.
+
+    Returns providers with 'config_display' (masked) instead of raw 'config'.
+    Use this for API responses and any data sent to the frontend.
+
+    Args:
+        enabled_only: If True, only return enabled providers
+    """
+    providers = _query_providers(enabled_only=enabled_only)
+    for provider in providers:
+        # Build a display-safe copy of config (masks sensitive values)
+        # Pop raw config to avoid leaking secrets in API responses
+        raw_config = provider.pop('config', None) or {}
+        safe_config = {}
+        for k, v in raw_config.items():
+            if k in ('password', 'token', 'api_key'):
+                safe_config[k] = '********' if v else None
+            else:
+                safe_config[k] = v
+        provider['config_display'] = safe_config
+    return providers
+
+
+def get_providers_raw(enabled_only=False):
+    """Get all configured providers with raw config (including credentials).
+
+    Returns providers with the original 'config' dict intact.
+    Use this for internal code that needs real credentials (e.g., media server
+    connections, analysis tasks).
+
+    Args:
+        enabled_only: If True, only return enabled providers
+    """
+    return _query_providers(enabled_only=enabled_only)
+
+
+# Backward compatibility alias
+get_providers = get_providers_display
 
 
 def get_provider_by_id(provider_id):
@@ -333,6 +367,32 @@ def delete_provider(provider_id):
         cur.execute("DELETE FROM provider WHERE id = %s", (provider_id,))
         db.commit()
         return cur.rowcount > 0
+
+
+def _auto_apply_existing_prefix(detected_prefix):
+    """
+    Auto-set music_path_prefix on existing providers that don't have one yet.
+
+    When adding a second provider, path comparison may reveal that existing
+    providers have an extra path segment (e.g., "Music I/") that needs to be
+    configured as their music_path_prefix for cross-provider matching to work.
+    """
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT id, provider_type, name, config FROM provider WHERE enabled = true")
+        for row in cur.fetchall():
+            provider_id, provider_type, name, config = row
+            current_prefix = config.get('music_path_prefix', '') if config else ''
+            if not current_prefix:
+                config = config or {}
+                config['music_path_prefix'] = detected_prefix
+                config['prefix_verified'] = True
+                cur.execute(
+                    "UPDATE provider SET config = %s, updated_at = NOW() WHERE id = %s",
+                    (json.dumps(config), provider_id)
+                )
+                logger.info(f"Auto-set music_path_prefix='{detected_prefix}' on provider {name} (id={provider_id})")
+        db.commit()
 
 
 # ##############################################################################
@@ -431,7 +491,7 @@ def _detect_and_persist_path_format(provider_id, provider_type, config_data):
                 if path_format == 'relative' and provider_type == 'navidrome':
                     logger.warning(
                         f"Provider {provider_id} ({provider_type}) is reporting relative paths. "
-                        f'Enable "Report Real Path" in Navidrome Players > AudioMuse player '
+                        f'Enable "Report Real Path" in Navidrome Players > AudioMuse-AI player '
                         f"for cross-provider track matching to work."
                     )
     except Exception as e:
@@ -646,6 +706,13 @@ def create_provider():
             _update_multi_provider_settings()
             return jsonify({'id': existing['id'], 'message': 'Provider updated', 'was_update': True}), 200
 
+        # If provider has no music_path_prefix but other providers do, and this was validated
+        # during the test connection (prefix detection ran), mark it as verified
+        if not config_data.get('music_path_prefix'):
+            other_providers = [p for p in existing_providers if p.get('config_display', {}).get('music_path_prefix')]
+            if other_providers:
+                config_data['prefix_verified'] = True
+
         provider_id = add_provider(provider_type, name, config_data, enabled, priority)
         # Auto-detect path format for the new provider
         _detect_and_persist_path_format(provider_id, provider_type, config_data)
@@ -845,6 +912,14 @@ def test_provider_config():
                     result['suggested_prefix'] = prefix_result.get('detected_prefix', '')
                     if prefix_result.get('confidence') in ('high', 'medium'):
                         result['message'] += f" Detected path prefix: '{prefix_result.get('detected_prefix', '')}' ({prefix_result.get('confidence')} confidence)"
+
+                    # Auto-apply music_path_prefix to existing providers if detected
+                    existing_provider_prefix = prefix_result.get('existing_provider_prefix', '')
+                    if existing_provider_prefix and prefix_result.get('confidence') in ('high', 'medium'):
+                        _auto_apply_existing_prefix(existing_provider_prefix)
+                        result['existing_prefix_applied'] = existing_provider_prefix
+                        result['message'] += f" Auto-set existing provider prefix: '{existing_provider_prefix}'"
+
                 elif not prefix_result.get('had_existing_tracks', True):
                     # No existing tracks at all - this is truly the first provider
                     result['prefix_detection']['message'] = 'No existing tracks to compare with (first provider setup)'
@@ -911,7 +986,7 @@ def rehash_provider_tracks(provider_id):
                 f'Enable "Report Real Path" in Navidrome and run "Rescan Paths" first.'
             ),
             'instructions': [
-                'In Navidrome, go to Players > AudioMuse player',
+                'In Navidrome, go to Players > AudioMuse-AI player',
                 'Toggle "Report Real Path" to enabled',
                 'Click "Rescan Paths" on this provider in Settings',
                 'Then try "Rehash Tracks" again'
@@ -982,12 +1057,20 @@ def rescan_provider_paths(provider_id):
 
         # Persist path_format into provider config JSONB
         if path_format and path_format != 'unknown':
+            old_path_format = config_data.get('path_format', '')
             config_data['path_format'] = path_format
+            update_data = {'path_format': path_format}
+
+            # Detect path format upgrade (relative → absolute): flag for rehash
+            if old_path_format == 'relative' and path_format == 'absolute':
+                update_data['needs_rehash'] = True
+                logger.info(f"Provider {provider_id} path format changed from relative to absolute — needs rehash")
+
             db = get_db()
             with db.cursor() as cur:
                 cur.execute(
                     "UPDATE provider SET config = config || %s::jsonb WHERE id = %s",
-                    (json.dumps({'path_format': path_format}), provider_id)
+                    (json.dumps(update_data), provider_id)
                 )
                 db.commit()
 
@@ -1028,7 +1111,7 @@ def check_provider_health():
         is_multi_provider = len(providers) > 1
 
         # Collect all prefixes to detect mismatches
-        # Note: get_providers() replaces 'config' with 'config_display' (sensitive values masked)
+        # Note: get_providers()/get_providers_display() replaces 'config' with 'config_display' (sensitive values masked)
         prefixes = {}
         for p in providers:
             cfg = p.get('config_display') or {}
@@ -1075,7 +1158,7 @@ def check_provider_health():
                         'action': 'Enable "Report Real Path" in Navidrome, then Rescan Paths, then Rehash Tracks.',
                         'action_url': '/settings',
                         'recovery_steps': [
-                            'In Navidrome, go to Players > AudioMuse player',
+                            'In Navidrome, go to Players > AudioMuse-AI player',
                             'Toggle "Report Real Path" to enabled',
                             'In AudioMuse-AI Settings, click "Rescan Paths" on this provider',
                             'Then click "Rehash Tracks" to update all track identity records'
@@ -1099,10 +1182,11 @@ def check_provider_health():
                             f'{pname} is reporting relative file paths. This is fine for a single provider, '
                             f'but you must enable "Report Real Path" before adding more providers.'
                         ),
-                        'action': 'Enable "Report Real Path" in Navidrome Players > AudioMuse player.' if ptype == 'navidrome' else 'Check provider path configuration.',
+                        'action': 'Enable "Report Real Path" in Navidrome Players > AudioMuse-AI player.' if ptype == 'navidrome' else 'Check provider path configuration.',
                         'action_url': '/settings'
                     })
-            elif not path_format and ptype not in ('localfiles',):
+            elif not path_format and ptype == 'navidrome':
+                # Only Navidrome has actionable path format detection ("Report Real Path")
                 warnings.append({
                     'provider_id': pid, 'provider_name': pname, 'provider_type': ptype,
                     'level': 'info',
@@ -1112,7 +1196,9 @@ def check_provider_health():
                 })
 
             # Prefix mismatch: this provider has no prefix but others do
-            if non_empty_prefixes and not prefixes.get(pid) and ptype not in ('localfiles',) and path_format != 'relative':
+            # Skip if provider was verified to not need a prefix (prefix_verified flag set during detection)
+            prefix_verified = cfg.get('prefix_verified', False)
+            if non_empty_prefixes and not prefixes.get(pid) and not prefix_verified and ptype not in ('localfiles',) and path_format != 'relative':
                 if is_multi_provider:
                     warnings.append({
                         'provider_id': pid, 'provider_name': pname, 'provider_type': ptype,
@@ -1152,7 +1238,7 @@ def check_library_duplicates():
             """)
             for track_id, cnt in cur.fetchall():
                 cur.execute(
-                    "SELECT item_id, title, author, album FROM score WHERE track_id = %s ORDER BY item_id",
+                    "SELECT track_id, title, author, album FROM score WHERE track_id = %s",
                     (track_id,)
                 )
                 rows = cur.fetchall()
@@ -1160,7 +1246,7 @@ def check_library_duplicates():
                     'type': 'track_id',
                     'key': str(track_id),
                     'count': cnt,
-                    'items': [{'item_id': r[0], 'title': r[1], 'artist': r[2], 'album': r[3]} for r in rows]
+                    'items': [{'item_id': str(r[0]), 'track_id': r[0], 'title': r[1], 'artist': r[2], 'album': r[3]} for r in rows]
                 })
 
             # Strategy B: metadata duplicates (suspected)
@@ -1213,7 +1299,7 @@ def check_library_duplicates():
                         f'instead of real filesystem paths.'
                     ),
                     'action': (
-                        f'Enable "Report Real Path" in Navidrome Players > AudioMuse player, '
+                        f'Enable "Report Real Path" in Navidrome Players > AudioMuse-AI player, '
                         f'then run Rescan Paths and Rehash Tracks in Settings.'
                     ),
                     'provider_name': pname,
@@ -1331,11 +1417,75 @@ def _get_all_songs_with_config(provider_type, provider_config):
                 setattr(config, attr_name, original_value)
 
 
+def _backfill_legacy_tracks(primary_provider_id):
+    """
+    Backfill track table entries for legacy score rows that have file_path but no track_id.
+
+    This handles the migration from single-provider to multi-provider: existing analyzed
+    tracks get linked to the track table so that sync_provider can cross-reference them.
+
+    Args:
+        primary_provider_id: The provider that originally analyzed these tracks
+
+    Returns:
+        dict with 'linked' and 'errors' counts
+    """
+    from app_helper import get_or_create_track, update_score_track_id, link_provider_track
+
+    # In the new track_id canonical architecture, score.track_id IS the PK (never NULL).
+    # This backfill function is only relevant for pre-migration databases.
+    # After migration_track_id.py runs, this is a no-op.
+    db = get_db()
+    linked = 0
+    errors = 0
+
+    with db.cursor() as cur:
+        # Check if score table still has item_id column (pre-migration)
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'item_id')")
+        has_item_id = cur.fetchone()[0]
+        if not has_item_id:
+            logger.info("Score table already uses track_id PK — backfill not needed")
+            return {'linked': 0, 'errors': 0, 'total': 0}
+
+        cur.execute("""
+            SELECT item_id, title, author, album, file_path
+            FROM score
+            WHERE track_id IS NULL AND file_path IS NOT NULL
+        """)
+        rows = cur.fetchall()
+
+    if not rows:
+        return {'linked': 0, 'errors': 0, 'total': 0}
+
+    logger.info(f"Backfilling {len(rows)} legacy tracks into track table for provider {primary_provider_id}")
+
+    for item_id, title, author, album, file_path in rows:
+        try:
+            track_id = get_or_create_track(file_path, provider_id=primary_provider_id)
+            if track_id:
+                update_score_track_id(item_id, track_id)
+                link_provider_track(primary_provider_id, track_id, item_id,
+                                    title=title, artist=author, album=album)
+                linked += 1
+            else:
+                errors += 1
+        except Exception as e:
+            errors += 1
+            if errors <= 5:
+                logger.warning(f"Backfill error for {item_id}: {e}")
+
+    logger.info(f"Backfill complete: {linked} linked, {errors} errors out of {len(rows)} total")
+    return {'linked': linked, 'errors': errors, 'total': len(rows)}
+
+
 @setup_bp.route('/api/setup/providers/<int:provider_id>/sync', methods=['POST'])
 def sync_provider(provider_id):
     """
     Sync a provider's tracks by matching file paths to existing analyzed tracks.
     Creates provider_track entries and enriches score metadata from provider data.
+
+    Automatically backfills legacy score rows into the track table if needed
+    (migration from single-provider to multi-provider).
     ---
     tags:
       - Setup
@@ -1351,7 +1501,7 @@ def sync_provider(provider_id):
       404:
         description: Provider not found
     """
-    from app_helper import _compute_file_path_hash, link_provider_track, normalize_provider_path
+    from app_helper import _compute_file_path_hash, link_provider_track, normalize_provider_path, get_primary_provider_id
 
     provider = get_provider_by_id(provider_id)
     if not provider:
@@ -1361,7 +1511,22 @@ def sync_provider(provider_id):
     provider_config = provider['config']
 
     try:
-        # Fetch all songs from the provider using its stored config
+        # Phase 1: Backfill legacy tracks that have file_path but no track_id
+        # This links pre-existing analysis data to the track table so cross-provider
+        # matching works. Uses the primary provider for path normalization.
+        primary_id = get_primary_provider_id()
+        if not primary_id:
+            # Fall back to highest-priority provider
+            all_providers = get_providers(enabled_only=True)
+            if all_providers:
+                primary_id = all_providers[0]['id']
+
+        if primary_id:
+            backfill_result = _backfill_legacy_tracks(primary_id)
+            if backfill_result['linked'] > 0:
+                logger.info(f"Backfilled {backfill_result['linked']} legacy tracks before sync")
+
+        # Phase 2: Fetch all songs from the provider using its stored config
         songs = _get_all_songs_with_config(provider_type, provider_config)
         if not songs:
             return jsonify({
@@ -1388,7 +1553,7 @@ def sync_provider(provider_id):
             # Look up existing track by file_path_hash
             with db.cursor() as cur:
                 cur.execute("""
-                    SELECT t.id, s.item_id, s.album_artist, s.year, s.rating, s.file_path, s.album
+                    SELECT t.id, s.track_id, s.album_artist, s.year, s.rating, s.file_path, s.album
                     FROM track t
                     LEFT JOIN score s ON s.track_id = t.id
                     WHERE t.file_path_hash = %s
@@ -1398,7 +1563,7 @@ def sync_provider(provider_id):
             if not row:
                 continue
 
-            track_id, score_item_id = row[0], row[1]
+            track_id, score_track_id = row[0], row[1]
 
             # Create provider_track link
             link_provider_track(
@@ -1410,7 +1575,7 @@ def sync_provider(provider_id):
             matched += 1
 
             # Metadata enrichment: fill missing score fields from this provider's data
-            if score_item_id:
+            if score_track_id:
                 current_album_artist, current_year, current_rating, current_file_path, current_album = row[2], row[3], row[4], row[5], row[6]
 
                 updates = []
@@ -1442,10 +1607,10 @@ def sync_provider(provider_id):
                     values.append(new_album)
 
                 if updates:
-                    values.append(score_item_id)
+                    values.append(score_track_id)
                     with db.cursor() as cur:
                         cur.execute(
-                            f"UPDATE score SET {', '.join(updates)} WHERE item_id = %s",
+                            f"UPDATE score SET {', '.join(updates)} WHERE track_id = %s",
                             values
                         )
                     enriched += 1
@@ -1507,6 +1672,16 @@ def get_settings():
         description: All settings grouped by category
     """
     settings = get_all_settings()
+
+    # Auto-detect hardware type if not explicitly set
+    if 'hardware_type' not in settings or not settings.get('hardware_type'):
+        import subprocess
+        try:
+            result = subprocess.run(['nvidia-smi'], capture_output=True, timeout=5)
+            settings['hardware_type'] = 'nvidia' if result.returncode == 0 else 'cpu'
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            settings['hardware_type'] = 'cpu'
+
     return jsonify(settings)
 
 

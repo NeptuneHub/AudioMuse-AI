@@ -82,7 +82,7 @@ def start_analysis_endpoint():
     """
     # Local imports to prevent circular dependency at startup
     from app_helper import rq_queue_high, clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING
-    from app_setup import get_providers
+    from app_setup import get_providers_display as get_providers
 
     data = request.json or {}
     num_recent_albums = int(data.get('num_recent_albums', NUM_RECENT_ALBUMS))
@@ -97,7 +97,7 @@ def start_analysis_endpoint():
         if is_multi_provider:
             path_issues = []
             for p in providers:
-                cfg = p.get('config') or {}
+                cfg = p.get('config_display') or {}
                 pname = p.get('name') or p.get('provider_type')
                 ptype = p.get('provider_type')
                 path_format = cfg.get('path_format', '')
@@ -111,7 +111,7 @@ def start_analysis_endpoint():
                         'message': f'{pname} is reporting virtual file paths instead of real filesystem paths.',
                         'instructions': [
                             'In Navidrome, go to Players in the right sidebar',
-                            'Click on the AudioMuse player entry',
+                            'Click on the AudioMuse-AI player entry',
                             'Toggle "Report Real Path" to enabled',
                             'Back in AudioMuse-AI Settings, click "Rescan Paths" on this provider'
                         ]
@@ -142,7 +142,12 @@ def start_analysis_endpoint():
                     })
 
             if path_issues:
-                logger.warning(f"Analysis blocked: {len(path_issues)} provider path issue(s) in multi-provider setup")
+                logger.warning(f"⚠️ Analysis BLOCKED: {len(path_issues)} provider path issue(s) in multi-provider setup.")
+                for issue in path_issues:
+                    logger.warning(
+                        f"  [{issue['provider_name']}] {issue['message']} "
+                        f"Fix: {' → '.join(issue.get('instructions', []))}"
+                    )
                 return jsonify({
                     'error': 'provider_path_issue',
                     'blocked': True,
