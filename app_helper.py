@@ -495,6 +495,76 @@ def init_db():
                 db.rollback()
                 logger.warning(f"Score dedup migration failed (will retry next startup): {e}")
 
+        # Migration: Backfill track table from legacy score rows (multi-provider migration)
+        # Legacy score rows have file_path but no track_id — link them to track table
+        cur.execute("SELECT value FROM app_settings WHERE key = 'migration_backfill_track_table_done'")
+        if not cur.fetchone():
+            try:
+                import hashlib as _hashlib_bt
+                cur.execute("""
+                    SELECT item_id, title, author, album, file_path
+                    FROM score
+                    WHERE track_id IS NULL AND file_path IS NOT NULL
+                """)
+                legacy_rows = cur.fetchall()
+
+                if legacy_rows:
+                    # Determine primary provider for path normalization
+                    cur.execute("SELECT id FROM provider WHERE enabled = true ORDER BY priority DESC, id ASC LIMIT 1")
+                    prov_row = cur.fetchone()
+                    primary_provider_id = prov_row[0] if prov_row else None
+
+                    backfill_count = 0
+                    for item_id, title, author, album, file_path in legacy_rows:
+                        try:
+                            normalized = normalize_provider_path(file_path, provider_id=primary_provider_id)
+                            if not normalized:
+                                continue
+                            fph = _hashlib_bt.sha256(normalized.encode('utf-8')).hexdigest()
+
+                            # Create or get track
+                            cur.execute("""
+                                INSERT INTO track (file_path_hash, file_path, normalized_path)
+                                VALUES (%s, %s, %s)
+                                ON CONFLICT (file_path_hash) DO UPDATE SET
+                                    normalized_path = EXCLUDED.normalized_path,
+                                    updated_at = NOW()
+                                RETURNING id
+                            """, (fph, file_path, normalized))
+                            track_id = cur.fetchone()[0]
+
+                            # Link score → track
+                            cur.execute("UPDATE score SET track_id = %s WHERE item_id = %s AND track_id IS NULL",
+                                        (track_id, item_id))
+
+                            # Create provider_track link
+                            if primary_provider_id:
+                                cur.execute("""
+                                    INSERT INTO provider_track (provider_id, track_id, item_id, title, artist, album, last_synced)
+                                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                                    ON CONFLICT (provider_id, item_id) DO UPDATE SET
+                                        track_id = EXCLUDED.track_id,
+                                        last_synced = NOW()
+                                """, (primary_provider_id, track_id, item_id, title, author, album))
+
+                            backfill_count += 1
+                        except Exception:
+                            continue  # Skip individual failures
+
+                    logger.info(f"Track table backfill complete: {backfill_count}/{len(legacy_rows)} legacy tracks linked")
+                else:
+                    logger.info("Track table backfill: no legacy tracks to migrate")
+
+                cur.execute("""
+                    INSERT INTO app_settings (key, value, updated_at)
+                    VALUES ('migration_backfill_track_table_done', 'true', NOW())
+                    ON CONFLICT (key) DO NOTHING
+                """)
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"Track table backfill migration failed (will retry next startup): {e}")
+
         db.commit()
 
 # --- Status Constants ---
@@ -2382,9 +2452,11 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None, extr
 
     # Detect prefix by finding common suffix (segment-based for robustness)
     prefix_candidates = {}
+    existing_prefix_candidates = {}  # Track prefixes the existing provider(s) need
     sample_comparisons = []
 
-    for match in matches[:20]:  # Limit analysis to first 20 matches
+    analyzed_matches = matches[:20]  # Limit analysis to first 20 matches
+    for match in analyzed_matches:
         new_path = match['new_path']
         existing_path = match['existing_path']
 
@@ -2407,11 +2479,18 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None, extr
             # This means the NEW provider needs no prefix, but existing does
             prefix_candidates[''] = prefix_candidates.get('', 0) + 1
 
+            # Detect what prefix the existing provider needs
+            existing_extra_len = len(existing_path) - len(new_path)
+            existing_extra = existing_path[:existing_extra_len].rstrip('/')
+            if existing_extra:
+                existing_prefix_candidates[existing_extra] = existing_prefix_candidates.get(existing_extra, 0) + 1
+
             sample_comparisons.append({
                 'title': match['title'],
                 'new_path': new_path,
                 'existing_path': existing_path,
-                'detected_prefix': '(existing has prefix, new does not)'
+                'detected_prefix': '',
+                'existing_has_prefix': existing_extra
             })
         else:
             # Segment-based longest-common-suffix matching
@@ -2431,11 +2510,17 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None, extr
                 new_prefix = '/'.join(new_path.split('/')[:len(new_segments) - common_count])
                 prefix_candidates[new_prefix] = prefix_candidates.get(new_prefix, 0) + 1
 
+                # Also track existing provider prefix
+                existing_prefix = '/'.join(existing_path.split('/')[:len(existing_segments) - common_count])
+                if existing_prefix:
+                    existing_prefix_candidates[existing_prefix] = existing_prefix_candidates.get(existing_prefix, 0) + 1
+
                 sample_comparisons.append({
                     'title': match['title'],
                     'new_path': new_path,
                     'existing_path': existing_path,
-                    'detected_prefix': new_prefix
+                    'detected_prefix': new_prefix,
+                    'existing_has_prefix': existing_prefix
                 })
 
     if not prefix_candidates:
@@ -2447,19 +2532,31 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None, extr
     # Find most common prefix
     most_common_prefix = max(prefix_candidates, key=prefix_candidates.get)
     occurrence_count = prefix_candidates[most_common_prefix]
-    total_matches = len(matches)
+    # Use analyzed count for confidence (not total matches, since we cap analysis at 20)
+    analyzed_count = len(analyzed_matches)
+
+    # Determine confidence based on total prefix consistency (both new and existing)
+    total_consistent = occurrence_count
+    existing_prefix_suggestion = ''
+    if existing_prefix_candidates:
+        most_common_existing = max(existing_prefix_candidates, key=existing_prefix_candidates.get)
+        existing_count = existing_prefix_candidates[most_common_existing]
+        # If most matches agree on the existing prefix, count them toward confidence
+        total_consistent = max(occurrence_count, existing_count)
+        if existing_count >= 2:
+            existing_prefix_suggestion = most_common_existing
 
     # Determine confidence
-    if occurrence_count == total_matches and total_matches >= 3:
+    if total_consistent == analyzed_count and analyzed_count >= 3:
         confidence = 'high'
-    elif occurrence_count >= total_matches * 0.8 and total_matches >= 2:
+    elif total_consistent >= analyzed_count * 0.8 and analyzed_count >= 2:
         confidence = 'medium'
-    elif occurrence_count >= 1:
+    elif total_consistent >= 1:
         confidence = 'low'
     else:
         confidence = 'none'
 
-    return {
+    result = {
         'detected_prefix': most_common_prefix,
         'confidence': confidence,
         'matches_found': len(matches),
@@ -2467,6 +2564,12 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None, extr
         'sample_comparisons': sample_comparisons[:5],
         'had_existing_tracks': True
     }
+
+    # Include existing provider prefix suggestion if detected
+    if existing_prefix_suggestion:
+        result['existing_provider_prefix'] = existing_prefix_suggestion
+
+    return result
 
 
 def detect_path_format(sample_tracks):

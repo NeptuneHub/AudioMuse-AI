@@ -221,6 +221,17 @@ def rehash_provider_tracks_task(provider_id):
             save_task_status(current_task_id, "rehash_tracks", TASK_STATUS_SUCCESS,
                              progress=100, details=summary)
 
+            # Clear needs_rehash flag now that rehash is complete
+            try:
+                with db.cursor() as cur2:
+                    cur2.execute(
+                        "UPDATE provider SET config = config - 'needs_rehash' WHERE id = %s",
+                        (provider_id,)
+                    )
+                    db.commit()
+            except Exception:
+                pass  # Non-critical — flag will just remain
+
             logger.info(f"Track rehash complete for provider {provider_id}: {summary}")
             return {"status": "SUCCESS", **summary}
 

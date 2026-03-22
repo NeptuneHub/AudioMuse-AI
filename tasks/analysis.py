@@ -1079,7 +1079,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
 # MODIFIED: Removed jellyfin_url, jellyfin_user_id, jellyfin_token from signature.
 def run_analysis_task(num_recent_albums, top_n_moods):
     from app import app
-    from app_helper import (redis_conn, get_db, rq_queue_default, save_task_status, get_task_info_from_db, get_primary_provider_id, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+    from app_helper import (redis_conn, get_db, rq_queue_default, save_task_status, get_task_info_from_db, get_primary_provider_id, link_provider_track, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import is_clap_available
     import config  # Import config to access MULAN_ENABLED
 
@@ -1146,7 +1146,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                             error_msg = (
                                 f"Analysis aborted: Provider '{pname}' uses relative file paths in a multi-provider setup. "
                                 f"This will create duplicate tracks. Enable 'Report Real Path' in Navidrome "
-                                f"(Players > AudioMuse player), then run 'Rescan Paths' in Settings."
+                                f"(Players > AudioMuse-AI player), then run 'Rescan Paths' in Settings."
                             )
                             log_and_update_main(error_msg, 0, task_state=TASK_STATUS_FAILURE)
                             return {"status": "FAILURE", "message": error_msg}
@@ -1190,7 +1190,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             total_albums_to_check = len(all_albums)
             active_jobs, launched_jobs = {}, []
             launched_job_ids = set()  # Track job IDs launched in THIS run only
-            albums_skipped, albums_launched, albums_completed, last_rebuild_count = 0, 0, 0, 0
+            albums_skipped, albums_launched, albums_completed, last_rebuild_count, total_linked = 0, 0, 0, 0, 0
 
             def get_existing_track_ids(track_ids):
                 if not track_ids: return set()
@@ -1383,16 +1383,45 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
                 # Skip ONLY if all tracks have MusiCNN AND CLAP (if enabled) AND MuLan (if enabled)
                 if existing_count >= len(tracks) and not needs_clap_analysis and not needs_mulan_analysis:
-                    # Always update album name for all tracks, even if already analyzed
+                    # Batch check: which tracks already have provider_track for this provider?
+                    already_linked_ids = set()
+                    if active_provider_id:
+                        try:
+                            track_id_strs = [str(t['Id']) for t in tracks]
+                            with get_db() as conn, conn.cursor() as cur:
+                                cur.execute(
+                                    "SELECT item_id FROM provider_track WHERE provider_id = %s AND item_id IN %s",
+                                    (active_provider_id, tuple(track_id_strs))
+                                )
+                                already_linked_ids = {row[0] for row in cur.fetchall()}
+                        except Exception:
+                            pass
+
                     for item in tracks:
                         track_id_str = str(item['Id'])
+                        file_path = item.get('Path') or item.get('FilePath')
+
+                        # Update metadata
                         try:
                             with get_db() as conn, conn.cursor() as cur:
-                                cur.execute("UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE item_id = %s", (album.get('Name'), item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'), item.get('Path') or item.get('FilePath'), track_id_str))
+                                cur.execute("UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE item_id = %s", (album.get('Name'), item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'), file_path, track_id_str))
                                 conn.commit()
-                            logger.info(f"[MainAnalysisTask] Updated album/album_artist/year/rating/file_path for track '{item['Name']}' to '{album.get('Name')}' (main task)")
                         except Exception as e:
-                            logger.warning(f"[MainAnalysisTask] Failed to update album name for '{item['Name']}': {e}")
+                            logger.warning(f"[MainAnalysisTask] Failed to update metadata for '{item['Name']}': {e}")
+
+                        # Cross-provider linking: only if not already linked for this provider
+                        if active_provider_id and file_path and track_id_str not in already_linked_ids:
+                            try:
+                                from app_helper import get_or_create_track, link_provider_track
+                                track_id = get_or_create_track(file_path, provider_id=active_provider_id)
+                                if track_id:
+                                    link_provider_track(active_provider_id, track_id, track_id_str,
+                                                        title=item.get('Name'),
+                                                        artist=item.get('AlbumArtist') or item.get('Artist'),
+                                                        album=album.get('Name'))
+                                    total_linked += 1
+                            except Exception as e:
+                                logger.warning(f"[MainAnalysisTask] Failed to link provider track for '{item['Name']}': {e}")
                     albums_skipped += 1
                     checked_album_ids.add(album['Id'])
                     # Build dynamic status message based on enabled features
@@ -1515,8 +1544,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             # Top query computation disabled - using default queries from database only
             logger.info('Analysis complete. CLAP text search uses default queries (no auto-regeneration).')
 
-            # Sum cross-provider link stats from child tasks
-            total_linked = 0
+            # Sum cross-provider link stats from child tasks (add to skip-path links)
             try:
                 from app_helper import get_child_tasks_from_db
                 for ct in get_child_tasks_from_db(current_task_id):
@@ -1529,6 +1557,70 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     total_linked += (details.get('final_summary_details') or {}).get('tracks_linked', 0)
             except Exception as e:
                 logger.warning(f"Could not sum link stats from child tasks: {e}")
+
+            # Cross-provider sync: link secondary providers' tracks to existing track table
+            # The main loop only scans the primary provider — this links other providers
+            secondary_linked = 0
+            try:
+                from app_helper import get_enabled_provider_ids, _compute_file_path_hash
+                from app_setup import get_provider_by_id, _get_all_songs_with_config
+                all_provider_ids = get_enabled_provider_ids()
+                secondary_ids = [pid for pid in all_provider_ids if pid != active_provider_id]
+
+                if secondary_ids:
+                    log_and_update_main(f"Linking tracks for {len(secondary_ids)} secondary provider(s)...", 95)
+
+                for sec_id in secondary_ids:
+                    sec_provider = get_provider_by_id(sec_id)
+                    if not sec_provider:
+                        continue
+                    sec_type = sec_provider['provider_type']
+                    sec_config = sec_provider['config']
+                    sec_name = sec_provider.get('name', sec_type)
+
+                    try:
+                        sec_songs = _get_all_songs_with_config(sec_type, sec_config)
+                        if not sec_songs:
+                            logger.info(f"No songs from secondary provider {sec_name}")
+                            continue
+
+                        provider_linked = 0
+                        for song in sec_songs:
+                            file_path = song.get('Path') or song.get('FilePath')
+                            if not file_path:
+                                continue
+                            fph = _compute_file_path_hash(file_path, sec_id)
+                            if not fph:
+                                continue
+                            with get_db() as conn, conn.cursor() as cur:
+                                cur.execute("SELECT id FROM track WHERE file_path_hash = %s", (fph,))
+                                row = cur.fetchone()
+                            if row:
+                                link_provider_track(sec_id, row[0], song.get('Id', ''),
+                                                    title=song.get('Name'),
+                                                    artist=song.get('AlbumArtist') or song.get('Artist'),
+                                                    album=song.get('Album'))
+                                provider_linked += 1
+
+                        secondary_linked += provider_linked
+                        match_rate = provider_linked / len(sec_songs) if sec_songs else 0
+                        if match_rate < 0.5 and len(sec_songs) > 10:
+                            logger.warning(
+                                f"⚠️ Low cross-provider match rate for {sec_name}: "
+                                f"{provider_linked}/{len(sec_songs)} ({match_rate:.0%}). "
+                                f"Check music_path_prefix settings or verify both providers serve the same library."
+                            )
+                            log_and_update_main(
+                                f"⚠️ Low match rate for {sec_name}: {provider_linked}/{len(sec_songs)} ({match_rate:.0%}). "
+                                f"Check path prefix settings in Settings.", 96)
+                        else:
+                            logger.info(f"Linked {provider_linked}/{len(sec_songs)} tracks for secondary provider {sec_name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to sync secondary provider {sec_name}: {e}")
+
+                total_linked += secondary_linked
+            except Exception as e:
+                logger.warning(f"Secondary provider sync failed (non-blocking): {e}")
 
             final_message = (
                 f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
