@@ -730,9 +730,12 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
                             linked = False
                             if existing_analysis.get('source') == 'metadata_match':
                                 # Metadata-based match: link directly to existing track_id
-                                link_provider_track(active_provider_id, existing_track_id, track_id_str,
-                                                    item.get('Name'), item.get('AlbumArtist'), album_name)
-                                linked = True
+                                try:
+                                    link_provider_track(active_provider_id, existing_track_id, track_id_str,
+                                                        item.get('Name'), item.get('AlbumArtist'), album_name)
+                                    linked = True
+                                except Exception as e:
+                                    logger.warning(f"Failed to link provider track for '{item.get('Name')}': {e}")
                             else:
                                 # Path-based match: existing flow
                                 linked = link_provider_to_existing_track(
@@ -1091,7 +1094,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
 # MODIFIED: Removed jellyfin_url, jellyfin_user_id, jellyfin_token from signature.
 def run_analysis_task(num_recent_albums, top_n_moods):
     from app import app
-    from app_helper import (redis_conn, get_db, rq_queue_default, save_task_status, get_task_info_from_db, get_primary_provider_id, link_provider_track, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+    from app_helper import (redis_conn, get_db, rq_queue_default, save_task_status, get_task_info_from_db, get_primary_provider_id, get_or_create_track, link_provider_track, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import is_clap_available
     import config  # Import config to access MULAN_ENABLED
 
@@ -1103,6 +1106,11 @@ def run_analysis_task(num_recent_albums, top_n_moods):
     with app.app_context():
         # Resolve active provider_id for passing to album analysis tasks
         active_provider_id = get_primary_provider_id()
+        if active_provider_id is None:
+            from app_helper import get_enabled_provider_ids
+            enabled = get_enabled_provider_ids()
+            if enabled:
+                active_provider_id = enabled[0]
         if num_recent_albums < 0:
              logger.warning("num_recent_albums is negative, treating as 0 (all albums).")
              num_recent_albums = 0
@@ -1587,29 +1595,44 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                             logger.info(f"No songs from secondary provider {sec_name}")
                             continue
 
-                        provider_linked = 0
+                        # Batch: compute all hashes, resolve in one query, then link
+                        hash_to_songs = {}
                         for song in sec_songs:
                             file_path = song.get('Path') or song.get('FilePath')
                             if not file_path:
                                 continue
                             fph = _compute_file_path_hash(file_path, sec_id)
-                            if not fph:
-                                continue
-                            with get_db() as conn, conn.cursor() as cur:
-                                cur.execute("SELECT id FROM track WHERE file_path_hash = %s", (fph,))
-                                row = cur.fetchone()
-                            if row:
-                                link_provider_track(sec_id, row[0], song.get('Id', ''),
-                                                    title=song.get('Name'),
-                                                    artist=song.get('AlbumArtist') or song.get('Artist'),
-                                                    album=song.get('Album'))
-                                provider_linked += 1
+                            if fph:
+                                hash_to_songs[fph] = song
 
-                            # Collect artist_id → name mapping from this provider's songs
+                            # Collect (artist_id, provider_id) → name mapping
                             artist_name = song.get('AlbumArtist') or song.get('Artist')
                             artist_id = song.get('ArtistId')
-                            if artist_name and artist_id and artist_id not in all_artist_mappings:
-                                all_artist_mappings[artist_id] = artist_name
+                            if artist_name and artist_id:
+                                mapping_key = (artist_id, sec_id)
+                                if mapping_key not in all_artist_mappings:
+                                    all_artist_mappings[mapping_key] = artist_name
+
+                        # Batch resolve hashes → track_ids in chunks
+                        provider_linked = 0
+                        hash_list = list(hash_to_songs.keys())
+                        CHUNK = 500
+                        for i in range(0, len(hash_list), CHUNK):
+                            chunk = hash_list[i:i+CHUNK]
+                            with get_db() as conn, conn.cursor() as cur:
+                                cur.execute("SELECT id, file_path_hash FROM track WHERE file_path_hash IN %s", (tuple(chunk),))
+                                hash_to_track_id = {row[1]: row[0] for row in cur.fetchall()}
+
+                            for fph in chunk:
+                                track_id = hash_to_track_id.get(fph)
+                                if track_id:
+                                    song = hash_to_songs[fph]
+                                    result = link_provider_track(sec_id, track_id, song.get('Id', ''),
+                                                        title=song.get('Name'),
+                                                        artist=song.get('AlbumArtist') or song.get('Artist'),
+                                                        album=song.get('Album'))
+                                    if result is not None:
+                                        provider_linked += 1
 
                         secondary_linked += provider_linked
                         match_rate = provider_linked / len(sec_songs) if sec_songs else 0
@@ -1631,10 +1654,10 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 # Store as additional rows (artist_id is indexed for reverse lookup)
                 if all_artist_mappings:
                     try:
-                        from app_helper_artist import upsert_artist_mapping_secondary
+                        from app_helper_artist import upsert_artist_provider_mapping
                         stored = 0
-                        for aid, aname in all_artist_mappings.items():
-                            if upsert_artist_mapping_secondary(aname, aid):
+                        for (aid, prov_id), aname in all_artist_mappings.items():
+                            if upsert_artist_provider_mapping(aname, prov_id, aid, is_primary=False):
                                 stored += 1
                         logger.info(f"Stored {stored} secondary provider artist mappings")
                     except Exception as e:

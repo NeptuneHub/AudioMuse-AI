@@ -42,7 +42,7 @@ def upsert_artist_provider_mapping(artist_name, provider_id, provider_artist_id,
             provider_artist_id = provider_artist_id[:200]
 
     if not artist_name or not provider_artist_id or provider_id is None:
-        return
+        return False
 
     try:
         conn = get_db()
@@ -56,13 +56,13 @@ def upsert_artist_provider_mapping(artist_name, provider_id, provider_artist_id,
                               is_primary  = EXCLUDED.is_primary
             """, (artist_name, provider_id, provider_artist_id, is_primary))
             conn.commit()
+        return True
     except Exception as e:
         logger.error(f"Failed to upsert artist provider mapping for '{artist_name}' "
                      f"(provider_id={provider_id}): {e}")
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+        from app_helper import reset_db_connection
+        reset_db_connection()
+        return False
 
 
 def get_artist_ids_by_name(artist_name):
@@ -255,8 +255,7 @@ def upsert_artist_mapping_secondary(artist_name, artist_id):
 
     try:
         provider_id = _get_default_secondary_provider_id()
-        upsert_artist_provider_mapping(artist_name, provider_id, artist_id, is_primary=False)
-        return True
+        return upsert_artist_provider_mapping(artist_name, provider_id, artist_id, is_primary=False)
     except Exception as e:
         logger.error(f"Failed to upsert secondary artist mapping for '{artist_name}': {e}")
         return False
@@ -276,8 +275,7 @@ def _get_default_provider_id():
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT id FROM provider
-                WHERE is_primary = TRUE
-                ORDER BY id ASC
+                ORDER BY priority DESC, id ASC
                 LIMIT 1
             """)
             row = cur.fetchone()
@@ -285,6 +283,8 @@ def _get_default_provider_id():
                 return row[0]
     except Exception as e:
         logger.debug(f"Could not look up primary provider ID: {e}")
+        from app_helper import reset_db_connection
+        reset_db_connection()
 
     return 1
 
@@ -299,14 +299,15 @@ def _get_default_secondary_provider_id():
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT id FROM provider
-                WHERE is_primary = FALSE
-                ORDER BY id ASC
-                LIMIT 1
+                ORDER BY priority ASC, id ASC
+                LIMIT 1 OFFSET 1
             """)
             row = cur.fetchone()
             if row:
                 return row[0]
     except Exception as e:
         logger.debug(f"Could not look up secondary provider ID: {e}")
+        from app_helper import reset_db_connection
+        reset_db_connection()
 
     return 2
