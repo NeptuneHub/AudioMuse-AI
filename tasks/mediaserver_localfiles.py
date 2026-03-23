@@ -78,7 +78,7 @@ def _get_songs_from_db() -> List[Dict]:
     Falls back to empty list if DB is unavailable.
 
     Uses provider_track join to return the localfiles provider's native item_id
-    when available, with fallback to score.item_id for legacy data.
+    when available, with fallback to score.track_id for legacy data.
     """
     try:
         from app_helper import get_db
@@ -100,7 +100,7 @@ def _get_songs_from_db() -> List[Dict]:
             if not rows:
                 # Fallback for legacy data without provider_track mappings
                 cur.execute("""
-                    SELECT item_id, title, author, album, album_artist, file_path,
+                    SELECT track_id, title, author, album, album_artist, file_path,
                            year, rating
                     FROM score
                     WHERE file_path IS NOT NULL

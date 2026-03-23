@@ -693,13 +693,13 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
 
                 # Store artist ID mapping for all tracks (even if already analyzed)
                 try:
-                    from app_helper_artist import upsert_artist_mapping
+                    from app_helper_artist import upsert_artist_provider_mapping
                     artist_name = item.get('AlbumArtist')
                     artist_id = item.get('ArtistId')
                     logger.info(f"Track '{item.get('Name')}': artist_name='{artist_name}', artist_id='{artist_id}'")
                     if artist_name and artist_id:
-                        upsert_artist_mapping(artist_name, artist_id)
-                        logger.info(f"✓ Stored artist mapping: '{artist_name}' → '{artist_id}'")
+                        upsert_artist_provider_mapping(artist_name, active_provider_id, artist_id)
+                        logger.info(f"✓ Stored artist mapping: '{artist_name}' → '{artist_id}' (provider {active_provider_id})")
                     else:
                         if not artist_id:
                             logger.warning(f"✗ No artist_id for track '{item.get('Name')}' by '{artist_name}'")
@@ -1333,12 +1333,12 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
                 # Store artist ID mappings for all tracks in this album (even if already analyzed)
                 try:
-                    from app_helper_artist import upsert_artist_mapping
+                    from app_helper_artist import upsert_artist_provider_mapping
                     for track in tracks:
                         artist_name = track.get('AlbumArtist')
                         artist_id = track.get('ArtistId')
                         if artist_name and artist_id:
-                            upsert_artist_mapping(artist_name, artist_id)
+                            upsert_artist_provider_mapping(artist_name, active_provider_id, artist_id)
                         elif artist_name and not artist_id:
                             logger.warning(f"✗ No artist_id for '{artist_name}' in album '{album.get('Name')}'")
                     logger.info(f"✓ Artist mapping for album '{album.get('Name')}' done")

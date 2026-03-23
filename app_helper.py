@@ -448,6 +448,7 @@ def init_db():
             logger.warning(f"Canonical track_id migration check failed: {e}")
 
         db.commit()
+        cur.execute('SELECT pg_advisory_unlock(42)')
 
 # --- Status Constants ---
 TASK_STATUS_PENDING = "PENDING"
@@ -1373,24 +1374,6 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
              cancelled_count += cancel_job_and_children_recursive(child_job_id, reason="Cancelled due to parent task revocation.")
 
     return cancelled_count
-
-
-# ##############################################################################
-# RESULT HELPERS
-# ##############################################################################
-
-def add_item_id_to_results(results):
-    """Add item_id = str(track_id) to result dicts for frontend backward compatibility.
-
-    All API responses should call this before returning track results,
-    since templates reference track.item_id in JavaScript.
-    """
-    if not results:
-        return results
-    for r in results:
-        if 'track_id' in r and 'item_id' not in r:
-            r['item_id'] = str(r['track_id'])
-    return results
 
 
 # ##############################################################################

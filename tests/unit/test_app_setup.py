@@ -375,8 +375,12 @@ class TestProviderCRUD:
     @patch('app_setup.get_providers', return_value=[
         {'id': 1, 'provider_type': 'jellyfin', 'name': 'Old', 'config': {}}
     ])
+    @patch('app_setup.get_provider_by_id', return_value={
+        'id': 1, 'provider_type': 'jellyfin', 'name': 'Old',
+        'config': {'url': 'http://jf:8096', 'user_id': 'admin', 'token': 'old-secret'}
+    })
     @patch('app_setup.update_provider', return_value=True)
-    def test_create_provider_upserts_existing(self, mock_update, mock_get, mock_validate, client):
+    def test_create_provider_upserts_existing(self, mock_update, mock_get_by_id, mock_get, mock_validate, client):
         """Creating a provider of existing type upserts instead."""
         resp = client.post('/api/setup/providers', json={
             'provider_type': 'jellyfin',
@@ -385,6 +389,30 @@ class TestProviderCRUD:
         })
         assert resp.status_code == 200
         assert resp.get_json().get('was_update') is True
+
+    @patch('app_setup.PROVIDER_TYPES', {'jellyfin': {'name': 'Jellyfin'}})
+    @patch('app_setup.validate_provider_config', return_value=(True, []))
+    @patch('app_setup.get_providers', return_value=[
+        {'id': 1, 'provider_type': 'jellyfin', 'name': 'Old', 'config_display': {'url': 'http://jf', 'token': '********'}}
+    ])
+    @patch('app_setup.get_provider_by_id', return_value={
+        'id': 1, 'provider_type': 'jellyfin', 'name': 'Old',
+        'config': {'url': 'http://jf', 'token': 'real-secret-token'}
+    })
+    @patch('app_setup.update_provider', return_value=True)
+    def test_create_provider_upsert_preserves_masked_credentials(self, mock_update, mock_get_by_id, mock_get, mock_validate, client):
+        """POST upsert should NOT overwrite real credentials with '********'."""
+        resp = client.post('/api/setup/providers', json={
+            'provider_type': 'jellyfin',
+            'name': 'Updated Jellyfin',
+            'config': {'url': 'http://jf-new', 'token': '********'}
+        })
+        assert resp.status_code == 200
+        # Verify update_provider was called with the real token, not '********'
+        call_args = mock_update.call_args
+        config_passed = call_args.kwargs.get('config_data')
+        assert config_passed['token'] == 'real-secret-token'
+        assert config_passed['url'] == 'http://jf-new'
 
     @patch('app_setup.validate_provider_config', return_value=(False, ['Missing url']))
     @patch('app_setup.PROVIDER_TYPES', {'jellyfin': {'name': 'Jellyfin'}})

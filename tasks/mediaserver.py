@@ -293,6 +293,9 @@ def delete_automatic_playlists():
 
 def get_recent_albums(limit):
     """Fetches recently added albums using admin credentials."""
+    if config.MEDIASERVER_TYPE == 'mpd':
+        logger.error("MPD provider removed in v0.9. Reconfigure MEDIASERVER_TYPE.")
+        return []
     if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_recent_albums(limit)
@@ -390,6 +393,9 @@ def _detect_audio_format(filepath):
 
 def get_all_songs():
     """Fetches all songs using admin credentials."""
+    if config.MEDIASERVER_TYPE == 'mpd':
+        logger.error("MPD provider removed in v0.9. Reconfigure MEDIASERVER_TYPE.")
+        return []
     if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_get_all_songs()
     if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_all_songs()
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_all_songs()
@@ -409,6 +415,9 @@ def get_playlist_by_name(playlist_name):
 
 def create_playlist(base_name, item_ids):
     """Creates a playlist using admin credentials."""
+    if config.MEDIASERVER_TYPE == 'mpd':
+        logger.error("MPD provider removed in v0.9. Reconfigure MEDIASERVER_TYPE.")
+        return None
     if not base_name: raise ValueError("Playlist name is required.")
     if not item_ids: raise ValueError("Track IDs are required.")
     if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_create_playlist(base_name, item_ids)
@@ -420,6 +429,9 @@ def create_playlist(base_name, item_ids):
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     """Creates an instant playlist. Uses user_creds if provided, otherwise admin."""
+    if config.MEDIASERVER_TYPE == 'mpd':
+        logger.error("MPD provider removed in v0.9. Reconfigure MEDIASERVER_TYPE.")
+        return None
     if not playlist_name: raise ValueError("Playlist name is required.")
     if not item_ids: raise ValueError("Track IDs are required.")
 

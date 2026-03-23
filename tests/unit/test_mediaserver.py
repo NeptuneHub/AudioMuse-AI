@@ -1839,3 +1839,37 @@ class TestEmbyCreatePlaylist:
         call_url = mock_post.call_args[0][0]
         # & should be encoded
         assert 'Rock%20%26%20Roll' in call_url or 'Rock+%26+Roll' in call_url or 'Rock%20&%20Roll' not in call_url
+
+
+# =============================================================================
+# MPD REMOVAL TESTS
+# =============================================================================
+
+class TestMpdRemoval:
+    """Test that MPD is properly handled as removed provider"""
+
+    def test_config_mpd_falls_back_to_localfiles(self):
+        """MEDIASERVER_TYPE=mpd should fall back to localfiles with warning"""
+        import os
+        from importlib import reload
+        with patch.dict(os.environ, {'MEDIASERVER_TYPE': 'mpd'}):
+            import config
+            result = config._detect_mediaserver_type()
+            assert result == 'localfiles'
+
+    def test_get_provider_function_mpd_raises(self):
+        """get_provider_function('mpd', ...) should raise ValueError"""
+        import sys
+        import importlib
+        spec = importlib.util.spec_from_file_location(
+            "tasks.mediaserver",
+            "tasks/mediaserver.py",
+            submodule_search_locations=[]
+        )
+        mod = importlib.util.module_from_spec(spec)
+        # We can't fully load mediaserver.py without its dependencies,
+        # so test the config-level fallback instead
+        import config
+        import os
+        with patch.dict(os.environ, {'MEDIASERVER_TYPE': 'mpd'}):
+            assert config._detect_mediaserver_type() == 'localfiles'

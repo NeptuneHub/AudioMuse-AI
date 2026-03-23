@@ -14,7 +14,8 @@ from rq.exceptions import NoSuchJobError
 
 # Import configuration
 from config import (
-    REDIS_URL, DATABASE_URL, MAX_QUEUED_ANALYSIS_JOBS, CLEANING_SAFETY_LIMIT
+    REDIS_URL, DATABASE_URL, MAX_QUEUED_ANALYSIS_JOBS, CLEANING_SAFETY_LIMIT,
+    MEDIASERVER_TYPE
 )
 
 # Import other project modules
@@ -123,17 +124,38 @@ def identify_and_clean_orphaned_albums_task():
             
             log_and_update_main(f"🎯 Found {len(media_server_track_ids)} total tracks on media server", 75)
             
-            # Step 3: Get all track IDs from database
+            # Step 3: Get all track IDs from database (resolved to provider item_ids)
             log_and_update_main("🗄️ Fetching all track IDs from database...", 80)
+            from app_helper import get_primary_provider_id
+
             with get_db() as conn, conn.cursor() as cur:
-                cur.execute("""
-                    SELECT DISTINCT s.track_id, s.title, s.author
-                    FROM score s
-                    JOIN embedding e ON s.track_id = e.track_id
-                """)
+                primary_provider_id = get_primary_provider_id()
+
+                if primary_provider_id:
+                    cur.execute("""
+                        SELECT DISTINCT pt.item_id, s.track_id, s.title, s.author
+                        FROM score s
+                        JOIN embedding e ON s.track_id = e.track_id
+                        JOIN provider_track pt ON pt.track_id = s.track_id
+                            AND pt.provider_id = %s
+                    """, (primary_provider_id,))
+                else:
+                    # Legacy fallback: look up provider matching current MEDIASERVER_TYPE
+                    cur.execute("""
+                        SELECT DISTINCT pt.item_id, s.track_id, s.title, s.author
+                        FROM score s
+                        JOIN embedding e ON s.track_id = e.track_id
+                        JOIN provider_track pt ON pt.track_id = s.track_id
+                        JOIN provider p ON p.id = pt.provider_id
+                            AND p.provider_type = %s
+                    """, (MEDIASERVER_TYPE,))
+
                 database_tracks = cur.fetchall()
-            
+
+            # Now both sets are in provider item_id space (same as media server)
             database_track_ids = {str(row[0]) for row in database_tracks}
+            # Keep mapping for converting back to canonical track_ids for deletion
+            item_id_to_track_id = {str(row[0]): row[1] for row in database_tracks}
             log_and_update_main(f"📚 Found {len(database_track_ids)} tracks in database", 85)
 
             # Step 4: Identify orphaned tracks (in database but not on media server)
@@ -144,12 +166,12 @@ def identify_and_clean_orphaned_albums_task():
             orphaned_albums_info = defaultdict(lambda: {"tracks": [], "track_count": 0})
 
             for track_data in database_tracks:
-                track_id, title, author = track_data
-                if str(track_id) in orphaned_track_ids:
+                item_id, track_id, title, author = track_data
+                if str(item_id) in orphaned_track_ids:
                     album_key = f"{author}" if author else "Unknown Artist"
                     orphaned_albums_info[album_key]["tracks"].append({
                         "track_id": track_id,
-                        "item_id": str(track_id),
+                        "item_id": str(item_id),
                         "title": title,
                         "author": author
                     })
@@ -175,11 +197,11 @@ def identify_and_clean_orphaned_albums_task():
                 log_and_update_main(f"⚠️ Safety limit: Found {total_orphaned_albums} orphaned albums, limiting to first {CLEANING_SAFETY_LIMIT} for safety", 92)
                 # Keep only first CLEANING_SAFETY_LIMIT albums
                 orphaned_albums_list = orphaned_albums_list[:CLEANING_SAFETY_LIMIT]
-                # Recalculate track IDs for limited albums
+                # Recalculate item_ids for limited albums
                 limited_track_ids = set()
                 for album in orphaned_albums_list:
                     for track in album["tracks"]:
-                        limited_track_ids.add(str(track["track_id"]))
+                        limited_track_ids.add(str(track["item_id"]))
                 orphaned_track_ids = limited_track_ids
             
             if len(orphaned_track_ids) == 0:
@@ -218,9 +240,15 @@ def identify_and_clean_orphaned_albums_task():
                 }
             
             log_and_update_main(f"🧹 Starting automatic deletion of {len(orphaned_track_ids)} orphaned tracks...", 93)
-            
+
+            # Convert orphaned item_ids back to canonical track_ids for deletion
+            orphaned_canonical_ids = [
+                str(item_id_to_track_id[iid]) for iid in orphaned_track_ids
+                if iid in item_id_to_track_id
+            ]
+
             # Step 6: Automatically delete all orphaned tracks
-            deletion_result = delete_orphaned_albums_sync(list(orphaned_track_ids))
+            deletion_result = delete_orphaned_albums_sync(orphaned_canonical_ids)
             
             summary = {
                 "total_media_server_albums": len(all_media_server_albums),

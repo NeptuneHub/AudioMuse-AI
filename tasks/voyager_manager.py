@@ -1784,18 +1784,19 @@ def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: di
                     raise Exception(result.get('error', 'Playlist creation failed'))
             raise Exception("No provider found")
 
-        # Default: use existing single-provider logic for backward compatibility
-        created_playlist = create_instant_playlist(playlist_name, track_ids, user_creds=user_creds)
+        # Default: route through multi-provider which handles ID remapping
+        # (canonical track_id integers -> provider-native item_id strings)
+        results = create_playlist_multi_provider(playlist_name, track_ids, None, user_creds)
 
-        if not created_playlist:
-            raise Exception("Playlist creation failed. The media server did not return a playlist object.")
+        if not results:
+            raise Exception("Playlist creation failed. No results returned.")
 
-        playlist_id = created_playlist.get('Id')
-
-        if not playlist_id:
-            raise Exception("Media server API response did not include a playlist ID.")
-
-        return playlist_id
+        # Extract single result (None provider_ids returns one result)
+        result = list(results.values())[0]
+        if result.get('success'):
+            return result.get('playlist_id')
+        else:
+            raise Exception(result.get('error', 'Playlist creation failed'))
 
     except Exception as e:
         raise e

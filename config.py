@@ -8,7 +8,15 @@ import os
 def _detect_mediaserver_type():
     explicit = os.environ.get("MEDIASERVER_TYPE")
     if explicit:
-        return explicit.lower()
+        normalized = explicit.lower()
+        if normalized == 'mpd':
+            import logging
+            logging.getLogger(__name__).warning(
+                "MPD provider has been removed in v0.9. Falling back to 'localfiles'. "
+                "Please update MEDIASERVER_TYPE in your environment."
+            )
+            return 'localfiles'
+        return normalized
     # Auto-detect from provider-specific env vars
     if os.environ.get("JELLYFIN_URL", ""):
         return "jellyfin"

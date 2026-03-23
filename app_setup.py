@@ -436,12 +436,47 @@ def _rehash_tracks_for_prefix(prefix):
                     cur.execute("SELECT id FROM track WHERE file_path_hash = %s AND id != %s", (new_hash, track_id))
                     existing = cur.fetchone()
                     if existing:
-                        # Merge: point all references to the existing track
-                        cur.execute("UPDATE score SET track_id = %s WHERE track_id = %s", (existing[0], track_id))
-                        cur.execute("UPDATE provider_track SET track_id = %s WHERE track_id = %s", (existing[0], track_id))
-                        cur.execute("UPDATE embedding SET track_id = %s WHERE track_id = %s", (existing[0], track_id))
-                        cur.execute("UPDATE clap_embedding SET track_id = %s WHERE track_id = %s", (existing[0], track_id))
-                        cur.execute("DELETE FROM track WHERE id = %s", (track_id,))
+                        existing_track_id = existing[0]
+
+                        # 1. Handle provider_track: delete rows that would violate
+                        #    UNIQUE(provider_id, track_id), then re-point the rest
+                        cur.execute("""
+                            DELETE FROM provider_track
+                            WHERE track_id = %s
+                              AND provider_id IN (
+                                  SELECT provider_id FROM provider_track WHERE track_id = %s
+                              )
+                        """, (track_id, existing_track_id))
+                        cur.execute("""
+                            UPDATE provider_track SET track_id = %s
+                            WHERE track_id = %s
+                        """, (existing_track_id, track_id))
+
+                        # 2. Handle score + embeddings
+                        cur.execute("SELECT 1 FROM score WHERE track_id = %s", (existing_track_id,))
+                        if cur.fetchone():
+                            # Existing track has analysis — delete the duplicate
+                            # (CASCADE cleans up embedding, clap_embedding, mulan_embedding)
+                            cur.execute("DELETE FROM score WHERE track_id = %s", (track_id,))
+                        else:
+                            # No analysis on existing track — re-point all analysis data
+                            cur.execute("UPDATE embedding SET track_id = %s WHERE track_id = %s", (existing_track_id, track_id))
+                            cur.execute("UPDATE clap_embedding SET track_id = %s WHERE track_id = %s", (existing_track_id, track_id))
+                            # Always attempt mulan_embedding update — rows may exist from when
+                            # MuLan was previously enabled. No-op if empty, prevents FK violation
+                            # on score update below. Use SAVEPOINT since table may not exist.
+                            cur.execute("SAVEPOINT mulan_update")
+                            try:
+                                cur.execute("UPDATE mulan_embedding SET track_id = %s WHERE track_id = %s", (existing_track_id, track_id))
+                                cur.execute("RELEASE SAVEPOINT mulan_update")
+                            except Exception:
+                                cur.execute("ROLLBACK TO SAVEPOINT mulan_update")
+                            cur.execute("UPDATE score SET track_id = %s WHERE track_id = %s", (existing_track_id, track_id))
+
+                        # 3. Delete orphaned track only if no references remain
+                        cur.execute("SELECT COUNT(*) FROM provider_track WHERE track_id = %s", (track_id,))
+                        if cur.fetchone()[0] == 0:
+                            cur.execute("DELETE FROM track WHERE id = %s", (track_id,))
                     else:
                         cur.execute(
                             "UPDATE track SET file_path_hash = %s, normalized_path = %s, updated_at = NOW() WHERE id = %s",
@@ -764,7 +799,19 @@ def create_provider():
 
         if existing:
             # Update existing provider instead of creating duplicate
-            update_provider(existing['id'], name=name, config_data=config_data, enabled=enabled, priority=priority)
+            # Fetch raw config (get_providers returns masked config_display)
+            existing_raw = get_provider_by_id(existing['id'])
+            existing_config = existing_raw.get('config', {}) if existing_raw else {}
+
+            # Don't overwrite real credentials with masked '********' values
+            for key in list(config_data.keys()):
+                if config_data[key] == '********':
+                    config_data[key] = existing_config.get(key)
+
+            # Merge so partial updates don't wipe existing fields
+            merged_config = {**existing_config, **config_data}
+
+            update_provider(existing['id'], name=name, config_data=merged_config, enabled=enabled, priority=priority)
             logger.info(f"Updated existing provider {existing['id']} ({provider_type}) instead of creating duplicate")
             _update_multi_provider_settings()
             return jsonify({'id': existing['id'], 'message': 'Provider updated', 'was_update': True}), 200
@@ -1957,10 +2004,10 @@ def get_server_info():
     return jsonify({
         'host': host_ip,
         'hostname': socket.gethostname() if hasattr(socket, 'gethostname') else 'unknown',
-        'redis_port': os.environ.get('REDIS_PORT', '6379'),
-        'postgres_port': os.environ.get('POSTGRES_PORT', '5432'),
-        'postgres_host': os.environ.get('POSTGRES_HOST', 'postgres'),
-        'redis_url': os.environ.get('REDIS_URL', 'redis://redis:6379/0'),
+        'redis_port': config.REDIS_URL.split(':')[-1].split('/')[0] if config.REDIS_URL else '6379',
+        'postgres_port': str(config.POSTGRES_PORT),
+        'postgres_host': str(config.POSTGRES_HOST),
+        'redis_url': str(config.REDIS_URL),
         'gpu_available': gpu_available,
         'gpu_name': gpu_name,
     })

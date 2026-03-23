@@ -31,7 +31,8 @@ from config import (MAX_SONGS_PER_CLUSTER, MOOD_LABELS, STRATIFIED_GENRES,
 # Import AI naming function and prompt template
 from ai import get_ai_playlist_name, creative_prompt_template
 # Import media server functions
-from .mediaserver import create_playlist, delete_automatic_playlists
+from .mediaserver import delete_automatic_playlists
+from .voyager_manager import create_playlist_from_ids
 # Import refactored clustering helpers
 from .clustering_helper import (
     _get_stratified_song_subset,
@@ -581,8 +582,8 @@ def run_clustering_task(
 
             _log_and_update(f"Creating {len(final_shuffled_playlists)} new playlists...", 98)
             for name, songs_with_details in final_shuffled_playlists.items():
-                item_ids = [item_id for item_id, _, _ in songs_with_details]
-                create_playlist(name, item_ids)
+                track_ids = [track_id for track_id, _, _ in songs_with_details]
+                create_playlist_from_ids(name, track_ids)
 
             update_playlist_table(final_shuffled_playlists)
 
