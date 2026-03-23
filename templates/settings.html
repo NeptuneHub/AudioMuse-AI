@@ -712,24 +712,12 @@
                 </label>
                 <div class="field-help">Accelerate clustering with NVIDIA RAPIDS cuML. Requires NVIDIA GPU.</div>
             </div>
-        </div>
-    </div>
 
-    <!-- Library Health Section -->
-    <div class="settings-section">
-        <div class="section-header" onclick="toggleSection(this)">
-            <h2><span class="section-icon">&#128269;</span> Library Health</h2>
-            <span class="toggle-icon">&#9660;</span>
-        </div>
-        <div class="section-content collapsed">
-            <p class="section-description">
-                Check your library for duplicate tracks and provider configuration issues.
-            </p>
-
-            <div class="field-group">
-                <button id="check-duplicates-btn" onclick="checkDuplicates()" style="margin-bottom: 1rem;">Check for Duplicates</button>
+            <div class="field-group" style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
+                <button id="check-duplicates-btn" onclick="checkDuplicates()">Check for Duplicates</button>
+                <div class="field-help">Scan library for duplicate tracks across providers.</div>
                 <div id="duplicate-results" style="display: none;">
-                    <div id="duplicate-summary" style="margin-bottom: 1rem; font-weight: 600;"></div>
+                    <div id="duplicate-summary" style="margin-top: 0.5rem; font-weight: 600;"></div>
                     <div id="duplicate-table-container"></div>
                 </div>
             </div>

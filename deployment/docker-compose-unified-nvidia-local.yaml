@@ -127,6 +127,7 @@ services:
       CLAP_ENABLED: "${CLAP_ENABLED:-true}"
       MULAN_ENABLED: "${MULAN_ENABLED:-false}"
       ENABLE_PROXY_FIX: "${ENABLE_PROXY_FIX:-false}"
+      USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio

@@ -371,13 +371,18 @@ def delete_provider(provider_id):
 
 def _auto_apply_existing_prefix(detected_prefix):
     """
-    Auto-set music_path_prefix on existing providers that don't have one yet.
+    Auto-set music_path_prefix on existing providers that don't have one yet,
+    then rehash all their tracks so cross-provider matching works.
 
     When adding a second provider, path comparison may reveal that existing
     providers have an extra path segment (e.g., "Music I/") that needs to be
     configured as their music_path_prefix for cross-provider matching to work.
     """
+    from app_helper import _compute_file_path_hash, normalize_path_deterministic, _strip_prefix_from_normalized
+    import hashlib
+
     db = get_db()
+    providers_to_rehash = []
     with db.cursor() as cur:
         cur.execute("SELECT id, provider_type, name, config FROM provider WHERE enabled = true")
         for row in cur.fetchall():
@@ -392,7 +397,65 @@ def _auto_apply_existing_prefix(detected_prefix):
                     (json.dumps(config), provider_id)
                 )
                 logger.info(f"Auto-set music_path_prefix='{detected_prefix}' on provider {name} (id={provider_id})")
+                providers_to_rehash.append(provider_id)
         db.commit()
+
+    # Rehash tracks for providers whose prefix just changed
+    if providers_to_rehash:
+        _rehash_tracks_for_prefix(detected_prefix)
+
+
+def _rehash_tracks_for_prefix(prefix):
+    """Recompute file_path_hash for all tracks whose normalized_path starts with the prefix.
+
+    After music_path_prefix is set on a provider, existing track hashes include the
+    prefix (e.g., "music i/artist/..."). This recomputes them without the prefix
+    so cross-provider matching works.
+    """
+    from app_helper import normalize_path_deterministic, _strip_prefix_from_normalized
+    import hashlib
+
+    db = get_db()
+    prefix_lower = prefix.lower().strip('/') + '/'
+    updated = 0
+    try:
+        with db.cursor() as cur:
+            # Find all tracks whose normalized_path starts with the prefix
+            cur.execute(
+                "SELECT id, normalized_path, file_path_hash FROM track WHERE LOWER(normalized_path) LIKE %s",
+                (prefix_lower + '%',)
+            )
+            rows = cur.fetchall()
+            logger.info(f"Rehashing {len(rows)} tracks with prefix '{prefix}'")
+
+            for track_id, old_norm, old_hash in rows:
+                new_norm = _strip_prefix_from_normalized(old_norm, prefix)
+                new_hash = hashlib.sha256(new_norm.encode('utf-8')).hexdigest()
+                if new_hash != old_hash:
+                    # Check for hash collision (another track already has this hash)
+                    cur.execute("SELECT id FROM track WHERE file_path_hash = %s AND id != %s", (new_hash, track_id))
+                    existing = cur.fetchone()
+                    if existing:
+                        # Merge: point all references to the existing track
+                        cur.execute("UPDATE score SET track_id = %s WHERE track_id = %s", (existing[0], track_id))
+                        cur.execute("UPDATE provider_track SET track_id = %s WHERE track_id = %s", (existing[0], track_id))
+                        cur.execute("UPDATE embedding SET track_id = %s WHERE track_id = %s", (existing[0], track_id))
+                        cur.execute("UPDATE clap_embedding SET track_id = %s WHERE track_id = %s", (existing[0], track_id))
+                        cur.execute("DELETE FROM track WHERE id = %s", (track_id,))
+                    else:
+                        cur.execute(
+                            "UPDATE track SET file_path_hash = %s, normalized_path = %s, updated_at = NOW() WHERE id = %s",
+                            (new_hash, new_norm, track_id)
+                        )
+                    updated += 1
+            db.commit()
+        logger.info(f"Rehashed {updated}/{len(rows)} tracks after prefix change")
+    except Exception as e:
+        logger.error(f"Failed to rehash tracks for prefix '{prefix}': {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 # ##############################################################################
@@ -1251,7 +1314,7 @@ def check_library_duplicates():
 
             # Strategy B: metadata duplicates (suspected)
             cur.execute("""
-                SELECT LOWER(title), LOWER(author), LOWER(album), COUNT(*) as cnt, array_agg(item_id)
+                SELECT LOWER(title), LOWER(author), LOWER(album), COUNT(*) as cnt, array_agg(track_id)
                 FROM score
                 WHERE title IS NOT NULL AND author IS NOT NULL
                 GROUP BY LOWER(title), LOWER(author), LOWER(album)
@@ -1259,7 +1322,7 @@ def check_library_duplicates():
             """)
             # Post-filter with normalization to merge variant groups
             seen_normalized = set()
-            for title_l, author_l, album_l, cnt, item_ids in cur.fetchall():
+            for title_l, author_l, album_l, cnt, track_ids in cur.fetchall():
                 norm_t, norm_a = _normalize_metadata_for_matching(title_l or '', author_l or '')
                 norm_key = (norm_t, norm_a, (album_l or '').strip())
                 if norm_key in seen_normalized:
@@ -1267,13 +1330,13 @@ def check_library_duplicates():
                 seen_normalized.add(norm_key)
                 # Skip if already covered by track_id duplicates
                 existing_track_id_items = {item for g in duplicate_groups if g['type'] == 'track_id' for item in [i['item_id'] for i in g['items']]}
-                if all(iid in existing_track_id_items for iid in item_ids):
+                if all(str(tid) in existing_track_id_items for tid in track_ids):
                     continue
                 duplicate_groups.append({
                     'type': 'metadata',
                     'key': f"{title_l} | {author_l} | {album_l}",
                     'count': cnt,
-                    'items': [{'item_id': iid} for iid in item_ids]
+                    'items': [{'item_id': str(tid), 'track_id': tid} for tid in track_ids]
                 })
 
             # Total score rows for context
@@ -1672,14 +1735,21 @@ def get_settings():
     """
     settings = get_all_settings()
 
-    # Auto-detect hardware type if not explicitly set
-    if 'hardware_type' not in settings or not settings.get('hardware_type'):
+    # Auto-detect hardware type and GPU clustering from environment if not in DB
+    # Inject into 'general' category so frontend flattening works correctly
+    if 'general' not in settings:
+        settings['general'] = {}
+
+    if 'hardware_type' not in settings.get('general', {}):
         import subprocess
         try:
             result = subprocess.run(['nvidia-smi'], capture_output=True, timeout=5)
-            settings['hardware_type'] = 'nvidia' if result.returncode == 0 else 'cpu'
+            settings['general']['hardware_type'] = {'value': 'nvidia' if result.returncode == 0 else 'cpu'}
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            settings['hardware_type'] = 'cpu'
+            settings['general']['hardware_type'] = {'value': 'cpu'}
+
+    if 'gpu_clustering' not in settings.get('general', {}):
+        settings['general']['gpu_clustering'] = {'value': config.USE_GPU_CLUSTERING}
 
     return jsonify(settings)
 
