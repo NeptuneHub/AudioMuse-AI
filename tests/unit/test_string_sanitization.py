@@ -269,4 +269,4 @@ class TestArtistMappingSanitization:
         call_args = mock_cur.execute.call_args
         values = call_args[0][1]
         
-        assert len(values[1]) == 200  # Should be truncated to 200
+        assert len(values[2]) == 200  # Should be truncated to 200
