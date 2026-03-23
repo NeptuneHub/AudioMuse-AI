@@ -336,8 +336,7 @@ def step1_create_infrastructure(cur):
             provider_artist_id TEXT NOT NULL,
             is_primary BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(provider_id, provider_artist_id),
-            UNIQUE(provider_id, artist_name)
+            UNIQUE(provider_id, provider_artist_id)
         )
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_apm_artist_name ON artist_provider_mapping(LOWER(artist_name))")

@@ -61,7 +61,7 @@ rq_queue_default = Queue('default', connection=redis_conn, default_timeout=-1) #
 
 # --- Database Setup (PostgreSQL) ---
 def get_db():
-    if 'db' not in g:
+    if 'db' not in g or (hasattr(g, 'db') and g.db.closed):
         try:
             g.db = psycopg2.connect(
                 DATABASE_URL,
@@ -76,6 +76,24 @@ def get_db():
             raise # Re-raise to ensure the operation that needed the DB fails clearly
     return g.db
 
+
+def reset_db_connection():
+    """Force a fresh DB connection by closing and removing the cached one.
+    Use after a DB error to recover from poisoned transaction state."""
+    try:
+        db = g.pop('db', None)
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            try:
+                db.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 def close_db(e=None):
     db = g.pop('db', None)
     if db is not None:
@@ -84,6 +102,10 @@ def close_db(e=None):
 def init_db():
     db = get_db()
     with db.cursor() as cur:
+        # Serialize DDL across containers (flask + worker start simultaneously)
+        # Advisory lock prevents deadlocks when both try to run migrations at once
+        cur.execute('SELECT pg_advisory_lock(42)')
+
         # Enable extensions to fix and assist in searches
         cur.execute('CREATE EXTENSION IF NOT EXISTS unaccent')
         cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
@@ -369,10 +391,20 @@ def init_db():
                 provider_artist_id TEXT NOT NULL,
                 is_primary BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(provider_id, provider_artist_id),
-                UNIQUE(provider_id, artist_name)
+                UNIQUE(provider_id, provider_artist_id)
             )
         """)
+
+        # Drop redundant UNIQUE(provider_id, artist_name) constraint if it exists.
+        # Same artist name can have multiple provider_artist_ids (compilations, different folders).
+        # The ON CONFLICT (provider_id, provider_artist_id) clause can't handle two unique
+        # constraints, causing transaction aborts that poison the DB connection.
+        try:
+            cur.execute("ALTER TABLE artist_provider_mapping DROP CONSTRAINT IF EXISTS artist_provider_mapping_provider_id_artist_name_key")
+            db.commit()
+        except Exception as e:
+            logger.warning(f"DROP CONSTRAINT failed (non-critical): {e}")
+            db.rollback()
 
         # Performance indexes for hot queries (brainstorm, artist search)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author_lower ON score(LOWER(author))")
@@ -1689,25 +1721,57 @@ normalize_provider_path = normalize_path_for_provider
 
 
 
-def _compute_file_path_hash(file_path, provider_id=None):
-    """Compute SHA-256 hash of deterministically normalized file path.
+def _get_provider_prefix(provider_id):
+    """Get the music_path_prefix for a provider from the database.
+    Returns empty string if not set or provider not found."""
+    if not provider_id:
+        return ''
+    try:
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute("SELECT config->>'music_path_prefix' FROM provider WHERE id = %s", (provider_id,))
+            row = cur.fetchone()
+            return (row[0] or '').strip() if row else ''
+    except Exception:
+        return ''
 
-    Uses normalize_path_deterministic (no provider prefix) for stable hashes
-    that don't change when provider configuration changes.
+
+def _strip_prefix_from_normalized(normalized, prefix):
+    """Strip a music_path_prefix from a normalized path (case-insensitive)."""
+    if not prefix or not normalized:
+        return normalized
+    prefix_clean = prefix.replace('\\', '/').strip('/').lower()
+    if prefix_clean and normalized.lower().startswith(prefix_clean + '/'):
+        return normalized[len(prefix_clean) + 1:]
+    elif prefix_clean and normalized.lower().startswith(prefix_clean):
+        return normalized[len(prefix_clean):].lstrip('/')
+    return normalized
+
+
+def _compute_file_path_hash(file_path, provider_id=None):
+    """Compute SHA-256 hash of normalized file path with provider prefix stripped.
+
+    Uses normalize_path_deterministic for mount point stripping, then additionally
+    strips the provider's music_path_prefix so that the same song from different
+    providers produces the same hash.
 
     Args:
         file_path: The file path to hash
-        provider_id: Ignored (kept for backward compat signature)
+        provider_id: Provider ID to look up music_path_prefix for stripping
 
     Returns:
         SHA-256 hash string or None if path is empty
     """
     import hashlib
 
-    # Use deterministic normalization (no provider prefix) for stable hashes
     normalized = normalize_path_deterministic(file_path)
     if not normalized:
         return None
+
+    # Strip provider-specific prefix so cross-provider hashes match
+    prefix = _get_provider_prefix(provider_id)
+    if prefix:
+        normalized = _strip_prefix_from_normalized(normalized, prefix)
 
     return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
@@ -1729,28 +1793,39 @@ def get_or_create_track(file_path, provider_id=None):
     if not file_path:
         return None
 
-    # Use deterministic normalization for hash (stable across provider config changes)
+    # Normalize and strip provider prefix for cross-provider matching
     normalized = normalize_path_deterministic(file_path)
     if not normalized:
         return None
 
+    prefix = _get_provider_prefix(provider_id)
+    if prefix:
+        normalized = _strip_prefix_from_normalized(normalized, prefix)
+
     import hashlib
     file_hash = hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
-    db = get_db()
-    with db.cursor() as cur:
-        cur.execute("""
-            INSERT INTO track (file_path_hash, file_path, normalized_path, norm_version)
-            VALUES (%s, %s, %s, 1)
-            ON CONFLICT (file_path_hash) DO UPDATE SET updated_at = NOW()
-            RETURNING id
-        """, (file_hash, file_path, normalized))
-        result = cur.fetchone()
-        if not result:
-            logger.error(f"Failed to get or create track for hash {file_hash}")
-            return None
-        db.commit()
-        return result[0]
+    try:
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute("""
+                INSERT INTO track (file_path_hash, file_path, normalized_path, norm_version)
+                VALUES (%s, %s, %s, 1)
+                ON CONFLICT (file_path_hash) DO UPDATE SET
+                    normalized_path = EXCLUDED.normalized_path,
+                    updated_at = NOW()
+                RETURNING id
+            """, (file_hash, file_path, normalized))
+            result = cur.fetchone()
+            if not result:
+                logger.error(f"Failed to get or create track for hash {file_hash}")
+                return None
+            db.commit()
+            return result[0]
+    except Exception as e:
+        reset_db_connection()
+        logger.warning(f"Failed to get_or_create_track for '{file_path}': {e}")
+        return None
 
 
 def link_provider_track(provider_id, track_id, item_id, title=None, artist=None, album=None):
@@ -1774,31 +1849,34 @@ def link_provider_track(provider_id, track_id, item_id, title=None, artist=None,
     if not provider_id or not track_id or not item_id:
         return None
 
-    db = get_db()
-    with db.cursor() as cur:
-        # Atomic CTE: delete conflicting rows and upsert in a single statement.
-        # This avoids a window between DELETE and INSERT where concurrent calls
-        # could hit constraint violations on UNIQUE(provider_id, track_id).
-        cur.execute("""
-            WITH cleared AS (
-                DELETE FROM provider_track
-                WHERE provider_id = %s AND track_id = %s AND item_id != %s
+    try:
+        db = get_db()
+        with db.cursor() as cur:
+            # Atomic CTE: delete conflicting rows and upsert in a single statement.
+            cur.execute("""
+                WITH cleared AS (
+                    DELETE FROM provider_track
+                    WHERE provider_id = %s AND track_id = %s AND item_id != %s
+                    RETURNING id
+                )
+                INSERT INTO provider_track (provider_id, track_id, item_id, title, artist, album, last_synced)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (provider_id, item_id) DO UPDATE SET
+                    track_id = EXCLUDED.track_id,
+                    title = COALESCE(EXCLUDED.title, provider_track.title),
+                    artist = COALESCE(EXCLUDED.artist, provider_track.artist),
+                    album = COALESCE(EXCLUDED.album, provider_track.album),
+                    last_synced = NOW()
                 RETURNING id
-            )
-            INSERT INTO provider_track (provider_id, track_id, item_id, title, artist, album, last_synced)
-            VALUES (%s, %s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (provider_id, item_id) DO UPDATE SET
-                track_id = EXCLUDED.track_id,
-                title = COALESCE(EXCLUDED.title, provider_track.title),
-                artist = COALESCE(EXCLUDED.artist, provider_track.artist),
-                album = COALESCE(EXCLUDED.album, provider_track.album),
-                last_synced = NOW()
-            RETURNING id
-        """, (provider_id, track_id, item_id,
-              provider_id, track_id, item_id, title, artist, album))
-        result = cur.fetchone()
-        db.commit()
-        return result[0] if result else None
+            """, (provider_id, track_id, item_id,
+                  provider_id, track_id, item_id, title, artist, album))
+            result = cur.fetchone()
+            db.commit()
+            return result[0] if result else None
+    except Exception as e:
+        reset_db_connection()
+        logger.warning(f"Failed to link provider_track (provider={provider_id}, track={track_id}): {e}")
+        return None
 
 
 
