@@ -3,8 +3,8 @@ from flask import Blueprint, jsonify, request, render_template
 import logging
 
 from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
-from tasks.mediaserver import resolve_emby_jellyfin_user # Import the new resolver function
-from config import MEDIASERVER_TYPE, JELLYFIN_USER_ID, JELLYFIN_TOKEN, NAVIDROME_USER, NAVIDROME_PASSWORD # Import configs
+from tasks.mediaserver import resolve_emby_jellyfin_user, _resolve_play_history_provider
+from config import MEDIASERVER_TYPE, JELLYFIN_USER_ID, JELLYFIN_TOKEN, NAVIDROME_USER, NAVIDROME_PASSWORD
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +27,9 @@ def sonic_fingerprint_page():
               type: string
     """
     try:
-        # The default user info will now be fetched by an API call from the frontend
-        return render_template('sonic_fingerprint.html', mediaserver_type=MEDIASERVER_TYPE, title = 'AudioMuse-AI - Sonic Fingerprint', active='sonic_fingerprint')
+        # Use primary provider type for template rendering
+        provider_type, _ = _resolve_play_history_provider()
+        return render_template('sonic_fingerprint.html', mediaserver_type=provider_type, title = 'AudioMuse-AI - Sonic Fingerprint', active='sonic_fingerprint')
     except Exception as e:
          logger.error(f"Error rendering sonic_fingerprint.html: {e}", exc_info=True)
          return "Sonic Fingerprint page not implemented yet. Use the API at /api/sonic_fingerprint/generate"
@@ -49,16 +50,17 @@ def get_media_server_defaults():
             schema:
               type: object
     """
-    # MODIFIED: Removed the security credentials from the response.
-    # We only return the user ID/username to pre-fill forms, but not the tokens/passwords.
-    if MEDIASERVER_TYPE == 'jellyfin':
-        return jsonify({
-            "default_user_id": JELLYFIN_USER_ID,
-        })
-    elif MEDIASERVER_TYPE == 'navidrome':
-        return jsonify({
-            "default_user": NAVIDROME_USER,
-        })
+    # Return default credentials from the primary provider for form pre-fill.
+    provider_type, sc = _resolve_play_history_provider()
+    if provider_type == 'jellyfin':
+        default_user_id = (sc.get('user_id') if sc else None) or JELLYFIN_USER_ID
+        return jsonify({"default_user_id": default_user_id})
+    elif provider_type == 'emby':
+        default_user_id = (sc.get('user_id') if sc else None) or JELLYFIN_USER_ID
+        return jsonify({"default_user_id": default_user_id})
+    elif provider_type == 'navidrome':
+        default_user = (sc.get('username') if sc else None) or NAVIDROME_USER
+        return jsonify({"default_user": default_user})
     return jsonify({})
 
 
@@ -145,29 +147,35 @@ def generate_sonic_fingerprint_endpoint():
             except (ValueError, TypeError):
                 return jsonify({"error": "Parameter 'n' must be a valid integer."}), 400
         
+        # Resolve primary provider for credential building
+        provider_type, sc = _resolve_play_history_provider()
+
         user_creds = {}
-        if MEDIASERVER_TYPE == 'jellyfin':
+        if provider_type in ('jellyfin', 'emby'):
             user_identifier = data.get('jellyfin_user_identifier')
             if not user_identifier:
-                return jsonify({"error": "Jellyfin User Identifier is required."}), 400
+                return jsonify({"error": f"{provider_type.title()} User Identifier is required."}), 400
 
-            token = data.get('jellyfin_token') or JELLYFIN_TOKEN
-            
+            default_token = (sc.get('token') if sc else None) or JELLYFIN_TOKEN
+            token = data.get('jellyfin_token') or default_token
+
             if not token:
-                return jsonify({"error": "Jellyfin API Token is required. Please provide one or set it in the server configuration."}), 400
+                return jsonify({"error": f"{provider_type.title()} API Token is required. Please provide one or set it in the server configuration."}), 400
 
-            logger.info(f"Resolving Jellyfin user identifier: '{user_identifier}'")
+            logger.info(f"Resolving {provider_type} user identifier: '{user_identifier}'")
             resolved_user_id = resolve_emby_jellyfin_user(user_identifier, token)
             if not resolved_user_id:
-                return jsonify({"error": f"Could not resolve Jellyfin user '{user_identifier}'."}), 400
-            
-            logger.info(f"Resolved Jellyfin user ID: '{resolved_user_id}'")
+                return jsonify({"error": f"Could not resolve {provider_type} user '{user_identifier}'."}), 400
+
+            logger.info(f"Resolved {provider_type} user ID: '{resolved_user_id}'")
             user_creds['user_id'] = resolved_user_id
             user_creds['token'] = token
 
-        elif MEDIASERVER_TYPE == 'navidrome':
-            user_creds['user'] = data.get('navidrome_user') or NAVIDROME_USER
-            user_creds['password'] = data.get('navidrome_password') or NAVIDROME_PASSWORD
+        elif provider_type == 'navidrome':
+            default_user = (sc.get('username') if sc else None) or NAVIDROME_USER
+            default_pass = (sc.get('password') if sc else None) or NAVIDROME_PASSWORD
+            user_creds['user'] = data.get('navidrome_user') or default_user
+            user_creds['password'] = data.get('navidrome_password') or default_pass
             if not user_creds['user'] or not user_creds['password']:
                 return jsonify({"error": "Navidrome username and password are required. Please provide them or set them in the server configuration."}), 400
         

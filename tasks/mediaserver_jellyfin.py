@@ -409,13 +409,15 @@ def delete_playlist(playlist_id):
         return False
 
 # --- USER-SPECIFIC JELLYFIN FUNCTIONS ---
-def get_top_played_songs(limit, user_creds=None):
+def get_top_played_songs(limit, user_creds=None, server_config=None):
     """Fetches the top N most played songs from Jellyfin for a specific user."""
-    user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
-    token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
+    sc = server_config or {}
+    base_url = sc.get('url') or config.JELLYFIN_URL
+    user_id = user_creds.get('user_id') if user_creds else (sc.get('user_id') or config.JELLYFIN_USER_ID)
+    token = user_creds.get('token') if user_creds else (sc.get('token') or config.JELLYFIN_TOKEN)
     if not user_id or not token: raise ValueError("Jellyfin User ID and Token are required.")
 
-    url = f"{config.JELLYFIN_URL}/Users/{user_id}/Items"
+    url = f"{base_url}/Users/{user_id}/Items"
     headers = {"X-Emby-Token": token}
     params = {"IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path,ProductionYear"}
     try:
@@ -438,13 +440,15 @@ def get_top_played_songs(limit, user_creds=None):
         logger.error(f"Jellyfin get_top_played_songs failed: {e}", exc_info=True)
         return []
 
-def get_last_played_time(item_id, user_creds=None):
+def get_last_played_time(item_id, user_creds=None, server_config=None):
     """Fetches the last played time for a specific track from Jellyfin for a specific user."""
-    user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
-    token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
+    sc = server_config or {}
+    base_url = sc.get('url') or config.JELLYFIN_URL
+    user_id = user_creds.get('user_id') if user_creds else (sc.get('user_id') or config.JELLYFIN_USER_ID)
+    token = user_creds.get('token') if user_creds else (sc.get('token') or config.JELLYFIN_TOKEN)
     if not user_id or not token: raise ValueError("Jellyfin User ID and Token are required.")
 
-    url = f"{config.JELLYFIN_URL}/Users/{user_id}/Items/{item_id}"
+    url = f"{base_url}/Users/{user_id}/Items/{item_id}"
     headers = {"X-Emby-Token": token}
     params = {"Fields": "UserData"}
     try:

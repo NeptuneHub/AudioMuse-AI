@@ -737,13 +737,15 @@ def delete_playlist(playlist_id):
         return False
 
 # --- USER-SPECIFIC EMBY FUNCTIONS ---
-def get_top_played_songs(limit, user_creds=None):
+def get_top_played_songs(limit, user_creds=None, server_config=None):
     """Fetches the top N most played songs from Emby for a specific user."""
-    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
-    token = user_creds.get('token') if user_creds else config.EMBY_TOKEN
+    sc = server_config or {}
+    base_url = sc.get('url') or config.EMBY_URL
+    user_id = user_creds.get('user_id') if user_creds else (sc.get('user_id') or config.EMBY_USER_ID)
+    token = user_creds.get('token') if user_creds else (sc.get('token') or config.EMBY_TOKEN)
     if not user_id or not token: raise ValueError("Emby User ID and Token are required.")
 
-    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+    url = f"{base_url}/emby/Users/{user_id}/Items"
     # this Endpoint is compatble with Emby. no need to change
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     headers = {"X-Emby-Token": token}
@@ -768,13 +770,15 @@ def get_top_played_songs(limit, user_creds=None):
         logger.error(f"Emby get_top_played_songs failed for user {user_id}: {e}", exc_info=True)
         return []
 
-def get_last_played_time(item_id, user_creds=None):
+def get_last_played_time(item_id, user_creds=None, server_config=None):
     """Fetches the last played time for a specific track from Emby for a specific user."""
-    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
-    token = user_creds.get('token') if user_creds else config.EMBY_TOKEN
+    sc = server_config or {}
+    base_url = sc.get('url') or config.EMBY_URL
+    user_id = user_creds.get('user_id') if user_creds else (sc.get('user_id') or config.EMBY_USER_ID)
+    token = user_creds.get('token') if user_creds else (sc.get('token') or config.EMBY_TOKEN)
     if not user_id or not token: raise ValueError("Emby User ID and Token are required.")
 
-    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items/{item_id}"
+    url = f"{base_url}/emby/Users/{user_id}/Items/{item_id}"
     # this Endpoint is compatble with Emby. no need to change
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     headers = {"X-Emby-Token": token}

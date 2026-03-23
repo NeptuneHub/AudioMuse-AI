@@ -779,13 +779,13 @@ def create_instant_playlist(playlist_name: str, item_ids: List[str], user_creds=
     return None
 
 
-def get_top_played_songs(limit: int, user_creds=None) -> List[Dict]:
+def get_top_played_songs(limit: int, user_creds=None, server_config=None) -> List[Dict]:
     """Not supported for local files - no play history tracking."""
     logger.warning("get_top_played_songs is not supported for local files provider")
     return []
 
 
-def get_last_played_time(item_id: str, user_creds=None):
+def get_last_played_time(item_id: str, user_creds=None, server_config=None):
     """Not supported for local files - no play history tracking."""
     logger.warning("get_last_played_time is not supported for local files provider")
     return None

@@ -543,21 +543,29 @@ def get_playlist_by_name(playlist_name, user_creds=None):
     
     return None # No match found
 
-def get_top_played_songs(limit, user_creds):
+def get_top_played_songs(limit, user_creds=None, server_config=None):
     """Fetches the top N most played songs from Navidrome for a specific user."""
+    sc = server_config or {}
+    base_url = sc.get('url') or None
+    if not user_creds and sc:
+        user_creds = {'user': sc.get('username', ''), 'password': sc.get('password', '')}
     all_top_songs = []
     num_albums_to_fetch = (limit // 10) + 10
     params = {"type": "frequent", "size": num_albums_to_fetch}
-    response = _navidrome_request("getAlbumList2", params, user_creds=user_creds)
+    response = _navidrome_request("getAlbumList2", params, user_creds=user_creds, base_url=base_url)
     if response and "albumList2" in response and "album" in response["albumList2"]:
         for album in response["albumList2"]["album"]:
             tracks = get_tracks_from_album(album.get("id"), user_creds=user_creds)
             if tracks: all_top_songs.extend(tracks)
     return random.sample(all_top_songs, limit) if len(all_top_songs) > limit else all_top_songs
 
-def get_last_played_time(item_id, user_creds):
+def get_last_played_time(item_id, user_creds=None, server_config=None):
     """Fetches the last played time for a track for a specific user."""
-    response = _navidrome_request("getSong", {"id": item_id}, user_creds=user_creds)
+    sc = server_config or {}
+    base_url = sc.get('url') or None
+    if not user_creds and sc:
+        user_creds = {'user': sc.get('username', ''), 'password': sc.get('password', '')}
+    response = _navidrome_request("getSong", {"id": item_id}, user_creds=user_creds, base_url=base_url)
     if response and "song" in response: return response["song"].get("lastPlayed")
     return None
 

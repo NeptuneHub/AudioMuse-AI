@@ -253,9 +253,9 @@ def get_provider_function(provider_type: str, function_name: str):
 
 def resolve_emby_jellyfin_user(identifier, token):
     """Public dispatcher for resolving a Jellyfin or Emby user identifier."""
-    # This is specific to Jellyfin, so we call it directly.
-    if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_resolve_user(identifier, token)
-    if config.MEDIASERVER_TYPE == 'emby': return emby_resolve_user(identifier, token)
+    provider_type, _ = _resolve_play_history_provider()
+    if provider_type == 'jellyfin': return jellyfin_resolve_user(identifier, token)
+    if provider_type == 'emby': return emby_resolve_user(identifier, token)
     return []
 
 def delete_automatic_playlists():
@@ -447,32 +447,56 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         return localfiles_create_instant_playlist(playlist_name, item_ids, user_creds)
     return None
 
+def _resolve_play_history_provider():
+    """Resolve the provider type and server_config for play history functions.
+
+    Uses the primary provider from multi-provider setup if available,
+    otherwise falls back to the legacy config.MEDIASERVER_TYPE.
+
+    Returns:
+        Tuple of (provider_type: str, server_config: dict or None)
+    """
+    try:
+        from app_helper import get_primary_provider_id
+        from app_setup import get_provider_by_id
+        primary_id = get_primary_provider_id()
+        if primary_id:
+            provider = get_provider_by_id(primary_id)
+            if provider and provider.get('enabled'):
+                return provider['provider_type'], provider.get('config') or {}
+    except Exception as e:
+        logger.debug(f"Could not resolve primary provider, falling back to legacy: {e}")
+    return config.MEDIASERVER_TYPE, None
+
+
 def get_top_played_songs(limit, user_creds=None):
-    """Fetches top played songs. Uses user_creds if provided, otherwise admin."""
-    if config.MEDIASERVER_TYPE == 'jellyfin':
-        return jellyfin_get_top_played_songs(limit, user_creds)
-    if config.MEDIASERVER_TYPE == 'navidrome':
-        return navidrome_get_top_played_songs(limit, user_creds)
-    if config.MEDIASERVER_TYPE == 'lyrion':
-        return lyrion_get_top_played_songs(limit)
-    if config.MEDIASERVER_TYPE == 'emby':
-        return emby_get_top_played_songs(limit, user_creds)
-    if config.MEDIASERVER_TYPE == 'localfiles':
-        return localfiles_get_top_played_songs(limit, user_creds)
+    """Fetches top played songs from the primary provider. Uses user_creds if provided, otherwise admin."""
+    provider_type, sc = _resolve_play_history_provider()
+    if provider_type == 'jellyfin':
+        return jellyfin_get_top_played_songs(limit, user_creds, server_config=sc)
+    if provider_type == 'navidrome':
+        return navidrome_get_top_played_songs(limit, user_creds, server_config=sc)
+    if provider_type == 'lyrion':
+        return lyrion_get_top_played_songs(limit, server_config=sc)
+    if provider_type == 'emby':
+        return emby_get_top_played_songs(limit, user_creds, server_config=sc)
+    if provider_type == 'localfiles':
+        return localfiles_get_top_played_songs(limit, user_creds, server_config=sc)
     return []
 
 def get_last_played_time(item_id, user_creds=None):
-    """Fetches last played time for a track. Uses user_creds if provided, otherwise admin."""
-    if config.MEDIASERVER_TYPE == 'jellyfin':
-        return jellyfin_get_last_played_time(item_id, user_creds)
-    if config.MEDIASERVER_TYPE == 'navidrome':
-        return navidrome_get_last_played_time(item_id, user_creds)
-    if config.MEDIASERVER_TYPE == 'lyrion':
-        return lyrion_get_last_played_time(item_id)
-    if config.MEDIASERVER_TYPE == 'emby':
-        return emby_get_last_played_time(item_id, user_creds)
-    if config.MEDIASERVER_TYPE == 'localfiles':
-        return localfiles_get_last_played_time(item_id, user_creds)
+    """Fetches last played time for a track from the primary provider. Uses user_creds if provided, otherwise admin."""
+    provider_type, sc = _resolve_play_history_provider()
+    if provider_type == 'jellyfin':
+        return jellyfin_get_last_played_time(item_id, user_creds, server_config=sc)
+    if provider_type == 'navidrome':
+        return navidrome_get_last_played_time(item_id, user_creds, server_config=sc)
+    if provider_type == 'lyrion':
+        return lyrion_get_last_played_time(item_id, server_config=sc)
+    if provider_type == 'emby':
+        return emby_get_last_played_time(item_id, user_creds, server_config=sc)
+    if provider_type == 'localfiles':
+        return localfiles_get_last_played_time(item_id, user_creds, server_config=sc)
     return None
 
 

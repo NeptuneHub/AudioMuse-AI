@@ -1142,9 +1142,11 @@ def get_playlist_by_name(playlist_name):
             return p # Return the already formatted playlist dict
     return None
 
-def get_top_played_songs(limit):
+def get_top_played_songs(limit, server_config=None):
     """Fetches the top N most played songs from Lyrion for a specific user using JSON-RPC."""
-    response = _jsonrpc_request("titles", [0, limit, "sort:popular", "tags:galduAyR"])
+    sc = server_config or {}
+    base_url = sc.get('url') or None
+    response = _jsonrpc_request("titles", [0, limit, "sort:popular", "tags:galduAyR"], base_url=base_url)
     if response and "titles_loop" in response:
         songs = response["titles_loop"]
         # Map Lyrion API keys to our standard format.
@@ -1188,7 +1190,7 @@ def get_top_played_songs(limit):
     return []
 
 
-def get_last_played_time(item_id):
+def get_last_played_time(item_id, server_config=None):
     """Fetches the last played time for a track for a specific user. Not supported by Lyrion JSON-RPC API."""
     logger.warning("Lyrion's JSON-RPC API does not provide a 'last played time' for individual tracks.")
     return None
