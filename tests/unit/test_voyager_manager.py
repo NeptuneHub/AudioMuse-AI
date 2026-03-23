@@ -480,7 +480,7 @@ class TestFindNearestNeighborsByVector:
 class TestCreatePlaylistFromIds:
     """Test playlist creation functionality — default path uses create_playlist_multi_provider"""
 
-    @patch('tasks.voyager_manager.create_playlist_multi_provider')
+    @patch('tasks.mediaserver.create_playlist_multi_provider')
     def test_default_path_uses_multi_provider(self, mock_multi):
         """Default path (provider_ids=None) should route through create_playlist_multi_provider"""
         from tasks.voyager_manager import create_playlist_from_ids
@@ -492,7 +492,7 @@ class TestCreatePlaylistFromIds:
         assert result == 'playlist-123'
         mock_multi.assert_called_once_with('Test Playlist', [1, 2, 3], None, None)
 
-    @patch('tasks.voyager_manager.create_playlist_multi_provider')
+    @patch('tasks.mediaserver.create_playlist_multi_provider')
     def test_raises_on_creation_failure(self, mock_multi):
         """Should raise exception if multi-provider returns failure"""
         from tasks.voyager_manager import create_playlist_from_ids
@@ -502,7 +502,7 @@ class TestCreatePlaylistFromIds:
         with pytest.raises(Exception, match="Playlist creation failed"):
             create_playlist_from_ids('Test Playlist', [1])
 
-    @patch('tasks.voyager_manager.create_playlist_multi_provider')
+    @patch('tasks.mediaserver.create_playlist_multi_provider')
     def test_raises_on_empty_results(self, mock_multi):
         """Should raise exception if no results returned"""
         from tasks.voyager_manager import create_playlist_from_ids
@@ -512,7 +512,7 @@ class TestCreatePlaylistFromIds:
         with pytest.raises(Exception, match="No results returned"):
             create_playlist_from_ids('Test Playlist', [1])
 
-    @patch('tasks.voyager_manager.create_playlist_multi_provider')
+    @patch('tasks.mediaserver.create_playlist_multi_provider')
     def test_passes_user_credentials(self, mock_multi):
         """Should pass user credentials to multi-provider"""
         from tasks.voyager_manager import create_playlist_from_ids
@@ -524,7 +524,7 @@ class TestCreatePlaylistFromIds:
 
         mock_multi.assert_called_once_with('Test', [1], None, user_creds)
 
-    @patch('tasks.voyager_manager.create_playlist_multi_provider')
+    @patch('tasks.mediaserver.create_playlist_multi_provider')
     def test_explicit_provider_ids_uses_multi_provider(self, mock_multi):
         """Explicit provider_ids should also use create_playlist_multi_provider"""
         from tasks.voyager_manager import create_playlist_from_ids

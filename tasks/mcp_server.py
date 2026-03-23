@@ -408,7 +408,7 @@ def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filt
             log_messages.append(f"Applying hybrid filters (tempo: {tempo_filter}, energy: {energy_filter})")
             
             # Get track_ids from CLAP results
-            item_ids = [r['item_id'] for r in clap_results]
+            item_ids = [r['track_id'] for r in clap_results]
             
             # Define tempo ranges (BPM)
             tempo_ranges = {
@@ -482,7 +482,7 @@ def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filt
             matched_genres = [g for g in _GENRE_KEYWORDS if g in desc_lower]
 
             if matched_genres and songs:
-                song_ids = [s['item_id'] for s in songs]
+                song_ids = [s.get('track_id', s['item_id']) for s in songs]
                 with db_conn.cursor(cursor_factory=DictCursor) as cur:
                     ph = ','.join(['%s'] * len(song_ids))
                     # Build OR regex for each matched genre
@@ -499,7 +499,7 @@ def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filt
                     """, song_ids + genre_params)
                     matching_ids = {str(r['track_id']) for r in cur.fetchall()}
 
-                filtered = [s for s in songs if s['item_id'] in matching_ids]
+                filtered = [s for s in songs if str(s.get('track_id', s['item_id'])) in matching_ids]
                 # Only apply if keeps >= 40% of results
                 if len(filtered) >= len(songs) * 0.4:
                     removed = len(songs) - len(filtered)
@@ -860,7 +860,7 @@ def _song_alchemy_sync(add_items: List[Dict], subtract_items: Optional[List[Dict
         
         raw_songs = result.get('results', [])
         # Map DB column 'author' to 'artist' for consistency with other tools
-        songs = [{"item_id": s['item_id'], "title": s['title'], "artist": s.get('author', s.get('artist', '')), "album": s.get('album', '')} for s in raw_songs]
+        songs = [{"track_id": s.get('track_id'), "item_id": s['item_id'], "title": s['title'], "artist": s.get('author', s.get('artist', '')), "album": s.get('album', '')} for s in raw_songs]
         log_messages.append(f"Retrieved {len(songs)} songs from alchemy")
 
         # --- Genre-coherence filter: remove off-genre results ---
@@ -913,7 +913,7 @@ def _song_alchemy_sync(add_items: List[Dict], subtract_items: Optional[List[Dict
 
                             if top_seed_genres:
                                 # 3. Check genre overlap for result songs
-                                result_ids = [s['item_id'] for s in songs]
+                                result_ids = [s['track_id'] for s in songs]
                                 ph2 = ','.join(['%s'] * len(result_ids))
                                 cur.execute(f"""
                                     SELECT track_id, mood_vector
@@ -937,7 +937,7 @@ def _song_alchemy_sync(add_items: List[Dict], subtract_items: Optional[List[Dict
                                 # 4. Keep songs with genre overlap (any top-5 seed genre at >= 0.1) or no mood data
                                 filtered = []
                                 for s in songs:
-                                    sid = s['item_id']
+                                    sid = str(s['track_id'])
                                     g = result_genres.get(sid, {})
                                     if not g:
                                         filtered.append(s)  # no mood data, keep
@@ -1296,8 +1296,8 @@ Return the JSON now:"""
         
         # Add genre conditions
         for genre in criteria.get('genres', []):
-            conditions.append("mood_vector LIKE %s")
-            params.append(f"%{genre}%")
+            conditions.append("mood_vector ~* %s")
+            params.append(f"(^|,)\\s*{re.escape(genre)}:")
         
         # Add mood conditions
         for mood in criteria.get('moods', []):

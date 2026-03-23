@@ -165,11 +165,22 @@ def skip_id_resolution(f):
 @app.before_request
 def resolve_request_ids():
     """Automatically resolve provider item_ids to canonical track_ids."""
+    # Skip static file requests
+    if request.endpoint == 'static':
+        return
+
     # Skip if endpoint opts out
     if request.endpoint:
         view_func = app.view_functions.get(request.endpoint)
         if view_func and getattr(view_func, '_skip_id_resolution', False):
             return
+
+    # Skip if no relevant params exist (avoids unnecessary DB lookups)
+    has_query_id = request.args.get('item_id') or request.args.get('id')
+    has_json_body = (request.method in ('POST', 'PUT')
+                     and request.content_type and 'json' in request.content_type)
+    if not has_query_id and not has_json_body:
+        return
 
     # Resolve 'item_id' or 'id' in query params
     for param in ('item_id', 'id'):

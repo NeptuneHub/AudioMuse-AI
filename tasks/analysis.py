@@ -712,6 +712,12 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provid
                 # Get or create canonical track entry (track_id is the integer PK)
                 track_id = get_or_create_track(item_file_path, provider_id=active_provider_id) if item_file_path else None
 
+                if not item_file_path:
+                    logger.warning(f"Skipping '{item.get('Name', 'Unknown')}' (ID: {item['Id']}): "
+                                   f"no file_path available, cannot create track record")
+                    tracks_skipped_count += 1
+                    continue
+
                 needs_musicnn = track_id_str not in existing_track_ids_set
                 needs_clap = track_id_str in missing_clap_ids_set
                 needs_mulan = track_id_str in missing_mulan_ids_set

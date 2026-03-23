@@ -340,68 +340,54 @@ def delete_orphaned_albums_sync(orphaned_track_ids):
     try:
         deleted_count = 0
         failed_deletions = []
-        
+
         with get_db() as conn:
             with conn.cursor() as cur:
-                # Delete from embedding table first (foreign key constraint)
-                logger.info(f"Deleting {len(orphaned_track_ids)} tracks from embedding table...")
+                # Delete playlist entries first (playlist FK has no CASCADE from track)
+                logger.info(f"Deleting playlist entries for {len(orphaned_track_ids)} tracks...")
                 for tid in orphaned_track_ids:
                     try:
-                        cur.execute("DELETE FROM embedding WHERE track_id = %s", (tid,))
-                        logger.debug(f"Deleted embedding for track ID: {tid}")
+                        cur.execute("DELETE FROM playlist WHERE track_id = %s", (tid,))
                     except Exception as e:
-                        logger.warning(f"Failed to delete embedding for track {tid}: {e}")
-                        failed_deletions.append({"track_id": tid, "table": "embedding", "error": str(e)})
+                        logger.warning(f"Failed to delete playlist entry for track {tid}: {e}")
+                        failed_deletions.append({"track_id": tid, "table": "playlist", "error": str(e)})
 
-                # Delete from score table
-                logger.info(f"Deleting {len(orphaned_track_ids)} tracks from score table...")
+                # Delete from track table — CASCADE handles score, embedding,
+                # clap_embedding, mulan_embedding, and provider_track
+                logger.info(f"Deleting {len(orphaned_track_ids)} tracks (CASCADE to score, embeddings, provider_track)...")
                 for tid in orphaned_track_ids:
                     try:
-                        cur.execute("DELETE FROM score WHERE track_id = %s", (tid,))
+                        cur.execute("DELETE FROM track WHERE id = %s", (tid,))
                         if cur.rowcount > 0:
                             deleted_count += 1
-                            logger.debug(f"Deleted score for track ID: {tid}")
+                            logger.debug(f"Deleted track ID: {tid}")
                         else:
-                            logger.warning(f"No score record found for track ID: {tid}")
+                            logger.warning(f"No track record found for ID: {tid}")
                     except Exception as e:
-                        logger.warning(f"Failed to delete score for track {tid}: {e}")
-                        failed_deletions.append({"track_id": tid, "table": "score", "error": str(e)})
-                
-                # Commit the transaction
+                        logger.warning(f"Failed to delete track {tid}: {e}")
+                        failed_deletions.append({"track_id": tid, "table": "track", "error": str(e)})
+
                 conn.commit()
                 logger.info(f"Successfully deleted {deleted_count} orphaned tracks from database")
-        
-        # Also clean up any related data that might reference these tracks
+
+        # Clean up orphaned artists from artist_provider_mapping table
         try:
             with get_db() as conn:
                 with conn.cursor() as cur:
-                    # Clean up playlist entries for deleted tracks
-                    for tid in orphaned_track_ids:
-                        cur.execute("DELETE FROM playlist WHERE track_id = %s", (tid,))
-                    conn.commit()
-                    logger.info("Cleaned up playlist references for deleted tracks")
-        except Exception as e:
-            logger.warning(f"Failed to clean up playlist references: {e}")
-        
-        # Clean up orphaned artists from artist_mapping table
-        try:
-            with get_db() as conn:
-                with conn.cursor() as cur:
-                    # Find artists that no longer have any tracks in the score table
                     cur.execute("""
-                        DELETE FROM artist_mapping
+                        DELETE FROM artist_provider_mapping
                         WHERE artist_name NOT IN (
-                            SELECT DISTINCT author 
-                            FROM score 
+                            SELECT DISTINCT author
+                            FROM score
                             WHERE author IS NOT NULL AND author != ''
                         )
                     """)
                     orphaned_artists_count = cur.rowcount
                     conn.commit()
                     if orphaned_artists_count > 0:
-                        logger.info(f"Cleaned up {orphaned_artists_count} orphaned artists from artist_mapping table")
+                        logger.info(f"Cleaned up {orphaned_artists_count} orphaned artists from artist_provider_mapping")
         except Exception as e:
-            logger.warning(f"Failed to clean up orphaned artists from artist_mapping: {e}")
+            logger.warning(f"Failed to clean up orphaned artists from artist_provider_mapping: {e}")
         
         return {
             "status": "SUCCESS",

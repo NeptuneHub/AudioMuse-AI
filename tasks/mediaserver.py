@@ -256,29 +256,39 @@ def resolve_emby_jellyfin_user(identifier, token):
     provider_type, _ = _resolve_play_history_provider()
     if provider_type == 'jellyfin': return jellyfin_resolve_user(identifier, token)
     if provider_type == 'emby': return emby_resolve_user(identifier, token)
+    # Fallback: primary provider doesn't support user resolution.
+    # Check legacy config in case Jellyfin/Emby is configured but not primary.
+    fallback_type = config.MEDIASERVER_TYPE
+    if fallback_type != provider_type:
+        logger.debug(f"Primary provider '{provider_type}' has no user resolution; "
+                     f"falling back to legacy MEDIASERVER_TYPE='{fallback_type}'")
+        if fallback_type == 'jellyfin': return jellyfin_resolve_user(identifier, token)
+        if fallback_type == 'emby': return emby_resolve_user(identifier, token)
     return []
 
 def delete_automatic_playlists():
     """Deletes all playlists ending with '_automatic' using admin credentials."""
     logger.info("Starting deletion of all '_automatic' playlists.")
     deleted_count = 0
-    
+
     playlists_to_check = []
     delete_function = None
 
-    if config.MEDIASERVER_TYPE == 'jellyfin':
+    provider_type, _ = _resolve_play_history_provider()
+
+    if provider_type == 'jellyfin':
         playlists_to_check = jellyfin_get_all_playlists()
         delete_function = jellyfin_delete_playlist
-    elif config.MEDIASERVER_TYPE == 'navidrome':
+    elif provider_type == 'navidrome':
         playlists_to_check = navidrome_get_all_playlists()
         delete_function = navidrome_delete_playlist
-    elif config.MEDIASERVER_TYPE == 'lyrion':
+    elif provider_type == 'lyrion':
         playlists_to_check = lyrion_get_all_playlists()
         delete_function = lyrion_delete_playlist
-    elif config.MEDIASERVER_TYPE == 'emby':
+    elif provider_type == 'emby':
         playlists_to_check = emby_get_all_playlists()
         delete_function = emby_delete_playlist
-    elif config.MEDIASERVER_TYPE == 'localfiles':
+    elif provider_type == 'localfiles':
         playlists_to_check = localfiles_get_all_playlists()
         delete_function = localfiles_delete_playlist
 
