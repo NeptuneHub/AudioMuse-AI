@@ -236,7 +236,7 @@ class TestAnalyzeAlbumMemoryCleanup:
         # Setup mocks
         mock_get_job.return_value = None
         mock_get_tracks.return_value = [
-            {'Id': '1', 'Name': 'Track 1', 'AlbumArtist': 'Artist 1', 'ArtistId': 'artist1'}
+            {'Id': '1', 'Name': 'Track 1', 'AlbumArtist': 'Artist 1', 'ArtistId': 'artist1', 'Path': '/music/track1.mp3'}
         ]
         mock_download.return_value = "/tmp/track.mp3"
 
@@ -279,7 +279,10 @@ class TestAnalyzeAlbumMemoryCleanup:
         with patch('tasks.clap_analyzer.is_clap_available', return_value=False), \
              patch('config.MULAN_ENABLED', False), \
              patch('app_helper.find_existing_analysis_by_file_path', return_value=None), \
-             patch('app_helper_artist.upsert_artist_mapping'):
+             patch('app_helper_artist.upsert_artist_mapping'), \
+             patch('app_helper.get_or_create_track', return_value=1), \
+             patch('app_helper.link_provider_track'), \
+             patch('app_helper.get_primary_provider_id', return_value=1):
             result = analyze_album_task("album_123", "Test Album", 5, None)
 
         # Verify session cleanup was called for all loaded sessions
