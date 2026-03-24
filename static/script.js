@@ -154,14 +154,22 @@ function renderConfig(config) {
     document.getElementById('config-spectral_n_clusters_max').value = config.spectral_n_clusters_max || 0;
 
 
-    // AI Naming
+    // AI Naming (read-only — configured in Settings)
     aiModelProviderSelect.value = config.ai_model_provider || 'NONE';
-    document.getElementById('config-ollama_server_url').value = config.ollama_server_url || 'http://127.0.0.1:11434/api/generate';
-    document.getElementById('config-ollama_model_name').value = config.ollama_model_name || 'mistral:7b';
-    document.getElementById('config-openai_server_url').value = config.openai_server_url || 'https://openrouter.ai/api/v1/chat/completions';
+    document.getElementById('config-ollama_server_url').value = config.ollama_server_url || '';
+    document.getElementById('config-ollama_model_name').value = config.ollama_model_name || '';
+    document.getElementById('config-openai_server_url').value = config.openai_server_url || '';
     document.getElementById('config-openai_model_name').value = config.openai_model_name || '';
-    document.getElementById('config-gemini_model_name').value = config.gemini_model_name || 'gemini-2.5-pro';
-    document.getElementById('config-mistral_model_name').value = config.mistral_model_name || 'ministral-3b-latest';
+    document.getElementById('config-gemini_model_name').value = config.gemini_model_name || '';
+    document.getElementById('config-mistral_model_name').value = config.mistral_model_name || '';
+
+    // Show warning if no AI provider configured
+    const aiNoneWarning = document.getElementById('ai-none-warning');
+    if (aiModelProviderSelect.value === 'NONE') {
+        aiNoneWarning.classList.remove('hidden');
+    } else {
+        aiNoneWarning.classList.add('hidden');
+    }
 }
 
 function toggleClusteringParams() {
@@ -616,7 +624,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 basicViewBtn.addEventListener('click', () => switchView('basic'));
 advancedViewBtn.addEventListener('click', () => switchView('advanced'));
 clusterAlgorithmSelect.addEventListener('change', toggleClusteringParams);
-aiModelProviderSelect.addEventListener('change', toggleAiConfig);
 startAnalysisBtn.addEventListener('click', () => startTask('analysis'));
 startClusteringBtn.addEventListener('click', () => startTask('clustering'));
 fetchPlaylistsBtn.addEventListener('click', fetchPlaylists);

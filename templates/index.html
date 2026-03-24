@@ -355,16 +355,16 @@
 
             <fieldset>
                 <legend>AI Playlist Naming</legend>
+                <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: -0.25rem; margin-bottom: 0.75rem;">
+                    Configured in <a href="/settings">Settings</a>. Clustering uses the AI provider below to generate creative playlist names.
+                </p>
+                <div id="ai-none-warning" class="hidden" style="padding: 0.75rem 1rem; border-radius: 0.5rem; background: rgba(220, 160, 0, 0.1); border: 1px solid var(--color-warning, #d4a017); color: var(--text-body); font-size: 0.875rem; margin-bottom: 0.75rem;">
+                    No AI provider configured. Playlists will use generic names instead of AI-generated ones. Configure a provider in <a href="/settings">Settings</a> for creative naming.
+                </div>
                 <div class="param-group">
                     <div>
-                        <label for="config-ai_model_provider" class="label-with-tooltip">
-                            AI Provider:
-                            <span class="info-tooltip" tabindex="0">
-                                <span class="info-icon"></span>
-                                <span class="tooltip-text">OPTIONAL: Choose an AI service to generate creative playlist names for your clustering results. This is just for naming - it doesn't affect how playlists are created. Select "None" if you prefer default names or don't want to use AI.</span>
-                            </span>
-                        </label>
-                        <select id="config-ai_model_provider">
+                        <label for="config-ai_model_provider">AI Provider:</label>
+                        <select id="config-ai_model_provider" disabled>
                             <option value="OLLAMA">Ollama</option>
                             <option value="OPENAI">OpenAI / OpenRouter</option>
                             <option value="GEMINI">Gemini</option>
@@ -376,40 +376,40 @@
                     <div id="ollama-config-group" class="hidden">
                         <h4>Ollama Configuration:</h4>
                         <div>
-                            <label for="config-ollama_server_url">Ollama Server URL:</label>
-                            <input type="text" id="config-ollama_server_url" value="http://127.0.0.1:11434/api/generate">
+                            <label>Server URL:</label>
+                            <input type="text" id="config-ollama_server_url" readonly>
                         </div>
                         <div>
-                            <label for="config-ollama_model_name">Ollama Model Name:</label>
-                            <input type="text" id="config-ollama_model_name" value="mistral:7b">
+                            <label>Model:</label>
+                            <input type="text" id="config-ollama_model_name" readonly>
                         </div>
                     </div>
 
                     <div id="openai-config-group" class="hidden">
                         <h4>OpenAI / OpenRouter Configuration:</h4>
                         <div>
-                            <label for="config-openai_server_url">OpenAI Server URL:</label>
-                            <input type="text" id="config-openai_server_url" value="https://openrouter.ai/api/v1/chat/completions">
+                            <label>Server URL:</label>
+                            <input type="text" id="config-openai_server_url" readonly>
                         </div>
                         <div>
-                            <label for="config-openai_model_name">OpenAI Model Name:</label>
-                            <input type="text" id="config-openai_model_name" value="">
+                            <label>Model:</label>
+                            <input type="text" id="config-openai_model_name" readonly>
                         </div>
                     </div>
 
                     <div id="gemini-config-group" class="hidden">
                         <h4>Gemini Configuration:</h4>
                         <div>
-                            <label for="config-gemini_model_name">Gemini Model Name:</label>
-                            <input type="text" id="config-gemini_model_name" value="gemini-2.5-pro">
+                            <label>Model:</label>
+                            <input type="text" id="config-gemini_model_name" readonly>
                         </div>
                     </div>
 
                     <div id="mistral-config-group" class="hidden">
                         <h4>Mistral Configuration:</h4>
                         <div>
-                            <label for="config-mistral_model_name">Mistral Model Name:</label>
-                            <input type="text" id="config-mistral_model_name" value="ministral-3b-latest">
+                            <label>Model:</label>
+                            <input type="text" id="config-mistral_model_name" readonly>
                         </div>
                     </div>
                 </div>

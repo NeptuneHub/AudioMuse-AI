@@ -429,6 +429,35 @@ def init_db():
                     """, (key, value, category, description))
                 logger.info("Inserted default app settings")
 
+            # Seed AI settings from env vars (via config.py) if not already in DB.
+            # This ensures .env values are reflected in the settings UI on first boot.
+            # Once a user saves via the settings page, their values take precedence.
+            import config as _cfg
+            import json as _json
+            ai_settings = [
+                ('ai_provider', _cfg.AI_MODEL_PROVIDER, 'ai', 'AI provider for playlist naming'),
+                ('ollama_server_url', _cfg.OLLAMA_SERVER_URL, 'ai', 'Ollama server URL'),
+                ('ollama_model_name', _cfg.OLLAMA_MODEL_NAME, 'ai', 'Ollama model name'),
+                ('openai_server_url', _cfg.OPENAI_SERVER_URL, 'ai', 'OpenAI/OpenRouter server URL'),
+                ('openai_model_name', _cfg.OPENAI_MODEL_NAME, 'ai', 'OpenAI/OpenRouter model name'),
+                ('openai_api_key', _cfg.OPENAI_API_KEY, 'ai', 'OpenAI/OpenRouter API key'),
+                ('gemini_api_key', _cfg.GEMINI_API_KEY, 'ai', 'Gemini API key'),
+                ('gemini_model_name', _cfg.GEMINI_MODEL_NAME, 'ai', 'Gemini model name'),
+                ('mistral_api_key', _cfg.MISTRAL_API_KEY, 'ai', 'Mistral API key'),
+                ('mistral_model_name', _cfg.MISTRAL_MODEL_NAME, 'ai', 'Mistral model name'),
+                ('ai_request_timeout', _cfg.AI_REQUEST_TIMEOUT_SECONDS, 'ai', 'AI request timeout in seconds'),
+            ]
+            for key, value, category, description in ai_settings:
+                # Skip placeholder values that aren't real config
+                if isinstance(value, str) and value in ('YOUR-GEMINI-API-KEY-HERE', 'YOUR-MISTRAL-API-KEY-HERE', 'no-key-needed'):
+                    value = ''
+                cur.execute("""
+                    INSERT INTO app_settings (key, value, category, description)
+                    VALUES (%s, %s::jsonb, %s, %s)
+                    ON CONFLICT (key) DO NOTHING
+                """, (key, _json.dumps(value), category, description))
+            logger.info("Seeded AI settings from environment/config")
+
             # Run canonical track_id migration if not already done.
             # This converts the old schema (score.item_id TEXT PK) to the new
             # architecture (score.track_id INTEGER PK). Idempotent — skips if already completed.
