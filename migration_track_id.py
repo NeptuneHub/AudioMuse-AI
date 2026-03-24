@@ -1105,6 +1105,16 @@ def run_migration():
             # Step 2: Provider entry
             provider_id = step2_create_provider(cur)
 
+            # Set migrated provider as primary (first provider on fresh setup)
+            cur.execute("""
+                INSERT INTO app_settings (key, value, category, description, updated_at)
+                VALUES ('primary_provider_id', %s::jsonb, 'providers', 'ID of the primary provider for playlist creation', NOW())
+                ON CONFLICT (key) DO UPDATE SET
+                    value = EXCLUDED.value, updated_at = NOW()
+                WHERE app_settings.value = 'null' OR app_settings.value IS NULL
+            """, (json.dumps(provider_id),))
+            logger.info(f"  Set primary_provider_id = {provider_id}")
+
             if score_count == 0:
                 # Nothing to migrate — just record completion
                 cur.execute("""

@@ -1831,7 +1831,6 @@ def update_settings():
         'gemini_model_name', 'mistral_model_name',
         'max_songs_per_artist_playlist', 'playlist_energy_arc',
         'ai_request_timeout', 'gpu_clustering',
-        'deployment_type', 'hardware_type',
     }
 
     for key, value in data.items():

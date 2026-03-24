@@ -1384,7 +1384,7 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
 # ##############################################################################
 
 def get_primary_provider_id():
-    """Get the primary provider ID from app_settings."""
+    """Get the primary provider ID from app_settings, falling back to first enabled provider."""
     db = get_db()
     with db.cursor() as cur:
         cur.execute("SELECT value FROM app_settings WHERE key = 'primary_provider_id'")
@@ -1395,11 +1395,23 @@ def get_primary_provider_id():
                 val = row[0]
                 if isinstance(val, int):
                     return val
-                if val is None or val == 'null':
-                    return None
-                return int(val)
+                if val is not None and val != 'null':
+                    return int(val)
             except (ValueError, TypeError):
-                return None
+                pass
+
+        # Fallback: pick first enabled provider and persist the choice
+        cur.execute("SELECT id FROM provider WHERE enabled = TRUE ORDER BY priority DESC, created_at ASC LIMIT 1")
+        fallback = cur.fetchone()
+        if fallback:
+            provider_id = fallback[0]
+            cur.execute("""
+                INSERT INTO app_settings (key, value, category, description, updated_at)
+                VALUES ('primary_provider_id', %s::jsonb, 'providers', 'ID of the primary provider for playlist creation', NOW())
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+            """, (json.dumps(provider_id),))
+            db.commit()
+            return provider_id
         return None
 
 

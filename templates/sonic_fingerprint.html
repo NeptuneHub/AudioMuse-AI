@@ -16,8 +16,43 @@
             margin-top: 1rem;
             background-color: var(--color-primary);
         }
-        #fingerprint-form button:hover {
+        #fingerprint-form button:hover:not(:disabled) {
             background-color: var(--color-primary-hover);
+        }
+        #fingerprint-form button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .provider-info-banner {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            background: rgba(37, 99, 235, 0.1);
+            border: 1px solid var(--color-primary);
+            color: var(--text-body);
+            font-size: 0.875rem;
+            margin-bottom: 1rem;
+        }
+        .provider-info-banner.provider-warning {
+            background: rgba(220, 53, 69, 0.1);
+            border-color: var(--color-danger, #dc3545);
+        }
+        .provider-info-banner .banner-icon {
+            font-size: 1.25rem;
+            flex-shrink: 0;
+        }
+        .credential-override {
+            margin-bottom: 1rem;
+        }
+        .credential-override summary {
+            cursor: pointer;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+        .credential-override summary:hover {
+            color: var(--text-body);
         }
 </style>
 {% endblock %}
@@ -31,57 +66,48 @@
 
     <form id="fingerprint-form">
 
-        <fieldset>
-            <legend>Your Credentials</legend>
-            <p style="font-size: 0.875rem; color: var(--text-muted); margin-top: -0.5rem; margin-bottom: 1rem;">
-                Enter your personal credentials to generate a fingerprint from your listening history.
-            </p>
-            <div class="param-group">
-                {% if mediaserver_type == 'jellyfin' %}
+        {% if mediaserver_type == 'localfiles' %}
+        <div class="provider-info-banner provider-warning">
+            <span class="banner-icon">&#9888;</span>
+            <span>
+                Your primary provider is <strong>Local Files</strong>, which does not track play history.
+                Sonic Fingerprint requires a media server that tracks listening habits (Jellyfin, Navidrome, Emby, or Lyrion).
+                Change your primary provider in <a href="/settings">Settings</a> to use this feature.
+            </span>
+        </div>
+        {% else %}
+        <div class="provider-info-banner">
+            <span class="banner-icon">&#8505;</span>
+            <span>Play history is read from your primary provider (<strong>{{ mediaserver_type | title }}</strong>). Credentials are taken from provider settings. You can change this in <a href="/settings">Settings</a>.</span>
+        </div>
+
+        {% if mediaserver_type in ('jellyfin', 'emby', 'navidrome') %}
+        <details class="credential-override">
+            <summary>Override credentials (for a different user)</summary>
+            <div class="param-group" style="margin-top: 0.75rem;">
+                {% if mediaserver_type in ('jellyfin', 'emby') %}
                 <div>
-                    <label for="jellyfin_user_identifier" class="label-with-tooltip">
-                        Jellyfin Username or User ID:
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Your Jellyfin username or user ID. This is used to fetch your personal listening history from the media server.</span>
-                        </span>
-                    </label>
-                    <input type="text" id="jellyfin_user_identifier" name="jellyfin_user_identifier" required placeholder="Enter Jellyfin Username or User ID">
+                    <label for="jellyfin_user_identifier">{{ mediaserver_type | title }} Username or User ID:</label>
+                    <input type="text" id="jellyfin_user_identifier" name="jellyfin_user_identifier" placeholder="Leave empty to use provider default">
                 </div>
                 <div>
-                    <label for="jellyfin_token" class="label-with-tooltip">
-                        API Token:
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Optional: Your Jellyfin API token. Only needed if you're not the default user or if accessing another user's fingerprint.</span>
-                        </span>
-                    </label>
-                    <input type="password" id="jellyfin_token" name="jellyfin_token" placeholder="Optional for default user, specify for other users">
+                    <label for="jellyfin_token">API Token:</label>
+                    <input type="password" id="jellyfin_token" name="jellyfin_token" placeholder="Leave empty to use provider default">
                 </div>
                 {% elif mediaserver_type == 'navidrome' %}
                 <div>
-                    <label for="navidrome_user" class="label-with-tooltip">
-                        Navidrome Username:
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Your Navidrome username. This is used to fetch your personal listening history from the media server.</span>
-                        </span>
-                    </label>
-                    <input type="text" id="navidrome_user" name="navidrome_user" required>
+                    <label for="navidrome_user">Navidrome Username:</label>
+                    <input type="text" id="navidrome_user" name="navidrome_user" placeholder="Leave empty to use provider default">
                 </div>
                 <div>
-                    <label for="navidrome_password" class="label-with-tooltip">
-                        Password/API Token:
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Optional: Your Navidrome password or API token. Only needed if you're not the default user or if accessing another user's fingerprint.</span>
-                        </span>
-                    </label>
-                    <input type="password" id="navidrome_password" name="navidrome_password" placeholder="Optional for default user, specify for other user">
+                    <label for="navidrome_password">Password/API Token:</label>
+                    <input type="password" id="navidrome_password" name="navidrome_password" placeholder="Leave empty to use provider default">
                 </div>
                 {% endif %}
             </div>
-        </fieldset>
+        </details>
+        {% endif %}
+        {% endif %}
 
         <fieldset>
             <legend>Parameters</legend>
@@ -99,7 +125,7 @@
             </div>
         </fieldset>
 
-        <button type="submit">
+        <button type="submit" {% if mediaserver_type == 'localfiles' %}disabled{% endif %}>
             Generate My Sonic Fingerprint
         </button>
     </form>
@@ -147,23 +173,6 @@
             const resultsTableWrapper = document.getElementById('results-table-wrapper');
             const playlistStatusDiv = document.getElementById('playlist-status');
 
-            window.addEventListener('DOMContentLoaded', async () => {
-                try {
-                    const response = await fetch("{{ url_for('sonic_fingerprint_bp.get_media_server_defaults') }}");
-                    if (!response.ok) return;
-
-                    const data = await response.json();
-
-                    if (mediaserverType === 'jellyfin' && data.default_user_id) {
-                        document.getElementById('jellyfin_user_identifier').value = data.default_user_id;
-                    } else if (mediaserverType === 'navidrome' && data.default_user) {
-                        document.getElementById('navidrome_user').value = data.default_user;
-                    }
-                } catch (error) {
-                    console.error('Failed to fetch default config:', error);
-                }
-            });
-
             fingerprintForm.addEventListener('submit', async function (event) {
                 event.preventDefault();
 
@@ -171,24 +180,17 @@
                     n: parseInt(document.getElementById('n').value, 10)
                 };
 
-                if (mediaserverType === 'jellyfin') {
-                    payload.jellyfin_user_identifier = document.getElementById('jellyfin_user_identifier').value;
-                    payload.jellyfin_token = document.getElementById('jellyfin_token').value;
-                    if (!payload.jellyfin_user_identifier) {
-                        statusDiv.textContent = 'Jellyfin User Identifier is required.';
-                        statusDiv.className = 'status-error';
-                        resultsContainer.classList.remove('hidden');
-                        return;
-                    }
+                // Include override credentials only if the user filled them in
+                if (mediaserverType === 'jellyfin' || mediaserverType === 'emby') {
+                    const userIdEl = document.getElementById('jellyfin_user_identifier');
+                    const tokenEl = document.getElementById('jellyfin_token');
+                    if (userIdEl && userIdEl.value) payload.jellyfin_user_identifier = userIdEl.value;
+                    if (tokenEl && tokenEl.value) payload.jellyfin_token = tokenEl.value;
                 } else if (mediaserverType === 'navidrome') {
-                    payload.navidrome_user = document.getElementById('navidrome_user').value;
-                    payload.navidrome_password = document.getElementById('navidrome_password').value;
-                     if (!payload.navidrome_user) {
-                        statusDiv.textContent = 'Navidrome Username is required.';
-                        statusDiv.className = 'status-error';
-                        resultsContainer.classList.remove('hidden');
-                        return;
-                    }
+                    const userEl = document.getElementById('navidrome_user');
+                    const passEl = document.getElementById('navidrome_password');
+                    if (userEl && userEl.value) payload.navidrome_user = userEl.value;
+                    if (passEl && passEl.value) payload.navidrome_password = passEl.value;
                 }
 
                 resultsContainer.classList.remove('hidden');
@@ -257,12 +259,16 @@
                     user_creds: {}
                 };
 
-                if (mediaserverType === 'jellyfin') {
-                    payload.user_creds.user_identifier = document.getElementById('jellyfin_user_identifier').value;
-                    payload.user_creds.token = document.getElementById('jellyfin_token').value;
+                if (mediaserverType === 'jellyfin' || mediaserverType === 'emby') {
+                    const userIdEl = document.getElementById('jellyfin_user_identifier');
+                    const tokenEl = document.getElementById('jellyfin_token');
+                    if (userIdEl && userIdEl.value) payload.user_creds.user_identifier = userIdEl.value;
+                    if (tokenEl && tokenEl.value) payload.user_creds.token = tokenEl.value;
                 } else if (mediaserverType === 'navidrome') {
-                    payload.user_creds.user = document.getElementById('navidrome_user').value;
-                    payload.user_creds.password = document.getElementById('navidrome_password').value;
+                    const userEl = document.getElementById('navidrome_user');
+                    const passEl = document.getElementById('navidrome_password');
+                    if (userEl && userEl.value) payload.user_creds.user = userEl.value;
+                    if (passEl && passEl.value) payload.user_creds.password = passEl.value;
                 }
                 addProviderToPayload(payload);
 

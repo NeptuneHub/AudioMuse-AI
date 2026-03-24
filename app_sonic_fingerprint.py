@@ -152,15 +152,16 @@ def generate_sonic_fingerprint_endpoint():
 
         user_creds = {}
         if provider_type in ('jellyfin', 'emby'):
-            user_identifier = data.get('jellyfin_user_identifier')
-            if not user_identifier:
-                return jsonify({"error": f"{provider_type.title()} User Identifier is required."}), 400
-
+            default_user_id = (sc.get('user_id') if sc else None) or JELLYFIN_USER_ID
             default_token = (sc.get('token') if sc else None) or JELLYFIN_TOKEN
+
+            user_identifier = data.get('jellyfin_user_identifier') or default_user_id
             token = data.get('jellyfin_token') or default_token
 
+            if not user_identifier:
+                return jsonify({"error": f"{provider_type.title()} User Identifier is required. Configure it in provider settings or enter it below."}), 400
             if not token:
-                return jsonify({"error": f"{provider_type.title()} API Token is required. Please provide one or set it in the server configuration."}), 400
+                return jsonify({"error": f"{provider_type.title()} API Token is required. Configure it in provider settings or enter it below."}), 400
 
             logger.info(f"Resolving {provider_type} user identifier: '{user_identifier}'")
             resolved_user_id = resolve_emby_jellyfin_user(user_identifier, token)
@@ -177,7 +178,7 @@ def generate_sonic_fingerprint_endpoint():
             user_creds['user'] = data.get('navidrome_user') or default_user
             user_creds['password'] = data.get('navidrome_password') or default_pass
             if not user_creds['user'] or not user_creds['password']:
-                return jsonify({"error": "Navidrome username and password are required. Please provide them or set them in the server configuration."}), 400
+                return jsonify({"error": "Navidrome username and password are required. Configure them in provider settings or enter them below."}), 400
         
         fingerprint_results = generate_sonic_fingerprint(
             num_neighbors=num_results,

@@ -200,6 +200,17 @@
         color: var(--text-muted);
     }
 
+    .readonly-cards .option-card {
+        cursor: default;
+        opacity: 0.4;
+    }
+    .readonly-cards .option-card:hover {
+        border-color: var(--border-color);
+    }
+    .readonly-cards .option-card.selected {
+        opacity: 1;
+    }
+
     /* Provider List */
     .provider-list {
         margin-top: 1rem;
@@ -626,18 +637,18 @@
         </div>
         <div class="section-content">
             <p class="section-description">
-                Configure how AudioMuse-AI is deployed across your infrastructure.
+                Detected from the running Docker image. Change by redeploying with a different compose file.
             </p>
 
             <div class="field-group">
                 <label>Deployment Mode</label>
-                <div class="option-cards">
-                    <div class="option-card selected" data-value="unified" onclick="selectOption(this, 'deployment')">
+                <div class="option-cards readonly-cards">
+                    <div class="option-card selected" data-value="unified">
                         <div class="card-icon">&#128230;</div>
                         <div class="card-title">Unified</div>
                         <div class="card-desc">Server and worker on same machine</div>
                     </div>
-                    <div class="option-card" data-value="split" onclick="selectOption(this, 'deployment')">
+                    <div class="option-card" data-value="split">
                         <div class="card-icon">&#128423;</div>
                         <div class="card-title">Split</div>
                         <div class="card-desc">Workers on separate machines</div>
@@ -647,13 +658,13 @@
 
             <div class="field-group">
                 <label>Hardware Type</label>
-                <div class="option-cards">
-                    <div class="option-card selected" data-value="cpu" onclick="selectOption(this, 'hardware')">
+                <div class="option-cards readonly-cards">
+                    <div class="option-card selected" data-value="cpu">
                         <div class="card-icon">&#128187;</div>
                         <div class="card-title">CPU Only</div>
                         <div class="card-desc">Standard processing</div>
                     </div>
-                    <div class="option-card" data-value="nvidia" onclick="selectOption(this, 'hardware')">
+                    <div class="option-card" data-value="nvidia">
                         <div class="card-icon">&#9889;</div>
                         <div class="card-title">NVIDIA GPU</div>
                         <div class="card-desc">CUDA acceleration</div>
@@ -1011,19 +1022,17 @@
     }
 
     function applySettings() {
-        // Deployment - directly select by data-value
+        // Deployment - read-only indicator, select by data-value
         const deploymentValue = settings.deployment_type || 'unified';
-        const deploymentCard = document.querySelector(`.option-card[data-value="${deploymentValue}"][onclick*="deployment"]`);
-        if (deploymentCard) {
-            selectOption(deploymentCard, 'deployment', false);
-        }
+        document.querySelectorAll('.readonly-cards .option-card[data-value="unified"], .readonly-cards .option-card[data-value="split"]').forEach(c => c.classList.remove('selected'));
+        const deploymentCard = document.querySelector(`.readonly-cards .option-card[data-value="${deploymentValue}"]`);
+        if (deploymentCard) deploymentCard.classList.add('selected');
 
-        // Hardware - directly select by data-value
+        // Hardware - read-only indicator, select by data-value
         const hardwareValue = settings.hardware_type || 'cpu';
-        const hardwareCard = document.querySelector(`.option-card[data-value="${hardwareValue}"][onclick*="hardware"]`);
-        if (hardwareCard) {
-            selectOption(hardwareCard, 'hardware', false);
-        }
+        document.querySelectorAll('.readonly-cards .option-card[data-value="cpu"], .readonly-cards .option-card[data-value="nvidia"]').forEach(c => c.classList.remove('selected'));
+        const hardwareCard = document.querySelector(`.readonly-cards .option-card[data-value="${hardwareValue}"]`);
+        if (hardwareCard) hardwareCard.classList.add('selected');
 
         // Analysis
         document.getElementById('clap-enabled').checked = settings.clap_enabled !== false;
@@ -1668,25 +1677,7 @@
     // Save settings
     async function saveSettings() {
         // Collect current values
-        const deploymentCards = document.querySelectorAll('.option-card[data-value="unified"], .option-card[data-value="split"]');
-        let deploymentType = 'unified';
-        deploymentCards.forEach(card => {
-            if (card.classList.contains('selected')) {
-                deploymentType = card.dataset.value;
-            }
-        });
-
-        const hardwareCards = document.querySelectorAll('.option-card[data-value="cpu"], .option-card[data-value="nvidia"]');
-        let hardwareType = 'cpu';
-        hardwareCards.forEach(card => {
-            if (card.classList.contains('selected') && (card.dataset.value === 'cpu' || card.dataset.value === 'nvidia')) {
-                hardwareType = card.dataset.value;
-            }
-        });
-
         const settingsData = {
-            deployment_type: deploymentType,
-            hardware_type: hardwareType,
             clap_enabled: document.getElementById('clap-enabled').checked,
             gpu_clustering: document.getElementById('gpu-clustering').checked,
             ai_provider: document.getElementById('ai-provider').value,
