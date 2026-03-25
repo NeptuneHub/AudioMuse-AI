@@ -107,7 +107,3 @@ Interactive playlist builder with weighted centroid calculation, smart filters, 
 ### Plex Integration (Phase 3)
 Full Plex media server support with library browsing, track downloading, and playlist management.
 - Source: `tasks/mediaserver_plex.py`
-
-### Multi-Server Playlist Sync (Phase 4)
-Synchronize playlists across multiple media servers using file path matching.
-- Source: `app_playlist_sync.py`, `tasks/playlist_sync.py`, `tasks/playlist_manager.py`
