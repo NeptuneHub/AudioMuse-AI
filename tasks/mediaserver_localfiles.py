@@ -90,10 +90,11 @@ def _get_songs_from_db() -> List[Dict]:
             # Includes last_synced timestamp for mtime-based cache invalidation
             cur.execute("""
                 SELECT pt.item_id, s.title, s.author, s.album, s.album_artist,
-                       s.file_path, s.year, s.rating, pt.last_synced
+                       s.file_path, s.year, s.rating, pt.last_synced, t.normalized_path
                 FROM score s
                 JOIN provider_track pt ON pt.track_id = s.track_id
                 JOIN provider p ON p.id = pt.provider_id AND p.provider_type = 'localfiles'
+                JOIN track t ON t.id = pt.track_id
                 WHERE s.file_path IS NOT NULL
                 LIMIT 100000
             """)
@@ -121,6 +122,7 @@ def _get_songs_from_db() -> List[Dict]:
                     'Year': row[6],
                     'Rating': row[7],
                     '_last_synced': row[8],  # For mtime comparison in delta scan
+                    '_normalized_path': row[9],  # For cross-provider path matching
                 })
             return songs
     except Exception as e:
@@ -508,18 +510,41 @@ def get_all_songs() -> List[Dict]:
 
     # Phase 2: Load DB cache and determine delta (new files + modified files)
     cached_songs = _get_songs_from_db()
+    # Index cache by both the original path AND the normalized path so we can
+    # match even when the DB stores a different provider's path (e.g., Jellyfin's
+    # /data/Music I/... vs LocalFiles' /music/...).  Normalized paths are
+    # lowercase and prefix-stripped, so we normalize filesystem paths the same way.
     cached_by_path = {}
+    cached_by_norm = {}
     for s in cached_songs:
         path = s.get('Path') or s.get('FilePath')
         if path:
             cached_by_path[path] = s
+        norm = s.get('_normalized_path')
+        if norm:
+            cached_by_norm[norm] = s
+
+    def _normalize_fs_path(fs_path):
+        """Normalize a filesystem path the same way as track.normalized_path."""
+        p = fs_path.replace('\\', '/')
+        # Strip common mount prefixes (must match normalize_path_deterministic)
+        for prefix in ('/media/music/', '/media/', '/mnt/media/music/', '/mnt/media/',
+                       '/mnt/music/', '/mnt/data/music/', '/mnt/data/', '/mnt/',
+                       '/data/music/', '/data/', '/music/', '/share/music/', '/share/',
+                       '/volume1/music/', '/volume1/', '/srv/music/', '/srv/',
+                       '/home/music/', '/storage/music/', '/opt/music/', '/nas/music/',
+                       '/library/music/'):
+            if p.lower().startswith(prefix):
+                p = p[len(prefix):]
+                break
+        return p.lower().lstrip('/')
 
     fs_paths = set(all_paths)
     rescan_paths = []  # New or modified files that need metadata extraction
     active_cached = []  # Cached songs still valid
 
     for path in all_paths:
-        cached = cached_by_path.get(path)
+        cached = cached_by_path.get(path) or cached_by_norm.get(_normalize_fs_path(path))
         if cached is None:
             # New file — not in cache
             rescan_paths.append(path)
@@ -535,13 +560,18 @@ def get_all_songs() -> List[Dict]:
                         continue
                 except OSError:
                     pass  # Can't stat — use cached version
+            # Override Path/FilePath with the actual filesystem path so that
+            # downstream code (e.g., cross-provider hash linking) uses the
+            # LocalFiles path, not the primary provider's path from score.file_path.
+            cached['Path'] = path
+            cached['FilePath'] = path
             active_cached.append(cached)
 
     if not rescan_paths:
         logger.info(f"Delta scan: 0 new/modified files, using {len(active_cached)} cached songs")
         return active_cached
 
-    new_count = sum(1 for p in rescan_paths if p not in cached_by_path)
+    new_count = sum(1 for p in rescan_paths if p not in cached_by_path and _normalize_fs_path(p) not in cached_by_norm)
     modified_count = len(rescan_paths) - new_count
     logger.info(f"Delta scan: {new_count} new + {modified_count} modified files to process, {len(active_cached)} cached")
 

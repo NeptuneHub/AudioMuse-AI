@@ -1640,6 +1640,16 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                                     if result is not None:
                                         provider_linked += 1
 
+                                    # Backfill rating from secondary provider if score has no rating
+                                    sec_rating = song.get('Rating')
+                                    if sec_rating and track_id:
+                                        try:
+                                            with get_db() as conn2, conn2.cursor() as cur2:
+                                                cur2.execute("UPDATE score SET rating = %s WHERE track_id = %s AND (rating IS NULL OR rating = 0)", (sec_rating, track_id))
+                                                conn2.commit()
+                                        except Exception:
+                                            pass
+
                         secondary_linked += provider_linked
                         match_rate = provider_linked / len(sec_songs) if sec_songs else 0
                         if match_rate < 0.5 and len(sec_songs) > 10:
