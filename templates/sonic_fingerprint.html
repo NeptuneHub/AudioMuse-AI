@@ -72,13 +72,13 @@
             <span>
                 Your primary provider is <strong>Local Files</strong>, which does not track play history.
                 Sonic Fingerprint requires a media server that tracks listening habits (Jellyfin, Navidrome, Emby, or Lyrion).
-                Change your primary provider in <a href="/settings">Settings</a> to use this feature.
+                Change your primary provider in <a href="/settings" style="color: var(--color-primary);">Settings</a> to use this feature.
             </span>
         </div>
         {% else %}
         <div class="provider-info-banner">
             <span class="banner-icon">&#8505;</span>
-            <span>Play history is read from your primary provider (<strong>{{ mediaserver_type | title }}</strong>). Credentials are taken from provider settings. You can change this in <a href="/settings">Settings</a>.</span>
+            <span>Play history is read from your primary provider (<strong>{{ mediaserver_type | title }}</strong>). Credentials are taken from provider settings. You can change this in <a href="/settings" style="color: var(--color-primary);">Settings</a>.</span>
         </div>
 
         {% if mediaserver_type in ('jellyfin', 'emby', 'navidrome') %}

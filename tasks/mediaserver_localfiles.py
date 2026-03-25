@@ -753,15 +753,18 @@ def create_playlist(base_name: str, item_ids: List[str], config_override: Dict =
     # Ensure playlist directory exists
     os.makedirs(playlist_dir, exist_ok=True)
 
-    # Build a lookup from item_id to file path (DB cache first, filesystem fallback)
-    all_songs = _get_songs_from_db() or get_all_songs()
+    # Build a lookup from item_id to file path.
+    # Use get_all_songs() which returns actual filesystem paths (case-correct)
+    # via the delta scan. _get_songs_from_db() may return score.file_path from
+    # the primary provider (e.g. Jellyfin's /data/Music I/...) which doesn't
+    # exist on the LocalFiles mount.
+    all_songs = get_all_songs()
     id_to_path = {song['Id']: song.get('Path') or song.get('FilePath', '') for song in all_songs}
 
     # Resolve paths
     paths = []
     for item_id in item_ids:
         if item_id in id_to_path:
-            # Use relative path for portability
             full_path = id_to_path[item_id]
             try:
                 rel_path = os.path.relpath(full_path, playlist_dir)
