@@ -2411,8 +2411,7 @@ def detect_music_path_prefix(sample_tracks, existing_normalized_paths=None, extr
             # The prefix is what's before the existing path
             prefix_len = len(new_path) - len(existing_path)
             prefix = new_path[:prefix_len].rstrip('/')
-            if prefix:
-                prefix_candidates[prefix] = prefix_candidates.get(prefix, 0) + 1
+            prefix_candidates[prefix] = prefix_candidates.get(prefix, 0) + 1
 
             sample_comparisons.append({
                 'title': match['title'],

@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 REQUESTS_TIMEOUT = 300
 NAVIDROME_API_BATCH_SIZE = 40
+_HEADERS = {'User-Agent': 'AudioMuse-AI'}
 
 # ##############################################################################
 # NAVIDROME (SUBSONIC API) IMPLEMENTATION
@@ -24,7 +25,7 @@ def get_music_libraries(config_dict=None):
         auth_params = get_navidrome_auth_params(username=config_dict.get('user'), password=config_dict.get('password'))
         url = f"{config_dict.get('url', '').rstrip('/')}/rest/getMusicFolders.view"
         try:
-            r = requests.get(url, params=auth_params, timeout=REQUESTS_TIMEOUT)
+            r = requests.get(url, params=auth_params, timeout=REQUESTS_TIMEOUT, headers=_HEADERS)
             r.raise_for_status()
             subsonic = r.json().get("subsonic-response", {})
             if subsonic.get("status") == "failed":
@@ -138,7 +139,7 @@ def _navidrome_request(endpoint, params=None, method='get', stream=False, user_c
     all_params = {**auth_params, **params}
 
     try:
-        r = requests.request(method, url, params=all_params, timeout=REQUESTS_TIMEOUT, stream=stream)
+        r = requests.request(method, url, params=all_params, timeout=REQUESTS_TIMEOUT, stream=stream, headers=_HEADERS)
         r.raise_for_status()
 
         if stream:

@@ -553,7 +553,7 @@ def test_provider_connection(provider_type: str, config_dict: dict = None):
             salt = secrets.token_hex(8)
             token = hashlib.md5((password + salt).encode()).hexdigest()
             params = {'u': user, 't': token, 's': salt, 'v': '1.16.1', 'c': 'AudioMuse-AI', 'f': 'json'}
-            resp = requests.get(f"{url.rstrip('/')}/rest/ping", params=params, timeout=10)
+            resp = requests.get(f"{url.rstrip('/')}/rest/ping", params=params, timeout=10, headers={'User-Agent': 'AudioMuse-AI'})
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get('subsonic-response', {}).get('status') == 'ok':
@@ -653,10 +653,10 @@ def get_sample_tracks_from_provider(provider_type: str, config_dict: dict, limit
             token = hashlib.md5((password + salt).encode()).hexdigest()
             params = {
                 'u': user, 't': token, 's': salt,
-                'v': '1.16.1', 'c': 'audiomuse', 'f': 'json',
+                'v': '1.16.1', 'c': 'AudioMuse-AI', 'f': 'json',
                 'query': '', 'songCount': limit, 'songOffset': 0
             }
-            r = requests.get(f"{url.rstrip('/')}/rest/search3", params=params, timeout=15)
+            r = requests.get(f"{url.rstrip('/')}/rest/search3", params=params, timeout=15, headers={'User-Agent': 'AudioMuse-AI'})
             if r.status_code != 200:
                 return []
 
