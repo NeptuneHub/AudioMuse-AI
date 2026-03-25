@@ -1663,7 +1663,7 @@
             if (data.success) {
                 const pd = data.prefix_detection;
                 if (type === 'navidrome' && data.path_format === 'relative') {
-                    resultStatus = 'error';
+                    resultStatus = 'warning';
                     hasPathWarning = 'relative';
                 } else if (type === 'navidrome' && pd && pd.confidence === 'low' && pd.had_existing_tracks) {
                     resultStatus = 'warning';

@@ -7,7 +7,10 @@ import os
 # keep working without adding MEDIASERVER_TYPE to their .env.
 def _detect_mediaserver_type():
     explicit = os.environ.get("MEDIASERVER_TYPE")
-    if explicit:
+    if explicit is not None:
+        if not explicit:
+            # Explicitly set to empty string — no default provider
+            return ""
         normalized = explicit.lower()
         if normalized == 'mpd':
             import logging
@@ -17,7 +20,7 @@ def _detect_mediaserver_type():
             )
             return 'localfiles'
         return normalized
-    # Auto-detect from provider-specific env vars
+    # Auto-detect from provider-specific env vars (MEDIASERVER_TYPE not set at all)
     if os.environ.get("JELLYFIN_URL", ""):
         return "jellyfin"
     if os.environ.get("EMBY_URL", ""):
