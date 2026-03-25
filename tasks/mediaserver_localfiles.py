@@ -87,9 +87,10 @@ def _get_songs_from_db() -> List[Dict]:
             return []
         with db.cursor() as cur:
             # Try provider-filtered query first (returns localfiles provider item_ids)
+            # Includes last_synced timestamp for mtime-based cache invalidation
             cur.execute("""
                 SELECT pt.item_id, s.title, s.author, s.album, s.album_artist,
-                       s.file_path, s.year, s.rating
+                       s.file_path, s.year, s.rating, pt.last_synced
                 FROM score s
                 JOIN provider_track pt ON pt.track_id = s.track_id
                 JOIN provider p ON p.id = pt.provider_id AND p.provider_type = 'localfiles'
@@ -101,7 +102,7 @@ def _get_songs_from_db() -> List[Dict]:
                 # Fallback for legacy data without provider_track mappings
                 cur.execute("""
                     SELECT track_id, title, author, album, album_artist, file_path,
-                           year, rating
+                           year, rating, NULL
                     FROM score
                     WHERE file_path IS NOT NULL
                     LIMIT 100000
@@ -119,6 +120,7 @@ def _get_songs_from_db() -> List[Dict]:
                     'FilePath': row[5],
                     'Year': row[6],
                     'Rating': row[7],
+                    '_last_synced': row[8],  # For mtime comparison in delta scan
                 })
             return songs
     except Exception as e:
@@ -467,50 +469,93 @@ def test_connection(config_override: Dict = None) -> Tuple[bool, str]:
 
 
 def get_all_songs() -> List[Dict]:
-    """Fetch all audio files from the music directory."""
+    """Fetch all audio files from the music directory.
+
+    Uses a delta scan strategy: first does a quick os.walk to collect file paths,
+    then loads cached songs from the DB, and only extracts metadata (mutagen) for
+    files not already in the cache. This makes subsequent scans fast even over NAS/SMB.
+    """
     cfg = get_config()
     music_dir = cfg['music_directory']
     supported = set(fmt.lower() if fmt.startswith('.') else f'.{fmt.lower()}'
                     for fmt in cfg['supported_formats'])
     scan_subdirs = cfg['scan_subdirectories']
 
-    all_songs = []
-
     if not os.path.isdir(music_dir):
         logger.error(f"Music directory not found: {music_dir}")
         return []
 
+    # Phase 1: Quick path scan (no metadata extraction)
     logger.info(f"Scanning local music directory: {music_dir}")
-
+    all_paths = []
     try:
         if scan_subdirs:
             for root, _, files in os.walk(music_dir):
                 for filename in files:
-                    ext = os.path.splitext(filename)[1].lower()
-                    if ext in supported:
-                        full_path = os.path.join(root, filename)
-                        try:
-                            song = _format_song(full_path, music_dir)
-                            all_songs.append(song)
-                        except Exception as e:
-                            logger.warning(f"Error processing {full_path}: {e}")
+                    if os.path.splitext(filename)[1].lower() in supported:
+                        all_paths.append(os.path.join(root, filename))
         else:
             for filename in os.listdir(music_dir):
-                ext = os.path.splitext(filename)[1].lower()
-                if ext in supported:
+                if os.path.splitext(filename)[1].lower() in supported:
                     full_path = os.path.join(music_dir, filename)
                     if os.path.isfile(full_path):
-                        try:
-                            song = _format_song(full_path, music_dir)
-                            all_songs.append(song)
-                        except Exception as e:
-                            logger.warning(f"Error processing {full_path}: {e}")
-
-        logger.info(f"Found {len(all_songs)} audio files in local library")
-
+                        all_paths.append(full_path)
     except Exception as e:
         logger.error(f"Error scanning music directory: {e}", exc_info=True)
+        return []
 
+    logger.info(f"Found {len(all_paths)} audio files on filesystem")
+
+    # Phase 2: Load DB cache and determine delta (new files + modified files)
+    cached_songs = _get_songs_from_db()
+    cached_by_path = {}
+    for s in cached_songs:
+        path = s.get('Path') or s.get('FilePath')
+        if path:
+            cached_by_path[path] = s
+
+    fs_paths = set(all_paths)
+    rescan_paths = []  # New or modified files that need metadata extraction
+    active_cached = []  # Cached songs still valid
+
+    for path in all_paths:
+        cached = cached_by_path.get(path)
+        if cached is None:
+            # New file — not in cache
+            rescan_paths.append(path)
+        else:
+            # Existing file — check if modified since last sync
+            last_synced = cached.get('_last_synced')
+            if last_synced:
+                try:
+                    file_mtime = os.stat(path).st_mtime
+                    synced_ts = last_synced.timestamp() if hasattr(last_synced, 'timestamp') else float(last_synced)
+                    if file_mtime > synced_ts:
+                        rescan_paths.append(path)
+                        continue
+                except OSError:
+                    pass  # Can't stat — use cached version
+            active_cached.append(cached)
+
+    if not rescan_paths:
+        logger.info(f"Delta scan: 0 new/modified files, using {len(active_cached)} cached songs")
+        return active_cached
+
+    new_count = sum(1 for p in rescan_paths if p not in cached_by_path)
+    modified_count = len(rescan_paths) - new_count
+    logger.info(f"Delta scan: {new_count} new + {modified_count} modified files to process, {len(active_cached)} cached")
+
+    # Phase 3: Extract metadata only for new/modified files
+    new_songs = []
+    for full_path in rescan_paths:
+        try:
+            song = _format_song(full_path, music_dir)
+            new_songs.append(song)
+        except Exception as e:
+            logger.warning(f"Error processing {full_path}: {e}")
+
+    all_songs = active_cached + new_songs
+    logger.info(f"Total: {len(all_songs)} audio files ({len(active_cached)} cached + {len(new_songs)} new/modified)")
     return all_songs
 
 

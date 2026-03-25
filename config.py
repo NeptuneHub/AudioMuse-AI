@@ -71,7 +71,7 @@ LYRION_URL = os.environ.get("LYRION_URL", "http://your_lyrion_url:9000")
 # --- Local Files Provider Constants ---
 # These are used only if MEDIASERVER_TYPE is "localfiles".
 LOCALFILES_MUSIC_DIRECTORY = os.environ.get("LOCALFILES_MUSIC_DIRECTORY", "/music")  # Path to local music directory
-LOCALFILES_FORMATS = os.environ.get("LOCALFILES_FORMATS", ".mp3,.flac,.ogg,.m4a,.mp4,.wav,.wma,.aac,.opus")  # Supported audio formats
+LOCALFILES_FORMATS = os.environ.get("LOCALFILES_FORMATS", "") or ".mp3,.flac,.ogg,.m4a,.mp4,.wav,.wma,.aac,.opus"  # Supported audio formats
 LOCALFILES_SCAN_SUBDIRS = os.environ.get("LOCALFILES_SCAN_SUBDIRS", "true").lower() == "true"  # Scan subdirectories
 LOCALFILES_USE_METADATA = os.environ.get("LOCALFILES_USE_METADATA", "true").lower() == "true"  # Use embedded metadata
 LOCALFILES_PLAYLIST_DIR = os.environ.get("LOCALFILES_PLAYLIST_DIR", "/music/playlists")  # Where to save M3U playlists

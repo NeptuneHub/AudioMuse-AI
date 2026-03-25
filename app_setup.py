@@ -1491,6 +1491,9 @@ _config_patch_lock = threading.Lock()
 def _get_all_songs_with_config(provider_type, provider_config):
     """Get all songs from a provider by temporarily patching config with stored DB values.
 
+    For localfiles: uses DB cache from provider_track when available to avoid
+    expensive NAS/filesystem rescans. Falls back to full scan on first run.
+
     Uses a lock to prevent concurrent requests from corrupting shared config state
     within a single process. Note: this is still not safe across multiple gunicorn
     workers, but the sync endpoint is an infrequent admin operation.
