@@ -466,6 +466,10 @@ async function startTask(taskType) {
             mistral_model_name: document.getElementById('config-mistral_model_name').value,
             enable_clustering_embeddings: document.getElementById('config-enable_clustering_embeddings').checked
         });
+        // Add provider selection for playlist creation target
+        if (typeof addProviderToPayload === 'function') {
+            addProviderToPayload(payload);
+        }
     }
 
     try {

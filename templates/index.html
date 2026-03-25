@@ -414,6 +414,11 @@
                     </div>
                 </div>
             </fieldset>
+
+            <fieldset>
+                <legend>Playlist Target</legend>
+                <div id="provider-selector-container"></div>
+            </fieldset>
         </form>
     </section>
 
@@ -456,5 +461,11 @@
 
 {% block bodyAdditions %}
     <script src="{{ url_for('static', filename='menu.js') }}"></script>
+    <script src="{{ url_for('static', filename='provider-selector.js') }}"></script>
     {% include 'script.html' %}
+    <script>
+        if (typeof initProviderSelector === 'function') {
+            initProviderSelector('provider-selector-container', { labelText: 'Create clustering playlists on:' });
+        }
+    </script>
 {% endblock %}

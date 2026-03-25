@@ -334,6 +334,7 @@ def start_clustering_endpoint():
             "mistral_model_name_param": data.get('mistral_model_name', MISTRAL_MODEL_NAME),
             "top_n_moods_for_clustering_param": int(data.get('top_n_moods', TOP_N_MOODS)),
             "enable_clustering_embeddings_param": data.get('enable_clustering_embeddings', ENABLE_CLUSTERING_EMBEDDINGS),
+            "provider_ids_param": data.get('provider_ids'),
         },
         job_id=job_id,
         description="Main Music Clustering",

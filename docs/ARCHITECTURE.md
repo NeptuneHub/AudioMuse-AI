@@ -16,7 +16,7 @@ graph TB
     Redis ---|Dequeue Tasks| Worker[Worker Container<br/>Analysis + Clustering]
     PostgreSQL ---|Read/Write| Worker
     
-    MediaServer[Media Server<br/>Jellyfin/Navidrome<br/>Lyrion/Emby] -.-|Fetch Music| Flask
+    MediaServer[Media Server<br/>Jellyfin/Navidrome<br/>Lyrion/Emby/LocalFiles] -.-|Fetch Music| Flask
     MediaServer -.-|Fetch Audio Files| Worker
     
     style User fill:#607D8B
@@ -49,16 +49,18 @@ graph TB
 - **High Priority Queue**: Separate queue for priority tasks
 
 ### PostgreSQL Database
-- **Track Metadata**: Stores song information, paths, and library data
-- **Analysis Results**: Mood scores, embeddings, feature vectors
+- **Track Registry** (`track` table): Canonical track identities with `file_path_hash` (SHA-256) for cross-provider deduplication
+- **Provider Links** (`provider_track` table): Maps provider-specific item IDs to canonical track IDs, enabling multi-provider ID remapping
+- **Provider Config** (`provider` table): JSONB-based provider registry (type, credentials, path prefix, priority)
+- **Analysis Results** (`score`, `embedding` tables): Mood scores, feature vectors, 200-dim embeddings
 - **Playlists**: Generated clusters and user playlists
-- **Voyager Index**: Vector similarity search index
+- **Voyager Index** (`voyager_index_data`): Serialized HNSW vector similarity search index
 
 ### Media Server
 - **Music Source**: Provides access to audio library
-- **API Integration**: Jellyfin, Navidrome, Lyrion, or Emby APIs
-- **Audio Streaming**: Streams audio files for analysis
-- **Playlist Sync**: Target for generated playlists
+- **Multi-Provider Support**: Jellyfin, Navidrome, Lyrion, Emby, and LocalFiles (direct filesystem)
+- **Audio Streaming**: Streams audio files for analysis (LocalFiles reads directly from disk)
+- **Playlist Sync**: Target for generated playlists (supports creating on multiple providers simultaneously)
 
 ## Data Flow
 
@@ -92,6 +94,7 @@ graph TB
 | Navidrome | 4533 | HTTP |
 | Lyrion | 9000 | HTTP |
 | Emby | 8096 | HTTP |
+| LocalFiles | N/A | Filesystem |
 
 ## Deployment Modes
 

@@ -270,7 +270,8 @@ def run_clustering_task(
     mistral_api_key_param, mistral_model_name_param,
     top_n_moods_for_clustering_param,
     top_n_playlists_param, # *** NEW: Accept Top N parameter ***
-    enable_clustering_embeddings_param):
+    enable_clustering_embeddings_param,
+    provider_ids_param=None):
     """
     Main entry point for the clustering process.
     Orchestrates data preparation, batch job creation, result aggregation, and playlist creation.
@@ -583,7 +584,7 @@ def run_clustering_task(
             _log_and_update(f"Creating {len(final_shuffled_playlists)} new playlists...", 98)
             for name, songs_with_details in final_shuffled_playlists.items():
                 track_ids = [track_id for track_id, _, _ in songs_with_details]
-                create_playlist_from_ids(name, track_ids)
+                create_playlist_from_ids(name, track_ids, provider_ids=provider_ids_param)
 
             update_playlist_table(final_shuffled_playlists)
 

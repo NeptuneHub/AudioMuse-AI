@@ -61,6 +61,21 @@ These parameters can be left as-is:
 | `WORKER_REDIS_URL` | This is the Url of your the redis service on your server. The worker uses this to connect to the redis service the flask app uses too. Make sure to include the protocol "redis://" and the dbindex "/0" (e.g. redis://100.000.00.00:6379/0)   | `false` |
 | `TZ`     | Set the time zone of Flask and worker container | `UTC` |
 
+### Multi-Provider Configuration
+
+AudioMuse-AI supports connecting to multiple media servers simultaneously. Provider configuration is managed through the **Setup Wizard** (`/setup`) and stored in the PostgreSQL `provider` table as JSONB, rather than environment variables.
+
+Legacy single-provider environment variables (`JELLYFIN_URL`, `NAVIDROME_URL`, etc.) still work for backward compatibility and are used to seed the initial provider configuration on first startup.
+
+The following environment variables are specific to the LocalFiles provider:
+
+| Parameter | Description | Default Value |
+|-----------|-------------|---------------|
+| `LOCALFILES_MUSIC_DIRECTORY` | Root directory containing music files for the LocalFiles provider | `""` |
+| `LOCALFILES_PLAYLIST_DIRECTORY` | Directory for M3U playlist files created by LocalFiles provider | `""` |
+| `LOCALFILES_SCAN_SUBDIRECTORIES` | Whether to recursively scan subdirectories | `true` |
+| `MUSIC_PATH_PREFIX` | Path prefix to strip from file paths for cross-provider matching (per-provider, configurable in Setup Wizard) | `""` |
+
 These are the default parameters used when launching analysis or clustering tasks. You can change them directly in the front-end.
 
 | Parameter                                   | Description                                                                                                                | Default Value   |
