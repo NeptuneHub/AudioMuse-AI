@@ -13,6 +13,19 @@ from unittest.mock import Mock, patch, MagicMock
 from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
 
 
+@pytest.fixture(autouse=True)
+def mock_resolve_track_id():
+    """Mock resolve_track_id for all tests — avoids Flask app context / DB calls.
+    Returns int(id) for numeric IDs, None otherwise (mimics real behavior)."""
+    def _resolve(external_id):
+        try:
+            return int(external_id)
+        except (ValueError, TypeError):
+            return None
+    with patch('app_helper.resolve_track_id', side_effect=_resolve):
+        yield
+
+
 class TestGenerateSonicFingerprint:
     """Test the main generate_sonic_fingerprint function"""
 
@@ -201,9 +214,10 @@ class TestGenerateSonicFingerprint:
         
         generate_sonic_fingerprint(num_neighbors=1, user_creds=user_creds)
         
-        # Verify user_creds were passed
+        # Verify user_creds were passed to both functions
         from unittest.mock import ANY
         mock_top_songs.assert_called_with(limit=ANY, user_creds=user_creds)
+        # get_last_played_time receives the original provider item_id (from track_to_provider map)
         mock_last_played.assert_called_with('1', user_creds=user_creds)
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
