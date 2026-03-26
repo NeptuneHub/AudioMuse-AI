@@ -228,7 +228,7 @@ class TestPrepareAndScaleData:
 class TestApplyClusteringModel:
     """Test the actual _apply_clustering_model function"""
 
-    @patch('tasks.clustering_helper.USE_GPU_CLUSTERING', False)
+    @patch('config.USE_GPU_CLUSTERING', False)
     def test_applies_kmeans_successfully(self):
         """Test K-Means clustering application"""
         data = np.random.rand(50, 10)
@@ -243,7 +243,7 @@ class TestApplyClusteringModel:
         assert len(labels) == 50
         assert len(set(labels)) <= 5
 
-    @patch('tasks.clustering_helper.USE_GPU_CLUSTERING', False)
+    @patch('config.USE_GPU_CLUSTERING', False)
     def test_applies_dbscan_successfully(self):
         """Test DBSCAN clustering application"""
         data = np.random.rand(50, 10)
@@ -257,7 +257,7 @@ class TestApplyClusteringModel:
         assert labels is not None
         assert len(labels) == 50
 
-    @patch('tasks.clustering_helper.USE_GPU_CLUSTERING', False)
+    @patch('config.USE_GPU_CLUSTERING', False)
     def test_rejects_invalid_kmeans_params(self):
         """Test that invalid K-Means parameters are rejected"""
         data = np.random.rand(50, 10)
