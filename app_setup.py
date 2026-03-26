@@ -606,6 +606,8 @@ def create_default_provider_from_env():
         return None  # Providers already exist
 
     provider_type = config.MEDIASERVER_TYPE
+    if not provider_type:
+        return None  # Explicitly set to empty — no default provider
     if provider_type not in PROVIDER_TYPES:
         logger.warning(f"Unknown provider type from env: {provider_type}")
         return None

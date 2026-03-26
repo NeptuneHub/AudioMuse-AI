@@ -303,34 +303,36 @@ def delete_automatic_playlists():
 
 def get_recent_albums(limit):
     """Fetches recently added albums using admin credentials."""
-    if config.MEDIASERVER_TYPE == 'mpd':
+    pt = _resolve_provider_type()
+    if pt == 'mpd':
         logger.error("MPD provider removed in v0.9. Reconfigure MEDIASERVER_TYPE.")
         return []
-    if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_get_recent_albums(limit)
-    if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_recent_albums(limit)
-    if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_recent_albums(limit)
-    if config.MEDIASERVER_TYPE == 'emby': return emby_get_recent_albums(limit)
-    if config.MEDIASERVER_TYPE == 'localfiles': return localfiles_get_recent_albums(limit)
+    if pt == 'jellyfin': return jellyfin_get_recent_albums(limit)
+    if pt == 'navidrome': return navidrome_get_recent_albums(limit)
+    if pt == 'lyrion': return lyrion_get_recent_albums(limit)
+    if pt == 'emby': return emby_get_recent_albums(limit)
+    if pt == 'localfiles': return localfiles_get_recent_albums(limit)
     return []
 
 def get_tracks_from_album(album_id):
     """Fetches tracks for an album using admin credentials."""
-    if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_get_tracks_from_album(album_id)
-    if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_tracks_from_album(album_id)
-    if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_tracks_from_album(album_id)
-    if config.MEDIASERVER_TYPE == 'emby': return emby_get_tracks_from_album(album_id)
-    if config.MEDIASERVER_TYPE == 'localfiles': return localfiles_get_tracks_from_album(album_id)
+    pt = _resolve_provider_type()
+    if pt == 'jellyfin': return jellyfin_get_tracks_from_album(album_id)
+    if pt == 'navidrome': return navidrome_get_tracks_from_album(album_id)
+    if pt == 'lyrion': return lyrion_get_tracks_from_album(album_id)
+    if pt == 'emby': return emby_get_tracks_from_album(album_id)
+    if pt == 'localfiles': return localfiles_get_tracks_from_album(album_id)
     return []
 
 def download_track(temp_dir, item):
     """Downloads a track using admin credentials. Detects format from file if .tmp extension is used."""
     downloaded_path = None
-    
-    if config.MEDIASERVER_TYPE == 'jellyfin': downloaded_path = jellyfin_download_track(temp_dir, item)
-    elif config.MEDIASERVER_TYPE == 'navidrome': downloaded_path = navidrome_download_track(temp_dir, item)
-    elif config.MEDIASERVER_TYPE == 'lyrion': downloaded_path = lyrion_download_track(temp_dir, item)
-    elif config.MEDIASERVER_TYPE == 'emby': downloaded_path = emby_download_track(temp_dir, item)
-    elif config.MEDIASERVER_TYPE == 'localfiles': downloaded_path = localfiles_download_track(temp_dir, item)
+    pt = _resolve_provider_type()
+    if pt == 'jellyfin': downloaded_path = jellyfin_download_track(temp_dir, item)
+    elif pt == 'navidrome': downloaded_path = navidrome_download_track(temp_dir, item)
+    elif pt == 'lyrion': downloaded_path = lyrion_download_track(temp_dir, item)
+    elif pt == 'emby': downloaded_path = emby_download_track(temp_dir, item)
+    elif pt == 'localfiles': downloaded_path = localfiles_download_track(temp_dir, item)
     
     # If download failed or returned None, return as is
     if not downloaded_path:
@@ -403,59 +405,74 @@ def _detect_audio_format(filepath):
 
 def get_all_songs():
     """Fetches all songs using admin credentials."""
-    if config.MEDIASERVER_TYPE == 'mpd':
+    pt = _resolve_provider_type()
+    if pt == 'mpd':
         logger.error("MPD provider removed in v0.9. Reconfigure MEDIASERVER_TYPE.")
         return []
-    if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_get_all_songs()
-    if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_all_songs()
-    if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_all_songs()
-    if config.MEDIASERVER_TYPE == 'emby': return emby_get_all_songs()
-    if config.MEDIASERVER_TYPE == 'localfiles': return localfiles_get_all_songs()
+    if pt == 'jellyfin': return jellyfin_get_all_songs()
+    if pt == 'navidrome': return navidrome_get_all_songs()
+    if pt == 'lyrion': return lyrion_get_all_songs()
+    if pt == 'emby': return emby_get_all_songs()
+    if pt == 'localfiles': return localfiles_get_all_songs()
     return []
 
 def get_playlist_by_name(playlist_name):
     """Finds a playlist by name using admin credentials."""
     if not playlist_name: raise ValueError("Playlist name is required.")
-    if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_get_playlist_by_name(playlist_name)
-    if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_playlist_by_name(playlist_name)
-    if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_playlist_by_name(playlist_name)
-    if config.MEDIASERVER_TYPE == 'emby': return emby_get_playlist_by_name(playlist_name)
-    if config.MEDIASERVER_TYPE == 'localfiles': return localfiles_get_playlist_by_name(playlist_name)
+    pt = _resolve_provider_type()
+    if pt == 'jellyfin': return jellyfin_get_playlist_by_name(playlist_name)
+    if pt == 'navidrome': return navidrome_get_playlist_by_name(playlist_name)
+    if pt == 'lyrion': return lyrion_get_playlist_by_name(playlist_name)
+    if pt == 'emby': return emby_get_playlist_by_name(playlist_name)
+    if pt == 'localfiles': return localfiles_get_playlist_by_name(playlist_name)
     return None
 
 def create_playlist(base_name, item_ids):
     """Creates a playlist using admin credentials."""
-    if config.MEDIASERVER_TYPE == 'mpd':
+    pt = _resolve_provider_type()
+    if pt == 'mpd':
         logger.error("MPD provider removed in v0.9. Reconfigure MEDIASERVER_TYPE.")
         return None
     if not base_name: raise ValueError("Playlist name is required.")
     if not item_ids: raise ValueError("Track IDs are required.")
-    if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_create_playlist(base_name, item_ids)
-    elif config.MEDIASERVER_TYPE == 'navidrome': return navidrome_create_playlist(base_name, item_ids)
-    elif config.MEDIASERVER_TYPE == 'lyrion': return lyrion_create_playlist(base_name, item_ids)
-    elif config.MEDIASERVER_TYPE == 'emby': return emby_create_playlist(base_name, item_ids)
-    elif config.MEDIASERVER_TYPE == 'localfiles': return localfiles_create_playlist(base_name, item_ids)
-    else: logger.warning(f"create_playlist: unsupported MEDIASERVER_TYPE '{config.MEDIASERVER_TYPE}'"); return None
+    if pt == 'jellyfin': return jellyfin_create_playlist(base_name, item_ids)
+    elif pt == 'navidrome': return navidrome_create_playlist(base_name, item_ids)
+    elif pt == 'lyrion': return lyrion_create_playlist(base_name, item_ids)
+    elif pt == 'emby': return emby_create_playlist(base_name, item_ids)
+    elif pt == 'localfiles': return localfiles_create_playlist(base_name, item_ids)
+    else: logger.warning(f"create_playlist: unsupported provider type '{pt}'"); return None
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     """Creates an instant playlist. Uses user_creds if provided, otherwise admin."""
-    if config.MEDIASERVER_TYPE == 'mpd':
+    pt = _resolve_provider_type()
+    if pt == 'mpd':
         logger.error("MPD provider removed in v0.9. Reconfigure MEDIASERVER_TYPE.")
         return None
     if not playlist_name: raise ValueError("Playlist name is required.")
     if not item_ids: raise ValueError("Track IDs are required.")
 
-    if config.MEDIASERVER_TYPE == 'jellyfin':
+    if pt == 'jellyfin':
         return jellyfin_create_instant_playlist(playlist_name, item_ids, user_creds)
-    if config.MEDIASERVER_TYPE == 'navidrome':
+    if pt == 'navidrome':
         return navidrome_create_instant_playlist(playlist_name, item_ids, user_creds)
-    if config.MEDIASERVER_TYPE == 'lyrion':
+    if pt == 'lyrion':
         return lyrion_create_instant_playlist(playlist_name, item_ids)
-    if config.MEDIASERVER_TYPE == 'emby':
+    if pt == 'emby':
         return emby_create_instant_playlist(playlist_name, item_ids, user_creds)
-    if config.MEDIASERVER_TYPE == 'localfiles':
+    if pt == 'localfiles':
         return localfiles_create_instant_playlist(playlist_name, item_ids, user_creds)
     return None
+
+def _resolve_provider_type():
+    """Resolve the active provider type from DB, falling back to env var.
+
+    Reads the primary provider from the multi-provider DB table first.
+    If unavailable (no DB, no providers configured), falls back to
+    config.MEDIASERVER_TYPE (the legacy env var path).
+    """
+    ptype, _ = _resolve_play_history_provider()
+    return ptype
+
 
 def _resolve_play_history_provider():
     """Resolve the provider type and server_config for play history functions.
@@ -703,6 +720,7 @@ def get_sample_tracks_from_provider(provider_type: str, config_dict: dict, limit
             return tracks
 
         elif provider_type == 'lyrion':
+            from tasks.mediaserver_lyrion import _decode_lyrion_url
             url = config_dict.get('url')
             if not url:
                 return []
@@ -726,7 +744,7 @@ def get_sample_tracks_from_provider(provider_type: str, config_dict: dict, limit
                     'id': t.get('id'),
                     'title': t.get('title'),
                     'artist': t.get('artist'),
-                    'file_path': t.get('url')  # Lyrion uses 'url' for file path
+                    'file_path': _decode_lyrion_url(t.get('url'))  # Decode file:// URI to path
                 })
             return tracks
 

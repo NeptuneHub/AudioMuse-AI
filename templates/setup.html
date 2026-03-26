@@ -2158,9 +2158,14 @@
     async function completeSetup() {
         try {
             // Save providers
+            if (selectedProviders.length === 0) {
+                alert('No providers selected. Please go back and select at least one provider.');
+                return;
+            }
+
             for (const type of selectedProviders) {
                 const provider = providerTypes.find(p => p.type === type);
-                await fetch('/api/setup/providers', {
+                const resp = await fetch('/api/setup/providers', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -2171,6 +2176,10 @@
                         priority: 0
                     })
                 });
+                if (!resp.ok) {
+                    const errData = await resp.json().catch(() => ({}));
+                    throw new Error(`Failed to save provider "${provider.name}": ${errData.error || resp.statusText}`);
+                }
             }
 
             // Collect AI provider settings
