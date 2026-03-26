@@ -649,21 +649,31 @@ def get_tracks_from_album(album_id: str) -> List[Dict]:
     Get all tracks from an album.
 
     For local files, album_id is "Artist - Album Name" format.
-    Uses DB cache when available to avoid rescanning the filesystem.
+    Tries DB cache first for speed (important for rescans over NAS/SMB),
+    falls back to full filesystem scan if the album isn't found in cache.
     """
-    all_songs = _get_songs_from_db()
-    if not all_songs:
-        all_songs = get_all_songs()
+    def _filter_album(songs):
+        matched = []
+        for song in songs:
+            album_name = song.get('Album', 'Unknown Album')
+            album_artist = song.get('AlbumArtist', 'Unknown Artist')
+            song_album_key = f"{album_artist} - {album_name}"
+            if song_album_key == album_id or album_name == album_id:
+                matched.append(song)
+        return matched
 
-    # Filter songs matching this album
-    tracks = []
-    for song in all_songs:
-        album_name = song.get('Album', 'Unknown Album')
-        album_artist = song.get('AlbumArtist', 'Unknown Artist')
-        song_album_key = f"{album_artist} - {album_name}"
+    # Fast path: check DB cache (covers rescans where tracks are already analyzed)
+    cached_songs = _get_songs_from_db()
+    if cached_songs:
+        tracks = _filter_album(cached_songs)
+        if tracks:
+            tracks.sort(key=lambda t: (t.get('TrackNumber') or 999, t.get('Name', '')))
+            logger.info(f"Found {len(tracks)} tracks for album '{album_id}'")
+            return tracks
 
-        if song_album_key == album_id or album_name == album_id:
-            tracks.append(song)
+    # Slow path: full filesystem scan (covers first analysis / unanalyzed albums)
+    all_songs = get_all_songs()
+    tracks = _filter_album(all_songs)
 
     # Sort by track number if available
     tracks.sort(key=lambda t: (t.get('TrackNumber') or 999, t.get('Name', '')))
