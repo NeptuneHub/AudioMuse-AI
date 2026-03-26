@@ -1554,7 +1554,7 @@
             }
 
             let html = `<div class="test-result ${data.path_format === 'relative' ? 'warning' : 'success'}">`;
-            html += `<strong>Path format:</strong> ${escapeHtml(data.path_format)}`;
+            html += `<strong>Rescan complete — Path format:</strong> ${escapeHtml(data.path_format)}`;
 
             if (data.path_format === 'relative') {
                 html += `<br>Relative paths will prevent cross-provider track matching.`;
@@ -1633,14 +1633,38 @@
             }
 
             resultDiv.innerHTML = `<div class="test-result success">
-                <strong>Rehash task enqueued</strong> (Task ID: ${data.task_id})
-                <br><small>Track identity records will be updated in the background. Check the Analysis page for task progress.</small>
+                <strong>Rehash task running...</strong>
+                <br><small>Updating track identity records in the background.</small>
             </div>`;
 
-            // Refresh health banner after enqueuing
-            if (typeof fetchAndRenderHealthBanner === 'function') {
-                fetchAndRenderHealthBanner('settings-health-banner');
-            }
+            // Poll for task completion
+            const taskId = data.task_id;
+            const pollInterval = setInterval(async () => {
+                try {
+                    const statusResp = await fetch(`/api/active_tasks`);
+                    const statusData = await statusResp.json();
+                    const task = (statusData.tasks || []).find(t => t.task_id === taskId);
+                    if (task) {
+                        const state = (task.state || '').toUpperCase();
+                        if (state === 'SUCCESS' || state === 'FINISHED') {
+                            clearInterval(pollInterval);
+                            resultDiv.innerHTML = `<div class="test-result success"><strong>Rehash complete.</strong> Track identity records updated.</div>`;
+                            await loadProviders();
+                            renderProviders();
+                            if (typeof fetchAndRenderHealthBanner === 'function') {
+                                fetchAndRenderHealthBanner('settings-health-banner');
+                            }
+                        } else if (state === 'FAILURE' || state === 'REVOKED') {
+                            clearInterval(pollInterval);
+                            const details = task.details || '';
+                            resultDiv.innerHTML = `<div class="test-result error"><strong>Rehash failed.</strong> ${escapeHtml(typeof details === 'string' ? details : JSON.stringify(details))}</div>`;
+                        } else {
+                            const progress = task.progress || 0;
+                            resultDiv.innerHTML = `<div class="test-result success"><strong>Rehash in progress...</strong> ${progress}%</div>`;
+                        }
+                    }
+                } catch (e) { /* ignore poll errors */ }
+            }, 2000);
         } catch (err) {
             resultDiv.innerHTML = `<div class="test-result error">Rehash failed: ${err.message}</div>`;
         }

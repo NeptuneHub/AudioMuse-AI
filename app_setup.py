@@ -1257,9 +1257,11 @@ def check_provider_health():
 
             path_format = cfg.get('path_format', '')
 
-            if path_format == 'relative':
-                # Check if this is the "wrong Navidrome first" scenario (critical)
+            if path_format == 'relative' and is_multi_provider:
+                # Only warn about relative paths in multi-provider setups.
+                # Single-provider users don't need path matching — no warning needed.
                 if ptype == 'navidrome' and navidrome_has_analyzed_tracks.get(pid):
+                    # Already analyzed with relative paths — hard to recover
                     warnings.append({
                         'provider_id': pid, 'provider_name': pname, 'provider_type': ptype,
                         'level': 'critical',
@@ -1276,25 +1278,12 @@ def check_provider_health():
                             'Then click "Rehash Tracks" to update all track identity records'
                         ]
                     })
-                elif is_multi_provider:
-                    # Multi-provider with relative paths (blocking for analysis)
+                else:
                     warnings.append({
                         'provider_id': pid, 'provider_name': pname, 'provider_type': ptype,
                         'level': 'critical' if ptype == 'navidrome' else 'warning',
                         'message': f'{pname} is reporting relative file paths. Cross-provider track matching will not work.',
                         'action': 'Enable "Report Real Path" in Navidrome, then Rescan Paths.' if ptype == 'navidrome' else 'Check provider path configuration.',
-                        'action_url': '/settings'
-                    })
-                else:
-                    # Single provider with relative paths (non-blocking info)
-                    warnings.append({
-                        'provider_id': pid, 'provider_name': pname, 'provider_type': ptype,
-                        'level': 'info',
-                        'message': (
-                            f'{pname} is reporting relative file paths. This is fine for a single provider, '
-                            f'but you must enable "Report Real Path" before adding more providers.'
-                        ),
-                        'action': 'Enable "Report Real Path" in Navidrome Players > AudioMuse-AI player.' if ptype == 'navidrome' else 'Check provider path configuration.',
                         'action_url': '/settings'
                     })
             elif not path_format and ptype == 'navidrome':
