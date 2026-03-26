@@ -158,11 +158,9 @@ def is_setup_completed():
 
     provider_type = config.MEDIASERVER_TYPE
     required_values = _ENV_REQUIREMENTS.get(provider_type)
-    if required_values is None:
-        return False  # localfiles or unknown — require wizard
 
-    # All values must be non-empty and must not contain placeholder text
-    if all(v and 'your_' not in v for v in required_values):
+    # Auto-complete from env vars if a known provider is fully configured
+    if required_values and all(v and 'your_' not in v for v in required_values):
         try:
             create_default_provider_from_env()
             set_setting('setup_completed', True, 'system', 'Auto-completed from environment variables')
@@ -170,6 +168,23 @@ def is_setup_completed():
             return True
         except Exception as e:
             logger.warning(f"Failed to auto-complete setup from env: {e}")
+
+    # If the migration already created a provider with linked tracks, mark setup as complete.
+    # This handles restoring from backups or env vars being empty after migration.
+    try:
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM provider WHERE enabled = true")
+            provider_count = cur.fetchone()[0]
+            if provider_count > 0:
+                cur.execute("SELECT COUNT(*) FROM provider_track")
+                link_count = cur.fetchone()[0]
+                if link_count > 0:
+                    set_setting('setup_completed', True, 'system', 'Auto-completed: providers with linked tracks exist')
+                    logger.info(f"Auto-completed setup: {provider_count} provider(s) with {link_count} linked tracks")
+                    return True
+    except Exception as e:
+        logger.debug(f"Provider check during setup_completed: {e}")
 
     return False
 
