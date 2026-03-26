@@ -1579,7 +1579,25 @@
                 </div>`;
             }
 
+            // Offer rehash after rescan detected absolute paths (tracks may need identity update)
+            if (data.path_format === 'absolute') {
+                html += `<div class="rescan-actions" style="margin-top: 0.5rem;">
+                    <button data-provider-id="${providerId}" class="rehash-after-rescan-btn">
+                        Rehash Tracks
+                    </button>
+                    <small style="margin-left: 0.5rem; color: var(--text-muted);">Updates track identity records to use the new absolute paths</small>
+                </div>`;
+            }
+
             resultDiv.innerHTML = html;
+
+            // Bind click handler for the rehash-after-rescan button
+            const rehashBtn = resultDiv.querySelector('.rehash-after-rescan-btn');
+            if (rehashBtn) {
+                rehashBtn.addEventListener('click', () => {
+                    rehashTracks(parseInt(rehashBtn.dataset.providerId, 10));
+                });
+            }
 
             // Bind click handler for the apply-prefix button (avoids inline onclick with user data)
             const applyBtn = resultDiv.querySelector('.apply-prefix-btn');
@@ -1592,9 +1610,33 @@
                 });
             }
 
+            // Save the rescan result HTML before re-rendering providers
+            const savedResultHTML = resultDiv.innerHTML;
+
             // Reload providers so the persistent warning badge updates
             await loadProviders();
             renderProviders();
+
+            // Restore the rescan result after re-render (renderProviders recreates the DOM)
+            const restoredDiv = document.getElementById(`rescan-result-${providerId}`);
+            if (restoredDiv) {
+                restoredDiv.innerHTML = savedResultHTML;
+                // Re-bind rehash button handler
+                const rehashBtn = restoredDiv.querySelector('.rehash-after-rescan-btn');
+                if (rehashBtn) {
+                    rehashBtn.addEventListener('click', () => {
+                        rehashTracks(parseInt(rehashBtn.dataset.providerId, 10));
+                    });
+                }
+                // Re-bind apply-prefix button handler
+                const applyBtn = restoredDiv.querySelector('.apply-prefix-btn');
+                if (applyBtn) {
+                    applyBtn.addEventListener('click', () => {
+                        updateProviderPrefix(parseInt(applyBtn.dataset.providerId, 10), applyBtn.dataset.prefix);
+                    });
+                }
+            }
+
             // Refresh health banner after path rescan
             if (typeof fetchAndRenderHealthBanner === 'function') {
                 fetchAndRenderHealthBanner('settings-health-banner');
@@ -1637,31 +1679,32 @@
                 <br><small>Updating track identity records in the background.</small>
             </div>`;
 
-            // Poll for task completion
+            // Poll for task completion via /api/status/<task_id>
             const taskId = data.task_id;
             const pollInterval = setInterval(async () => {
                 try {
-                    const statusResp = await fetch(`/api/active_tasks`);
-                    const statusData = await statusResp.json();
-                    const task = (statusData.tasks || []).find(t => t.task_id === taskId);
-                    if (task) {
-                        const state = (task.state || '').toUpperCase();
-                        if (state === 'SUCCESS' || state === 'FINISHED') {
-                            clearInterval(pollInterval);
-                            resultDiv.innerHTML = `<div class="test-result success"><strong>Rehash complete.</strong> Track identity records updated.</div>`;
-                            await loadProviders();
-                            renderProviders();
-                            if (typeof fetchAndRenderHealthBanner === 'function') {
-                                fetchAndRenderHealthBanner('settings-health-banner');
-                            }
-                        } else if (state === 'FAILURE' || state === 'REVOKED') {
-                            clearInterval(pollInterval);
-                            const details = task.details || '';
-                            resultDiv.innerHTML = `<div class="test-result error"><strong>Rehash failed.</strong> ${escapeHtml(typeof details === 'string' ? details : JSON.stringify(details))}</div>`;
-                        } else {
-                            const progress = task.progress || 0;
-                            resultDiv.innerHTML = `<div class="test-result success"><strong>Rehash in progress...</strong> ${progress}%</div>`;
+                    const statusResp = await fetch(`/api/status/${taskId}`);
+                    if (!statusResp.ok) return;
+                    const task = await statusResp.json();
+                    const state = (task.state || task.status || '').toUpperCase();
+                    if (state === 'SUCCESS' || state === 'FINISHED') {
+                        clearInterval(pollInterval);
+                        const details = task.details || {};
+                        const rehashed = details.rehashed || '?';
+                        const total = details.total || '?';
+                        resultDiv.innerHTML = `<div class="test-result success"><strong>Rehash complete.</strong> ${rehashed}/${total} track identity records updated.</div>`;
+                        await loadProviders();
+                        renderProviders();
+                        if (typeof fetchAndRenderHealthBanner === 'function') {
+                            fetchAndRenderHealthBanner('settings-health-banner');
                         }
+                    } else if (state === 'FAILURE' || state === 'REVOKED') {
+                        clearInterval(pollInterval);
+                        const msg = (task.details && task.details.message) || task.status_message || 'Unknown error';
+                        resultDiv.innerHTML = `<div class="test-result error"><strong>Rehash failed.</strong> ${escapeHtml(msg)}</div>`;
+                    } else if (state !== 'PENDING') {
+                        const progress = task.progress || 0;
+                        resultDiv.innerHTML = `<div class="test-result success"><strong>Rehash in progress...</strong> ${progress}%</div>`;
                     }
                 } catch (e) { /* ignore poll errors */ }
             }, 2000);

@@ -801,15 +801,17 @@ try:
 except OSError:
   logger.debug(f"Could not create TEMP_DIR '{TEMP_DIR}' (may be running in test/CI environment)")
 
+# --- Apply DB settings to runtime config (both Flask and workers) ---
+with app.app_context():
+  try:
+    from app_setup import apply_settings_to_config
+    apply_settings_to_config()
+    logger.info("Applied DB settings to runtime config.")
+  except Exception as e:
+    logger.debug(f"Could not apply DB settings at startup: {e}")
+
 if not _is_worker:
   with app.app_context():
-    # --- Apply DB settings to runtime config ---
-    try:
-      from app_setup import apply_settings_to_config
-      apply_settings_to_config()
-      logger.info("Applied DB settings to runtime config.")
-    except Exception as e:
-      logger.debug(f"Could not apply DB settings at startup: {e}")
 
     # --- MPD removal warning ---
     if config.MEDIASERVER_TYPE == 'mpd':

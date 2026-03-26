@@ -28,14 +28,14 @@ except ImportError:
 from rq.job import Job
 from rq.exceptions import NoSuchJobError
 
+import config as _config_module
 from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DISTANCE,
                     MAX_SONGS_PER_ARTIST, GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS,
                     TOP_K_MOODS_FOR_PURITY_CALCULATION, LN_MOOD_DIVERSITY_STATS,
                     LN_MOOD_PURITY_STATS, LN_MOOD_DIVERSITY_EMBEDING_STATS,
                     LN_MOOD_PURITY_EMBEDING_STATS, LN_OTHER_FEATURES_DIVERSITY_STATS,
                     LN_OTHER_FEATURES_PURITY_STATS,
-                    OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
-                    USE_GPU_CLUSTERING)
+                    OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY)
 from .commons import score_vector
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ def _perform_single_clustering_iteration(
         pca_model, data_after_pca = None, data_to_cluster
         if params['pca_config']['enabled']:
             # Use GPU PCA if available and enabled
-            if USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE:
+            if _config_module.USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE:
                 pca_model = get_pca_model(n_components=params['pca_config']['components'], use_gpu=True)
             else:
                 pca_model = PCA(n_components=params['pca_config']['components'])
@@ -276,7 +276,7 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
                 return None, None, None
 
         # Use GPU clustering if enabled and available
-        use_gpu = USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE
+        use_gpu = _config_module.USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE
 
         if use_gpu:
             try:
