@@ -136,14 +136,20 @@ def resolve_user(identifier, token):
     return identifier # Return original identifier if no match is found
 
 # --- ADMIN/GLOBAL JELLYFIN FUNCTIONS ---
-def get_recent_albums(limit):
+def get_recent_albums(limit, server_config=None):
     """
     Fetches a list of the most recently added albums from Jellyfin using pagination.
     Uses global admin credentials.
     If MUSIC_LIBRARIES is set, it will only return albums from those libraries.
     """
-    target_library_ids = _get_target_library_ids()
-    
+    sc = server_config or {}
+    url = sc.get('url') or config.JELLYFIN_URL
+    user_id = sc.get('user_id') or config.JELLYFIN_USER_ID
+    token = sc.get('token') or config.JELLYFIN_TOKEN
+    headers = {"X-Emby-Token": token}
+
+    target_library_ids = _get_target_library_ids(provider_config=sc)
+
     # Case 1: Config is set, but no matching libraries were found. Scan nothing.
     if isinstance(target_library_ids, set) and not target_library_ids:
         logger.warning("Library filtering is active, but no matching libraries were found on the server. Returning no albums.")
@@ -159,20 +165,20 @@ def get_recent_albums(limit):
         page_size = 500
         while True:
             # We fetch full pages and apply the limit only after collecting and sorting.
-            url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
+            api_url = f"{url}/Users/{user_id}/Items"
             params = {
                 "IncludeItemTypes": "MusicAlbum", "SortBy": "DateCreated", "SortOrder": "Descending",
                 "Recursive": True, "Limit": page_size, "StartIndex": start_index
             }
             try:
-                r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+                r = requests.get(api_url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
                 r.raise_for_status()
                 response_data = r.json()
                 albums_on_page = response_data.get("Items", [])
-                
+
                 if not albums_on_page:
                     break
-                
+
                 all_albums.extend(albums_on_page)
                 start_index += len(albums_on_page)
 
@@ -181,7 +187,7 @@ def get_recent_albums(limit):
             except Exception as e:
                 logger.error(f"Jellyfin get_recent_albums failed during 'scan all': {e}", exc_info=True)
                 break
-    
+
     # Case 3: Config is set and we have library IDs. Scan each of these libraries by using their ID as ParentId.
     else:
         logger.info(f"Scanning {len(target_library_ids)} specific Jellyfin libraries for recent albums.")
@@ -189,21 +195,21 @@ def get_recent_albums(limit):
             start_index = 0
             page_size = 500
             while True: # Paginate through the current library
-                url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
+                api_url = f"{url}/Users/{user_id}/Items"
                 params = {
                     "IncludeItemTypes": "MusicAlbum", "SortBy": "DateCreated", "SortOrder": "Descending",
                     "Recursive": True, "Limit": page_size, "StartIndex": start_index,
                     "ParentId": library_id
                 }
                 try:
-                    r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+                    r = requests.get(api_url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
                     r.raise_for_status()
                     response_data = r.json()
                     albums_on_page = response_data.get("Items", [])
-                    
+
                     if not albums_on_page:
                         break
-                    
+
                     all_albums.extend(albums_on_page)
                     start_index += len(albums_on_page)
 
@@ -220,15 +226,21 @@ def get_recent_albums(limit):
     # Apply the final limit if one was specified
     if not fetch_all:
         return all_albums[:limit]
-        
+
     return all_albums
 
-def get_tracks_from_album(album_id):
+def get_tracks_from_album(album_id, server_config=None):
     """Fetches all audio tracks for a given album ID from Jellyfin using admin credentials."""
-    url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
+    sc = server_config or {}
+    url = sc.get('url') or config.JELLYFIN_URL
+    user_id = sc.get('user_id') or config.JELLYFIN_USER_ID
+    token = sc.get('token') or config.JELLYFIN_TOKEN
+    headers = {"X-Emby-Token": token}
+
+    api_url = f"{url}/Users/{user_id}/Items"
     params = {"ParentId": album_id, "IncludeItemTypes": "Audio", "Fields": "Path"}
     try:
-        r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+        r = requests.get(api_url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         items = r.json().get("Items", [])
 
@@ -247,11 +259,16 @@ def get_tracks_from_album(album_id):
         logger.error(f"Jellyfin get_tracks_from_album failed for album {album_id}: {e}", exc_info=True)
         return []
 
-def download_track(temp_dir, item):
+def download_track(temp_dir, item, server_config=None):
     """Downloads a single track from Jellyfin using admin credentials."""
+    sc = server_config or {}
+    url = sc.get('url') or config.JELLYFIN_URL
+    token = sc.get('token') or config.JELLYFIN_TOKEN
+    headers = {"X-Emby-Token": token}
+
     try:
         track_id = item['Id']
-        
+
         # Try to get format from Container field first (most reliable)
         file_extension = '.tmp'
         try:
@@ -266,10 +283,10 @@ def download_track(temp_dir, item):
                 file_extension = os.path.splitext(item['Path'])[1] or '.tmp'
         except Exception as e:
             logger.debug(f"Error getting format from Container/Path, using .tmp: {e}")
-        
-        download_url = f"{config.JELLYFIN_URL}/Items/{track_id}/Download"
+
+        download_url = f"{url}/Items/{track_id}/Download"
         local_filename = os.path.join(temp_dir, f"{track_id}{file_extension}")
-        with requests.get(download_url, headers=config.HEADERS, stream=True, timeout=REQUESTS_TIMEOUT) as r:
+        with requests.get(download_url, headers=headers, stream=True, timeout=REQUESTS_TIMEOUT) as r:
             r.raise_for_status()
             with open(local_filename, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192): f.write(chunk)

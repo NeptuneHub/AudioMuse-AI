@@ -303,35 +303,35 @@ def delete_automatic_playlists():
 
 def get_recent_albums(limit):
     """Fetches recently added albums using admin credentials."""
-    pt = _resolve_provider_type()
+    pt, sc = _resolve_play_history_provider()
     if pt == 'mpd':
         logger.error("MPD provider removed in v0.9. Reconfigure MEDIASERVER_TYPE.")
         return []
-    if pt == 'jellyfin': return jellyfin_get_recent_albums(limit)
-    if pt == 'navidrome': return navidrome_get_recent_albums(limit)
-    if pt == 'lyrion': return lyrion_get_recent_albums(limit)
-    if pt == 'emby': return emby_get_recent_albums(limit)
+    if pt == 'jellyfin': return jellyfin_get_recent_albums(limit, server_config=sc)
+    if pt == 'navidrome': return navidrome_get_recent_albums(limit, server_config=sc)
+    if pt == 'lyrion': return lyrion_get_recent_albums(limit, server_config=sc)
+    if pt == 'emby': return emby_get_recent_albums(limit, server_config=sc)
     if pt == 'localfiles': return localfiles_get_recent_albums(limit)
     return []
 
 def get_tracks_from_album(album_id):
     """Fetches tracks for an album using admin credentials."""
-    pt = _resolve_provider_type()
-    if pt == 'jellyfin': return jellyfin_get_tracks_from_album(album_id)
-    if pt == 'navidrome': return navidrome_get_tracks_from_album(album_id)
-    if pt == 'lyrion': return lyrion_get_tracks_from_album(album_id)
-    if pt == 'emby': return emby_get_tracks_from_album(album_id)
+    pt, sc = _resolve_play_history_provider()
+    if pt == 'jellyfin': return jellyfin_get_tracks_from_album(album_id, server_config=sc)
+    if pt == 'navidrome': return navidrome_get_tracks_from_album(album_id, server_config=sc)
+    if pt == 'lyrion': return lyrion_get_tracks_from_album(album_id, server_config=sc)
+    if pt == 'emby': return emby_get_tracks_from_album(album_id, server_config=sc)
     if pt == 'localfiles': return localfiles_get_tracks_from_album(album_id)
     return []
 
 def download_track(temp_dir, item):
     """Downloads a track using admin credentials. Detects format from file if .tmp extension is used."""
     downloaded_path = None
-    pt = _resolve_provider_type()
-    if pt == 'jellyfin': downloaded_path = jellyfin_download_track(temp_dir, item)
-    elif pt == 'navidrome': downloaded_path = navidrome_download_track(temp_dir, item)
-    elif pt == 'lyrion': downloaded_path = lyrion_download_track(temp_dir, item)
-    elif pt == 'emby': downloaded_path = emby_download_track(temp_dir, item)
+    pt, sc = _resolve_play_history_provider()
+    if pt == 'jellyfin': downloaded_path = jellyfin_download_track(temp_dir, item, server_config=sc)
+    elif pt == 'navidrome': downloaded_path = navidrome_download_track(temp_dir, item, server_config=sc)
+    elif pt == 'lyrion': downloaded_path = lyrion_download_track(temp_dir, item, server_config=sc)
+    elif pt == 'emby': downloaded_path = emby_download_track(temp_dir, item, server_config=sc)
     elif pt == 'localfiles': downloaded_path = localfiles_download_track(temp_dir, item)
     
     # If download failed or returned None, return as is

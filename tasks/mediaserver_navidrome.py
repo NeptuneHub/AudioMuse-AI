@@ -156,11 +156,16 @@ def _navidrome_request(endpoint, params=None, method='get', stream=False, user_c
         logger.error(f"Error calling Navidrome API endpoint '{endpoint}': {e}", exc_info=True)
         return None
 
-def download_track(temp_dir, item):
+def download_track(temp_dir, item, server_config=None):
     """Downloads a single track from Navidrome using admin credentials."""
+    sc = server_config or {}
+    user_creds = None
+    if sc:
+        user_creds = {'user': sc.get('user', ''), 'password': sc.get('password', '')}
+    base_url = sc.get('url') or None
     try:
-        track_id = item['id'] 
-        
+        track_id = item['id']
+
         # Try to get format from suffix field first (Subsonic API standard)
         file_extension = '.tmp'
         try:
@@ -175,10 +180,10 @@ def download_track(temp_dir, item):
                 file_extension = os.path.splitext(item['path'])[1] or '.tmp'
         except Exception as e:
             logger.debug(f"Error getting format from suffix/path, using .tmp: {e}")
-        
+
         local_filename = os.path.join(temp_dir, f"{track_id}{file_extension}")
-        
-        response = _navidrome_request("stream", params={"id": track_id}, stream=True)
+
+        response = _navidrome_request("stream", params={"id": track_id}, stream=True, user_creds=user_creds, base_url=base_url)
         if response:
             with open(local_filename, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
@@ -189,13 +194,18 @@ def download_track(temp_dir, item):
         logger.error(f"Failed to download Navidrome track {item.get('title', 'Unknown')}: {e}", exc_info=True)
     return None
 
-def get_recent_albums(limit):
+def get_recent_albums(limit, server_config=None):
     """
     Fetches a list of the most recently added albums from Navidrome using admin credentials.
     If MUSIC_LIBRARIES is set, it will only return albums from those folders.
     """
-    target_folder_ids = _get_target_music_folder_ids()
-    
+    sc = server_config or {}
+    user_creds = None
+    if sc:
+        user_creds = {'user': sc.get('user', ''), 'password': sc.get('password', '')}
+    base_url = sc.get('url') or None
+    target_folder_ids = _get_target_music_folder_ids(provider_config=sc if sc else None)
+
     # Case 1: Config is set, but no matching folders were found. Scan nothing.
     if isinstance(target_folder_ids, set) and not target_folder_ids:
         logger.warning("Folder filtering is active, but no matching folders were found on the server. Returning no albums.")
@@ -214,11 +224,11 @@ def get_recent_albums(limit):
             if size_to_fetch <= 0: break
 
             params = {"type": "newest", "size": size_to_fetch, "offset": offset}
-            response = _navidrome_request("getAlbumList2", params)
+            response = _navidrome_request("getAlbumList2", params, user_creds=user_creds, base_url=base_url)
 
             if response and "albumList2" in response and "album" in response["albumList2"]:
                 albums = response["albumList2"]["album"]
-                if not albums: break 
+                if not albums: break
 
                 all_albums.extend([{**a, 'Id': a.get('id'), 'Name': a.get('name')} for a in albums])
                 offset += len(albums)
@@ -239,11 +249,11 @@ def get_recent_albums(limit):
                 if size_to_fetch <= 0: break
 
                 params = {"type": "newest", "size": size_to_fetch, "offset": offset, "musicFolderId": folder_id}
-                response = _navidrome_request("getAlbumList2", params)
+                response = _navidrome_request("getAlbumList2", params, user_creds=user_creds, base_url=base_url)
 
                 if response and "albumList2" in response and "album" in response["albumList2"]:
                     albums = response["albumList2"]["album"]
-                    if not albums: break 
+                    if not albums: break
 
                     all_albums.extend([{**a, 'Id': a.get('id'), 'Name': a.get('name')} for a in albums])
                     offset += len(albums)
@@ -497,10 +507,14 @@ def delete_playlist(playlist_id):
     return False
 
 # --- USER-SPECIFIC NAVIDROME FUNCTIONS ---
-def get_tracks_from_album(album_id, user_creds=None):
+def get_tracks_from_album(album_id, user_creds=None, server_config=None):
     """Fetches all audio tracks for an album. Uses specific user_creds if provided."""
+    sc = server_config or {}
+    if not user_creds and sc:
+        user_creds = {'user': sc.get('user', ''), 'password': sc.get('password', '')}
+    base_url = sc.get('url') or None
     params = {"id": album_id}
-    response = _navidrome_request("getAlbum", params, user_creds=user_creds)
+    response = _navidrome_request("getAlbum", params, user_creds=user_creds, base_url=base_url)
     if response and "album" in response and "song" in response["album"]:
         songs = response["album"]["song"]
         

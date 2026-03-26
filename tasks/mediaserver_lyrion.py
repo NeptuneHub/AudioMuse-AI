@@ -378,7 +378,7 @@ def _jsonrpc_request(method, params, player_id="", base_url=None):
     raise LyrionAPIError("Unreachable: exceeded jsonrpc retry loop")
 
 
-def _count_albums(use_sort_new=True, page_size=100):
+def _count_albums(use_sort_new=True, page_size=100, base_url=None):
     """Count total albums on the Lyrion server using the given paging mode.
     Returns an integer count or None on fatal error.
     """
@@ -387,7 +387,7 @@ def _count_albums(use_sort_new=True, page_size=100):
     while True:
         params = [offset, page_size, "sort:new"] if use_sort_new else [offset, page_size]
         try:
-            resp = _jsonrpc_request("albums", params)
+            resp = _jsonrpc_request("albums", params, base_url=base_url)
         except Exception as e:
             logger.warning(f"Unable to count albums (use_sort_new={use_sort_new}): {e}")
             return None
@@ -408,17 +408,19 @@ def _count_albums(use_sort_new=True, page_size=100):
 
     return total
 
-def download_track(temp_dir, item):
+def download_track(temp_dir, item, server_config=None):
     """Downloads a single track from Lyrion using its URL."""
+    sc = server_config or {}
+    url = sc.get('url') or config.LYRION_URL
     try:
         track_id = item.get('Id')
         if not track_id:
             logger.error("Lyrion item does not have a track ID.")
             return None
-            
+
         # The correct, stable URL format for directly downloading a track from Lyrion/LMS by its ID.
         # This avoids issues with the /stream endpoint which is often for the currently playing track.
-        download_url = f"{config.LYRION_URL}/music/{track_id}/download"
+        download_url = f"{url}/music/{track_id}/download"
         
         # A more robust way to handle the file extension.
         file_extension = item.get('Path', '.mp3')
@@ -444,7 +446,7 @@ def download_track(temp_dir, item):
         logger.error(f"Failed to download Lyrion track {item.get('title', 'Unknown')}: {e}", exc_info=True)
     return None
 
-def _get_all_albums_simple(limit):
+def _get_all_albums_simple(limit, base_url=None):
     """Simple album fetching without filtering."""
     albums_accum = []
     fetch_all = (limit == 0)
@@ -459,8 +461,8 @@ def _get_all_albums_simple(limit):
     use_sort_new = True
     if limit == 0:
         logger.info("Counting Lyrion albums with and without 'sort:new' to decide pagination mode...")
-        sorted_total = _count_albums(use_sort_new=True, page_size=page_size)
-        unsorted_total = _count_albums(use_sort_new=False, page_size=page_size)
+        sorted_total = _count_albums(use_sort_new=True, page_size=page_size, base_url=base_url)
+        unsorted_total = _count_albums(use_sort_new=False, page_size=page_size, base_url=base_url)
         logger.info(f"Albums with sort:new = {sorted_total}, albums without sort = {unsorted_total}")
         if unsorted_total is not None and sorted_total is not None and unsorted_total > sorted_total:
             logger.info("Albums without sort are more numerous; proceeding with unsorted pagination for Lyrion.")
@@ -475,7 +477,7 @@ def _get_all_albums_simple(limit):
         page_error = None
         for attempt in range(3):
             try:
-                page_response = _jsonrpc_request("albums", params)
+                page_response = _jsonrpc_request("albums", params, base_url=base_url)
                 break
             except LyrionAPIError as e:
                 page_error = e
@@ -611,7 +613,7 @@ def _try_folder_id_based_filtering(target_paths, limit):
     
     return albums_found if albums_found else None
 
-def _album_has_tracks_in_target_path(album_id, target_paths):
+def _album_has_tracks_in_target_path(album_id, target_paths, base_url=None):
     """
     Check if an album has tracks in the target folder by examining actual file paths.
     This is the most reliable method for Lyrion folder filtering.
@@ -622,7 +624,7 @@ def _album_has_tracks_in_target_path(album_id, target_paths):
     for attempt in range(attempts):
         try:
             # Ask for up to 20 tracks with richer tags that may include path/url
-            response = _jsonrpc_request("titles", [0, 20, f"album_id:{album_id}", "tags:fFlpuoP"])
+            response = _jsonrpc_request("titles", [0, 20, f"album_id:{album_id}", "tags:fFlpuoP"], base_url=base_url)
 
             if not response or "titles_loop" not in response:
                 return False
@@ -667,17 +669,19 @@ def _album_has_tracks_in_target_path(album_id, target_paths):
     logger.error(f"Failed to fetch tracks for album {album_id} after {attempts} attempts")
     return False
 
-def get_recent_albums(limit):
+def get_recent_albums(limit, server_config=None):
     """
     Fetches recently added albums from Lyrion using JSON-RPC.
     If MUSIC_LIBRARIES is set, filters albums by checking if their tracks' actual file paths match.
     Scans ALL albums until the requested number is found (or library is exhausted).
     """
-    target_paths = _get_target_paths_for_filtering()
-    
+    sc = server_config or {}
+    base_url = sc.get('url') or None
+    target_paths = _get_target_paths_for_filtering(provider_config=sc)
+
     # If no filtering needed, use simple approach
     if target_paths is None:
-        return _get_all_albums_simple(limit)
+        return _get_all_albums_simple(limit, base_url=base_url)
     
     # Use file path checking approach - scan ALL albums until we find enough matches
     logger.info(f"Scanning Lyrion library for albums in configured folders (limit: {limit or 'all'})")
@@ -699,8 +703,8 @@ def get_recent_albums(limit):
     use_sort_new = True
     if fetch_all:
         logger.info("Counting Lyrion albums with and without 'sort:new' to decide pagination mode (analysis of all albums)...")
-        sorted_total = _count_albums(use_sort_new=True, page_size=page_size)
-        unsorted_total = _count_albums(use_sort_new=False, page_size=page_size)
+        sorted_total = _count_albums(use_sort_new=True, page_size=page_size, base_url=base_url)
+        unsorted_total = _count_albums(use_sort_new=False, page_size=page_size, base_url=base_url)
         logger.info(f"Albums with sort:new = {sorted_total}, albums without sort = {unsorted_total}")
         if unsorted_total is not None and sorted_total is not None and unsorted_total > sorted_total:
             logger.info("Albums without sort are more numerous; proceeding with unsorted pagination for Lyrion.")
@@ -714,7 +718,7 @@ def get_recent_albums(limit):
         page_error = None
         for attempt in range(3):
             try:
-                page_response = _jsonrpc_request("albums", params)
+                page_response = _jsonrpc_request("albums", params, base_url=base_url)
                 break
             except LyrionAPIError as e:
                 page_error = e
@@ -735,17 +739,17 @@ def get_recent_albums(limit):
             break
 
         pages_fetched += 1
-        
+
         # Extract albums from response
         page_albums = []
         if isinstance(response, dict) and "albums_loop" in response:
             page_albums = response["albums_loop"]
         elif isinstance(response, list):
             page_albums = response
-        
+
         if not page_albums:
             break
-        
+
         # Check each album in this batch
         for album in page_albums:
             albums_scanned += 1
@@ -759,7 +763,7 @@ def get_recent_albums(limit):
 
             # Check if this album's tracks are in our target folder
             try:
-                has_tracks = _album_has_tracks_in_target_path(album_id, target_paths)
+                has_tracks = _album_has_tracks_in_target_path(album_id, target_paths, base_url=base_url)
             except Exception as e:
                 logger.warning(f"Error checking album paths for album {album_id}: {e}")
                 has_tracks = False
@@ -1022,15 +1026,17 @@ def delete_playlist(playlist_id):
     return False
 
 # --- User-specific Lyrion functions ---
-def get_tracks_from_album(album_id):
+def get_tracks_from_album(album_id, server_config=None):
     """Fetches all audio tracks for an album from Lyrion using JSON-RPC."""
+    sc = server_config or {}
+    base_url = sc.get('url') or None
     logger.info(f"Attempting to fetch tracks for album ID: {album_id}")
-    
+
     # Lyrion's JSON-RPC doesn't have a direct "get tracks for album" call.
     # The 'titles' command with a filter is the correct way to get songs for an album.
     # We now fetch all songs and filter them by the album ID.
     try:
-        response = _jsonrpc_request("titles", [0, 999999, f"album_id:{album_id}", "tags:galduAyR"])
+        response = _jsonrpc_request("titles", [0, 999999, f"album_id:{album_id}", "tags:galduAyR"], base_url=base_url)
         logger.debug(f"Lyrion API Raw Track Response for Album {album_id}: {response}")
     except Exception as e:
         logger.error(f"Lyrion API call for album {album_id} failed: {e}", exc_info=True)
