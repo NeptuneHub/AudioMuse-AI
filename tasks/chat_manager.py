@@ -383,16 +383,16 @@ def execute_action(action, db_conn, log_messages, ai_config=None):
             with db_conn.cursor(cursor_factory=DictCursor) as cur:
                 placeholders = ','.join(['%s'] * len(artist_names))
                 sql = f"""
-                    SELECT DISTINCT item_id, title, author FROM (
-                        SELECT item_id, title, author FROM public.score
+                    SELECT DISTINCT track_id, title, author FROM (
+                        SELECT track_id, title, author FROM public.score
                         WHERE author IN ({placeholders})
                         ORDER BY RANDOM()
                     ) AS randomized LIMIT %s
                 """
                 cur.execute(sql, artist_names + [get_songs_count])
                 results = cur.fetchall()
-                
-            songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
+
+            songs = [{"item_id": str(r['track_id']), "title": r['title'], "artist": r['author']} for r in results]
             log_messages.append(f"   ✓ Retrieved {len(songs)} songs")
             return songs
         
@@ -432,8 +432,8 @@ def execute_action(action, db_conn, log_messages, ai_config=None):
             if tempo_filter or energy_filter:
                 log_messages.append(f"   🔧 Applying hybrid filters (tempo: {tempo_filter}, energy: {energy_filter})")
                 
-                # Get item_ids from CLAP results
-                item_ids = [r['item_id'] for r in clap_results]
+                # Get track_ids from CLAP results
+                track_ids = [r['track_id'] for r in clap_results]
                 
                 # Define tempo ranges (BPM)
                 tempo_ranges = {
@@ -460,37 +460,37 @@ def execute_action(action, db_conn, log_messages, ai_config=None):
                 
                 if energy_filter and energy_filter in energy_ranges:
                     energy_min, energy_max = energy_ranges[energy_filter]
-                    filter_conditions.append("energy_normalized >= %s AND energy_normalized < %s")
+                    filter_conditions.append("energy >= %s AND energy < %s")
                     query_params.extend([energy_min, energy_max])
                 
                 # Query database to filter by tempo/energy
                 with db_conn.cursor(cursor_factory=DictCursor) as cur:
-                    placeholders = ','.join(['%s'] * len(item_ids))
+                    placeholders = ','.join(['%s'] * len(track_ids))
                     where_clause = ' AND '.join(filter_conditions)
-                    
+
                     sql = f"""
-                        SELECT item_id, title, author, tempo, energy_normalized
+                        SELECT track_id, title, author, tempo, energy
                         FROM public.score
-                        WHERE item_id IN ({placeholders})
+                        WHERE track_id IN ({placeholders})
                         AND {where_clause}
                     """
-                    
-                    cur.execute(sql, item_ids + query_params)
+
+                    cur.execute(sql, track_ids + query_params)
                     filtered_results = cur.fetchall()
-                
+
                 # Preserve CLAP similarity order for filtered results
-                filtered_item_ids = {r['item_id'] for r in filtered_results}
+                filtered_track_ids = {r['track_id'] for r in filtered_results}
                 songs = [
-                    {"item_id": r['item_id'], "title": r['title'], "artist": r['author']}
+                    {"item_id": str(r['track_id']), "title": r['title'], "artist": r['author']}
                     for r in clap_results
-                    if r['item_id'] in filtered_item_ids
+                    if r['track_id'] in filtered_track_ids
                 ]
                 
                 log_messages.append(f"   ✓ Filtered to {len(songs)} songs matching tempo/energy criteria")
                 return songs
             else:
                 # No filters - return CLAP results as-is
-                songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in clap_results]
+                songs = [{"item_id": str(r['track_id']), "title": r['title'], "artist": r['author']} for r in clap_results]
                 log_messages.append(f"   ✓ Retrieved {len(songs)} songs from CLAP")
                 return songs
         
@@ -567,13 +567,13 @@ Provide 20-30 of their most well-known hits."""
                     if or_conditions:
                         where_clause = " OR ".join(or_conditions)
                         sql = f"""
-                            SELECT DISTINCT item_id, title, author FROM public.score
+                            SELECT DISTINCT track_id, title, author FROM public.score
                             WHERE {where_clause}
                             LIMIT %s
                         """
                         cur.execute(sql, params_list + [get_songs_count])
                         results = cur.fetchall()
-                        songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
+                        songs = [{"item_id": str(r['track_id']), "title": r['title'], "artist": r['author']} for r in results]
                         
                         log_messages.append(f"   ✓ Found {len(songs)} matching songs in database")
                         
@@ -603,13 +603,13 @@ Provide 20-30 of their most well-known hits."""
                                 
                                 where_clause = " OR ".join(or_conditions)
                                 sql = f"""
-                                    SELECT DISTINCT item_id, title, author FROM public.score
+                                    SELECT DISTINCT track_id, title, author FROM public.score
                                     WHERE {where_clause}
                                     LIMIT %s
                                 """
                                 cur.execute(sql, params_list + [get_songs_count])
                                 results = cur.fetchall()
-                                songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
+                                songs = [{"item_id": str(r['track_id']), "title": r['title'], "artist": r['author']} for r in results]
                                 log_messages.append(f"   ✓ With fuzzy matching: {len(songs)} total songs found")
             
             return songs
@@ -706,14 +706,14 @@ Provide 20-30 of their most well-known hits."""
                 # Request more songs initially to compensate for filtering
                 request_multiplier = 3 if filters else 1
                 sql = f"""
-                    SELECT DISTINCT item_id, title, author FROM (
-                        SELECT item_id, title, author FROM public.score
+                    SELECT DISTINCT track_id, title, author FROM (
+                        SELECT track_id, title, author FROM public.score
                         WHERE {where_clause}
                         ORDER BY RANDOM()
                     ) AS randomized LIMIT %s
                 """
                 params_list.append(get_songs_count * request_multiplier)
-                
+
                 # Log the filters being applied
                 filter_desc = []
                 if 'genre' in filters and filters['genre']:
@@ -730,44 +730,44 @@ Provide 20-30 of their most well-known hits."""
                 cur.execute(sql, params_list)
                 results = cur.fetchall()
                 
-            songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
+            songs = [{"item_id": str(r['track_id']), "title": r['title'], "artist": r['author']} for r in results]
             log_messages.append(f"   ✓ Retrieved {len(songs)} filtered songs from similar artists")
             return songs
             
         elif action_type == "song_similarity_api":
-            from tasks.voyager_manager import get_item_id_by_title_and_artist, find_nearest_neighbors_by_id
+            from tasks.voyager_manager import get_track_id_by_title_and_artist, find_nearest_neighbors_by_id
             song_title = params.get('song_title')
             song_artist = params.get('artist')
-            
-            target_item_id = get_item_id_by_title_and_artist(song_title, song_artist)
-            if not target_item_id:
+
+            target_track_id = get_track_id_by_title_and_artist(song_title, song_artist)
+            if not target_track_id:
                 log_messages.append(f"   ❌ Song '{song_title}' by '{song_artist}' not found")
                 return []
-            
-            similar_songs = find_nearest_neighbors_by_id(target_item_id, n=get_songs_count)
-            
-            # find_nearest_neighbors_by_id returns [{"item_id": ..., "distance": ...}]
+
+            similar_songs = find_nearest_neighbors_by_id(target_track_id, n=get_songs_count)
+
+            # find_nearest_neighbors_by_id returns [{"track_id": int, "item_id": str, "distance": float}]
             # We need to fetch title and author from database
             if similar_songs:
-                item_ids = [s['item_id'] for s in similar_songs]
+                track_ids = [s['track_id'] for s in similar_songs]
                 with db_conn.cursor(cursor_factory=DictCursor) as cur:
                     # Use ANY to query multiple IDs efficiently
-                    sql = "SELECT item_id, title, author FROM public.score WHERE item_id = ANY(%s)"
-                    cur.execute(sql, (item_ids,))
+                    sql = "SELECT track_id, title, author FROM public.score WHERE track_id = ANY(%s)"
+                    cur.execute(sql, (track_ids,))
                     results = cur.fetchall()
-                    
+
                     # Create lookup map
-                    details_map = {r['item_id']: {'title': r['title'], 'author': r['author']} for r in results}
-                    
+                    details_map = {r['track_id']: {'title': r['title'], 'author': r['author']} for r in results}
+
                     # Build final song list with title and artist
                     songs = []
                     for s in similar_songs:
-                        item_id = s['item_id']
-                        if item_id in details_map:
+                        tid = s['track_id']
+                        if tid in details_map:
                             songs.append({
-                                "item_id": item_id,
-                                "title": details_map[item_id]['title'],
-                                "artist": details_map[item_id]['author']
+                                "item_id": str(tid),
+                                "title": details_map[tid]['title'],
+                                "artist": details_map[tid]['author']
                             })
                     
                 log_messages.append(f"   ✓ Retrieved {len(songs)} similar songs")
@@ -786,15 +786,15 @@ Provide 20-30 of their most well-known hits."""
                 log_messages.append(f"   ⚠️ No genre specified, querying all songs randomly")
                 with db_conn.cursor(cursor_factory=DictCursor) as cur:
                     sql = """
-                        SELECT DISTINCT item_id, title, author FROM (
-                            SELECT item_id, title, author FROM public.score
+                        SELECT DISTINCT track_id, title, author FROM (
+                            SELECT track_id, title, author FROM public.score
                             ORDER BY RANDOM()
                         ) AS randomized LIMIT %s
                     """
                     cur.execute(sql, [get_songs_count])
                     results = cur.fetchall()
-                    
-                songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
+
+                songs = [{"item_id": str(r['track_id']), "title": r['title'], "artist": r['author']} for r in results]
                 log_messages.append(f"   ✓ Retrieved {len(songs)} random songs")
                 return songs
             
@@ -857,8 +857,8 @@ Provide 20-30 of their most well-known hits."""
             with db_conn.cursor(cursor_factory=DictCursor) as cur:
                 where_clause = ' AND '.join(where_conditions)
                 sql = f"""
-                    SELECT DISTINCT item_id, title, author FROM (
-                        SELECT item_id, title, author FROM public.score
+                    SELECT DISTINCT track_id, title, author FROM (
+                        SELECT track_id, title, author FROM public.score
                         WHERE {where_clause}
                         ORDER BY RANDOM()
                     ) AS randomized LIMIT %s
@@ -884,7 +884,7 @@ Provide 20-30 of their most well-known hits."""
             if energy_level:
                 filter_desc += f" (energy: {energy_level})"
             
-            songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
+            songs = [{"item_id": str(r['track_id']), "title": r['title'], "artist": r['author']} for r in results]
             log_messages.append(f"   ✓ Retrieved {len(songs)} {filter_desc} songs")
             return songs
             
@@ -913,18 +913,18 @@ Provide 20-30 of their most well-known hits."""
             
             with db_conn.cursor(cursor_factory=DictCursor) as cur:
                 sql = f"""
-                    SELECT DISTINCT item_id, title, author FROM (
-                        SELECT item_id, title, author FROM public.score
+                    SELECT DISTINCT track_id, title, author FROM (
+                        SELECT track_id, title, author FROM public.score
                         WHERE {tempo_filter} AND {energy_filter}
                         ORDER BY RANDOM()
                     ) AS randomized LIMIT %s
                 """
                 # Log the actual SQL query
-                log_messages.append(f"   📝 SQL: SELECT item_id, title, author FROM public.score WHERE {tempo_filter} AND {energy_filter} ORDER BY RANDOM() LIMIT {get_songs_count}")
+                log_messages.append(f"   📝 SQL: SELECT track_id, title, author FROM public.score WHERE {tempo_filter} AND {energy_filter} ORDER BY RANDOM() LIMIT {get_songs_count}")
                 cur.execute(sql, [get_songs_count])
                 results = cur.fetchall()
-                
-            songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
+
+            songs = [{"item_id": str(r['track_id']), "title": r['title'], "artist": r['author']} for r in results]
             log_messages.append(f"   ✓ Retrieved {len(songs)} songs (tempo: {tempo_level}, energy: {energy_level})")
             return songs
             
@@ -1092,13 +1092,13 @@ Provide the JSON now:"""
             
             with db_conn.cursor(cursor_factory=DictCursor) as cur:
                 sql = f"""
-                    SELECT DISTINCT item_id, title, author FROM (
-                        SELECT item_id, title, author FROM public.score
+                    SELECT DISTINCT track_id, title, author FROM (
+                        SELECT track_id, title, author FROM public.score
                         WHERE {where_clause}
                         ORDER BY RANDOM()
                     ) AS randomized LIMIT %s
                 """
-                
+
                 # Log interpolated SQL for debugging
                 try:
                     log_params = [repr(p) for p in query_params]
@@ -1112,7 +1112,7 @@ Provide the JSON now:"""
                 cur.execute(sql, query_params + [get_songs_count])
                 results = cur.fetchall()
             
-            songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author']} for r in results]
+            songs = [{"item_id": str(r['track_id']), "title": r['title'], "artist": r['author']} for r in results]
             log_messages.append(f"   ✓ Retrieved {len(songs)} songs matching vibe '{vibe_description}'")
             return songs
         
@@ -1226,8 +1226,8 @@ Target Song Count: {target_count}
 Is Energy Query: {is_energy_query}
 
 {"**CRITICAL - TEMPORAL QUERY DETECTED**" if is_temporal_query else "**CRITICAL - GENRE/MOOD QUERY DETECTED**"}
-{"This is a time-based query (e.g., 'recent years', '2020s'). The database has NO YEAR COLUMN." if is_temporal_query else "This is a GENRE/MOOD query (e.g., 'metal songs', 'chill music'). You MUST use mood_vector filtering."}
-{"You MUST filter by specific SONG TITLES to achieve temporal filtering." if is_temporal_query else "You MUST use 'AND mood_vector LIKE %genre%' to filter by genre/mood."}
+{"This is a time-based query (e.g., 'recent years', '2020s'). Use the year column (integer) to filter by year/decade." if is_temporal_query else "This is a GENRE/MOOD query (e.g., 'metal songs', 'chill music'). You MUST use mood_vector filtering."}
+{"Use 'AND year >= YYYY' or 'AND year BETWEEN YYYY AND YYYY' for temporal filtering. You can also combine with specific SONG TITLES if available." if is_temporal_query else "You MUST use 'AND mood_vector LIKE %genre%' to filter by genre/mood."}
 
 {"**CRITICAL - ENERGY QUERY DETECTED**" if is_energy_query else ""}
 {"Add 'AND energy > 0.08' for high energy OR 'AND energy < 0.05' for low energy INSIDE the WHERE clause." if is_energy_query else ""}
@@ -1244,7 +1244,7 @@ Additional similar artists (optional): {', '.join(other_artists[:15]) if other_a
 Available Moods/Genres: {', '.join(found_keywords) if found_keywords else 'None'}
 
 Database Schema:
-- item_id (text)
+- track_id (integer, primary key)
 - title (text)
 - author (text)
 - album (text)
@@ -1260,7 +1260,7 @@ Database Schema:
 The goal is to return EXACTLY {target_count} songs. Start with minimal filters and add more ONLY if needed.
 
 **Filtering Priority:**
-- **TEMPORAL QUERIES** (has song titles): Artist filtering + Song title matching
+- **TEMPORAL QUERIES** (year-based): Year column filtering + Artist filtering (+ optional song title matching)
 - **GENRE/MOOD QUERIES** (no song titles): Artist filtering + mood_vector LIKE filter **REQUIRED**
 - **ENERGY QUERIES**: Artist filtering + energy filter
 
@@ -1279,25 +1279,18 @@ If this is NOT a temporal query (no song titles found), you **MUST** add mood_ve
 **Query Building Rules:**
 1. Return ONLY raw SQL (no markdown, no ```sql, no explanations)
 2. **ABSOLUTELY CRITICAL**: ALL filters (mood_vector, energy, tempo) go INSIDE the subquery, BEFORE "ORDER BY RANDOM()"
-3. **NEVER EVER** add WHERE clause after ") AS randomized" - the outer query is ALWAYS: SELECT DISTINCT item_id, title, author FROM (...) AS randomized LIMIT {target_count}
+3. **NEVER EVER** add WHERE clause after ") AS randomized" - the outer query is ALWAYS: SELECT DISTINCT track_id, title, author FROM (...) AS randomized LIMIT {target_count}
 4. Use ONLY artists found in step 3 exploration (found_artists list)
-5. For temporal queries: Use (title, author) IN tuples for exact matches
+5. For temporal queries: Use year column filtering (year >= YYYY, year BETWEEN). Optionally add (title, author) IN tuples for exact matches.
 6. Use proper SQL escaping (single quotes as '')
 7. **DOUBLE CHECK**: After writing your SQL, verify that mood_vector, energy, tempo filters are INSIDE the subquery, not outside
 
 **FOR TEMPORAL QUERIES ("recent years", "2020s", "last decade"):**
-- Use found song titles with artist names as exact (title, author) IN tuples
-- Add OR author IN (...) for additional songs from those artists
+- Use the year column to filter by time period (e.g., year >= 2020, year BETWEEN 2010 AND 2019)
+- Combine with author IN (...) if specific artists are found
+- Optionally add (title, author) IN tuples for exact song matches
 - DO NOT add energy filters - this is a TIME-based query, not energy-based
-- DO NOT add mood_vector filters - keep it simple to maximize results
-- **IMPORTANT**: If you have many found artists (>10), use a simpler query:
-  ```
-  SELECT DISTINCT item_id, title, author FROM (
-    SELECT item_id, title, author FROM public.score
-    WHERE author IN ('Taylor Swift', 'Miley Cyrus', 'The Weeknd', ...)
-    ORDER BY RANDOM()
-  ) AS randomized LIMIT {target_count}
-  ```
+- Handle NULL years: some tracks may have year = NULL, exclude them with year IS NOT NULL
 
 **FOR GENRE/MOOD QUERIES ("rock songs", "pop music", "jazz"):**
 - Use author IN (...) for found artists
@@ -1312,28 +1305,24 @@ If this is NOT a temporal query (no song titles found), you **MUST** add mood_ve
 Strategy Guidance: {strategy_info.get('sql_approach', 'Select diverse songs')}
 
 **Example 1 - Temporal query ("top radio songs recent years"):**
-SELECT DISTINCT item_id, title, author FROM (
-  SELECT item_id, title, author FROM public.score
-  WHERE (title, author) IN (
-      ('Anti-Hero', 'Taylor Swift'),
-      ('Flowers', 'Miley Cyrus'),
-      ('As It Was', 'Harry Styles')
-    )
-    OR author IN ('Taylor Swift', 'Miley Cyrus', 'The Weeknd', 'Dua Lipa')
+SELECT DISTINCT track_id, title, author FROM (
+  SELECT track_id, title, author FROM public.score
+  WHERE year >= 2020 AND year IS NOT NULL
+    AND author IN ('Taylor Swift', 'Miley Cyrus', 'The Weeknd', 'Dua Lipa')
   ORDER BY RANDOM()
 ) AS randomized LIMIT {target_count}
 
 **Example 2 - Genre query ("metal songs"):**
-SELECT DISTINCT item_id, title, author FROM (
-  SELECT item_id, title, author FROM public.score
+SELECT DISTINCT track_id, title, author FROM (
+  SELECT track_id, title, author FROM public.score
   WHERE author IN ('Metallica', 'Iron Maiden', 'Slayer', 'Megadeth')
     AND (mood_vector LIKE '%metal%' OR mood_vector LIKE '%heavy metal%')
   ORDER BY RANDOM()
 ) AS randomized LIMIT {target_count}
 
 **Example 3 - Energy query ("high energy workout music"):**
-SELECT DISTINCT item_id, title, author FROM (
-  SELECT item_id, title, author FROM public.score
+SELECT DISTINCT track_id, title, author FROM (
+  SELECT track_id, title, author FROM public.score
   WHERE author IN ('David Guetta', 'Calvin Harris')
     AND energy > 0.08
   ORDER BY RANDOM()

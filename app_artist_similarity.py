@@ -158,15 +158,19 @@ def get_similar_artists_endpoint():
     ef_search = request.args.get('ef_search', type=int)
     include_component_matches = request.args.get('include_component_matches', 'false').lower() == 'true'
     
-    # Accept either artist name or artist_id
+    # Accept either artist name or artist_id, resolve to canonical name
     query_artist = artist or artist_id
-    
+
     if not query_artist:
         return jsonify({"error": "Missing 'artist' or 'artist_id' parameter"}), 400
-    
+
+    # Resolve provider-specific artist_id to artist name
+    from app_helper import resolve_canonical_artist
+    query_artist = resolve_canonical_artist(query_artist)
+
     try:
         similar_artists = find_similar_artists(
-            query_artist, 
+            query_artist,
             n=n, 
             ef_search=ef_search,
             include_component_matches=include_component_matches

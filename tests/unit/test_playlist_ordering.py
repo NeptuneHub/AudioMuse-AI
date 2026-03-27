@@ -8,6 +8,7 @@ Tests verify:
 - Energy arc reshaping
 - Handling of songs missing from database
 """
+import sys
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 
@@ -16,6 +17,10 @@ from tests.conftest import _import_module, make_dict_row, make_mock_connection
 
 def _load_playlist_ordering():
     """Load playlist_ordering module via importlib to bypass tasks/__init__.py."""
+    # Pre-register mock for tasks.mcp_server so order_playlist's lazy import
+    # doesn't trigger the heavy tasks/__init__.py chain
+    if 'tasks.mcp_server' not in sys.modules:
+        sys.modules['tasks.mcp_server'] = MagicMock()
     return _import_module('tasks.playlist_ordering', 'tasks/playlist_ordering.py')
 
 
@@ -91,20 +96,30 @@ class TestCompositeDistance:
         assert dist > 0
 
 
+def _make_db_rows(song_data):
+    """Build mock DictRow list from {track_id: {tempo, energy, key, scale}} dict."""
+    rows = []
+    for tid, data in song_data.items():
+        row = dict(data)
+        row['track_id'] = tid
+        rows.append(make_dict_row(row))
+    return rows
+
+
 class TestOrderPlaylist:
     """Test order_playlist() function — Main greedy algorithm."""
 
     def test_single_song_unchanged(self):
         """Single song → return unchanged (no DB call needed)."""
         mod = _load_playlist_ordering()
-        result = mod.order_playlist(['only_id'])
-        assert result == ['only_id']
+        result = mod.order_playlist([1])
+        assert result == [1]
 
     def test_two_songs_unchanged(self):
         """Two songs → no reordering (len <= 2, no DB call)."""
         mod = _load_playlist_ordering()
-        result = mod.order_playlist(['id1', 'id2'])
-        assert result == ['id1', 'id2']
+        result = mod.order_playlist([1, 2])
+        assert result == [1, 2]
 
     def test_empty_input(self):
         """Empty input → empty output."""
@@ -112,12 +127,60 @@ class TestOrderPlaylist:
         result = mod.order_playlist([])
         assert result == []
 
-    def test_minimum_songs_no_ordering(self):
-        """3+ songs with len <= 2 orderable → return input unchanged."""
+    def test_all_input_songs_in_output(self):
+        """All input track_ids appear in output, none lost or duplicated."""
         mod = _load_playlist_ordering()
-        # This simulates the case where we have 3 songs but fewer than 3 with DB data
-        # Since the function checks if len(orderable_ids) <= 2 and returns early,
-        # we verify this behavior by checking the algorithm logic itself.
+        song_data = {
+            i: {'tempo': 80 + i * 10, 'energy': 0.02 + i * 0.02, 'key': 'C', 'scale': 'major'}
+            for i in range(10)
+        }
+        ids = list(song_data.keys())
+        rows = _make_db_rows(song_data)
+        cur = MagicMock()
+        cur.fetchall.return_value = rows
+        conn = make_mock_connection(cur)
+        sys.modules['tasks.mcp_server'].get_db_connection = Mock(return_value=conn)
+        result = mod.order_playlist(ids)
+        assert set(result) == set(ids) and len(result) == len(ids)
 
-        # The function returns unchanged when there's no enough orderable data
-        # We can verify this through the underlying algorithm tests above
+    def test_unorderable_songs_appended_at_end(self):
+        """Songs not in DB are appended at the end."""
+        mod = _load_playlist_ordering()
+        song_data = {
+            i: {'tempo': 100 + i * 10, 'energy': 0.05 + i * 0.02, 'key': 'C', 'scale': 'major'}
+            for i in range(3)
+        }
+        ids = [0, 1, 2, 999]
+        rows = _make_db_rows(song_data)
+        cur = MagicMock()
+        cur.fetchall.return_value = rows
+        conn = make_mock_connection(cur)
+        sys.modules['tasks.mcp_server'].get_db_connection = Mock(return_value=conn)
+        result = mod.order_playlist(ids)
+        assert result[-1] == 999
+        assert set(result) == set(ids)
+
+    def test_no_db_rows_returns_original_order(self):
+        """When DB returns no rows, return input unchanged."""
+        mod = _load_playlist_ordering()
+        ids = [10, 20, 30]
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        conn = make_mock_connection(cur)
+        sys.modules['tasks.mcp_server'].get_db_connection = Mock(return_value=conn)
+        assert mod.order_playlist(ids) == ids
+
+    def test_only_two_orderable_returns_original(self):
+        """When only 2 songs have DB data, return input unchanged."""
+        mod = _load_playlist_ordering()
+        song_data = {
+            10: {'tempo': 100, 'energy': 0.05, 'key': 'C', 'scale': 'major'},
+            20: {'tempo': 110, 'energy': 0.06, 'key': 'G', 'scale': 'major'},
+        }
+        ids = [10, 20, 999]
+        rows = _make_db_rows(song_data)
+        cur = MagicMock()
+        cur.fetchall.return_value = rows
+        conn = make_mock_connection(cur)
+        sys.modules['tasks.mcp_server'].get_db_connection = Mock(return_value=conn)
+        assert mod.order_playlist(ids) == ids

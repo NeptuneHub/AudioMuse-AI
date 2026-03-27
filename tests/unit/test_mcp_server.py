@@ -370,7 +370,7 @@ class TestDatabaseGenreQuery:
         mod = _import_mcp_server()
         conn, cur = self._setup_mock_conn()
         cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "1", "title": "Song A", "author": "Artist A",
+            _make_dict_row({"track_id": 1, "title": "Song A", "author": "Artist A",
                            "album": "Album", "album_artist": "AA", "tempo": 120,
                            "key": "C", "scale": "major", "energy": 0.08,
                            "mood_vector": "rock:0.82", "other_features": "danceable"}),
@@ -506,14 +506,14 @@ class TestSongSimilarityLookup:
         cur.__enter__ = Mock(return_value=cur)
         cur.__exit__ = Mock(return_value=False)
         cur.fetchone = Mock(return_value=_make_dict_row({
-            "item_id": "123", "title": "Bohemian Rhapsody", "author": "Queen"
+            "track_id": 123, "title": "Bohemian Rhapsody", "author": "Queen"
         }))
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
         mock_nn = Mock(return_value=[
-            {"item_id": "123", "distance": 0.0},
-            {"item_id": "456", "distance": 0.1},
+            {"track_id": 123, "item_id": "123", "distance": 0.0},
+            {"track_id": 456, "item_id": "456", "distance": 0.1},
         ])
         # Create a mock voyager_manager module in sys.modules to avoid tasks/__init__.py
         mock_voyager = MagicMock()
@@ -570,8 +570,8 @@ class TestArtistSimilarityApiSync:
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "Radiohead"}))
         cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "1", "title": "Creep", "author": "Radiohead"}),
-            _make_dict_row({"item_id": "2", "title": "Paranoid Android", "author": "Muse"}),
+            _make_dict_row({"track_id": 1, "title": "Creep", "author": "Radiohead"}),
+            _make_dict_row({"track_id": 2, "title": "Paranoid Android", "author": "Muse"}),
         ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -597,7 +597,7 @@ class TestArtistSimilarityApiSync:
             _make_dict_row({"author": "AC/DC", "len": 5}),
         ])
         cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "10", "title": "Back in Black", "author": "AC/DC"}),
+            _make_dict_row({"track_id": 10, "title": "Back in Black", "author": "AC/DC"}),
         ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -638,7 +638,7 @@ class TestArtistSimilarityApiSync:
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "Queen"}))
         cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "5", "title": "We Will Rock You", "author": "Queen"}),
+            _make_dict_row({"track_id": 5, "title": "We Will Rock You", "author": "Queen"}),
         ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -664,7 +664,7 @@ class TestArtistSimilarityApiSync:
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "P!nk"}))
         cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "20", "title": "So What", "author": "P!nk"}),
+            _make_dict_row({"track_id": 20, "title": "So What", "author": "P!nk"}),
         ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -690,8 +690,8 @@ class TestArtistSimilarityApiSync:
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "Nirvana"}))
         cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "30", "title": "Smells Like Teen Spirit", "author": "Nirvana"}),
-            _make_dict_row({"item_id": "31", "title": "Everlong", "author": "Foo Fighters"}),
+            _make_dict_row({"track_id": 30, "title": "Smells Like Teen Spirit", "author": "Nirvana"}),
+            _make_dict_row({"track_id": 31, "title": "Everlong", "author": "Foo Fighters"}),
         ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -716,8 +716,8 @@ class TestArtistSimilarityApiSync:
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "The Beatles"}))
         cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "40", "title": "Hey Jude", "author": "The Beatles"}),
-            _make_dict_row({"item_id": "41", "title": "Imagine", "author": "John Lennon"}),
+            _make_dict_row({"track_id": 40, "title": "Hey Jude", "author": "The Beatles"}),
+            _make_dict_row({"track_id": 41, "title": "Imagine", "author": "John Lennon"}),
         ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -743,7 +743,7 @@ class TestArtistSimilarityApiSync:
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "Coldplay"}))
         many_songs = [
-            _make_dict_row({"item_id": str(i), "title": f"Song {i}", "author": "Coldplay"})
+            _make_dict_row({"track_id": i, "title": f"Song {i}", "author": "Coldplay"})
             for i in range(50)
         ]
         cur.fetchall = Mock(return_value=many_songs)
@@ -903,8 +903,8 @@ class TestAiBrainstormSync:
         ai_mod = self._make_ai_module(ai_response)
 
         cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "100", "title": "Bohemian Rhapsody", "author": "Queen"}),
-            _make_dict_row({"item_id": "101", "title": "Stairway to Heaven", "author": "Led Zeppelin"}),
+            _make_dict_row({"track_id": 100, "title": "Bohemian Rhapsody", "author": "Queen"}),
+            _make_dict_row({"track_id": 101, "title": "Stairway to Heaven", "author": "Led Zeppelin"}),
         ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -926,7 +926,7 @@ class TestAiBrainstormSync:
         ai_mod = self._make_ai_module(ai_response)
 
         cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "200", "title": "Hey Jude", "author": "The Beatles"}),
+            _make_dict_row({"track_id": 200, "title": "Hey Jude", "author": "The Beatles"}),
         ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -947,7 +947,7 @@ class TestAiBrainstormSync:
         ai_mod = self._make_ai_module(ai_response)
 
         cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "300", "title": "Creep", "author": "Radiohead"}),
+            _make_dict_row({"track_id": 300, "title": "Creep", "author": "Radiohead"}),
         ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -957,7 +957,7 @@ class TestAiBrainstormSync:
             result = mod._ai_brainstorm_sync("90s alternative", self._make_ai_config(), 10)
 
         assert len(result["songs"]) == 1
-        assert result["songs"][0]["item_id"] == "300"
+        assert result["songs"][0]["track_id"] == 300
 
     def test_stage2_fuzzy_normalized_match(self):
         """AI suggests 'Don't Stop Me Now' by 'Queen', DB has 'Dont Stop Me Now' -> fuzzy match."""
@@ -975,7 +975,7 @@ class TestAiBrainstormSync:
                 return []
             else:
                 return [_make_dict_row({
-                    "item_id": "400",
+                    "track_id": 400,
                     "title": "Dont Stop Me Now",
                     "author": "Queen"
                 })]
@@ -989,7 +989,7 @@ class TestAiBrainstormSync:
             result = mod._ai_brainstorm_sync("fun queen songs", self._make_ai_config(), 10)
 
         assert len(result["songs"]) == 1
-        assert result["songs"][0]["item_id"] == "400"
+        assert result["songs"][0]["track_id"] == 400
 
     def test_normalize_logic(self):
         """Verify _normalize strips spaces, dashes, apostrophes, periods, commas."""
@@ -1058,7 +1058,7 @@ class TestAiBrainstormSync:
         ai_mod = self._make_ai_module(ai_response)
 
         exact_rows = [
-            _make_dict_row({"item_id": str(i), "title": f"Song {i}", "author": f"Artist {i}"})
+            _make_dict_row({"track_id": i, "title": f"Song {i}", "author": f"Artist {i}"})
             for i in range(30)
         ]
         cur.fetchall = Mock(return_value=exact_rows)
@@ -1164,8 +1164,8 @@ class TestTextSearchSync:
         conn.cursor = Mock(return_value=cur)
 
         clap_results = [
-            {"item_id": "c1", "title": "Ambient Song", "author": "Artist A"},
-            {"item_id": "c2", "title": "Dreamy Track", "author": "Artist B"},
+            {"track_id": 1, "item_id": "1", "title": "Ambient Song", "author": "Artist A"},
+            {"track_id": 2, "item_id": "2", "title": "Dreamy Track", "author": "Artist B"},
         ]
         clap_mod = self._make_clap_module(results=clap_results)
         import config as cfg
@@ -1179,7 +1179,7 @@ class TestTextSearchSync:
             cfg.CLAP_ENABLED = orig
 
         assert len(result["songs"]) == 2
-        assert result["songs"][0]["item_id"] == "c1"
+        assert result["songs"][0]["item_id"] == "1"
 
     def test_tempo_filter_applied(self):
         """Tempo filter 'slow' triggers DB filtering of CLAP results."""
@@ -1187,13 +1187,13 @@ class TestTextSearchSync:
         cur = self._setup_cursor()
 
         clap_results = [
-            {"item_id": "c1", "title": "Slow Song", "author": "A1"},
-            {"item_id": "c2", "title": "Fast Song", "author": "A2"},
+            {"track_id": 1, "item_id": "1", "title": "Slow Song", "author": "A1"},
+            {"track_id": 2, "item_id": "2", "title": "Fast Song", "author": "A2"},
         ]
         clap_mod = self._make_clap_module(results=clap_results)
 
         cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "c1", "title": "Slow Song", "author": "A1"}),
+            _make_dict_row({"track_id": 1, "title": "Slow Song", "author": "A1"}),
         ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -1209,7 +1209,7 @@ class TestTextSearchSync:
             cfg.CLAP_ENABLED = orig
 
         assert len(result["songs"]) == 1
-        assert result["songs"][0]["item_id"] == "c1"
+        assert result["songs"][0]["item_id"] == "1"
 
     def test_energy_filter_applied(self):
         """Energy filter 'high' triggers DB filtering of CLAP results."""
@@ -1217,13 +1217,13 @@ class TestTextSearchSync:
         cur = self._setup_cursor()
 
         clap_results = [
-            {"item_id": "c1", "title": "High Energy", "author": "A1"},
-            {"item_id": "c2", "title": "Low Energy", "author": "A2"},
+            {"track_id": 1, "item_id": "1", "title": "High Energy", "author": "A1"},
+            {"track_id": 2, "item_id": "2", "title": "Low Energy", "author": "A2"},
         ]
         clap_mod = self._make_clap_module(results=clap_results)
 
         cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "c1", "title": "High Energy", "author": "A1"}),
+            _make_dict_row({"track_id": 1, "title": "High Energy", "author": "A1"}),
         ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -1239,7 +1239,7 @@ class TestTextSearchSync:
             cfg.CLAP_ENABLED = orig
 
         assert len(result["songs"]) == 1
-        assert result["songs"][0]["item_id"] == "c1"
+        assert result["songs"][0]["item_id"] == "1"
 
     def test_combined_tempo_and_energy_filters(self):
         """Both tempo and energy filters applied together."""
@@ -1247,15 +1247,15 @@ class TestTextSearchSync:
         cur = self._setup_cursor()
 
         clap_results = [
-            {"item_id": "c1", "title": "Perfect Match", "author": "A1"},
-            {"item_id": "c2", "title": "No Match", "author": "A2"},
-            {"item_id": "c3", "title": "Also Match", "author": "A3"},
+            {"track_id": 1, "item_id": "1", "title": "Perfect Match", "author": "A1"},
+            {"track_id": 2, "item_id": "2", "title": "No Match", "author": "A2"},
+            {"track_id": 3, "item_id": "3", "title": "Also Match", "author": "A3"},
         ]
         clap_mod = self._make_clap_module(results=clap_results)
 
         cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "c1", "title": "Perfect Match", "author": "A1"}),
-            _make_dict_row({"item_id": "c3", "title": "Also Match", "author": "A3"}),
+            _make_dict_row({"track_id": 1, "title": "Perfect Match", "author": "A1"}),
+            _make_dict_row({"track_id": 3, "title": "Also Match", "author": "A3"}),
         ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -1271,8 +1271,8 @@ class TestTextSearchSync:
             cfg.CLAP_ENABLED = orig
 
         assert len(result["songs"]) == 2
-        assert result["songs"][0]["item_id"] == "c1"
-        assert result["songs"][1]["item_id"] == "c3"
+        assert result["songs"][0]["item_id"] == "1"
+        assert result["songs"][1]["item_id"] == "3"
 
     def test_results_limited_to_get_songs(self):
         """CLAP returns 50 results, get_songs=10 -> only 10 returned."""
@@ -1282,7 +1282,7 @@ class TestTextSearchSync:
         conn.cursor = Mock(return_value=cur)
 
         clap_results = [
-            {"item_id": f"c{i}", "title": f"Song {i}", "author": f"Artist {i}"}
+            {"track_id": i, "item_id": str(i), "title": f"Song {i}", "author": f"Artist {i}"}
             for i in range(50)
         ]
         clap_mod = self._make_clap_module(results=clap_results)

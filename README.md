@@ -105,16 +105,20 @@ For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](d
    EMBY_TOKEN=your-api-token
    ```
 
+   **For Local Files (No Media Server):**
+   ```env
+   MEDIASERVER_TYPE=localfiles
+   LOCALFILES_MUSIC_DIRECTORY=/path/to/your/music
+   LOCALFILES_PLAYLIST_DIR=/path/to/your/music/playlists
+   ```
+
 3. **Start the services:**
    ```bash
-   docker compose -f deployment/docker-compose.yaml up -d
+   docker compose -f deployment/docker-compose-unified.yaml up -d
    ```
-> Remember to get the correct version for your Music Server.
+   > For NVIDIA GPU acceleration, use `docker-compose-unified-nvidia.yaml` instead.
+   > The unified compose file supports all provider types (Jellyfin, Navidrome, Lyrion, Emby, LocalFiles).
 
-> docker-compose.yaml is for Jellyfin.
-> You also have docker-compose-navidrome.yaml, docker-compose-lyrion.yaml, dokcer-compose-emby.yaml
-
-> Other example are for advanced deployment.
 4. **Access the application:**
    Open your browser at `http://localhost:8000`
 
@@ -125,8 +129,55 @@ For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](d
 
 **Stopping the services:**
 ```bash
-docker compose -f deployment/docker-compose.yaml down
+docker compose -f deployment/docker-compose-unified.yaml down
 ```
+
+## Multi-Provider Support
+
+AudioMuse-AI supports connecting to multiple media servers simultaneously, allowing you to:
+- Share analysis data across providers (analyze once, use everywhere)
+- Create playlists on multiple servers at once
+- Use a GUI Setup Wizard for easy configuration
+
+### GUI Setup Wizard
+
+Access the Setup Wizard at `http://localhost:8000/setup` to:
+1. Add and configure multiple providers
+2. Test connections before saving
+3. Auto-detect music path prefixes for cross-provider matching
+4. Set a primary provider for playlist creation
+
+### Local Files Provider
+
+The Local Files provider scans your music directory directly without requiring a media server:
+- Supports MP3, FLAC, OGG, M4A, WAV, WMA, AAC, and OPUS formats
+- Extracts metadata from embedded tags (ID3, Vorbis comments, etc.)
+- Creates M3U playlists in a configurable directory
+- Extracts ratings from POPM, TXXX:RATING, and Vorbis RATING tags
+
+**Configuration:**
+```env
+MEDIASERVER_TYPE=localfiles
+LOCALFILES_MUSIC_DIRECTORY=/music              # Path to your music library
+LOCALFILES_PLAYLIST_DIR=/music/playlists       # Where to save generated playlists
+LOCALFILES_FORMATS=.mp3,.flac,.ogg,.m4a,.wav   # Supported audio formats
+LOCALFILES_SCAN_SUBDIRS=true                   # Scan subdirectories
+```
+
+### Cross-Provider Track Matching
+
+When using multiple providers, tracks are matched across servers using normalized file paths. This allows:
+- Analysis data to be reused across providers
+- Playlists to be created on any provider using tracks from another
+- Automatic ID remapping when creating cross-provider playlists
+
+### Extended Metadata Fields
+
+AudioMuse-AI now stores additional metadata for each track:
+- **album_artist**: The album artist (useful for compilations)
+- **year**: Release year extracted from various tag formats
+- **rating**: User rating on 0-5 scale (from tags or media server)
+- **file_path**: Normalized file path for cross-provider linking
 
 > NOTE: by default AudioMuse-AI is deployed WITHOUT authentication layer and its suited only for LOCAL deployment. If you want to configure it have a look to the  [AUTHENTICATION](docs/AUTH.md) docs. If you enable the Authentication Layer, you need to be sure that any plugin used support and use the AudioMuse-AI API TOKEN
 

@@ -47,10 +47,17 @@ This document provides a detailed functional (high-level) and technical (algorit
    * [9.1. Functional Analysis (High-Level)](#91-functional-analysis-high-level)  
    * [9.2. Technical Analysis (Algorithm-Level)](#92-technical-analysis-algorithm-level)  
    * [9.3. Environment Variable Configuration](#93-environment-variable-configuration)  
-10. [Scheduled Tasks (Cron)](#10-scheduled-tasks-cron)  
-   * [10.1. Functional Analysis (High-Level)](#101-functional-analysis-high-level)  
-   * [10.2. Technical Analysis (Algorithm-Level)](#102-technical-analysis-algorithm-level)  
+10. [Scheduled Tasks (Cron)](#10-scheduled-tasks-cron)
+   * [10.1. Functional Analysis (High-Level)](#101-functional-analysis-high-level)
+   * [10.2. Technical Analysis (Algorithm-Level)](#102-technical-analysis-algorithm-level)
    * [10.3. Environment Variable Configuration](#103-environment-variable-configuration)
+11. [Text Search (CLAP)](#11-text-search-clap)
+12. [Text Search (MuLan)](#12-text-search-mulan)
+13. [Artist Similarity](#13-artist-similarity)
+14. [External Plugin API](#14-external-plugin-api)
+15. [Waveform Visualization](#15-waveform-visualization)
+16. [Collection Sync](#16-collection-sync)
+17. [Multi-Provider Architecture](#17-multi-provider-architecture)
 
 ## **0. Architectural Design**
 
@@ -74,7 +81,7 @@ High-level flows:
 
 Core components and responsibilities:
 
-- Web App (Flask): Registers blueprints (chat, analysis, clustering, voyager, alchemy, map, cron, cleaning, sonic fingerprint, path, collection, external) and starts lightweight background threads such as `listen_for_index_reloads` and the cron manager. The web app persists task metadata to the `task_status` table and exposes endpoints for task control and status.
+- Web App (Flask): Registers blueprints (chat, analysis, clustering, voyager, alchemy, map, cron, cleaning, sonic fingerprint, path, collection, external, artist similarity, CLAP search, MuLan search, setup, waveform) and starts lightweight background threads such as `listen_for_index_reloads` and the cron manager. The web app persists task metadata to the `task_status` table and exposes endpoints for task control and status.
 
 - Background Workers (RQ): Workers run RQ jobs defined under `tasks/` (e.g., `tasks.analysis`, `tasks.clustering`, `tasks.cleaning`, `tasks.song_alchemy`). Workers fetch jobs from Redis queues (`rq_queue_high`, `rq_queue_default`) and write progress to the database and job meta for UI consumption. RQ handles retries and job lifecycle.
 
@@ -86,7 +93,7 @@ Core components and responsibilities:
 
 - ONNX Models & Audio Stack: Analysis uses ONNX Runtime to run embedding and prediction models. Audio loading uses `librosa` with a `pydub`/ffmpeg fallback for resilient decoding. The Docker image pre-fetches ONNX model files and pins runtime libs to ensure consistent behavior across environments.
 
-- Media Server Adapters: `mediaserver.py` provides adapters for Jellyfin, Navidrome, Emby, etc., enabling playlist creation and reading play-history for the Sonic Fingerprint feature.
+- Media Server Adapters: `mediaserver.py` provides adapters for Jellyfin, Navidrome, Emby, Lyrion, and LocalFiles, enabling playlist creation and reading play-history for the Sonic Fingerprint feature. Multi-provider support allows simultaneous connections with cross-provider track deduplication via the `provider_track` table.
 
 Deployment considerations (informed by `Dockerfile`):
 
@@ -590,17 +597,17 @@ This feature primarily interacts with the pre-built Voyager index for fast simil
 
 #### **Stage 2: Autocomplete Search**
 
-1. **Route:** Typing in the search boxes (similarity.html) triggers JavaScript (handleSearchInput) which sends GET requests to /api/search\_tracks (app\_voyager.py).  
-2. **Backend Logic:** The endpoint calls search\_tracks\_by\_title\_and\_artist (voyager\_manager.py), which performs a simple SQL ILIKE query against the score table in PostgreSQL to find matching tracks.
+1. **Route:** Typing in the search boxes (similarity.html) triggers JavaScript (handleSearchInput) which sends GET requests to /api/search\_tracks (app\_voyager.py). Accepts `search_query` (unified) or legacy `title`/`artist` params.
+2. **Backend Logic:** The endpoint calls search\_tracks\_unified (voyager\_manager.py), which performs an accent-insensitive substring search across title, author, and album in the score table. Results include `item_id`, `title`, `author`, `album`, `album_artist`, and `file_path`.
 
 #### **Stage 3: Finding Similar Tracks**
 
-1. **Route:** Clicking "Find Similar Tracks" sends a GET request to /api/similar\_tracks (app\_voyager.py). Parameters include item\_id (of the seed song), n, eliminate\_duplicates, and radius\_similarity.  
+1. **Route:** Clicking "Find Similar Tracks" sends a GET request to /api/similar\_tracks (app\_voyager.py). Parameters include item\_id (of the seed song), n, eliminate\_duplicates, radius\_similarity, and mood\_similarity (optional boolean to filter by mood/feature similarity).  
 2. **Backend Logic (find\_nearest\_neighbors\_by\_id in voyager\_manager.py):**  
    * **Vector Lookup:** It retrieves the embedding vector for the target\_item\_id from the in-memory Voyager index (voyager\_index.get\_vector).  
    * **Determine Query Size (k):** It calculates how many neighbors (num\_to\_query) to initially retrieve from Voyager. This is *more* than n requested by the user, especially if radius\_similarity or eliminate\_duplicates is true, to provide a larger pool for filtering.  
    * **Voyager Query:** It calls voyager\_index.query(query\_vector, k=num\_to\_query) to get the k nearest neighbors (internal Voyager IDs and distances).  
-   * **ID Mapping:** It converts the internal Voyager IDs back to media server item\_id strings using the id\_map.  
+   * **ID Mapping:** It converts the internal Voyager IDs back to canonical track\_id integers using the id\_map. The `before_request` middleware in `app.py` transparently resolves provider-specific item\_ids (e.g., Jellyfin UUIDs) to canonical track\_ids via the `provider_track` table, so clients can pass either format.  
    * **Radius** Similarity **Branching:**  
      * **If radius\_similarity is True:**  
        * Calls \_radius\_walk\_get\_candidates to prepare the initial pool. This involves pre-filtering candidates using \_filter\_by\_distance (removes songs extremely close to the *anchor* based on DUPLICATE\_DISTANCE\_THRESHOLD\_\*), \_deduplicate\_and\_filter\_neighbors (removes exact name/artist matches, including the anchor itself), and potentially \_filter\_by\_mood\_similarity (if enabled by MOOD\_SIMILARITY\_ENABLE). It also pre-fetches vectors and calculates distances to the anchor.  
@@ -618,13 +625,13 @@ This feature primarily interacts with the pre-built Voyager index for fast simil
          3. \_filter\_by\_mood\_similarity: (Optional, based on MOOD\_SIMILARITY\_ENABLE or user request) Removes songs whose "other features" (danceable, aggressive, etc.) differ too much from the anchor song, based on MOOD\_SIMILARITY\_THRESHOLD.  
          4. **Artist Cap:** If eliminate\_duplicates is true, it iterates through the remaining songs and keeps only up to MAX\_SONGS\_PER\_ARTIST songs per unique artist.  
        * The final list contains the top n remaining songs, **sorted by their original distance** to the anchor song.  
-   * **Details Fetch:** It fetches the Title and Artist for the final list of item\_ids from the score table.  
-   * **Return:** Returns the list of similar songs (including item\_id, title, author, distance) to the frontend.
+   * **Details Fetch:** It fetches details for the final list of item\_ids from the score table.
+   * **Return:** Returns the list of similar songs to the frontend. Each result includes: `item_id`, `title`, `author`, `album`, `album_artist`, `distance`, `file_path`, `key`, `scale`, `tempo`, `energy`, `mood_vector`, `other_features`, `year`, and `rating`.
 
 #### **Stage 4: Playlist Creation**
 
-1. **Route:** Clicking "Create Playlist" (similarity.html) sends a POST request to /api/create\_playlist (app\_voyager.py). The payload contains the desired playlist\_name and the list of track\_ids (seed song \+ similar songs).  
-2. **Backend Logic:** The endpoint calls create\_playlist\_from\_ids (voyager\_manager.py), which in turn calls create\_instant\_playlist (mediaserver.py). This function uses the configured MEDIASERVER\_TYPE and credentials to interact with the media server's API and create the actual playlist.
+1. **Route:** Clicking "Create Playlist" (similarity.html) sends a POST request to /api/create\_playlist (app\_voyager.py). The payload contains `playlist_name`, `track_ids` (seed song + similar songs), and optionally `provider_ids` (`'all'`, a single int, or list of ints) to target specific providers.
+2. **Backend Logic:** The endpoint calls create\_playlist\_from\_ids (voyager\_manager.py). In multi-provider mode, it remaps canonical track\_ids to provider-specific item\_ids via the `provider_track` table, then calls the appropriate media server adapter for each targeted provider.
 
 ### **3.3. Environment Variable Configuration**
 
@@ -1009,8 +1016,9 @@ This feature combines media server interaction for user history with vector anal
 
 #### **Stage 2: Fingerprint Generation (generate\_sonic\_fingerprint in sonic\_fingerprint\_manager.py)**
 
-1. **Fetch Top Songs:** Calls get\_top\_played\_songs (from mediaserver.py), passing the user\_creds. This function interacts with the media server API (based on MEDIASERVER\_TYPE) to retrieve the user's top SONIC\_FINGERPRINT\_TOP\_N\_SONGS most played tracks.  
-2. **Fetch Embeddings:** Retrieves the embedding vectors (embedding\_vector) for these top songs from the application's PostgreSQL database (embedding table) using get\_tracks\_by\_ids.  
+1. **Fetch Top Songs:** Calls get\_top\_played\_songs (from mediaserver.py), passing the user\_creds. This function interacts with the media server API (via the primary provider) to retrieve the user's top SONIC\_FINGERPRINT\_TOP\_N\_SONGS most played tracks.
+2. **Resolve IDs:** Provider-specific item IDs (e.g., Jellyfin UUIDs, Navidrome strings) are resolved to canonical database track\_ids using `resolve_track_id()`, which looks up the `provider_track` table. A reverse mapping is maintained so `get_last_played_time()` can still query the media server with original provider IDs.
+3. **Fetch Embeddings:** Retrieves the embedding vectors (embedding\_vector) for the resolved track\_ids from the application's PostgreSQL database (embedding table) using get\_tracks\_by\_ids.  
 3. **Calculate Recency Weights:**  
    * Iterates through the top songs (for which embeddings were found).  
    * For each song, calls get\_last\_played\_time (from mediaserver.py), passing user\_creds, to get the timestamp of the last play.  
@@ -1045,8 +1053,8 @@ The Sonic Fingerprint feature uses the following configurations:
 
 #### **Media Server**
 
-* MEDIASERVER\_TYPE: **(Required)** Determines how to interact with the media server API to get play history and create playlists.  
-* JELLYFIN\_URL, JELLYFIN\_USER\_ID, JELLYFIN\_TOKEN: Default Jellyfin credentials (used if user doesn't provide specific ones, and for resolving usernames).  
+* MEDIASERVER\_TYPE: Determines how to interact with the media server API to get play history and create playlists. In multi-provider mode, the primary provider is used for play history.
+* JELLYFIN\_URL, JELLYFIN\_USER\_ID, JELLYFIN\_TOKEN: Default Jellyfin credentials (used if user doesn't provide specific ones, and for resolving usernames). In multi-provider mode, credentials are read from the provider registry.  
 * NAVIDROME\_URL, NAVIDROME\_USER, NAVIDROME\_PASSWORD: Default Navidrome credentials (used if user doesn't provide specific ones).  
 * *(Other media server credentials)*: Used similarly based on MEDIASERVER\_TYPE.
 
@@ -1061,7 +1069,7 @@ The Sonic Fingerprint feature uses the following configurations:
 
 ## **8\. Instant Playlist (Chat)**
 
-This section documents the Instant Playlist (Chat) feature: a conversational UI that accepts a user's natural-language prompt (mood, activity, description), uses an AI model to produce a playlist intent and a safe read-only query, executes the query against the analyzed music library, and optionally creates a playlist on the configured media server.
+This section documents the Instant Playlist (Chat) feature: a conversational UI that accepts a user's natural-language prompt (mood, activity, description), uses an AI model with MCP (Model Context Protocol) tool calling in an agentic loop to discover songs, and optionally creates a playlist on the configured media server.
 
 ### **8.1. Functional Analysis (High-Level)**
 
@@ -1071,62 +1079,99 @@ Key User Interactions & Workflow
 
 1. The user navigates to the Instant Playlist page (chat UI under the `/chat` blueprint). The page shows AI provider/model controls and a single prompt textarea (see `templates/chat.html`).
 2. The user types a prompt describing mood, activity, or desired songs (e.g., "upbeat workout with electronic funk") and clicks "Get Playlist Idea".
-3. The frontend gathers UI options (provider, model, optional Ollama server URL override) and posts to `/chat/api/chatPlaylist` with `{ userInput, ai_provider, ai_model, ... }`.
-4. The backend constructs a structured AI prompt asking for two things: a short human-friendly message summarizing the playlist intent and a parameterized, read-only SQL (or structured query) that will return candidate songs (or, alternatively, a validated structured query object). It calls an AI provider via helper functions in `ai.py`.
-5. The AI's response is validated and sanitized server-side. If valid, the server executes the query (with parameter binding) against PostgreSQL, returning the message, the executed SQL (for transparency), and the resulting songs. If invalid or unsafe, the server either rejects the AI output and returns an error or falls back to a safe templated query built from extracted entities.
+3. The frontend gathers UI options (provider, model, optional server URL/API key overrides) and posts to `/chat/api/chatPlaylist` with `{ userInput, ai_provider, ai_model, ... }`.
+4. The backend runs an **agentic tool-calling loop** (max 5 iterations): The AI selects from 6 MCP tools to discover songs, results are collected and deduplicated, and the loop continues until ~100 usable songs are found or iterations are exhausted.
+5. Results are ordered using a greedy nearest-neighbor algorithm (tempo/energy/key distance) for smooth listening transitions.
 6. The frontend displays:
-   * Collapsible AI interaction log (full message),
-   * Collapsible executed query (for debugging/transparency),
+   * AI interaction log (iterations, tool calls, results per tool),
    * The resulting playlist (ordered list of songs), and
    * A "Create Playlist on Media Server" section to push the returned songs to the user's configured media server.
 
 Outcome
 
-The user receives an instant playlist that reflects their natural language prompt, with the option to persist it to their media server. The UI emphasizes transparency by showing the AI message and executed query.
+The user receives an instant playlist that reflects their natural language prompt, with the option to persist it to their media server. The AI adaptively selects different search strategies (similarity, text search, genre filters, cultural knowledge) across multiple iterations.
 
 ### **8.2. Technical Analysis (Algorithm-Level)**
 
-The backend emphasizes structured AI output, safety, and result-size limits. The implementation uses `ai.py` helpers to call Ollama/Gemini/Mistral, enforces timeouts/delays, and strictly validates any AI-generated query.
+The backend uses an agentic MCP tool-calling architecture. The AI model decides which tools to call and with what parameters; the server executes those tools against the music library and feeds results back for iterative refinement.
 
-Stage 1: Request Handling
+#### **MCP Tools**
 
-1. Endpoint: POST `/chat/api/chatPlaylist` (registered by `chat_bp` in `app_chat.py`). The payload includes `userInput`, `ai_provider`, `ai_model`, and provider-specific overrides (e.g., `ollama_server_url`).
-2. Validation: Ensure `userInput` is present and non-empty. Normalize provider value (uppercase) and select server-side defaults from config if client omitted them.
+Six tools are available to the AI, defined in `ai_mcp_client.py` and executed via `tasks/mcp_server.py`:
 
-Stage 2: Prompt Construction
+| Tool | Priority | When AI Should Use It | Key Parameters |
+|------|----------|----------------------|----------------|
+| `song_similarity` | 1 (most specific) | User mentions a specific song title | `song_title` (required), `song_artist` (required), `get_songs` (default 200) |
+| `text_search` | 2 | Instruments, sound descriptions, vibes (requires CLAP) | `description` (required), `tempo_filter` (slow/medium/fast), `energy_filter` (low/medium/high), `get_songs` |
+| `artist_similarity` | 3 | "Songs like Artist X" | `artist` (required), `get_songs` |
+| `song_alchemy` | 4 | Blend multiple artists/songs ("A + B but not C") | `add_items` (required, 2+ items), `subtract_items`, `get_songs` |
+| `ai_brainstorm` | 5 | Cultural knowledge (awards, trending, iconic albums) | `user_request` (required), `get_songs` |
+| `search_database` | 6 (most general) | Genre/mood/tempo/energy/year/rating/key/scale filters | `genres`, `moods`, `tempo_min/max`, `energy_min/max`, `key`, `scale`, `year_min/max`, `min_rating`, `album`, `artist`, `get_songs` |
 
-1. Build a prompt that asks the model to return a structured JSON object with explicit keys: `message` (string), `query` (parameterized SQL string or a high-level structured query representation), and `params` (array/object of bind parameters). Example instruction: "Return JSON: {message:'..', query:'SELECT ... WHERE ... LIMIT $1', params:[50]}".
-2. Include explicit constraints in the prompt: SQL must be READ-ONLY (SELECT only), no joins that access non-music tables, result size limit, and only allowed columns (item_id, title, author, album, score, feature fields). Ask the model to prefer parameterized queries and to avoid database-specific features.
+**Tool implementations:**
 
-Stage 3: Call AI Provider
+* **song_similarity:** Exact + fuzzy title/artist match in DB, then Voyager HNSW nearest-neighbor search on the matched song's embedding vector.
+* **text_search:** CLAP text encoder produces a query embedding; cosine similarity against all pre-computed CLAP audio embeddings. Optional hybrid filtering by tempo range and energy level. Genre keyword filtering removes off-genre CLAP results when description mentions specific genres.
+* **artist_similarity:** Finds the artist in the GMM-based artist component index, retrieves similar artists via Jeffreys divergence, returns songs from the original + similar artists.
+* **song_alchemy:** Vector arithmetic on embeddings (sum ADD items, subtract SUBTRACT items), then Voyager nearest-neighbor search on the resulting vector. Requires 2+ ADD items; single items are redirected to `artist_similarity`.
+* **ai_brainstorm:** Prompts the AI to suggest 25-35 song titles, then performs two-stage matching against the DB (exact case-insensitive, then normalized fuzzy on both title AND artist).
+* **search_database:** Builds a parameterized SQL query combining all provided filters. Energy values are normalized (AI sees 0-1, converted to raw 0.01-0.15 range via `ENERGY_MIN`/`ENERGY_MAX`). Genres match against `mood_vector` using regex `(^|,)\s*genre:` to prevent substring false positives.
 
-1. Use `ai.py` to call the selected provider. For Ollama, the app may call an internal or user-provided Ollama server URL (streaming support exists). For Gemini, the server uses `google.generativeai`; for Mistral, it uses `mistralai`.
-2. Apply provider-specific delays/timeouts (Gemini/Mistral use env-controlled call-delay variables) and keep a high-level timeout to avoid long waits. Log the full raw AI response for debugging (but not API keys).
+#### **System Prompt**
 
-Stage 4: Validate & Sanitize AI Output
+`_build_system_prompt()` in `ai_mcp_client.py` builds a single prompt used by all AI providers. It includes:
 
-1. If the AI returns JSON with `query` and `params`, parse it and inspect `query` to ensure it:
-   * Is read-only (only SELECT),
-   * Does not contain prohibited keywords (INSERT, UPDATE, DELETE, DROP, ALTER, COPY, TRUNCATE),
-   * References only allowed table(s) (score, embedding, track-related tables) and allowed columns.
-2. If the AI returns freeform SQL or text, attempt to extract intent (mood/genre/tempo/entities) and map to a safe, parameterized server-side template query (e.g., a template that selects based on mood vector similarity + tempo range + artist cap).
-3. Enforce a maximum `LIMIT` (e.g., `ALCHEMY_MAX_N_RESULTS`) regardless of AI-specified limits.
+1. **Library context** from `get_library_context()`: total songs, unique artists, year range, rating coverage, available scales, top 15 genres, top 10 moods.
+2. **Tool decision tree**: maps query patterns to recommended tools (e.g., specific song → `song_similarity`, instruments/vibes → `text_search`, awards/trending → `ai_brainstorm`).
+3. **Rules** (14 critical rules): both title AND artist required for `song_similarity`; combine ALL filters in ONE `search_database` call; use 1-3 specific genres not broad ones; rating is a hard filter; year handling conventions (single year, decade, range, before/after).
 
-Stage 5: Execute Query & Post-process Results
+#### **Agentic Loop**
 
-1. Execute the validated, parameterized query against PostgreSQL and fetch rows.
-2. Post-process results: limit final result size, apply de-duplication (by title/artist), and enforce `MAX_SONGS_PER_ARTIST` if requested. Build the `query_results` array for the response.
-3. Save the executed SQL and params to the response so the frontend can show the executed query in a collapsible section.
+The loop runs in `chat_playlist_api()` (`app_chat.py`):
 
-Stage 6: Optional Playlist Creation on Media Server
+```
+for iteration in range(5):
+    1. Count usable songs (after MAX_SONGS_PER_ARTIST_PLAYLIST cap)
+    2. Stop conditions:
+       - usable_count >= 100 OR raw_count >= 1000
+       - Rating-filtered request AND iteration >= 2
+       - Year-only query AND iteration >= 2
+    3. Build AI context (progress so far, which tools succeeded/failed)
+    4. Call AI with system prompt + tool definitions
+    5. Pre-execution validation per tool call:
+       - song_similarity: reject if title or artist empty
+       - song_alchemy: convert single item to artist_similarity
+       - search_database: strip years < 1900, hallucinated min_rating, invalid genres
+    6. Execute each tool (capped at 10 tool calls per iteration)
+    7. Deduplicate results by (title, artist) tuple
+    8. Track which tool contributed each song
+```
 
-1. The frontend posts the playlist name and `item_ids` to an endpoint that maps internal `item_id`s to media-server-specific IDs and creates the playlist using the configured media server adapter (Jellyfin/Emby/Navidrome). These adapter functions live in `mediaserver.py`.
-2. Return the media server response (success, playlist id, or error) to the frontend and display it in the UI.
+**Collection strategy:** Over-collect up to 1000 raw songs, apply artist diversity cap (`MAX_SONGS_PER_ARTIST_PLAYLIST`, default 5), stop when 100 usable songs are reached.
 
-Safety & Fallbacks
+**Fallback:** If iteration 0 fails (AI error or no tool calls), fall back to `search_database` with top genres from the library.
 
-* If AI output fails validation, return a friendly error and either (a) allow the user to retry, (b) run a safe fallback query built from extracted entities, or (c) return an empty result with an explanation.
-* Limit the number of AI calls per minute or per session to avoid abuse. Record AI call metadata (time, provider, model) for observability.
+#### **AI Provider Implementations**
+
+All providers receive the same system prompt and tool definitions. Tool calling is handled differently per provider:
+
+| Provider | Client | Tool Calling Mode | Notes |
+|----------|--------|-------------------|-------|
+| Gemini | `google.genai.Client` | `FunctionCallingConfig(mode='ANY')` | Schema converted to Gemini uppercase types |
+| OpenAI/OpenRouter | HTTP POST | `tool_choice: "required"` | Supports any OpenAI-compatible endpoint |
+| Mistral | `mistralai.Mistral` | `tool_choice="any"` | Native tool calling |
+| Ollama | HTTP POST | Prompt-based JSON output | No native tool calling; robust parsing with `<think>` tag removal for reasoning models |
+
+#### **Playlist Ordering**
+
+After the agentic loop, results are ordered by `order_playlist()` in `tasks/playlist_ordering.py` using a greedy nearest-neighbor algorithm:
+
+1. Start from the song at the 25th percentile of energy (gentle opener).
+2. Greedily pick the nearest unvisited neighbor using a composite distance metric: **35% tempo** (normalized by 80 BPM span), **35% energy** (normalized by 0.14 energy span), **30% key distance** (Circle of Fifths, 20% discount for same scale).
+
+#### **Playlist Creation**
+
+Uses the same `/api/create_playlist` endpoint as other features. The frontend posts the playlist name and `item_ids`, which are remapped to provider-specific IDs and sent to the media server adapter.
 
 ### **8.3. Environment Variable Configuration**
 
@@ -1138,35 +1183,42 @@ Core / Shared
 
 AI / Chat Specific
 
-* `AI_MODEL_PROVIDER` — Default chat AI provider (OLLAMA, GEMINI, MISTRAL, NONE).
-* `OLLAMA_SERVER_URL` — Default Ollama server (e.g., `http://localhost:11434/api/generate`) used when provider is OLLAMA. The frontend may supply an override `ollama_server_url` per-request.
-* `OLLAMA_MODEL_NAME` — Default Ollama model name for playlist-related prompts.
-* `GEMINI_API_KEY` — Server-side Google Gemini key used for GEMINI provider.
-* `GEMINI_MODEL_NAME` — Default Gemini model (e.g., `gemini-2.5-pro`).
-* `GEMINI_API_CALL_DELAY_SECONDS` — Optional delay to respect Gemini rate limits (used by `ai.py`).
-* `MISTRAL_API_KEY` — Server-side Mistral key used for MISTRAL provider.
-* `MISTRAL_MODEL_NAME` — Default Mistral model for playlist prompts.
-* `MISTRAL_API_CALL_DELAY_SECONDS` — Optional delay for Mistral calls.
+* `AI_MODEL_PROVIDER` — Default AI provider: `OLLAMA`, `OPENAI`, `GEMINI`, `MISTRAL`, or `NONE`.
+* `AI_REQUEST_TIMEOUT_SECONDS` — Timeout for AI API requests (default `120`).
+* `OLLAMA_SERVER_URL` — Default Ollama server URL. The frontend may supply an override per-request.
+* `OLLAMA_MODEL_NAME` — Default Ollama model name.
+* `OPENAI_SERVER_URL` — OpenAI-compatible endpoint (default `https://openrouter.ai/api/v1/chat/completions`).
+* `OPENAI_MODEL_NAME` — Default model for OpenAI/OpenRouter provider.
+* `OPENAI_API_KEY` — API key for OpenAI/OpenRouter.
+* `GEMINI_API_KEY` — Google Gemini API key.
+* `GEMINI_MODEL_NAME` — Default Gemini model.
+* `MISTRAL_API_KEY` — Mistral API key.
+* `MISTRAL_MODEL_NAME` — Default Mistral model.
 
-Database safety for AI chat
+MCP / Playlist Specific
 
-* `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD` — Credentials for a restricted, read-only DB role that the chat/AI flow uses to execute validated, parameterized SELECT queries. The application creates/uses this low-privilege user to ensure any AI-generated SQL runs without write or DDL permissions. Documented here for operators who manage DB roles and secrets.
+* `MAX_SONGS_PER_ARTIST_PLAYLIST` — Maximum songs from one artist in the final playlist (default `5`).
+* `CLAP_ENABLED` — Must be `true` for the `text_search` tool to be available.
+* `ENERGY_MIN`, `ENERGY_MAX` — Raw energy range in DB (default `0.01`-`0.15`). AI sees normalized 0-1 values; conversion happens in `execute_mcp_tool`.
+
+Deprecated (no longer used by MCP architecture)
+
+* `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD` — These were used by the previous SQL-generation architecture where the AI produced parameterized SQL queries executed via a restricted database role. The current MCP tool-calling approach no longer generates or executes raw SQL; tools use the application's standard database connection. These config vars still exist in `config.py` but are unused by the chat feature.
 
 Limits and Safety
 
-* `ALCHEMY_DEFAULT_N_RESULTS` / `ALCHEMY_MAX_N_RESULTS` — Caps the number of songs returned by AI-generated queries.
-* `CHAT_SQL_ALLOWED_READ_ONLY` — Conceptual flag: code enforces read-only SQL execution for AI results. (Enforced in code; not required to be present as an env var.)
+* The agentic loop is capped at **5 iterations** and **10 tool calls per iteration** to prevent runaway AI behavior.
+* Song collection is capped at **1000 raw songs** before deduplication and artist-cap filtering.
+* Artist diversity is enforced via `MAX_SONGS_PER_ARTIST_PLAYLIST` (default 5) — no single artist dominates the playlist.
+* Rating-filtered and year-only requests stop early (iteration 2) to prevent the AI from broadening filters beyond the user's intent.
+* Pre-execution validation strips hallucinated parameters (invalid years, fabricated ratings, nonsensical genres) before tool execution.
+* Energy normalization prevents the AI from accidentally querying raw DB values (the AI works in 0-1 range; conversion to raw 0.01-0.15 is handled server-side).
 
 Operational Notes
 
-* API keys remain server-side; the frontend should never submit third-party API keys. For Ollama the UI may optionally provide an Ollama server URL if users self-host and the server is reachable from the UI.
-* Log AI interactions (message, executed query, provider, model) for debugging and observability; avoid logging secrets.
-
-## Notes
-
-This design favors structured AI output (JSON with `message`, `query`, `params`) and strict validation to safely combine LLM creativity with controlled database queries. When a generated query cannot be validated, the server should fall back to a safe template-based query derived from the AI's intent.
-
-```
+* API keys can be provided per-request from the frontend (for OpenAI/OpenRouter, Gemini, Mistral) or configured server-side via environment variables.
+* For Ollama, the UI may optionally provide a server URL if users self-host.
+* Log AI interactions (iterations, tool calls, results) for debugging; avoid logging secrets.
 
 ## **9. Database Cleaning**
 
@@ -1501,3 +1553,157 @@ The Text Search functionality is configured by the following environment variabl
 * **Cache Refresh:** After running analysis on new albums, use `/api/clap/cache/refresh` to reload embeddings without restarting Flask.
 * **Query Quality:** CLAP performs best with simple queries (2-4 words) combining genre, instrument, and mood descriptors. Genre and instrument queries yield the most accurate results, while mood-based queries are less precise. Examples: "energetic rock guitar", "calm piano instrumental", "electronic dance synthesizer".
 * **Tokenizer:** Uses HuggingFace `transformers` library's RoBERTa tokenizer. The `TRANSFORMERS_NO_ADVISORY_WARNINGS` env var suppresses PyTorch/TensorFlow warnings since only the tokenizer is used.
+
+## **12. Text Search (MuLan)**
+
+MuLan provides an alternative text-to-audio search using MuQ-MuLan ONNX models. It mirrors the CLAP feature (Section 11) with the same endpoint pattern and caching architecture but uses a different model.
+
+### **12.1. Functional Analysis (High-Level)**
+
+The user experience is identical to CLAP Text Search: navigate to the MuLan Search page, type a natural language query, and receive songs ranked by semantic similarity. MuLan uses an XLM-RoBERTa text encoder (supporting English and Chinese) paired with a separate audio encoder.
+
+### **12.2. Technical Analysis (Algorithm-Level)**
+
+**Audio Analysis (Worker):** Audio is loaded at 24kHz (strict requirement), split into overlapping 10-second segments (5-second hop), each segment produces one embedding via the audio encoder, and the final embedding is the normalized average of all segments.
+
+**Text Search (Flask):** The text query is tokenized (XLM-RoBERTa, max\_length=128), run through the text encoder to produce a normalized embedding, then compared via cosine similarity (dot product of unit vectors) against all cached audio embeddings. Per-artist cap is enforced via `MAX_SONGS_PER_ARTIST`.
+
+**Endpoints:** Same pattern as CLAP with `/api/mulan/` prefix:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/mulan/search` | POST | Search by text query (`{query, limit}`) |
+| `/api/mulan/warmup` | POST | Preload text encoder model |
+| `/api/mulan/warmup/status` | GET | Check if model is loaded |
+| `/api/mulan/cache/refresh` | POST | Reload embeddings from DB |
+| `/api/mulan/stats` | GET | Cache stats (song count, memory, enabled status) |
+| `/api/mulan/top_queries` | GET | Precomputed example queries |
+
+### **12.3. Environment Variable Configuration**
+
+* `MULAN_ENABLED` — Enable MuLan model during analysis and text search (default `false`).
+* `MULAN_EMBEDDING_DIMENSION` — Embedding dimension for MuLan vectors.
+
+## **13. Artist Similarity**
+
+Artist Similarity finds artists whose music sounds similar by modeling each artist's sonic profile as a Gaussian Mixture Model (GMM) over their song embeddings, then comparing GMM distributions.
+
+### **13.1. Functional Analysis (High-Level)**
+
+1. The user navigates to the Artist Similarity page and searches for an artist.
+2. The system returns a ranked list of similar artists with divergence scores (lower = more similar).
+3. The user can view all tracks by any artist and optionally request component-level matches showing which "musical facets" of two artists overlap.
+
+### **13.2. Technical Analysis (Algorithm-Level)**
+
+**Artist Embedding Computation:**
+* No additional audio processing is needed — uses existing 200-dim song embeddings from the `embedding` table.
+* For each artist, a GMM is fitted to all their song embeddings using BIC scoring to auto-select the number of components (2-10).
+* Diagonal covariance is used for efficiency with 200-dim vectors.
+* GMM parameters (weights, means, covariances) are stored in `artist_gmm_params`.
+
+**Similarity Metric:**
+* **Jeffreys Divergence** (symmetric KL): `(KL(P||Q) + KL(Q||P)) / 2` between two artist GMMs.
+* Monte Carlo sampling (500 samples) for KL approximation.
+* A Voyager HNSW index (`artist_similarity_index`) stores GMM centroids for fast retrieval.
+
+**Component-Level Matching (optional):**
+When requested, computes pairwise distances between individual GMM components of two artists, returning the top 3 component matches with representative songs from each.
+
+**Endpoints:**
+
+| Endpoint | Method | Key Parameters | Response |
+|----------|--------|----------------|----------|
+| `/api/search_artists` | GET | `query` (min 2 chars) | `[{artist, artist_id, track_count}]` |
+| `/api/similar_artists` | GET | `artist` or `artist_id`, `n` (default 10) | `[{artist, artist_id, divergence}]` |
+| `/api/artist_tracks` | GET | `artist` or `artist_id` | `[{item_id, title, author}]` |
+
+## **14. External Plugin API**
+
+The External API provides endpoints for third-party integrations (Jellyfin/Navidrome plugins) to query AudioMuse-AI's analysis data without direct database access.
+
+### **14.1. Technical Analysis**
+
+All endpoints are registered under the `/external` URL prefix.
+
+| Endpoint | Method | Parameters | Response |
+|----------|--------|-----------|----------|
+| `/external/get_score` | GET | `id` (track\_id, required) | Complete score row: title, author, album, album\_artist, tempo, key, scale, mood\_vector, other\_features, energy, year, rating, file\_path |
+| `/external/get_embedding` | GET | `id` (track\_id, required) | `{track_id, embedding: float[200]}` |
+| `/external/search` | GET | `search_query` (min 3 chars) or legacy `title`+`artist` | `[{item_id, title, author, album, album_artist, file_path}]` |
+
+**ID Resolution:** The `before_request` middleware resolves provider-specific item\_ids to canonical track\_ids, so plugins can pass either Jellyfin UUIDs or integer track\_ids.
+
+## **15. Waveform Visualization**
+
+The Waveform feature provides audio waveform data for visualization in the UI.
+
+### **15.1. Technical Analysis**
+
+**Endpoint:** GET `/api/waveform?item_id=<id>` returns peak amplitude data.
+
+**Algorithm:**
+1. Downloads the audio file from the media server via the configured provider.
+2. Loads audio (soundfile → scipy decimation → librosa fallback), converts to mono.
+3. Reshapes into 500 chunks, computes peak amplitude per chunk.
+4. Normalizes to -1.0/+1.0 range, returns 1000 float values (min/max pairs for symmetric visualization).
+
+## **16. Collection Sync**
+
+The Collection feature synchronizes AudioMuse-AI's analysis database with external collection services.
+
+### **16.1. Technical Analysis**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/collection/start` | POST | Enqueue sync task (`{url, token, num_albums}`) |
+| `/api/collection/last_task` | GET | Get status of last collection sync task |
+
+The sync runs as a high-priority RQ job with 2-hour timeout. Progress is tracked via the `task_status` table.
+
+## **17. Multi-Provider Architecture**
+
+AudioMuse-AI supports connecting to multiple media servers simultaneously, with a GUI Setup Wizard for configuration and automatic cross-provider track deduplication.
+
+### **17.1. Functional Analysis (High-Level)**
+
+1. The user accesses the Setup Wizard (`/setup`) on first run or the Settings page (`/settings`) for ongoing management.
+2. Providers are added by selecting a type (Jellyfin, Navidrome, Lyrion, Emby, LocalFiles), entering credentials, and testing the connection.
+3. One provider is designated as **primary** (highest priority for play history, conflict resolution).
+4. During analysis, tracks are deduplicated across providers using file path hashing — the same song from Jellyfin and Navidrome shares one set of analysis results.
+5. Playlist creation can target one, some, or all providers, with automatic ID remapping per provider.
+
+### **17.2. Technical Analysis (Algorithm-Level)**
+
+**Database Schema:**
+
+* `provider` table: JSONB config storage (type, credentials, path prefix, priority, enabled flag).
+* `track` table: Canonical track identity with `file_path_hash` (SHA-256 of normalized path) as unique key.
+* `provider_track` table: Links provider-specific `item_id` to canonical `track_id`. Unique constraints on `(provider_id, item_id)` and `(provider_id, track_id)`.
+
+**Cross-Provider Track Matching:**
+
+1. File paths are normalized (lowercase, forward slashes, strip prefix) to produce a deterministic `normalized_path`.
+2. SHA-256 hash of the normalized path = `file_path_hash`, used as the unique deduplication key.
+3. When a new provider scans its library, existing tracks with matching hashes are linked via `provider_track` rather than re-analyzed.
+
+**ID Resolution:**
+
+The `before_request` middleware (`app.py`) intercepts all API requests and resolves `item_id` or `id` params to canonical `track_id` via `resolve_track_id()`, which:
+1. Tries parsing as integer → verifies in `track` table.
+2. Falls back to `provider_track.item_id` lookup.
+
+This makes all APIs backwards-compatible — clients can pass Jellyfin UUIDs, Navidrome IDs, or canonical integer track\_ids interchangeably.
+
+**Key Endpoints (all under `/api/setup/`):**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/setup/status` | GET | Setup completion status, provider count |
+| `/api/setup/providers` | GET/POST | List or create providers |
+| `/api/setup/providers/<id>` | PUT/DELETE | Update or remove a provider |
+| `/api/setup/providers/<id>/test` | POST | Test provider connection |
+| `/api/setup/providers/health` | GET | Health check all providers |
+| `/api/setup/settings` | GET/PUT | Global application settings |
+| `/api/setup/server-info` | GET | Server hardware info (GPU, host) |
+| `/api/library/duplicates` | GET | Find duplicate tracks across providers |

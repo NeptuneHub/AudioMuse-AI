@@ -21,6 +21,7 @@ from redis import Redis
 from flasgger import Swagger, swag_from
 
 # Import configuration
+import config
 from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP_DIR, \
   REDIS_URL, DATABASE_URL, MAX_DISTANCE, MAX_SONGS_PER_CLUSTER, MAX_SONGS_PER_ARTIST, NUM_RECENT_ALBUMS, \
   SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_SILHOUETTE, SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ, \
@@ -51,6 +52,7 @@ from app_helper import (
     save_task_status,
     get_task_info_from_db,
     cancel_job_and_children_recursive,
+    resolve_track_id,
     TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
 )
@@ -155,6 +157,59 @@ def teardown_db(e=None):
 with app.app_context():
     init_db()
 
+def skip_id_resolution(f):
+    """Mark an endpoint to skip automatic ID resolution."""
+    f._skip_id_resolution = True
+    return f
+
+@app.before_request
+def resolve_request_ids():
+    """Automatically resolve provider item_ids to canonical track_ids."""
+    # Skip static file requests
+    if request.endpoint == 'static':
+        return
+
+    # Skip if endpoint opts out
+    if request.endpoint:
+        view_func = app.view_functions.get(request.endpoint)
+        if view_func and getattr(view_func, '_skip_id_resolution', False):
+            return
+
+    # Skip if no relevant params exist (avoids unnecessary DB lookups)
+    has_query_id = request.args.get('item_id') or request.args.get('id')
+    has_json_body = (request.method in ('POST', 'PUT')
+                     and request.content_type and 'json' in request.content_type)
+    if not has_query_id and not has_json_body:
+        return
+
+    # Resolve 'item_id' or 'id' in query params
+    for param in ('item_id', 'id'):
+        val = request.args.get(param)
+        if val:
+            track_id = resolve_track_id(val)
+            if track_id:
+                g.track_id = track_id
+                g.original_item_id = val
+            break
+
+    # Resolve in JSON body (POST/PUT)
+    if request.is_json and request.method in ('POST', 'PUT'):
+        data = request.get_json(silent=True) or {}
+        if 'item_id' in data:
+            track_id = resolve_track_id(data['item_id'])
+            if track_id:
+                g.track_id = track_id
+        # Resolve arrays: track_ids or item_ids
+        for array_key in ('track_ids', 'item_ids'):
+            if array_key in data and isinstance(data[array_key], list):
+                resolved = []
+                for iid in data[array_key]:
+                    tid = resolve_track_id(iid)
+                    if tid:
+                        resolved.append(tid)
+                if resolved:
+                    g.track_ids = resolved
+
 
 # --- API Endpoints ---
 
@@ -224,6 +279,7 @@ def logout_endpoint():
 def index():
     """
     Serve the main HTML page.
+    Redirects to setup wizard if initial setup is not completed.
     ---
     tags:
       - UI
@@ -234,7 +290,13 @@ def index():
           text/html:
             schema:
               type: string
+      302:
+        description: Redirect to setup wizard if setup not completed.
     """
+    # Check if setup is completed - redirect to wizard if not
+    from app_setup import is_setup_completed
+    if not is_setup_completed():
+        return redirect(url_for('setup.setup_page'))
     return render_template('index.html', title = 'AudioMuse-AI - Home Page', active='index')
 
 
@@ -574,11 +636,11 @@ def get_config_endpoint():
         "pca_components_min": PCA_COMPONENTS_MIN, "pca_components_max": PCA_COMPONENTS_MAX,
         "min_songs_per_genre_for_stratification": MIN_SONGS_PER_GENRE_FOR_STRATIFICATION,
         "stratified_sampling_target_percentile": STRATIFIED_SAMPLING_TARGET_PERCENTILE,
-        "ai_model_provider": AI_MODEL_PROVIDER,
-        "ollama_server_url": OLLAMA_SERVER_URL, "ollama_model_name": OLLAMA_MODEL_NAME,
-        "openai_server_url": OPENAI_SERVER_URL, "openai_model_name": OPENAI_MODEL_NAME,
-        "gemini_model_name": GEMINI_MODEL_NAME,
-        "mistral_model_name": MISTRAL_MODEL_NAME,
+        "ai_model_provider": config.AI_MODEL_PROVIDER,
+        "ollama_server_url": config.OLLAMA_SERVER_URL, "ollama_model_name": config.OLLAMA_MODEL_NAME,
+        "openai_server_url": config.OPENAI_SERVER_URL, "openai_model_name": config.OPENAI_MODEL_NAME,
+        "gemini_model_name": config.GEMINI_MODEL_NAME,
+        "mistral_model_name": config.MISTRAL_MODEL_NAME,
         "top_n_moods": TOP_N_MOODS, "mood_labels": MOOD_LABELS, "clustering_runs": CLUSTERING_RUNS,
         "top_n_playlists": TOP_N_PLAYLISTS,
         "enable_clustering_embeddings": ENABLE_CLUSTERING_EMBEDDINGS,
@@ -605,12 +667,12 @@ def get_playlists_endpoint():
     from collections import defaultdict # Local import if not used elsewhere globally
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
-    cur.execute("SELECT playlist_name, item_id, title, author FROM playlist ORDER BY playlist_name")
+    cur.execute("SELECT playlist_name, track_id, title, author FROM playlist ORDER BY playlist_name")
     rows = cur.fetchall()
     cur.close()
     playlists_data = defaultdict(list)
     for row in rows:
-        playlists_data[row['playlist_name']].append({"item_id": row['item_id'], "title": row['title'], "author": row['author']})
+        playlists_data[row['playlist_name']].append({"item_id": str(row['track_id']), "title": row['title'], "author": row['author']})
     return jsonify(dict(playlists_data)), 200
 
 
@@ -710,6 +772,7 @@ from app_waveform import waveform_bp
 from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
 from app_mulan_search import mulan_search_bp
+from app_setup import setup_bp  # Setup wizard and provider configuration
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -726,6 +789,7 @@ app.register_blueprint(waveform_bp)
 app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
 app.register_blueprint(mulan_search_bp)
+app.register_blueprint(setup_bp)  # Setup wizard
 
 # --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
 # RQ workers import app.py but should NOT load indexes or start background threads.
@@ -737,8 +801,26 @@ try:
 except OSError:
   logger.debug(f"Could not create TEMP_DIR '{TEMP_DIR}' (may be running in test/CI environment)")
 
+# --- Apply DB settings to runtime config (both Flask and workers) ---
+with app.app_context():
+  try:
+    from app_setup import apply_settings_to_config
+    apply_settings_to_config()
+    logger.info("Applied DB settings to runtime config.")
+  except Exception as e:
+    logger.debug(f"Could not apply DB settings at startup: {e}")
+
 if not _is_worker:
   with app.app_context():
+
+    # --- MPD removal warning ---
+    if config.MEDIASERVER_TYPE == 'mpd':
+      logger.warning("=" * 60)
+      logger.warning("MPD provider has been removed in v0.9.0.")
+      logger.warning("Please switch to 'localfiles' or another supported provider.")
+      logger.warning("See deployment/.env.example for configuration options.")
+      logger.warning("=" * 60)
+
     # --- Initial Voyager Index Load ---
     from tasks.voyager_manager import load_voyager_index_for_querying
     load_voyager_index_for_querying()

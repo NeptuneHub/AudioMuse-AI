@@ -15,15 +15,15 @@ class TestSaveTrackStringSanitization:
     def test_sanitize_removes_nul_bytes(self, mock_get_db):
         """Test that NUL bytes are removed from all string fields."""
         from app_helper import save_track_analysis_and_embedding
-        
+
         # Setup mock database
         mock_conn = MagicMock()
         mock_cur = MagicMock()
         mock_conn.cursor.return_value = mock_cur
         mock_get_db.return_value = mock_conn
-        
+
         # Test data with NUL bytes
-        item_id = "test_id"
+        track_id = 1
         title = "Song\x00Title"
         author = "Artist\x00Name"
         album = "Album\x00Name"
@@ -32,10 +32,10 @@ class TestSaveTrackStringSanitization:
         other_features = "feature1:0.5\x00,feature2:0.8"
         moods = {"happy": 0.8, "energetic": 0.6}
         embedding = np.array([0.1, 0.2, 0.3])
-        
+
         # Call the function
         save_track_analysis_and_embedding(
-            item_id, title, author, 120.0, key, scale, 
+            track_id, title, author, 120.0, key, scale,
             moods, embedding, energy=0.5, other_features=other_features, album=album
         )
         
@@ -59,18 +59,18 @@ class TestSaveTrackStringSanitization:
     def test_sanitize_removes_control_characters(self, mock_get_db):
         """Test that control characters are removed."""
         from app_helper import save_track_analysis_and_embedding
-        
+
         mock_conn = MagicMock()
         mock_cur = MagicMock()
         mock_conn.cursor.return_value = mock_cur
         mock_get_db.return_value = mock_conn
-        
+
         # Test data with control characters
         title = "Song\x01\x02\x03Title"
         author = "Artist\x1fName"
-        
+
         save_track_analysis_and_embedding(
-            "test_id", title, author, 120.0, "C", "major",
+            1, title, author, 120.0, "C", "major",
             {"happy": 0.5}, np.array([0.1, 0.2])
         )
         
@@ -84,15 +84,15 @@ class TestSaveTrackStringSanitization:
     def test_sanitize_handles_none_values(self, mock_get_db):
         """Test that None values are handled correctly."""
         from app_helper import save_track_analysis_and_embedding
-        
+
         mock_conn = MagicMock()
         mock_cur = MagicMock()
         mock_conn.cursor.return_value = mock_cur
         mock_get_db.return_value = mock_conn
-        
+
         save_track_analysis_and_embedding(
-            "test_id", None, None, 120.0, None, None,
-            {"happy": 0.5}, np.array([0.1, 0.2]), 
+            1, None, None, 120.0, None, None,
+            {"happy": 0.5}, np.array([0.1, 0.2]),
             energy=None, other_features=None
         )
         
@@ -110,20 +110,20 @@ class TestSaveTrackStringSanitization:
     def test_sanitize_truncates_long_strings(self, mock_get_db):
         """Test that overly long strings are truncated."""
         from app_helper import save_track_analysis_and_embedding
-        
+
         mock_conn = MagicMock()
         mock_cur = MagicMock()
         mock_conn.cursor.return_value = mock_cur
         mock_get_db.return_value = mock_conn
-        
+
         # Create strings longer than the limits
         long_title = "A" * 600  # Should be truncated to 500
         long_author = "B" * 300  # Should be truncated to 200
         long_other = "C" * 2500  # Should be truncated to 2000
-        
+
         save_track_analysis_and_embedding(
-            "test_id", long_title, long_author, 120.0, "C", "major",
-            {"happy": 0.5}, np.array([0.1, 0.2]), 
+            1, long_title, long_author, 120.0, "C", "major",
+            {"happy": 0.5}, np.array([0.1, 0.2]),
             other_features=long_other
         )
         
@@ -139,14 +139,14 @@ class TestSaveTrackStringSanitization:
     def test_sanitize_strips_whitespace(self, mock_get_db):
         """Test that leading/trailing whitespace is stripped."""
         from app_helper import save_track_analysis_and_embedding
-        
+
         mock_conn = MagicMock()
         mock_cur = MagicMock()
         mock_conn.cursor.return_value = mock_cur
         mock_get_db.return_value = mock_conn
-        
+
         save_track_analysis_and_embedding(
-            "test_id", "  Song Title  ", "  Artist Name  ", 
+            1, "  Song Title  ", "  Artist Name  ",
             120.0, "  C  ", "  major  ",
             {"happy": 0.5}, np.array([0.1, 0.2])
         )
@@ -163,17 +163,17 @@ class TestSaveTrackStringSanitization:
     def test_sanitize_preserves_unicode(self, mock_get_db):
         """Test that Unicode characters are preserved."""
         from app_helper import save_track_analysis_and_embedding
-        
+
         mock_conn = MagicMock()
         mock_cur = MagicMock()
         mock_conn.cursor.return_value = mock_cur
         mock_get_db.return_value = mock_conn
-        
+
         title = "歌曲 - Song 世界"
         author = "艺术家 Артист"
-        
+
         save_track_analysis_and_embedding(
-            "test_id", title, author, 120.0, "C", "major",
+            1, title, author, 120.0, "C", "major",
             {"happy": 0.5}, np.array([0.1, 0.2])
         )
         
@@ -269,4 +269,4 @@ class TestArtistMappingSanitization:
         call_args = mock_cur.execute.call_args
         values = call_args[0][1]
         
-        assert len(values[1]) == 200  # Should be truncated to 200
+        assert len(values[2]) == 200  # Should be truncated to 200

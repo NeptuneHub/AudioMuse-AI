@@ -2,7 +2,36 @@
 import os
 
 # --- Media Server Type ---
-MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, mpd, emby
+# Auto-detect provider from env vars if MEDIASERVER_TYPE is not explicitly set.
+# This ensures seamless upgrades: existing users with e.g. JELLYFIN_URL set
+# keep working without adding MEDIASERVER_TYPE to their .env.
+def _detect_mediaserver_type():
+    explicit = os.environ.get("MEDIASERVER_TYPE")
+    if explicit is not None:
+        if not explicit:
+            # Explicitly set to empty string — no default provider
+            return ""
+        normalized = explicit.lower()
+        if normalized == 'mpd':
+            import logging
+            logging.getLogger(__name__).warning(
+                "MPD provider has been removed in v0.9. Falling back to 'localfiles'. "
+                "Please update MEDIASERVER_TYPE in your environment."
+            )
+            return 'localfiles'
+        return normalized
+    # Auto-detect from provider-specific env vars (MEDIASERVER_TYPE not set at all)
+    if os.environ.get("JELLYFIN_URL", ""):
+        return "jellyfin"
+    if os.environ.get("EMBY_URL", ""):
+        return "emby"
+    if os.environ.get("NAVIDROME_URL", ""):
+        return "navidrome"
+    if os.environ.get("LYRION_URL", ""):
+        return "lyrion"
+    return "localfiles"
+
+MEDIASERVER_TYPE = _detect_mediaserver_type()
 
 # --- Jellyfin and DB Constants (Read from Environment Variables first) ---
 
@@ -42,12 +71,13 @@ NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "your_navidrome_passwo
 # These are used only if MEDIASERVER_TYPE is "lyrion".
 LYRION_URL = os.environ.get("LYRION_URL", "http://your_lyrion_url:9000")
 
-# --- MPD (Music Player Daemon) Constants ---
-# These are used only if MEDIASERVER_TYPE is "mpd".
-MPD_HOST = os.environ.get("MPD_HOST", "localhost")
-MPD_PORT = int(os.environ.get("MPD_PORT", "6600"))
-MPD_PASSWORD = os.environ.get("MPD_PASSWORD", "")  # Optional password, leave empty if none
-MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music")  # Path to MPD's music directory for file access
+# --- Local Files Provider Constants ---
+# These are used only if MEDIASERVER_TYPE is "localfiles".
+LOCALFILES_MUSIC_DIRECTORY = os.environ.get("LOCALFILES_MUSIC_DIRECTORY", "/music")  # Path to local music directory
+LOCALFILES_FORMATS = os.environ.get("LOCALFILES_FORMATS", "") or ".mp3,.flac,.ogg,.m4a,.mp4,.wav,.wma,.aac,.opus"  # Supported audio formats
+LOCALFILES_SCAN_SUBDIRS = os.environ.get("LOCALFILES_SCAN_SUBDIRS", "true").lower() == "true"  # Scan subdirectories
+LOCALFILES_USE_METADATA = os.environ.get("LOCALFILES_USE_METADATA", "true").lower() == "true"  # Use embedded metadata
+LOCALFILES_PLAYLIST_DIR = os.environ.get("LOCALFILES_PLAYLIST_DIR", "/music/playlists")  # Where to save M3U playlists
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
@@ -104,7 +134,7 @@ PCA_COMPONENTS_MIN = int(os.getenv("PCA_COMPONENTS_MIN", "0")) # 0 to disable PC
 PCA_COMPONENTS_MAX = int(os.getenv("PCA_COMPONENTS_MAX", "199")) # Max components for PCA 8 for score vectore, 199 for embeding
 
 # --- Clustering Runs for Diversity (New Constant) ---
-CLUSTERING_RUNS = int(os.environ.get("CLUSTERING_RUNS", "1000")) # Default to 100 runs for evolutionary search
+CLUSTERING_RUNS = int(os.environ.get("CLUSTERING_RUNS", "1000")) # Default to 1000 runs for evolutionary search
 MAX_QUEUED_ANALYSIS_JOBS = int(os.environ.get("MAX_QUEUED_ANALYSIS_JOBS", "25")) # Max album analysis jobs to keep in RQ queue (reduced from 100 to prevent resource exhaustion)
 
 # --- Batching Constants for Clustering Runs ---
@@ -215,7 +245,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "no-key-needed") # Set to "no-
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR-GEMINI-API-KEY-HERE") # Default API key
 GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro") # Default Gemini model gemini-2.5-pro, alternative gemini-2.5-flash
 
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "YOUR-GEMINI-API-KEY-HERE")
+MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "YOUR-MISTRAL-API-KEY-HERE")
 MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 
 # AI Request Timeout Configuration
@@ -263,6 +293,10 @@ TOP_N_OTHER_FEATURES = int(os.environ.get("TOP_N_OTHER_FEATURES", "2")) # Number
 EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/app/model/musicnn_embedding.onnx")
 PREDICTION_MODEL_PATH = os.environ.get("PREDICTION_MODEL_PATH", "/app/model/musicnn_prediction.onnx")
 EMBEDDING_DIMENSION = 200
+
+# --- Path Normalization Version ---
+# Increment when normalize_path_deterministic() algorithm changes to trigger rehashing
+CURRENT_NORM_VERSION = 1
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
@@ -470,6 +504,7 @@ ENABLE_PROXY_FIX = os.environ.get("ENABLE_PROXY_FIX", "False").lower() == "true"
 MAX_SONGS_PER_ARTIST_PLAYLIST = int(os.environ.get("MAX_SONGS_PER_ARTIST_PLAYLIST", "5"))
 # Enable energy-arc shaping for playlist ordering (gentle start -> peak -> cool down)
 PLAYLIST_ENERGY_ARC = os.environ.get("PLAYLIST_ENERGY_ARC", "False").lower() == "true"
+
 # --- Authentication ---
 # Set all three to enable authentication. Leave any blank to disable (legacy mode).
 AUDIOMUSE_USER = os.environ.get("AUDIOMUSE_USER", "")

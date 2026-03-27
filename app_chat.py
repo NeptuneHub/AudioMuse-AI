@@ -443,20 +443,20 @@ def chat_playlist_api():
 
             # Genres covered (from actual collected songs' mood_vector)
             genres_str = "none specifically"
-            collected_ids = [s['item_id'] for s in all_songs]
-            if collected_ids:
+            collected_track_ids = [s.get('track_id') or int(s['item_id']) for s in all_songs if s.get('track_id') or (s.get('item_id', '') and str(s['item_id']).isdigit())]
+            if collected_track_ids:
                 try:
                     from tasks.mcp_server import get_db_connection
                     from psycopg2.extras import DictCursor
                     db_conn_feedback = get_db_connection()
                     with db_conn_feedback.cursor(cursor_factory=DictCursor) as cur:
-                        placeholders = ','.join(['%s'] * min(len(collected_ids), 200))
+                        placeholders = ','.join(['%s'] * min(len(collected_track_ids), 200))
                         cur.execute(f"""
                             SELECT unnest(string_to_array(mood_vector, ',')) AS tag
                             FROM public.score
-                            WHERE item_id IN ({placeholders})
+                            WHERE track_id IN ({placeholders})
                             AND mood_vector IS NOT NULL AND mood_vector != ''
-                        """, collected_ids[:200])
+                        """, collected_track_ids[:200])
                         genre_freq = {}
                         for r in cur:
                             tag = r['tag'].strip()
@@ -580,11 +580,17 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
             if tn == 'search_database':
                 y_min = ta.get('year_min')
                 y_max = ta.get('year_max')
-                if y_min is not None and int(y_min) < 1900:
-                    log_messages.append(f"   ⚠️ Stripped nonsensical year_min={y_min} from {tn}")
+                try:
+                    if y_min is not None and int(y_min) < 1900:
+                        log_messages.append(f"   ⚠️ Stripped nonsensical year_min={y_min} from {tn}")
+                        ta.pop('year_min', None)
+                except (ValueError, TypeError):
                     ta.pop('year_min', None)
-                if y_max is not None and int(y_max) < 1900:
-                    log_messages.append(f"   ⚠️ Stripped nonsensical year_max={y_max} from {tn}")
+                try:
+                    if y_max is not None and int(y_max) < 1900:
+                        log_messages.append(f"   ⚠️ Stripped nonsensical year_max={y_max} from {tn}")
+                        ta.pop('year_max', None)
+                except (ValueError, TypeError):
                     ta.pop('year_max', None)
 
             # search_database: strip hallucinated min_rating if user didn't ask for ratings
@@ -640,9 +646,12 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
             if tool_name == 'search_database':
                 mr = tool_args.get('min_rating')
                 if mr is not None and mr != '' and mr != 0:
-                    rating_val = int(mr)
-                    if detected_min_rating is None or rating_val > detected_min_rating:
-                        detected_min_rating = rating_val
+                    try:
+                        rating_val = int(mr)
+                        if detected_min_rating is None or rating_val > detected_min_rating:
+                            detected_min_rating = rating_val
+                    except (ValueError, TypeError):
+                        pass
 
             # Execute the tool
             tool_result = execute_mcp_tool(tool_name, tool_args, ai_config)
@@ -782,17 +791,18 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
             from app_helper import get_db
             from psycopg2.extras import DictCursor
             try:
-                song_ids = [s['item_id'] for s in all_songs]
+                song_track_ids = [s['track_id'] for s in all_songs if 'track_id' in s]
+                if not song_track_ids:
+                    # Fallback: try parsing item_id as track_id
+                    song_track_ids = [int(s['item_id']) for s in all_songs if s.get('item_id', '').isdigit()]
                 db_conn = get_db()
-                cur = db_conn.cursor(cursor_factory=DictCursor)
-                # Fetch ratings for all collected songs
-                cur.execute(
-                    "SELECT item_id, rating FROM public.score WHERE item_id = ANY(%s)",
-                    (song_ids,)
-                )
-                rating_map = {row['item_id']: row['rating'] for row in cur.fetchall()}
-                cur.close()
-                db_conn.close()
+                with db_conn.cursor(cursor_factory=DictCursor) as cur:
+                    # Fetch ratings for all collected songs
+                    cur.execute(
+                        "SELECT track_id, rating FROM public.score WHERE track_id = ANY(%s)",
+                        (song_track_ids,)
+                    )
+                    rating_map = {str(row['track_id']): row['rating'] for row in cur.fetchall()}
 
                 before_count = len(all_songs)
                 all_songs = [s for s in all_songs if (rating_map.get(s['item_id']) or 0) >= detected_min_rating]
@@ -1020,27 +1030,41 @@ def create_media_server_playlist_api():
     API endpoint to create a playlist on the configured media server.
     """
     # Local import to break circular dependency at startup
-    from tasks.mediaserver import create_instant_playlist
+    from tasks.voyager_manager import create_playlist_from_ids
+
+    from flask import g
 
     data = request.get_json()
-    if not data or 'playlist_name' not in data or 'item_ids' not in data:
-        return jsonify({"message": "Error: Missing playlist_name or item_ids in request"}), 400
+    if not data or 'playlist_name' not in data:
+        return jsonify({"message": "Error: Missing playlist_name in request"}), 400
 
     user_playlist_name = data.get('playlist_name')
-    item_ids = data.get('item_ids') # This will be a list of strings
+    provider_ids = data.get('provider_ids')  # Can be 'all', int, or list of ints
+
+    # Use middleware-resolved track_ids, fallback to raw item_ids/track_ids from request
+    track_ids = g.get('track_ids', [])
+    if not track_ids:
+        return jsonify({"message": "Error: No valid songs provided to create the playlist."}), 400
 
     if not user_playlist_name.strip():
         return jsonify({"message": "Error: Playlist name cannot be empty."}), 400
-    if not item_ids:
-        return jsonify({"message": "Error: No songs provided to create the playlist."}), 400
 
     try:
-        created_playlist_info = create_instant_playlist(user_playlist_name, item_ids)
+        # Use the voyager_manager function that supports multi-provider (now takes track_ids)
+        result = create_playlist_from_ids(user_playlist_name, track_ids, provider_ids=provider_ids)
 
-        if not created_playlist_info:
-            raise Exception("Media server did not return playlist information after creation.")
-
-        return jsonify({"message": f"Successfully created playlist '{user_playlist_name}' on the media server with ID: {created_playlist_info.get('Id')}"}), 200
+        # Handle multi-provider result (dict) vs single provider result (string)
+        if isinstance(result, dict):
+            # Multi-provider response
+            success_count = sum(1 for r in result.values() if r.get('success'))
+            total_count = len(result)
+            return jsonify({
+                "message": f"Playlist '{user_playlist_name}' created on {success_count}/{total_count} provider(s).",
+                "results": result
+            }), 200
+        else:
+            # Single provider response
+            return jsonify({"message": f"Successfully created playlist '{user_playlist_name}' on the media server with ID: {result}"}), 200
 
     except Exception as e:
         # Log detailed error on the server
