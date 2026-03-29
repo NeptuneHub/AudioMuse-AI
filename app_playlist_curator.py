@@ -161,7 +161,7 @@ def _build_filter_query(filters, match_mode='all'):
     return f"({join_op.join(clauses)})", params
 
 
-def _find_duplicate_groups(track_ids, threshold=0.05):
+def _find_duplicate_groups(track_ids, threshold=0.015):
     """
     Find duplicate groups in a set of tracks using embedding cosine distance.
 
@@ -300,6 +300,8 @@ def get_filter_options():
     cur = db.cursor()
     unique_moods = []
     unique_features = []
+    year_min = None
+    year_max = None
     try:
         cur.execute("""
             SELECT DISTINCT TRIM(SPLIT_PART(mood, ':', 1)) as mood_label
@@ -321,6 +323,12 @@ def get_filter_options():
             ORDER BY feature_label
         """)
         unique_features = [row[0] for row in cur.fetchall() if row[0]]
+
+        cur.execute("SELECT MIN(year) AS ymin, MAX(year) AS ymax FROM score WHERE year IS NOT NULL AND year > 0")
+        row = cur.fetchone()
+        if row:
+            year_min = row[0]
+            year_max = row[1]
     except Exception as e:
         logger.warning(f"Failed to query filter options: {e}")
     finally:
@@ -358,7 +366,9 @@ def get_filter_options():
             {"value": "3-5", "label": "Good (3-5)"},
             {"value": "4-5", "label": "Great (4-5)"},
             {"value": "5-5", "label": "Favorites (5)"}
-        ]
+        ],
+        "year_min": year_min,
+        "year_max": year_max
     })
 
 
@@ -382,6 +392,8 @@ def search_api():
     included_ids = payload.get('included_ids', [])
     excluded_ids = payload.get('excluded_ids', [])
     min_rating = payload.get('min_rating')
+    year_min = payload.get('year_min')
+    year_max = payload.get('year_max')
     search_only = payload.get('search_only', False)
     source_ids = payload.get('source_ids', [])
 
@@ -488,6 +500,17 @@ def search_api():
                 if track_rating is None or track_rating < min_rating:
                     continue
 
+            # Year range filter
+            if year_min is not None or year_max is not None:
+                meta = metadata_map.get(track_id, {})
+                track_year = meta.get('year')
+                if track_year is None or track_year <= 0:
+                    continue
+                if year_min is not None and track_year < year_min:
+                    continue
+                if year_max is not None and track_year > year_max:
+                    continue
+
             # Excluded centroid proximity filter
             if excluded_centroid is not None:
                 vec = get_vector_by_id(track_id)
@@ -508,6 +531,7 @@ def search_api():
                 meta = metadata_map.get(track_id, {})
                 result['album'] = meta.get('album')
                 result['album_artist'] = meta.get('album_artist')
+                result['year'] = meta.get('year')
                 if not result.get('title'):
                     result['title'] = meta.get('title')
                 if not result.get('author'):

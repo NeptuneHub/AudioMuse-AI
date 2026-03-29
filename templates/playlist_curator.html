@@ -35,6 +35,78 @@
         width: 100%;
     }
 
+    /* Dual-range slider for year filter */
+    .dual-range-container {
+        position: relative;
+        height: 30px;
+    }
+
+    .dual-range {
+        position: absolute;
+        width: 100%;
+        pointer-events: none;
+        -webkit-appearance: none;
+        appearance: none;
+        background: transparent;
+        top: 0;
+        margin: 0;
+    }
+
+    .dual-range::-webkit-slider-runnable-track {
+        height: 4px;
+        background: var(--border-color);
+        border-radius: 2px;
+    }
+
+    .dual-range::-moz-range-track {
+        height: 4px;
+        background: var(--border-color);
+        border-radius: 2px;
+    }
+
+    .dual-range::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        pointer-events: auto;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--color-primary);
+        cursor: pointer;
+        margin-top: -6px;
+        position: relative;
+        z-index: 3;
+    }
+
+    .dual-range::-moz-range-thumb {
+        pointer-events: auto;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--color-primary);
+        cursor: pointer;
+        border: none;
+    }
+
+    .dual-range-lower {
+        z-index: 1;
+    }
+
+    .dual-range-upper {
+        z-index: 2;
+    }
+
+    .dual-range-track {
+        position: absolute;
+        height: 4px;
+        background: var(--color-primary);
+        border-radius: 2px;
+        top: 50%;
+        transform: translateY(-50%);
+        pointer-events: none;
+        z-index: 1;
+    }
+
     .results-table {
         width: 100%;
         border-collapse: collapse;
@@ -783,7 +855,7 @@
 
         <!-- Existing Playlist Section -->
         <div id="playlist-section" class="param-group hidden">
-            <div style="width: 100%;">
+            <div>
                 <label for="playlist_select" class="label-with-tooltip">
                     Select Playlist:
                     <span class="info-tooltip" tabindex="0">
@@ -791,15 +863,16 @@
                         <span class="tooltip-text">Choose a playlist from AudioMuse clusters or load one from your media server providers.</span>
                     </span>
                 </label>
-                <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-                    <select id="playlist_select" name="playlist_select" style="flex: 1; min-width: 200px;">
-                        <option value="">-- Select a playlist --</option>
-                    </select>
-                </div>
-                <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem;">
-                    <select id="provider_picker" style="min-width: 150px;">
-                        <option value="">All Providers</option>
-                    </select>
+                <select id="playlist_select" name="playlist_select" style="width: 100%;">
+                    <option value="">-- Select a playlist --</option>
+                </select>
+            </div>
+            <div>
+                <label for="provider_picker">Load from Provider:</label>
+                <select id="provider_picker" style="width: 100%;">
+                    <option value="">All Providers</option>
+                </select>
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem;">
                     <button type="button" style="background-color:#6366F1;color:white;border:none;padding:0.5rem 1rem;border-radius:0.375rem;cursor:pointer;font-size:0.875rem;white-space:nowrap;" onclick="loadProviderPlaylists()">
                         Load Playlists
                     </button>
@@ -811,7 +884,7 @@
         <!-- Common Parameters (Only visible for Playlist Extend mode) -->
         <div id="extend-params" class="hidden">
             <div class="param-group">
-                <div>
+                <div style="flex: 0 0 auto; max-width: 200px;">
                     <label for="max_songs" class="label-with-tooltip">
                         Maximum Songs:
                         <span class="info-tooltip" tabindex="0">
@@ -821,9 +894,6 @@
                     </label>
                     <input type="number" id="max_songs" name="max_songs" value="50" min="1" max="200">
                 </div>
-            </div>
-
-            <div class="param-group">
                 <div class="slider-container">
                     <label for="similarity_threshold" class="label-with-tooltip">
                         Similarity Threshold: <span id="threshold_value" class="slider-value">0.50</span>
@@ -836,7 +906,10 @@
                     <input type="range" id="similarity_threshold" name="similarity_threshold" min="0" max="1"
                         step="0.01" value="0.50">
                 </div>
-                <div class="form-group">
+            </div>
+
+            <div class="param-group">
+                <div class="slider-container">
                     <label for="min_rating" class="label-with-tooltip">
                         Minimum Rating: <span id="min_rating_value" class="slider-value">Off</span>
                         <span class="info-tooltip" tabindex="0">
@@ -847,10 +920,24 @@
                     <input type="range" id="min_rating" name="min_rating" min="0" max="5"
                         step="0.5" value="0">
                 </div>
+                <div class="slider-container" id="year-range-group" style="display: none;">
+                    <label class="label-with-tooltip">
+                        Year Range: <span id="year_range_value" class="slider-value">Off</span>
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Filter results by release year. Drag the sliders to set a min and max year range.</span>
+                        </span>
+                    </label>
+                    <div class="dual-range-container">
+                        <input type="range" id="year_min_slider" class="dual-range dual-range-lower" min="1900" max="2030" step="1" value="1900">
+                        <input type="range" id="year_max_slider" class="dual-range dual-range-upper" min="1900" max="2030" step="1" value="2030">
+                        <div class="dual-range-track" id="year-range-track"></div>
+                    </div>
+                </div>
             </div>
 
             <button type="submit" id="btn-extend-playlist">
-                Find Similar Songs
+                Find Songs
             </button>
         </div>
     </form>
@@ -869,9 +956,9 @@
             </div>
             <div class="dedup-controls">
                 <div class="dedup-slider-group label-with-tooltip">
-                    <span class="dedup-slider-label" id="dedup-sensitivity-label">Moderate</span>
-                    <input type="range" id="dedup-threshold" min="0.01" max="0.15" step="0.005" value="0.05">
-                    <span class="dedup-slider-value" id="dedup-threshold-value">0.050</span>
+                    <span class="dedup-slider-label" id="dedup-sensitivity-label">Strict</span>
+                    <input type="range" id="dedup-threshold" min="0.01" max="0.15" step="0.005" value="0.015">
+                    <span class="dedup-slider-value" id="dedup-threshold-value">0.015</span>
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
                         <span class="tooltip-text">Duplicate sensitivity based on audio analysis similarity.
@@ -923,7 +1010,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
 </section>
 
 <section id="results-container" class="hidden">
-    <h2>Similar Songs</h2>
+    <h2>Search Results</h2>
     <div id="status"></div>
     <div id="results-table-wrapper" class="results-table-container"></div>
 </section>
@@ -1103,6 +1190,12 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
                     document.getElementById('results-container').classList.remove('hidden');
                     document.getElementById('stats-container').classList.remove('hidden');
                     document.getElementById('playlist-creator').classList.remove('hidden');
+                } else {
+                    document.getElementById('results-container').classList.add('hidden');
+                    document.getElementById('stats-container').classList.add('hidden');
+                    document.getElementById('playlist-creator').classList.add('hidden');
+                    document.getElementById('results-table-wrapper').innerHTML = '';
+                    document.getElementById('status').textContent = '';
                 }
             }
             updateStatsDisplay();
@@ -1279,6 +1372,23 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         // Load filter options first
         await loadFilterOptions();
 
+        // Initialize year range sliders from DB data
+        if (filterOptions.year_min && filterOptions.year_max) {
+            const yearGroup = document.getElementById('year-range-group');
+            const minSlider = document.getElementById('year_min_slider');
+            const maxSlider = document.getElementById('year_max_slider');
+            minSlider.min = filterOptions.year_min;
+            minSlider.max = filterOptions.year_max;
+            minSlider.value = filterOptions.year_min;
+            maxSlider.min = filterOptions.year_min;
+            maxSlider.max = filterOptions.year_max;
+            maxSlider.value = filterOptions.year_max;
+            document.getElementById('year_range_value').textContent = 'Off';
+            yearGroup.style.display = '';
+            // Initialize track highlight
+            setTimeout(updateYearDisplay, 0);
+        }
+
         // Load playlists for the select dropdown
         loadPlaylists();
 
@@ -1308,6 +1418,46 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         document.getElementById('min_rating').addEventListener('input', (e) => {
             const val = parseFloat(e.target.value);
             document.getElementById('min_rating_value').textContent = val === 0 ? 'Off' : val.toFixed(1) + ' stars';
+        });
+
+        // Year range sliders
+        const yearMinSlider = document.getElementById('year_min_slider');
+        const yearMaxSlider = document.getElementById('year_max_slider');
+        const yearRangeLabel = document.getElementById('year_range_value');
+        const yearRangeTrack = document.getElementById('year-range-track');
+
+        function updateYearDisplay() {
+            const minVal = parseInt(yearMinSlider.value);
+            const maxVal = parseInt(yearMaxSlider.value);
+            const dbMin = parseInt(yearMinSlider.min);
+            const dbMax = parseInt(yearMaxSlider.max);
+            if (minVal === dbMin && maxVal === dbMax) {
+                yearRangeLabel.textContent = 'Off';
+            } else {
+                yearRangeLabel.textContent = minVal + ' – ' + maxVal;
+            }
+            // Update highlighted track between thumbs
+            const range = dbMax - dbMin;
+            if (range > 0) {
+                const leftPct = ((minVal - dbMin) / range) * 100;
+                const rightPct = ((maxVal - dbMin) / range) * 100;
+                yearRangeTrack.style.left = leftPct + '%';
+                yearRangeTrack.style.width = (rightPct - leftPct) + '%';
+            }
+        }
+
+        yearMinSlider.addEventListener('input', () => {
+            if (parseInt(yearMinSlider.value) > parseInt(yearMaxSlider.value)) {
+                yearMinSlider.value = yearMaxSlider.value;
+            }
+            updateYearDisplay();
+        });
+
+        yearMaxSlider.addEventListener('input', () => {
+            if (parseInt(yearMaxSlider.value) < parseInt(yearMinSlider.value)) {
+                yearMaxSlider.value = yearMinSlider.value;
+            }
+            updateYearDisplay();
         });
 
         // Player events
@@ -1497,6 +1647,16 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         const minRatingVal = parseFloat(document.getElementById('min_rating').value);
         const minRating = minRatingVal > 0 ? minRatingVal : null; // null if disabled (0)
 
+        // Year range filter
+        const yearMinEl = document.getElementById('year_min_slider');
+        const yearMaxEl = document.getElementById('year_max_slider');
+        const yearMinVal = parseInt(yearMinEl.value);
+        const yearMaxVal = parseInt(yearMaxEl.value);
+        const yearDbMin = parseInt(yearMinEl.min);
+        const yearDbMax = parseInt(yearMaxEl.max);
+        const yearMin = (yearMinVal === yearDbMin && yearMaxVal === yearDbMax) ? null : yearMinVal;
+        const yearMax = (yearMinVal === yearDbMin && yearMaxVal === yearDbMax) ? null : yearMaxVal;
+
         // Fix search bug: Clear state at start of Smart Filter search
         if (searchOnly && activeTab === 'smart') {
             currentResults = [];
@@ -1531,6 +1691,8 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
             max_songs: maxSongs,
             similarity_threshold: threshold,
             min_rating: minRating,
+            year_min: yearMin,
+            year_max: yearMax,
             included_ids: includedIds,
             excluded_ids: excludedIds,
             search_only: searchOnly,
@@ -1834,7 +1996,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
                             <span class="track-artist">${escHtml(displayArtist)}</span>
                         </div>
                     </td>
-                    <td>${escHtml(track.album) || '-'}</td>
+                    <td>${escHtml(track.album) || '-'}${track.year ? ' (' + track.year + ')' : ''}</td>
                     <td>${track.distance ? track.distance.toFixed(4) : 'N/A'}</td>
                     ${weightCell}
                     <td class="action-buttons">
