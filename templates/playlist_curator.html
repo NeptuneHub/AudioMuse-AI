@@ -139,65 +139,90 @@
         color: white;
     }
 
-    /* Flex container for stats and save playlist side by side */
+    /* Stats + Save row: two matched boxes side by side, fixed height */
     .stats-save-row {
         display: flex;
         gap: 1rem;
         margin-bottom: 1rem;
-        flex-wrap: wrap;
-        align-items: stretch;
+        align-items: center;
     }
 
     .stats-container {
         display: flex;
-        gap: 2rem;
-        padding: 0.75rem 1.5rem;
+        gap: 1.5rem;
+        height: 76px;
+        padding: 0 1rem;
         background-color: var(--bg-code);
         border: 1px solid var(--border-color);
         border-radius: 0.5rem;
-        flex: 1;
+        flex: 0 0 auto;
         align-items: center;
-        justify-content: space-around;
     }
 
-    /* Override for the inline save playlist box to match alignment */
-    .stats-save-row #playlist-creator {
-        margin-top: 0;
+    /* Save playlist box — #id selector overrides global #playlist-creator in style.css */
+    #playlist-creator.save-playlist-inline {
         flex: 1;
-        max-width: 50%;
-        padding: 0.75rem 1.5rem;
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        gap: 1rem;
-    }
-
-    .stats-save-row #playlist-creator h3 {
+        height: 76px;
         margin: 0;
-        font-size: 1rem;
+        padding: 0 1rem;
+        background-color: var(--bg-code);
+        border: 1px solid var(--border-color);
+        border-radius: 0.5rem;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+    }
+
+    /* Override global #playlist-status margin/padding that adds invisible height */
+    #playlist-creator #playlist-status {
+        margin: 0;
+        padding: 0;
+    }
+
+    /* Override global form margins inside the save box */
+    #playlist-creator.save-playlist-inline form {
+        margin: 0;
+        padding: 0;
+    }
+
+    /* All elements inside save box: same 36px height, vertically centered */
+    #playlist-creator.save-playlist-inline .provider-selector,
+    #playlist-creator.save-playlist-inline form {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin: 0;
+        padding: 0;
+    }
+
+    #playlist-creator.save-playlist-inline form {
+        flex: 1;
+        gap: 0.75rem;
+    }
+
+    #playlist-creator.save-playlist-inline .provider-selector label {
+        margin: 0;
         white-space: nowrap;
+        font-size: 0.875rem;
+        line-height: 36px;
     }
 
-    /* Target the form to ensure it takes available space */
-    .stats-save-row #playlist-creator form {
-        flex: 1;
-        display: flex;
-        align-items: center;
-    }
-
-    /* Make input wider and match button height */
-    .stats-save-row #playlist-creator input[type="text"] {
-        flex: 1;
-        height: 40px;
-        padding: 0 0.75rem;
+    #playlist-creator.save-playlist-inline .provider-selector select,
+    #playlist-creator.save-playlist-inline input[type="text"],
+    #playlist-creator.save-playlist-inline button[type="submit"] {
+        height: 36px;
+        box-sizing: border-box;
         margin: 0;
     }
 
-    /* Ensure button matches input height */
-    .stats-save-row #playlist-creator button {
-        height: 40px;
+    #playlist-creator.save-playlist-inline input[type="text"] {
+        flex: 1;
+        min-width: 120px;
+        padding: 0 0.75rem;
+    }
+
+    #playlist-creator.save-playlist-inline button[type="submit"] {
         padding: 0 1.25rem;
-        margin: 0 !important;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -206,17 +231,17 @@
 
     .stat-item {
         display: flex;
-        flex-direction: column;
-        gap: 0.25rem;
+        align-items: baseline;
+        gap: 0.4rem;
     }
 
     .stat-label {
-        font-size: 0.875rem;
+        font-size: 0.8rem;
         color: var(--text-muted);
     }
 
     .stat-value {
-        font-size: 1.25rem;
+        font-size: 1.1rem;
         font-weight: 700;
         color: var(--text-title);
     }
@@ -400,42 +425,6 @@
         background-color: var(--color-primary, #3B82F6);
         border-radius: 2px;
         width: 0%;
-    }
-
-    /* Save playlist inline form styling */
-    .save-playlist-inline {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        padding: 0.75rem 1rem;
-        background-color: var(--bg-code);
-        border-radius: 0.5rem;
-        flex: 0 1 50%;
-        max-width: 50%;
-    }
-
-    .save-playlist-inline h3 {
-        margin: 0;
-        font-size: 0.875rem;
-        color: var(--text-muted);
-        white-space: nowrap;
-    }
-
-    .save-playlist-inline input[type="text"] {
-        flex: 1;
-        min-width: 150px;
-        padding: 0.5rem;
-        border: 1px solid var(--border-color-darker);
-        border-radius: 0.375rem;
-    }
-
-    .save-playlist-inline button {
-        white-space: nowrap;
-    }
-
-    .save-playlist-inline #playlist-status {
-        font-size: 0.875rem;
-        white-space: nowrap;
     }
 
     /* Hidden class utility */
@@ -771,7 +760,7 @@
         <div id="smart-filters-section" class="filter-builder">
             <div class="filter-header">
                 <span>Match</span>
-                <select id="match-mode" name="match_mode">
+                <select id="match-mode" name="match_mode" style="width: auto; min-width: 0; flex: 0 0 auto;">
                     <option value="all">all</option>
                     <option value="any">any</option>
                 </select>
@@ -794,19 +783,27 @@
 
         <!-- Existing Playlist Section -->
         <div id="playlist-section" class="param-group hidden">
-            <div>
+            <div style="width: 100%;">
                 <label for="playlist_select" class="label-with-tooltip">
                     Select Playlist:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Choose a playlist from your library to extend with similar
-                            songs.</span>
+                        <span class="tooltip-text">Choose a playlist from AudioMuse clusters or load one from your media server providers.</span>
                     </span>
                 </label>
                 <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
                     <select id="playlist_select" name="playlist_select" style="flex: 1; min-width: 200px;">
                         <option value="">-- Select a playlist --</option>
                     </select>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem;">
+                    <select id="provider_picker" style="min-width: 150px;">
+                        <option value="">All Providers</option>
+                    </select>
+                    <button type="button" style="background-color:#6366F1;color:white;border:none;padding:0.5rem 1rem;border-radius:0.375rem;cursor:pointer;font-size:0.875rem;white-space:nowrap;" onclick="loadProviderPlaylists()">
+                        Load Playlists
+                    </button>
+                    <span id="provider-playlist-status" style="font-size:0.875rem;"></span>
                 </div>
             </div>
         </div>
@@ -871,23 +868,27 @@
                 <span id="stat-total" class="stat-value">0</span>
             </div>
             <div class="dedup-controls">
-                <div class="dedup-slider-group">
+                <div class="dedup-slider-group label-with-tooltip">
                     <span class="dedup-slider-label" id="dedup-sensitivity-label">Moderate</span>
                     <input type="range" id="dedup-threshold" min="0.01" max="0.15" step="0.005" value="0.05">
-                    <span class="dedup-slider-value" id="dedup-threshold-value">0.05</span>
+                    <span class="dedup-slider-value" id="dedup-threshold-value">0.050</span>
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Duplicate sensitivity based on audio analysis similarity.
+Strict (0.01-0.03): Same recording, different metadata only.
+Moderate (0.03-0.07): Catches most duplicates across compilations.
+Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</span>
+                    </span>
                 </div>
                 <button type="button" class="btn-find-duplicates" onclick="findDuplicates()">Find Duplicates</button>
             </div>
         </div>
         <div id="playlist-creator" class="save-playlist-inline hidden">
-            <h3>Save Playlist:</h3>
-            <div id="provider-selector-container" style="margin-right: 0.5rem;"></div>
-            <form id="save-playlist-form" style="display: flex; align-items: center; gap: 0.75rem; flex: 1;">
+            <div id="provider-selector-container"></div>
+            <form id="save-playlist-form">
                 <input type="text" id="new_playlist_name" name="new_playlist_name" required
                     placeholder="Playlist name">
-                <button type="submit">
-                    Save to Media Server
-                </button>
+                <button type="submit">Save</button>
             </form>
             <div id="playlist-status"></div>
         </div>
@@ -997,14 +998,20 @@
 
     // Fields config with types
     const filterFields = [
-        { value: 'album', label: 'Album Title', type: 'text' },
         { value: 'artist', label: 'Artist', type: 'text' },
         { value: 'title', label: 'Track Title', type: 'text' },
+        { value: 'album', label: 'Album', type: 'text' },
+        { value: 'album_artist', label: 'Album Artist', type: 'text' },
+        { value: 'genre', label: 'Genre', type: 'dropdown', optionsKey: 'moods' },
+        { value: 'mood', label: 'Mood / Style', type: 'dropdown', optionsKey: 'moods' },
+        { value: 'features', label: 'Vibe (danceable, aggressive...)', type: 'dropdown', optionsKey: 'features' },
+        { value: 'year', label: 'Year', type: 'number' },
+        { value: 'decade', label: 'Decade', type: 'dropdown', optionsKey: 'year_ranges' },
+        { value: 'rating', label: 'Rating', type: 'dropdown', optionsKey: 'rating_ranges' },
         { value: 'bpm', label: 'BPM', type: 'dropdown', optionsKey: 'bpm_ranges' },
         { value: 'energy', label: 'Energy', type: 'dropdown', optionsKey: 'energy_ranges' },
         { value: 'key', label: 'Key', type: 'dropdown', optionsKey: 'keys' },
         { value: 'scale', label: 'Scale', type: 'dropdown', optionsKey: 'scales' },
-        { value: 'mood', label: 'Mood', type: 'dropdown', optionsKey: 'moods' }
     ];
 
     const operators = {
@@ -1014,8 +1021,13 @@
             { value: 'is', label: 'is' },
             { value: 'is_not', label: 'is not' }
         ],
+        dropdown: [
+            { value: 'is', label: 'is' },
+            { value: 'is_not', label: 'is not' }
+        ],
         number: [
             { value: 'is', label: 'is' },
+            { value: 'is_not', label: 'is not' },
             { value: 'greater_than', label: 'is greater than' },
             { value: 'less_than', label: 'is less than' }
         ]
@@ -1039,7 +1051,8 @@
             document.getElementById('smart-filters-section').classList.remove('hidden');
             document.getElementById('playlist-section').classList.add('hidden');
             document.getElementById('extend-params').classList.add('hidden');
-            // Don't clear smartFilterSourceIds - keep them synchronized
+            document.getElementById('source-drawer-container').classList.add('hidden');
+            closeDedupPanel();
         } else if (tab === 'extend') {
             // Extend mode - show extend params but hide both source sections
             document.getElementById('smart-filters-section').classList.add('hidden');
@@ -1075,6 +1088,13 @@
                     document.getElementById('results-container').classList.remove('hidden');
                     document.getElementById('stats-container').classList.remove('hidden');
                     document.getElementById('playlist-creator').classList.remove('hidden');
+                } else {
+                    // No smart results — hide everything from the extend tab
+                    document.getElementById('results-container').classList.add('hidden');
+                    document.getElementById('stats-container').classList.add('hidden');
+                    document.getElementById('playlist-creator').classList.add('hidden');
+                    document.getElementById('results-table-wrapper').innerHTML = '';
+                    document.getElementById('status').textContent = '';
                 }
             } else {
                 // Extend/Playlist tab: show extendPlaylistResults
@@ -1145,8 +1165,9 @@
         opSelect.innerHTML = '';
         let ops;
         if (fieldType === 'dropdown') {
-            // For dropdown fields, use "is" operator for exact match
-            ops = [{ value: 'is', label: 'is' }];
+            ops = operators.dropdown;
+        } else if (fieldType === 'number') {
+            ops = operators.number;
         } else {
             ops = operators.text;
         }
@@ -1264,6 +1285,20 @@
         // Add initial filter row
         addFilterRow();
 
+        // Clear source data when playlist selection changes (forces re-fetch for provider playlists)
+        document.getElementById('playlist_select').addEventListener('change', () => {
+            sourceTracksData = [];
+            smartFilterSourceIds = [];
+            sourceWeights = {};
+            extendPlaylistResults = [];
+            includedIds = [];
+            includedSongsData = [];
+            excludedIds = [];
+            document.getElementById('source-drawer-container').classList.add('hidden');
+            document.getElementById('results-container').classList.add('hidden');
+            document.getElementById('stats-container').classList.add('hidden');
+        });
+
         // Update threshold display
         document.getElementById('similarity_threshold').addEventListener('input', (e) => {
             document.getElementById('threshold_value').textContent = parseFloat(e.target.value).toFixed(2);
@@ -1290,6 +1325,7 @@
 
         // Initialize provider selector
         if (typeof initProviderSelector === 'function') initProviderSelector();
+        loadProviderPicker();
     })();
 
     // --- API Interaction ---
@@ -1309,6 +1345,125 @@
             updateSmartFilterDropdownOption();
         } catch (error) {
             console.error('Failed to load playlists:', error);
+        }
+    }
+
+    // --- Load Provider Playlists ---
+    async function loadProviderPicker() {
+        try {
+            const resp = await fetch('/api/providers/enabled');
+            const providers = await resp.json();
+            const picker = document.getElementById('provider_picker');
+            picker.innerHTML = '<option value="">All Providers</option>';
+            providers.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.id;
+                opt.textContent = p.name || p.provider_type;
+                picker.appendChild(opt);
+            });
+        } catch (e) {
+            console.error('Failed to load provider picker:', e);
+        }
+    }
+
+    window.loadProviderPlaylists = async function() {
+        const statusSpan = document.getElementById('provider-playlist-status');
+        statusSpan.textContent = 'Loading...';
+        statusSpan.style.color = 'var(--color-primary)';
+
+        const selectedProvider = document.getElementById('provider_picker').value;
+        const url = selectedProvider
+            ? `{{ url_for('playlist_curator_bp.provider_playlists_api') }}?provider_id=${selectedProvider}`
+            : "{{ url_for('playlist_curator_bp.provider_playlists_api') }}";
+
+        try {
+            const response = await fetch(url);
+            const playlists = await response.json();
+            if (!response.ok) throw new Error(playlists.error || 'Failed');
+
+            const select = document.getElementById('playlist_select');
+
+            // Remove old provider options
+            select.querySelectorAll('option[data-provider]').forEach(o => o.remove());
+
+            if (playlists.length === 0) {
+                statusSpan.textContent = 'No provider playlists found';
+                statusSpan.style.color = 'var(--text-muted)';
+                setTimeout(() => { statusSpan.textContent = ''; }, 3000);
+                return;
+            }
+
+            // Group by provider
+            const byProvider = {};
+            playlists.forEach(pl => {
+                if (!byProvider[pl.provider_name]) byProvider[pl.provider_name] = [];
+                byProvider[pl.provider_name].push(pl);
+            });
+
+            // Add optgroups per provider
+            for (const [provName, pls] of Object.entries(byProvider)) {
+                const group = document.createElement('optgroup');
+                group.label = provName;
+                group.dataset.provider = 'true';
+                pls.forEach(pl => {
+                    const opt = document.createElement('option');
+                    opt.value = `__provider__${pl.provider_id}__${pl.playlist_id}`;
+                    opt.textContent = `${pl.playlist_name} (${pl.song_count} songs)`;
+                    opt.dataset.provider = 'true';
+                    group.appendChild(opt);
+                });
+                select.appendChild(group);
+            }
+
+            statusSpan.textContent = `${playlists.length} playlists loaded`;
+            statusSpan.style.color = 'var(--color-success)';
+            setTimeout(() => { statusSpan.textContent = ''; }, 3000);
+
+        } catch (error) {
+            console.error('Load provider playlists error:', error);
+            statusSpan.textContent = error.message;
+            statusSpan.style.color = 'var(--color-danger)';
+        }
+    };
+
+    async function loadProviderPlaylistTracks(selectValue) {
+        // Parse __provider__{provider_id}__{playlist_id}
+        const parts = selectValue.replace('__provider__', '').split('__');
+        if (parts.length < 2) return false;
+        const providerId = parts[0];
+        const playlistId = parts.slice(1).join('__');
+
+        const statusDiv = document.getElementById('status');
+        try {
+            const response = await fetch("{{ url_for('playlist_curator_bp.provider_playlist_tracks_api') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider_id: parseInt(providerId), playlist_id: playlistId })
+            });
+
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Failed to load playlist tracks');
+
+            // Set up source tracks from provider playlist
+            sourceTracksData = data.tracks;
+            sourceWeights = {};
+            includedWeights = {};
+            sourceTracksData.forEach(t => sourceWeights[t.item_id] = 1);
+            smartFilterSourceIds = sourceTracksData.map(t => t.item_id);
+            sourcePlaylistCount = data.resolved_tracks;
+
+            displaySourceTracksDrawer();
+
+            if (data.unresolved_tracks > 0) {
+                statusDiv.textContent = `Loaded ${data.resolved_tracks} tracks (${data.unresolved_tracks} not yet analyzed)`;
+                statusDiv.style.color = 'var(--text-muted)';
+            }
+
+            return true;
+        } catch (error) {
+            statusDiv.textContent = error.message;
+            statusDiv.style.color = 'red';
+            return false;
         }
     }
 
@@ -1403,12 +1558,21 @@
                 statusDiv.style.color = 'red';
                 return;
             }
-            // Handle Smart Filter option in dropdown
+            // Handle special playlist options
             if (playlistName === '__smart_filter__') {
                 if (smartFilterSourceIds.length === 0) {
                     statusDiv.textContent = 'No Smart Filter results available. Run a Smart Filter search first.';
                     statusDiv.style.color = 'red';
                     return;
+                }
+                payload.source_ids = smartFilterSourceIds;
+            } else if (playlistName.startsWith('__provider__')) {
+                // Provider playlist — fetch tracks first if not already loaded
+                if (smartFilterSourceIds.length === 0) {
+                    statusDiv.textContent = 'Loading playlist tracks from provider...';
+                    statusDiv.style.color = 'blue';
+                    const loaded = await loadProviderPlaylistTracks(playlistName);
+                    if (!loaded) return;
                 }
                 payload.source_ids = smartFilterSourceIds;
             } else {
@@ -1545,9 +1709,10 @@
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'Search failed');
 
-            // Store the Smart Filter results for switching back
+            // Store the Smart Filter results, filtering out excluded IDs (e.g. removed duplicates)
             smartFilterResults = data.results;
-            smartFilterSourceIds = data.results.map(r => r.item_id);
+            const filteredResults = data.results.filter(r => !excludedIds.includes(r.item_id));
+            smartFilterSourceIds = filteredResults.map(r => r.item_id);
 
             if (smartFilterSourceIds.length === 0) {
                 statusDiv.textContent = 'No songs found matching the filters. Cannot extend.';
@@ -1556,9 +1721,10 @@
             }
 
             // Initialize source tracks data and weights for the drawer
-            sourceTracksData = data.results.slice();
+            sourceTracksData = filteredResults.slice();
             sourceWeights = {};
             includedWeights = {};
+            sourcePlaylistCount = filteredResults.length;
             sourceTracksData.forEach(t => sourceWeights[t.item_id] = 1);
 
             // Display the source tracks drawer
@@ -1660,7 +1826,7 @@
             html += `
                 <tr class="${rowClass}">
                     <td>
-                        <button class="btn-play" onclick="playSong('${escHtml(streamUrl)}', '${escHtml(track.title || 'Unknown')}', '${escHtml(displayArtist)}')">&#9658;</button>
+                        <button class="btn-play" data-stream="${escHtml(streamUrl)}" data-title="${escHtml(track.title || 'Unknown')}" data-artist="${escHtml(displayArtist)}">&#9658;</button>
                     </td>
                     <td>
                         <div class="track-info">
@@ -1731,7 +1897,7 @@
             html += `
                 <tr class="${rowClass}">
                     <td>
-                        <button class="btn-play" onclick="playSong('${escHtml(streamUrl)}', '${escHtml(track.title || 'Unknown')}', '${escHtml(displayArtist)}')">&#9658;</button>
+                        <button class="btn-play" data-stream="${escHtml(streamUrl)}" data-title="${escHtml(track.title || 'Unknown')}" data-artist="${escHtml(displayArtist)}">&#9658;</button>
                     </td>
                     <td>
                         <div class="track-info">
@@ -1863,6 +2029,14 @@
     });
 
     // --- Player Logic ---
+    // Event delegation for play buttons — handles apostrophes and special chars safely
+    document.addEventListener('click', function(e) {
+        const btn = e.target.closest('.btn-play[data-stream]');
+        if (btn) {
+            playSong(btn.dataset.stream, btn.dataset.title, btn.dataset.artist);
+        }
+    });
+
     window.playSong = function (url, title, artist) {
         if (!url) return;
 
@@ -2008,7 +2182,7 @@
             const streamUrl = '/api/curator/stream/' + track.item_id;
 
             html += `<tr>
-                <td><button class="btn-play" onclick="playSong('${escHtml(streamUrl)}','${escHtml(track.title || 'Unknown')}','${escHtml(artist)}')">&#9658;</button></td>
+                <td><button class="btn-play" data-stream="${escHtml(streamUrl)}" data-title="${escHtml(track.title || 'Unknown')}" data-artist="${escHtml(artist)}">&#9658;</button></td>
                 <td><div class="track-info"><span class="track-title">${escHtml(track.title) || 'Unknown'}</span><span class="track-artist">${escHtml(artist)}</span></div></td>
                 <td>${escHtml(track.album) || '-'}</td>
                 <td><button class="btn-weight ${weight > 1 ? 'weight-high' : ''}" data-weight-id="${track.item_id}" onclick="cycleWeight('${track.item_id}',true)">x${weight}</button></td>
@@ -2140,9 +2314,17 @@
         const group = dedupGroups[groupIdx];
         if (!group) return;
 
-        group.tracks.forEach((t, i) => {
-            t._keep = (i === trackIdx);
-        });
+        const clicked = group.tracks[trackIdx];
+        const currentState = clicked._keep !== undefined ? clicked._keep : (trackIdx === 0);
+
+        // Toggle the clicked track's state
+        clicked._keep = !currentState;
+
+        // Ensure at least one track is KEEP — if none are, force this one back to KEEP
+        const anyKeep = group.tracks.some(t => t._keep !== undefined ? t._keep : false);
+        if (!anyKeep) {
+            clicked._keep = true;
+        }
 
         renderDedupGroups();
     };

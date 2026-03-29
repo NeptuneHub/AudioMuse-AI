@@ -1,5 +1,6 @@
 from flask import Blueprint, jsonify, request, render_template, Response
 import logging
+import os
 import re
 import numpy as np
 import requests as http_requests
@@ -74,12 +75,18 @@ def _build_filter_query(filters, match_mode='all'):
     field_map = {
         'album': 'album',
         'artist': 'author',
+        'album_artist': 'album_artist',
         'title': 'title',
         'bpm': 'tempo',
         'energy': 'energy',
         'key': 'key',
         'scale': 'scale',
-        'mood': 'mood_vector'
+        'mood': 'mood_vector',
+        'genre': 'mood_vector',
+        'year': 'year',
+        'decade': 'year',
+        'rating': 'rating',
+        'features': 'other_features',
     }
 
     for f in filters:
@@ -90,8 +97,8 @@ def _build_filter_query(filters, match_mode='all'):
         if not db_col:
             continue
 
-        # Range-based values for BPM and Energy
-        if field in ['bpm', 'energy'] and '-' in str(value):
+        # Range-based values for BPM, Energy, Year, Rating
+        if field in ['bpm', 'energy', 'year', 'decade', 'rating'] and '-' in str(value):
             try:
                 parts = value.split('-')
                 min_val, max_val = float(parts[0]), float(parts[1])
@@ -117,17 +124,24 @@ def _build_filter_query(filters, match_mode='all'):
             clauses.append(f"{db_col} NOT ILIKE %s")
             params.append(f"%{value}%")
         elif operator == 'is':
-            if field == 'mood':
+            if field in ('mood', 'genre'):
                 # Use regex to match genre label within comma-separated mood_vector
                 clauses.append(f"{db_col} ~ %s")
                 params.append(f"(^|,)\\s*{re.escape(value)}:")
+            elif field == 'features':
+                # other_features is comma-separated: "danceable, aggressive, happy"
+                clauses.append(f"{db_col} ILIKE %s")
+                params.append(f"%{value}%")
             else:
                 clauses.append(f"{db_col} = %s")
                 params.append(value)
         elif operator == 'is_not':
-            if field == 'mood':
+            if field in ('mood', 'genre'):
                 clauses.append(f"{db_col} !~ %s")
                 params.append(f"(^|,)\\s*{re.escape(value)}:")
+            elif field == 'features':
+                clauses.append(f"{db_col} NOT ILIKE %s")
+                params.append(f"%{value}%")
             else:
                 clauses.append(f"{db_col} != %s")
                 params.append(value)
@@ -235,14 +249,17 @@ def _find_duplicate_groups(track_ids, threshold=0.05):
             tid = valid_ids[idx]
             meta = metadata_map.get(tid, {})
 
-            # Composite score: rating(w3) + metadata_completeness(w2) + position(w1)
+            # Composite score: rating(w3) + completeness(w2) + oldest_year(w3) + position(w0.1)
+            # Older albums strongly preferred — newer are often compilations
             rating_score = ((meta.get('rating') or 0) / 5.0) * 3.0
             completeness = sum(1 for f in ['album', 'year', 'album_artist'] if meta.get(f) is not None)
             completeness_score = (completeness / 3.0) * 2.0
+            year = meta.get('year')
+            year_score = ((2050 - year) / 100.0 * 3.0) if year and year > 1900 else 0.0
             pos = position_map.get(tid, total_tracks)
-            position_score = (1.0 - (pos / max(total_tracks, 1))) * 1.0
+            position_score = (1.0 - (pos / max(total_tracks, 1))) * 0.1
 
-            score = round(rating_score + completeness_score + position_score, 2)
+            score = round(rating_score + completeness_score + year_score + position_score, 2)
 
             group_tracks.append({
                 'item_id': str(tid),
@@ -281,6 +298,8 @@ def get_filter_options():
     """Returns available filter options for Smart Search dropdowns."""
     db = get_db()
     cur = db.cursor()
+    unique_moods = []
+    unique_features = []
     try:
         cur.execute("""
             SELECT DISTINCT TRIM(SPLIT_PART(mood, ':', 1)) as mood_label
@@ -291,9 +310,19 @@ def get_filter_options():
             ORDER BY mood_label
         """)
         unique_moods = [row[0] for row in cur.fetchall() if row[0]]
+
+        cur.execute("""
+            SELECT DISTINCT TRIM(feature) as feature_label
+            FROM (
+                SELECT UNNEST(STRING_TO_ARRAY(other_features, ',')) as feature
+                FROM score WHERE other_features IS NOT NULL AND other_features != ''
+            ) t
+            WHERE TRIM(feature) != ''
+            ORDER BY feature_label
+        """)
+        unique_features = [row[0] for row in cur.fetchall() if row[0]]
     except Exception as e:
-        logger.warning(f"Failed to query unique moods: {e}")
-        unique_moods = []
+        logger.warning(f"Failed to query filter options: {e}")
     finally:
         cur.close()
 
@@ -301,6 +330,7 @@ def get_filter_options():
         "keys": ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'],
         "scales": ['major', 'minor'],
         "moods": unique_moods,
+        "features": unique_features,
         "bpm_ranges": [
             {"value": "0-80", "label": "Slow (< 80 BPM)"},
             {"value": "80-100", "label": "Moderate (80-100 BPM)"},
@@ -313,6 +343,21 @@ def get_filter_options():
             {"value": "0-0.33", "label": "Low Energy"},
             {"value": "0.33-0.66", "label": "Medium Energy"},
             {"value": "0.66-1", "label": "High Energy"}
+        ],
+        "year_ranges": [
+            {"value": "0-1969", "label": "Before 1970"},
+            {"value": "1970-1979", "label": "1970s"},
+            {"value": "1980-1989", "label": "1980s"},
+            {"value": "1990-1999", "label": "1990s"},
+            {"value": "2000-2009", "label": "2000s"},
+            {"value": "2010-2019", "label": "2010s"},
+            {"value": "2020-2029", "label": "2020s"}
+        ],
+        "rating_ranges": [
+            {"value": "1-5", "label": "Any Rating (1-5)"},
+            {"value": "3-5", "label": "Good (3-5)"},
+            {"value": "4-5", "label": "Great (4-5)"},
+            {"value": "5-5", "label": "Favorites (5)"}
         ]
     })
 
@@ -410,9 +455,11 @@ def search_api():
         if excluded_centroid is not None:
             query_vector = positive_centroid - (excluded_centroid * 0.5)
 
-        # Find similar songs
-        n_candidates = max_songs * 5
+        # Find similar songs — request more candidates to account for source track filtering
+        source_count = len(playlist_ids) + len(included_ids)
+        n_candidates = max(max_songs * 5, source_count * 3, 500)
         neighbor_results = find_nearest_neighbors_by_vector(query_vector, n=n_candidates, eliminate_duplicates=True)
+        logger.info(f"Extend: requested {n_candidates} candidates, got {len(neighbor_results)}, source_count={source_count}")
 
         # Filter results
         already_seen = set(str(tid) for tid in playlist_ids) | set(str(i) for i in included_ids) | set(str(i) for i in excluded_ids)
@@ -526,9 +573,228 @@ def save_playlist_api():
         return jsonify({"error": "Internal error"}), 500
 
 
+@playlist_curator_bp.route('/api/curator/provider_playlists', methods=['GET'])
+def provider_playlists_api():
+    """List playlists from a specific provider or all enabled providers."""
+    from app_setup import get_providers_raw, get_provider_by_id
+
+    provider_id = request.args.get('provider_id')
+
+    try:
+        if provider_id:
+            prov = get_provider_by_id(int(provider_id))
+            if not prov or not prov.get('enabled'):
+                return jsonify({"error": "Provider not found or disabled"}), 404
+            providers = [prov]
+        else:
+            providers = get_providers_raw(enabled_only=True)
+
+        all_playlists = []
+
+        for prov in providers:
+            p_id = prov['id']
+            p_type = prov['provider_type']
+            p_name = prov.get('name', p_type)
+            cfg = prov.get('config', {}) or {}
+
+            try:
+                raw_playlists = _fetch_provider_playlists(p_type, cfg)
+                for pl in (raw_playlists or []):
+                    pl_id = pl.get('Id') or pl.get('id', '')
+                    pl_name = pl.get('Name') or pl.get('name', 'Unknown')
+                    song_count = pl.get('songCount') or pl.get('MediaSourceCount') or pl.get('ChildCount') or 0
+                    all_playlists.append({
+                        'provider_id': p_id,
+                        'provider_name': p_name,
+                        'provider_type': p_type,
+                        'playlist_id': str(pl_id),
+                        'playlist_name': pl_name,
+                        'song_count': int(song_count) if song_count else 0
+                    })
+            except Exception as e:
+                logger.warning(f"Failed to fetch playlists from provider {p_name}: {e}")
+                continue
+
+        return jsonify(all_playlists)
+
+    except Exception as e:
+        logger.exception("Failed to fetch provider playlists")
+        return jsonify({"error": "Internal error"}), 500
+
+
+def _fetch_provider_playlists(provider_type, provider_config):
+    """Fetch playlist list from a provider using DB-stored credentials."""
+    try:
+        if provider_type in ('jellyfin', 'emby'):
+            base_url = provider_config.get('url') or (config.JELLYFIN_URL if provider_type == 'jellyfin' else config.EMBY_URL)
+            token = provider_config.get('token') or provider_config.get('api_key') or (config.JELLYFIN_TOKEN if provider_type == 'jellyfin' else config.EMBY_TOKEN)
+            user_id = provider_config.get('user_id') or (config.JELLYFIN_USER_ID if provider_type == 'jellyfin' else config.EMBY_USER_ID)
+            url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+            params = {"IncludeItemTypes": "Playlist", "Recursive": True}
+            headers = {'X-Emby-Token': token} if provider_type == 'emby' else {'Authorization': f'MediaBrowser Token="{token}"'}
+            resp = http_requests.get(url, headers=headers, params=params, timeout=30)
+            if resp.status_code == 200:
+                return resp.json().get('Items', [])
+
+        elif provider_type == 'navidrome':
+            base_url = provider_config.get('url') or config.NAVIDROME_URL
+            user = provider_config.get('user') or provider_config.get('username') or config.NAVIDROME_USER
+            password = provider_config.get('password') or config.NAVIDROME_PASSWORD
+            if not user or not password:
+                logger.warning("Navidrome credentials not available for playlist fetch")
+                return []
+            hex_pass = password.encode('utf-8').hex()
+            params = {"u": user, "p": f"enc:{hex_pass}", "v": "1.16.1", "c": "AudioMuse-AI", "f": "json"}
+            resp = http_requests.get(f"{base_url.rstrip('/')}/rest/getPlaylists.view", params=params, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json().get('subsonic-response', {})
+                if data.get('status') == 'ok' and 'playlists' in data:
+                    pls = data['playlists'].get('playlist', [])
+                    return [{'Id': p.get('id'), 'Name': p.get('name'), 'songCount': p.get('songCount', 0)} for p in pls]
+
+        elif provider_type == 'lyrion':
+            base_url = provider_config.get('url') or config.LYRION_URL
+            payload = {"id": 1, "method": "slim.request", "params": ["", ["playlists", 0, 999999]]}
+            resp = http_requests.post(f"{base_url.rstrip('/')}/jsonrpc.js", json=payload, timeout=30)
+            if resp.status_code == 200:
+                result = resp.json().get('result', {})
+                return [{'Id': p.get('id'), 'Name': p.get('playlist')} for p in result.get('playlists_loop', [])]
+
+        elif provider_type == 'localfiles':
+            from tasks.mediaserver_localfiles import get_all_playlists
+            return get_all_playlists()
+
+        return []
+    except Exception as e:
+        logger.warning(f"_fetch_provider_playlists failed for {provider_type}: {e}")
+        return []
+
+
+@playlist_curator_bp.route('/api/curator/provider_playlist_tracks', methods=['POST'])
+def provider_playlist_tracks_api():
+    """Get tracks from a specific provider playlist, resolved to canonical track_ids."""
+    payload = request.get_json() or {}
+    provider_id = payload.get('provider_id')
+    playlist_id = payload.get('playlist_id')
+
+    if not provider_id or not playlist_id:
+        return jsonify({"error": "Missing provider_id or playlist_id"}), 400
+
+    try:
+        from app_setup import get_provider_by_id
+        provider = get_provider_by_id(int(provider_id))
+        if not provider:
+            return jsonify({"error": "Provider not found"}), 404
+
+        p_type = provider['provider_type']
+        cfg = provider.get('config', {}) or {}
+
+        # Fetch playlist tracks from provider
+        item_ids = _fetch_playlist_item_ids(p_type, playlist_id, cfg)
+        if item_ids is None:
+            return jsonify({"error": "Failed to fetch playlist tracks from provider"}), 500
+        if not item_ids:
+            return jsonify({"error": "Playlist is empty"}), 404
+
+        # Resolve provider item_ids to canonical track_ids via provider_track table
+        db = get_db()
+        cur = db.cursor()
+        cur.execute("""
+            SELECT item_id, track_id FROM provider_track
+            WHERE provider_id = %s AND item_id = ANY(%s)
+        """, (int(provider_id), list(item_ids)))
+        rows = cur.fetchall()
+        cur.close()
+
+        item_to_track = {row[0]: row[1] for row in rows}
+        resolved_track_ids = [item_to_track[iid] for iid in item_ids if iid in item_to_track]
+
+        if not resolved_track_ids:
+            return jsonify({"error": "No tracks in this playlist have been analyzed yet"}), 404
+
+        # Fetch metadata for resolved tracks
+        metadata_list = get_score_data_by_ids(resolved_track_ids)
+
+        return jsonify({
+            "tracks": metadata_list,
+            "total_provider_tracks": len(item_ids),
+            "resolved_tracks": len(resolved_track_ids),
+            "unresolved_tracks": len(item_ids) - len(resolved_track_ids)
+        })
+
+    except Exception as e:
+        logger.exception("Failed to fetch provider playlist tracks")
+        return jsonify({"error": "Internal error"}), 500
+
+
+def _fetch_playlist_item_ids(provider_type, playlist_id, provider_config):
+    """Fetch track item_ids from a provider playlist. Returns list of str item_ids or None on error."""
+    try:
+        if provider_type in ('jellyfin', 'emby'):
+            base_url = provider_config.get('url') or (config.JELLYFIN_URL if provider_type == 'jellyfin' else config.EMBY_URL)
+            token = provider_config.get('token') or provider_config.get('api_key') or (config.JELLYFIN_TOKEN if provider_type == 'jellyfin' else config.EMBY_TOKEN)
+            user_id = provider_config.get('user_id') or (config.JELLYFIN_USER_ID if provider_type == 'jellyfin' else config.EMBY_USER_ID)
+            url = f"{base_url.rstrip('/')}/Users/{user_id}/Items?ParentId={playlist_id}&IncludeItemTypes=Audio&Fields=Path"
+            headers = {'X-Emby-Token': token} if provider_type == 'emby' else {'Authorization': f'MediaBrowser Token="{token}"'}
+            resp = http_requests.get(url, headers=headers, timeout=30)
+            if resp.status_code == 200:
+                items = resp.json().get('Items', [])
+                return [str(item['Id']) for item in items]
+
+        elif provider_type == 'navidrome':
+            base_url = provider_config.get('url') or config.NAVIDROME_URL
+            user = provider_config.get('user') or provider_config.get('username') or config.NAVIDROME_USER
+            password = provider_config.get('password') or config.NAVIDROME_PASSWORD
+            if not user or not password:
+                return None
+            hex_pass = password.encode('utf-8').hex()
+            params = {"u": user, "p": f"enc:{hex_pass}", "v": "1.16.1", "c": "AudioMuse-AI", "f": "json", "id": playlist_id}
+            resp = http_requests.get(f"{base_url.rstrip('/')}/rest/getPlaylist.view", params=params, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json().get('subsonic-response', {})
+                if data.get('status') == 'ok' and 'playlist' in data:
+                    entries = data['playlist'].get('entry', [])
+                    return [str(e.get('id')) for e in entries if e.get('id')]
+
+        elif provider_type == 'lyrion':
+            base_url = provider_config.get('url') or config.LYRION_URL
+            payload = {"id": 1, "method": "slim.request", "params": ["", ["playlists", "tracks", "0", "999999", f"playlist_id:{playlist_id}"]]}
+            resp = http_requests.post(f"{base_url.rstrip('/')}/jsonrpc.js", json=payload, timeout=30)
+            if resp.status_code == 200:
+                result = resp.json().get('result', {})
+            if result and "playlisttracks_loop" in result:
+                return [str(t.get('id')) for t in result["playlisttracks_loop"] if t.get('id')]
+
+        elif provider_type == 'localfiles':
+            from tasks.mediaserver_localfiles import get_all_playlists
+            playlists = get_all_playlists()
+            for pl in playlists:
+                if pl.get('Id') == playlist_id or pl.get('Name') == playlist_id:
+                    # Parse M3U to get file paths, then resolve to item_ids
+                    path = pl.get('Path')
+                    if path and os.path.isfile(path):
+                        import os
+                        tracks = []
+                        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                            for line in f:
+                                line = line.strip()
+                                if line and not line.startswith('#'):
+                                    tracks.append(line)
+                        return tracks
+
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to fetch playlist tracks from {provider_type}: {e}")
+        return None
+
+
 @playlist_curator_bp.route('/api/curator/stream/<int:track_id>', methods=['GET'])
 def stream_track(track_id):
-    """Proxy audio stream for a track, keeping provider credentials server-side."""
+    """Redirect to direct media server stream URL for instant playback.
+    For API-based providers, redirects to the provider's download/stream endpoint.
+    For localfiles, serves directly from disk.
+    """
+    from flask import redirect as flask_redirect
     try:
         primary_provider_id = get_primary_provider_id()
         provider_item_id = get_item_id_for_provider(track_id, primary_provider_id) if primary_provider_id else None
@@ -545,33 +811,29 @@ def stream_track(track_id):
             p_type = config.MEDIASERVER_TYPE
             cfg = {}
 
-        stream_url = None
-        headers = {}
-
         if p_type in ('jellyfin', 'emby'):
             base_url = cfg.get('url') or config.JELLYFIN_URL or config.EMBY_URL
             token = cfg.get('token') or cfg.get('api_key') or config.JELLYFIN_TOKEN or config.EMBY_TOKEN
-            stream_url = f"{base_url.rstrip('/')}/Items/{provider_item_id}/Download?api_key={token}"
+            return flask_redirect(f"{base_url.rstrip('/')}/Items/{provider_item_id}/Download?api_key={token}")
 
         elif p_type == 'navidrome':
             base_url = cfg.get('url') or config.NAVIDROME_URL
-            user = cfg.get('username') or config.NAVIDROME_USER
+            user = cfg.get('user') or cfg.get('username') or config.NAVIDROME_USER
             password = cfg.get('password') or config.NAVIDROME_PASSWORD
-            stream_url = f"{base_url.rstrip('/')}/rest/stream?id={provider_item_id}&u={user}&p={password}&v=1.16.1&c=AudioMuse-AI"
+            hex_pass = password.encode('utf-8').hex() if password else ''
+            return flask_redirect(f"{base_url.rstrip('/')}/rest/stream?id={provider_item_id}&u={user}&p=enc:{hex_pass}&v=1.16.1&c=AudioMuse-AI&f=json")
 
         elif p_type == 'lyrion':
             base_url = cfg.get('url') or config.LYRION_URL
-            stream_url = f"{base_url.rstrip('/')}/music/{provider_item_id}/download"
+            return flask_redirect(f"{base_url.rstrip('/')}/music/{provider_item_id}/download")
 
         elif p_type == 'localfiles':
-            # Serve file directly from disk
             db = get_db()
             cur = db.cursor()
             cur.execute("SELECT file_path FROM score WHERE track_id = %s", (track_id,))
             row = cur.fetchone()
             cur.close()
             if row and row[0]:
-                import os
                 file_path = row[0]
                 if os.path.isfile(file_path):
                     import mimetypes
@@ -591,30 +853,7 @@ def stream_track(track_id):
                                              'Accept-Ranges': 'bytes'})
             return jsonify({"error": "File not found"}), 404
 
-        if not stream_url:
-            return jsonify({"error": "Could not construct stream URL for provider"}), 500
-
-        # Proxy the stream
-        upstream = http_requests.get(stream_url, headers=headers, stream=True, timeout=30)
-        if upstream.status_code != 200:
-            upstream.close()
-            return jsonify({"error": f"Upstream returned {upstream.status_code}"}), 502
-
-        content_type = upstream.headers.get('Content-Type', 'audio/mpeg')
-        resp_headers = {}
-        if 'Content-Length' in upstream.headers:
-            resp_headers['Content-Length'] = upstream.headers['Content-Length']
-        resp_headers['Accept-Ranges'] = 'bytes'
-
-        def stream_and_close():
-            try:
-                yield from upstream.iter_content(chunk_size=65536)
-            finally:
-                upstream.close()
-
-        return Response(stream_and_close(),
-                        content_type=content_type,
-                        headers=resp_headers)
+        return jsonify({"error": "Could not construct stream URL for provider"}), 500
 
     except Exception as e:
         logger.exception(f"Stream failed for track_id={track_id}")
