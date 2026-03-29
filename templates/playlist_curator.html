@@ -703,6 +703,8 @@
         border-radius: 0.5rem;
         padding: 1rem;
         margin-bottom: 1rem;
+        max-height: 50vh;
+        overflow-y: auto;
     }
 
     .dedup-panel-header {
@@ -710,6 +712,11 @@
         justify-content: space-between;
         align-items: center;
         margin-bottom: 1rem;
+        position: sticky;
+        top: 0;
+        background-color: var(--bg-code);
+        padding-bottom: 0.5rem;
+        z-index: 1;
     }
 
     .dedup-panel-header h3 {
@@ -2428,6 +2435,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
             const removable = data.total_duplicate_tracks - data.total_groups;
             titleEl.textContent = `Duplicates Found: ${data.total_groups} group${data.total_groups > 1 ? 's' : ''} (${removable} to remove)`;
             renderDedupGroups();
+            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
         } catch (error) {
             console.error('Find duplicates error:', error);
