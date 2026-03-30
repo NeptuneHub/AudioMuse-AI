@@ -511,6 +511,31 @@
         display: none !important;
     }
 
+    /* Loading spinner */
+    .loading-spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid var(--border-color, #d1d5db);
+        border-top-color: var(--color-primary, #3B82F6);
+        border-radius: 50%;
+        animation: spin 0.6s linear infinite;
+        vertical-align: middle;
+        margin-right: 0.5rem;
+    }
+
+    @keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+
+    #status:not(:empty) {
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.75rem;
+        border-radius: 0.375rem;
+        background-color: var(--bg-code);
+        border: 1px solid var(--border-color);
+    }
+
     /* Collapsible Drawer Styles */
     .drawer-header {
         display: flex;
@@ -718,12 +743,13 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 1rem;
+        margin: -1rem -1rem 1rem -1rem;
+        padding: 0.75rem 1rem;
         position: sticky;
-        top: 0;
+        top: -1rem;
         background-color: var(--bg-code);
-        padding-bottom: 0.5rem;
-        z-index: 1;
+        z-index: 2;
+        border-bottom: 1px solid var(--border-color);
     }
 
     .dedup-panel-header h3 {
@@ -887,7 +913,7 @@
                     <option value="">All Providers</option>
                 </select>
                 <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem;">
-                    <button type="button" style="background-color:#6366F1;color:white;border:none;padding:0.5rem 1rem;border-radius:0.375rem;cursor:pointer;font-size:0.875rem;white-space:nowrap;" onclick="loadProviderPlaylists()">
+                    <button type="button" id="btn-load-provider" style="background-color:#6366F1;color:white;border:none;padding:0.5rem 1rem;border-radius:0.375rem;cursor:pointer;font-size:0.875rem;white-space:nowrap;" onclick="loadProviderPlaylists()">
                         Load Playlists
                     </button>
                     <span id="provider-playlist-status" style="font-size:0.875rem;"></span>
@@ -978,7 +1004,7 @@ Moderate (0.03-0.07): Catches most duplicates across compilations.
 Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</span>
                     </span>
                 </div>
-                <button type="button" class="btn-find-duplicates" onclick="findDuplicates()">Find Duplicates</button>
+                <button type="button" id="btn-find-duplicates" class="btn-find-duplicates" onclick="findDuplicates()">Find Duplicates</button>
             </div>
         </div>
         <div id="playlist-creator" class="save-playlist-inline hidden">
@@ -986,7 +1012,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
             <form id="save-playlist-form">
                 <input type="text" id="new_playlist_name" name="new_playlist_name" required
                     placeholder="Playlist name">
-                <button type="submit">Save</button>
+                <button type="submit" id="btn-save-playlist">Save</button>
             </form>
             <div id="playlist-status"></div>
         </div>
@@ -1020,9 +1046,10 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
     </div>
 </section>
 
+<div id="status"></div>
+
 <section id="results-container" class="hidden">
     <h2>Search Results</h2>
-    <div id="status"></div>
     <div id="results-table-wrapper" class="results-table-container"></div>
 </section>
 
@@ -1063,6 +1090,32 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
     function escHtml(s) {
         return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
             .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+    }
+
+    // --- Loading & Status Helpers ---
+    function setLoadingStatus(message) {
+        const el = document.getElementById('status');
+        el.innerHTML = '<span class="loading-spinner"></span>' + escHtml(message);
+        el.style.color = 'var(--color-primary)';
+    }
+
+    function clearStatus() {
+        const el = document.getElementById('status');
+        el.textContent = '';
+        el.style.color = '';
+    }
+
+    function setErrorStatus(message) {
+        const el = document.getElementById('status');
+        el.textContent = message;
+        el.style.color = 'var(--color-danger, red)';
+    }
+
+    function setSearchButtonsDisabled(disabled) {
+        ['btn-search-filters', 'btn-send-to-extend', 'btn-extend-playlist'].forEach(id => {
+            const btn = document.getElementById(id);
+            if (btn) btn.disabled = disabled;
+        });
     }
 
     // --- Global Variables ---
@@ -1176,7 +1229,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
             document.getElementById('stats-container').classList.add('hidden');
             document.getElementById('playlist-creator').classList.add('hidden');
             document.getElementById('results-table-wrapper').innerHTML = '';
-            document.getElementById('status').textContent = '';
+            clearStatus();
         } else {
             // Re-render results with appropriate data for the active tab
             if (tab === 'smart') {
@@ -1192,7 +1245,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
                     document.getElementById('stats-container').classList.add('hidden');
                     document.getElementById('playlist-creator').classList.add('hidden');
                     document.getElementById('results-table-wrapper').innerHTML = '';
-                    document.getElementById('status').textContent = '';
+                    clearStatus();
                 }
             } else {
                 // Extend/Playlist tab: show extendPlaylistResults
@@ -1206,7 +1259,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
                     document.getElementById('stats-container').classList.add('hidden');
                     document.getElementById('playlist-creator').classList.add('hidden');
                     document.getElementById('results-table-wrapper').innerHTML = '';
-                    document.getElementById('status').textContent = '';
+                    clearStatus();
                 }
             }
             updateStatsDisplay();
@@ -1528,6 +1581,8 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
     }
 
     window.loadProviderPlaylists = async function() {
+        const providerBtn = document.getElementById('btn-load-provider');
+        if (providerBtn) providerBtn.disabled = true;
         const statusSpan = document.getElementById('provider-playlist-status');
         statusSpan.textContent = 'Loading...';
         statusSpan.style.color = 'var(--color-primary)';
@@ -1584,6 +1639,8 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
             console.error('Load provider playlists error:', error);
             statusSpan.textContent = error.message;
             statusSpan.style.color = 'var(--color-danger)';
+        } finally {
+            if (providerBtn) providerBtn.disabled = false;
         }
     };
 
@@ -1594,7 +1651,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         const providerId = parts[0];
         const playlistId = parts.slice(1).join('__');
 
-        const statusDiv = document.getElementById('status');
+        setLoadingStatus('Loading playlist tracks from provider...');
         try {
             const response = await fetch("{{ url_for('playlist_curator_bp.provider_playlist_tracks_api') }}", {
                 method: 'POST',
@@ -1616,14 +1673,16 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
             displaySourceTracksDrawer();
 
             if (data.unresolved_tracks > 0) {
-                statusDiv.textContent = `Loaded ${data.resolved_tracks} tracks (${data.unresolved_tracks} not yet analyzed)`;
-                statusDiv.style.color = 'var(--text-muted)';
+                const el = document.getElementById('status');
+                el.textContent = `Loaded ${data.resolved_tracks} tracks (${data.unresolved_tracks} not yet analyzed)`;
+                el.style.color = 'var(--text-muted)';
+            } else {
+                clearStatus();
             }
 
             return true;
         } catch (error) {
-            statusDiv.textContent = error.message;
-            statusDiv.style.color = 'red';
+            setErrorStatus(error.message);
             return false;
         }
     }
@@ -1652,7 +1711,6 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
 
     window.findSimilarSongs = async function (searchOnly = false) {
         console.log('findSimilarSongs called', { searchOnly, activeTab, smartFilterSourceIds: smartFilterSourceIds.length });
-        const statusDiv = document.getElementById('status');
         const maxSongs = parseInt(document.getElementById('max_songs').value);
         const threshold = parseFloat(document.getElementById('similarity_threshold').value);
         const minRatingVal = parseFloat(document.getElementById('min_rating').value);
@@ -1715,8 +1773,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
             const filters = getFilters();
             console.log('Filters:', filters);
             if (filters.length === 0) {
-                statusDiv.textContent = 'Please add at least one filter.';
-                statusDiv.style.color = 'red';
+                setErrorStatus('Please add at least one filter.');
                 return;
             }
             payload.filters = filters;
@@ -1727,23 +1784,20 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         } else {
             const playlistName = document.getElementById('playlist_select').value;
             if (!playlistName) {
-                statusDiv.textContent = 'Please select a playlist.';
-                statusDiv.style.color = 'red';
+                setErrorStatus('Please select a playlist.');
                 return;
             }
             // Handle special playlist options
             if (playlistName === '__smart_filter__') {
                 if (smartFilterSourceIds.length === 0) {
-                    statusDiv.textContent = 'No Smart Filter results available. Run a Smart Filter search first.';
-                    statusDiv.style.color = 'red';
+                    setErrorStatus('No Smart Filter results available. Run a Smart Filter search first.');
                     return;
                 }
                 payload.source_ids = smartFilterSourceIds;
             } else if (playlistName.startsWith('__provider__')) {
                 // Provider playlist — fetch tracks first if not already loaded
                 if (smartFilterSourceIds.length === 0) {
-                    statusDiv.textContent = 'Loading playlist tracks from provider...';
-                    statusDiv.style.color = 'blue';
+                    setLoadingStatus('Loading playlist tracks from provider...');
                     const loaded = await loadProviderPlaylistTracks(playlistName);
                     if (!loaded) return;
                 }
@@ -1753,8 +1807,8 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
             }
         }
 
-        statusDiv.textContent = searchOnly ? 'Searching...' : 'Finding similar songs...';
-        statusDiv.style.color = 'blue';
+        setLoadingStatus(searchOnly ? 'Searching...' : 'Finding similar songs...');
+        setSearchButtonsDisabled(true);
 
         try {
             const response = await fetch("{{ url_for('playlist_curator_bp.search_api') }}", {
@@ -1806,7 +1860,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
                 displayResults(data.results);
             }
 
-            statusDiv.textContent = '';
+            clearStatus();
 
             document.getElementById('results-container').classList.remove('hidden');
             document.getElementById('stats-container').classList.remove('hidden');
@@ -1817,8 +1871,9 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
 
         } catch (error) {
             console.error('Search error:', error);
-            statusDiv.textContent = error.message;
-            statusDiv.style.color = 'red';
+            setErrorStatus(error.message);
+        } finally {
+            setSearchButtonsDisabled(false);
         }
     };
 
@@ -1848,18 +1903,16 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
 
     // --- Send to Extend Playlist ---
     window.sendToExtendPlaylist = async function () {
-        const statusDiv = document.getElementById('status');
         const filters = getFilters();
 
         if (filters.length === 0) {
-            statusDiv.textContent = 'Please add at least one filter.';
-            statusDiv.style.color = 'red';
+            setErrorStatus('Please add at least one filter.');
             return;
         }
 
         // First, perform the search to get results
-        statusDiv.textContent = 'Searching...';
-        statusDiv.style.color = 'blue';
+        setLoadingStatus('Searching filters and preparing extend...');
+        document.getElementById('btn-send-to-extend').disabled = true;
 
         try {
             const matchMode = document.getElementById('match-mode').value;
@@ -1888,8 +1941,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
             smartFilterSourceIds = filteredResults.map(r => r.item_id);
 
             if (smartFilterSourceIds.length === 0) {
-                statusDiv.textContent = 'No songs found matching the filters. Cannot extend.';
-                statusDiv.style.color = 'red';
+                setErrorStatus('No songs found matching the filters. Cannot extend.');
                 return;
             }
 
@@ -1907,16 +1959,16 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
             switchTab(null, 'extend', true);
 
             // Show status message
-            statusDiv.textContent = `Using ${smartFilterSourceIds.length} Smart Filter results as source. Finding similar songs...`;
-            statusDiv.style.color = 'blue';
+            setLoadingStatus(`Using ${smartFilterSourceIds.length} Smart Filter results as source. Finding similar songs...`);
 
             // Automatically run the extend operation (it will update stats and display)
             await findSimilarSongs(false);
 
         } catch (error) {
             console.error('Send to extend error:', error);
-            statusDiv.textContent = error.message;
-            statusDiv.style.color = 'red';
+            setErrorStatus(error.message);
+        } finally {
+            document.getElementById('btn-send-to-extend').disabled = false;
         }
     };
 
@@ -2174,6 +2226,8 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         }
 
         statusDiv.textContent = 'Saving...';
+        const saveBtn = document.getElementById('btn-save-playlist');
+        if (saveBtn) saveBtn.disabled = true;
         try {
             const payload = {
                 new_playlist_name: name,
@@ -2198,6 +2252,8 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         } catch (e) {
             statusDiv.textContent = e.message;
             statusDiv.style.color = 'red';
+        } finally {
+            if (saveBtn) saveBtn.disabled = false;
         }
     });
 
@@ -2414,7 +2470,9 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
             return;
         }
 
-        container.innerHTML = '<p style="color:var(--color-primary);">Scanning for duplicates...</p>';
+        const dedupBtn = document.getElementById('btn-find-duplicates');
+        if (dedupBtn) dedupBtn.disabled = true;
+        container.innerHTML = '<p style="color:var(--color-primary);"><span class="loading-spinner"></span>Scanning for duplicates...</p>';
         panel.classList.remove('hidden');
 
         try {
@@ -2444,6 +2502,8 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         } catch (error) {
             console.error('Find duplicates error:', error);
             container.innerHTML = `<p style="color:var(--color-danger);">${escHtml(error.message)}</p>`;
+        } finally {
+            if (dedupBtn) dedupBtn.disabled = false;
         }
     };
 
