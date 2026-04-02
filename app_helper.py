@@ -282,7 +282,7 @@ def init_db():
                     VALUES (%s, %s, %s, NOW())
                 """, (query, 1.0, rank))
             
-            logger.info(f"Inserted {len(default_queries)} default CLAP search queries")
+            logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
         
         db.commit()
 
