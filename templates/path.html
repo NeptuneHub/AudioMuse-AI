@@ -128,6 +128,7 @@
                     <div class="param-row" style="margin-top:0.4rem;">
                         <input id="start_mood_pct" type="range" min="10" max="100" step="1" value="100" />
                         <span id="start_mood_pct_label" style="font-weight:500;">100%</span>
+                        <input id="start_mood_pct_input" type="number" min="10" max="100" step="1" value="100" />
                     </div>
                 </div>
             </div>
@@ -160,6 +161,7 @@
                     <div class="param-row" style="margin-top:0.4rem;">
                         <input id="end_mood_pct" type="range" min="10" max="100" step="1" value="100" />
                         <span id="end_mood_pct_label" style="font-weight:500;">100%</span>
+                        <input id="end_mood_pct_input" type="number" min="10" max="100" step="1" value="100" />
                     </div>
                 </div>
             </div>
@@ -423,9 +425,21 @@
 
             document.getElementById('start_mood_pct').addEventListener('input', function() {
                 document.getElementById('start_mood_pct_label').textContent = this.value + '%';
+                document.getElementById('start_mood_pct_input').value = this.value;
+            });
+            document.getElementById('start_mood_pct_input').addEventListener('input', function() {
+                const v = Math.max(10, Math.min(100, parseInt(this.value) || 100));
+                document.getElementById('start_mood_pct').value = v;
+                document.getElementById('start_mood_pct_label').textContent = v + '%';
             });
             document.getElementById('end_mood_pct').addEventListener('input', function() {
                 document.getElementById('end_mood_pct_label').textContent = this.value + '%';
+                document.getElementById('end_mood_pct_input').value = this.value;
+            });
+            document.getElementById('end_mood_pct_input').addEventListener('input', function() {
+                const v = Math.max(10, Math.min(100, parseInt(this.value) || 100));
+                document.getElementById('end_mood_pct').value = v;
+                document.getElementById('end_mood_pct_label').textContent = v + '%';
             });
 
             // --- Normalization Function with Fixed Range ---
