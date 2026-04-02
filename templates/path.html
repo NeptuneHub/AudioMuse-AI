@@ -125,18 +125,10 @@
                         <option value="relaxed">Relaxed</option>
                         <option value="danceable">Danceable</option>
                     </select>
-                    <select id="start_mood_pct" class="mood-select" style="margin-top:0.4rem;">
-                        <option value="100">100%</option>
-                        <option value="90">90%</option>
-                        <option value="80">80%</option>
-                        <option value="70">70%</option>
-                        <option value="60">60%</option>
-                        <option value="50">50%</option>
-                        <option value="40">40%</option>
-                        <option value="30">30%</option>
-                        <option value="20">20%</option>
-                        <option value="10">10%</option>
-                    </select>
+                    <div class="param-row" style="margin-top:0.4rem;">
+                        <input id="start_mood_pct" type="range" min="10" max="100" step="10" value="100" />
+                        <span id="start_mood_pct_label" style="font-weight:500;">100%</span>
+                    </div>
                 </div>
             </div>
 
@@ -165,18 +157,10 @@
                         <option value="relaxed">Relaxed</option>
                         <option value="danceable">Danceable</option>
                     </select>
-                    <select id="end_mood_pct" class="mood-select" style="margin-top:0.4rem;">
-                        <option value="100">100%</option>
-                        <option value="90">90%</option>
-                        <option value="80">80%</option>
-                        <option value="70">70%</option>
-                        <option value="60">60%</option>
-                        <option value="50">50%</option>
-                        <option value="40">40%</option>
-                        <option value="30">30%</option>
-                        <option value="20">20%</option>
-                        <option value="10">10%</option>
-                    </select>
+                    <div class="param-row" style="margin-top:0.4rem;">
+                        <input id="end_mood_pct" type="range" min="10" max="100" step="10" value="100" />
+                        <span id="end_mood_pct_label" style="font-weight:500;">100%</span>
+                    </div>
                 </div>
             </div>
 
@@ -435,6 +419,13 @@
             });
             document.getElementById('end-mode-toggle').addEventListener('click', () => {
                 setMode('end', endMode === 'song' ? 'mood' : 'song');
+            });
+
+            document.getElementById('start_mood_pct').addEventListener('input', function() {
+                document.getElementById('start_mood_pct_label').textContent = this.value + '%';
+            });
+            document.getElementById('end_mood_pct').addEventListener('input', function() {
+                document.getElementById('end_mood_pct_label').textContent = this.value + '%';
             });
 
             // --- Normalization Function with Fixed Range ---
