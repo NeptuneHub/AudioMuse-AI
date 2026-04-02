@@ -379,7 +379,7 @@ PATH_LCORE_MULTIPLIER = int(os.environ.get("PATH_LCORE_MULTIPLIER", "3"))
 PATH_FIX_SIZE = os.environ.get("PATH_FIX_SIZE", "False").lower() == 'true'
 
 # Path to the JSON file containing mood centroids for the path-to-mood feature.
-MOOD_CENTROIDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mood_centroids_real_080_clap_final.json')
+MOOD_CENTROIDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mood_centroids_real_080_clap.json')
 
 # --- Song Alchemy Defaults ---
 # Number of similar songs to return when creating the Alchemy result (default 100, max 200)
