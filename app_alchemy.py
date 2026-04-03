@@ -76,9 +76,9 @@ def list_anchors():
         anchors = get_alchemy_anchors()
         # no centroid returned here (name-only list)
         return jsonify({'anchors': [{'id': a['id'], 'name': a['name']} for a in anchors]})
-    except Exception as e:
+    except Exception:
         logger.exception('Failed to list anchors')
-        return jsonify({'anchors': [], 'error': str(e)}), 500
+        return jsonify({'anchors': [], 'error': 'Unable to retrieve anchors at this time.'}), 500
 
 
 @alchemy_bp.route('/api/anchors', methods=['POST'])
@@ -166,9 +166,9 @@ def artist_projections_api():
             'components': components,
             'count': len(components)
         })
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to retrieve artist projections")
-        return jsonify({'components': [], 'count': 0, 'error': str(e)}), 500
+        return jsonify({'components': [], 'count': 0, 'error': 'Unable to retrieve artist projections at this time.'}), 500
 
 
 @alchemy_bp.route('/api/build_artist_projection', methods=['POST'])
@@ -194,9 +194,9 @@ def build_artist_projection_endpoint():
                 'status': 'error',
                 'message': 'Artist projection build returned no data (no GMM parameters found?)'
             }), 400
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to build artist projection")
         return jsonify({
             'status': 'error',
-            'message': f'Failed to build artist projection: {str(e)}'
+            'message': 'Failed to build artist projection. Please try again later.'
         }), 500
