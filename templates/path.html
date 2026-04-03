@@ -103,10 +103,10 @@
             <div class="autocomplete-container">
                 <label for="start_search" class="label-with-tooltip">
                     Start:
-                    <button type="button" class="mode-toggle-btn" id="start-mode-toggle" title="Click to toggle Song/Mood">🎵 Song</button>
+                    <button type="button" class="mode-toggle-btn" id="start-mode-toggle" title="Click to cycle Song/Mood/Anchor">🎵 Song</button>
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Click the button to toggle between Song (search by name) and Mood (select a mood direction)</span>
+                        <span class="tooltip-text">Click the button to cycle between Song (search by name), Mood, and Anchor.</span>
                     </span>
                 </label>
                 <div id="start-song-fields">
@@ -139,10 +139,10 @@
             <div class="autocomplete-container">
                 <label for="end_search" class="label-with-tooltip">
                     End:
-                    <button type="button" class="mode-toggle-btn" id="end-mode-toggle" title="Click to toggle Song/Mood">🎵 Song</button>
+                    <button type="button" class="mode-toggle-btn" id="end-mode-toggle" title="Click to cycle Song/Mood/Anchor">🎵 Song</button>
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Click the button to toggle between Song (search by name) and Mood (select a mood direction)</span>
+                        <span class="tooltip-text">Click the button to cycle between Song (search by name), Mood, and Anchor.</span>
                     </span>
                 </label>
                 <div id="end-song-fields">
@@ -433,26 +433,41 @@
                     moodFields.classList.add('hidden');
                     toggleBtn.innerHTML = '🎵 Song';
                     toggleBtn.classList.remove('mood-active');
-                } else {
+                    toggleBtn.classList.remove('anchor-active');
+                } else if (mode === 'mood') {
                     songFields.classList.add('hidden');
                     moodFields.classList.remove('hidden');
                     toggleBtn.innerHTML = '🎭 Mood';
                     toggleBtn.classList.add('mood-active');
-                    // Force the OTHER endpoint back to song (only one mood allowed)
+                    toggleBtn.classList.remove('anchor-active');
+                    // Force the other endpoint back to song if already mode mood/anchor is active so only one
                     const other = isStart ? 'end' : 'start';
-                    if ((isStart ? endMode : startMode) === 'mood') {
+                    if ((isStart ? endMode : startMode) !== 'song') {
+                        setMode(other, 'song');
+                    }
+                } else {
+                    songFields.classList.add('hidden');
+                    moodFields.classList.remove('hidden');
+                    toggleBtn.innerHTML = '🔖 Anchor';
+                    toggleBtn.classList.remove('mood-active');
+                    toggleBtn.classList.add('anchor-active');
+                    const other = isStart ? 'end' : 'start';
+                    if ((isStart ? endMode : startMode) !== 'song') {
                         setMode(other, 'song');
                     }
                 }
                 if (isStart) startMode = mode; else endMode = mode;
             };
 
-            document.getElementById('start-mode-toggle').addEventListener('click', () => {
-                setMode('start', startMode === 'song' ? 'mood' : 'song');
-            });
-            document.getElementById('end-mode-toggle').addEventListener('click', () => {
-                setMode('end', endMode === 'song' ? 'mood' : 'song');
-            });
+            const cycleMode = (endpoint) => {
+                const current = endpoint === 'start' ? startMode : endMode;
+                const next = current === 'song' ? 'mood' : (current === 'mood' ? 'anchor' : 'song');
+                setMode(endpoint, next);
+            };
+
+            document.getElementById('start-mode-toggle').addEventListener('click', () => cycleMode('start'));
+            document.getElementById('end-mode-toggle').addEventListener('click', () => cycleMode('end'));
+
 
             document.getElementById('start_mood_pct').addEventListener('input', function() {
                 document.getElementById('start_mood_pct_label').textContent = this.value + '%';
@@ -893,8 +908,8 @@
                 const endSongId = endSongIdInput.value;
                 const startMood = startMode === 'mood' ? startMoodSelect.value : '';
                 const endMood = endMode === 'mood' ? endMoodSelect.value : '';
-                const startAnchor = startMode === 'mood' ? startAnchorSelect.value : '';
-                const endAnchor = endMode === 'mood' ? endAnchorSelect.value : '';
+                const startAnchor = startMode === 'anchor' ? startAnchorSelect.value : '';
+                const endAnchor = endMode === 'anchor' ? endAnchorSelect.value : '';
                 const maxSteps = document.getElementById('max_steps').value;
 
                 resultsContainer.classList.remove('hidden');
@@ -1017,12 +1032,16 @@
 
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
-                    const startLabel = startMode === 'mood'
+                    const startLabel = startMode === 'song'
+                        ? (startTitleDiv.textContent || '').replace(/^Title:\s*/, '')
+                        : startMode === 'mood'
                         ? (startMoodSelect.options[startMoodSelect.selectedIndex]?.text || 'Mood')
-                        : (startTitleDiv.textContent || '').replace(/^Title:\s*/, '');
-                    const endLabel = endMode === 'mood'
+                        : (startAnchorSelect.options[startAnchorSelect.selectedIndex]?.text || 'Anchor');
+                    const endLabel = endMode === 'song'
+                        ? (endTitleDiv.textContent || '').replace(/^Title:\s*/, '')
+                        : endMode === 'mood'
                         ? (endMoodSelect.options[endMoodSelect.selectedIndex]?.text || 'Mood')
-                        : (endTitleDiv.textContent || '').replace(/^Title:\s*/, '');
+                        : (endAnchorSelect.options[endAnchorSelect.selectedIndex]?.text || 'Anchor');
                     document.getElementById('playlist_name').value = `Path: ${startLabel} to ${endLabel}`;
                 } catch (error) {
                     statusDiv.textContent = `Error: ${error.message}`;

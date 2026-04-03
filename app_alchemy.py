@@ -86,9 +86,12 @@ def create_anchor():
     from app_helper import save_alchemy_anchor
     payload = request.get_json() or {}
     name = (payload.get('name') or '').strip()
+    centroid = payload.get('centroid')
     if not name:
         return jsonify({'error': 'Anchor name is required'}), 400
-    anchor = save_alchemy_anchor(name)
+    if not centroid or not isinstance(centroid, list):
+        return jsonify({'error': 'Anchor centroid is required and must be a list'}), 400
+    anchor = save_alchemy_anchor(name, centroid)
     if not anchor:
         return jsonify({'error': 'Failed to save anchor'}), 500
     return jsonify({'anchor': {'id': anchor['id'], 'name': anchor['name']}})

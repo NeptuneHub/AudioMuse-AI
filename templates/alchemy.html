@@ -150,23 +150,6 @@
     </div>
 </section>
 
-<section id="anchor-manager" class="hidden" style="margin-top: 1.5rem;">
-    <h2>Saved Anchors</h2>
-    <div class="param-group" style="margin-bottom:1rem;">
-        <div style="display:flex;gap:0.75rem;align-items:flex-end;">
-            <div style="flex-grow:1;">
-                <label for="anchor_name_input">Anchor name</label>
-                <input id="anchor_name_input" type="text" placeholder="Name this anchor..." style="width:100%;padding:.5rem;" />
-            </div>
-            <button id="save-anchor-btn" type="button" style="padding:.5rem 1rem;">Save Anchor</button>
-        </div>
-    </div>
-    <table style="width:100%;border-collapse:collapse;">
-        <thead><tr><th>Name</th><th>Action</th></tr></thead>
-        <tbody id="saved-anchors-table-body"></tbody>
-    </table>
-</section>
-
 <section id="playlist-creator" class="hidden">
     <h3>Create a Playlist from Results</h3>
     <form id="playlist-form">
@@ -180,6 +163,26 @@
     </form>
     <div id="playlist-status"></div>
 </section>
+
+<section id="save-anchor-panel" class="hidden" style="margin-top:1.2rem;">
+    <h3>Save Anchor</h3>
+    <div class="param-group" style="display:flex; gap:0.75rem; align-items:flex-end;">
+        <div style="flex-grow:1;">
+            <label for="anchor_name_input">Anchor Name</label>
+            <input id="anchor_name_input" type="text" placeholder="Name this anchor..." style="width:100%;padding:.5rem;" />
+        </div>
+        <button id="save-anchor-btn" type="button" style="padding:.5rem 1rem;">Save Anchor</button>
+    </div>
+</section>
+
+<section id="anchor-manager" class="hidden" style="margin-top: 1.5rem;">
+    <h2>Saved Anchors</h2>
+    <table style="width:100%;border-collapse:collapse;">
+        <thead><tr><th>Name</th><th>Action</th></tr></thead>
+        <tbody id="saved-anchors-table-body"></tbody>
+    </table>
+</section>
+
 {% endblock %}
 
 {% block bodyAdditions %}
@@ -246,9 +249,7 @@
             card.innerHTML = `
                 <div class="alchemy-card-header">
                     <div class="left-group">
-                        <button type="button" class="type-toggle-btn song-btn" title="Set as Song">🎵<br>Song</button>
-                        <button type="button" class="type-toggle-btn artist-btn" title="Set as Artist">🎤<br>Artist</button>
-                        <button type="button" class="type-toggle-btn anchor-btn" title="Set as Anchor">🔖<br>Anchor</button>
+                        <button type="button" class="type-toggle-btn type-cycle-btn" title="Click to switch: Song → Artist → Anchor">🎵 Song</button>
                         <div class="op-buttons">
                             <button type="button" class="op-btn op-add active">Include</button>
                             <button type="button" class="op-btn op-sub">Exclude</button>
@@ -287,9 +288,7 @@
             const songNumberEl = card.querySelector('.song-number');
             const opAddBtn = card.querySelector('.op-add');
             const opSubBtn = card.querySelector('.op-sub');
-            const songBtn = card.querySelector('.song-btn');
-            const artistBtn = card.querySelector('.artist-btn');
-            const anchorBtn = card.querySelector('.anchor-btn');
+            const typeCycleBtn = card.querySelector('.type-cycle-btn');
             const selectedSongNameEl = card.querySelector('.selected-song-name');
             const songFieldRow = card.querySelector('.song-field-row');
             const anchorFieldRow = card.querySelector('.anchor-field-row');
@@ -306,27 +305,36 @@
 
             const setType = (type) => {
                 itemTypeHidden.value = type;
-                songBtn.classList.toggle('active', type === 'song');
-                artistBtn.classList.toggle('active', type === 'artist');
-                anchorBtn.classList.toggle('active', type === 'anchor');
                 card.classList.toggle('item-type-song', type === 'song');
                 card.classList.toggle('item-type-artist', type === 'artist');
                 card.classList.toggle('item-type-anchor', type === 'anchor');
 
-                if (type === 'anchor') {
-                    songFieldRow.classList.add('hidden');
-                    anchorFieldRow.classList.remove('hidden');
-                    clearSelection();
-                } else {
+                if (type === 'song') {
+                    typeCycleBtn.textContent = '🎵 Song';
+                    typeCycleBtn.style.background = '#3B82F6';
                     songFieldRow.classList.remove('hidden');
                     anchorFieldRow.classList.add('hidden');
-                    clearSelection();
+                } else if (type === 'artist') {
+                    typeCycleBtn.textContent = '🎤 Artist';
+                    typeCycleBtn.style.background = '#8B5CF6';
+                    songFieldRow.classList.remove('hidden');
+                    anchorFieldRow.classList.add('hidden');
+                } else {
+                    typeCycleBtn.textContent = '🔖 Anchor';
+                    typeCycleBtn.style.background = '#2DD4BF';
+                    songFieldRow.classList.add('hidden');
+                    anchorFieldRow.classList.remove('hidden');
                 }
+                clearSelection();
             };
 
-            songBtn.addEventListener('click', () => setType('song'));
-            artistBtn.addEventListener('click', () => setType('artist'));
-            anchorBtn.addEventListener('click', () => setType('anchor'));
+            const cycleType = () => {
+                const current = itemTypeHidden.value || 'song';
+                const next = current === 'song' ? 'artist' : current === 'artist' ? 'anchor' : 'song';
+                setType(next);
+            };
+
+            typeCycleBtn.addEventListener('click', cycleType);
 
             anchorSelect.addEventListener('change', () => {
                 if (itemTypeHidden.value === 'anchor') {
@@ -635,8 +643,12 @@
                     });
                     // Save centroid from alchemy for potential anchor actions (not returned in anchors list)
                     window.lastAddCentroidVector = data.add_centroid_vector || null;
-                    // Show playlist creator
-                    document.getElementById('playlist-creator').classList.remove('hidden');
+                    // Show results, playlist creator, and save-anchor control for this run
+                    alchemyHasRun = true;
+                    resultsSection.classList.remove('hidden');
+                    playlistSection.classList.remove('hidden');
+                    saveAnchorPanel.classList.remove('hidden');
+                    anchorManagerSection.classList.add('hidden');
                     document.getElementById('playlist-status').textContent = '';
                     document.getElementById('playlist_name').value = `Alchemy: ${document.querySelector('.alchemy-card .song-title')?.value || 'Results'}`;
 
@@ -1013,19 +1025,32 @@
         const tabAlchemy = document.getElementById('tab-alchemy');
         const tabAnchors = document.getElementById('tab-anchors');
         const anchorManagerSection = document.getElementById('anchor-manager');
+        const resultsSection = document.getElementById('results');
+        const playlistSection = document.getElementById('playlist-creator');
+        const saveAnchorPanel = document.getElementById('save-anchor-panel');
+
+        let alchemyHasRun = false;
 
         const setTab = (tab) => {
             if (tab === 'alchemy') {
                 tabAlchemy.classList.add('active');
                 tabAnchors.classList.remove('active');
-                document.getElementById('results').classList.remove('hidden');
-                document.getElementById('playlist-creator').classList.remove('hidden');
                 anchorManagerSection.classList.add('hidden');
+                if (alchemyHasRun) {
+                    resultsSection.classList.remove('hidden');
+                    playlistSection.classList.remove('hidden');
+                    saveAnchorPanel.classList.remove('hidden');
+                } else {
+                    resultsSection.classList.add('hidden');
+                    playlistSection.classList.add('hidden');
+                    saveAnchorPanel.classList.add('hidden');
+                }
             } else {
                 tabAlchemy.classList.remove('active');
                 tabAnchors.classList.add('active');
-                document.getElementById('results').classList.add('hidden');
-                document.getElementById('playlist-creator').classList.add('hidden');
+                resultsSection.classList.add('hidden');
+                playlistSection.classList.add('hidden');
+                saveAnchorPanel.classList.add('hidden');
                 anchorManagerSection.classList.remove('hidden');
             }
         };
