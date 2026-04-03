@@ -57,6 +57,41 @@
     .item-type-artist .type-toggle-btn:hover {
         background: #7C3AED;
     }
+
+    /* Mobile-friendly anchor manager actions */
+    @media (max-width: 768px) {
+        #anchor-manager table,
+        #anchor-manager table tbody,
+        #anchor-manager table tr,
+        #anchor-manager table td {
+            display: block;
+            width: 100%;
+        }
+        #anchor-manager table tr {
+            margin-bottom: 0.75rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.75rem;
+        }
+        #anchor-manager table td {
+            text-align: left;
+            padding: 0.35rem 0;
+        }
+        #anchor-manager table td:last-child button {
+            display: block;
+            width: 100%;
+            margin: 0.25rem 0;
+        }
+
+        #anchor-manager > div {
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        #back-to-alchemy-btn,
+        #anchor-manager .btn {
+            width: 100%;
+            box-sizing: border-box;
+        }
+    }
 </style>
 {% endblock %}
 
