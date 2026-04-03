@@ -29,6 +29,22 @@ _load_mood_centroids()
 VALID_MOODS = {'happy', 'sad', 'aggressive', 'relaxed', 'danceable'}
 
 
+def _find_nearest_song_excluding_vector(vec, exclude_id=None):
+    if vec is None:
+        return None
+    # If wants neighbor excluding current song to avoid same-start/end on low pct
+    n = 2 if exclude_id else 1
+    neighbors = find_nearest_neighbors_by_vector(vec, n=n)
+    if not neighbors:
+        return None
+    if exclude_id and len(neighbors) > 1:
+        for ninfo in neighbors:
+            if str(ninfo['item_id']) != str(exclude_id):
+                return ninfo['item_id']
+    # fallback to best neighbor
+    return neighbors[0]['item_id']
+
+
 def _resolve_mood_to_song_id(mood, other_song_id, pct=100):
     """
     Given a mood name and the other endpoint's song ID, find the nearest
@@ -53,11 +69,7 @@ def _resolve_mood_to_song_id(mood, other_song_id, pct=100):
     t = max(0, min(100, pct)) / 100.0
     target = other_vector + t * (best_centroid - other_vector)
 
-    neighbors = find_nearest_neighbors_by_vector(target, n=1)
-    if not neighbors:
-        return None
-
-    return neighbors[0]['item_id']
+    return _find_nearest_song_excluding_vector(target, exclude_id=other_song_id)
 
 
 def _resolve_anchor_to_song_id(anchor_id, other_song_id=None, pct=100):
@@ -76,20 +88,16 @@ def _resolve_anchor_to_song_id(anchor_id, other_song_id=None, pct=100):
     except Exception:
         return None
 
-    # Interpolate between the other song and the anchor centroid if requested.
     if other_song_id is not None and pct is not None and pct != 100:
         other_vector = get_vector_by_id(other_song_id)
         if other_vector is None:
             return None
         t = max(0, min(100, pct)) / 100.0
         target = other_vector + t * (centroid_vec - other_vector)
-        neighbors = find_nearest_neighbors_by_vector(target, n=1)
-    else:
-        neighbors = find_nearest_neighbors_by_vector(centroid_vec, n=1)
+        return _find_nearest_song_excluding_vector(target, exclude_id=other_song_id)
 
-    if not neighbors:
-        return None
-    return neighbors[0]['item_id']
+    return _find_nearest_song_excluding_vector(centroid_vec, exclude_id=other_song_id)
+
 
 # Create a Blueprint for the path finding routes
 path_bp = Blueprint('path_bp', __name__, template_folder='../templates')
