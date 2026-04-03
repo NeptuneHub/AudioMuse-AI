@@ -126,7 +126,16 @@ def find_path_endpoint():
         else:
             path_fix_size = str(pfs).lower() in ('1', 'true', 'yes', 'y')
 
-        path, total_distance = find_path_between_songs(start_song_id, end_song_id, max_steps, path_fix_size=path_fix_size)
+        mood_endpoint = start_mood or end_mood
+        mood_direction = 'up' if start_mood else ('down' if end_mood else None)
+        path, total_distance = find_path_between_songs(
+            start_song_id,
+            end_song_id,
+            max_steps,
+            path_fix_size=path_fix_size,
+            mood=mood_endpoint,
+            mood_direction=mood_direction
+        )
 
         if not path:
             return jsonify({"error": f"No path found between the selected songs within {max_steps} steps."}), 404
