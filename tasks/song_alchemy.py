@@ -97,6 +97,13 @@ def _compute_centroid_from_items(items: List[dict]) -> np.ndarray:
             for vec, weight in zip(gmm_vecs, gmm_weights):
                 vectors.append(np.array(vec, dtype=float))
                 weights.append(weight)
+
+        elif item_type == 'anchor':
+            from app_helper import get_alchemy_anchor_by_id
+            anchor = get_alchemy_anchor_by_id(item_id)
+            if anchor and anchor.get('centroid') and isinstance(anchor.get('centroid'), list):
+                vectors.append(np.array(anchor['centroid'], dtype=float))
+                weights.append(1.0)
     
     if not vectors:
         return None
