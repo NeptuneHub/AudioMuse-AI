@@ -472,7 +472,20 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                 if vec is not None:
                     proj_vectors.append(np.array(vec, dtype=float))
                     proj_ids.append(f'__add_id__{aid}')
-                    add_meta.append({'item_id': aid, 'title': add_map.get(aid, {}).get('title'), 'author': add_map.get(aid, {}).get('author')})
+                    add_meta.append({'item_id': aid, 'title': add_map.get(aid, {}).get('title'), 'author': add_map.get(aid, {}).get('author'), 'type': 'song'})
+
+        # Add anchors as individual points
+        add_anchor_items = [item for item in add_items if item.get('type') == 'anchor']
+        if add_anchor_items:
+            from app_helper import get_alchemy_anchor_by_id
+            for item in add_anchor_items:
+                anchor_id = item['id']
+                anchor = get_alchemy_anchor_by_id(anchor_id)
+                if anchor and anchor.get('centroid') and isinstance(anchor['centroid'], list):
+                    vec = np.array(anchor['centroid'], dtype=float)
+                    proj_vectors.append(vec)
+                    proj_ids.append(f'__add_anchor__{anchor_id}')
+                    add_meta.append({'item_id': anchor_id, 'title': anchor.get('name', 'Anchor'), 'author': '', 'type': 'anchor'})
         
         # Add artist GMM components - metadata only (projections will be looked up from precomputed cache)
         add_artist_items = [item for item in add_items if item.get('type') == 'artist']
@@ -511,7 +524,20 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                 if vec is not None:
                     proj_vectors.append(np.array(vec, dtype=float))
                     proj_ids.append(f'__sub_id__{sid}')
-                    sub_meta.append({'item_id': sid, 'title': sub_map.get(sid, {}).get('title'), 'author': sub_map.get(sid, {}).get('author')})
+                    sub_meta.append({'item_id': sid, 'title': sub_map.get(sid, {}).get('title'), 'author': sub_map.get(sid, {}).get('author'), 'type': 'song'})
+
+        # Add anchors as individual points
+        subtract_anchor_items = [item for item in subtract_items if item.get('type') == 'anchor']
+        if subtract_anchor_items:
+            from app_helper import get_alchemy_anchor_by_id
+            for item in subtract_anchor_items:
+                anchor_id = item['id']
+                anchor = get_alchemy_anchor_by_id(anchor_id)
+                if anchor and anchor.get('centroid') and isinstance(anchor['centroid'], list):
+                    vec = np.array(anchor['centroid'], dtype=float)
+                    proj_vectors.append(vec)
+                    proj_ids.append(f'__sub_anchor__{anchor_id}')
+                    sub_meta.append({'item_id': anchor_id, 'title': anchor.get('name', 'Anchor'), 'author': '', 'type': 'anchor'})
         
         # Add artist GMM components - metadata only (projections will be looked up from precomputed cache)
         subtract_artist_items = [item for item in subtract_items if item.get('type') == 'artist']
@@ -676,7 +702,13 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                 if c is not None:
                     coords.append(np.array(c, dtype=float))
                     weights.append(1.0)
-        
+            elif item.get('type') == 'anchor':
+                mid = item['id']
+                c = id_to_coord.get(str(mid))
+                if c is not None:
+                    coords.append(np.array(c, dtype=float))
+                    weights.append(1.0)
+
         # Collect artist component coordinates (with their GMM weights) from precomputed projections
         for item in items:
             if item.get('type') == 'artist':
@@ -723,6 +755,22 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
         elif isinstance(pid, str) and pid.startswith('__sub_id__'):
             item_id = pid.replace('__sub_id__', '')
             vec = get_vector_by_id(item_id)
+        elif isinstance(pid, str) and pid.startswith('__add_anchor__'):
+            anchor_id = pid.replace('__add_anchor__', '')
+            from app_helper import get_alchemy_anchor_by_id
+            anchor = get_alchemy_anchor_by_id(anchor_id)
+            if anchor and anchor.get('centroid') and isinstance(anchor['centroid'], list):
+                vec = np.array(anchor['centroid'], dtype=float)
+            else:
+                vec = None
+        elif isinstance(pid, str) and pid.startswith('__sub_anchor__'):
+            anchor_id = pid.replace('__sub_anchor__', '')
+            from app_helper import get_alchemy_anchor_by_id
+            anchor = get_alchemy_anchor_by_id(anchor_id)
+            if anchor and anchor.get('centroid') and isinstance(anchor['centroid'], list):
+                vec = np.array(anchor['centroid'], dtype=float)
+            else:
+                vec = None
         else:
             # regular item id
             vec = get_vector_by_id(pid)
@@ -957,11 +1005,11 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
     # Attach 2D coords to add/sub selected items (songs and artist components)
     add_points = []
     for m in add_meta:
-        # Check if it's an artist component or regular song
         if m.get('is_artist_component'):
-            # Artist component ID format: __add_artist_comp__{artist_id}_{comp_idx}
             pid = f"__add_artist_comp__{m['item_id'].rsplit('_comp', 1)[0]}_{m['item_id'].split('_comp')[1]}"
             logger.debug(f"Looking for ADD artist component: item_id={m['item_id']}, pid={pid}, found={pid in proj_map}")
+        elif m.get('type') == 'anchor':
+            pid = f"__add_anchor__{m['item_id']}"
         else:
             pid = f"__add_id__{m['item_id']}"
         coord = proj_map.get(pid)
@@ -969,11 +1017,11 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
 
     sub_points = []
     for m in sub_meta:
-        # Check if it's an artist component or regular song
         if m.get('is_artist_component'):
-            # Artist component ID format: __sub_artist_comp__{artist_id}_{comp_idx}
             pid = f"__sub_artist_comp__{m['item_id'].rsplit('_comp', 1)[0]}_{m['item_id'].split('_comp')[1]}"
             logger.debug(f"Looking for SUB artist component: item_id={m['item_id']}, pid={pid}, found={pid in proj_map}")
+        elif m.get('type') == 'anchor':
+            pid = f"__sub_anchor__{m['item_id']}"
         else:
             pid = f"__sub_id__{m['item_id']}"
         coord = proj_map.get(pid)
