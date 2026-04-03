@@ -60,7 +60,7 @@ def _resolve_mood_to_song_id(mood, other_song_id, pct=100):
     return neighbors[0]['item_id']
 
 
-def _resolve_anchor_to_song_id(anchor_id):
+def _resolve_anchor_to_song_id(anchor_id, other_song_id=None, pct=100):
     from app_helper import get_alchemy_anchor_by_id
     try:
         anchor = get_alchemy_anchor_by_id(int(anchor_id))
@@ -75,7 +75,18 @@ def _resolve_anchor_to_song_id(anchor_id):
         centroid_vec = np.array(centroid, dtype=np.float32)
     except Exception:
         return None
-    neighbors = find_nearest_neighbors_by_vector(centroid_vec, n=1)
+
+    # Interpolate between the other song and the anchor centroid if requested.
+    if other_song_id is not None and pct is not None and pct != 100:
+        other_vector = get_vector_by_id(other_song_id)
+        if other_vector is None:
+            return None
+        t = max(0, min(100, pct)) / 100.0
+        target = other_vector + t * (centroid_vec - other_vector)
+        neighbors = find_nearest_neighbors_by_vector(target, n=1)
+    else:
+        neighbors = find_nearest_neighbors_by_vector(centroid_vec, n=1)
+
     if not neighbors:
         return None
     return neighbors[0]['item_id']
@@ -126,7 +137,7 @@ def find_path_endpoint():
 
     # Resolve mood/anchor to song IDs
     if start_anchor:
-        resolved_id = _resolve_anchor_to_song_id(start_anchor)
+        resolved_id = _resolve_anchor_to_song_id(start_anchor, other_song_id=end_song_id, pct=mood_pct)
         if not resolved_id:
             return jsonify({"error": f"Could not resolve anchor '{start_anchor}' to a song."}), 404
         start_song_id = resolved_id
@@ -139,7 +150,7 @@ def find_path_endpoint():
         logger.info(f"Resolved start mood '{start_mood}' ({mood_pct}%) to song {start_song_id}")
 
     if end_anchor:
-        resolved_id = _resolve_anchor_to_song_id(end_anchor)
+        resolved_id = _resolve_anchor_to_song_id(end_anchor, other_song_id=start_song_id, pct=mood_pct)
         if not resolved_id:
             return jsonify({"error": f"Could not resolve anchor '{end_anchor}' to a song."}), 404
         end_song_id = resolved_id
