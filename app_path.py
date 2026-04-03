@@ -37,6 +37,27 @@ def _resolve_mood_to_song_id(mood, other_song_id, pct=100):
     pct=100 means use the centroid directly; lower values interpolate
     between the other song and the centroid (e.g. 50 = halfway).
     """
+    if mood not in _MOOD_CENTROIDS or not _MOOD_CENTROIDS[mood]:
+        return None
+
+    if other_song_id is None:
+        return None
+
+    other_vector = get_vector_by_id(other_song_id)
+    if other_vector is None:
+        return None
+
+    centroids = _MOOD_CENTROIDS[mood]
+    best_centroid = min(centroids, key=lambda c: get_distance(other_vector, c))
+
+    t = max(0, min(100, pct)) / 100.0
+    target = other_vector + t * (best_centroid - other_vector)
+
+    neighbors = find_nearest_neighbors_by_vector(target, n=1)
+    if not neighbors:
+        return None
+
+    return neighbors[0]['item_id']
 
 
 def _resolve_anchor_to_song_id(anchor_id):
@@ -55,26 +76,6 @@ def _resolve_anchor_to_song_id(anchor_id):
     except Exception:
         return None
     neighbors = find_nearest_neighbors_by_vector(centroid_vec, n=1)
-    if not neighbors:
-        return None
-    return neighbors[0]['item_id']
-    if mood not in _MOOD_CENTROIDS or not _MOOD_CENTROIDS[mood]:
-        return None
-
-    other_vector = get_vector_by_id(other_song_id)
-    if other_vector is None:
-        return None
-
-    # Find the centroid closest to the other song
-    centroids = _MOOD_CENTROIDS[mood]
-    best_centroid = min(centroids, key=lambda c: get_distance(other_vector, c))
-
-    # Interpolate: target = other + (pct/100) * (centroid - other)
-    t = max(0, min(100, pct)) / 100.0
-    target = other_vector + t * (best_centroid - other_vector)
-
-    # Find the real song nearest to the target point
-    neighbors = find_nearest_neighbors_by_vector(target, n=1)
     if not neighbors:
         return None
     return neighbors[0]['item_id']

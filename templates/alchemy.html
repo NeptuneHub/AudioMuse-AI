@@ -65,7 +65,7 @@
     <header class="page-header">
         <h1>AudioMuse-AI - Song Alchemy</h1>
         <p>Select tracks or artists to Include or Exclude — boost favorites with Include and remove unwanted flavors with Exclude.</p>
-        <div class="alchemy-tabs" style="margin-top:1rem; display:flex; gap:0.5rem;">
+        <div class="alchemy-tabs" style="margin-top:1rem; display:flex; gap:0.5rem; justify-content:flex-end;">
             <button type="button" id="tab-alchemy" class="tab-btn active">Alchemy</button>
             <button type="button" id="tab-anchors" class="tab-btn">Anchors</button>
         </div>
@@ -171,14 +171,17 @@
             <label for="anchor_name_input">Anchor Name</label>
             <input id="anchor_name_input" type="text" placeholder="Name this anchor..." style="width:100%;padding:.5rem;" />
         </div>
-        <button id="save-anchor-btn" type="button" style="padding:.5rem 1rem;">Save Anchor</button>
+        <button id="save-anchor-btn" type="button" class="btn btn-primary">Save Anchor</button>
     </div>
 </section>
 
 <section id="anchor-manager" class="hidden" style="margin-top: 1.5rem;">
-    <h2>Saved Anchors</h2>
-    <table style="width:100%;border-collapse:collapse;">
-        <thead><tr><th>Name</th><th>Action</th></tr></thead>
+    <div style="display:flex; align-items:center; justify-content:space-between;">
+        <h2>Saved Anchors</h2>
+        <button type="button" id="back-to-alchemy-btn" class="btn btn-ghost btn-sm">← Back to Alchemy</button>
+    </div>
+    <table style="width:100%;border-collapse:collapse; margin-top: 0.7rem;">
+        <thead><tr><th>Name</th><th>Actions</th></tr></thead>
         <tbody id="saved-anchors-table-body"></tbody>
     </table>
 </section>
@@ -227,7 +230,13 @@
                     anchorsTable.innerHTML = '';
                     _alchemyAnchorsCache.forEach(anchor => {
                         const tr = document.createElement('tr');
-                        tr.innerHTML = `<td>${anchor.name}</td><td><button type="button" class="btn-delete-anchor" data-id="${anchor.id}">Delete</button></td>`;
+                        tr.innerHTML = `
+                            <td>${anchor.name}</td>
+                            <td>
+                                <button type="button" class="btn btn-sm btn-ghost btn-rename-anchor" data-id="${anchor.id}">Rename</button>
+                                <button type="button" class="btn btn-sm btn-danger btn-delete-anchor" data-id="${anchor.id}">Delete</button>
+                            </td>
+                        `;
                         anchorsTable.appendChild(tr);
                     });
                 }
@@ -1086,17 +1095,47 @@
         });
 
         document.getElementById('saved-anchors-table-body').addEventListener('click', async (event) => {
-            if (!event.target.matches('.btn-delete-anchor')) return;
-            const id = event.target.dataset.id;
-            try {
-                await fetch(`/api/anchors/${id}`, { method: 'DELETE' });
-                await refreshAnchors();
-                showMessageBox('Deleted', 'Anchor deleted successfully.');
-            } catch (e) {
-                console.error('delete anchor', e);
-                showMessageBox('Error', 'Failed to delete anchor.');
+            const target = event.target;
+            if (target.matches('.btn-delete-anchor')) {
+                const id = target.dataset.id;
+                try {
+                    await fetch(`/api/anchors/${id}`, { method: 'DELETE' });
+                    await refreshAnchors();
+                    showMessageBox('Deleted', 'Anchor deleted successfully.');
+                } catch (e) {
+                    console.error('delete anchor', e);
+                    showMessageBox('Error', 'Failed to delete anchor.');
+                }
+                return;
+            }
+            if (target.matches('.btn-rename-anchor')) {
+                const id = target.dataset.id;
+                const oldName = target.closest('tr')?.querySelector('td')?.textContent?.trim() || '';
+                const newName = window.prompt('Enter new anchor name:', oldName);
+                if (!newName || newName.trim() === '' || newName.trim() === oldName) {
+                    return;
+                }
+                try {
+                    const resp = await fetch(`/api/anchors/${id}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: newName.trim() }),
+                    });
+                    const body = await resp.json();
+                    if (!resp.ok || body.error) {
+                        throw new Error(body.error || 'Failed to rename anchor');
+                    }
+                    await refreshAnchors();
+                    showMessageBox('Renamed', `Anchor renamed to '${newName.trim()}'.`);
+                } catch (e) {
+                    console.error('rename anchor', e);
+                    showMessageBox('Error', String(e));
+                }
+                return;
             }
         });
+
+        document.getElementById('back-to-alchemy-btn').addEventListener('click', () => setTab('alchemy'));
 
         setTab('alchemy');
 

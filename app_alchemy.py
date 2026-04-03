@@ -106,6 +106,19 @@ def remove_anchor(anchor_id):
     return jsonify({'deleted': True})
 
 
+@alchemy_bp.route('/api/anchors/<int:anchor_id>', methods=['PUT'])
+def rename_anchor(anchor_id):
+    from app_helper import update_alchemy_anchor_name
+    payload = request.get_json() or {}
+    name = (payload.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'Anchor name is required'}), 400
+    anchor = update_alchemy_anchor_name(anchor_id, name)
+    if not anchor:
+        return jsonify({'error': 'Anchor not found or rename failed'}), 404
+    return jsonify({'anchor': {'id': anchor['id'], 'name': anchor['name']}})
+
+
 @alchemy_bp.route('/api/artist_projections', methods=['GET'])
 def artist_projections_api():
     """Return precomputed artist component projections.

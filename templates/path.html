@@ -117,10 +117,7 @@
                     <div id="start-autocomplete-results" class="autocomplete-results hidden"></div>
                 </div>
                 <div id="start-mood-fields" class="hidden">
-                    <select id="start_anchor_select" class="mood-select">
-                        <option value="">-- Select anchor (optional) --</option>
-                    </select>
-                    <select id="start_mood_select" class="mood-select" style="margin-top:0.5rem;">
+                    <select id="start_mood_select" class="mood-select">
                         <option value="">-- Select a mood --</option>
                         <option value="happy">Happy</option>
                         <option value="sad">Sad</option>
@@ -132,6 +129,16 @@
                         <input id="start_mood_pct" type="range" min="10" max="100" step="1" value="100" />
                         <span id="start_mood_pct_label" style="font-weight:500;">100%</span>
                         <input id="start_mood_pct_input" type="number" min="10" max="100" step="1" value="100" />
+                    </div>
+                </div>
+                <div id="start-anchor-fields" class="hidden">
+                    <select id="start_anchor_select" class="mood-select">
+                        <option value="">-- Select anchor --</option>
+                    </select>
+                    <div class="param-row" style="margin-top:0.4rem;">
+                        <input id="start_anchor_pct" type="range" min="10" max="100" step="1" value="100" />
+                        <span id="start_anchor_pct_label" style="font-weight:500;">100%</span>
+                        <input id="start_anchor_pct_input" type="number" min="10" max="100" step="1" value="100" />
                     </div>
                 </div>
             </div>
@@ -153,10 +160,7 @@
                     <div id="end-autocomplete-results" class="autocomplete-results hidden"></div>
                 </div>
                 <div id="end-mood-fields" class="hidden">
-                    <select id="end_anchor_select" class="mood-select">
-                        <option value="">-- Select anchor (optional) --</option>
-                    </select>
-                    <select id="end_mood_select" class="mood-select" style="margin-top:0.5rem;">
+                    <select id="end_mood_select" class="mood-select">
                         <option value="">-- Select a mood --</option>
                         <option value="happy">Happy</option>
                         <option value="sad">Sad</option>
@@ -168,6 +172,16 @@
                         <input id="end_mood_pct" type="range" min="10" max="100" step="1" value="100" />
                         <span id="end_mood_pct_label" style="font-weight:500;">100%</span>
                         <input id="end_mood_pct_input" type="number" min="10" max="100" step="1" value="100" />
+                    </div>
+                </div>
+                <div id="end-anchor-fields" class="hidden">
+                    <select id="end_anchor_select" class="mood-select">
+                        <option value="">-- Select anchor --</option>
+                    </select>
+                    <div class="param-row" style="margin-top:0.4rem;">
+                        <input id="end_anchor_pct" type="range" min="10" max="100" step="1" value="100" />
+                        <span id="end_anchor_pct_label" style="font-weight:500;">100%</span>
+                        <input id="end_anchor_pct_input" type="number" min="10" max="100" step="1" value="100" />
                     </div>
                 </div>
             </div>
@@ -392,8 +406,10 @@
             let endMode = 'song';
             const startSongFields = document.getElementById('start-song-fields');
             const startMoodFields = document.getElementById('start-mood-fields');
+            const startAnchorFields = document.getElementById('start-anchor-fields');
             const endSongFields = document.getElementById('end-song-fields');
             const endMoodFields = document.getElementById('end-mood-fields');
+            const endAnchorFields = document.getElementById('end-anchor-fields');
             const startMoodSelect = document.getElementById('start_mood_select');
             const startAnchorSelect = document.getElementById('start_anchor_select');
             const endMoodSelect = document.getElementById('end_mood_select');
@@ -427,16 +443,19 @@
                 const toggleBtn = document.getElementById(`${endpoint}-mode-toggle`);
                 const songFields = isStart ? startSongFields : endSongFields;
                 const moodFields = isStart ? startMoodFields : endMoodFields;
+                const anchorFields = isStart ? startAnchorFields : endAnchorFields;
 
                 if (mode === 'song') {
                     songFields.classList.remove('hidden');
                     moodFields.classList.add('hidden');
+                    anchorFields.classList.add('hidden');
                     toggleBtn.innerHTML = '🎵 Song';
                     toggleBtn.classList.remove('mood-active');
                     toggleBtn.classList.remove('anchor-active');
                 } else if (mode === 'mood') {
                     songFields.classList.add('hidden');
                     moodFields.classList.remove('hidden');
+                    anchorFields.classList.add('hidden');
                     toggleBtn.innerHTML = '🎭 Mood';
                     toggleBtn.classList.add('mood-active');
                     toggleBtn.classList.remove('anchor-active');
@@ -447,7 +466,8 @@
                     }
                 } else {
                     songFields.classList.add('hidden');
-                    moodFields.classList.remove('hidden');
+                    moodFields.classList.add('hidden');
+                    anchorFields.classList.remove('hidden');
                     toggleBtn.innerHTML = '🔖 Anchor';
                     toggleBtn.classList.remove('mood-active');
                     toggleBtn.classList.add('anchor-active');
@@ -486,6 +506,25 @@
                 const v = Math.max(10, Math.min(100, parseInt(this.value) || 100));
                 document.getElementById('end_mood_pct').value = v;
                 document.getElementById('end_mood_pct_label').textContent = v + '%';
+            });
+
+            document.getElementById('start_anchor_pct').addEventListener('input', function() {
+                document.getElementById('start_anchor_pct_label').textContent = this.value + '%';
+                document.getElementById('start_anchor_pct_input').value = this.value;
+            });
+            document.getElementById('start_anchor_pct_input').addEventListener('input', function() {
+                const v = Math.max(10, Math.min(100, parseInt(this.value) || 100));
+                document.getElementById('start_anchor_pct').value = v;
+                document.getElementById('start_anchor_pct_label').textContent = v + '%';
+            });
+            document.getElementById('end_anchor_pct').addEventListener('input', function() {
+                document.getElementById('end_anchor_pct_label').textContent = this.value + '%';
+                document.getElementById('end_anchor_pct_input').value = this.value;
+            });
+            document.getElementById('end_anchor_pct_input').addEventListener('input', function() {
+                const v = Math.max(10, Math.min(100, parseInt(this.value) || 100));
+                document.getElementById('end_anchor_pct').value = v;
+                document.getElementById('end_anchor_pct_label').textContent = v + '%';
             });
 
             refreshPathAnchors();
@@ -948,7 +987,13 @@
                     // Send mood intensity percentage
                     const moodPct = startMode === 'mood'
                         ? document.getElementById('start_mood_pct').value
-                        : (endMode === 'mood' ? document.getElementById('end_mood_pct').value : '100');
+                        : startMode === 'anchor'
+                            ? document.getElementById('start_anchor_pct').value
+                            : endMode === 'mood'
+                                ? document.getElementById('end_mood_pct').value
+                                : endMode === 'anchor'
+                                    ? document.getElementById('end_anchor_pct').value
+                                    : '100';
                     params.set('mood_pct', moodPct);
                     // Start fetching the full map projection in parallel (non-blocking) so both network requests
                     // can be performed concurrently. Always fetch fresh data and do not reuse any in-page cached promise.

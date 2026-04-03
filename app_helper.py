@@ -848,7 +848,7 @@ def get_alchemy_anchor_by_id(anchor_id):
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
     try:
-        cur.execute("SELECT id, name, created_at FROM alchemy_anchors WHERE id = %s", (anchor_id,))
+        cur.execute("SELECT id, name, centroid, created_at FROM alchemy_anchors WHERE id = %s", (anchor_id,))
         row = cur.fetchone()
         if not row:
             return None
@@ -861,6 +861,29 @@ def get_alchemy_anchor_by_id(anchor_id):
         return anchor
     except Exception as e:
         logger.error(f"Failed to fetch alchemy anchor id={anchor_id}: {e}")
+        return None
+    finally:
+        cur.close()
+
+
+def update_alchemy_anchor_name(anchor_id, name):
+    if not name or not isinstance(name, str):
+        return None
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(
+            "UPDATE alchemy_anchors SET name = %s WHERE id = %s RETURNING id, name",
+            (name.strip(), anchor_id)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        if not row:
+            return None
+        return dict(row)
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to rename alchemy anchor id={anchor_id}: {e}")
         return None
     finally:
         cur.close()
