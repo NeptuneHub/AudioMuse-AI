@@ -333,6 +333,7 @@
                     typeCycleBtn.style.background = '#2DD4BF';
                     songFieldRow.classList.add('hidden');
                     anchorFieldRow.classList.remove('hidden');
+                    refreshAnchors().catch(() => {});
                 }
                 clearSelection();
             };
@@ -544,6 +545,8 @@
 
             songRows.appendChild(card);
             updateNumbers();
+            // Refresh anchor options so newly added rows can select from current anchors immediately.
+            refreshAnchors().catch(() => {});
         }
 
         const updateNumbers = () => {
