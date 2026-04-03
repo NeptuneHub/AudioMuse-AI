@@ -982,6 +982,8 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
         'centroid_2d': centroid_2d,
         'add_centroid_2d': centroid_2d,
         'subtract_centroid_2d': subtract_centroid_2d,
+        'add_centroid_vector': add_centroid.tolist() if add_centroid is not None else None,
+        'subtract_centroid_vector': subtract_centroid.tolist() if subtract_centroid is not None else None,
         'add_points': add_points,
         'sub_points': sub_points,
         'projection': projection_used,

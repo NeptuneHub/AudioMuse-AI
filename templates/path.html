@@ -117,7 +117,10 @@
                     <div id="start-autocomplete-results" class="autocomplete-results hidden"></div>
                 </div>
                 <div id="start-mood-fields" class="hidden">
-                    <select id="start_mood_select" class="mood-select">
+                    <select id="start_anchor_select" class="mood-select">
+                        <option value="">-- Select anchor (optional) --</option>
+                    </select>
+                    <select id="start_mood_select" class="mood-select" style="margin-top:0.5rem;">
                         <option value="">-- Select a mood --</option>
                         <option value="happy">Happy</option>
                         <option value="sad">Sad</option>
@@ -150,7 +153,10 @@
                     <div id="end-autocomplete-results" class="autocomplete-results hidden"></div>
                 </div>
                 <div id="end-mood-fields" class="hidden">
-                    <select id="end_mood_select" class="mood-select">
+                    <select id="end_anchor_select" class="mood-select">
+                        <option value="">-- Select anchor (optional) --</option>
+                    </select>
+                    <select id="end_mood_select" class="mood-select" style="margin-top:0.5rem;">
                         <option value="">-- Select a mood --</option>
                         <option value="happy">Happy</option>
                         <option value="sad">Sad</option>
@@ -389,7 +395,32 @@
             const endSongFields = document.getElementById('end-song-fields');
             const endMoodFields = document.getElementById('end-mood-fields');
             const startMoodSelect = document.getElementById('start_mood_select');
+            const startAnchorSelect = document.getElementById('start_anchor_select');
             const endMoodSelect = document.getElementById('end_mood_select');
+            const endAnchorSelect = document.getElementById('end_anchor_select');
+
+            const refreshPathAnchors = async () => {
+                try {
+                    const resp = await fetch('/api/anchors');
+                    const data = await resp.json();
+                    const anchors = Array.isArray(data.anchors) ? data.anchors : [];
+                    [startAnchorSelect, endAnchorSelect].forEach(select => {
+                        if (!select) return;
+                        const current = select.value;
+                        select.innerHTML = '<option value="">-- Select anchor (optional) --</option>';
+                        anchors.forEach(a => {
+                            const opt = document.createElement('option');
+                            opt.value = a.id;
+                            opt.textContent = a.name;
+                            select.appendChild(opt);
+                        });
+                        if (current) select.value = current;
+                    });
+                } catch (e) {
+                    console.warn('Could not refresh anchors', e);
+                }
+            };
+
 
             const setMode = (endpoint, mode) => {
                 const isStart = endpoint === 'start';
@@ -441,6 +472,8 @@
                 document.getElementById('end_mood_pct').value = v;
                 document.getElementById('end_mood_pct_label').textContent = v + '%';
             });
+
+            refreshPathAnchors();
 
             // --- Normalization Function with Fixed Range ---
             const normalizeValue = (value, min, max) => {
@@ -860,6 +893,8 @@
                 const endSongId = endSongIdInput.value;
                 const startMood = startMode === 'mood' ? startMoodSelect.value : '';
                 const endMood = endMode === 'mood' ? endMoodSelect.value : '';
+                const startAnchor = startMode === 'mood' ? startAnchorSelect.value : '';
+                const endAnchor = endMode === 'mood' ? endAnchorSelect.value : '';
                 const maxSteps = document.getElementById('max_steps').value;
 
                 resultsContainer.classList.remove('hidden');
@@ -869,11 +904,11 @@
                 statusDiv.className = '';
                 resultsTableWrapper.innerHTML = '';
 
-                // Validate: each endpoint must have a song ID or a mood selected
-                const hasStart = startMode === 'song' ? !!startSongId : !!startMood;
-                const hasEnd = endMode === 'song' ? !!endSongId : !!endMood;
+                // Validate: each endpoint must have a song ID, mood, or anchor selected
+                const hasStart = startMode === 'song' ? !!startSongId : !!startMood || !!startAnchor;
+                const hasEnd = endMode === 'song' ? !!endSongId : !!endMood || !!endAnchor;
                 if (!hasStart || !hasEnd) {
-                    statusDiv.textContent = 'Please select a song or mood for both start and end.';
+                    statusDiv.textContent = 'Please select a song, mood, or anchor for both start and end.';
                     statusDiv.className = 'status-error';
                     return;
                 }
@@ -881,10 +916,20 @@
                 try {
                     const pathFixSize = document.getElementById('path_fix_size_checkbox')?.checked ? 'true' : 'false';
                     const params = new URLSearchParams({ max_steps: maxSteps, path_fix_size: pathFixSize });
-                    if (startMode === 'song') params.set('start_song_id', startSongId);
-                    else params.set('start_mood', startMood);
-                    if (endMode === 'song') params.set('end_song_id', endSongId);
-                    else params.set('end_mood', endMood);
+                    if (startMode === 'song') {
+                        params.set('start_song_id', startSongId);
+                    } else if (startAnchor) {
+                        params.set('start_anchor', startAnchor);
+                    } else {
+                        params.set('start_mood', startMood);
+                    }
+                    if (endMode === 'song') {
+                        params.set('end_song_id', endSongId);
+                    } else if (endAnchor) {
+                        params.set('end_anchor', endAnchor);
+                    } else {
+                        params.set('end_mood', endMood);
+                    }
                     // Send mood intensity percentage
                     const moodPct = startMode === 'mood'
                         ? document.getElementById('start_mood_pct').value

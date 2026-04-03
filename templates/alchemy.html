@@ -36,6 +36,19 @@
     .type-toggle-btn:hover {
         background: #2563EB;
     }
+    .alchemy-tabs .tab-btn {
+        border: 1px solid var(--border-color-darker);
+        background: var(--bg-card);
+        color: var(--text-main);
+        padding: 0.4rem 0.8rem;
+        border-radius: 0.4rem;
+        cursor: pointer;
+    }
+    .alchemy-tabs .tab-btn.active {
+        background: var(--color-primary);
+        color: white;
+        border-color: var(--color-primary);
+    }
     
     .item-type-artist .type-toggle-btn {
         background: #8B5CF6;
@@ -52,6 +65,10 @@
     <header class="page-header">
         <h1>AudioMuse-AI - Song Alchemy</h1>
         <p>Select tracks or artists to Include or Exclude — boost favorites with Include and remove unwanted flavors with Exclude.</p>
+        <div class="alchemy-tabs" style="margin-top:1rem; display:flex; gap:0.5rem;">
+            <button type="button" id="tab-alchemy" class="tab-btn active">Alchemy</button>
+            <button type="button" id="tab-anchors" class="tab-btn">Anchors</button>
+        </div>
     </header>
 
     <form id="alchemy-form">
@@ -133,6 +150,23 @@
     </div>
 </section>
 
+<section id="anchor-manager" class="hidden" style="margin-top: 1.5rem;">
+    <h2>Saved Anchors</h2>
+    <div class="param-group" style="margin-bottom:1rem;">
+        <div style="display:flex;gap:0.75rem;align-items:flex-end;">
+            <div style="flex-grow:1;">
+                <label for="anchor_name_input">Anchor name</label>
+                <input id="anchor_name_input" type="text" placeholder="Name this anchor..." style="width:100%;padding:.5rem;" />
+            </div>
+            <button id="save-anchor-btn" type="button" style="padding:.5rem 1rem;">Save Anchor</button>
+        </div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;">
+        <thead><tr><th>Name</th><th>Action</th></tr></thead>
+        <tbody id="saved-anchors-table-body"></tbody>
+    </table>
+</section>
+
 <section id="playlist-creator" class="hidden">
     <h3>Create a Playlist from Results</h3>
     <form id="playlist-form">
@@ -167,6 +201,39 @@
             ? 'rgba(75, 85, 99, 0.5)'
             : 'rgba(229, 231, 235, 0.5)';
 
+        // Anchor persistence helper (name-only for list APIs)
+        let _alchemyAnchorsCache = [];
+        const refreshAnchors = async () => {
+            try {
+                const response = await fetch('/api/anchors');
+                const payload = await response.json();
+                _alchemyAnchorsCache = Array.isArray(payload.anchors) ? payload.anchors : [];
+                document.querySelectorAll('.anchor-select').forEach(select => {
+                    const curVal = select.value;
+                    select.innerHTML = '<option value="">-- Select anchor --</option>';
+                    _alchemyAnchorsCache.forEach(anchor => {
+                        const opt = document.createElement('option');
+                        opt.value = anchor.id;
+                        opt.textContent = anchor.name;
+                        select.appendChild(opt);
+                    });
+                    select.value = curVal || '';
+                });
+                const anchorsTable = document.getElementById('saved-anchors-table-body');
+                if (anchorsTable) {
+                    anchorsTable.innerHTML = '';
+                    _alchemyAnchorsCache.forEach(anchor => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `<td>${anchor.name}</td><td><button type="button" class="btn-delete-anchor" data-id="${anchor.id}">Delete</button></td>`;
+                        anchorsTable.appendChild(tr);
+                    });
+                }
+            } catch (err) {
+                console.warn('Failed to load anchors:', err);
+            }
+        };
+
+
         // Autocomplete plumbing
         let searchTimeout;
         const songRows = document.getElementById('song-rows');
@@ -179,7 +246,9 @@
             card.innerHTML = `
                 <div class="alchemy-card-header">
                     <div class="left-group">
-                        <button type="button" class="type-toggle-btn" title="Toggle Song/Artist">🎵<br>Song</button>
+                        <button type="button" class="type-toggle-btn song-btn" title="Set as Song">🎵<br>Song</button>
+                        <button type="button" class="type-toggle-btn artist-btn" title="Set as Artist">🎤<br>Artist</button>
+                        <button type="button" class="type-toggle-btn anchor-btn" title="Set as Anchor">🔖<br>Anchor</button>
                         <div class="op-buttons">
                             <button type="button" class="op-btn op-add active">Include</button>
                             <button type="button" class="op-btn op-sub">Exclude</button>
@@ -191,13 +260,19 @@
                     </div>
                     <button type="button" class="card-close" aria-label="Remove item">&times;</button>
                 </div>
-                <div class="field-row">
+                <div class="field-row song-field-row">
                     <label>Song, Artist or Album name</label>
                     <div class="autocomplete-container">
                         <input type="text" placeholder="Start typing..." class="song" />
                         <div class="autocomplete-results-artist hidden"></div>
                         <div class="autocomplete-results hidden"></div>
                     </div>
+                </div>
+                <div class="field-row anchor-field-row hidden">
+                    <label>Select Anchor</label>
+                    <select class="anchor-select" style="width:100%;padding:0.5rem;border-radius:0.35rem;border:1px solid #ccc;">
+                        <option value="">-- Select anchor --</option>
+                    </select>
                 </div>
                 <input type="hidden" class="song-id" />
                 <input type="hidden" class="item-type" value="song" />
@@ -212,33 +287,51 @@
             const songNumberEl = card.querySelector('.song-number');
             const opAddBtn = card.querySelector('.op-add');
             const opSubBtn = card.querySelector('.op-sub');
-            const typeToggleBtn = card.querySelector('.type-toggle-btn');
+            const songBtn = card.querySelector('.song-btn');
+            const artistBtn = card.querySelector('.artist-btn');
+            const anchorBtn = card.querySelector('.anchor-btn');
             const selectedSongNameEl = card.querySelector('.selected-song-name');
+            const songFieldRow = card.querySelector('.song-field-row');
+            const anchorFieldRow = card.querySelector('.anchor-field-row');
+            const anchorSelect = card.querySelector('.anchor-select');
 
-            // Type toggle handler (Song ↔ Artist)
-            typeToggleBtn.addEventListener('click', () => {
-                if (itemTypeHidden.value === 'song') {
-                    // Switch to Artist - clear everything to force fresh selection
-                    itemTypeHidden.value = 'artist';
-                    typeToggleBtn.innerHTML = '🎤<br>Artist';
-                    card.classList.remove('item-type-song');
-                    card.classList.add('item-type-artist');
-                    searchInput.value = '';
-                    idEl.value = '';
-                    selectedSongNameEl.textContent = '';
-                    resultsEl.classList.add('hidden');
-                    resultsArtistEl.classList.add('hidden');
+            const clearSelection = () => {
+                searchInput.value = '';
+                idEl.value = '';
+                selectedSongNameEl.textContent = '';
+                resultsEl.classList.add('hidden');
+                resultsArtistEl.classList.add('hidden');
+                anchorSelect.value = '';
+            };
+
+            const setType = (type) => {
+                itemTypeHidden.value = type;
+                songBtn.classList.toggle('active', type === 'song');
+                artistBtn.classList.toggle('active', type === 'artist');
+                anchorBtn.classList.toggle('active', type === 'anchor');
+                card.classList.toggle('item-type-song', type === 'song');
+                card.classList.toggle('item-type-artist', type === 'artist');
+                card.classList.toggle('item-type-anchor', type === 'anchor');
+
+                if (type === 'anchor') {
+                    songFieldRow.classList.add('hidden');
+                    anchorFieldRow.classList.remove('hidden');
+                    clearSelection();
                 } else {
-                    // Switch to Song - clear everything to force fresh selection
-                    itemTypeHidden.value = 'song';
-                    typeToggleBtn.innerHTML = '🎵<br>Song';
-                    card.classList.remove('item-type-artist');
-                    card.classList.add('item-type-song');
-                    searchInput.value = '';
-                    idEl.value = '';
-                    selectedSongNameEl.textContent = '';
-                    resultsEl.classList.add('hidden');
-                    resultsArtistEl.classList.add('hidden');
+                    songFieldRow.classList.remove('hidden');
+                    anchorFieldRow.classList.add('hidden');
+                    clearSelection();
+                }
+            };
+
+            songBtn.addEventListener('click', () => setType('song'));
+            artistBtn.addEventListener('click', () => setType('artist'));
+            anchorBtn.addEventListener('click', () => setType('anchor'));
+
+            anchorSelect.addEventListener('change', () => {
+                if (itemTypeHidden.value === 'anchor') {
+                    idEl.value = anchorSelect.value || '';
+                    selectedSongNameEl.textContent = anchorSelect.value ? `Anchor: ${anchorSelect.options[anchorSelect.selectedIndex].text}` : '';
                 }
             });
 
@@ -446,6 +539,7 @@
         addRowBtn.addEventListener('click', () => makeRow());
         makeRow();
         makeRow();
+        refreshAnchors();
 
         document.addEventListener('click', (e) => {
             if (!e.target.closest('.autocomplete-container')) {
@@ -539,6 +633,8 @@
                         list.appendChild(row);
                         if (r.item_id) window.currentResultIds.push(r.item_id);
                     });
+                    // Save centroid from alchemy for potential anchor actions (not returned in anchors list)
+                    window.lastAddCentroidVector = data.add_centroid_vector || null;
                     // Show playlist creator
                     document.getElementById('playlist-creator').classList.remove('hidden');
                     document.getElementById('playlist-status').textContent = '';
@@ -912,6 +1008,72 @@
             document.body.appendChild(messageBox);
             setTimeout(() => messageBox.remove(), 5000);
         }
+
+        // Hooks for anchor manager & tabs
+        const tabAlchemy = document.getElementById('tab-alchemy');
+        const tabAnchors = document.getElementById('tab-anchors');
+        const anchorManagerSection = document.getElementById('anchor-manager');
+
+        const setTab = (tab) => {
+            if (tab === 'alchemy') {
+                tabAlchemy.classList.add('active');
+                tabAnchors.classList.remove('active');
+                document.getElementById('results').classList.remove('hidden');
+                document.getElementById('playlist-creator').classList.remove('hidden');
+                anchorManagerSection.classList.add('hidden');
+            } else {
+                tabAlchemy.classList.remove('active');
+                tabAnchors.classList.add('active');
+                document.getElementById('results').classList.add('hidden');
+                document.getElementById('playlist-creator').classList.add('hidden');
+                anchorManagerSection.classList.remove('hidden');
+            }
+        };
+
+        tabAlchemy.addEventListener('click', () => setTab('alchemy'));
+        tabAnchors.addEventListener('click', () => setTab('anchors'));
+
+        const saveAnchorBtn = document.getElementById('save-anchor-btn');
+        const anchorNameInput = document.getElementById('anchor_name_input');
+
+        saveAnchorBtn.addEventListener('click', async () => {
+            const name = (anchorNameInput.value || '').trim();
+            if (!name) { showMessageBox('Anchor Error', 'Anchor name is required.'); return; }
+            if (!window.lastAddCentroidVector || !Array.isArray(window.lastAddCentroidVector)) {
+                showMessageBox('Anchor Error', 'Run Alchemy first so the centroid is available to save.');
+                return;
+            }
+            try {
+                const resp = await fetch('/api/anchors', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, centroid: window.lastAddCentroidVector }),
+                });
+                const resData = await resp.json();
+                if (!resp.ok || resData.error) throw new Error(resData.error || 'Failed to save anchor');
+                showMessageBox('Anchor Saved', `Anchor '${name}' saved successfully.`);
+                anchorNameInput.value = '';
+                await refreshAnchors();
+            } catch (e) {
+                console.error(e);
+                showMessageBox('Error', String(e));
+            }
+        });
+
+        document.getElementById('saved-anchors-table-body').addEventListener('click', async (event) => {
+            if (!event.target.matches('.btn-delete-anchor')) return;
+            const id = event.target.dataset.id;
+            try {
+                await fetch(`/api/anchors/${id}`, { method: 'DELETE' });
+                await refreshAnchors();
+                showMessageBox('Deleted', 'Anchor deleted successfully.');
+            } catch (e) {
+                console.error('delete anchor', e);
+                showMessageBox('Error', 'Failed to delete anchor.');
+            }
+        });
+
+        setTab('alchemy');
 
     })();
 </script>

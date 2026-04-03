@@ -205,6 +205,8 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'artist_mapping' table to map artist names to media server artist IDs
         cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
+        # Create 'alchemy_anchors' table to persist named user anchors for reuse
+        cur.execute("CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'text_search_queries' table for precomputed CLAP text search queries
         cur.execute("""
             CREATE TABLE IF NOT EXISTS text_search_queries (
@@ -786,6 +788,82 @@ def get_score_data_by_ids(item_ids_list):
     finally:
         cur.close()
     return [dict(row) for row in rows]
+
+
+def save_alchemy_anchor(name, centroid):
+    """Save a named anchor centroid into DB."""
+    if not name or not centroid or not isinstance(centroid, list):
+        raise ValueError('Anchor name and centroid list are required.')
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        centroid_json = json.dumps(centroid)
+        cur.execute(
+            "INSERT INTO alchemy_anchors (name, centroid) VALUES (%s, %s) "
+            "ON CONFLICT (name) DO UPDATE SET centroid = EXCLUDED.centroid, created_at = NOW() "
+            "RETURNING id, name, created_at",
+            (name, centroid_json)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to save alchemy anchor '{name}': {e}")
+        return None
+    finally:
+        cur.close()
+
+
+def get_alchemy_anchors():
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute("SELECT id, name, created_at FROM alchemy_anchors ORDER BY created_at DESC")
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to load alchemy anchors: {e}")
+        return []
+    finally:
+        cur.close()
+
+
+def delete_alchemy_anchor(anchor_id):
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM alchemy_anchors WHERE id = %s", (anchor_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to delete alchemy anchor id={anchor_id}: {e}")
+        return False
+    finally:
+        cur.close()
+
+
+def get_alchemy_anchor_by_id(anchor_id):
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute("SELECT id, name, created_at FROM alchemy_anchors WHERE id = %s", (anchor_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        anchor = dict(row)
+        if isinstance(anchor.get('centroid'), str):
+            try:
+                anchor['centroid'] = json.loads(anchor['centroid'])
+            except Exception:
+                anchor['centroid'] = None
+        return anchor
+    except Exception as e:
+        logger.error(f"Failed to fetch alchemy anchor id={anchor_id}: {e}")
+        return None
+    finally:
+        cur.close()
 
 
 def save_map_projection(index_name, id_map, projection_array):

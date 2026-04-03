@@ -58,7 +58,7 @@ def alchemy_api():
     subtract_distance = payload.get('subtract_distance')
     try:
         results = song_alchemy(add_items=add_items, subtract_items=subtract_items, n_results=n, subtract_distance=subtract_distance, temperature=temperature)
-        # song_alchemy now returns a dict with results, filtered_out and centroid projections
+        # Keep full centroid in response for client-side save action, but not in anchor list endpoint.
         return jsonify(results)
     except ValueError as e:
         # Log the validation error server-side but do not expose internal error text to clients
@@ -67,6 +67,40 @@ def alchemy_api():
     except Exception as e:
         logger.exception("Alchemy failure")
         return jsonify({"error": "Internal error"}), 500
+
+
+@alchemy_bp.route('/api/anchors', methods=['GET'])
+def list_anchors():
+    from app_helper import get_alchemy_anchors
+    try:
+        anchors = get_alchemy_anchors()
+        # no centroid returned here (name-only list)
+        return jsonify({'anchors': [{'id': a['id'], 'name': a['name']} for a in anchors]})
+    except Exception as e:
+        logger.exception('Failed to list anchors')
+        return jsonify({'anchors': [], 'error': str(e)}), 500
+
+
+@alchemy_bp.route('/api/anchors', methods=['POST'])
+def create_anchor():
+    from app_helper import save_alchemy_anchor
+    payload = request.get_json() or {}
+    name = (payload.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'Anchor name is required'}), 400
+    anchor = save_alchemy_anchor(name)
+    if not anchor:
+        return jsonify({'error': 'Failed to save anchor'}), 500
+    return jsonify({'anchor': {'id': anchor['id'], 'name': anchor['name']}})
+
+
+@alchemy_bp.route('/api/anchors/<int:anchor_id>', methods=['DELETE'])
+def remove_anchor(anchor_id):
+    from app_helper import delete_alchemy_anchor
+    ok = delete_alchemy_anchor(anchor_id)
+    if not ok:
+        return jsonify({'error': 'Anchor not found'}), 404
+    return jsonify({'deleted': True})
 
 
 @alchemy_bp.route('/api/artist_projections', methods=['GET'])
