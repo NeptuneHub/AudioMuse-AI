@@ -177,31 +177,11 @@ def _normalize_signature(artist, title):
     return (artist_norm, title_norm)
 
 
-def _extract_mood_score_from_other_features(other_features, mood):
-    if not other_features or not mood:
-        return None
-    try:
-        for part in other_features.split(','):
-            if ':' not in part:
-                continue
-            key, val = part.split(':', 1)
-            if key.strip().lower() == mood.strip().lower():
-                try:
-                    return float(val.strip())
-                except ValueError:
-                    return None
-    except Exception:
-        return None
-    return None
-
-
 def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_songs_details_so_far,
-                             k_search=10, num_to_find=1, artist_counts=None,
-                             mood=None, mood_direction=None, mood_threshold=None):
+                             k_search=10, num_to_find=1, artist_counts=None):
     """
     Finds a specific number (`num_to_find`) of best songs for a centroid
     by searching k_search neighbors.
-    Applies a mood monotonic constraint when mood_direction and mood_threshold are supplied.
     Returns a list of found songs.
     If the list length is less than num_to_find, returns [] and rolls back internal state.
     """
@@ -212,7 +192,6 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
     metric_name = 'Angular' if PATH_DISTANCE_METRIC == 'angular' else 'Euclidean'
 
     found_songs = []
-    eligible_candidates = []
 
     try:
         candidates_voyager = find_nearest_neighbors_by_vector(centroid_vec, n=k_search)
@@ -230,6 +209,9 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
 
     # Scan in order (nearest first) and collect acceptable candidates
     for candidate in candidates_voyager:
+        if len(found_songs) >= num_to_find:
+            break # We found all the songs we needed for this job
+
         candidate_id = candidate['item_id']
 
         # Check if this is a duplicate by ID
@@ -256,20 +238,6 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
         candidate_vector = get_vector_by_id(candidate_id)
         if candidate_vector is None:
             continue # Skip if vector is missing
-
-        # Mood aware scoring and threshold filtering by monotonic direction.
-        distance = get_distance(candidate_vector, centroid_vec)
-        combined_score = 1.0 / (1.0 + distance)
-
-        candidate_mood_score = None
-        if mood is not None:
-            candidate_mood_score = _extract_mood_score_from_other_features(details.get('other_features'), mood)
-
-        if mood_direction in ('up', 'down') and mood_threshold is not None and candidate_mood_score is not None:
-            if mood_direction == 'up' and candidate_mood_score < mood_threshold:
-                continue
-            if mood_direction == 'down' and candidate_mood_score > mood_threshold:
-                continue
 
         is_too_close = False
 
@@ -306,45 +274,20 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
                 continue
 
         # If we get here, the song is acceptable
-        eligible_candidates.append({
-            "item_id": candidate_id,
-            "signature": signature,
-            "vector": candidate_vector,
-            "title": details.get('title'),
-            "author": details.get('author'),
-            "combined_score": combined_score,
-            "author_norm": author_norm,
-            "mood_score": candidate_mood_score
-        })
-
-    # Choose the best candidates by combined score (higher is better)
-    if len(eligible_candidates) < num_to_find:
-        logger.warning(f"Found only {len(eligible_candidates)} of {num_to_find} mood-aware candidates for centroid (k={k_search}).")
-        return []
-
-    eligible_candidates.sort(key=lambda x: x['combined_score'], reverse=True)
-    selected = eligible_candidates[:num_to_find]
-
-    for candidate in selected:
-        candidate_id = candidate['item_id']
-        signature = candidate['signature']
-        candidate_vector = candidate['vector']
-        author_norm = candidate['author_norm']
-
         found_songs.append({
             "item_id": candidate_id,
             "signature": signature,
             "vector": candidate_vector,
-            "title": candidate['title'],
-            "author": candidate['author'],
-            "mood_score": candidate.get('mood_score')
+            "title": details.get('title'),
+            "author": details.get('author')
         })
 
-        # IMPORTANT: Add to used_song_ids and used_signatures now
+        # IMPORTANT: Add to used_song_ids and used_signatures immediately
+        # so they are not picked again by this same job.
         used_song_ids.add(candidate_id)
         used_signatures.add(signature)
-
-        if artist_counts is not None and author_norm:
+        # Increment artist count
+        if artist_counts is not None:
             artist_counts[author_norm] = artist_counts.get(author_norm, 0) + 1
 
 
@@ -374,7 +317,7 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
     return found_songs
 
 
-def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH, path_fix_size=PATH_FIX_SIZE, mood=None, mood_direction=None):
+def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH, path_fix_size=PATH_FIX_SIZE):
     """
     Finds a path between two songs using linear interpolation of centroids
     and a centroid-merging strategy on failure, ensuring exact path length.
@@ -431,12 +374,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
 
     # This list holds the start song + all *found* intermediate songs
     path_songs_details = [{**start_details, 'vector': start_vector}]
-
-    current_mood_threshold = None
-    if mood is not None and mood_direction in ('up', 'down'):
-        starting_mood_val = _extract_mood_score_from_other_features(start_details.get('other_features'), mood)
-        current_mood_threshold = starting_mood_val
-
+    
     num_intermediate = Lreq - 2
     k_base = 10
     k_max = 1000 # Max search neighbors
@@ -492,24 +430,10 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                     path_songs_details,
                     k_search=k_base,
                     num_to_find=1,
-                    artist_counts=artist_counts,
-                    mood=mood,
-                    mood_direction=mood_direction,
-                    mood_threshold=current_mood_threshold
+                    artist_counts=artist_counts
                 )
                 if found and len(found) > 0:
                     path_songs_details.extend(found)
-                    # Update mood threshold on each selected song
-                    if mood_direction in ('up', 'down'):
-                        for s in found:
-                            ms = s.get('mood_score')
-                            if ms is not None:
-                                if current_mood_threshold is None:
-                                    current_mood_threshold = ms
-                                elif mood_direction == 'up':
-                                    current_mood_threshold = max(current_mood_threshold, ms)
-                                else:
-                                    current_mood_threshold = min(current_mood_threshold, ms)
             # Skip merging logic entirely
         else:
             # Group original intermediate centroids into `initial_count` buckets and create jobs per bucket.
@@ -553,10 +477,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                     path_songs_details, # Pass the list of songs found so far
                     k_search=job['k'],
                     num_to_find=job['num_to_find'],
-                    artist_counts=artist_counts,
-                    mood=mood,
-                    mood_direction=mood_direction,
-                    mood_threshold=current_mood_threshold
+                    artist_counts=artist_counts
                 )
 
                 num_found = len(found_songs)
@@ -565,17 +486,6 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                 if num_found == num_needed:
                     # Success! Add songs to path and move to the next job
                     path_songs_details.extend(found_songs)
-                    # Update mood threshold with selected songs
-                    if mood_direction in ('up','down'):
-                        for s in found_songs:
-                            ms = s.get('mood_score')
-                            if ms is not None:
-                                if current_mood_threshold is None:
-                                    current_mood_threshold = ms
-                                elif mood_direction == 'up':
-                                    current_mood_threshold = max(current_mood_threshold, ms)
-                                else:
-                                    current_mood_threshold = min(current_mood_threshold, ms)
                     # Note: used_song_ids was already updated inside _find_best_songs_for_job
                     i += 1
                 else:
