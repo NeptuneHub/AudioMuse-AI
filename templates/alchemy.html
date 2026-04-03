@@ -1045,6 +1045,7 @@
                 tabAlchemy.classList.add('active');
                 tabAnchors.classList.remove('active');
                 anchorManagerSection.classList.add('hidden');
+                document.getElementById('alchemy-form').classList.remove('hidden');
                 if (alchemyHasRun) {
                     resultsSection.classList.remove('hidden');
                     playlistSection.classList.remove('hidden');
@@ -1061,6 +1062,7 @@
                 playlistSection.classList.add('hidden');
                 saveAnchorPanel.classList.add('hidden');
                 anchorManagerSection.classList.remove('hidden');
+                document.getElementById('alchemy-form').classList.add('hidden');
             }
         };
 
