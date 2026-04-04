@@ -497,7 +497,7 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None, server_con
 
     user_id = resolve_user(identifier, token)
 
-    final_playlist_name = f"{playlist_name.strip()}_instant"
+    final_playlist_name = playlist_name.strip()
     base_url = sc.get('url') or config.JELLYFIN_URL
     url = f"{base_url}/Playlists"
     headers = {"X-Emby-Token": token}

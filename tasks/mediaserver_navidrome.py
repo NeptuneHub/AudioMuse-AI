@@ -594,5 +594,5 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None, server_con
             'password': sc.get('password', ''),
         }
     base_url = sc.get('url') or config.NAVIDROME_URL
-    final_playlist_name = f"{playlist_name.strip()}_instant"
+    final_playlist_name = playlist_name.strip()
     return _create_playlist_batched(final_playlist_name, item_ids, user_creds, base_url=base_url)

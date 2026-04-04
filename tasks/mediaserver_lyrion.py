@@ -1205,5 +1205,5 @@ def create_instant_playlist(playlist_name, item_ids, server_config=None):
     """Creates a new instant playlist on Lyrion for a specific user, with batching."""
     sc = server_config or {}
     base_url = sc.get('url') or config.LYRION_URL
-    final_playlist_name = f"{playlist_name.strip()}_instant"
+    final_playlist_name = playlist_name.strip()
     return _create_playlist_batched(final_playlist_name, item_ids, base_url=base_url)

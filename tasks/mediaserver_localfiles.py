@@ -860,7 +860,7 @@ def create_instant_playlist(playlist_name: str, item_ids: List[str], user_creds=
         config_override['music_directory'] = sc['music_directory']
     if sc.get('playlist_directory'):
         config_override['playlist_directory'] = sc['playlist_directory']
-    final_name = f"{playlist_name.strip()}_instant"
+    final_name = playlist_name.strip()
     result = create_playlist(final_name, item_ids, config_override=config_override or None)
     if result:
         return {'Id': result, 'Name': final_name}

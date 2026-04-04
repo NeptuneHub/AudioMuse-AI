@@ -824,7 +824,7 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None, server_con
 
     try:
         # Build playlist name according to convention
-        final_playlist_name = f"{playlist_name.strip()}_instant"
+        final_playlist_name = playlist_name.strip()
 
         # Construct the API endpoint — note the use of query parameters,
         # not JSON payload, per Emby API spec
