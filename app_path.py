@@ -29,6 +29,22 @@ _load_mood_centroids()
 VALID_MOODS = {'happy', 'sad', 'aggressive', 'relaxed', 'danceable'}
 
 
+def _find_nearest_song_excluding_vector(vec, exclude_id=None):
+    if vec is None:
+        return None
+    # If wants neighbor excluding current song to avoid same-start/end on low pct
+    n = 2 if exclude_id else 1
+    neighbors = find_nearest_neighbors_by_vector(vec, n=n)
+    if not neighbors:
+        return None
+    if exclude_id and len(neighbors) > 1:
+        for ninfo in neighbors:
+            if str(ninfo['item_id']) != str(exclude_id):
+                return ninfo['item_id']
+    # fallback to best neighbor
+    return neighbors[0]['item_id']
+
+
 def _resolve_mood_to_song_id(mood, other_song_id, pct=100):
     """
     Given a mood name and the other endpoint's song ID, find the nearest
@@ -40,23 +56,48 @@ def _resolve_mood_to_song_id(mood, other_song_id, pct=100):
     if mood not in _MOOD_CENTROIDS or not _MOOD_CENTROIDS[mood]:
         return None
 
+    if other_song_id is None:
+        return None
+
     other_vector = get_vector_by_id(other_song_id)
     if other_vector is None:
         return None
 
-    # Find the centroid closest to the other song
     centroids = _MOOD_CENTROIDS[mood]
     best_centroid = min(centroids, key=lambda c: get_distance(other_vector, c))
 
-    # Interpolate: target = other + (pct/100) * (centroid - other)
     t = max(0, min(100, pct)) / 100.0
     target = other_vector + t * (best_centroid - other_vector)
 
-    # Find the real song nearest to the target point
-    neighbors = find_nearest_neighbors_by_vector(target, n=1)
-    if not neighbors:
+    return _find_nearest_song_excluding_vector(target, exclude_id=other_song_id)
+
+
+def _resolve_anchor_to_song_id(anchor_id, other_song_id=None, pct=100):
+    from app_helper import get_alchemy_anchor_by_id
+    try:
+        anchor = get_alchemy_anchor_by_id(int(anchor_id))
+    except Exception:
+        anchor = None
+    if not anchor or not anchor.get('centroid'):
         return None
-    return neighbors[0]['item_id']
+    try:
+        centroid = anchor['centroid']
+        if not isinstance(centroid, list):
+            return None
+        centroid_vec = np.array(centroid, dtype=np.float32)
+    except Exception:
+        return None
+
+    if other_song_id is not None and pct is not None and pct != 100:
+        other_vector = get_vector_by_id(other_song_id)
+        if other_vector is None:
+            return None
+        t = max(0, min(100, pct)) / 100.0
+        target = other_vector + t * (centroid_vec - other_vector)
+        return _find_nearest_song_excluding_vector(target, exclude_id=other_song_id)
+
+    return _find_nearest_song_excluding_vector(centroid_vec, exclude_id=other_song_id)
+
 
 # Create a Blueprint for the path finding routes
 path_bp = Blueprint('path_bp', __name__, template_folder='../templates')
@@ -80,13 +121,15 @@ def find_path_endpoint():
     end_song_id = request.args.get('end_song_id')
     start_mood = request.args.get('start_mood')
     end_mood = request.args.get('end_mood')
+    start_anchor = request.args.get('start_anchor')
+    end_anchor = request.args.get('end_anchor')
     mood_pct = request.args.get('mood_pct', 100, type=int)
     # Use the default from config if max_steps is not provided in the request
     max_steps = request.args.get('max_steps', PATH_DEFAULT_LENGTH, type=int)
 
-    # Cannot have both endpoints as moods
-    if start_mood and end_mood:
-        return jsonify({"error": "Only one endpoint can be a mood, not both."}), 400
+    # Cannot have more than one special endpoint among start/end (mood or anchor)
+    if (start_mood or start_anchor) and (end_mood or end_anchor):
+        return jsonify({"error": "Only one endpoint can be a mood/anchor and the other a song."}), 400
 
     # Validate mood values
     if start_mood and start_mood not in VALID_MOODS:
@@ -94,22 +137,34 @@ def find_path_endpoint():
     if end_mood and end_mood not in VALID_MOODS:
         return jsonify({"error": f"Invalid mood '{end_mood}'. Valid: {', '.join(sorted(VALID_MOODS))}"}), 400
 
-    # Each endpoint must have either a song ID or a mood
-    if not start_song_id and not start_mood:
-        return jsonify({"error": "Start endpoint must be a song or a mood."}), 400
-    if not end_song_id and not end_mood:
-        return jsonify({"error": "End endpoint must be a song or a mood."}), 400
+    # Each endpoint must have either a song ID, a mood, or an anchor
+    if not start_song_id and not start_mood and not start_anchor:
+        return jsonify({"error": "Start endpoint must be a song, mood, or anchor."}), 400
+    if not end_song_id and not end_mood and not end_anchor:
+        return jsonify({"error": "End endpoint must be a song, mood, or anchor."}), 400
 
-    # Resolve moods to real song IDs
-    if start_mood:
-        resolved_id = _resolve_mood_to_song_id(start_mood, end_song_id, pct=mood_pct)
+    # Resolve mood/anchor to song IDs
+    if start_anchor:
+        resolved_id = _resolve_anchor_to_song_id(start_anchor, other_song_id=end_song_id, pct=mood_pct)
+        if not resolved_id:
+            return jsonify({"error": f"Could not resolve anchor '{start_anchor}' to a song."}), 404
+        start_song_id = resolved_id
+        logger.info(f"Resolved start anchor '{start_anchor}' to song {start_song_id}")
+    elif start_mood:
+        resolved_id = _resolve_mood_to_song_id(start_mood, end_song_id or start_song_id, pct=mood_pct)
         if not resolved_id:
             return jsonify({"error": f"Could not resolve mood '{start_mood}' to a song."}), 404
         start_song_id = resolved_id
         logger.info(f"Resolved start mood '{start_mood}' ({mood_pct}%) to song {start_song_id}")
 
-    if end_mood:
-        resolved_id = _resolve_mood_to_song_id(end_mood, start_song_id, pct=mood_pct)
+    if end_anchor:
+        resolved_id = _resolve_anchor_to_song_id(end_anchor, other_song_id=start_song_id, pct=mood_pct)
+        if not resolved_id:
+            return jsonify({"error": f"Could not resolve anchor '{end_anchor}' to a song."}), 404
+        end_song_id = resolved_id
+        logger.info(f"Resolved end anchor '{end_anchor}' to song {end_song_id}")
+    elif end_mood:
+        resolved_id = _resolve_mood_to_song_id(end_mood, start_song_id or end_song_id, pct=mood_pct)
         if not resolved_id:
             return jsonify({"error": f"Could not resolve mood '{end_mood}' to a song."}), 404
         end_song_id = resolved_id
@@ -126,7 +181,14 @@ def find_path_endpoint():
         else:
             path_fix_size = str(pfs).lower() in ('1', 'true', 'yes', 'y')
 
-        path, total_distance = find_path_between_songs(start_song_id, end_song_id, max_steps, path_fix_size=path_fix_size)
+        # Note: `find_path_between_songs` does not accept mood direction options.
+        # Path mood/anchor resolution is already done above (start/end resolved to song id).
+        path, total_distance = find_path_between_songs(
+            start_song_id,
+            end_song_id,
+            max_steps,
+            path_fix_size=path_fix_size
+        )
 
         if not path:
             return jsonify({"error": f"No path found between the selected songs within {max_steps} steps."}), 404
