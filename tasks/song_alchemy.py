@@ -704,7 +704,8 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     weights.append(1.0)
             elif item.get('type') == 'anchor':
                 mid = item['id']
-                c = id_to_coord.get(str(mid))
+                prefix = '__add_anchor__' if is_add else '__sub_anchor__'
+                c = proj_map.get(f'{prefix}{mid}')
                 if c is not None:
                     coords.append(np.array(c, dtype=float))
                     weights.append(1.0)
@@ -798,9 +799,9 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     for pid in missing_ids:
                         idx = missing_ids.index(pid)
                         vec = missing_vectors[idx]
-                        if pid.startswith('__add_id__') or pid.startswith('__add_artist_comp__'):
+                        if pid.startswith('__add_id__') or pid.startswith('__add_artist_comp__') or pid.startswith('__add_anchor__'):
                             local_add_vecs.append(vec)
-                        elif pid.startswith('__sub_id__') or pid.startswith('__sub_artist_comp__'):
+                        elif pid.startswith('__sub_id__') or pid.startswith('__sub_artist_comp__') or pid.startswith('__sub_anchor__'):
                             local_sub_vecs.append(vec)
                     
                     if local_add_vecs and local_sub_vecs and _project_with_discriminant is not None:

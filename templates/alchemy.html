@@ -269,13 +269,15 @@
                     anchorsTable.innerHTML = '';
                     _alchemyAnchorsCache.forEach(anchor => {
                         const tr = document.createElement('tr');
-                        tr.innerHTML = `
-                            <td>${anchor.name}</td>
-                            <td>
-                                <button type="button" class="btn btn-sm btn-ghost btn-rename-anchor" data-id="${anchor.id}">Rename</button>
-                                <button type="button" class="btn btn-sm btn-danger btn-delete-anchor" data-id="${anchor.id}">Delete</button>
-                            </td>
+                        const tdName = document.createElement('td');
+                        tdName.textContent = anchor.name;
+                        const tdActions = document.createElement('td');
+                        tdActions.innerHTML = `
+                            <button type="button" class="btn btn-sm btn-ghost btn-rename-anchor" data-id="${anchor.id}">Rename</button>
+                            <button type="button" class="btn btn-sm btn-danger btn-delete-anchor" data-id="${anchor.id}">Delete</button>
                         `;
+                        tr.appendChild(tdName);
+                        tr.appendChild(tdActions);
                         anchorsTable.appendChild(tr);
                     });
                 }

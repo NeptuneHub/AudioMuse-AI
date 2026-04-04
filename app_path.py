@@ -27,7 +27,7 @@ def _load_mood_centroids():
 
 _load_mood_centroids()
 
-VALID_MOODS = {'happy', 'sad', 'aggressive', 'relaxed', 'danceable'}
+VALID_MOODS = {'happy', 'sad', 'aggressive', 'relaxed', 'danceable', 'party'}
 
 
 def _find_nearest_song_excluding_vector(vec, exclude_id=None):
@@ -60,7 +60,7 @@ def _resolve_mood_to_song_id(mood, other_song_id, pct=100):
     if other_song_id is None:
         return None
 
-    other_vector = get_vector_by_id(other_song_id)
+    other_vector = get_vector_by_id(int(other_song_id))
     if other_vector is None:
         return None
 
@@ -90,7 +90,7 @@ def _resolve_anchor_to_song_id(anchor_id, other_song_id=None, pct=100):
         return None
 
     if other_song_id is not None and pct is not None and pct != 100:
-        other_vector = get_vector_by_id(other_song_id)
+        other_vector = get_vector_by_id(int(other_song_id))
         if other_vector is None:
             return None
         t = max(0, min(100, pct)) / 100.0

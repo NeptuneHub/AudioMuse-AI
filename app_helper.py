@@ -408,6 +408,9 @@ def init_db():
                 logger.warning(f"DROP CONSTRAINT failed (non-critical): {e}")
                 db.rollback()
 
+            # Create 'alchemy_anchors' table to persist named user anchors for reuse
+            cur.execute("CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+
             # Performance indexes for hot queries (brainstorm, artist search)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author_lower ON score(LOWER(author))")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_title_author_lower ON score(LOWER(title), LOWER(author))")
@@ -577,28 +580,30 @@ def get_active_main_task(task_type=None):
     """
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
-    non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
+    try:
+        non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
 
-    if task_type:
-        cur.execute("""
-            SELECT task_id, task_type, status, details
-            FROM task_status
-            WHERE task_type = %s AND status IN %s AND parent_task_id IS NULL
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """, (task_type, non_terminal_statuses))
-    else:
-        cur.execute("""
-            SELECT task_id, task_type, status, details
-            FROM task_status
-            WHERE status IN %s AND parent_task_id IS NULL
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """, (non_terminal_statuses,))
+        if task_type:
+            cur.execute("""
+                SELECT task_id, task_type, status, details
+                FROM task_status
+                WHERE task_type = %s AND status IN %s AND parent_task_id IS NULL
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """, (task_type, non_terminal_statuses))
+        else:
+            cur.execute("""
+                SELECT task_id, task_type, status, details
+                FROM task_status
+                WHERE status IN %s AND parent_task_id IS NULL
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """, (non_terminal_statuses,))
 
-    active_task = cur.fetchone()
-    cur.close()
-    return dict(active_task) if active_task else None
+        active_task = cur.fetchone()
+        return dict(active_task) if active_task else None
+    finally:
+        cur.close()
 
 
 # --- DB Utility Functions (used by tasks.py and API) ---

@@ -84,7 +84,11 @@ def start_analysis_endpoint():
     from app_helper import rq_queue_high, clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING, get_active_main_task
     from app_setup import get_providers_display as get_providers
 
-    # Check for any existing active main task to prevent parallel batch runs.
+    # Clean up stale tasks first, then check for truly active ones.
+    # Must run cleanup before the active-task check — otherwise a crashed worker
+    # leaves a STARTED/PROGRESS row that blocks new runs forever.
+    clean_up_previous_main_tasks()
+
     active_task = get_active_main_task()
     if active_task:
         return jsonify({
@@ -170,8 +174,6 @@ def start_analysis_endpoint():
 
     job_id = str(uuid.uuid4())
 
-    # Clean up details of previously successful or stale tasks before starting a new one
-    clean_up_previous_main_tasks()
     save_task_status(job_id, "main_analysis", TASK_STATUS_PENDING, details={"message": "Task enqueued."})
 
     # Enqueue task using a string path to its function.
@@ -218,6 +220,9 @@ def start_cleaning_endpoint():
     # Local imports to prevent circular dependency at startup
     from app_helper import rq_queue_high, clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING, get_active_main_task
 
+    # Clean up stale tasks first, then check for truly active ones.
+    clean_up_previous_main_tasks()
+
     active_task = get_active_main_task()
     if active_task:
         return jsonify({
@@ -225,9 +230,6 @@ def start_cleaning_endpoint():
             "task_id": active_task['task_id'],
             "status": active_task['status']
         }), 409
-
-    # Clean up any previous cleaning tasks
-    clean_up_previous_main_tasks()
 
     job_id = str(uuid.uuid4())
     save_task_status(job_id, "cleaning", TASK_STATUS_PENDING, details={"message": "Database cleaning task enqueued."})
