@@ -9,6 +9,31 @@
             gap: 0.5rem; /* Space between checkbox and label */
             margin-top: 1rem; /* Align with other inputs */
         }
+        /* Mode toggle buttons */
+        .mode-toggle {
+            display: flex;
+            gap: 0;
+            margin-bottom: 1rem;
+        }
+        .mode-toggle button {
+            padding: 0.5rem 1.2rem;
+            border: 1px solid var(--border-color, #ccc);
+            background: var(--bg-secondary, #f5f5f5);
+            color: var(--text-color, #333);
+            cursor: pointer;
+            font-size: 0.95rem;
+        }
+        .mode-toggle button:first-child {
+            border-radius: 6px 0 0 6px;
+        }
+        .mode-toggle button:last-child {
+            border-radius: 0 6px 6px 0;
+        }
+        .mode-toggle button.active {
+            background: var(--color-primary, #4a90d9);
+            color: #fff;
+            border-color: var(--color-primary, #4a90d9);
+        }
 </style>
 {% endblock %}
 
@@ -21,9 +46,17 @@
 
     <form id="similarity-form">
         <input type="hidden" id="selected_item_id" name="item_id">
+
+        <!-- Mode toggle: Song vs Mood -->
+        <div class="mode-toggle">
+            <button type="button" id="mode-song-btn" class="active" onclick="setSimilarityMode('song')">Song</button>
+            <button type="button" id="mode-mood-btn" onclick="setSimilarityMode('mood')">Mood</button>
+        </div>
+
         <div class="param-group">
 
-            <div class="autocomplete-container">
+            <!-- Song mode: autocomplete search -->
+            <div class="autocomplete-container" id="song-mode-container">
                 <label for="search_query" class="label-with-tooltip">
                     Song, Artist or Album name:
                     <span class="info-tooltip" tabindex="0">
@@ -39,6 +72,33 @@
                 <div id="selected_album_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
                 <input type="hidden" id="selected_item_album" name="album">
                 <div id="autocomplete-results" class="autocomplete-results hidden"></div>
+            </div>
+
+            <!-- Mood mode: mood + centroid selection (hidden by default) -->
+            <div id="mood-mode-container" class="hidden">
+                <label for="mood_select" class="label-with-tooltip">
+                    Mood:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Select a mood category to find songs matching that mood.</span>
+                    </span>
+                </label>
+                <select id="mood_select">
+                    <option value="">-- Select a mood --</option>
+                </select>
+
+                <div id="centroid-select-container" class="hidden" style="margin-top:1rem;">
+                    <label for="centroid_select" class="label-with-tooltip">
+                        Centroid:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Each centroid represents a sub-cluster within the mood. The top tags describe the dominant genres of that cluster.</span>
+                        </span>
+                    </label>
+                    <select id="centroid_select">
+                        <option value="">-- Select a centroid --</option>
+                    </select>
+                </div>
             </div>
 
             <div>
@@ -112,6 +172,28 @@
 
 {% block bodyAdditions %}
     <script>
+        // Global function for mode toggle (called from onclick)
+        let _currentMode = 'song';
+        function setSimilarityMode(mode) {
+            _currentMode = mode;
+            const songBtn = document.getElementById('mode-song-btn');
+            const moodBtn = document.getElementById('mode-mood-btn');
+            const songContainer = document.getElementById('song-mode-container');
+            const moodContainer = document.getElementById('mood-mode-container');
+
+            if (mode === 'mood') {
+                songBtn.classList.remove('active');
+                moodBtn.classList.add('active');
+                songContainer.classList.add('hidden');
+                moodContainer.classList.remove('hidden');
+            } else {
+                moodBtn.classList.remove('active');
+                songBtn.classList.add('active');
+                moodContainer.classList.add('hidden');
+                songContainer.classList.remove('hidden');
+            }
+        }
+
         (() => {
             let currentTrackIds = [];
             let currentTracks = [];
@@ -120,6 +202,9 @@
             let autocompleteOffset = 0;
             let autocompleteQuery = '';
             let isLoadingMore = false;
+
+            // Mood centroid data cache
+            let moodCentroidsCache = null;
 
             const similarityForm = document.getElementById('similarity-form');
             const playlistForm = document.getElementById('playlist-form');
@@ -131,6 +216,49 @@
             const statusDiv = document.getElementById('status');
             const resultsTableWrapper = document.getElementById('results-table-wrapper');
             const playlistStatusDiv = document.getElementById('playlist-status');
+
+            const moodSelect = document.getElementById('mood_select');
+            const centroidSelect = document.getElementById('centroid_select');
+            const centroidContainer = document.getElementById('centroid-select-container');
+
+            // --- Load mood centroids on page load ---
+            async function loadMoodCentroids() {
+                try {
+                    const resp = await fetch(`{{ url_for('voyager_bp.get_mood_centroids_endpoint') }}`);
+                    if (resp.ok) {
+                        moodCentroidsCache = await resp.json();
+                        // Populate mood dropdown
+                        for (const mood of Object.keys(moodCentroidsCache).sort()) {
+                            const opt = document.createElement('option');
+                            opt.value = mood;
+                            opt.textContent = mood.charAt(0).toUpperCase() + mood.slice(1);
+                            moodSelect.appendChild(opt);
+                        }
+                    }
+                } catch (e) {
+                    console.error('Failed to load mood centroids:', e);
+                }
+            }
+            loadMoodCentroids();
+
+            // --- Mood select change -> populate centroids ---
+            moodSelect.addEventListener('change', () => {
+                const mood = moodSelect.value;
+                centroidSelect.innerHTML = '<option value="">-- Select a centroid --</option>';
+                if (!mood || !moodCentroidsCache || !moodCentroidsCache[mood]) {
+                    centroidContainer.classList.add('hidden');
+                    return;
+                }
+                const centroids = moodCentroidsCache[mood];
+                centroids.forEach(c => {
+                    const opt = document.createElement('option');
+                    opt.value = c.index;
+                    const moodLabel = mood.charAt(0).toUpperCase() + mood.slice(1);
+                    opt.textContent = moodLabel + ' - ' + c.top_tags.join('/');
+                    centroidSelect.appendChild(opt);
+                });
+                centroidContainer.classList.remove('hidden');
+            });
 
             // --- Autocomplete Logic ---
             const handleSearchInput = () => {
@@ -256,35 +384,58 @@
             similarityForm.addEventListener('submit', async function (event) {
                 event.preventDefault();
 
-                const itemId = selectedItemIdInput.value;
                 const n = document.getElementById('n').value;
                 const eliminateDuplicates = document.getElementById('eliminate_duplicates').checked;
                 const radiusSimilarity = document.getElementById('radius_similarity').checked;
-                // Mood similarity removed from UI/API: do not read or send this value
-                // const moodSimilarity = document.getElementById('mood_similarity').checked;
 
                 resultsContainer.classList.remove('hidden');
                 playlistCreator.classList.add('hidden');
                 statusDiv.textContent = 'Searching...';
                 statusDiv.className = '';
                 resultsTableWrapper.innerHTML = '';
+                document.getElementById('max-distance').textContent = '';
 
-                if (!itemId) {
-                    statusDiv.textContent = 'Please select a track from the autocomplete suggestions.';
-                    statusDiv.className = 'status-error';
-                    return;
+                let params;
+                let isMoodMode = (_currentMode === 'mood');
+                let playlistLabel;
+
+                if (isMoodMode) {
+                    // --- Mood centroid mode ---
+                    const mood = moodSelect.value;
+                    const centroidIdx = centroidSelect.value;
+                    if (!mood || centroidIdx === '') {
+                        statusDiv.textContent = 'Please select a mood and a centroid.';
+                        statusDiv.className = 'status-error';
+                        return;
+                    }
+                    params = new URLSearchParams({
+                        mood: mood,
+                        centroid_index: centroidIdx,
+                        n: n,
+                        eliminate_duplicates: eliminateDuplicates
+                    });
+                    const selectedOption = centroidSelect.options[centroidSelect.selectedIndex];
+                    playlistLabel = selectedOption ? selectedOption.textContent : mood;
+                } else {
+                    // --- Song mode ---
+                    const itemId = selectedItemIdInput.value;
+                    if (!itemId) {
+                        statusDiv.textContent = 'Please select a track from the autocomplete suggestions.';
+                        statusDiv.className = 'status-error';
+                        return;
+                    }
+                    const albumValue = ((document.getElementById('selected_item_album') && document.getElementById('selected_item_album').value) || '').trim() || 'unknown';
+                    params = new URLSearchParams({
+                        item_id: itemId,
+                        n: n,
+                        eliminate_duplicates: eliminateDuplicates,
+                        radius_similarity: radiusSimilarity,
+                        album: albumValue
+                    });
+                    playlistLabel = (document.getElementById('selected_item_title') && document.getElementById('selected_item_title').value) ? document.getElementById('selected_item_title').value : 'Unknown';
                 }
 
                 try {
-                    const albumValue = ((document.getElementById('selected_item_album') && document.getElementById('selected_item_album').value) || '').trim() || 'unknown';
-                    const params = new URLSearchParams({
-                        item_id: itemId,
-                        n: n,
-                        eliminate_duplicates: eliminateDuplicates, // Always send true or false
-                        radius_similarity: radiusSimilarity,
-                        album: albumValue
-                        // mood_similarity intentionally omitted
-                    });
                     const response = await fetch(`{{ url_for('voyager_bp.get_similar_tracks_endpoint') }}?${params}`);
                     const data = await response.json();
 
@@ -295,73 +446,68 @@
                         return;
                     }
 
-                    // Fetch exact max distance for the selected song and display it.
-                    // Also fetch the farthest song's title/artist when the API returns a farthest_item_id.
-                    try {
-                        const mdResp = await fetch(`{{ url_for('voyager_bp.get_max_distance_endpoint') }}?item_id=` + encodeURIComponent(itemId));
-                        if (mdResp.ok) {
-                            const md = await mdResp.json();
-                            const maxDistDiv = document.getElementById('max-distance');
-                            if (md && typeof md.max_distance === 'number') {
-                                // Default text with just the distance
-                                let text = 'Max distance: ' + md.max_distance.toFixed(4);
-
-                                // If server returned the farthest item's id, try to fetch its title/artist
-                                const farId = md.farthest_item_id || md.farthest_id || md.item_id || md.max_item_id || md.farthestItemId;
-                                if (farId) {
-                                    try {
-                                        const tdResp = await fetch(`{{ url_for('voyager_bp.get_track_endpoint') }}?item_id=` + encodeURIComponent(farId));
-                                        if (tdResp.ok) {
-                                            const td = await tdResp.json();
-                                            if (td && (td.title || td.author)) {
-                                                const title = td.title || 'Unknown title';
-                                                const author = td.author || 'Unknown artist';
-                                                text += ' — Farthest track: "' + title + '" by ' + author;
+                    // Fetch max distance only in song mode
+                    if (!isMoodMode) {
+                        const itemId = selectedItemIdInput.value;
+                        try {
+                            const mdResp = await fetch(`{{ url_for('voyager_bp.get_max_distance_endpoint') }}?item_id=` + encodeURIComponent(itemId));
+                            if (mdResp.ok) {
+                                const md = await mdResp.json();
+                                const maxDistDiv = document.getElementById('max-distance');
+                                if (md && typeof md.max_distance === 'number') {
+                                    let text = 'Max distance: ' + md.max_distance.toFixed(4);
+                                    const farId = md.farthest_item_id || md.farthest_id || md.item_id || md.max_item_id || md.farthestItemId;
+                                    if (farId) {
+                                        try {
+                                            const tdResp = await fetch(`{{ url_for('voyager_bp.get_track_endpoint') }}?item_id=` + encodeURIComponent(farId));
+                                            if (tdResp.ok) {
+                                                const td = await tdResp.json();
+                                                if (td && (td.title || td.author)) {
+                                                    text += ' — Farthest track: "' + (td.title || 'Unknown title') + '" by ' + (td.author || 'Unknown artist');
+                                                } else {
+                                                    text += ' — Farthest track ID: ' + farId;
+                                                }
                                             } else {
-                                                // If the endpoint returned something unexpected, show the id
                                                 text += ' — Farthest track ID: ' + farId;
                                             }
-                                        } else {
-                                            // If the track endpoint failed, show the id only
+                                        } catch (errInner) {
+                                            console.error('Failed to fetch farthest track metadata:', errInner);
                                             text += ' — Farthest track ID: ' + farId;
                                         }
-                                    } catch (errInner) {
-                                        console.error('Failed to fetch farthest track metadata:', errInner);
-                                        text += ' — Farthest track ID: ' + farId;
                                     }
+                                    maxDistDiv.textContent = text;
+                                } else {
+                                    maxDistDiv.textContent = '';
                                 }
-
-                                maxDistDiv.textContent = text;
-                            } else {
-                                maxDistDiv.textContent = '';
                             }
+                        } catch (err) {
+                            console.error('Failed to fetch max distance:', err);
                         }
-                    } catch (err) {
-                        console.error('Failed to fetch max distance:', err);
                     }
 
-                    selectedTrackTitle = (document.getElementById('selected_item_title') && document.getElementById('selected_item_title').value) ? document.getElementById('selected_item_title').value : 'Unknown';
-
-                    currentTrackIds = [itemId, ...data.map(track => track.item_id)];
-
-                    currentTracks = [
-                        {
-                            id: itemId,
-                            title: selectedTrackTitle,
-                            author: (document.getElementById('selected_item_artist') && document.getElementById('selected_item_artist').value) ? document.getElementById('selected_item_artist').value : 'Unknown',
-                            album: (document.getElementById('selected_item_album') && document.getElementById('selected_item_album').value) ? document.getElementById('selected_item_album').value : 'Unknown'
-                        },
-                        ...data.map(track => ({id: track.item_id, title: track.title, author: track.author, album: track.album || 'Unknown'}))
-                    ];
-
-                    // Graph visualization removed: skipping map fetch and chart rendering.
+                    if (!isMoodMode) {
+                        const itemId = selectedItemIdInput.value;
+                        currentTrackIds = [itemId, ...data.map(track => track.item_id)];
+                        currentTracks = [
+                            {
+                                id: itemId,
+                                title: playlistLabel,
+                                author: (document.getElementById('selected_item_artist') && document.getElementById('selected_item_artist').value) || 'Unknown',
+                                album: (document.getElementById('selected_item_album') && document.getElementById('selected_item_album').value) || 'Unknown'
+                            },
+                            ...data.map(track => ({id: track.item_id, title: track.title, author: track.author, album: track.album || 'Unknown'}))
+                        ];
+                    } else {
+                        currentTrackIds = data.map(track => track.item_id);
+                        currentTracks = data.map(track => ({id: track.item_id, title: track.title, author: track.author, album: track.album || 'Unknown'}));
+                    }
 
                     statusDiv.textContent = 'Found ' + data.length + ' similar tracks.';
                     const tableHTML = '<table><thead><tr><th>Title</th><th>Artist</th><th>Album</th><th>Distance</th></tr></thead><tbody>' + data.map(track => '<tr><td>' + (track.title || 'N/A') + '</td><td>' + (track.author || 'N/A') + '</td><td>' + (track.album || 'Unknown') + '</td><td>' + track.distance.toFixed(4) + '</td></tr>').join('') + '</tbody></table>';
                     resultsTableWrapper.innerHTML = tableHTML;
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
-                    document.getElementById('playlist_name').value = "Similar to " + selectedTrackTitle;
+                    document.getElementById('playlist_name').value = isMoodMode ? "Mood: " + playlistLabel : "Similar to " + playlistLabel;
 
                 } catch (error) {
                     statusDiv.textContent = `Error: ${error.message}`;
