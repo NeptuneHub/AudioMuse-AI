@@ -32,10 +32,10 @@ def _load_mood_centroids_for_similarity():
             meta_list = []
             for i, c in enumerate(centroids):
                 tags = c.get('top_tags', {})
-                top3 = sorted(tags.items(), key=lambda x: -x[1])[:3]
+                top5 = sorted(tags.items(), key=lambda x: -x[1])[:5]
                 meta_list.append({
                     'index': i,
-                    'top_tags': [t[0] for t in top3],
+                    'top_tags': [t[0] for t in top5],
                     'n_songs': c.get('n_songs', 0),
                 })
             _MOOD_CENTROIDS_META[mood] = meta_list

@@ -9,30 +9,33 @@
             gap: 0.5rem; /* Space between checkbox and label */
             margin-top: 1rem; /* Align with other inputs */
         }
-        /* Mode toggle buttons */
-        .mode-toggle {
-            display: flex;
-            gap: 0;
-            margin-bottom: 1rem;
-        }
-        .mode-toggle button {
-            padding: 0.5rem 1.2rem;
-            border: 1px solid var(--border-color, #ccc);
-            background: var(--bg-secondary, #f5f5f5);
-            color: var(--text-color, #333);
+        .mode-toggle-btn {
+            background: #3B82F6;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 4px 10px;
             cursor: pointer;
-            font-size: 0.95rem;
+            font-size: 0.8rem;
+            font-weight: 500;
+            line-height: 1.2;
+            text-align: center;
+            min-width: 55px;
+            margin-left: 0.5rem;
+            margin-top: 0;
+            width: auto;
+            flex-grow: 0;
+            vertical-align: middle;
+            transition: background-color 0.2s;
         }
-        .mode-toggle button:first-child {
-            border-radius: 6px 0 0 6px;
+        .mode-toggle-btn:hover {
+            background: #2563EB;
         }
-        .mode-toggle button:last-child {
-            border-radius: 0 6px 6px 0;
+        .mode-toggle-btn.mood-active {
+            background: #8B5CF6;
         }
-        .mode-toggle button.active {
-            background: var(--color-primary, #4a90d9);
-            color: #fff;
-            border-color: var(--color-primary, #4a90d9);
+        .mode-toggle-btn.mood-active:hover {
+            background: #7C3AED;
         }
 </style>
 {% endblock %}
@@ -47,13 +50,11 @@
     <form id="similarity-form">
         <input type="hidden" id="selected_item_id" name="item_id">
 
-        <!-- Mode toggle: Song vs Mood -->
-        <div class="mode-toggle">
-            <button type="button" id="mode-song-btn" class="active" onclick="setSimilarityMode('song')">Song</button>
-            <button type="button" id="mode-mood-btn" onclick="setSimilarityMode('mood')">Mood</button>
-        </div>
-
         <div class="param-group">
+
+            <div>
+                <button type="button" class="mode-toggle-btn" id="similarity-mode-toggle" title="Click to switch Song/Mood">🎵 Song</button>
+            </div>
 
             <!-- Song mode: autocomplete search -->
             <div class="autocomplete-container" id="song-mode-container">
@@ -172,27 +173,7 @@
 
 {% block bodyAdditions %}
     <script>
-        // Global function for mode toggle (called from onclick)
         let _currentMode = 'song';
-        function setSimilarityMode(mode) {
-            _currentMode = mode;
-            const songBtn = document.getElementById('mode-song-btn');
-            const moodBtn = document.getElementById('mode-mood-btn');
-            const songContainer = document.getElementById('song-mode-container');
-            const moodContainer = document.getElementById('mood-mode-container');
-
-            if (mode === 'mood') {
-                songBtn.classList.remove('active');
-                moodBtn.classList.add('active');
-                songContainer.classList.add('hidden');
-                moodContainer.classList.remove('hidden');
-            } else {
-                moodBtn.classList.remove('active');
-                songBtn.classList.add('active');
-                moodContainer.classList.add('hidden');
-                songContainer.classList.remove('hidden');
-            }
-        }
 
         (() => {
             let currentTrackIds = [];
@@ -220,6 +201,26 @@
             const moodSelect = document.getElementById('mood_select');
             const centroidSelect = document.getElementById('centroid_select');
             const centroidContainer = document.getElementById('centroid-select-container');
+            const modeToggleBtn = document.getElementById('similarity-mode-toggle');
+
+            // --- Mode toggle click handler ---
+            modeToggleBtn.addEventListener('click', () => {
+                const songContainer = document.getElementById('song-mode-container');
+                const moodContainer = document.getElementById('mood-mode-container');
+                if (_currentMode === 'song') {
+                    _currentMode = 'mood';
+                    modeToggleBtn.textContent = '\ud83c\udfad Mood';
+                    modeToggleBtn.classList.add('mood-active');
+                    songContainer.classList.add('hidden');
+                    moodContainer.classList.remove('hidden');
+                } else {
+                    _currentMode = 'song';
+                    modeToggleBtn.textContent = '\ud83c\udfb5 Song';
+                    modeToggleBtn.classList.remove('mood-active');
+                    moodContainer.classList.add('hidden');
+                    songContainer.classList.remove('hidden');
+                }
+            });
 
             // --- Load mood centroids on page load ---
             async function loadMoodCentroids() {
