@@ -244,6 +244,30 @@
 
         // Anchor persistence helper (name-only for list APIs)
         let _alchemyAnchorsCache = [];
+
+        // Mood centroids cache: { mood_name: [{index, top_tags, n_songs}, ...] }
+        let _moodCentroidsCache = {};
+        let _moodCentroidsLoaded = false;
+        const _loadMoodCentroids = async () => {
+            if (_moodCentroidsLoaded) return;
+            try {
+                const resp = await fetch('/api/mood_centroids');
+                _moodCentroidsCache = await resp.json();
+                _moodCentroidsLoaded = true;
+            } catch (e) { console.warn('Failed to load mood centroids', e); }
+        };
+        const _loadMoodOptionsForCard = async (selectEl) => {
+            await _loadMoodCentroids();
+            const curVal = selectEl.value;
+            selectEl.innerHTML = '<option value="">-- Select mood --</option>';
+            for (const mood of Object.keys(_moodCentroidsCache)) {
+                const opt = document.createElement('option');
+                opt.value = mood;
+                opt.textContent = mood.charAt(0).toUpperCase() + mood.slice(1);
+                selectEl.appendChild(opt);
+            }
+            selectEl.value = curVal || '';
+        };
         const refreshAnchors = async () => {
             try {
                 const response = await fetch('/api/anchors');
@@ -293,7 +317,7 @@
             card.innerHTML = `
                 <div class="alchemy-card-header">
                     <div class="left-group">
-                        <button type="button" class="type-toggle-btn type-cycle-btn" title="Click to switch: Song → Artist → Anchor">🎵 Song</button>
+                        <button type="button" class="type-toggle-btn type-cycle-btn" title="Click to switch: Song → Artist → Anchor → Mood">🎵 Song</button>
                         <div class="op-buttons">
                             <button type="button" class="op-btn op-add active">Include</button>
                             <button type="button" class="op-btn op-sub">Exclude</button>
@@ -319,6 +343,15 @@
                         <option value="">-- Select anchor --</option>
                     </select>
                 </div>
+                <div class="field-row mood-field-row hidden">
+                    <label>Select Mood &amp; Centroid</label>
+                    <select class="mood-select" style="width:100%;padding:0.5rem;border-radius:0.35rem;border:1px solid #ccc;margin-bottom:0.4rem;">
+                        <option value="">-- Select mood --</option>
+                    </select>
+                    <select class="centroid-select" style="width:100%;padding:0.5rem;border-radius:0.35rem;border:1px solid #ccc;" disabled>
+                        <option value="">-- Select centroid --</option>
+                    </select>
+                </div>
                 <input type="hidden" class="song-id" />
                 <input type="hidden" class="item-type" value="song" />
                 <input type="hidden" class="op" value="ADD" />
@@ -337,6 +370,9 @@
             const songFieldRow = card.querySelector('.song-field-row');
             const anchorFieldRow = card.querySelector('.anchor-field-row');
             const anchorSelect = card.querySelector('.anchor-select');
+            const moodFieldRow = card.querySelector('.mood-field-row');
+            const moodSelect = card.querySelector('.mood-select');
+            const centroidSelect = card.querySelector('.centroid-select');
 
             const clearSelection = () => {
                 searchInput.value = '';
@@ -345,6 +381,9 @@
                 resultsEl.classList.add('hidden');
                 resultsArtistEl.classList.add('hidden');
                 anchorSelect.value = '';
+                moodSelect.value = '';
+                centroidSelect.innerHTML = '<option value="">-- Select centroid --</option>';
+                centroidSelect.disabled = true;
             };
 
             const setType = (type) => {
@@ -352,30 +391,39 @@
                 card.classList.toggle('item-type-song', type === 'song');
                 card.classList.toggle('item-type-artist', type === 'artist');
                 card.classList.toggle('item-type-anchor', type === 'anchor');
+                card.classList.toggle('item-type-mood', type === 'mood');
+
+                songFieldRow.classList.add('hidden');
+                anchorFieldRow.classList.add('hidden');
+                moodFieldRow.classList.add('hidden');
 
                 if (type === 'song') {
                     typeCycleBtn.textContent = '🎵 Song';
                     typeCycleBtn.style.background = '#3B82F6';
                     songFieldRow.classList.remove('hidden');
-                    anchorFieldRow.classList.add('hidden');
                 } else if (type === 'artist') {
                     typeCycleBtn.textContent = '🎤 Artist';
                     typeCycleBtn.style.background = '#8B5CF6';
                     songFieldRow.classList.remove('hidden');
-                    anchorFieldRow.classList.add('hidden');
-                } else {
+                } else if (type === 'anchor') {
                     typeCycleBtn.textContent = '🔖 Anchor';
                     typeCycleBtn.style.background = '#2DD4BF';
-                    songFieldRow.classList.add('hidden');
                     anchorFieldRow.classList.remove('hidden');
                     refreshAnchors().catch(() => {});
+                } else if (type === 'mood') {
+                    typeCycleBtn.textContent = '🎭 Mood';
+                    typeCycleBtn.style.background = '#F59E0B';
+                    moodFieldRow.classList.remove('hidden');
+                    _loadMoodOptionsForCard(moodSelect);
                 }
                 clearSelection();
             };
 
+            const cycleTypes = ['song', 'artist', 'anchor', 'mood'];
             const cycleType = () => {
                 const current = itemTypeHidden.value || 'song';
-                const next = current === 'song' ? 'artist' : current === 'artist' ? 'anchor' : 'song';
+                const curIdx = cycleTypes.indexOf(current);
+                const next = cycleTypes[(curIdx + 1) % cycleTypes.length];
                 setType(next);
             };
 
@@ -385,6 +433,33 @@
                 if (itemTypeHidden.value === 'anchor') {
                     idEl.value = anchorSelect.value || '';
                     selectedSongNameEl.textContent = anchorSelect.value ? `Anchor: ${anchorSelect.options[anchorSelect.selectedIndex].text}` : '';
+                }
+            });
+
+            // Mood centroid selection handlers
+            moodSelect.addEventListener('change', () => {
+                const mood = moodSelect.value;
+                centroidSelect.innerHTML = '<option value="">-- Select centroid --</option>';
+                idEl.value = '';
+                selectedSongNameEl.textContent = '';
+                if (!mood || !_moodCentroidsCache[mood]) {
+                    centroidSelect.disabled = true;
+                    return;
+                }
+                _moodCentroidsCache[mood].forEach(c => {
+                    const opt = document.createElement('option');
+                    opt.value = `${mood}:${c.index}`;
+                    opt.textContent = `${mood} - ${c.top_tags.join('/')}`;
+                    centroidSelect.appendChild(opt);
+                });
+                centroidSelect.disabled = false;
+            });
+            centroidSelect.addEventListener('change', () => {
+                idEl.value = centroidSelect.value || '';
+                if (centroidSelect.value) {
+                    selectedSongNameEl.textContent = `Mood: ${centroidSelect.options[centroidSelect.selectedIndex].text}`;
+                } else {
+                    selectedSongNameEl.textContent = '';
                 }
             });
 

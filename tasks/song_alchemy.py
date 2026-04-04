@@ -104,7 +104,32 @@ def _compute_centroid_from_items(items: List[dict]) -> np.ndarray:
             if anchor and anchor.get('centroid') and isinstance(anchor.get('centroid'), list):
                 vectors.append(np.array(anchor['centroid'], dtype=float))
                 weights.append(1.0)
-    
+
+        elif item_type == 'mood':
+            # id format: "mood_name:centroid_index"
+            parts = str(item_id).split(':', 1)
+            if len(parts) == 2:
+                mood_name, idx_str = parts[0].strip().lower(), parts[1].strip()
+                try:
+                    cidx = int(idx_str)
+                    from config import MOOD_CENTROIDS_FILE
+                    import json as _json
+                    with open(MOOD_CENTROIDS_FILE) as _f:
+                        _mcdata = _json.load(_f)
+                    if mood_name in _mcdata:
+                        centroids_list = _mcdata[mood_name].get('centroids', [])
+                        if 0 <= cidx < len(centroids_list):
+                            vec = centroids_list[cidx].get('centroid')
+                            if vec:
+                                vectors.append(np.array(vec, dtype=float))
+                                weights.append(1.0)
+                        else:
+                            logger.warning(f"Mood centroid index {cidx} out of range for '{mood_name}'")
+                    else:
+                        logger.warning(f"Unknown mood '{mood_name}' in alchemy item")
+                except (ValueError, FileNotFoundError) as exc:
+                    logger.warning(f"Failed to load mood centroid from '{item_id}': {exc}")
+
     if not vectors:
         return None
     
