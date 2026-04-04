@@ -258,6 +258,9 @@ def get_similar_tracks_endpoint():
     # Optional mood centroid parameters
     mood_param = request.args.get('mood', '', type=str).strip().lower()
     centroid_index_param = request.args.get('centroid_index', None, type=int)
+
+    # Optional anchor parameter
+    anchor_id_param = request.args.get('anchor_id', None, type=int)
     
     eliminate_duplicates_str = request.args.get('eliminate_duplicates')
     if eliminate_duplicates_str is None:
@@ -302,6 +305,50 @@ def get_similar_tracks_endpoint():
 
         if not neighbor_results:
             return jsonify({"error": "No similar tracks found for this mood centroid."}), 404
+
+        from app import get_score_data_by_ids
+        neighbor_ids = [n_item['item_id'] for n_item in neighbor_results]
+        neighbor_details = get_score_data_by_ids(neighbor_ids)
+        details_map = {d['item_id']: d for d in neighbor_details}
+        distance_map = {n_item['item_id']: n_item['distance'] for n_item in neighbor_results}
+
+        final_results = []
+        for neighbor_id in neighbor_ids:
+            if neighbor_id in details_map:
+                track_info = details_map[neighbor_id]
+                final_results.append({
+                    "item_id": track_info['item_id'],
+                    "title": track_info['title'],
+                    "author": track_info['author'],
+                    "album": (track_info.get('album') or 'unknown'),
+                    "album_artist": (track_info.get('album_artist') or 'unknown'),
+                    "distance": distance_map[neighbor_id]
+                })
+        return jsonify(final_results)
+
+    # --- Anchor mode: use anchor's centroid vector ---
+    if anchor_id_param is not None:
+        from app_helper import get_alchemy_anchor_by_id
+        anchor = get_alchemy_anchor_by_id(anchor_id_param)
+        if not anchor or not anchor.get('centroid'):
+            return jsonify({"error": f"Anchor with id {anchor_id_param} not found or has no centroid."}), 404
+
+        anchor_vector = np.array(anchor['centroid'], dtype=np.float32)
+        try:
+            neighbor_results = find_nearest_neighbors_by_vector(
+                anchor_vector,
+                n=num_neighbors,
+                eliminate_duplicates=eliminate_duplicates
+            )
+        except RuntimeError as e:
+            logger.error(f"Runtime error finding neighbors for anchor {anchor_id_param}: {e}", exc_info=True)
+            return jsonify({"error": "The similarity search service is currently unavailable."}), 503
+        except Exception as e:
+            logger.error(f"Unexpected error finding neighbors for anchor {anchor_id_param}: {e}", exc_info=True)
+            return jsonify({"error": "An unexpected error occurred."}), 500
+
+        if not neighbor_results:
+            return jsonify({"error": "No similar tracks found for this anchor."}), 404
 
         from app import get_score_data_by_ids
         neighbor_ids = [n_item['item_id'] for n_item in neighbor_results]

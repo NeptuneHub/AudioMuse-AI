@@ -37,6 +37,12 @@
         .mode-toggle-btn.mood-active:hover {
             background: #7C3AED;
         }
+        .mode-toggle-btn.anchor-active {
+            background: #F59E0B;
+        }
+        .mode-toggle-btn.anchor-active:hover {
+            background: #D97706;
+        }
 </style>
 {% endblock %}
 
@@ -100,6 +106,21 @@
                         <option value="">-- Select a centroid --</option>
                     </select>
                 </div>
+            </div>
+
+            <!-- Anchor mode: anchor selection (hidden by default) -->
+            <div id="anchor-mode-container" class="hidden">
+                <label for="anchor_select" class="label-with-tooltip">
+                    Anchor:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Select a pre-built anchor to find songs similar to its sound profile.</span>
+                    </span>
+                </label>
+                <select id="anchor_select">
+                    <option value="">-- Select an anchor --</option>
+                </select>
+                <div id="no-anchors-msg" class="hidden" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);">No anchors available. Create anchors from the Alchemy page first.</div>
             </div>
 
             <div>
@@ -202,23 +223,22 @@
             const centroidSelect = document.getElementById('centroid_select');
             const centroidContainer = document.getElementById('centroid-select-container');
             const modeToggleBtn = document.getElementById('similarity-mode-toggle');
+            const anchorSelect = document.getElementById('anchor_select');
 
-            // --- Mode toggle click handler ---
+            // --- Mode toggle click handler (Song -> Mood -> Anchor -> Song) ---
+            const modes = ['song', 'mood', 'anchor'];
+            const modeLabels = {'song': '\ud83c\udfb5 Song', 'mood': '\ud83c\udfad Mood', 'anchor': '\u2693 Anchor'};
+            const modeClasses = {'song': '', 'mood': 'mood-active', 'anchor': 'anchor-active'};
+            const modeContainers = {'song': 'song-mode-container', 'mood': 'mood-mode-container', 'anchor': 'anchor-mode-container'};
+
             modeToggleBtn.addEventListener('click', () => {
-                const songContainer = document.getElementById('song-mode-container');
-                const moodContainer = document.getElementById('mood-mode-container');
-                if (_currentMode === 'song') {
-                    _currentMode = 'mood';
-                    modeToggleBtn.textContent = '\ud83c\udfad Mood';
-                    modeToggleBtn.classList.add('mood-active');
-                    songContainer.classList.add('hidden');
-                    moodContainer.classList.remove('hidden');
-                } else {
-                    _currentMode = 'song';
-                    modeToggleBtn.textContent = '\ud83c\udfb5 Song';
-                    modeToggleBtn.classList.remove('mood-active');
-                    moodContainer.classList.add('hidden');
-                    songContainer.classList.remove('hidden');
+                const curIdx = modes.indexOf(_currentMode);
+                const nextIdx = (curIdx + 1) % modes.length;
+                _currentMode = modes[nextIdx];
+                modeToggleBtn.textContent = modeLabels[_currentMode];
+                modeToggleBtn.className = 'mode-toggle-btn' + (modeClasses[_currentMode] ? ' ' + modeClasses[_currentMode] : '');
+                for (const m of modes) {
+                    document.getElementById(modeContainers[m]).classList.toggle('hidden', m !== _currentMode);
                 }
             });
 
@@ -241,6 +261,32 @@
                 }
             }
             loadMoodCentroids();
+
+            // --- Load anchors on page load ---
+            async function loadAnchors() {
+                try {
+                    const resp = await fetch('/api/anchors');
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        const anchors = data.anchors || [];
+                        const noMsg = document.getElementById('no-anchors-msg');
+                        if (anchors.length === 0) {
+                            noMsg.classList.remove('hidden');
+                        } else {
+                            noMsg.classList.add('hidden');
+                            anchors.forEach(a => {
+                                const opt = document.createElement('option');
+                                opt.value = a.id;
+                                opt.textContent = a.name;
+                                anchorSelect.appendChild(opt);
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.error('Failed to load anchors:', e);
+                }
+            }
+            loadAnchors();
 
             // --- Mood select change -> populate centroids ---
             moodSelect.addEventListener('change', () => {
@@ -397,10 +443,10 @@
                 document.getElementById('max-distance').textContent = '';
 
                 let params;
-                let isMoodMode = (_currentMode === 'mood');
+                let isVectorMode = (_currentMode === 'mood' || _currentMode === 'anchor');
                 let playlistLabel;
 
-                if (isMoodMode) {
+                if (_currentMode === 'mood') {
                     // --- Mood centroid mode ---
                     const mood = moodSelect.value;
                     const centroidIdx = centroidSelect.value;
@@ -417,6 +463,21 @@
                     });
                     const selectedOption = centroidSelect.options[centroidSelect.selectedIndex];
                     playlistLabel = selectedOption ? selectedOption.textContent : mood;
+                } else if (_currentMode === 'anchor') {
+                    // --- Anchor mode ---
+                    const anchorId = anchorSelect.value;
+                    if (!anchorId) {
+                        statusDiv.textContent = 'Please select an anchor.';
+                        statusDiv.className = 'status-error';
+                        return;
+                    }
+                    params = new URLSearchParams({
+                        anchor_id: anchorId,
+                        n: n,
+                        eliminate_duplicates: eliminateDuplicates
+                    });
+                    const selectedOption = anchorSelect.options[anchorSelect.selectedIndex];
+                    playlistLabel = selectedOption ? selectedOption.textContent : 'Anchor';
                 } else {
                     // --- Song mode ---
                     const itemId = selectedItemIdInput.value;
@@ -448,7 +509,7 @@
                     }
 
                     // Fetch max distance only in song mode
-                    if (!isMoodMode) {
+                    if (!isVectorMode) {
                         const itemId = selectedItemIdInput.value;
                         try {
                             const mdResp = await fetch(`{{ url_for('voyager_bp.get_max_distance_endpoint') }}?item_id=` + encodeURIComponent(itemId));
@@ -486,7 +547,7 @@
                         }
                     }
 
-                    if (!isMoodMode) {
+                    if (!isVectorMode) {
                         const itemId = selectedItemIdInput.value;
                         currentTrackIds = [itemId, ...data.map(track => track.item_id)];
                         currentTracks = [
@@ -508,7 +569,7 @@
                     resultsTableWrapper.innerHTML = tableHTML;
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
-                    document.getElementById('playlist_name').value = isMoodMode ? "Mood: " + playlistLabel : "Similar to " + playlistLabel;
+                    document.getElementById('playlist_name').value = isVectorMode ? (_currentMode === 'anchor' ? 'Anchor: ' : 'Mood: ') + playlistLabel : 'Similar to ' + playlistLabel;
 
                 } catch (error) {
                     statusDiv.textContent = `Error: ${error.message}`;
