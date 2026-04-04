@@ -39,7 +39,7 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * **Version 0.9.0** introduce the possibility to create a Song Path with mood. Also Song Alchemy can save is output as an Anchor to be used for future alchemy or as an input of Song Path.
+> * **Version 0.9.4** introduce the possibility to create a Song Path with mood. Also Song Alchemy can save is output as an Anchor to be used for future alchemy or as an input of Song Path.
 > * **Version 0.9.0** introduce the new DCLAP model, for a faster analysis. **IMPORTANT**: it need to start from a clean db and a new analysis. Learn more on the release note.
 > * **Version 0.8.13** introduce the authentication layer. It start initially disabled by default. Learn more on the release note.
 
