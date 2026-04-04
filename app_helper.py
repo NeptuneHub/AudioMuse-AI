@@ -375,6 +375,38 @@ def clean_up_previous_main_tasks():
         cur.close()
 
 
+def get_active_main_task(task_type=None):
+    """Return the currently active main task.
+
+    If task_type is provided, only return an active task of that type.
+    If task_type is None, return any active main task.
+    """
+    db = get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
+
+    if task_type:
+        cur.execute("""
+            SELECT task_id, task_type, status, details
+            FROM task_status
+            WHERE task_type = %s AND status IN %s AND parent_task_id IS NULL
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """, (task_type, non_terminal_statuses))
+    else:
+        cur.execute("""
+            SELECT task_id, task_type, status, details
+            FROM task_status
+            WHERE status IN %s AND parent_task_id IS NULL
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """, (non_terminal_statuses,))
+
+    active_task = cur.fetchone()
+    cur.close()
+    return dict(active_task) if active_task else None
+
+
 # --- DB Utility Functions (used by tasks.py and API) ---
 def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task_id=None, sub_type_identifier=None, progress=0, details=None):
     """

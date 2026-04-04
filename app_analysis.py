@@ -81,7 +81,16 @@ def start_analysis_endpoint():
         description: Server error during task enqueue.
     """
     # Local imports to prevent circular dependency at startup
-    from app_helper import rq_queue_high, clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING
+    from app_helper import rq_queue_high, clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING, get_active_main_task
+
+    # Check for any existing active main task to prevent parallel batch runs.
+    active_task = get_active_main_task()
+    if active_task:
+        return jsonify({
+            "error": "An active batch task is already in progress.",
+            "task_id": active_task['task_id'],
+            "status": active_task['status']
+        }), 409
 
     data = request.json or {}
     # MODIFIED: Removed jellyfin_url, jellyfin_user_id, and jellyfin_token as they are no longer passed to the task.
@@ -138,7 +147,15 @@ def start_cleaning_endpoint():
         description: Server error during task enqueue.
     """
     # Local imports to prevent circular dependency at startup
-    from app_helper import rq_queue_high, clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING
+    from app_helper import rq_queue_high, clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING, get_active_main_task
+
+    active_task = get_active_main_task()
+    if active_task:
+        return jsonify({
+            "error": "An active batch task is already in progress.",
+            "task_id": active_task['task_id'],
+            "status": active_task['status']
+        }), 409
 
     # Clean up any previous cleaning tasks
     clean_up_previous_main_tasks()
