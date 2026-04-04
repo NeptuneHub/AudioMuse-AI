@@ -154,14 +154,22 @@ function renderConfig(config) {
     document.getElementById('config-spectral_n_clusters_max').value = config.spectral_n_clusters_max || 0;
 
 
-    // AI Naming
+    // AI Naming (read-only — configured in Settings)
     aiModelProviderSelect.value = config.ai_model_provider || 'NONE';
-    document.getElementById('config-ollama_server_url').value = config.ollama_server_url || 'http://127.0.0.1:11434/api/generate';
-    document.getElementById('config-ollama_model_name').value = config.ollama_model_name || 'mistral:7b';
-    document.getElementById('config-openai_server_url').value = config.openai_server_url || 'https://openrouter.ai/api/v1/chat/completions';
+    document.getElementById('config-ollama_server_url').value = config.ollama_server_url || '';
+    document.getElementById('config-ollama_model_name').value = config.ollama_model_name || '';
+    document.getElementById('config-openai_server_url').value = config.openai_server_url || '';
     document.getElementById('config-openai_model_name').value = config.openai_model_name || '';
-    document.getElementById('config-gemini_model_name').value = config.gemini_model_name || 'gemini-2.5-pro';
-    document.getElementById('config-mistral_model_name').value = config.mistral_model_name || 'ministral-3b-latest';
+    document.getElementById('config-gemini_model_name').value = config.gemini_model_name || '';
+    document.getElementById('config-mistral_model_name').value = config.mistral_model_name || '';
+
+    // Show warning if no AI provider configured
+    const aiNoneWarning = document.getElementById('ai-none-warning');
+    if (aiModelProviderSelect.value === 'NONE') {
+        aiNoneWarning.classList.remove('hidden');
+    } else {
+        aiNoneWarning.classList.add('hidden');
+    }
 }
 
 function toggleClusteringParams() {
@@ -234,11 +242,17 @@ async function checkActiveTasks() {
                 else if (['REVOKED', 'CANCELED'].includes(currentStatusUpper)) alertTitle = 'Task Canceled';
                 
                 showMessageBox(alertTitle, alertMessage);
+
+                // Check Navidrome path warning after analysis completes
+                if (['SUCCESS', 'FINISHED'].includes(currentStatusUpper)
+                    && (mainActiveTask.task_type_from_db || '').toLowerCase().includes('analysis')) {
+                    checkProviderHealth();
+                }
             }
             lastPolledTaskDetails[currentTaskId] = { state: currentStatusUpper, ...mainActiveTask };
             disableTaskButtons(true);
             updateCancelButtonState(false);
-            return true; 
+            return true;
         } else if (currentTaskId) {
             const finishedTaskId = currentTaskId;
             const previousDetails = lastPolledTaskDetails[finishedTaskId];
@@ -262,6 +276,12 @@ async function checkActiveTasks() {
                         else if (['REVOKED', 'CANCELED'].includes(upperFinalStatus)) alertTitle = 'Task Canceled';
                         
                         showMessageBox(alertTitle, alertMessage);
+
+                        // Check Navidrome path warning after analysis completes
+                        if (['SUCCESS', 'FINISHED'].includes(upperFinalStatus)
+                            && (finalStatusData.task_type_from_db || '').toLowerCase().includes('analysis')) {
+                            checkProviderHealth();
+                        }
                     }
                     displayTaskStatus(finalStatusData);
                 } else {
@@ -288,6 +308,54 @@ async function checkActiveTasks() {
         updateCancelButtonState(true);
     }
     return false;
+}
+
+async function checkProviderHealth() {
+    try {
+        // Render health banner above the Start Analysis button
+        if (typeof fetchAndRenderHealthBanner === 'function') {
+            const result = await fetchAndRenderHealthBanner('analysis-health-banner', {
+                onCritical: function(criticals) {
+                    // Disable Start Analysis button when critical issues exist
+                    if (startAnalysisBtn) {
+                        startAnalysisBtn.disabled = true;
+                        startAnalysisBtn.style.backgroundColor = '#93C5FD';
+                        startAnalysisBtn.style.cursor = 'not-allowed';
+                        startAnalysisBtn.title = 'Fix provider path issues in Settings before running analysis';
+                    }
+                },
+                onClear: function() {
+                    // Re-enable Start Analysis button when no critical issues
+                    if (startAnalysisBtn && !currentTaskId) {
+                        startAnalysisBtn.disabled = false;
+                        startAnalysisBtn.style.backgroundColor = '';
+                        startAnalysisBtn.style.cursor = '';
+                        startAnalysisBtn.title = '';
+                    }
+                }
+            });
+            // Show message box for first-time warnings (but not on every poll)
+            if (result.hasWarning || result.hasCritical) {
+                const warnings = result.warnings || [];
+                const criticals = warnings.filter(w => w.level === 'critical');
+                if (criticals.length > 0) {
+                    const bullets = criticals.map(w => `• ${w.message}`).join('<br>');
+                    showMessageBox('Provider Path Issue', bullets);
+                }
+            }
+        } else {
+            // Fallback: use the old message-box-only approach
+            const response = await fetch('/api/setup/providers/health');
+            const data = await response.json();
+            const warnings = data.warnings || [];
+            if (warnings.length > 0) {
+                const bullets = warnings.map(w => `• ${w.message}`).join('<br>');
+                showMessageBox('Provider Warnings', bullets);
+            }
+        }
+    } catch (e) {
+        console.warn('Could not check provider health:', e);
+    }
 }
 
 function disableTaskButtons(isDisabled) {
@@ -398,6 +466,10 @@ async function startTask(taskType) {
             mistral_model_name: document.getElementById('config-mistral_model_name').value,
             enable_clustering_embeddings: document.getElementById('config-enable_clustering_embeddings').checked
         });
+        // Add provider selection for playlist creation target
+        if (typeof addProviderToPayload === 'function') {
+            addProviderToPayload(payload);
+        }
     }
 
     try {
@@ -412,6 +484,24 @@ async function startTask(taskType) {
             displayTaskStatus({ task_id: result.task_id, task_type: result.task_type, state: 'PENDING', progress: 0, details: 'Task enqueued.' });
             lastPolledTaskDetails[result.task_id] = { state: 'PENDING', task_type: result.task_type, task_id: result.task_id };
             updateCancelButtonState(false);
+        } else if (response.status === 409 && result.error === 'provider_path_issue') {
+            // Provider path issue — show detailed error and refresh health banner
+            let msg = result.message || 'Provider path issues detected.';
+            if (result.issues && result.issues.length > 0) {
+                msg += '<br><br>';
+                result.issues.forEach(issue => {
+                    msg += `<strong>${issue.provider_name}:</strong> ${issue.message}<br>`;
+                    if (issue.instructions) {
+                        msg += '<ol style="margin: 0.3rem 0 0.5rem 1.2rem;">';
+                        issue.instructions.forEach(step => { msg += `<li>${step}</li>`; });
+                        msg += '</ol>';
+                    }
+                });
+            }
+            showMessageBox('Analysis Blocked', msg);
+            checkProviderHealth(); // Refresh the health banner
+            disableTaskButtons(false);
+            updateCancelButtonState(true);
         } else {
             throw new Error(result.message || 'Failed to start task.');
         }
@@ -531,13 +621,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         await fetchAndDisplayOverallLastTask();
         updateCancelButtonState(true);
     }
+    checkProviderHealth();
     setInterval(checkActiveTasks, 3000);
 });
 
 basicViewBtn.addEventListener('click', () => switchView('basic'));
 advancedViewBtn.addEventListener('click', () => switchView('advanced'));
 clusterAlgorithmSelect.addEventListener('change', toggleClusteringParams);
-aiModelProviderSelect.addEventListener('change', toggleAiConfig);
 startAnalysisBtn.addEventListener('click', () => startTask('analysis'));
 startClusteringBtn.addEventListener('click', () => startTask('clustering'));
 fetchPlaylistsBtn.addEventListener('click', fetchPlaylists);

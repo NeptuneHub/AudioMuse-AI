@@ -474,7 +474,7 @@ def build_and_store_artist_index(db_conn=None):
         logger.info("Fetching artists and tracks from database...")
 
         cur.execute("""
-            SELECT DISTINCT author, item_id, title
+            SELECT DISTINCT author, track_id, title
             FROM score
             WHERE author IS NOT NULL AND author != ''
             ORDER BY author, title
@@ -488,16 +488,16 @@ def build_and_store_artist_index(db_conn=None):
 
         # Group tracks by artist
         artist_tracks = defaultdict(list)
-        for author, item_id, title in rows:
-            artist_tracks[author].append({'item_id': item_id, 'title': title})
+        for author, track_id, title in rows:
+            artist_tracks[author].append({'track_id': track_id, 'title': title})
 
         logger.info(f"Found {len(artist_tracks)} artists with tracks")
 
         # Step 1.5: Compute per-artist track hashes for change detection
         artist_track_hashes = {}
         for artist_name, tracks in artist_tracks.items():
-            sorted_ids = sorted(track['item_id'] for track in tracks)
-            hash_input = ','.join(sorted_ids)
+            sorted_ids = sorted(track['track_id'] for track in tracks)
+            hash_input = ','.join(str(tid) for tid in sorted_ids)
             artist_track_hashes[artist_name] = hashlib.md5(hash_input.encode()).hexdigest()
 
         # Step 2: Fetch embeddings and fit GMMs (incremental: skip unchanged artists)
@@ -526,19 +526,19 @@ def build_and_store_artist_index(db_conn=None):
 
             # Artist is new or changed - fetch embeddings and refit GMM
             track_embeddings = []
-            item_ids = [track['item_id'] for track in tracks]
+            track_ids = [track['track_id'] for track in tracks]
 
             try:
                 # Batch fetch embeddings from database
                 cur.execute("""
-                    SELECT item_id, embedding
+                    SELECT track_id, embedding
                     FROM embedding
-                    WHERE item_id = ANY(%s) AND embedding IS NOT NULL
-                """, (item_ids,))
+                    WHERE track_id = ANY(%s) AND embedding IS NOT NULL
+                """, (track_ids,))
 
                 embedding_rows = cur.fetchall()
 
-                for item_id, embedding_bytes in embedding_rows:
+                for track_id, embedding_bytes in embedding_rows:
                     if embedding_bytes:
                         # Deserialize embedding vector
                         embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
@@ -918,47 +918,47 @@ def get_representative_songs_for_component(artist_name: str, component_index: in
     Returns: List of song dictionaries with item_id, title, distance_to_component
     """
     from app_helper import get_db
-    
+
     # Get GMM parameters for this artist
     if artist_gmm_params is None or artist_name not in artist_gmm_params:
         logger.warning(f"No GMM found for artist '{artist_name}'")
         return []
-    
+
     gmm_params = artist_gmm_params[artist_name]
-    
+
     # Get the component mean (centroid)
     means = np.array(gmm_params['means'])
     if component_index >= len(means):
         logger.warning(f"Component index {component_index} out of range for artist '{artist_name}'")
         return []
-    
+
     component_mean = means[component_index]
-    
+
     # Fetch all tracks and embeddings for this artist
     conn = get_db()
     cur = conn.cursor()
-    
+
     try:
         cur.execute("""
-            SELECT s.item_id, s.title, e.embedding
+            SELECT s.track_id, s.title, e.embedding
             FROM score s
-            JOIN embedding e ON s.item_id = e.item_id
+            JOIN embedding e ON s.track_id = e.track_id
             WHERE s.author = %s AND e.embedding IS NOT NULL
             ORDER BY s.title
         """, (artist_name,))
-        
+
         rows = cur.fetchall()
-        
+
         if not rows:
             return []
-        
+
         # Compute distances from each song to the component mean
         song_distances = []
-        for item_id, title, embedding_bytes in rows:
+        for track_id, title, embedding_bytes in rows:
             embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
             distance = np.linalg.norm(embedding - component_mean)
             song_distances.append({
-                'item_id': item_id,
+                'item_id': str(track_id),
                 'title': title,
                 'distance_to_component': float(distance)
             })
@@ -1180,29 +1180,29 @@ def get_artist_tracks(artist_identifier: str) -> List[Dict]:
     """
     from app_helper import get_db
     from app_helper_artist import get_artist_name_by_id
-    
+
     # Try to resolve ID to name if needed
     artist_name = artist_identifier
     if artist_identifier:
         resolved_name = get_artist_name_by_id(artist_identifier)
         if resolved_name:
             artist_name = resolved_name
-    
+
     conn = get_db()
     cur = conn.cursor()
-    
+
     try:
         cur.execute("""
-            SELECT item_id, title, author
+            SELECT track_id, title, author
             FROM score
             WHERE author = %s
             ORDER BY title
         """, (artist_name,))
-        
+
         results = []
-        for item_id, title, author in cur.fetchall():
+        for track_id, title, author in cur.fetchall():
             results.append({
-                'item_id': item_id,
+                'item_id': str(track_id),
                 'title': title,
                 'author': author
             })

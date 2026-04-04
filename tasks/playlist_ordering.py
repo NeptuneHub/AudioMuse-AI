@@ -74,18 +74,18 @@ def _composite_distance(song_a: Dict, song_b: Dict,
     return w_tempo * tempo_diff + w_energy * energy_diff + w_key * key_dist
 
 
-def order_playlist(song_ids: List[str], energy_arc: bool = False) -> List[str]:
+def order_playlist(song_ids: list, energy_arc: bool = False) -> list:
     """Order a list of song IDs for smooth listening transitions.
 
     Uses greedy nearest-neighbor: start from the song at the 25th percentile
     of energy, then greedily pick the nearest unvisited song.
 
     Args:
-        song_ids: List of item_id strings
+        song_ids: List of track_id (int) or item_id (str) identifiers
         energy_arc: If True, shape an energy arc (gentle start -> peak -> cooldown)
 
     Returns:
-        Reordered list of item_id strings
+        Reordered list of identifiers (same type as input)
     """
     if len(song_ids) <= 2:
         return song_ids
@@ -93,16 +93,21 @@ def order_playlist(song_ids: List[str], energy_arc: bool = False) -> List[str]:
     from tasks.mcp_server import get_db_connection
     from psycopg2.extras import DictCursor
 
+    # Convert to int for DB query (callers may pass str or int)
+    track_ids_int = [int(sid) for sid in song_ids]
+    # Map original IDs to int for consistent lookup
+    orig_to_int = {orig: tid for orig, tid in zip(song_ids, track_ids_int)}
+
     # Fetch song attributes
     db_conn = get_db_connection()
     try:
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            placeholders = ','.join(['%s'] * len(song_ids))
+            placeholders = ','.join(['%s'] * len(track_ids_int))
             cur.execute(f"""
-                SELECT item_id, tempo, energy, key, scale
+                SELECT track_id, tempo, energy, key, scale
                 FROM public.score
-                WHERE item_id IN ({placeholders})
-            """, song_ids)
+                WHERE track_id IN ({placeholders})
+            """, track_ids_int)
             rows = cur.fetchall()
     finally:
         db_conn.close()
@@ -110,15 +115,18 @@ def order_playlist(song_ids: List[str], energy_arc: bool = False) -> List[str]:
     if not rows:
         return song_ids
 
-    # Build lookup
+    # Build lookup keyed by original ID type (preserves caller's ID format)
     song_data = {}
+    int_to_orig = {tid: orig for orig, tid in orig_to_int.items()}
     for r in rows:
-        song_data[r['item_id']] = {
-            'tempo': r['tempo'] or 0,
-            'energy': r['energy'] or 0,
-            'key': r['key'] or '',
-            'scale': r['scale'] or '',
-        }
+        orig_id = int_to_orig.get(r['track_id'])
+        if orig_id is not None:
+            song_data[orig_id] = {
+                'tempo': r['tempo'] or 0,
+                'energy': r['energy'] or 0,
+                'key': r['key'] or '',
+                'scale': r['scale'] or '',
+            }
 
     # Only order songs we have data for; keep others at the end
     orderable_ids = [sid for sid in song_ids if sid in song_data]

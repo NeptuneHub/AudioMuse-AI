@@ -82,12 +82,12 @@ def _compute_centroid_from_items(items: List[dict]) -> np.ndarray:
     for item in items:
         item_type = item.get('type', 'song').lower()
         item_id = item.get('id')
-        
+
         if not item_id:
             continue
-        
+
         if item_type == 'song':
-            vec = get_vector_by_id(item_id)
+            vec = get_vector_by_id(int(item_id))
             if vec is not None:
                 vectors.append(np.array(vec, dtype=float))
                 weights.append(1.0)
@@ -117,11 +117,11 @@ def _compute_centroid_from_items(items: List[dict]) -> np.ndarray:
     return weighted_centroid
 
 
-def _compute_centroid_from_ids(ids: List[str]) -> np.ndarray:
+def _compute_centroid_from_ids(ids: list) -> np.ndarray:
     """Fetch vectors by id and compute their centroid (mean)."""
     vectors = []
     for item_id in ids:
-        vec = get_vector_by_id(item_id)
+        vec = get_vector_by_id(int(item_id))
         if vec is not None:
             vectors.append(np.array(vec, dtype=float))
     if not vectors:
@@ -386,7 +386,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
     # then use the id-based neighbor query so results match the "similar song" path.
     if temperature is not None and float(temperature) == 0.0 and add_items and len(add_items) == 1 and add_items[0].get('type') == 'song':
         try:
-            neighbors = find_nearest_neighbors_by_id(add_items[0]['id'], n=n_results)
+            neighbors = find_nearest_neighbors_by_id(int(add_items[0]['id']), n=n_results)
         except Exception:
             neighbors = find_nearest_neighbors_by_vector(add_centroid, n=n_results * 3)
     else:
@@ -394,19 +394,19 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
     if not neighbors:
         return {"results": [], "filtered_out": [], "centroid_2d": None}
 
-    # neighbors is a list of dicts with item_id and score; keep candidate ids
-    candidate_ids = [n['item_id'] for n in neighbors]
+    # neighbors is a list of dicts with track_id (int) and item_id (str); keep track_ids
+    candidate_ids = [n['track_id'] for n in neighbors]
 
     # Remove any user-provided ADD or SUBTRACT song items from candidate list
     # Extract song IDs from items
     add_song_ids = [item['id'] for item in add_items if item.get('type') == 'song' and item.get('id')]
     subtract_song_ids = [item['id'] for item in (subtract_items or []) if item.get('type') == 'song' and item.get('id')]
-    
+
     if add_song_ids:
-        add_set = set(add_song_ids)
+        add_set = {int(sid) for sid in add_song_ids}
         candidate_ids = [cid for cid in candidate_ids if cid not in add_set]
     if subtract_song_ids:
-        sub_set = set(subtract_song_ids)
+        sub_set = {int(sid) for sid in subtract_song_ids}
         candidate_ids = [cid for cid in candidate_ids if cid not in sub_set]
 
     # If subtract centroid present, filter candidates by distance
@@ -463,11 +463,11 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
         # Add songs as individual points
         add_song_items = [item for item in add_items if item.get('type') == 'song']
         if add_song_items:
-            add_song_ids = [item['id'] for item in add_song_items]
+            add_song_ids = [int(item['id']) for item in add_song_items]
             add_details = get_score_data_by_ids(add_song_ids)
-            add_map = {d['item_id']: d for d in add_details}
+            add_map = {d['track_id']: d for d in add_details}
             for item in add_song_items:
-                aid = item['id']
+                aid = int(item['id'])
                 vec = get_vector_by_id(aid)
                 if vec is not None:
                     proj_vectors.append(np.array(vec, dtype=float))
@@ -515,11 +515,11 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
         # Add songs as individual points
         subtract_song_items = [item for item in subtract_items if item.get('type') == 'song']
         if subtract_song_items:
-            subtract_song_ids = [item['id'] for item in subtract_song_items]
+            subtract_song_ids = [int(item['id']) for item in subtract_song_items]
             sub_details = get_score_data_by_ids(subtract_song_ids)
-            sub_map = {d['item_id']: d for d in sub_details}
+            sub_map = {d['track_id']: d for d in sub_details}
             for item in subtract_song_items:
-                sid = item['id']
+                sid = int(item['id'])
                 vec = get_vector_by_id(sid)
                 if vec is not None:
                     proj_vectors.append(np.array(vec, dtype=float))
@@ -704,7 +704,8 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     weights.append(1.0)
             elif item.get('type') == 'anchor':
                 mid = item['id']
-                c = id_to_coord.get(str(mid))
+                prefix = '__add_anchor__' if is_add else '__sub_anchor__'
+                c = proj_map.get(f'{prefix}{mid}')
                 if c is not None:
                     coords.append(np.array(c, dtype=float))
                     weights.append(1.0)
@@ -748,13 +749,13 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
         # Get the actual vector for this projection ID
         vec = None
         
-        # resolve underlying item id for add/sub song markers
+        # resolve underlying track_id for add/sub song markers
         if isinstance(pid, str) and pid.startswith('__add_id__'):
             item_id = pid.replace('__add_id__', '')
-            vec = get_vector_by_id(item_id)
+            vec = get_vector_by_id(int(item_id))
         elif isinstance(pid, str) and pid.startswith('__sub_id__'):
             item_id = pid.replace('__sub_id__', '')
-            vec = get_vector_by_id(item_id)
+            vec = get_vector_by_id(int(item_id))
         elif isinstance(pid, str) and pid.startswith('__add_anchor__'):
             anchor_id = pid.replace('__add_anchor__', '')
             from app_helper import get_alchemy_anchor_by_id
@@ -772,8 +773,8 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
             else:
                 vec = None
         else:
-            # regular item id
-            vec = get_vector_by_id(pid)
+            # regular track_id
+            vec = get_vector_by_id(int(pid))
 
         if vec is None:
             # can't project without vector; leave missing
@@ -798,9 +799,9 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     for pid in missing_ids:
                         idx = missing_ids.index(pid)
                         vec = missing_vectors[idx]
-                        if pid.startswith('__add_id__') or pid.startswith('__add_artist_comp__'):
+                        if pid.startswith('__add_id__') or pid.startswith('__add_artist_comp__') or pid.startswith('__add_anchor__'):
                             local_add_vecs.append(vec)
-                        elif pid.startswith('__sub_id__') or pid.startswith('__sub_artist_comp__'):
+                        elif pid.startswith('__sub_id__') or pid.startswith('__sub_artist_comp__') or pid.startswith('__sub_anchor__'):
                             local_sub_vecs.append(vec)
                     
                     if local_add_vecs and local_sub_vecs and _project_with_discriminant is not None:
@@ -865,7 +866,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
 
     # Fetch details
     details = get_score_data_by_ids(candidate_ids)
-    details_map = {d['item_id']: d for d in details}
+    details_map = {d['track_id']: d for d in details}
 
     # Minimal: ensure album/album_artist is present for each result (from score table via get_score_data_by_ids)
     for d in details_map.values():
@@ -907,11 +908,6 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     item = details_map.get(cid, {})
                     item['distance'] = distances.get(cid)
                     item['embedding_2d'] = proj_map.get(cid)
-                    # Ensure album/album_artist is present
-                    if 'album' not in item or not item['album']:
-                        item['album'] = 'Unknown'
-                    if 'album_artist' not in item or not item['album_artist']:
-                        item['album_artist'] = 'Unknown'
                     ordered.append(item)
             else:
                 # Softmax with temperature (temperature may be None or >0)
@@ -961,11 +957,6 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     item = details_map.get(cid, {})
                     item['distance'] = distances.get(cid)
                     item['embedding_2d'] = proj_map.get(cid)
-                    # Ensure album/album_artist is present
-                    if 'album' not in item or not item['album']:
-                        item['album'] = 'Unknown'
-                    if 'album_artist' not in item or not item['album_artist']:
-                        item['album_artist'] = 'Unknown'
                     ordered.append(item)
         except Exception as e:
             # Fallback deterministic ordering by best match
@@ -975,27 +966,17 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                 item = details_map.get(i, {})
                 item['distance'] = distances.get(i)
                 item['embedding_2d'] = proj_map.get(i)
-                # Ensure album/album_artist is present
-                if 'album' not in item or not item['album']:
-                    item['album'] = 'Unknown'
-                if 'album_artist' not in item or not item['album_artist']:
-                    item['album_artist'] = 'Unknown'
                 ordered.append(item)
 
     # Prepare filtered_out details
     filtered_details = []
     if filtered_out:
         details_f = get_score_data_by_ids(filtered_out)
-        details_f_map = {d['item_id']: d for d in details_f}
+        details_f_map = {d['track_id']: d for d in details_f}
         for fid in filtered_out:
             if fid in details_f_map:
                 fd = details_f_map[fid]
                 fd['embedding_2d'] = proj_map.get(fid)
-                # Ensure album/album_artist is present
-                if 'album' not in fd or not fd['album']:
-                    fd['album'] = 'Unknown'
-                if 'album_artist' not in fd or not fd['album_artist']:
-                    fd['album_artist'] = 'Unknown'
                 filtered_details.append(fd)
 
     # Centroid projections

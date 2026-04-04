@@ -29,33 +29,33 @@ from config import (OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DISTANCE, MAX_SONGS_P
 logger = logging.getLogger(__name__)
 
 
-def get_vectors_from_database(item_ids: list, db_conn):
+def get_vectors_from_database(track_ids: list, db_conn):
     """
     Fetches embedding vectors directly from the database for distance calculation.
     This bypasses the need for the Voyager index to be loaded.
-    
+
     Args:
-        item_ids: List of item IDs to fetch vectors for
+        track_ids: List of track IDs (int) to fetch vectors for
         db_conn: Database connection
-    
+
     Returns:
-        Dictionary mapping item_id to numpy array vector
+        Dictionary mapping track_id (int) to numpy array vector
     """
     vectors_map = {}
-    
+
     with db_conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute("SELECT item_id, embedding FROM embedding WHERE item_id = ANY(%s)", (item_ids,))
+        cur.execute("SELECT track_id, embedding FROM embedding WHERE track_id = ANY(%s)", (track_ids,))
         rows = cur.fetchall()
-        
+
         for row in rows:
             if row['embedding']:
                 try:
                     # Convert bytea to numpy array
                     vector = np.frombuffer(row['embedding'], dtype=np.float32)
-                    vectors_map[row['item_id']] = vector
+                    vectors_map[row['track_id']] = vector
                 except Exception as e:
-                    logger.warning(f"Failed to decode embedding for {row['item_id']}: {e}")
-                    
+                    logger.warning(f"Failed to decode embedding for track_id {row['track_id']}: {e}")
+
     return vectors_map
 
 
@@ -65,46 +65,46 @@ def apply_distance_filtering_direct(song_results: list, db_conn, log_prefix=""):
     This works without requiring the Voyager index to be loaded.
     
     Args:
-        song_results: List of dictionaries with 'item_id' keys
+        song_results: List of dictionaries with 'item_id' keys (track_id values)
         db_conn: Database connection
         log_prefix: Optional prefix for logging messages
-    
+
     Returns:
         Filtered list of song dictionaries
     """
-    from config import (DUPLICATE_DISTANCE_CHECK_LOOKBACK, 
-                       DUPLICATE_DISTANCE_THRESHOLD_COSINE, 
-                       DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, 
+    from config import (DUPLICATE_DISTANCE_CHECK_LOOKBACK,
+                       DUPLICATE_DISTANCE_THRESHOLD_COSINE,
+                       DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
                        VOYAGER_METRIC)
-    
+
     if DUPLICATE_DISTANCE_CHECK_LOOKBACK <= 0:
         return song_results
 
     if not song_results:
         return []
-    
+
     # Fetch vectors directly from database
-    item_ids = [s['item_id'] for s in song_results]
-    vectors_map = get_vectors_from_database(item_ids, db_conn)
-    
+    track_ids = [s['item_id'] for s in song_results]  # item_id holds track_id (int) from clustering tuples
+    vectors_map = get_vectors_from_database(track_ids, db_conn)
+
     # *** DIAGNOSTIC: Log vector availability ***
-    logger.debug(f"{log_prefix}Vector availability: {len(vectors_map)}/{len(item_ids)} songs have embedding vectors")
-    if len(vectors_map) < len(item_ids):
-        missing_vectors = len(item_ids) - len(vectors_map)
+    logger.debug(f"{log_prefix}Vector availability: {len(vectors_map)}/{len(track_ids)} songs have embedding vectors")
+    if len(vectors_map) < len(track_ids):
+        missing_vectors = len(track_ids) - len(vectors_map)
         logger.debug(f"{log_prefix}WARNING: {missing_vectors} songs missing embedding vectors, they will be kept without distance checking")
-    
+
     # If no vectors are available, fall back to title/artist matching
     if not vectors_map:
         logger.info(f"{log_prefix}No embedding vectors found, falling back to title/artist deduplication")
         return apply_title_artist_deduplication(song_results, db_conn, log_prefix)
-    
+
     # Fetch song details for logging
     details_map = {}
     with db_conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute("SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)", (item_ids,))
+        cur.execute("SELECT track_id, title, author FROM score WHERE track_id = ANY(%s)", (track_ids,))
         rows = cur.fetchall()
         for row in rows:
-            details_map[row['item_id']] = {'title': row['title'], 'author': row['author']}
+            details_map[row['track_id']] = {'title': row['title'], 'author': row['author']}
     
     # Use the same thresholds as voyager_manager
     threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if VOYAGER_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
@@ -120,7 +120,7 @@ def apply_distance_filtering_direct(song_results: list, db_conn, log_prefix=""):
     distances_calculated = []
     
     for current_song in song_results:
-        current_vector = vectors_map.get(current_song['item_id'])
+        current_vector = vectors_map.get(current_song['item_id'])  # item_id holds track_id from clustering
         if current_vector is None:
             # Keep songs without vectors (shouldn't happen in clustering)
             logger.debug(f"{log_prefix}No vector found for {current_song['item_id']}, keeping song")
@@ -224,14 +224,14 @@ def apply_title_artist_deduplication(song_results: list, db_conn, log_prefix="")
         return []
     
     # Fetch song details
-    item_ids = [s['item_id'] for s in song_results]
+    track_ids = [s['item_id'] for s in song_results]  # item_id holds track_id (int) from clustering tuples
     details_map = {}
-    
+
     with db_conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute("SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)", (item_ids,))
+        cur.execute("SELECT track_id, title, author FROM score WHERE track_id = ANY(%s)", (track_ids,))
         rows = cur.fetchall()
         for row in rows:
-            details_map[row['item_id']] = {'title': row['title'], 'author': row['author']}
+            details_map[row['track_id']] = {'title': row['title'], 'author': row['author']}
     
     # Track seen title/artist combinations
     seen_combinations = set()
@@ -331,8 +331,9 @@ def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
                 logger.info(f"{log_prefix}SORTED ORDER - First 5 titles: {[song[1] for song in songs_sorted_by_title[:5]]}")
                 
                 # Convert songs list to the format expected by _filter_by_distance
-                # Songs are tuples of (item_id, title, author), convert to list of dicts
-                song_results = [{"item_id": item_id} for item_id, title, author in songs_sorted_by_title]
+                # Songs are tuples of (track_id, title, author), convert to list of dicts
+                # Note: 'item_id' key holds track_id (int) for internal consistency
+                song_results = [{"item_id": track_id} for track_id, title, author in songs_sorted_by_title]
                 
                 logger.debug(f"{log_prefix}Filtering playlist '{playlist_name}' with {len(song_results)} songs")
                 

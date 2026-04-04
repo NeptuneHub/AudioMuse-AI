@@ -184,38 +184,47 @@ def get_waveform_endpoint():
       500:
         description: Server error during waveform generation
     """
-    item_id = request.args.get('item_id')
-    
-    if not item_id:
-        return jsonify({"error": "Missing 'item_id' parameter"}), 400
-    
+    from flask import g
+    from app_helper import get_item_id_for_provider, get_primary_provider_id
+
+    # Middleware resolves 'item_id' param to g.track_id
+    track_id = g.get('track_id')
+    if not track_id:
+        return jsonify({"error": "Missing 'item_id' parameter or track not found"}), 400
+
     # Get track information from database
     db = get_db()
     cur = db.cursor()
-    cur.execute("SELECT title, author FROM score WHERE item_id = %s", (item_id,))
+    cur.execute("SELECT title, author FROM score WHERE track_id = %s", (track_id,))
     track_info = cur.fetchone()
     cur.close()
     
     if not track_info:
-        return jsonify({"error": f"Track with ID '{item_id}' not found"}), 404
-    
+        return jsonify({"error": f"Track with ID '{track_id}' not found"}), 404
+
     title, author = track_info
-    
+
+    # Get provider-specific item_id for media server download
+    primary_provider_id = get_primary_provider_id()
+    provider_item_id = get_item_id_for_provider(track_id, primary_provider_id) if primary_provider_id else None
+    if not provider_item_id:
+        provider_item_id = str(track_id)  # fallback
+
     # Download the track to a temporary location
     temp_file = None
     try:
         import time
         start_time = time.time()
-        
+
         # Import download_track from the generic mediaserver module which handles all types
         from tasks.mediaserver import download_track
-        
+
         # For better compatibility, we need to fetch the full track details from the media server
         # This ensures we have all the metadata needed for proper file extension detection
         if MEDIASERVER_TYPE == "navidrome":
             # Import Navidrome-specific function to get full song details
             from tasks.mediaserver_navidrome import _navidrome_request
-            song_response = _navidrome_request("getSong", {"id": item_id})
+            song_response = _navidrome_request("getSong", {"id": provider_item_id})
             if song_response and "song" in song_response:
                 item = song_response["song"]
                 # Navidrome may provide 'suffix' field which is the file extension
@@ -237,12 +246,12 @@ def get_waveform_endpoint():
             else:
                 return jsonify({"error": "Failed to fetch track details from Navidrome"}), 404
         else:
-            # Create a minimal item dict with the item_id for other media servers
+            # Create a minimal item dict with provider-specific item_id for other media servers
             # The download_track function will handle the specifics for each media server type
             item = {
-                'Id': item_id,  # Jellyfin/Emby format
-                'id': item_id,  # Navidrome/Lyrion format
-                'file': item_id,  # MPD format (uses file path as ID)
+                'Id': provider_item_id,  # Jellyfin/Emby format
+                'id': provider_item_id,  # Navidrome/Lyrion format
+                'file': provider_item_id,  # MPD format (uses file path as ID)
                 'Name': title,
                 'Path': ''  # Will be fetched by download_track if needed
             }
@@ -263,7 +272,7 @@ def get_waveform_endpoint():
             return jsonify({"error": "Failed to download track from media server"}), 500
         
         # Generate waveform peaks in a thread pool with timeout
-        logger.info(f"🌊 Generating waveform with librosa for song={title}, item_id={item_id}")
+        logger.info(f"🌊 Generating waveform with librosa for song={title}, track_id={track_id}")
         
         waveform_start = time.time()
         # Submit to thread pool for parallel execution
@@ -273,7 +282,7 @@ def get_waveform_endpoint():
             # Wait up to 15 seconds for waveform generation
             peaks = future.result(timeout=15)
         except FuturesTimeoutError:
-            logger.error(f"Waveform generation timed out for {item_id}")
+            logger.error(f"Waveform generation timed out for track_id={track_id}")
             return jsonify({"error": "Waveform generation timed out (>15s). Try a shorter audio file."}), 500
         
         waveform_time = time.time() - waveform_start
@@ -289,10 +298,10 @@ def get_waveform_endpoint():
         return jsonify(response), 200
         
     except RuntimeError as e:
-        logger.error(f"Runtime error generating waveform for {item_id}: {e}", exc_info=True)
+        logger.error(f"Runtime error generating waveform for track_id={track_id}: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
     except Exception as e:
-        logger.error(f"Unexpected error generating waveform for {item_id}: {e}", exc_info=True)
+        logger.error(f"Unexpected error generating waveform for track_id={track_id}: {e}", exc_info=True)
         return jsonify({"error": "An unexpected error occurred during waveform generation"}), 500
     finally:
         # Clean up temporary file

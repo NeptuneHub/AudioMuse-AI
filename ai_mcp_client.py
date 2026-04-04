@@ -508,6 +508,7 @@ def _call_ollama_with_tools(user_message: str, tools: List[Dict], ai_config: Dic
         examples.append('"songs in minor key"\n{{"tool_calls": [{{"name": "search_database", "arguments": {{"scale": "minor", "get_songs": 200}}}}]}}')
         examples.append('"sounds like Iron Maiden and Metallica combined"\n{{"tool_calls": [{{"name": "song_alchemy", "arguments": {{"add_items": [{{"type": "artist", "id": "Iron Maiden"}}, {{"type": "artist", "id": "Metallica"}}], "get_songs": 200}}}}]}}')
         examples.append('"mix of Daft Punk and Gorillaz"\n{{"tool_calls": [{{"name": "song_alchemy", "arguments": {{"add_items": [{{"type": "artist", "id": "Daft Punk"}}, {{"type": "artist", "id": "Gorillaz"}}], "get_songs": 200}}}}]}}')
+
         examples_text = "\n\n".join(examples)
 
         prompt = f"""{system_prompt}
@@ -536,6 +537,7 @@ CORRECT: "songs in minor key" -> search_database(scale="minor")
 
 IMPORTANT: ONLY include parameters the user explicitly asked for. Do NOT invent extra filters (genres, ratings, moods, energy) the user never mentioned.
 For a specific year like "2026 songs", set BOTH year_min and year_max to 2026 (NOT year_min=1).
+
 
 Now analyze this request and return ONLY the JSON:
 Request: "{user_message}"

@@ -22,7 +22,7 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
                                      For Jellyfin: {'user_id': '...', 'token': '...'}
                                      For Navidrome: {'user': '...', 'password': '...'}
     """
-    from app_helper import get_tracks_by_ids
+    from app_helper import get_tracks_by_ids, resolve_track_id
     logger.info("Generating sonic fingerprint...")
 
     # Determine the total desired size for the final playlist
@@ -35,9 +35,26 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
         logger.warning("No top played songs found. Cannot generate sonic fingerprint.")
         return []
 
-    top_song_ids = [str(song['Id']) for song in top_songs]  # Convert to strings for consistency
-    logger.info(f"Found {len(top_song_ids)} top played songs to create fingerprint from.")
-    logger.debug(f"Top played song IDs: {top_song_ids[:5]}...")  # Log first 5 IDs for debugging
+    # Resolve provider-specific item IDs to canonical DB track_ids.
+    # Providers return their own ID format (Jellyfin hex, Navidrome strings, etc.)
+    # but get_tracks_by_ids() expects integer track_ids from the score table.
+    track_to_provider = {}  # track_id str → provider item_id (for get_last_played_time)
+    top_song_ids = []       # canonical track_id strings
+    for song in top_songs:
+        provider_item_id = str(song['Id'])
+        tid = resolve_track_id(provider_item_id)
+        if tid is not None:
+            tid_str = str(tid)
+            track_to_provider[tid_str] = provider_item_id
+            top_song_ids.append(tid_str)
+        else:
+            logger.debug(f"Could not resolve provider item '{provider_item_id}' to a DB track_id, skipping.")
+
+    logger.info(f"Resolved {len(top_song_ids)} of {len(top_songs)} top played songs to DB track IDs.")
+    if not top_song_ids:
+        logger.warning("Could not resolve any top played songs to database tracks.")
+        return []
+    logger.debug(f"Resolved track IDs: {top_song_ids[:5]}...")
 
     # 2. Get embeddings for these songs from our DB
     track_details = get_tracks_by_ids(top_song_ids)
@@ -69,9 +86,10 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
             continue
 
         embedding_vector = embeddings_map[song_id]
-        
-        # Pass user credentials to get last played time
-        last_played_str = get_last_played_time(song_id, user_creds=user_creds)
+
+        # Use the original provider item ID for get_last_played_time (media server API)
+        provider_item_id = track_to_provider.get(song_id, song_id)
+        last_played_str = get_last_played_time(provider_item_id, user_creds=user_creds)
         
         weight = 1.0
         days_since_played = "N/A"

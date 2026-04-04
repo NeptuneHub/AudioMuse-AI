@@ -104,17 +104,17 @@ def interpolate_centroids(v1, v2, num, metric="euclidean"):
 
 
 def _create_path_from_ids(path_ids):
-    """Helper to fetch song details for a list of IDs and format the final path."""
+    """Helper to fetch song details for a list of track_ids and format the final path."""
     # Local import to prevent circular dependency
     from app_helper import get_tracks_by_ids
     if not path_ids:
         return []
-    
+
     seen = set()
     unique_path_ids = [x for x in path_ids if not (x in seen or seen.add(x))]
 
     path_details = get_tracks_by_ids(unique_path_ids)
-    details_map = {d['item_id']: d for d in path_details}
+    details_map = {d['track_id']: d for d in path_details}
 
     # Ensure album and album_artist fields are present in each song dict
     for song in details_map.values():
@@ -127,30 +127,30 @@ def _create_path_from_ids(path_ids):
         album_artist = song.get('album_artist')
         song['album_artist'] = album_artist if album_artist else 'Unknown'
 
-    ordered_path_details = [details_map[song_id] for song_id in unique_path_ids if song_id in details_map]
+    ordered_path_details = [details_map[track_id] for track_id in unique_path_ids if track_id in details_map]
     return ordered_path_details
 
 
-def _calculate_local_average_jump_distance(start_item_id, end_item_id, sample_size=PATH_AVG_JUMP_SAMPLE_SIZE):
+def _calculate_local_average_jump_distance(start_track_id, end_track_id, sample_size=PATH_AVG_JUMP_SAMPLE_SIZE):
     """
     Calculates the average distance by creating a chain of neighbors and measuring the
     distance between each step in the chain.
     """
-    logger.info(f"Calculating chained average jump distance ({PATH_DISTANCE_METRIC}) for neighbors of {start_item_id} and {end_item_id}.")
-    
+    logger.info(f"Calculating chained average jump distance ({PATH_DISTANCE_METRIC}) for neighbors of {start_track_id} and {end_track_id}.")
+
     distances = []
-    
-    for item_id in [start_item_id, end_item_id]:
+
+    for track_id in [start_track_id, end_track_id]:
         try:
-            neighbors = find_nearest_neighbors_by_id(item_id, n=sample_size, radius_similarity=None)
+            neighbors = find_nearest_neighbors_by_id(track_id, n=sample_size, radius_similarity=None)
             if not neighbors:
                 continue
 
-            source_vector = get_vector_by_id(item_id)
+            source_vector = get_vector_by_id(track_id)
             if source_vector is None:
                 continue
 
-            neighbor_vectors = [get_vector_by_id(n['item_id']) for n in neighbors]
+            neighbor_vectors = [get_vector_by_id(n['track_id']) for n in neighbors]
             valid_neighbor_vectors = [v for v in neighbor_vectors if v is not None]
             vector_chain = [source_vector] + valid_neighbor_vectors
 
@@ -159,7 +159,7 @@ def _calculate_local_average_jump_distance(start_item_id, end_item_id, sample_si
                 distances.append(dist)
 
         except Exception as e:
-            logger.warning(f"Could not process neighbors for song {item_id} during chained jump calculation: {e}")
+            logger.warning(f"Could not process neighbors for song {track_id} during chained jump calculation: {e}")
 
     if not distances:
         logger.error("No valid chained distances could be calculated from start/end songs.")
@@ -203,16 +203,16 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
         logger.warning(f"No candidates found for centroid with k={k_search}.")
         return []
 
-    candidate_ids = [c['item_id'] for c in candidates_voyager]
+    candidate_ids = [c['track_id'] for c in candidates_voyager]
     candidate_details = get_score_data_by_ids(candidate_ids)
-    details_map = {d['item_id']: d for d in candidate_details}
+    details_map = {d['track_id']: d for d in candidate_details}
 
     # Scan in order (nearest first) and collect acceptable candidates
     for candidate in candidates_voyager:
         if len(found_songs) >= num_to_find:
             break # We found all the songs we needed for this job
 
-        candidate_id = candidate['item_id']
+        candidate_id = candidate['track_id']
 
         # Check if this is a duplicate by ID
         if candidate_id in used_song_ids:
@@ -275,7 +275,8 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
 
         # If we get here, the song is acceptable
         found_songs.append({
-            "item_id": candidate_id,
+            "track_id": candidate_id,
+            "item_id": str(candidate_id),
             "signature": signature,
             "vector": candidate_vector,
             "title": details.get('title'),
@@ -298,8 +299,8 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
         logger.warning(f"Found only {len(found_songs)} of {num_to_find} songs for centroid (k={k_search}). Rolling back adds.")
         for song in found_songs:
             # Add a safety check to prevent the KeyError
-            if song['item_id'] in used_song_ids:
-                used_song_ids.remove(song['item_id'])
+            if song['track_id'] in used_song_ids:
+                used_song_ids.remove(song['track_id'])
             if song['signature'] in used_signatures:
                 used_signatures.remove(song['signature'])
             # Decrement artist count for rolled-back songs
@@ -317,37 +318,41 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
     return found_songs
 
 
-def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH, path_fix_size=PATH_FIX_SIZE):
+def find_path_between_songs(start_track_id, end_track_id, Lreq=PATH_DEFAULT_LENGTH, path_fix_size=PATH_FIX_SIZE):
     """
     Finds a path between two songs using linear interpolation of centroids
     and a centroid-merging strategy on failure, ensuring exact path length.
-    
+
+    Args:
+        start_track_id: Canonical integer track_id for the start song.
+        end_track_id: Canonical integer track_id for the end song.
+
     The final path length *will be* Lreq, unless Lreq < 2 or a
     final merge fails catastrophically.
     """
     # Local import to prevent circular dependency
     from app_helper import get_db, get_score_data_by_ids, get_tracks_by_ids
-    logger.info(f"Starting centroid path generation (with merge logic) from {start_item_id} to {end_item_id} with requested length {Lreq}.")
+    logger.info(f"Starting centroid path generation (with merge logic) from {start_track_id} to {end_track_id} with requested length {Lreq}.")
 
     if Lreq < 2:
         logger.warning(f"Requested path length {Lreq} is less than 2. Returning just start and end songs if different.")
-        if start_item_id == end_item_id:
-             path_details = _create_path_from_ids([start_item_id])
+        if start_track_id == end_track_id:
+             path_details = _create_path_from_ids([start_track_id])
              return path_details, 0.0
-        path_details = _create_path_from_ids([start_item_id, end_item_id])
-        
+        path_details = _create_path_from_ids([start_track_id, end_track_id])
+
         # Calculate distance for the 2-song path
         total_path_distance = 0.0
-        v1 = get_vector_by_id(start_item_id)
-        v2 = get_vector_by_id(end_item_id)
+        v1 = get_vector_by_id(start_track_id)
+        v2 = get_vector_by_id(end_track_id)
         if v1 is not None and v2 is not None:
             total_path_distance = get_distance(v1, v2)
         return path_details, total_path_distance
 
-    start_vector = get_vector_by_id(start_item_id)
-    end_vector = get_vector_by_id(end_item_id)
-    start_details_list = get_score_data_by_ids([start_item_id])
-    end_details_list = get_score_data_by_ids([end_item_id])
+    start_vector = get_vector_by_id(start_track_id)
+    end_vector = get_vector_by_id(end_track_id)
+    start_details_list = get_score_data_by_ids([start_track_id])
+    end_details_list = get_score_data_by_ids([end_track_id])
 
     if not all([start_vector is not None, end_vector is not None, start_details_list, end_details_list]):
         logger.error("Could not retrieve vectors or details for start or end song.")
@@ -357,7 +362,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
     end_details = end_details_list[0]
 
     # Initialize trackers with *both* start and end songs to avoid duplication
-    used_song_ids = {start_item_id, end_item_id}
+    used_song_ids = {start_track_id, end_track_id}
     used_signatures = {
         _normalize_signature(start_details.get('author'), start_details.get('title')),
         _normalize_signature(end_details.get('author'), end_details.get('title'))
@@ -398,10 +403,10 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
             sample_n = 50
 
         try:
-            start_neighbors = find_nearest_neighbors_by_id(start_item_id, n=sample_n) or []
-            end_neighbors = find_nearest_neighbors_by_id(end_item_id, n=sample_n) or []
-            start_ids = {n['item_id'] for n in start_neighbors}
-            end_ids = {n['item_id'] for n in end_neighbors}
+            start_neighbors = find_nearest_neighbors_by_id(start_track_id, n=sample_n) or []
+            end_neighbors = find_nearest_neighbors_by_id(end_track_id, n=sample_n) or []
+            start_ids = {n['track_id'] for n in start_neighbors}
+            end_ids = {n['track_id'] for n in end_neighbors}
             intersection_size = len(start_ids & end_ids)
             union_size = len(start_ids | end_ids)
         except Exception as e:
@@ -532,16 +537,16 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
     # Add the end song (it was already in used_song_ids)
     path_songs_details.append({**end_details, 'vector': end_vector})
     
-    # Get final list of IDs
-    path_ids = [song['item_id'] for song in path_songs_details]
-    
+    # Get final list of track_ids
+    path_ids = [song['track_id'] for song in path_songs_details]
+
     final_path_details = _create_path_from_ids(path_ids)
-    
+
     # Recalculate total distance
     total_path_distance = 0.0
     if len(final_path_details) > 1:
         # We must re-fetch vectors because _create_path_from_ids doesn't return them
-        path_vectors = [get_vector_by_id(song['item_id']) for song in final_path_details]
+        path_vectors = [get_vector_by_id(song['track_id']) for song in final_path_details]
         for i in range(len(path_vectors) - 1):
             v1 = path_vectors[i]
             v2 = path_vectors[i+1]

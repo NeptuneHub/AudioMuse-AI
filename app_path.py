@@ -5,6 +5,7 @@ import json
 from tasks.path_manager import find_path_between_songs, get_distance
 from tasks.voyager_manager import get_vector_by_id, find_nearest_neighbors_by_vector
 from config import PATH_DEFAULT_LENGTH, PATH_FIX_SIZE, MOOD_CENTROIDS_FILE
+from app_helper import resolve_track_id
 import numpy as np
 import math # Import the math module
 
@@ -26,7 +27,7 @@ def _load_mood_centroids():
 
 _load_mood_centroids()
 
-VALID_MOODS = {'happy', 'sad', 'aggressive', 'relaxed', 'danceable'}
+VALID_MOODS = {'happy', 'sad', 'aggressive', 'relaxed', 'danceable', 'party'}
 
 
 def _find_nearest_song_excluding_vector(vec, exclude_id=None):
@@ -59,7 +60,7 @@ def _resolve_mood_to_song_id(mood, other_song_id, pct=100):
     if other_song_id is None:
         return None
 
-    other_vector = get_vector_by_id(other_song_id)
+    other_vector = get_vector_by_id(int(other_song_id))
     if other_vector is None:
         return None
 
@@ -89,7 +90,7 @@ def _resolve_anchor_to_song_id(anchor_id, other_song_id=None, pct=100):
         return None
 
     if other_song_id is not None and pct is not None and pct != 100:
-        other_vector = get_vector_by_id(other_song_id)
+        other_vector = get_vector_by_id(int(other_song_id))
         if other_vector is None:
             return None
         t = max(0, min(100, pct)) / 100.0
@@ -170,7 +171,14 @@ def find_path_endpoint():
         end_song_id = resolved_id
         logger.info(f"Resolved end mood '{end_mood}' ({mood_pct}%) to song {end_song_id}")
 
-    if start_song_id == end_song_id:
+    # Explicit resolution for non-standard param names (middleware only handles item_id/id)
+    start_track_id = resolve_track_id(start_song_id)
+    end_track_id = resolve_track_id(end_song_id)
+
+    if not start_track_id or not end_track_id:
+        return jsonify({"error": "One or both track IDs could not be resolved."}), 404
+
+    if start_track_id == end_track_id:
         return jsonify({"error": "Start and end songs cannot be the same."}), 400
 
     try:
@@ -181,14 +189,7 @@ def find_path_endpoint():
         else:
             path_fix_size = str(pfs).lower() in ('1', 'true', 'yes', 'y')
 
-        # Note: `find_path_between_songs` does not accept mood direction options.
-        # Path mood/anchor resolution is already done above (start/end resolved to song id).
-        path, total_distance = find_path_between_songs(
-            start_song_id,
-            end_song_id,
-            max_steps,
-            path_fix_size=path_fix_size
-        )
+        path, total_distance = find_path_between_songs(start_track_id, end_track_id, max_steps, path_fix_size=path_fix_size)
 
         if not path:
             return jsonify({"error": f"No path found between the selected songs within {max_steps} steps."}), 404
@@ -218,5 +219,5 @@ def find_path_endpoint():
         })
 
     except Exception as e:
-        logger.error(f"Error finding path between {start_song_id} and {end_song_id}: {e}", exc_info=True)
+        logger.error(f"Error finding path between {start_track_id} and {end_track_id}: {e}", exc_info=True)
         return jsonify({"error": "An unexpected error occurred while finding the path."}), 500

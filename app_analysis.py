@@ -82,8 +82,13 @@ def start_analysis_endpoint():
     """
     # Local imports to prevent circular dependency at startup
     from app_helper import rq_queue_high, clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING, get_active_main_task
+    from app_setup import get_providers_display as get_providers
 
-    # Check for any existing active main task to prevent parallel batch runs.
+    # Clean up stale tasks first, then check for truly active ones.
+    # Must run cleanup before the active-task check — otherwise a crashed worker
+    # leaves a STARTED/PROGRESS row that blocks new runs forever.
+    clean_up_previous_main_tasks()
+
     active_task = get_active_main_task()
     if active_task:
         return jsonify({
@@ -93,16 +98,82 @@ def start_analysis_endpoint():
         }), 409
 
     data = request.json or {}
-    # MODIFIED: Removed jellyfin_url, jellyfin_user_id, and jellyfin_token as they are no longer passed to the task.
-    # The task now gets these details from the central config.
     num_recent_albums = int(data.get('num_recent_albums', NUM_RECENT_ALBUMS))
     top_n_moods = int(data.get('top_n_moods', TOP_N_MOODS))
     logger.info(f"Starting analysis request: num_recent_albums={num_recent_albums}, top_n_moods={top_n_moods}")
 
+    # Pre-flight validation: block analysis in multi-provider setups with path issues
+    try:
+        providers = get_providers(enabled_only=True)
+        is_multi_provider = len(providers) > 1
+
+        if is_multi_provider:
+            path_issues = []
+            for p in providers:
+                cfg = p.get('config_display') or {}
+                pname = p.get('name') or p.get('provider_type')
+                ptype = p.get('provider_type')
+                path_format = cfg.get('path_format', '')
+
+                if ptype == 'navidrome' and path_format == 'relative':
+                    path_issues.append({
+                        'provider_id': p['id'],
+                        'provider_name': pname,
+                        'provider_type': ptype,
+                        'issue': 'relative_paths',
+                        'message': f'{pname} is reporting virtual file paths instead of real filesystem paths.',
+                        'instructions': [
+                            'In Navidrome, go to Players in the right sidebar',
+                            'Click on the AudioMuse-AI player entry',
+                            'Toggle "Report Real Path" to enabled',
+                            'Back in AudioMuse-AI Settings, click "Rescan Paths" on this provider'
+                        ]
+                    })
+                elif ptype == 'navidrome' and not path_format:
+                    path_issues.append({
+                        'provider_id': p['id'],
+                        'provider_name': pname,
+                        'provider_type': ptype,
+                        'issue': 'unknown_path_format',
+                        'message': f'{pname} has no path format detected yet.',
+                        'instructions': [
+                            'Go to Settings and click "Rescan Paths" on this provider',
+                            'This will detect whether real file paths are being reported'
+                        ]
+                    })
+                elif path_format == 'relative':
+                    path_issues.append({
+                        'provider_id': p['id'],
+                        'provider_name': pname,
+                        'provider_type': ptype,
+                        'issue': 'relative_paths',
+                        'message': f'{pname} is reporting relative file paths. Cross-provider matching will fail.',
+                        'instructions': [
+                            'Check provider path configuration to enable real filesystem paths',
+                            'Go to Settings and click "Rescan Paths" after fixing'
+                        ]
+                    })
+
+            if path_issues:
+                logger.warning(f"⚠️ Analysis BLOCKED: {len(path_issues)} provider path issue(s) in multi-provider setup.")
+                for issue in path_issues:
+                    logger.warning(
+                        f"  [{issue['provider_name']}] {issue['message']} "
+                        f"Fix: {' → '.join(issue.get('instructions', []))}"
+                    )
+                return jsonify({
+                    'error': 'provider_path_issue',
+                    'blocked': True,
+                    'message': 'Analysis blocked: provider path issues detected in multi-provider setup. '
+                               'Fix these issues to prevent duplicate tracks.',
+                    'issues': path_issues,
+                    'action_url': '/settings'
+                }), 409
+    except Exception as e:
+        logger.warning(f"Pre-flight provider validation failed (non-blocking): {e}")
+
     job_id = str(uuid.uuid4())
 
-    # Clean up details of previously successful or stale tasks before starting a new one
-    clean_up_previous_main_tasks()
     save_task_status(job_id, "main_analysis", TASK_STATUS_PENDING, details={"message": "Task enqueued."})
 
     # Enqueue task using a string path to its function.
@@ -149,6 +220,9 @@ def start_cleaning_endpoint():
     # Local imports to prevent circular dependency at startup
     from app_helper import rq_queue_high, clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING, get_active_main_task
 
+    # Clean up stale tasks first, then check for truly active ones.
+    clean_up_previous_main_tasks()
+
     active_task = get_active_main_task()
     if active_task:
         return jsonify({
@@ -156,9 +230,6 @@ def start_cleaning_endpoint():
             "task_id": active_task['task_id'],
             "status": active_task['status']
         }), 409
-
-    # Clean up any previous cleaning tasks
-    clean_up_previous_main_tasks()
 
     job_id = str(uuid.uuid4())
     save_task_status(job_id, "cleaning", TASK_STATUS_PENDING, details={"message": "Database cleaning task enqueued."})

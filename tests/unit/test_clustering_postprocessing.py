@@ -99,29 +99,29 @@ class TestTitleArtistDeduplication:
         mock_db = MagicMock()
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
-            {'item_id': 's1', 'title': 'Bohemian Rhapsody', 'author': 'Queen'},
-            {'item_id': 's2', 'title': 'Bohemian Rhapsody', 'author': 'Queen'},  # Duplicate
+            {'track_id': 1, 'title': 'Bohemian Rhapsody', 'author': 'Queen'},
+            {'track_id': 2, 'title': 'Bohemian Rhapsody', 'author': 'Queen'},  # Duplicate
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
-        song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
-        
+
+        song_results = [{'item_id': 1}, {'item_id': 2}]
+
         filtered = apply_title_artist_deduplication(song_results, mock_db)
-        
+
         assert len(filtered) == 1
-        assert filtered[0]['item_id'] == 's1'
+        assert filtered[0]['item_id'] == 1
 
     def test_normalizes_remastered_versions(self):
         """Test that (Remastered) versions are detected as duplicates"""
         mock_db = MagicMock()
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
-            {'item_id': 's1', 'title': 'Stairway to Heaven', 'author': 'Led Zeppelin'},
-            {'item_id': 's2', 'title': 'Stairway to Heaven (Remastered 2014)', 'author': 'Led Zeppelin'},
+            {'track_id': 1, 'title': 'Stairway to Heaven', 'author': 'Led Zeppelin'},
+            {'track_id': 2, 'title': 'Stairway to Heaven (Remastered 2014)', 'author': 'Led Zeppelin'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
-        song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
+
+        song_results = [{'item_id': 1}, {'item_id': 2}]
         
         filtered = apply_title_artist_deduplication(song_results, mock_db)
         
@@ -133,12 +133,12 @@ class TestTitleArtistDeduplication:
         mock_db = MagicMock()
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
-            {'item_id': 's1', 'title': 'Song Title', 'author': 'Artist'},
-            {'item_id': 's2', 'title': 'Song Title [Explicit]', 'author': 'Artist'},
+            {'track_id': 1, 'title': 'Song Title', 'author': 'Artist'},
+            {'track_id': 2, 'title': 'Song Title [Explicit]', 'author': 'Artist'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
-        song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
+
+        song_results = [{'item_id': 1}, {'item_id': 2}]
         
         filtered = apply_title_artist_deduplication(song_results, mock_db)
         
@@ -149,12 +149,12 @@ class TestTitleArtistDeduplication:
         mock_db = MagicMock()
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
-            {'item_id': 's1', 'title': 'Hello', 'author': 'Adele'},
-            {'item_id': 's2', 'title': 'Hello', 'author': 'Lionel Richie'},
+            {'track_id': 1, 'title': 'Hello', 'author': 'Adele'},
+            {'track_id': 2, 'title': 'Hello', 'author': 'Lionel Richie'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
-        song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
+
+        song_results = [{'item_id': 1}, {'item_id': 2}]
         
         filtered = apply_title_artist_deduplication(song_results, mock_db)
         
@@ -175,8 +175,8 @@ class TestTitleArtistDeduplication:
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = []  # No results from DB
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
-        song_results = [{'item_id': 's1'}]
+
+        song_results = [{'item_id': 1}]
         
         filtered = apply_title_artist_deduplication(song_results, mock_db)
         
@@ -196,23 +196,23 @@ class TestDistanceFilteringDirect:
         mock_db = MagicMock()
         # Two very similar vectors
         mock_get_vectors.return_value = {
-            's1': np.array([1.0, 0.0, 0.0]),
-            's2': np.array([1.01, 0.0, 0.0])  # Very close to s1
+            1: np.array([1.0, 0.0, 0.0]),
+            2: np.array([1.01, 0.0, 0.0])  # Very close to 1
         }
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
-            {'item_id': 's1', 'title': 'Song 1', 'author': 'Artist'},
-            {'item_id': 's2', 'title': 'Song 2', 'author': 'Artist'},
+            {'track_id': 1, 'title': 'Song 1', 'author': 'Artist'},
+            {'track_id': 2, 'title': 'Song 2', 'author': 'Artist'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
-        song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
-        
+
+        song_results = [{'item_id': 1}, {'item_id': 2}]
+
         filtered = apply_distance_filtering_direct(song_results, mock_db)
-        
+
         # Second song should be filtered as too close
         assert len(filtered) == 1
-        assert filtered[0]['item_id'] == 's1'
+        assert filtered[0]['item_id'] == 1
 
     @patch('config.VOYAGER_METRIC', 'euclidean')
     @patch('config.DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN', 0.1)
@@ -222,17 +222,17 @@ class TestDistanceFilteringDirect:
         """Test that songs with distant vectors are kept"""
         mock_db = MagicMock()
         mock_get_vectors.return_value = {
-            's1': np.array([1.0, 0.0, 0.0]),
-            's2': np.array([0.0, 1.0, 0.0])  # Orthogonal - far from s1
+            1: np.array([1.0, 0.0, 0.0]),
+            2: np.array([0.0, 1.0, 0.0])  # Orthogonal - far from 1
         }
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
-            {'item_id': 's1', 'title': 'Song 1', 'author': 'Artist'},
-            {'item_id': 's2', 'title': 'Song 2', 'author': 'Artist'},
+            {'track_id': 1, 'title': 'Song 1', 'author': 'Artist'},
+            {'track_id': 2, 'title': 'Song 2', 'author': 'Artist'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
-        song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
+
+        song_results = [{'item_id': 1}, {'item_id': 2}]
         
         filtered = apply_distance_filtering_direct(song_results, mock_db)
         
@@ -245,21 +245,21 @@ class TestDistanceFilteringDirect:
         """Test fallback to title/artist matching when no vectors available"""
         mock_db = MagicMock()
         mock_get_vectors.return_value = {}  # No vectors
-        mock_title_dedup.return_value = [{'item_id': 's1'}]
-        
-        song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
+        mock_title_dedup.return_value = [{'item_id': 1}]
+
+        song_results = [{'item_id': 1}, {'item_id': 2}]
         
         filtered = apply_distance_filtering_direct(song_results, mock_db)
         
         # Should call title/artist deduplication
         mock_title_dedup.assert_called_once()
-        assert filtered == [{'item_id': 's1'}]
+        assert filtered == [{'item_id': 1}]
 
     @patch('config.DUPLICATE_DISTANCE_CHECK_LOOKBACK', 0)
     def test_skips_filtering_when_lookback_zero(self):
         """Test that filtering is skipped when lookback is 0"""
         mock_db = MagicMock()
-        song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
+        song_results = [{'item_id': 1}, {'item_id': 2}]
         
         filtered = apply_distance_filtering_direct(song_results, mock_db)
         
@@ -360,12 +360,12 @@ class TestEdgeCases:
         mock_db = MagicMock()
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
-            {'item_id': 's1', 'title': 'Café del Mar', 'author': 'Artist'},
-            {'item_id': 's2', 'title': 'Café del Mar (Remastered)', 'author': 'Artist'},
+            {'track_id': 1, 'title': 'Café del Mar', 'author': 'Artist'},
+            {'track_id': 2, 'title': 'Café del Mar (Remastered)', 'author': 'Artist'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
-        song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
+
+        song_results = [{'item_id': 1}, {'item_id': 2}]
         
         filtered = apply_title_artist_deduplication(song_results, mock_db)
         
@@ -378,17 +378,17 @@ class TestEdgeCases:
         """Test that songs missing vectors are kept without distance check"""
         mock_db = MagicMock()
         mock_get_vectors.return_value = {
-            's1': np.array([1.0, 0.0, 0.0]),
-            # s2 has no vector
+            1: np.array([1.0, 0.0, 0.0]),
+            # track 2 has no vector
         }
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
-            {'item_id': 's1', 'title': 'Song 1', 'author': 'Artist'},
-            {'item_id': 's2', 'title': 'Song 2', 'author': 'Artist'},
+            {'track_id': 1, 'title': 'Song 1', 'author': 'Artist'},
+            {'track_id': 2, 'title': 'Song 2', 'author': 'Artist'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
-        song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
+
+        song_results = [{'item_id': 1}, {'item_id': 2}]
         
         filtered = apply_distance_filtering_direct(song_results, mock_db)
         

@@ -545,22 +545,28 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
 
 # --- RQ Task Definitions ---
 # MODIFIED: Removed jellyfin_url, jellyfin_user_id, jellyfin_token as they are no longer needed for the function calls.
-def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
+def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, provider_id=None):
     from app import (app, JobStatus)
     from app_helper import (redis_conn, get_db, save_task_status, get_task_info_from_db,
                      save_track_analysis_and_embedding, save_clap_embedding, get_clap_embedding,
+                     get_primary_provider_id, find_existing_analysis_by_file_path,
+                     link_provider_to_existing_track, link_provider_track,
+                     get_or_create_track,
                      TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import analyze_audio_file as clap_analyze, is_clap_available, get_or_cache_other_feature_text_embeddings, compute_other_features_from_clap
     from .mulan_analyzer import analyze_audio_file as mulan_analyze
     from config import MULAN_ENABLED
-    
+
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
 
     with app.app_context():
+        # Get provider_id for track linking (use passed value or get primary provider)
+        # Must be inside app.app_context() since get_primary_provider_id() uses get_db()
+        active_provider_id = provider_id if provider_id is not None else get_primary_provider_id()
         initial_details = {"album_name": album_name, "log": [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Album analysis task started."]}
         save_task_status(current_task_id, "album_analysis", TASK_STATUS_STARTED, parent_task_id=parent_task_id, sub_type_identifier=album_id, progress=0, details=initial_details)
-        tracks_analyzed_count, tracks_skipped_count, current_progress_val = 0, 0, 0
+        tracks_analyzed_count, tracks_skipped_count, tracks_linked_count, current_progress_val = 0, 0, 0, 0
         current_task_logs = initial_details["log"]
         
         model_paths = {
@@ -621,28 +627,52 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 log_and_update_album_task(f"No tracks found for album: {album_name}", 100, task_state=TASK_STATUS_SUCCESS)
                 return {"status": "SUCCESS", "message": f"No tracks in album {album_name}", "tracks_analyzed": 0}
 
-            def get_existing_track_ids(track_ids):
-                if not track_ids: return set()
+            def get_existing_track_ids(provider_item_ids):
+                """Check which provider item_ids already have complete analysis.
+                Resolves provider item_ids to canonical track_ids via provider_track,
+                then checks score + embedding tables."""
+                if not provider_item_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
-                    track_ids_as_strings = [str(id) for id in track_ids]
-                    cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL", (tuple(track_ids_as_strings),))
+                    item_id_strs = [str(id) for id in provider_item_ids]
+                    # Resolve provider item_ids → track_ids, then check score+embedding
+                    cur.execute("""
+                        SELECT pt.item_id FROM provider_track pt
+                        JOIN score s ON pt.track_id = s.track_id
+                        JOIN embedding e ON s.track_id = e.track_id
+                        WHERE pt.item_id IN %s AND s.other_features IS NOT NULL
+                        AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL
+                    """, (tuple(item_id_strs),))
                     return {row[0] for row in cur.fetchall()}
 
-            def get_missing_clap_track_ids(track_ids):
-                if not track_ids: return set()
+            def get_missing_clap_track_ids(provider_item_ids):
+                """Find provider item_ids that are missing CLAP embeddings.
+                Resolves via provider_track → track_id → clap_embedding."""
+                if not provider_item_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
-                    track_ids_as_strings = [str(id) for id in track_ids]
-                    cur.execute("SELECT item_id FROM clap_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
+                    item_id_strs = [str(id) for id in provider_item_ids]
+                    # Find which item_ids already have CLAP via provider_track chain
+                    cur.execute("""
+                        SELECT pt.item_id FROM provider_track pt
+                        JOIN clap_embedding ce ON pt.track_id = ce.track_id
+                        WHERE pt.item_id IN %s
+                    """, (tuple(item_id_strs),))
                     existing_clap_ids = {row[0] for row in cur.fetchall()}
-                    return set(track_ids_as_strings) - existing_clap_ids
+                    return set(item_id_strs) - existing_clap_ids
 
-            def get_missing_mulan_track_ids(track_ids):
-                if not track_ids: return set()
+            def get_missing_mulan_track_ids(provider_item_ids):
+                """Find provider item_ids that are missing MuLan embeddings.
+                Resolves via provider_track → track_id → mulan_embedding."""
+                if not provider_item_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
-                    track_ids_as_strings = [str(id) for id in track_ids]
-                    cur.execute("SELECT item_id FROM mulan_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
+                    item_id_strs = [str(id) for id in provider_item_ids]
+                    # Find which item_ids already have MuLan via provider_track chain
+                    cur.execute("""
+                        SELECT pt.item_id FROM provider_track pt
+                        JOIN mulan_embedding me ON pt.track_id = me.track_id
+                        WHERE pt.item_id IN %s
+                    """, (tuple(item_id_strs),))
                     existing_mulan_ids = {row[0] for row in cur.fetchall()}
-                    return set(track_ids_as_strings) - existing_mulan_ids
+                    return set(item_id_strs) - existing_mulan_ids
 
             existing_track_ids_set = get_existing_track_ids([str(t['Id']) for t in tracks])
             missing_clap_ids_set = get_missing_clap_track_ids([str(t['Id']) for t in tracks]) if is_clap_available() else set()
@@ -663,41 +693,105 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
 
                 # Store artist ID mapping for all tracks (even if already analyzed)
                 try:
-                    from app_helper_artist import upsert_artist_mapping
+                    from app_helper_artist import upsert_artist_provider_mapping
                     artist_name = item.get('AlbumArtist')
                     artist_id = item.get('ArtistId')
                     logger.info(f"Track '{item.get('Name')}': artist_name='{artist_name}', artist_id='{artist_id}'")
                     if artist_name and artist_id:
-                        upsert_artist_mapping(artist_name, artist_id)
-                        logger.info(f"✓ Stored artist mapping: '{artist_name}' → '{artist_id}'")
+                        upsert_artist_provider_mapping(artist_name, active_provider_id, artist_id)
+                        logger.info(f"✓ Stored artist mapping: '{artist_name}' → '{artist_id}' (provider {active_provider_id})")
                     else:
                         if not artist_id:
                             logger.warning(f"✗ No artist_id for track '{item.get('Name')}' by '{artist_name}'")
                 except Exception as mapping_error:
                     logger.error(f"Failed to store artist mapping for '{artist_name}': {mapping_error}", exc_info=True)
 
-                track_id_str = str(item['Id'])
+                track_id_str = str(item['Id'])  # Provider-specific item_id
+                item_file_path = item.get('Path') or item.get('FilePath')
+
+                # Get or create canonical track entry (track_id is the integer PK)
+                track_id = get_or_create_track(item_file_path, provider_id=active_provider_id) if item_file_path else None
+
+                if not item_file_path:
+                    logger.warning(f"Skipping '{item.get('Name', 'Unknown')}' (ID: {item['Id']}): "
+                                   f"no file_path available, cannot create track record")
+                    tracks_skipped_count += 1
+                    continue
+
                 needs_musicnn = track_id_str not in existing_track_ids_set
                 needs_clap = track_id_str in missing_clap_ids_set
                 needs_mulan = track_id_str in missing_mulan_ids_set
 
-                # Album name update now handled in main analysis task. If needed, uncomment below:
-                # try:
-                #     with get_db() as conn, conn.cursor() as cur:
-                #         cur.execute("UPDATE score SET album = %s WHERE item_id = %s", (album_name, track_id_str))
-                #         conn.commit()
-                #     logger.info(f"Updated album name for track '{track_name_full}' to '{album_name}'")
-                # except Exception as e:
-                #     logger.warning(f"Failed to update album name for '{track_name_full}': {e}")
+                # Multi-provider: Check if this track was already analyzed under a different provider's item_id
+                # If so, link to the existing analysis via provider_track instead of re-analyzing
+                # Uses 3-tier lookup: path hash → direct file_path → metadata (title+artist+album)
+                if needs_musicnn:
+                    existing_analysis = find_existing_analysis_by_file_path(
+                        item_file_path, active_provider_id,
+                        title=item.get('Name'), artist=item.get('AlbumArtist'), album=album_name
+                    )
+                    if existing_analysis and existing_analysis.get('has_musicnn'):
+                        existing_track_id = existing_analysis.get('track_id')
+                        if existing_track_id:
+                            linked = False
+                            if existing_analysis.get('source') == 'metadata_match':
+                                # Metadata-based match: link directly to existing track_id
+                                try:
+                                    link_provider_track(active_provider_id, existing_track_id, track_id_str,
+                                                        item.get('Name'), item.get('AlbumArtist'), album_name)
+                                    linked = True
+                                except Exception as e:
+                                    logger.warning(f"Failed to link provider track for '{item.get('Name')}': {e}")
+                            else:
+                                # Path-based match: existing flow
+                                linked = link_provider_to_existing_track(
+                                    file_path=item_file_path,
+                                    provider_id=active_provider_id,
+                                    item_id=track_id_str,
+                                    title=item.get('Name'),
+                                    artist=item.get('AlbumArtist'),
+                                    album=album_name
+                                )
+                            if linked:
+                                tracks_linked_count += 1
+                                # Update track_id to point to the existing canonical track
+                                track_id = existing_track_id
+                                logger.info(f"Linked '{track_name_full}' to existing analysis "
+                                            f"(source: {existing_analysis.get('source', 'path')}, "
+                                            f"canonical track_id {existing_track_id})")
+                                needs_musicnn = False
+                                if needs_clap and existing_analysis.get('has_clap'):
+                                    needs_clap = False
+                                    logger.info(f"  - CLAP embedding available via canonical track")
 
                 if not needs_musicnn and not needs_clap and not needs_mulan:
+                    # Update metadata for already-analyzed tracks (rating, year, album_artist, file_path)
+                    if track_id:
+                        try:
+                            with get_db() as conn, conn.cursor() as cur:
+                                cur.execute(
+                                    "UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE track_id = %s",
+                                    (album_name, item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'),
+                                     item_file_path, track_id)
+                                )
+                                conn.commit()
+                        except Exception as e:
+                            logger.warning(f"Failed to update metadata for '{track_name_full}': {e}")
+                    # Ensure provider_track link exists even for skipped tracks
+                    if track_id and active_provider_id:
+                        try:
+                            link_provider_track(active_provider_id, track_id, track_id_str,
+                                                item.get('Name'), item.get('AlbumArtist'), album_name)
+                        except Exception as e:
+                            logger.warning(f"Failed to link provider track for skipped '{track_name_full}': {e}")
+
                     tracks_skipped_count += 1
                     status_parts = ["MusiCNN: ✓"]
                     if is_clap_available():
                         status_parts.append("CLAP: ✓")
                     if MULAN_ENABLED:
                         status_parts.append("MuLan: ✓")
-                    logger.info(f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)})")
+                    logger.info(f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)}), metadata updated")
                     continue
                 
                 # MODIFIED: Call to download_track simplified. Assumes it gets server details from config.
@@ -863,7 +957,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         elif not needs_clap and clap_label_embeddings is not None:
                             # CLAP embedding already in DB - load it to compute other_features
                             try:
-                                existing_clap = get_clap_embedding(item['Id'])
+                                existing_clap = get_clap_embedding(track_id) if track_id else None
                                 if existing_clap is not None:
                                     other_features_dict = compute_other_features_from_clap(existing_clap, clap_label_embeddings)
                                     other_features = ",".join([f"{k}:{other_features_dict.get(k, 0.0):.2f}" for k in OTHER_FEATURE_LABELS])
@@ -885,40 +979,36 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         # Use both variants to avoid missing metadata and ensure `search_u` can be generated.
                         album_value = item.get('Album') or item.get('album')
                         album_artist_value = item.get('OriginalAlbumArtist') or item.get('originalAlbumArtist') or item.get('album_artist')
-                        save_track_analysis_and_embedding(
-                            item['Id'],
-                            item['Name'],
-                            item.get('AlbumArtist', 'Unknown'),
-                            musicnn_analysis['tempo'],
-                            musicnn_analysis['key'],
-                            musicnn_analysis['scale'],
-                            top_moods,
-                            musicnn_embedding,
-                            energy=musicnn_analysis['energy'],
-                            other_features=other_features,
-                            album=album_value,
-                            album_artist=album_artist_value,
-                            year=item.get('Year'),
-                            rating=item.get('Rating'),
-                            file_path=item.get('FilePath')
-                        )
+                        if track_id:
+                            save_track_analysis_and_embedding(
+                                track_id, item['Name'], item.get('AlbumArtist', 'Unknown'),
+                                musicnn_analysis['tempo'], musicnn_analysis['key'], musicnn_analysis['scale'],
+                                top_moods, musicnn_embedding,
+                                energy=musicnn_analysis['energy'], other_features=other_features,
+                                album=album_value, album_artist=album_artist_value,
+                                year=item.get('Year'), rating=item.get('Rating'),
+                                file_path=item_file_path,
+                                provider_id=active_provider_id, item_id=track_id_str
+                            )
+                        else:
+                            logger.warning(f"No track_id for '{track_name_full}' - cannot save analysis (missing file_path?)")
                     
-                    # Save CLAP embedding AFTER score row exists (FK: clap_embedding.item_id → score.item_id)
-                    if clap_embedding_for_track is not None and needs_clap:
+                    # Save CLAP embedding AFTER score row exists (FK: clap_embedding.track_id → score.track_id)
+                    if clap_embedding_for_track is not None and needs_clap and track_id:
                         try:
-                            save_clap_embedding(item['Id'], clap_embedding_for_track)
+                            save_clap_embedding(track_id, clap_embedding_for_track)
                             logger.info(f"  - CLAP embedding saved (512-dim)")
                         except Exception as e:
                             logger.warning(f"  - Failed to save CLAP embedding: {e}")
                     
                     # MuLan analysis (only if enabled AND needed)
-                    if needs_mulan and MULAN_ENABLED:
+                    if needs_mulan and MULAN_ENABLED and track_id:
                         logger.info(f"  - Starting MuLan analysis for {track_name_full}...")
                         try:
                             mulan_embedding, duration, num_segments = mulan_analyze(path)
                             if mulan_embedding is not None:
                                 from app_helper import save_mulan_embedding
-                                save_mulan_embedding(item['Id'], mulan_embedding)
+                                save_mulan_embedding(track_id, mulan_embedding)
                                 logger.info(f"  - MuLan embedding saved (512-dim, duration: {duration:.1f}s)")
                                 track_processed = True
                         except Exception as e:
@@ -958,7 +1048,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             logger.info("Performing final comprehensive cleanup after album analysis")
             comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
 
-            summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album}
+            summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "tracks_linked": tracks_linked_count, "total_tracks_in_album": total_tracks_in_album}
             log_and_update_album_task(f"Album '{album_name}' analysis complete.", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
             return {"status": "SUCCESS", **summary}
 
@@ -1010,16 +1100,23 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
 # MODIFIED: Removed jellyfin_url, jellyfin_user_id, jellyfin_token from signature.
 def run_analysis_task(num_recent_albums, top_n_moods):
     from app import app
-    from app_helper import (redis_conn, get_db, rq_queue_default, save_task_status, get_task_info_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+    from app_helper import (redis_conn, get_db, rq_queue_default, save_task_status, get_task_info_from_db, get_primary_provider_id, get_or_create_track, link_provider_track, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import is_clap_available
     import config  # Import config to access MULAN_ENABLED
 
     MULAN_ENABLED = getattr(config, 'MULAN_ENABLED', False)  # Get MULAN_ENABLED from config
 
     current_job = get_current_job(redis_conn)
-    current_task_id = current_job.id if current_job else str(uuid.uuid4())    
+    current_task_id = current_job.id if current_job else str(uuid.uuid4())
 
     with app.app_context():
+        # Resolve active provider_id for passing to album analysis tasks
+        active_provider_id = get_primary_provider_id()
+        if active_provider_id is None:
+            from app_helper import get_enabled_provider_ids
+            enabled = get_enabled_provider_ids()
+            if enabled:
+                active_provider_id = enabled[0]
         if num_recent_albums < 0:
              logger.warning("num_recent_albums is negative, treating as 0 (all albums).")
              num_recent_albums = 0
@@ -1057,6 +1154,58 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
         try:
             log_and_update_main("🚀 Starting main analysis process...", 0)
+
+            # Pre-analysis provider path validation (hard stop in multi-provider setups)
+            try:
+                from app_setup import get_provider_by_id, get_providers_raw
+                provider_config = get_provider_by_id(active_provider_id)
+                all_providers = get_providers_raw(enabled_only=True)
+                is_multi_provider = len(all_providers) > 1
+
+                if provider_config:
+                    pcfg = provider_config.get('config') or {}
+                    pname = provider_config.get('name') or provider_config.get('provider_type')
+
+                    if pcfg.get('path_format') == 'relative':
+                        if is_multi_provider:
+                            # Hard stop: multi-provider with relative paths will create duplicates
+                            error_msg = (
+                                f"Analysis aborted: Provider '{pname}' uses relative file paths in a multi-provider setup. "
+                                f"This will create duplicate tracks. Enable 'Report Real Path' in Navidrome "
+                                f"(Players > AudioMuse-AI player), then run 'Rescan Paths' in Settings."
+                            )
+                            log_and_update_main(error_msg, 0, task_state=TASK_STATUS_FAILURE)
+                            return {"status": "FAILURE", "message": error_msg}
+                        else:
+                            # Single provider: warn but continue
+                            log_and_update_main(
+                                f"⚠️ Warning: Provider '{pname}' uses relative file paths. "
+                                f"Cross-provider track matching will not work if you add more providers.", 0)
+
+                    # Also check if any OTHER provider has relative paths (safety net)
+                    if is_multi_provider:
+                        for p in all_providers:
+                            p_cfg = p.get('config') or {}
+                            if p['id'] != active_provider_id and p_cfg.get('path_format') == 'relative':
+                                p_name = p.get('name') or p.get('provider_type')
+                                error_msg = (
+                                    f"Analysis aborted: Provider '{p_name}' has relative file paths in a multi-provider setup. "
+                                    f"Fix this provider's path configuration in Settings before running analysis."
+                                )
+                                log_and_update_main(error_msg, 0, task_state=TASK_STATUS_FAILURE)
+                                return {"status": "FAILURE", "message": error_msg}
+
+                    if not pcfg.get('music_path_prefix') and provider_config.get('provider_type') not in ('localfiles',):
+                        with get_db() as conn, conn.cursor() as cur:
+                            cur.execute("SELECT COUNT(*) FROM provider_track WHERE provider_id != %s LIMIT 1", (active_provider_id,))
+                            other_count = cur.fetchone()[0]
+                        if other_count > 0:
+                            log_and_update_main(
+                                f"⚠️ Warning: Provider '{pname}' has no music_path_prefix but other providers have tracks. "
+                                f"Run 'Rescan Paths' in Settings for better cross-provider matching.", 0)
+            except Exception as e:
+                logger.warning(f"Pre-analysis path validation failed (non-blocking): {e}")
+
             clean_temp(TEMP_DIR)
             # MODIFIED: Call to get_recent_albums no longer needs server parameters.
             all_albums = get_recent_albums(num_recent_albums)
@@ -1067,14 +1216,23 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             total_albums_to_check = len(all_albums)
             active_jobs, launched_jobs = {}, []
             launched_job_ids = set()  # Track job IDs launched in THIS run only
-            albums_skipped, albums_launched, albums_completed, last_rebuild_count = 0, 0, 0, 0
+            albums_skipped, albums_launched, albums_completed, last_rebuild_count, total_linked = 0, 0, 0, 0, 0
 
-            def get_existing_track_ids(track_ids):
-                if not track_ids: return set()
+            def get_existing_track_ids(provider_item_ids):
+                """Check which provider item_ids already have complete analysis.
+                Resolves provider item_ids to canonical track_ids via provider_track,
+                then checks score + embedding tables."""
+                if not provider_item_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
-                    # Convert integer track IDs to strings for database comparison
-                    track_ids_as_strings = [str(track_id) for track_id in track_ids]
-                    cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL", (tuple(track_ids_as_strings),))
+                    item_id_strs = [str(id) for id in provider_item_ids]
+                    # Resolve provider item_ids → track_ids, then check score+embedding
+                    cur.execute("""
+                        SELECT pt.item_id FROM provider_track pt
+                        JOIN score s ON pt.track_id = s.track_id
+                        JOIN embedding e ON s.track_id = e.track_id
+                        WHERE pt.item_id IN %s AND s.other_features IS NOT NULL
+                        AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL
+                    """, (tuple(item_id_strs),))
                     return {row[0] for row in cur.fetchall()}
 
             def monitor_and_clear_jobs():
@@ -1181,12 +1339,12 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
                 # Store artist ID mappings for all tracks in this album (even if already analyzed)
                 try:
-                    from app_helper_artist import upsert_artist_mapping
+                    from app_helper_artist import upsert_artist_provider_mapping
                     for track in tracks:
                         artist_name = track.get('AlbumArtist')
                         artist_id = track.get('ArtistId')
                         if artist_name and artist_id:
-                            upsert_artist_mapping(artist_name, artist_id)
+                            upsert_artist_provider_mapping(artist_name, active_provider_id, artist_id)
                         elif artist_name and not artist_id:
                             logger.warning(f"✗ No artist_id for '{artist_name}' in album '{album.get('Name')}'")
                     logger.info(f"✓ Artist mapping for album '{album.get('Name')}' done")
@@ -1198,21 +1356,29 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     track_ids = [t['Id'] for t in tracks]
                     existing_count = len(get_existing_track_ids(track_ids))
                     
-                    # Check CLAP if enabled
+                    # Check CLAP if enabled (resolve provider item_ids via provider_track chain)
                     needs_clap_analysis = False
                     if is_clap_available():
                         with get_db() as conn, conn.cursor() as cur:
                             track_ids_as_strings = [str(id) for id in track_ids]
-                            cur.execute("SELECT item_id FROM clap_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
+                            cur.execute("""
+                                SELECT pt.item_id FROM provider_track pt
+                                JOIN clap_embedding ce ON pt.track_id = ce.track_id
+                                WHERE pt.item_id IN %s
+                            """, (tuple(track_ids_as_strings),))
                             existing_clap_ids = {row[0] for row in cur.fetchall()}
                             needs_clap_analysis = len(existing_clap_ids) < len(tracks)
-                    
-                    # Check MuLan only if enabled
+
+                    # Check MuLan only if enabled (resolve provider item_ids via provider_track chain)
                     needs_mulan_analysis = False
                     if MULAN_ENABLED:
                         with get_db() as conn, conn.cursor() as cur:
                             track_ids_as_strings = [str(id) for id in track_ids]
-                            cur.execute("SELECT item_id FROM mulan_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
+                            cur.execute("""
+                                SELECT pt.item_id FROM provider_track pt
+                                JOIN mulan_embedding me ON pt.track_id = me.track_id
+                                WHERE pt.item_id IN %s
+                            """, (tuple(track_ids_as_strings),))
                             existing_mulan_ids = {row[0] for row in cur.fetchall()}
                             needs_mulan_analysis = len(existing_mulan_ids) < len(tracks)
                     
@@ -1225,16 +1391,51 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
                 # Skip ONLY if all tracks have MusiCNN AND CLAP (if enabled) AND MuLan (if enabled)
                 if existing_count >= len(tracks) and not needs_clap_analysis and not needs_mulan_analysis:
-                    # Always update album name for all tracks, even if already analyzed
+                    # Batch check: which tracks already have provider_track for this provider?
+                    already_linked_ids = set()
+                    if active_provider_id:
+                        try:
+                            track_id_strs = [str(t['Id']) for t in tracks]
+                            with get_db() as conn, conn.cursor() as cur:
+                                cur.execute(
+                                    "SELECT item_id FROM provider_track WHERE provider_id = %s AND item_id IN %s",
+                                    (active_provider_id, tuple(track_id_strs))
+                                )
+                                already_linked_ids = {row[0] for row in cur.fetchall()}
+                        except Exception:
+                            pass
+
                     for item in tracks:
                         track_id_str = str(item['Id'])
-                        try:
-                            with get_db() as conn, conn.cursor() as cur:
-                                cur.execute("UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE item_id = %s", (album.get('Name'), item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'), item.get('FilePath'), track_id_str))
-                                conn.commit()
-                            logger.info(f"[MainAnalysisTask] Updated album/album_artist/year/rating/file_path for track '{item['Name']}' to '{album.get('Name')}' (main task)")
-                        except Exception as e:
-                            logger.warning(f"[MainAnalysisTask] Failed to update album name for '{item['Name']}': {e}")
+                        file_path = item.get('Path') or item.get('FilePath')
+
+                        # Get or create canonical track_id for metadata update and linking
+                        item_track_id = None
+                        if file_path:
+                            try:
+                                item_track_id = get_or_create_track(file_path, provider_id=active_provider_id)
+                            except Exception as e:
+                                logger.warning(f"[MainAnalysisTask] Failed to get/create track for '{item['Name']}': {e}")
+
+                        # Update metadata using canonical track_id
+                        if item_track_id:
+                            try:
+                                with get_db() as conn, conn.cursor() as cur:
+                                    cur.execute("UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE track_id = %s", (album.get('Name'), item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'), file_path, item_track_id))
+                                    conn.commit()
+                            except Exception as e:
+                                logger.warning(f"[MainAnalysisTask] Failed to update metadata for '{item['Name']}': {e}")
+
+                        # Cross-provider linking: only if not already linked for this provider
+                        if active_provider_id and item_track_id and track_id_str not in already_linked_ids:
+                            try:
+                                link_provider_track(active_provider_id, item_track_id, track_id_str,
+                                                    title=item.get('Name'),
+                                                    artist=item.get('AlbumArtist') or item.get('Artist'),
+                                                    album=album.get('Name'))
+                                total_linked += 1
+                            except Exception as e:
+                                logger.warning(f"[MainAnalysisTask] Failed to link provider track for '{item['Name']}': {e}")
                     albums_skipped += 1
                     checked_album_ids.add(album['Id'])
                     # Build dynamic status message based on enabled features
@@ -1247,7 +1448,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     continue
                 
                 # MODIFIED: Enqueue call for analyze_album_task now passes fewer arguments.
-                job = rq_queue_default.enqueue('tasks.analysis.analyze_album_task', args=(album['Id'], album['Name'], top_n_moods, current_task_id), job_id=str(uuid.uuid4()), job_timeout=-1, retry=Retry(max=3))
+                job = rq_queue_default.enqueue('tasks.analysis.analyze_album_task', args=(album['Id'], album['Name'], top_n_moods, current_task_id), kwargs={'provider_id': active_provider_id}, job_id=str(uuid.uuid4()), job_timeout=-1, retry=Retry(max=3))
                 active_jobs[job.id] = job
                 launched_jobs.append(job)
                 launched_job_ids.add(job.id)  # Track this job ID for reconciliation
@@ -1273,6 +1474,44 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 progress = 5 + int(85 * ((albums_skipped + albums_completed) / float(total_albums_to_check)))
                 status_message = f"Launched: {albums_launched}. Completed: {albums_completed}/{albums_launched}. Active: {len(active_jobs)}. Skipped: {albums_skipped}/{total_albums_to_check}. (Finalizing)"
                 log_and_update_main(status_message, progress, checked_album_ids=list(checked_album_ids))
+                time.sleep(5)
+
+            # Wait for any album analysis jobs still running on the queue from a previous run.
+            # This handles the case where the main task resumes, finds all albums already checked,
+            # but their album tasks are still executing from the previous run.
+            from rq import Queue
+            default_queue = Queue('default', connection=redis_conn)
+            wait_count = 0
+            max_wait_iterations = 720  # 60 minutes at 5s per iteration
+            while True:
+                # Count album analysis jobs still running or queued
+                pending_album_jobs = 0
+                for job in default_queue.jobs:
+                    if hasattr(job, 'func_name') and 'analyze_album_task' in str(job.func_name):
+                        pending_album_jobs += 1
+
+                # Also check started job registry for running jobs
+                started_registry = default_queue.started_job_registry
+                for job_id in started_registry.get_job_ids():
+                    try:
+                        job = Job.fetch(job_id, connection=redis_conn)
+                        if hasattr(job, 'func_name') and 'analyze_album_task' in str(job.func_name):
+                            pending_album_jobs += 1
+                    except Exception:
+                        pass
+
+                if pending_album_jobs == 0:
+                    break
+
+                wait_count += 1
+                if wait_count >= max_wait_iterations:
+                    logger.warning(f"Timed out waiting for {pending_album_jobs} album analysis job(s) after 60 minutes. Proceeding with index build.")
+                    log_and_update_main(f"Timed out waiting for {pending_album_jobs} stale job(s). Proceeding with index build.", 90)
+                    break
+                if wait_count == 1:
+                    log_and_update_main(f"Waiting for {pending_album_jobs} album analysis job(s) from previous run to complete...", 90)
+                elif wait_count % 6 == 0:  # Log every 30 seconds
+                    log_and_update_main(f"Still waiting for {pending_album_jobs} album analysis job(s)...", 90)
                 time.sleep(5)
 
             log_and_update_main("Performing final index rebuild...", 95)
@@ -1319,7 +1558,135 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             # Top query computation disabled - using default queries from database only
             logger.info('Analysis complete. CLAP text search uses default queries (no auto-regeneration).')
 
-            final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
+            # Sum cross-provider link stats from child tasks (add to skip-path links)
+            try:
+                from app_helper import get_child_tasks_from_db
+                for ct in get_child_tasks_from_db(current_task_id):
+                    details = ct.get('details') or {}
+                    if isinstance(details, str):
+                        try:
+                            details = json.loads(details)
+                        except (json.JSONDecodeError, TypeError):
+                            details = {}
+                    total_linked += (details.get('final_summary_details') or {}).get('tracks_linked', 0)
+            except Exception as e:
+                logger.warning(f"Could not sum link stats from child tasks: {e}")
+
+            # Cross-provider sync: link secondary providers' tracks to existing track table
+            # The main loop only scans the primary provider — this links other providers
+            secondary_linked = 0
+            try:
+                from app_helper import get_enabled_provider_ids, _compute_file_path_hash
+                from app_setup import get_provider_by_id, _get_all_songs_with_config
+                all_provider_ids = get_enabled_provider_ids()
+                secondary_ids = [pid for pid in all_provider_ids if pid != active_provider_id]
+
+                if secondary_ids:
+                    log_and_update_main(f"Linking tracks for {len(secondary_ids)} secondary provider(s)...", 95)
+
+                # Collect artist_id → artist_name mappings from all secondary providers
+                all_artist_mappings = {}
+
+                for sec_id in secondary_ids:
+                    sec_provider = get_provider_by_id(sec_id)
+                    if not sec_provider:
+                        continue
+                    sec_type = sec_provider['provider_type']
+                    sec_config = sec_provider['config']
+                    sec_name = sec_provider.get('name', sec_type)
+
+                    try:
+                        sec_songs = _get_all_songs_with_config(sec_type, sec_config)
+                        if not sec_songs:
+                            logger.info(f"No songs from secondary provider {sec_name}")
+                            continue
+
+                        # Batch: compute all hashes, resolve in one query, then link
+                        hash_to_songs = {}
+                        for song in sec_songs:
+                            file_path = song.get('Path') or song.get('FilePath')
+                            if not file_path:
+                                continue
+                            fph = _compute_file_path_hash(file_path, sec_id)
+                            if fph:
+                                hash_to_songs[fph] = song
+
+                            # Collect (artist_id, provider_id) → name mapping
+                            artist_name = song.get('AlbumArtist') or song.get('Artist')
+                            artist_id = song.get('ArtistId')
+                            if artist_name and artist_id:
+                                mapping_key = (artist_id, sec_id)
+                                if mapping_key not in all_artist_mappings:
+                                    all_artist_mappings[mapping_key] = artist_name
+
+                        # Batch resolve hashes → track_ids in chunks
+                        provider_linked = 0
+                        hash_list = list(hash_to_songs.keys())
+                        CHUNK = 500
+                        for i in range(0, len(hash_list), CHUNK):
+                            chunk = hash_list[i:i+CHUNK]
+                            with get_db() as conn, conn.cursor() as cur:
+                                cur.execute("SELECT id, file_path_hash FROM track WHERE file_path_hash IN %s", (tuple(chunk),))
+                                hash_to_track_id = {row[1]: row[0] for row in cur.fetchall()}
+
+                            for fph in chunk:
+                                track_id = hash_to_track_id.get(fph)
+                                if track_id:
+                                    song = hash_to_songs[fph]
+                                    result = link_provider_track(sec_id, track_id, song.get('Id', ''),
+                                                        title=song.get('Name'),
+                                                        artist=song.get('AlbumArtist') or song.get('Artist'),
+                                                        album=song.get('Album'))
+                                    if result is not None:
+                                        provider_linked += 1
+
+                                    # Backfill rating from secondary provider if score has no rating
+                                    sec_rating = song.get('Rating')
+                                    if sec_rating and track_id:
+                                        try:
+                                            with get_db() as conn2, conn2.cursor() as cur2:
+                                                cur2.execute("UPDATE score SET rating = %s WHERE track_id = %s AND (rating IS NULL OR rating = 0)", (sec_rating, track_id))
+                                                conn2.commit()
+                                        except Exception:
+                                            pass
+
+                        secondary_linked += provider_linked
+                        match_rate = provider_linked / len(sec_songs) if sec_songs else 0
+                        if match_rate < 0.5 and len(sec_songs) > 10:
+                            logger.warning(
+                                f"⚠️ Low cross-provider match rate for {sec_name}: "
+                                f"{provider_linked}/{len(sec_songs)} ({match_rate:.0%}). "
+                                f"Check music_path_prefix settings or verify both providers serve the same library."
+                            )
+                            log_and_update_main(
+                                f"⚠️ Low match rate for {sec_name}: {provider_linked}/{len(sec_songs)} ({match_rate:.0%}). "
+                                f"Check path prefix settings in Settings.", 96)
+                        else:
+                            logger.info(f"Linked {provider_linked}/{len(sec_songs)} tracks for secondary provider {sec_name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to sync secondary provider {sec_name}: {e}")
+
+                # Persist artist_id mappings from all secondary providers
+                # Store as additional rows (artist_id is indexed for reverse lookup)
+                if all_artist_mappings:
+                    try:
+                        from app_helper_artist import upsert_artist_provider_mapping
+                        stored = 0
+                        for (aid, prov_id), aname in all_artist_mappings.items():
+                            if upsert_artist_provider_mapping(aname, prov_id, aid, is_primary=False):
+                                stored += 1
+                        logger.info(f"Stored {stored} secondary provider artist mappings")
+                    except Exception as e:
+                        logger.warning(f"Failed to store secondary artist mappings: {e}")
+
+                total_linked += secondary_linked
+            except Exception as e:
+                logger.warning(f"Secondary provider sync failed (non-blocking): {e}")
+
+            final_message = (
+                f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
+                + (f" Cross-provider links: {total_linked}." if total_linked > 0 else "")
+            )
             log_and_update_main(final_message, 100, task_state=TASK_STATUS_SUCCESS)
             clean_temp(TEMP_DIR)
             return {"status": "SUCCESS", "message": final_message}
