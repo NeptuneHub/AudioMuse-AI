@@ -321,7 +321,8 @@ class TestStartCleaningEndpoint:
         data = response.get_json()
         assert data['task_id'] == 'existing-cleaning-123'
         assert data['status'] == 'STARTED'
-        mock_cleanup.assert_not_called()
+        # Cleanup runs before the active-task check to clear stale rows
+        mock_cleanup.assert_called_once()
         mock_queue.enqueue.assert_not_called()
 
 
@@ -356,7 +357,8 @@ class TestEndpointErrorHandling:
         assert response.status_code == 409
         assert response.get_json()['task_id'] == 'existing-cleaning-123'
         assert response.get_json()['status'] == 'STARTED'
-        mock_cleanup.assert_not_called()
+        # Cleanup runs before the active-task check to clear stale rows
+        mock_cleanup.assert_called_once()
         mock_queue.enqueue.assert_not_called()
 
     @patch('app_helper.rq_queue_high')

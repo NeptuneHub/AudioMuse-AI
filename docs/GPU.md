@@ -23,7 +23,7 @@ We suggest **8GB VRAM** on GPU, with less you can experience the NON BLOCKING Ou
    USE_GPU_CLUSTERING=true
    ```
 3. Ensure NVIDIA Container Toolkit is installed on your host
-4. Use docker-compose files with GPU support (e.g., `docker-compose-nvidia.yaml` or `docker-compose-worker-nvidia.yaml`)
+4. Use docker-compose files with GPU support (e.g., `docker-compose-unified-nvidia.yaml` or `docker-compose-worker-nvidia.yaml`)
 
 **Performance Impact:**
 - **KMeans**: 10-50x faster than CPU

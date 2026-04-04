@@ -61,74 +61,61 @@
 
     <!-- Main Form -->
     <form id="playlistForm">
-        <!-- AI Configuration Section -->
+        <!-- AI Configuration Section (read-only, configured in Settings) -->
         <fieldset>
             <legend>AI Configuration</legend>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: -0.25rem; margin-bottom: 0.75rem;">
+                Configured in <a href="/settings" style="color: var(--color-primary);">Settings</a>. Instant Playlist uses the AI provider below for tool-calling and song discovery.
+            </p>
+            <div id="ai-none-warning" class="hidden" style="padding: 0.75rem 1rem; border-radius: 0.5rem; background: rgba(220, 160, 0, 0.1); border: 1px solid var(--color-warning, #d4a017); color: var(--text-body); font-size: 0.875rem; margin-bottom: 0.75rem;">
+                No AI provider configured. Instant Playlist requires an AI provider. Configure one in <a href="/settings" style="color: var(--color-primary);">Settings</a>.
+            </div>
             <div class="param-group">
                 <div>
-                    <label for="aiProvider" class="label-with-tooltip">
-                        AI Provider
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Choose an AI service to help create your playlist. Gemini and Mistral are cloud services (require API key). Ollama runs locally on your computer. "None" lets you describe moods manually.</span>
-                        </span>
-                    </label>
-                    <select id="aiProvider">
-                        <option value="NONE">None</option>
+                    <label for="aiProvider">AI Provider:</label>
+                    <select id="aiProvider" disabled>
                         <option value="OLLAMA">Ollama</option>
                         <option value="OPENAI">OpenAI / OpenRouter</option>
                         <option value="GEMINI">Gemini</option>
                         <option value="MISTRAL">Mistral</option>
+                        <option value="NONE" selected>None</option>
                     </select>
                 </div>
                 <div id="ollamaConfig" class="hidden">
-                    <label for="ollamaModel" class="label-with-tooltip">
-                        Ollama Model
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">The specific AI model running on your Ollama server. Popular choices: mistral:7b, llama2, phi. Larger models give better results but need more RAM.</span>
-                        </span>
-                    </label>
-                    <input type="text" id="ollamaModel" placeholder="e.g., mistral:7b">
-                    <div style="margin-top: 1.5rem;">
-                        <label for="ollamaServerUrl" class="label-with-tooltip">
-                            Ollama Server URL
-                            <span class="info-tooltip" tabindex="0">
-                                <span class="info-icon"></span>
-                                <span class="tooltip-text">The web address where your Ollama server is running. Usually http://localhost:11434/api/generate if running on the same machine.</span>
-                            </span>
-                        </label>
-                        <input type="text" id="ollamaServerUrl" placeholder="e.g., http://localhost:11434/api/generate">
+                    <h4>Ollama Configuration:</h4>
+                    <div>
+                        <label>Server URL:</label>
+                        <input type="text" id="ollamaServerUrl" readonly>
+                    </div>
+                    <div>
+                        <label>Model:</label>
+                        <input type="text" id="ollamaModel" readonly>
                     </div>
                 </div>
                 <div id="openaiConfig" class="hidden">
-                    <label for="openaiModel">OpenAI Model</label>
-                    <input type="text" id="openaiModel" placeholder="e.g., openai/gpt-4 or meta-llama/llama-3.2-3b-instruct:free">
-                    <div style="margin-top: 1.5rem;">
-                        <label for="openaiServerUrl">OpenAI Server URL</label>
-                        <input type="text" id="openaiServerUrl" placeholder="e.g., https://openrouter.ai/api/v1/chat/completions">
+                    <h4>OpenAI / OpenRouter Configuration:</h4>
+                    <div>
+                        <label>Server URL:</label>
+                        <input type="text" id="openaiServerUrl" readonly>
+                    </div>
+                    <div>
+                        <label>Model:</label>
+                        <input type="text" id="openaiModel" readonly>
                     </div>
                 </div>
-                <!-- REMOVED: The Gemini API Key input field is removed as it should not be sent from the frontend -->
                 <div id="geminiConfig" class="hidden">
-                    <label for="geminiModel" class="label-with-tooltip">
-                        Gemini Model
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Google's AI model to use. gemini-2.0-flash-exp is fast and free. gemini-2.5-pro gives better quality but may have usage limits.</span>
-                        </span>
-                    </label>
-                    <input type="text" id="geminiModel" placeholder="e.g., gemini-2.5-pro">
+                    <h4>Gemini Configuration:</h4>
+                    <div>
+                        <label>Model:</label>
+                        <input type="text" id="geminiModel" readonly>
+                    </div>
                 </div>
                 <div id="mistralConfig" class="hidden">
-                    <label for="mistralModel" class="label-with-tooltip">
-                        Mistral Model
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Mistral AI's model to use. ministral-3b-latest is lightweight and fast. mistral-large-latest gives the best understanding of complex requests.</span>
-                        </span>
-                    </label>
-                    <input type="text" id="mistralModel" placeholder="e.g., ministral-3b-latest">
+                    <h4>Mistral Configuration:</h4>
+                    <div>
+                        <label>Model:</label>
+                        <input type="text" id="mistralModel" readonly>
+                    </div>
                 </div>
             </div>
         </fieldset>
@@ -180,6 +167,7 @@
                     <input type="text" id="mediaServerPlaylistName" name="playlist_name" placeholder="Enter playlist name" required>
                 </div>
             </div>
+            <div id="provider-selector-container"></div>
             <button type="submit" id="submitMediaServerPlaylist">Create Playlist</button>
         </form>
         <div id="mediaServerResponseArea"></div>
@@ -188,10 +176,14 @@
 {% endblock %}
 
 {% block bodyAdditions %}
+    <script src="{{ url_for('static', filename='provider-selector.js') }}"></script>
     <script>
         // --- Self-Executing Anonymous Function to Encapsulate Code ---
         (() => {
             let globalConfig = {};
+
+            // Initialize provider selector
+            initProviderSelector();
 
             // --- DOM Element References ---
             const aiProviderSelect = document.getElementById('aiProvider');
@@ -242,15 +234,24 @@
                     aiProviderSelect.value = globalConfig.default_ai_provider.toUpperCase();
                 }
 
-                // ollamaModelSelect.innerHTML = ''; // Not needed for input field
-                ollamaModelSelect.value = globalConfig.default_ollama_model_name || ""; // Set default value for input
-                ollamaServerUrlInput.value = globalConfig.ollama_server_url || "http://localhost:11434/api/generate"; // Pre-fill Ollama Server URL
+                ollamaModelSelect.value = globalConfig.default_ollama_model_name || "";
+                ollamaServerUrlInput.value = globalConfig.ollama_server_url || "";
 
-                openaiModelSelect.value = globalConfig.default_openai_model_name || ""; // Set default value for OpenAI
-                openaiServerUrlInput.value = globalConfig.openai_server_url || "https://openrouter.ai/api/v1/chat/completions"; // Pre-fill OpenAI Server URL
+                openaiModelSelect.value = globalConfig.default_openai_model_name || "";
+                openaiServerUrlInput.value = globalConfig.openai_server_url || "";
 
-                geminiModelSelect.value = globalConfig.default_gemini_model_name || "gemini-2.5-pro";
-                mistralModelSelect.value = globalConfig.default_mistral_model_name || "ministral-3b-latest";
+                geminiModelSelect.value = globalConfig.default_gemini_model_name || "";
+                mistralModelSelect.value = globalConfig.default_mistral_model_name || "";
+
+                // Show/hide NONE warning
+                const noneWarning = document.getElementById('ai-none-warning');
+                if (noneWarning) {
+                    if (!globalConfig.default_ai_provider || globalConfig.default_ai_provider.toUpperCase() === 'NONE') {
+                        noneWarning.classList.remove('hidden');
+                    } else {
+                        noneWarning.classList.add('hidden');
+                    }
+                }
             }
 
             /**
@@ -659,6 +660,7 @@
                     playlist_name: playlistNameInput.value,
                     item_ids: itemIdsInput.value.split(',') // Send as an array
                 };
+                addProviderToPayload(payload);
 
                 try {
                     // MODIFIED: Changed API endpoint to be more generic
@@ -682,7 +684,8 @@
 
             // --- Event Listeners ---
             document.addEventListener('DOMContentLoaded', fetchConfig);
-            aiProviderSelect.addEventListener('change', updateAIProviderVisibility);
+            // AI provider is read-only; visibility is set once on load
+            // aiProviderSelect.addEventListener('change', updateAIProviderVisibility);
             playlistForm.addEventListener('submit', handleChatSubmit);
             createPlaylistForm.addEventListener('submit', handleCreateMediaServerPlaylist);
             

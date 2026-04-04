@@ -16,6 +16,7 @@
     z-index: 1000;
     /* Start off-screen by default */
     transform: translateX(-100%);
+    overflow-y: auto;
 }
 
 /* When the .open class is added by JS, slide the menu in */

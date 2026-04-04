@@ -1,0 +1,2609 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    /* Override container max-width for wider layout */
+    .container {
+        max-width: 1400px;
+    }
+
+    /* Existing Styles */
+    .param-group {
+        display: flex;
+        gap: 1.5rem;
+        margin-bottom: 1rem;
+        flex-wrap: wrap;
+    }
+
+    .param-group>div {
+        flex: 1;
+        min-width: 200px;
+    }
+
+    .slider-container {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .extend-params-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.5rem 2rem;
+        margin-bottom: 1rem;
+    }
+
+    .slider-value {
+        font-weight: 600;
+        color: var(--color-primary);
+    }
+
+    input[type="range"] {
+        width: 100%;
+    }
+
+    /* Dual-range slider for year filter */
+    .dual-range-container {
+        position: relative;
+        height: 30px;
+    }
+
+    .dual-range {
+        position: absolute;
+        width: 100%;
+        pointer-events: none;
+        -webkit-appearance: none;
+        appearance: none;
+        background: transparent;
+        top: 0;
+        margin: 0;
+    }
+
+    .dual-range::-webkit-slider-runnable-track {
+        height: 4px;
+        background: var(--border-color);
+        border-radius: 2px;
+    }
+
+    .dual-range::-moz-range-track {
+        height: 4px;
+        background: var(--border-color);
+        border-radius: 2px;
+    }
+
+    .dual-range::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        pointer-events: auto;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--color-primary);
+        cursor: pointer;
+        margin-top: -6px;
+        position: relative;
+        z-index: 3;
+    }
+
+    .dual-range::-moz-range-thumb {
+        pointer-events: auto;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--color-primary);
+        cursor: pointer;
+        border: none;
+    }
+
+    .dual-range-lower {
+        z-index: 1;
+    }
+
+    .dual-range-upper {
+        z-index: 2;
+    }
+
+    .dual-range-track {
+        position: absolute;
+        height: 4px;
+        background: var(--color-primary);
+        border-radius: 2px;
+        top: 50%;
+        transform: translateY(-50%);
+        pointer-events: none;
+        z-index: 1;
+    }
+
+    .results-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 1rem;
+        margin-bottom: 60px;
+        /* Space for player */
+    }
+
+    .results-table th,
+    .results-table td {
+        padding: 0.75rem;
+        text-align: left;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .results-table th {
+        background-color: var(--bg-table-header);
+        font-weight: 600;
+        color: var(--text-sub);
+    }
+
+    .results-table tr:hover {
+        background-color: var(--bg-table-hover);
+    }
+
+    .action-buttons {
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .btn-include {
+        background-color: var(--color-success);
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+    }
+
+    .btn-include:hover {
+        background-color: var(--color-success-hover);
+    }
+
+    .btn-exclude {
+        background-color: var(--color-danger);
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+    }
+
+    .btn-exclude:hover {
+        background-color: var(--color-danger-hover);
+    }
+
+    .btn-play {
+        background-color: var(--color-primary);
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+    }
+
+    .btn-play:hover {
+        background-color: var(--color-primary-hover);
+    }
+
+    .included-row {
+        background-color: var(--status-success-bg) !important;
+    }
+
+    .excluded-row {
+        background-color: var(--status-failure-bg) !important;
+        opacity: 0.6;
+    }
+
+    .status-badge {
+        display: inline-block;
+        padding: 0.25rem 0.75rem;
+        border-radius: 0.375rem;
+        font-size: 0.875rem;
+        font-weight: 600;
+    }
+
+    .status-included {
+        background-color: var(--color-success);
+        color: white;
+    }
+
+    .status-excluded {
+        background-color: var(--color-danger);
+        color: white;
+    }
+
+    /* Stats + Save row: two matched boxes side by side, fixed height */
+    .stats-save-row {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 1rem;
+        align-items: center;
+    }
+
+    .stats-container {
+        display: flex;
+        gap: 1.5rem;
+        height: 76px;
+        padding: 0 1rem;
+        background-color: var(--bg-code);
+        border: 1px solid var(--border-color);
+        border-radius: 0.5rem;
+        flex: 0 0 auto;
+        align-items: center;
+    }
+
+    /* Save playlist box — #id selector overrides global #playlist-creator in style.css */
+    #playlist-creator.save-playlist-inline {
+        flex: 1;
+        height: 76px;
+        margin: 0;
+        padding: 0 1rem;
+        background-color: var(--bg-code);
+        border: 1px solid var(--border-color);
+        border-radius: 0.5rem;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+    }
+
+    /* Override global #playlist-status margin/padding that adds invisible height */
+    #playlist-creator #playlist-status {
+        margin: 0;
+        padding: 0;
+    }
+
+    /* Override global form margins inside the save box */
+    #playlist-creator.save-playlist-inline form {
+        margin: 0;
+        padding: 0;
+    }
+
+    /* All elements inside save box: same 36px height, vertically centered */
+    #playlist-creator.save-playlist-inline .provider-selector,
+    #playlist-creator.save-playlist-inline form {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin: 0;
+        padding: 0;
+    }
+
+    #playlist-creator.save-playlist-inline form {
+        flex: 1;
+        gap: 0.75rem;
+    }
+
+    #playlist-creator.save-playlist-inline .provider-selector label {
+        margin: 0;
+        white-space: nowrap;
+        font-size: 0.875rem;
+        line-height: 36px;
+    }
+
+    #playlist-creator.save-playlist-inline .provider-selector select,
+    #playlist-creator.save-playlist-inline input[type="text"],
+    #playlist-creator.save-playlist-inline button[type="submit"] {
+        height: 36px;
+        box-sizing: border-box;
+        margin: 0;
+    }
+
+    #playlist-creator.save-playlist-inline input[type="text"] {
+        flex: 1;
+        min-width: 120px;
+        padding: 0 0.75rem;
+    }
+
+    #playlist-creator.save-playlist-inline button[type="submit"] {
+        padding: 0 1.25rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        white-space: nowrap;
+    }
+
+    .stat-item {
+        display: flex;
+        align-items: baseline;
+        gap: 0.4rem;
+    }
+
+    .stat-label {
+        font-size: 0.8rem;
+        color: var(--text-muted);
+    }
+
+    .stat-value {
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: var(--text-title);
+    }
+
+    /* Filter Builder Styles - Variable Aware */
+    .filter-builder {
+        background-color: var(--bg-code);
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        color: var(--text-main);
+        margin-bottom: 1.5rem;
+        border: 1px solid var(--border-color);
+    }
+
+    .filter-header {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .filter-header select {
+        background-color: var(--bg-input);
+        color: var(--text-main);
+        border: 1px solid var(--border-color-darker);
+        padding: 0.5rem;
+        border-radius: 0.375rem;
+    }
+
+    .filter-row {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 0.75rem;
+        flex-wrap: wrap;
+    }
+
+    .filter-row select,
+    .filter-row input {
+        background-color: var(--bg-input);
+        color: var(--text-main);
+        border: 1px solid var(--border-color-darker);
+        padding: 0.5rem;
+        border-radius: 0.375rem;
+        flex: 1;
+        min-width: 150px;
+    }
+
+    .btn-add-filter {
+        background: none;
+        border: none;
+        color: var(--color-primary);
+        font-size: 1.5rem;
+        cursor: pointer;
+        line-height: 1;
+        font-weight: bold;
+    }
+
+    .btn-remove-filter {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        font-size: 1.5rem;
+        cursor: pointer;
+        line-height: 1;
+    }
+
+    .btn-add-filter:hover {
+        color: var(--color-primary-hover);
+    }
+
+    .btn-remove-filter:hover {
+        color: var(--color-danger);
+    }
+
+    .tab-container {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 1rem;
+        border-bottom: 2px solid var(--border-color);
+    }
+
+    .tab-btn {
+        padding: 0.75rem 1.5rem;
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-weight: 600;
+        color: #6b7280;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+    }
+
+    .tab-btn.active {
+        color: var(--color-primary);
+        border-bottom-color: var(--color-primary);
+    }
+
+    /* Sticky Player Styles */
+    .sticky-player {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background-color: #111827;
+        color: white;
+        padding: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 2rem;
+        box-shadow: 0 -4px 6px -1px rgba(0, 0, 0, 0.1);
+        z-index: 1000;
+        border-top: 1px solid #374151;
+    }
+
+    .player-info {
+        flex: 0 0 250px;
+        overflow: hidden;
+        white-space: nowrap;
+    }
+
+    .player-title {
+        font-weight: 700;
+        font-size: 1.1rem;
+        text-overflow: ellipsis;
+        overflow: hidden;
+    }
+
+    .player-artist {
+        font-size: 0.9rem;
+        color: #9ca3af;
+        text-overflow: ellipsis;
+        overflow: hidden;
+    }
+
+    .player-controls {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .player-buttons {
+        display: flex;
+        justify-content: center;
+        gap: 1rem;
+        align-items: center;
+    }
+
+    .player-btn {
+        background: none;
+        border: none;
+        color: white;
+        cursor: pointer;
+        font-size: 1.5rem;
+    }
+
+    .player-btn:hover {
+        color: var(--color-primary, #3B82F6);
+    }
+
+    .progress-container {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        font-size: 0.875rem;
+        color: #9ca3af;
+    }
+
+    .progress-bar {
+        flex: 1;
+        height: 4px;
+        background-color: #374151;
+        border-radius: 2px;
+        position: relative;
+        cursor: pointer;
+    }
+
+    .progress-fill {
+        height: 100%;
+        background-color: var(--color-primary, #3B82F6);
+        border-radius: 2px;
+        width: 0%;
+    }
+
+    /* Hidden class utility */
+    .hidden {
+        display: none !important;
+    }
+
+    /* Loading spinner */
+    .loading-spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid var(--border-color, #d1d5db);
+        border-top-color: var(--color-primary, #3B82F6);
+        border-radius: 50%;
+        animation: spin 0.6s linear infinite;
+        vertical-align: middle;
+        margin-right: 0.5rem;
+    }
+
+    @keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+
+    #status:not(:empty) {
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.75rem;
+        border-radius: 0.375rem;
+        background-color: var(--bg-code);
+        border: 1px solid var(--border-color);
+    }
+
+    /* Collapsible Drawer Styles */
+    .drawer-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem 1rem;
+        background-color: var(--bg-code);
+        border: 1px solid var(--border-color);
+        border-radius: 0.5rem;
+        cursor: pointer;
+        margin-bottom: 0;
+    }
+
+    .drawer-header:hover {
+        background-color: var(--bg-table-hover);
+    }
+
+    .drawer-header h3 {
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 1rem;
+    }
+
+    .drawer-toggle-icon {
+        transition: transform 0.2s ease;
+    }
+
+    .drawer-header.expanded .drawer-toggle-icon {
+        transform: rotate(180deg);
+    }
+
+    .drawer-hint {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+    }
+
+    .drawer-content {
+        border: 1px solid var(--border-color);
+        border-top: none;
+        border-radius: 0 0 0.5rem 0.5rem;
+        max-height: 300px;
+        overflow-y: auto;
+    }
+
+    .drawer-content.collapsed {
+        max-height: 0;
+        overflow: hidden;
+        border: none;
+    }
+
+    .badge {
+        background-color: var(--color-primary);
+        color: white;
+        padding: 0.125rem 0.5rem;
+        border-radius: 9999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+
+    /* Weight Button */
+    .btn-weight {
+        background-color: var(--bg-input);
+        color: var(--text-main);
+        border: 1px solid var(--border-color-darker);
+        padding: 0.375rem 0.625rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+        font-weight: 600;
+        min-width: 45px;
+    }
+
+    .btn-weight:hover {
+        border-color: var(--color-primary);
+    }
+
+    .btn-weight.weight-high {
+        background-color: var(--color-primary);
+        color: white;
+    }
+
+    /* Remove Button */
+    .btn-remove {
+        background-color: var(--color-danger);
+        color: white;
+        border: none;
+        padding: 0.5rem 0.75rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+    }
+
+    .btn-remove:hover {
+        background-color: var(--color-danger-hover);
+    }
+
+    /* Results table container - part of normal page flow */
+    .results-table-container {
+        margin-bottom: 60px;
+    }
+
+    /* Stacked title and artist in table cell */
+    .track-info {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .track-title {
+        font-weight: 600;
+        color: var(--text-main);
+    }
+
+    .track-artist {
+        font-size: 0.875rem;
+        color: var(--text-muted);
+    }
+
+    /* Dropdown styling for filter values */
+    .filter-value-dropdown {
+        background-color: var(--bg-input);
+        color: var(--text-main);
+        border: 1px solid var(--border-color-darker);
+        padding: 0.5rem;
+        border-radius: 0.375rem;
+        flex: 1;
+        min-width: 150px;
+    }
+
+    /* Button styling for Send to Extend */
+    .btn-send-extend {
+        background-color: #8B5CF6;
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+        margin-left: 0.5rem;
+    }
+
+    .btn-send-extend:hover {
+        background-color: #7C3AED;
+    }
+
+    /* Deduplication UI */
+    .dedup-controls {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-left: auto;
+    }
+
+    .dedup-slider-group {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.875rem;
+    }
+
+    .dedup-slider-group input[type="range"] {
+        width: 140px;
+    }
+
+    .dedup-slider-label {
+        color: var(--text-muted);
+        min-width: 60px;
+        font-size: 0.75rem;
+    }
+
+    .dedup-slider-value {
+        font-weight: 600;
+        color: var(--color-primary);
+        min-width: 35px;
+        text-align: right;
+    }
+
+    .btn-find-duplicates {
+        background-color: #8B5CF6;
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+        white-space: nowrap;
+    }
+
+    .btn-find-duplicates:hover {
+        background-color: #7C3AED;
+    }
+
+    .dedup-panel {
+        background-color: var(--bg-code);
+        border: 1px solid var(--border-color);
+        border-radius: 0.5rem;
+        padding: 1rem;
+        margin-bottom: 1rem;
+        max-height: 50vh;
+        overflow-y: auto;
+    }
+
+    .dedup-panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin: -1rem -1rem 1rem -1rem;
+        padding: 0.75rem 1rem;
+        position: sticky;
+        top: -1rem;
+        background-color: var(--bg-code);
+        z-index: 2;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .dedup-panel-header h3 {
+        margin: 0;
+        font-size: 1rem;
+    }
+
+    .btn-remove-all-marked {
+        background-color: var(--color-danger);
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+    }
+
+    .btn-remove-all-marked:hover {
+        background-color: var(--color-danger-hover);
+    }
+
+    .dedup-group {
+        border: 1px solid var(--border-color);
+        border-radius: 0.375rem;
+        margin-bottom: 0.75rem;
+        overflow: hidden;
+    }
+
+    .dedup-group-header {
+        background-color: var(--bg-table-header);
+        padding: 0.5rem 0.75rem;
+        font-weight: 600;
+        font-size: 0.875rem;
+        color: var(--text-muted);
+    }
+
+    .dedup-track {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.5rem 0.75rem;
+        border-top: 1px solid var(--border-color);
+        cursor: pointer;
+    }
+
+    .dedup-track:hover {
+        background-color: var(--bg-table-hover);
+    }
+
+    .dedup-track.keep {
+        background-color: var(--status-success-bg);
+    }
+
+    .dedup-track.remove {
+        background-color: var(--status-failure-bg);
+        opacity: 0.7;
+    }
+
+    .dedup-badge {
+        display: inline-block;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.25rem;
+        font-size: 0.75rem;
+        font-weight: 700;
+        min-width: 55px;
+        text-align: center;
+        flex-shrink: 0;
+    }
+
+    .dedup-badge.keep {
+        background-color: var(--color-success);
+        color: white;
+    }
+
+    .dedup-badge.remove {
+        background-color: var(--color-danger);
+        color: white;
+    }
+
+    .dedup-track-info {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .dedup-track-title {
+        font-weight: 600;
+        color: var(--text-main);
+    }
+
+    .dedup-track-meta {
+        font-size: 0.8rem;
+        color: var(--text-muted);
+    }
+
+    .dedup-no-results {
+        text-align: center;
+        padding: 1rem;
+        color: var(--text-muted);
+        font-style: italic;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Playlist Curator</h1>
+        <p>Create dynamic playlists using Smart Search or existing playlists, and discover similar tracks.</p>
+    </header>
+
+    <!-- Source Selection Tabs -->
+    <div class="tab-container">
+        <button class="tab-btn active" onclick="switchTab(event, 'smart')">Smart Search</button>
+        <button class="tab-btn" onclick="switchTab(event, 'playlist')">Playlist Extender</button>
+    </div>
+
+    <form id="extend-playlist-form">
+
+        <!-- Smart Filters Section -->
+        <div id="smart-filters-section" class="filter-builder">
+            <div class="filter-header">
+                <span>Match</span>
+                <select id="match-mode" name="match_mode" style="width: auto; min-width: 0; flex: 0 0 auto;">
+                    <option value="all">all</option>
+                    <option value="any">any</option>
+                </select>
+                <span>of the following rules:</span>
+                <button type="button" class="btn-add-filter" onclick="addFilterRow()">+</button>
+            </div>
+            <div id="filter-rows">
+                <!-- Filter rows will be added here -->
+            </div>
+            <!-- Search Button for Smart Filters -->
+            <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
+                <button type="button" id="btn-search-filters" onclick="findSimilarSongs(true)">
+                    Search
+                </button>
+                <button type="button" id="btn-send-to-extend" class="btn-send-extend" onclick="sendToExtendPlaylist()">
+                    Send to Extend Playlist
+                </button>
+            </div>
+        </div>
+
+        <!-- Existing Playlist Section -->
+        <div id="playlist-section" class="param-group hidden">
+            <div>
+                <label for="playlist_select" class="label-with-tooltip">
+                    Select Playlist:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Choose a playlist from AudioMuse clusters or load one from your media server providers.</span>
+                    </span>
+                </label>
+                <select id="playlist_select" name="playlist_select" style="width: 100%;">
+                    <option value="">-- Select a playlist --</option>
+                </select>
+            </div>
+            <div>
+                <label for="provider_picker">Load from Provider:</label>
+                <select id="provider_picker" style="width: 100%;">
+                    <option value="">All Providers</option>
+                </select>
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem;">
+                    <button type="button" id="btn-load-provider" style="background-color:#6366F1;color:white;border:none;padding:0.5rem 1rem;border-radius:0.375rem;cursor:pointer;font-size:0.875rem;white-space:nowrap;" onclick="loadProviderPlaylists()">
+                        Load Playlists
+                    </button>
+                    <span id="provider-playlist-status" style="font-size:0.875rem;"></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Common Parameters (Only visible for Playlist Extend mode) -->
+        <div id="extend-params" class="hidden">
+            <div class="extend-params-grid">
+                <div class="slider-container">
+                    <label for="similarity_threshold" class="label-with-tooltip">
+                        Similarity Threshold: <span id="threshold_value" class="slider-value">0.50</span>
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Lower values = more similar songs. Higher values = more
+                                diverse results. Range: 0.0 (most similar) to 1.0 (least similar).</span>
+                        </span>
+                    </label>
+                    <input type="range" id="similarity_threshold" name="similarity_threshold" min="0" max="1"
+                        step="0.01" value="0.50">
+                </div>
+                <div class="slider-container">
+                    <label for="min_rating" class="label-with-tooltip">
+                        Minimum Rating: <span id="min_rating_value" class="slider-value">Off</span>
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Filter results by minimum user rating (0-5 stars). Set to 0 to disable rating filter. Songs without ratings will be excluded when filter is active.</span>
+                        </span>
+                    </label>
+                    <input type="range" id="min_rating" name="min_rating" min="0" max="5"
+                        step="0.5" value="0">
+                </div>
+                <div>
+                    <label for="max_songs" class="label-with-tooltip">
+                        Maximum Songs:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Maximum number of similar songs to find.</span>
+                        </span>
+                    </label>
+                    <input type="number" id="max_songs" name="max_songs" value="50" min="1" max="200">
+                </div>
+                <div class="slider-container" id="year-range-group" style="display: none;">
+                    <label class="label-with-tooltip">
+                        Year Range: <span id="year_range_value" class="slider-value">Off</span>
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Filter results by release year. Drag the sliders to set a min and max year range.</span>
+                        </span>
+                    </label>
+                    <div class="dual-range-container">
+                        <input type="range" id="year_min_slider" class="dual-range dual-range-lower" min="1900" max="2030" step="1" value="1900">
+                        <input type="range" id="year_max_slider" class="dual-range dual-range-upper" min="1900" max="2030" step="1" value="2030">
+                        <div class="dual-range-track" id="year-range-track"></div>
+                    </div>
+                </div>
+            </div>
+
+            <button type="submit" id="btn-extend-playlist">
+                Find Songs
+            </button>
+        </div>
+    </form>
+</section>
+
+<section id="stats-container" class="hidden">
+    <div class="stats-save-row">
+        <div class="stats-container">
+            <div class="stat-item">
+                <span class="stat-label">Selected Songs</span>
+                <span id="stat-selected" class="stat-value">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Total Songs</span>
+                <span id="stat-total" class="stat-value">0</span>
+            </div>
+            <div class="dedup-controls">
+                <div class="dedup-slider-group label-with-tooltip">
+                    <span class="dedup-slider-label" id="dedup-sensitivity-label">Strict</span>
+                    <input type="range" id="dedup-threshold" min="0.01" max="0.15" step="0.005" value="0.015">
+                    <span class="dedup-slider-value" id="dedup-threshold-value">0.015</span>
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Duplicate sensitivity based on audio analysis similarity.
+Strict (0.01-0.03): Same recording, different metadata only.
+Moderate (0.03-0.07): Catches most duplicates across compilations.
+Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</span>
+                    </span>
+                </div>
+                <button type="button" id="btn-find-duplicates" class="btn-find-duplicates" onclick="findDuplicates()">Find Duplicates</button>
+            </div>
+        </div>
+        <div id="playlist-creator" class="save-playlist-inline hidden">
+            <div id="provider-selector-container"></div>
+            <form id="save-playlist-form">
+                <input type="text" id="new_playlist_name" name="new_playlist_name" required
+                    placeholder="Playlist name">
+                <button type="submit" id="btn-save-playlist">Save</button>
+            </form>
+            <div id="playlist-status"></div>
+        </div>
+    </div>
+</section>
+
+<!-- Dedup Review Panel -->
+<section id="dedup-panel" class="dedup-panel hidden">
+    <div class="dedup-panel-header">
+        <h3 id="dedup-panel-title">Duplicates Found</h3>
+        <div style="display: flex; gap: 0.5rem;">
+            <button type="button" class="btn-remove-all-marked" onclick="removeAllMarkedDuplicates()">Remove All Marked</button>
+            <button type="button" style="background:none;border:none;cursor:pointer;font-size:1.2rem;color:var(--text-muted);" onclick="closeDedupPanel()">&times;</button>
+        </div>
+    </div>
+    <div id="dedup-groups-container"></div>
+</section>
+
+<!-- Source Tracks Drawer (Collapsible) -->
+<section id="source-drawer-container" class="hidden" style="margin-bottom: 1rem;">
+    <div class="drawer-header" onclick="toggleDrawer()">
+        <h3>
+            <span class="drawer-toggle-icon">&#9660;</span>
+            Source Playlist
+            <span id="source-track-count" class="badge">0</span>
+        </h3>
+        <span class="drawer-hint">Click to expand</span>
+    </div>
+    <div id="source-drawer-content" class="drawer-content collapsed">
+        <div id="source-tracks-table-wrapper"></div>
+    </div>
+</section>
+
+<div id="status"></div>
+
+<section id="results-container" class="hidden">
+    <h2>Search Results</h2>
+    <div id="results-table-wrapper" class="results-table-container"></div>
+</section>
+
+<!-- Sticky Web Player -->
+<div id="web-player" class="sticky-player hidden">
+    <audio id="audio-element"></audio>
+    <div class="player-info">
+        <div id="player-title" class="player-title">Not Playing</div>
+        <div id="player-artist" class="player-artist"></div>
+    </div>
+    <div class="player-controls">
+        <div class="player-buttons">
+            <button class="player-btn" onclick="seek(-10)">&#8634;</button>
+            <button id="play-pause-btn" class="player-btn" onclick="togglePlay()">&#9658;</button>
+            <button class="player-btn" onclick="seek(10)">&#8635;</button>
+            <button class="player-btn" onclick="stopPlayer()" style="font-size: 1.2rem;">&#9632;</button>
+        </div>
+        <div class="progress-container">
+            <span id="current-time">0:00</span>
+            <div class="progress-bar" onclick="seekTo(event)">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <span id="duration">0:00</span>
+        </div>
+    </div>
+    <div style="flex: 0 0 100px;">
+        <!-- Volume or other controls if needed -->
+    </div>
+</div>
+
+{% endblock %}
+
+{% block bodyAdditions %}
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+<script src="{{ url_for('static', filename='provider-selector.js') }}"></script>
+<script>
+    // --- Helpers ---
+    function escHtml(s) {
+        return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+            .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+    }
+
+    // --- Loading & Status Helpers ---
+    function setLoadingStatus(message) {
+        const el = document.getElementById('status');
+        el.innerHTML = '<span class="loading-spinner"></span>' + escHtml(message);
+        el.style.color = 'var(--color-primary)';
+    }
+
+    function clearStatus() {
+        const el = document.getElementById('status');
+        el.textContent = '';
+        el.style.color = '';
+    }
+
+    function setErrorStatus(message) {
+        const el = document.getElementById('status');
+        el.textContent = message;
+        el.style.color = 'var(--color-danger, red)';
+    }
+
+    function setSearchButtonsDisabled(disabled) {
+        ['btn-search-filters', 'btn-send-to-extend', 'btn-extend-playlist'].forEach(id => {
+            const btn = document.getElementById(id);
+            if (btn) btn.disabled = disabled;
+        });
+    }
+
+    // --- Global Variables ---
+    let activeTab = 'smart';
+    let includedIds = [];  // For extend mode - tracks explicitly included
+    let excludedIds = [];
+    let currentResults = [];  // Store current results for saving
+    let playlistStats = { selected: 0, total: 0 };
+    let smartFilterSourceIds = [];  // Store Smart Filter results for extend
+
+    // Separate state for each tab
+    let smartFilterResults = [];      // Results from Smart Filter search
+    let extendPlaylistResults = [];   // Recommended songs from extend operation
+    let includedSongsData = [];       // Full track objects for included songs
+    let sourcePlaylistCount = 0;      // Track the number of songs in the source playlist/filter
+
+    // Track weights state
+    let sourceWeights = {};           // {item_id: weight} for source playlist tracks
+    let includedWeights = {};         // {item_id: weight} for included recommendations
+    let sourceTracksData = [];        // Full track objects for drawer display
+    const VALID_WEIGHTS = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
+
+    // Filter options (loaded from API)
+    let filterOptions = {
+        keys: [],
+        scales: [],
+        moods: [],
+        bpm_ranges: [],
+        energy_ranges: []
+    };
+
+    // Fields config with types
+    const filterFields = [
+        { value: 'artist', label: 'Artist', type: 'text' },
+        { value: 'title', label: 'Track Title', type: 'text' },
+        { value: 'album', label: 'Album', type: 'text' },
+        { value: 'album_artist', label: 'Album Artist', type: 'text' },
+        { value: 'genre', label: 'Genre', type: 'dropdown', optionsKey: 'moods' },
+        { value: 'mood', label: 'Mood / Style', type: 'dropdown', optionsKey: 'moods' },
+        { value: 'features', label: 'Vibe (danceable, aggressive...)', type: 'dropdown', optionsKey: 'features' },
+        { value: 'year', label: 'Year', type: 'number' },
+        { value: 'decade', label: 'Decade', type: 'dropdown', optionsKey: 'year_ranges' },
+        { value: 'rating', label: 'Rating', type: 'dropdown', optionsKey: 'rating_ranges' },
+        { value: 'bpm', label: 'BPM', type: 'dropdown', optionsKey: 'bpm_ranges' },
+        { value: 'energy', label: 'Energy', type: 'dropdown', optionsKey: 'energy_ranges' },
+        { value: 'key', label: 'Key', type: 'dropdown', optionsKey: 'keys' },
+        { value: 'scale', label: 'Scale', type: 'dropdown', optionsKey: 'scales' },
+    ];
+
+    const operators = {
+        text: [
+            { value: 'contains', label: 'contains' },
+            { value: 'does_not_contain', label: 'does not contain' },
+            { value: 'is', label: 'is' },
+            { value: 'is_not', label: 'is not' }
+        ],
+        dropdown: [
+            { value: 'is', label: 'is' },
+            { value: 'is_not', label: 'is not' }
+        ],
+        number: [
+            { value: 'is', label: 'is' },
+            { value: 'is_not', label: 'is not' },
+            { value: 'greater_than', label: 'is greater than' },
+            { value: 'less_than', label: 'is less than' }
+        ]
+    };
+
+    // --- Tab Switching ---
+    window.switchTab = function (event, tab, keepState = true) {
+        activeTab = tab;
+        document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+        if (event && event.currentTarget) {
+            event.currentTarget.classList.add('active');
+        } else {
+            // Programmatic switch - activate the correct tab button
+            const tabBtns = document.querySelectorAll('.tab-btn');
+            if (tab === 'smart') tabBtns[0].classList.add('active');
+            else if (tab === 'playlist') tabBtns[1].classList.add('active');
+            else if (tab === 'extend') tabBtns[1].classList.add('active'); // Extend uses playlist tab
+        }
+
+        if (tab === 'smart') {
+            document.getElementById('smart-filters-section').classList.remove('hidden');
+            document.getElementById('playlist-section').classList.add('hidden');
+            document.getElementById('extend-params').classList.add('hidden');
+            document.getElementById('source-drawer-container').classList.add('hidden');
+            closeDedupPanel();
+        } else if (tab === 'extend') {
+            // Extend mode - show extend params but hide both source sections
+            document.getElementById('smart-filters-section').classList.add('hidden');
+            document.getElementById('playlist-section').classList.add('hidden');
+            document.getElementById('extend-params').classList.remove('hidden');
+        } else {
+            document.getElementById('smart-filters-section').classList.add('hidden');
+            document.getElementById('playlist-section').classList.remove('hidden');
+            document.getElementById('extend-params').classList.remove('hidden');
+            // Update Smart Filter dropdown option
+            updateSmartFilterDropdownOption();
+        }
+
+        // Reset lists and clear results on tab switch (unless keepState)
+        if (!keepState) {
+            excludedIds = [];
+            includedIds = [];
+            includedSongsData = [];
+            currentResults = [];
+            smartFilterResults = [];
+            extendPlaylistResults = [];
+            document.getElementById('results-container').classList.add('hidden');
+            document.getElementById('stats-container').classList.add('hidden');
+            document.getElementById('playlist-creator').classList.add('hidden');
+            document.getElementById('results-table-wrapper').innerHTML = '';
+            clearStatus();
+        } else {
+            // Re-render results with appropriate data for the active tab
+            if (tab === 'smart') {
+                // Smart Filter tab: show smartFilterResults with included songs at top
+                if (smartFilterResults.length > 0 || includedSongsData.length > 0) {
+                    displayResultsForSmartFilter();
+                    document.getElementById('results-container').classList.remove('hidden');
+                    document.getElementById('stats-container').classList.remove('hidden');
+                    document.getElementById('playlist-creator').classList.remove('hidden');
+                } else {
+                    // No smart results — hide everything from the extend tab
+                    document.getElementById('results-container').classList.add('hidden');
+                    document.getElementById('stats-container').classList.add('hidden');
+                    document.getElementById('playlist-creator').classList.add('hidden');
+                    document.getElementById('results-table-wrapper').innerHTML = '';
+                    clearStatus();
+                }
+            } else {
+                // Extend/Playlist tab: show extendPlaylistResults
+                if (extendPlaylistResults.length > 0) {
+                    displayResults(extendPlaylistResults);
+                    document.getElementById('results-container').classList.remove('hidden');
+                    document.getElementById('stats-container').classList.remove('hidden');
+                    document.getElementById('playlist-creator').classList.remove('hidden');
+                } else {
+                    document.getElementById('results-container').classList.add('hidden');
+                    document.getElementById('stats-container').classList.add('hidden');
+                    document.getElementById('playlist-creator').classList.add('hidden');
+                    document.getElementById('results-table-wrapper').innerHTML = '';
+                    clearStatus();
+                }
+            }
+            updateStatsDisplay();
+        }
+    };
+
+    // --- Filter Builder Logic ---
+    window.addFilterRow = function () {
+        const row = document.createElement('div');
+        row.className = 'filter-row';
+
+        // Field Select
+        const fieldSelect = document.createElement('select');
+        fieldSelect.className = 'filter-field';
+        filterFields.forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f.value;
+            opt.textContent = f.label;
+            opt.dataset.type = f.type;
+            opt.dataset.optionsKey = f.optionsKey || '';
+            fieldSelect.appendChild(opt);
+        });
+
+        // Operator Select
+        const opSelect = document.createElement('select');
+        opSelect.className = 'filter-operator';
+
+        // Value Container (will hold input or select)
+        const valueContainer = document.createElement('div');
+        valueContainer.className = 'filter-value-container';
+        valueContainer.style.flex = '1';
+        valueContainer.style.minWidth = '150px';
+
+        // Remove Button
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn-remove-filter';
+        removeBtn.innerHTML = '&times;';
+        removeBtn.onclick = () => row.remove();
+
+        // Update operators and value input when field changes
+        fieldSelect.onchange = () => updateFilterRowUI(fieldSelect, opSelect, valueContainer);
+
+        row.appendChild(fieldSelect);
+        row.appendChild(opSelect);
+        row.appendChild(valueContainer);
+        row.appendChild(removeBtn);
+
+        document.getElementById('filter-rows').appendChild(row);
+        updateFilterRowUI(fieldSelect, opSelect, valueContainer); // Initialize
+    };
+
+    function updateFilterRowUI(fieldSelect, opSelect, valueContainer) {
+        const selectedOption = fieldSelect.options[fieldSelect.selectedIndex];
+        const fieldType = selectedOption.dataset.type;
+        const optionsKey = selectedOption.dataset.optionsKey;
+        const field = fieldSelect.value;
+
+        // Update operators
+        opSelect.innerHTML = '';
+        let ops;
+        if (fieldType === 'dropdown') {
+            ops = operators.dropdown;
+        } else if (fieldType === 'number') {
+            ops = operators.number;
+        } else {
+            ops = operators.text;
+        }
+
+        ops.forEach(op => {
+            const opt = document.createElement('option');
+            opt.value = op.value;
+            opt.textContent = op.label;
+            opSelect.appendChild(opt);
+        });
+
+        // Update value input
+        valueContainer.innerHTML = '';
+
+        if (fieldType === 'dropdown' && optionsKey) {
+            const select = document.createElement('select');
+            select.className = 'filter-value filter-value-dropdown';
+
+            // Add empty option
+            const emptyOpt = document.createElement('option');
+            emptyOpt.value = '';
+            emptyOpt.textContent = '-- Select --';
+            select.appendChild(emptyOpt);
+
+            // Get options from filterOptions
+            const options = filterOptions[optionsKey] || [];
+            options.forEach(opt => {
+                const option = document.createElement('option');
+                if (typeof opt === 'object') {
+                    option.value = opt.value;
+                    option.textContent = opt.label;
+                } else {
+                    option.value = opt;
+                    option.textContent = opt;
+                }
+                select.appendChild(option);
+            });
+
+            // Enter key triggers search
+            select.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    findSimilarSongs(true);
+                }
+            });
+            valueContainer.appendChild(select);
+        } else {
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'filter-value';
+            // Enter key triggers search
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    findSimilarSongs(true);
+                }
+            });
+            valueContainer.appendChild(input);
+        }
+    }
+
+    function getFilters() {
+        const rows = document.querySelectorAll('.filter-row');
+        const filters = [];
+        rows.forEach(row => {
+            const field = row.querySelector('.filter-field').value;
+            const operator = row.querySelector('.filter-operator').value;
+            const valueElement = row.querySelector('.filter-value');
+            const value = valueElement ? valueElement.value : '';
+            if (value) {
+                filters.push({ field, operator, value });
+            }
+        });
+        return filters;
+    }
+
+    // --- Load Filter Options from API ---
+    async function loadFilterOptions() {
+        try {
+            const response = await fetch("{{ url_for('playlist_curator_bp.get_filter_options') }}");
+            const data = await response.json();
+            filterOptions = data;
+        } catch (error) {
+            console.error('Failed to load filter options:', error);
+            // Use fallback hardcoded values
+            filterOptions = {
+                keys: ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'],
+                scales: ['major', 'minor'],
+                moods: ['rock', 'pop', 'alternative', 'indie', 'electronic'],
+                bpm_ranges: [
+                    { value: '0-80', label: 'Slow (< 80 BPM)' },
+                    { value: '80-100', label: 'Moderate (80-100 BPM)' },
+                    { value: '100-120', label: 'Medium (100-120 BPM)' },
+                    { value: '120-140', label: 'Fast (120-140 BPM)' },
+                    { value: '140-160', label: 'Very Fast (140-160 BPM)' },
+                    { value: '160-999', label: 'Extremely Fast (160+ BPM)' }
+                ],
+                energy_ranges: [
+                    { value: '0-0.33', label: 'Low Energy' },
+                    { value: '0.33-0.66', label: 'Medium Energy' },
+                    { value: '0.66-1', label: 'High Energy' }
+                ]
+            };
+        }
+    }
+
+    // --- Initialization ---
+    (async () => {
+        // Load filter options first
+        await loadFilterOptions();
+
+        // Initialize year range sliders from DB data
+        if (filterOptions.year_min && filterOptions.year_max) {
+            const yearGroup = document.getElementById('year-range-group');
+            const minSlider = document.getElementById('year_min_slider');
+            const maxSlider = document.getElementById('year_max_slider');
+            minSlider.min = filterOptions.year_min;
+            minSlider.max = filterOptions.year_max;
+            minSlider.value = filterOptions.year_min;
+            maxSlider.min = filterOptions.year_min;
+            maxSlider.max = filterOptions.year_max;
+            maxSlider.value = filterOptions.year_max;
+            document.getElementById('year_range_value').textContent = 'Off';
+            yearGroup.style.display = '';
+            // Initialize track highlight
+            setTimeout(updateYearDisplay, 0);
+        }
+
+        // Load playlists for the select dropdown
+        loadPlaylists();
+
+        // Add initial filter row
+        addFilterRow();
+
+        // Clear source data when playlist selection changes (forces re-fetch for provider playlists)
+        document.getElementById('playlist_select').addEventListener('change', () => {
+            sourceTracksData = [];
+            smartFilterSourceIds = [];
+            sourceWeights = {};
+            extendPlaylistResults = [];
+            includedIds = [];
+            includedSongsData = [];
+            excludedIds = [];
+            document.getElementById('source-drawer-container').classList.add('hidden');
+            document.getElementById('results-container').classList.add('hidden');
+            document.getElementById('stats-container').classList.add('hidden');
+        });
+
+        // Update threshold display
+        document.getElementById('similarity_threshold').addEventListener('input', (e) => {
+            document.getElementById('threshold_value').textContent = parseFloat(e.target.value).toFixed(2);
+        });
+
+        // Update min_rating display
+        document.getElementById('min_rating').addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            document.getElementById('min_rating_value').textContent = val === 0 ? 'Off' : val.toFixed(1) + ' stars';
+        });
+
+        // Year range sliders
+        const yearMinSlider = document.getElementById('year_min_slider');
+        const yearMaxSlider = document.getElementById('year_max_slider');
+        const yearRangeLabel = document.getElementById('year_range_value');
+        const yearRangeTrack = document.getElementById('year-range-track');
+
+        function updateYearDisplay() {
+            const minVal = parseInt(yearMinSlider.value);
+            const maxVal = parseInt(yearMaxSlider.value);
+            const dbMin = parseInt(yearMinSlider.min);
+            const dbMax = parseInt(yearMaxSlider.max);
+            if (minVal === dbMin && maxVal === dbMax) {
+                yearRangeLabel.textContent = 'Off';
+            } else {
+                yearRangeLabel.textContent = minVal + ' – ' + maxVal;
+            }
+            // Update highlighted track between thumbs
+            const range = dbMax - dbMin;
+            if (range > 0) {
+                const leftPct = ((minVal - dbMin) / range) * 100;
+                const rightPct = ((maxVal - dbMin) / range) * 100;
+                yearRangeTrack.style.left = leftPct + '%';
+                yearRangeTrack.style.width = (rightPct - leftPct) + '%';
+            }
+        }
+
+        yearMinSlider.addEventListener('input', () => {
+            if (parseInt(yearMinSlider.value) > parseInt(yearMaxSlider.value)) {
+                yearMinSlider.value = yearMaxSlider.value;
+            }
+            updateYearDisplay();
+        });
+
+        yearMaxSlider.addEventListener('input', () => {
+            if (parseInt(yearMaxSlider.value) < parseInt(yearMinSlider.value)) {
+                yearMaxSlider.value = yearMinSlider.value;
+            }
+            updateYearDisplay();
+        });
+
+        // Player events
+        const audio = document.getElementById('audio-element');
+        audio.addEventListener('timeupdate', updateProgress);
+        audio.addEventListener('ended', () => {
+            document.getElementById('play-pause-btn').innerHTML = '&#9658;';
+        });
+
+        // Handle URL parameter for ?tab=extend (from redirect)
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('tab') === 'extend') {
+            switchTab(null, 'playlist');
+        }
+
+        // Initialize provider selector
+        if (typeof initProviderSelector === 'function') initProviderSelector();
+        loadProviderPicker();
+    })();
+
+    // --- API Interaction ---
+    async function loadPlaylists() {
+        try {
+            const response = await fetch("{{ url_for('get_playlists_endpoint') }}");
+            const playlists = await response.json();
+            const select = document.getElementById('playlist_select');
+            select.innerHTML = '<option value="">-- Select a playlist --</option>';
+            for (const [name, tracks] of Object.entries(playlists)) {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = `${name} (${tracks.length} songs)`;
+                select.appendChild(option);
+            }
+            // Add Smart Filter option if available
+            updateSmartFilterDropdownOption();
+        } catch (error) {
+            console.error('Failed to load playlists:', error);
+        }
+    }
+
+    // --- Load Provider Playlists ---
+    async function loadProviderPicker() {
+        try {
+            const resp = await fetch('/api/providers/enabled');
+            const providers = await resp.json();
+            const picker = document.getElementById('provider_picker');
+            picker.innerHTML = '<option value="">All Providers</option>';
+            providers.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.id;
+                opt.textContent = p.name || p.provider_type;
+                picker.appendChild(opt);
+            });
+        } catch (e) {
+            console.error('Failed to load provider picker:', e);
+        }
+    }
+
+    window.loadProviderPlaylists = async function() {
+        const providerBtn = document.getElementById('btn-load-provider');
+        if (providerBtn) providerBtn.disabled = true;
+        const statusSpan = document.getElementById('provider-playlist-status');
+        statusSpan.textContent = 'Loading...';
+        statusSpan.style.color = 'var(--color-primary)';
+
+        const selectedProvider = document.getElementById('provider_picker').value;
+        const url = selectedProvider
+            ? `{{ url_for('playlist_curator_bp.provider_playlists_api') }}?provider_id=${selectedProvider}`
+            : "{{ url_for('playlist_curator_bp.provider_playlists_api') }}";
+
+        try {
+            const response = await fetch(url);
+            const playlists = await response.json();
+            if (!response.ok) throw new Error(playlists.error || 'Failed');
+
+            const select = document.getElementById('playlist_select');
+
+            // Remove old provider options
+            select.querySelectorAll('option[data-provider]').forEach(o => o.remove());
+
+            if (playlists.length === 0) {
+                statusSpan.textContent = 'No provider playlists found';
+                statusSpan.style.color = 'var(--text-muted)';
+                setTimeout(() => { statusSpan.textContent = ''; }, 3000);
+                return;
+            }
+
+            // Group by provider
+            const byProvider = {};
+            playlists.forEach(pl => {
+                if (!byProvider[pl.provider_name]) byProvider[pl.provider_name] = [];
+                byProvider[pl.provider_name].push(pl);
+            });
+
+            // Add optgroups per provider
+            for (const [provName, pls] of Object.entries(byProvider)) {
+                const group = document.createElement('optgroup');
+                group.label = provName;
+                group.dataset.provider = 'true';
+                pls.forEach(pl => {
+                    const opt = document.createElement('option');
+                    opt.value = `__provider__${pl.provider_id}__${pl.playlist_id}`;
+                    opt.textContent = `${pl.playlist_name} (${pl.song_count} songs)`;
+                    opt.dataset.provider = 'true';
+                    group.appendChild(opt);
+                });
+                select.appendChild(group);
+            }
+
+            statusSpan.textContent = `${playlists.length} playlists loaded`;
+            statusSpan.style.color = 'var(--color-success)';
+            setTimeout(() => { statusSpan.textContent = ''; }, 3000);
+
+        } catch (error) {
+            console.error('Load provider playlists error:', error);
+            statusSpan.textContent = error.message;
+            statusSpan.style.color = 'var(--color-danger)';
+        } finally {
+            if (providerBtn) providerBtn.disabled = false;
+        }
+    };
+
+    async function loadProviderPlaylistTracks(selectValue) {
+        // Parse __provider__{provider_id}__{playlist_id}
+        const parts = selectValue.replace('__provider__', '').split('__');
+        if (parts.length < 2) return false;
+        const providerId = parts[0];
+        const playlistId = parts.slice(1).join('__');
+
+        setLoadingStatus('Loading playlist tracks from provider...');
+        try {
+            const response = await fetch("{{ url_for('playlist_curator_bp.provider_playlist_tracks_api') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider_id: parseInt(providerId), playlist_id: playlistId })
+            });
+
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Failed to load playlist tracks');
+
+            // Set up source tracks from provider playlist
+            sourceTracksData = data.tracks;
+            sourceWeights = {};
+            includedWeights = {};
+            sourceTracksData.forEach(t => sourceWeights[t.item_id] = 1);
+            smartFilterSourceIds = sourceTracksData.map(t => t.item_id);
+            sourcePlaylistCount = data.resolved_tracks;
+
+            displaySourceTracksDrawer();
+
+            if (data.unresolved_tracks > 0) {
+                const el = document.getElementById('status');
+                el.textContent = `Loaded ${data.resolved_tracks} tracks (${data.unresolved_tracks} not yet analyzed)`;
+                el.style.color = 'var(--text-muted)';
+            } else {
+                clearStatus();
+            }
+
+            return true;
+        } catch (error) {
+            setErrorStatus(error.message);
+            return false;
+        }
+    }
+
+    // --- Update Smart Filter Option in Dropdown ---
+    function updateSmartFilterDropdownOption() {
+        const select = document.getElementById('playlist_select');
+        let smartOption = select.querySelector('option[value="__smart_filter__"]');
+
+        if (smartFilterSourceIds.length > 0) {
+            if (!smartOption) {
+                smartOption = document.createElement('option');
+                smartOption.value = '__smart_filter__';
+                // Insert after the "-- Select --" option
+                if (select.options.length > 1) {
+                    select.insertBefore(smartOption, select.options[1]);
+                } else {
+                    select.appendChild(smartOption);
+                }
+            }
+            smartOption.textContent = `Smart Filter Results (${smartFilterSourceIds.length} songs)`;
+        } else if (smartOption) {
+            smartOption.remove();
+        }
+    }
+
+    window.findSimilarSongs = async function (searchOnly = false) {
+        console.log('findSimilarSongs called', { searchOnly, activeTab, smartFilterSourceIds: smartFilterSourceIds.length });
+        const maxSongs = parseInt(document.getElementById('max_songs').value);
+        const threshold = parseFloat(document.getElementById('similarity_threshold').value);
+        const minRatingVal = parseFloat(document.getElementById('min_rating').value);
+        const minRating = minRatingVal > 0 ? minRatingVal : null; // null if disabled (0)
+
+        // Year range filter
+        const yearMinEl = document.getElementById('year_min_slider');
+        const yearMaxEl = document.getElementById('year_max_slider');
+        const yearMinVal = parseInt(yearMinEl.value);
+        const yearMaxVal = parseInt(yearMaxEl.value);
+        const yearDbMin = parseInt(yearMinEl.min);
+        const yearDbMax = parseInt(yearMaxEl.max);
+        const yearMin = (yearMinVal === yearDbMin && yearMaxVal === yearDbMax) ? null : yearMinVal;
+        const yearMax = (yearMinVal === yearDbMin && yearMaxVal === yearDbMax) ? null : yearMaxVal;
+
+        // Fix search bug: Clear state at start of Smart Filter search
+        if (searchOnly && activeTab === 'smart') {
+            currentResults = [];
+            smartFilterResults = [];
+            smartFilterSourceIds = [];
+            excludedIds = [];
+            // Clear source drawer data for new search
+            sourceTracksData = [];
+            sourceWeights = {};
+            document.getElementById('source-drawer-container').classList.add('hidden');
+        }
+
+        // Reset state for new extend operation (not search-only)
+        // Only reset if this is a fresh operation, not a recalculation after weight change
+        if (!searchOnly && (activeTab === 'playlist' || activeTab === 'extend')) {
+            // Fresh operation = no existing results AND no source tracks loaded
+            // If either has data, we're recalculating (preserve state)
+            const isFreshExtendOperation = extendPlaylistResults.length === 0 && sourceTracksData.length === 0;
+
+            if (isFreshExtendOperation) {
+                includedIds = [];
+                includedSongsData = [];
+                excludedIds = [];
+                sourcePlaylistCount = 0;
+                includedWeights = {};
+            }
+            // Always clear results to get fresh recommendations
+            extendPlaylistResults = [];
+        }
+
+        let payload = {
+            max_songs: maxSongs,
+            similarity_threshold: threshold,
+            min_rating: minRating,
+            year_min: yearMin,
+            year_max: yearMax,
+            included_ids: includedIds,
+            excluded_ids: excludedIds,
+            search_only: searchOnly,
+            source_weights: sourceWeights,
+            included_weights: includedWeights
+        };
+
+        if (activeTab === 'smart') {
+            const filters = getFilters();
+            console.log('Filters:', filters);
+            if (filters.length === 0) {
+                setErrorStatus('Please add at least one filter.');
+                return;
+            }
+            payload.filters = filters;
+            payload.match_mode = document.getElementById('match-mode').value;
+        } else if (activeTab === 'extend' && smartFilterSourceIds.length > 0) {
+            // Using Smart Filter results as source
+            payload.source_ids = smartFilterSourceIds;
+        } else {
+            const playlistName = document.getElementById('playlist_select').value;
+            if (!playlistName) {
+                setErrorStatus('Please select a playlist.');
+                return;
+            }
+            // Handle special playlist options
+            if (playlistName === '__smart_filter__') {
+                if (smartFilterSourceIds.length === 0) {
+                    setErrorStatus('No Smart Filter results available. Run a Smart Filter search first.');
+                    return;
+                }
+                payload.source_ids = smartFilterSourceIds;
+            } else if (playlistName.startsWith('__provider__')) {
+                // Provider playlist — fetch tracks first if not already loaded
+                if (smartFilterSourceIds.length === 0) {
+                    setLoadingStatus('Loading playlist tracks from provider...');
+                    const loaded = await loadProviderPlaylistTracks(playlistName);
+                    if (!loaded) return;
+                }
+                payload.source_ids = smartFilterSourceIds;
+            } else {
+                payload.playlist_name = playlistName;
+            }
+        }
+
+        setLoadingStatus(searchOnly ? 'Searching...' : 'Finding similar songs...');
+        setSearchButtonsDisabled(true);
+
+        try {
+            const response = await fetch("{{ url_for('playlist_curator_bp.search_api') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Search failed');
+
+            // Store results in appropriate state variable based on mode
+            currentResults = data.results;
+            if (activeTab === 'smart' && searchOnly) {
+                // Smart Filter search - store in smartFilterResults
+                smartFilterResults = data.results;
+                smartFilterSourceIds = data.results.map(r => r.item_id);
+                sourcePlaylistCount = data.results.length;  // For smart filter, source = results
+                updateSmartFilterDropdownOption();
+            } else {
+                // Extend mode - store in extendPlaylistResults
+                extendPlaylistResults = data.results;
+                // Use playlist_song_count from API response for source count
+                sourcePlaylistCount = data.playlist_song_count || smartFilterSourceIds.length || 0;
+
+                // Initialize source drawer from API response (for existing playlists)
+                // Only initialize if source_tracks are returned and we don't have data yet
+                if (data.source_tracks && data.source_tracks.length > 0) {
+                    // Only initialize source data and weights if we don't have any yet
+                    // This preserves weights during recalculation after weight changes
+                    if (sourceTracksData.length === 0) {
+                        sourceTracksData = data.source_tracks;
+                        sourceWeights = {};
+                        sourceTracksData.forEach(t => sourceWeights[t.item_id] = 1);
+                        smartFilterSourceIds = sourceTracksData.map(t => t.item_id);
+                    }
+                    // Always display the drawer (preserves existing weights on recalculation)
+                    displaySourceTracksDrawer();
+                }
+            }
+
+            // Update Stats (playlistStats is now derived in updateStatsDisplay)
+            updateStatsDisplay();
+
+            // Display results based on current tab
+            if (activeTab === 'smart') {
+                displayResultsForSmartFilter();
+            } else {
+                displayResults(data.results);
+            }
+
+            clearStatus();
+
+            document.getElementById('results-container').classList.remove('hidden');
+            document.getElementById('stats-container').classList.remove('hidden');
+            // Show playlist creator when there are results (songs are included by default)
+            if (data.results.length > 0) {
+                document.getElementById('playlist-creator').classList.remove('hidden');
+            }
+
+        } catch (error) {
+            console.error('Search error:', error);
+            setErrorStatus(error.message);
+        } finally {
+            setSearchButtonsDisabled(false);
+        }
+    };
+
+    function updateStatsDisplay() {
+        let selectedCount, totalCount;
+
+        if (activeTab === 'smart') {
+            // Smart Filter mode:
+            // Selected = songs matching filter
+            // Total = songs that will be saved (selected minus excluded)
+            selectedCount = smartFilterResults.length;
+            const excludedFromSmartFilter = excludedIds.filter(id =>
+                smartFilterResults.some(r => r.item_id === id)
+            ).length;
+            totalCount = selectedCount - excludedFromSmartFilter;
+        } else {
+            // Extend/Playlist mode:
+            // Selected = initial playlist/source count
+            // Total = source songs + newly included songs
+            selectedCount = sourcePlaylistCount;
+            totalCount = sourcePlaylistCount + includedIds.length;
+        }
+
+        document.getElementById('stat-selected').textContent = selectedCount;
+        document.getElementById('stat-total').textContent = totalCount;
+    }
+
+    // --- Send to Extend Playlist ---
+    window.sendToExtendPlaylist = async function () {
+        const filters = getFilters();
+
+        if (filters.length === 0) {
+            setErrorStatus('Please add at least one filter.');
+            return;
+        }
+
+        // First, perform the search to get results
+        setLoadingStatus('Searching filters and preparing extend...');
+        document.getElementById('btn-send-to-extend').disabled = true;
+
+        try {
+            const matchMode = document.getElementById('match-mode').value;
+            const payload = {
+                filters: filters,
+                match_mode: matchMode,
+                max_songs: 1000, // Get all matching songs
+                similarity_threshold: 1.0,
+                included_ids: [],
+                excluded_ids: [],
+                search_only: true
+            };
+
+            const response = await fetch("{{ url_for('playlist_curator_bp.search_api') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Search failed');
+
+            // Store the Smart Filter results, filtering out excluded IDs (e.g. removed duplicates)
+            smartFilterResults = data.results;
+            const filteredResults = data.results.filter(r => !excludedIds.includes(r.item_id));
+            smartFilterSourceIds = filteredResults.map(r => r.item_id);
+
+            if (smartFilterSourceIds.length === 0) {
+                setErrorStatus('No songs found matching the filters. Cannot extend.');
+                return;
+            }
+
+            // Initialize source tracks data and weights for the drawer
+            sourceTracksData = filteredResults.slice();
+            sourceWeights = {};
+            includedWeights = {};
+            sourcePlaylistCount = filteredResults.length;
+            sourceTracksData.forEach(t => sourceWeights[t.item_id] = 1);
+
+            // Display the source tracks drawer
+            displaySourceTracksDrawer();
+
+            // Switch to Extend tab (keep state)
+            switchTab(null, 'extend', true);
+
+            // Show status message
+            setLoadingStatus(`Using ${smartFilterSourceIds.length} Smart Filter results as source. Finding similar songs...`);
+
+            // Automatically run the extend operation (it will update stats and display)
+            await findSimilarSongs(false);
+
+        } catch (error) {
+            console.error('Send to extend error:', error);
+            setErrorStatus(error.message);
+        } finally {
+            document.getElementById('btn-send-to-extend').disabled = false;
+        }
+    };
+
+    function displayResults(results) {
+        const wrapper = document.getElementById('results-table-wrapper');
+
+        // Combine included songs (at top) with extend results
+        // Filter out songs already in includedSongsData to avoid duplicates
+        const includedIdsSet = new Set(includedIds);
+        const filteredResults = results.filter(r => !includedIdsSet.has(r.item_id));
+        const combinedResults = [...includedSongsData, ...filteredResults];
+
+        if (combinedResults.length === 0) {
+            wrapper.innerHTML = '<p>No similar songs found.</p>';
+            return;
+        }
+
+        // Check if we're in extend mode (playlist or extend tab) - show both Include/Exclude
+        // In smart filter mode, only show Exclude
+        const isExtendMode = (activeTab === 'playlist' || activeTab === 'extend');
+        const actionsHeader = isExtendMode ? 'Actions' : 'Exclude';
+        const actionsWidth = isExtendMode ? '180px' : '100px';
+
+        // Add Weight column header for extend mode
+        const weightHeader = isExtendMode ? '<th style="width: 70px;">Weight</th>' : '';
+
+        let html = `
+            <table class="results-table">
+                <thead>
+                    <tr>
+                        <th style="width: 50px;">Play</th>
+                        <th>Title / Artist</th>
+                        <th>Album</th>
+                        <th>Distance</th>
+                        ${weightHeader}
+                        <th style="width: ${actionsWidth};">${actionsHeader}</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        combinedResults.forEach(track => {
+            const isExcluded = excludedIds.includes(track.item_id);
+            const isIncluded = includedIds.includes(track.item_id);
+            let rowClass = isExcluded ? 'excluded-row' : (isIncluded ? 'included-row' : '');
+
+            const displayArtist = track.song_artist || track.author || 'Unknown';
+            const streamUrl = '/api/curator/stream/' + track.item_id;
+
+            // Build weight cell for extend mode
+            let weightCell = '';
+            if (isExtendMode) {
+                const weight = includedWeights[track.item_id] || 1;
+                weightCell = `<td><button class="btn-weight ${weight > 1 ? 'weight-high' : ''}" data-weight-id="${track.item_id}" onclick="cycleWeight('${track.item_id}',false)">x${weight}</button></td>`;
+            }
+
+            // Build actions cell based on mode
+            let actionsHtml;
+            if (isExtendMode) {
+                // Extend mode: Show both Include and Exclude buttons
+                if (isIncluded) {
+                    actionsHtml = '<span class="status-badge status-included">INCLUDED</span>';
+                } else if (isExcluded) {
+                    actionsHtml = '<span class="status-badge status-excluded">EXCLUDED</span>';
+                } else {
+                    actionsHtml = `
+                        <button class="btn-include" onclick="includeSong('${track.item_id}')">Include</button>
+                        <button class="btn-exclude" onclick="excludeSong('${track.item_id}')">Exclude</button>
+                    `;
+                }
+            } else {
+                // Smart Filter mode: Only Exclude button
+                if (isExcluded) {
+                    actionsHtml = '<span class="status-badge status-excluded">EXCLUDED</span>';
+                } else {
+                    actionsHtml = `<button class="btn-exclude" onclick="excludeSong('${track.item_id}')">Exclude</button>`;
+                }
+            }
+
+            html += `
+                <tr class="${rowClass}">
+                    <td>
+                        <button class="btn-play" data-stream="${escHtml(streamUrl)}" data-title="${escHtml(track.title || 'Unknown')}" data-artist="${escHtml(displayArtist)}">&#9658;</button>
+                    </td>
+                    <td>
+                        <div class="track-info">
+                            <span class="track-title">${escHtml(track.title) || 'Unknown'}</span>
+                            <span class="track-artist">${escHtml(displayArtist)}</span>
+                        </div>
+                    </td>
+                    <td>${escHtml(track.album) || '-'}${track.year ? ' (' + track.year + ')' : ''}</td>
+                    <td>${track.distance ? track.distance.toFixed(4) : 'N/A'}</td>
+                    ${weightCell}
+                    <td class="action-buttons">
+                        ${actionsHtml}
+                    </td>
+                </tr>
+            `;
+        });
+
+        html += '</tbody></table>';
+        wrapper.innerHTML = html;
+    }
+
+    // Display results for Smart Filter tab - shows included songs at top, then filter results
+    function displayResultsForSmartFilter() {
+        const wrapper = document.getElementById('results-table-wrapper');
+
+        // Combine included songs (at top) with smart filter results
+        // Filter out songs that are in includedSongsData from smartFilterResults to avoid duplicates
+        const includedIdsSet = new Set(includedIds);
+        const filteredSmartResults = smartFilterResults.filter(r => !includedIdsSet.has(r.item_id));
+        const combinedResults = [...includedSongsData, ...filteredSmartResults];
+
+        if (combinedResults.length === 0) {
+            wrapper.innerHTML = '<p>No songs found.</p>';
+            return;
+        }
+
+        let html = `
+            <table class="results-table">
+                <thead>
+                    <tr>
+                        <th style="width: 50px;">Play</th>
+                        <th>Title / Artist</th>
+                        <th>Album</th>
+                        <th style="width: 100px;">Exclude</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        combinedResults.forEach(track => {
+            const isExcluded = excludedIds.includes(track.item_id);
+            const isIncluded = includedIds.includes(track.item_id);
+            let rowClass = isExcluded ? 'excluded-row' : (isIncluded ? 'included-row' : '');
+
+            const displayArtist = track.song_artist || track.author || 'Unknown';
+            const streamUrl = '/api/curator/stream/' + track.item_id;
+
+            // Smart Filter mode: Only Exclude button, show INCLUDED badge for included songs
+            let actionsHtml;
+            if (isIncluded) {
+                actionsHtml = '<span class="status-badge status-included">INCLUDED</span>';
+            } else if (isExcluded) {
+                actionsHtml = '<span class="status-badge status-excluded">EXCLUDED</span>';
+            } else {
+                actionsHtml = `<button class="btn-exclude" onclick="excludeSong('${track.item_id}')">Exclude</button>`;
+            }
+
+            html += `
+                <tr class="${rowClass}">
+                    <td>
+                        <button class="btn-play" data-stream="${escHtml(streamUrl)}" data-title="${escHtml(track.title || 'Unknown')}" data-artist="${escHtml(displayArtist)}">&#9658;</button>
+                    </td>
+                    <td>
+                        <div class="track-info">
+                            <span class="track-title">${escHtml(track.title) || 'Unknown'}</span>
+                            <span class="track-artist">${escHtml(displayArtist)}</span>
+                        </div>
+                    </td>
+                    <td>${escHtml(track.album) || '-'}</td>
+                    <td class="action-buttons">
+                        ${actionsHtml}
+                    </td>
+                </tr>
+            `;
+        });
+
+        html += '</tbody></table>';
+        wrapper.innerHTML = html;
+
+        // Update currentResults for saving purposes
+        currentResults = combinedResults;
+    }
+
+    // --- Actions ---
+    window.excludeSong = function (id) {
+        if (!excludedIds.includes(id)) {
+            excludedIds.push(id);
+            // Remove from included if it was there
+            const inclIdx = includedIds.indexOf(id);
+            if (inclIdx > -1) {
+                includedIds.splice(inclIdx, 1);
+                // Also remove from includedSongsData
+                includedSongsData = includedSongsData.filter(t => t.item_id !== id);
+            }
+            // Re-render the results based on active tab
+            if (activeTab === 'smart') {
+                displayResultsForSmartFilter();
+            } else {
+                displayResults(extendPlaylistResults);
+            }
+            updateStatsDisplay();
+        }
+    };
+
+    window.includeSong = function (id) {
+        if (!includedIds.includes(id)) {
+            includedIds.push(id);
+            // Store full track data for display on Smart Filter tab
+            const track = extendPlaylistResults.find(t => t.item_id === id);
+            if (track && !includedSongsData.find(t => t.item_id === id)) {
+                includedSongsData.push(track);
+            }
+            // Remove from excluded if it was there
+            const exclIdx = excludedIds.indexOf(id);
+            if (exclIdx > -1) excludedIds.splice(exclIdx, 1);
+            // Re-render the results based on active tab
+            if (activeTab === 'smart') {
+                displayResultsForSmartFilter();
+            } else {
+                displayResults(extendPlaylistResults);
+            }
+            updateStatsDisplay();
+        }
+    };
+
+    document.getElementById('extend-playlist-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        findSimilarSongs(false); // Default submit is Extend mode
+    });
+
+    // --- Playlist Saving ---
+    document.getElementById('save-playlist-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const name = document.getElementById('new_playlist_name').value;
+        const statusDiv = document.getElementById('playlist-status');
+
+        // Determine which IDs to save based on mode
+        const isExtendMode = (activeTab === 'playlist' || activeTab === 'extend');
+        let trackIdsToSave;
+
+        if (isExtendMode) {
+            // Save source tracks + included recommendations
+            trackIdsToSave = [
+                ...sourceTracksData.map(t => t.item_id),
+                ...includedIds
+            ];
+        } else {
+            trackIdsToSave = currentResults
+                .map(r => r.item_id)
+                .filter(id => !excludedIds.includes(id));
+        }
+
+        if (!name) {
+            statusDiv.textContent = 'Please provide a playlist name.';
+            return;
+        }
+        if (trackIdsToSave.length === 0) {
+            statusDiv.textContent = isExtendMode
+                ? 'No songs included. Use the Include button to add songs to save.'
+                : 'No songs to save (all excluded or no results).';
+            return;
+        }
+
+        statusDiv.textContent = 'Saving...';
+        const saveBtn = document.getElementById('btn-save-playlist');
+        if (saveBtn) saveBtn.disabled = true;
+        try {
+            const payload = {
+                new_playlist_name: name,
+                track_ids: trackIdsToSave,
+                provider_ids: typeof getSelectedProviders === 'function' ? getSelectedProviders() : null
+            };
+
+            const response = await fetch("{{ url_for('playlist_curator_bp.save_playlist_api') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await response.json();
+            if (response.ok) {
+                statusDiv.textContent = 'Saved successfully!';
+                statusDiv.style.color = 'green';
+                loadPlaylists(); // Refresh list
+            } else {
+                throw new Error(data.error);
+            }
+        } catch (e) {
+            statusDiv.textContent = e.message;
+            statusDiv.style.color = 'red';
+        } finally {
+            if (saveBtn) saveBtn.disabled = false;
+        }
+    });
+
+    // --- Player Logic ---
+    // Event delegation for play buttons — handles apostrophes and special chars safely
+    document.addEventListener('click', function(e) {
+        const btn = e.target.closest('.btn-play[data-stream]');
+        if (btn) {
+            playSong(btn.dataset.stream, btn.dataset.title, btn.dataset.artist);
+        }
+    });
+
+    window.playSong = function (url, title, artist) {
+        if (!url) return;
+
+        const audio = document.getElementById('audio-element');
+        const player = document.getElementById('web-player');
+
+        player.classList.remove('hidden');
+        document.getElementById('player-title').textContent = title;
+        document.getElementById('player-artist').textContent = artist;
+
+        audio.src = url;
+        audio.play();
+        document.getElementById('play-pause-btn').innerHTML = '&#10074;&#10074;'; // Pause symbol
+    };
+
+    window.togglePlay = function () {
+        const audio = document.getElementById('audio-element');
+        const btn = document.getElementById('play-pause-btn');
+        if (audio.paused) {
+            audio.play();
+            btn.innerHTML = '&#10074;&#10074;';
+        } else {
+            audio.pause();
+            btn.innerHTML = '&#9658;';
+        }
+    };
+
+    window.stopPlayer = function () {
+        const audio = document.getElementById('audio-element');
+        audio.pause();
+        audio.currentTime = 0;
+        document.getElementById('web-player').classList.add('hidden');
+        document.getElementById('play-pause-btn').innerHTML = '&#9658;';
+    };
+
+    window.seek = function (seconds) {
+        const audio = document.getElementById('audio-element');
+        audio.currentTime += seconds;
+    };
+
+    function updateProgress() {
+        const audio = document.getElementById('audio-element');
+        const current = audio.currentTime;
+        const duration = audio.duration;
+
+        if (isNaN(duration)) return;
+
+        document.getElementById('current-time').textContent = formatTime(current);
+        document.getElementById('duration').textContent = formatTime(duration);
+
+        const pct = (current / duration) * 100;
+        document.getElementById('progress-fill').style.width = `${pct}%`;
+    }
+
+    window.seekTo = function (e) {
+        const audio = document.getElementById('audio-element');
+        const bar = e.currentTarget;
+        const pct = e.offsetX / bar.offsetWidth;
+        audio.currentTime = pct * audio.duration;
+    };
+
+    function formatTime(s) {
+        const m = Math.floor(s / 60);
+        const sec = Math.floor(s % 60);
+        return `${m}:${sec.toString().padStart(2, '0')}`;
+    }
+
+    // --- Track Weights Functions ---
+
+    // Drawer toggle
+    window.toggleDrawer = function() {
+        const header = document.querySelector('.drawer-header');
+        const content = document.getElementById('source-drawer-content');
+        content.classList.toggle('collapsed');
+        header.classList.toggle('expanded');
+    };
+
+    // Weight cycling (click to cycle through values)
+    window.cycleWeight = function(itemId, isSource) {
+        const weights = isSource ? sourceWeights : includedWeights;
+        const current = weights[itemId] || 1;
+        const idx = VALID_WEIGHTS.indexOf(current);
+        const next = VALID_WEIGHTS[(idx + 1) % VALID_WEIGHTS.length];
+        weights[itemId] = next;
+
+        // Update button UI
+        const btn = document.querySelector(`[data-weight-id="${itemId}"]`);
+        if (btn) {
+            btn.textContent = `x${next}`;
+            btn.classList.toggle('weight-high', next > 1);
+        }
+
+        debouncedRecalculate();
+    };
+
+    // Remove source track (different from exclude - just removes from source set)
+    window.removeSourceTrack = function(itemId) {
+        sourceTracksData = sourceTracksData.filter(t => t.item_id !== itemId);
+        smartFilterSourceIds = smartFilterSourceIds.filter(id => id !== itemId);
+        delete sourceWeights[itemId];
+        displaySourceTracksDrawer();
+        updateStatsDisplay();
+        debouncedRecalculate();
+    };
+
+    // Debounced recalculation (500ms delay)
+    let recalculateTimeout = null;
+    function debouncedRecalculate() {
+        clearTimeout(recalculateTimeout);
+        recalculateTimeout = setTimeout(() => {
+            if (activeTab === 'extend' || activeTab === 'playlist') {
+                findSimilarSongs(false);
+            }
+        }, 500);
+    }
+
+    // Display source tracks drawer
+    function displaySourceTracksDrawer() {
+        const wrapper = document.getElementById('source-tracks-table-wrapper');
+        const countBadge = document.getElementById('source-track-count');
+        const container = document.getElementById('source-drawer-container');
+
+        if (sourceTracksData.length === 0) {
+            container.classList.add('hidden');
+            return;
+        }
+
+        container.classList.remove('hidden');
+        countBadge.textContent = sourceTracksData.length;
+
+        // Build table with Play, Title/Artist, Album, Weight, Remove columns
+        let html = `<table class="results-table"><thead><tr>
+            <th style="width:50px;">Play</th>
+            <th>Title / Artist</th>
+            <th>Album</th>
+            <th style="width:70px;">Weight</th>
+            <th style="width:90px;">Remove</th>
+        </tr></thead><tbody>`;
+
+        sourceTracksData.forEach(track => {
+            const weight = sourceWeights[track.item_id] || 1;
+            const artist = track.song_artist || track.author || 'Unknown';
+            const streamUrl = '/api/curator/stream/' + track.item_id;
+
+            html += `<tr>
+                <td><button class="btn-play" data-stream="${escHtml(streamUrl)}" data-title="${escHtml(track.title || 'Unknown')}" data-artist="${escHtml(artist)}">&#9658;</button></td>
+                <td><div class="track-info"><span class="track-title">${escHtml(track.title) || 'Unknown'}</span><span class="track-artist">${escHtml(artist)}</span></div></td>
+                <td>${escHtml(track.album) || '-'}</td>
+                <td><button class="btn-weight ${weight > 1 ? 'weight-high' : ''}" data-weight-id="${track.item_id}" onclick="cycleWeight('${track.item_id}',true)">x${weight}</button></td>
+                <td><button class="btn-remove" onclick="removeSourceTrack('${track.item_id}')">Remove</button></td>
+            </tr>`;
+        });
+
+        html += '</tbody></table>';
+        wrapper.innerHTML = html;
+    }
+
+    // --- Deduplication ---
+    let dedupGroups = [];  // Current duplicate groups from API
+
+    // Slider label update
+    document.getElementById('dedup-threshold').addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value);
+        document.getElementById('dedup-threshold-value').textContent = val.toFixed(3);
+        const label = document.getElementById('dedup-sensitivity-label');
+        if (val <= 0.03) {
+            label.textContent = 'Strict';
+            label.title = 'Same recording, different metadata only';
+        } else if (val <= 0.07) {
+            label.textContent = 'Moderate';
+            label.title = 'Catches most duplicates across compilations';
+        } else {
+            label.textContent = 'Loose';
+            label.title = 'Includes remasters, live versions, re-recordings';
+        }
+    });
+
+    window.findDuplicates = async function() {
+        const threshold = parseFloat(document.getElementById('dedup-threshold').value);
+        const panel = document.getElementById('dedup-panel');
+        const container = document.getElementById('dedup-groups-container');
+        const titleEl = document.getElementById('dedup-panel-title');
+
+        // Collect track IDs based on active tab
+        let trackIds;
+        if (activeTab === 'smart') {
+            trackIds = smartFilterResults
+                .filter(r => !excludedIds.includes(r.item_id))
+                .map(r => r.item_id);
+        } else {
+            // Extend mode: source + included
+            trackIds = [
+                ...sourceTracksData.map(t => t.item_id),
+                ...includedIds
+            ];
+        }
+
+        if (trackIds.length < 2) {
+            container.innerHTML = '<p class="dedup-no-results">Need at least 2 tracks to check for duplicates.</p>';
+            panel.classList.remove('hidden');
+            setTimeout(() => panel.classList.add('hidden'), 3000);
+            return;
+        }
+
+        const dedupBtn = document.getElementById('btn-find-duplicates');
+        if (dedupBtn) dedupBtn.disabled = true;
+        container.innerHTML = '<p style="color:var(--color-primary);"><span class="loading-spinner"></span>Scanning for duplicates...</p>';
+        panel.classList.remove('hidden');
+
+        try {
+            const response = await fetch("{{ url_for('playlist_curator_bp.find_duplicates_api') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ track_ids: trackIds.map(id => parseInt(id)), threshold })
+            });
+
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Failed');
+
+            dedupGroups = data.groups;
+
+            if (data.total_groups === 0) {
+                container.innerHTML = '<p class="dedup-no-results">No duplicates found at this sensitivity level.</p>';
+                titleEl.textContent = 'No Duplicates Found';
+                setTimeout(() => panel.classList.add('hidden'), 3000);
+                return;
+            }
+
+            const removable = data.total_duplicate_tracks - data.total_groups;
+            titleEl.textContent = `Duplicates Found: ${data.total_groups} group${data.total_groups > 1 ? 's' : ''} (${removable} to remove)`;
+            renderDedupGroups();
+            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+        } catch (error) {
+            console.error('Find duplicates error:', error);
+            container.innerHTML = `<p style="color:var(--color-danger);">${escHtml(error.message)}</p>`;
+        } finally {
+            if (dedupBtn) dedupBtn.disabled = false;
+        }
+    };
+
+    function renderDedupGroups() {
+        const container = document.getElementById('dedup-groups-container');
+        let html = '';
+
+        dedupGroups.forEach((group, gi) => {
+            html += `<div class="dedup-group">`;
+            html += `<div class="dedup-group-header">Group ${gi + 1}</div>`;
+
+            group.tracks.forEach((track, ti) => {
+                const isKeeper = ti === 0;
+                const keepState = track._keep !== undefined ? track._keep : isKeeper;
+                const stateClass = keepState ? 'keep' : 'remove';
+                const badgeClass = keepState ? 'keep' : 'remove';
+                const badgeText = keepState ? 'KEEP' : 'REMOVE';
+
+                const artist = escHtml(track.author || 'Unknown');
+                const title = escHtml(track.title || 'Unknown');
+                const album = escHtml(track.album || '');
+                const year = track.year ? ` (${track.year})` : '';
+                const rating = track.rating ? ' ' + '&#9733;'.repeat(Math.round(track.rating)) : '';
+
+                html += `<div class="dedup-track ${stateClass}" onclick="toggleDedupKeep(${gi}, ${ti})">
+                    <span class="dedup-badge ${badgeClass}">${badgeText}</span>
+                    <div class="dedup-track-info">
+                        <span class="dedup-track-title">${title}</span>
+                        <span class="dedup-track-meta">${artist} &mdash; ${album}${year}${rating}</span>
+                    </div>
+                    <span style="font-size:0.75rem;color:var(--text-muted);">score: ${track.score}</span>
+                </div>`;
+            });
+
+            html += `</div>`;
+        });
+
+        container.innerHTML = html;
+    }
+
+    window.toggleDedupKeep = function(groupIdx, trackIdx) {
+        const group = dedupGroups[groupIdx];
+        if (!group) return;
+
+        const clicked = group.tracks[trackIdx];
+        const currentState = clicked._keep !== undefined ? clicked._keep : (trackIdx === 0);
+
+        // Toggle the clicked track's state
+        clicked._keep = !currentState;
+
+        // Ensure at least one track is KEEP — if none are, force this one back to KEEP
+        const anyKeep = group.tracks.some(t => t._keep !== undefined ? t._keep : false);
+        if (!anyKeep) {
+            clicked._keep = true;
+        }
+
+        renderDedupGroups();
+    };
+
+    window.removeAllMarkedDuplicates = function() {
+        const idsToRemove = [];
+
+        dedupGroups.forEach(group => {
+            group.tracks.forEach((track, idx) => {
+                const isKeeper = track._keep !== undefined ? track._keep : (idx === 0);
+                if (!isKeeper) {
+                    idsToRemove.push(track.item_id);
+                }
+            });
+        });
+
+        if (idsToRemove.length === 0) return;
+
+        if (activeTab === 'smart') {
+            idsToRemove.forEach(id => {
+                if (!excludedIds.includes(id)) excludedIds.push(id);
+            });
+            displayResultsForSmartFilter();
+        } else {
+            idsToRemove.forEach(id => {
+                if (sourceTracksData.some(t => t.item_id === id)) {
+                    removeSourceTrack(id);
+                }
+                const inclIdx = includedIds.indexOf(id);
+                if (inclIdx > -1) {
+                    includedIds.splice(inclIdx, 1);
+                    includedSongsData = includedSongsData.filter(t => t.item_id !== id);
+                }
+            });
+            displayResults(extendPlaylistResults);
+        }
+
+        updateStatsDisplay();
+        closeDedupPanel();
+    };
+
+    window.closeDedupPanel = function() {
+        document.getElementById('dedup-panel').classList.add('hidden');
+        dedupGroups = [];
+    };
+
+</script>
+{% endblock %}
