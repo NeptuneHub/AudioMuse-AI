@@ -65,6 +65,13 @@ const SunburstChart = (() => {
             if (node.children) {
                 node.children.forEach(resolveBest);
                 node.size = node.children.reduce((s, ch) => s + (ch.size || 1), 0);
+                // Propagate best centroid upward: pick child with highest moodScore
+                const best = node.children.reduce((a, b) => {
+                    if (!a || !a.bestCentroid) return b;
+                    if (!b || !b.bestCentroid) return a;
+                    return b.bestCentroid.moodScore > a.bestCentroid.moodScore ? b : a;
+                }, null);
+                if (best && best.bestCentroid) node.bestCentroid = best.bestCentroid;
             }
         })(root);
         return root;
@@ -267,7 +274,10 @@ const SunburstChart = (() => {
                 if (st.focus && st.focus !== st.tree) {
                     const par = findParent(st.tree, st.focus);
                     st.focus = par && par !== st.tree ? par : st.tree;
-                    doClear();
+                    // When going back to root, clear; otherwise auto-select parent's best
+                    if (st.focus === st.tree) doClear();
+                    else if (st.focus.bestCentroid) doSelect(st.focus);
+                    else doClear();
                     redraw();
                 }
                 return;
@@ -286,7 +296,9 @@ const SunburstChart = (() => {
                         if (p) st.focus = p;
                     } else {
                         st.focus = target;
-                        doClear();
+                        // Auto-select the best centroid from this subtree
+                        if (target.bestCentroid) doSelect(target);
+                        else doClear();
                     }
                     redraw();
                 }
@@ -298,7 +310,9 @@ const SunburstChart = (() => {
                 if (st.focus && st.focus !== st.tree) {
                     const par = findParent(st.tree, st.focus);
                     st.focus = par && par !== st.tree ? par : st.tree;
-                    doClear();
+                    if (st.focus === st.tree) doClear();
+                    else if (st.focus.bestCentroid) doSelect(st.focus);
+                    else doClear();
                     redraw();
                 }
             });
