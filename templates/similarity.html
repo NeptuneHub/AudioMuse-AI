@@ -81,31 +81,20 @@
                 <div id="autocomplete-results" class="autocomplete-results hidden"></div>
             </div>
 
-            <!-- Mood mode: mood + centroid selection (hidden by default) -->
+            <!-- Mood mode: sunburst chart (hidden by default) -->
             <div id="mood-mode-container" class="hidden">
-                <label for="mood_select" class="label-with-tooltip">
-                    Mood:
-                    <span class="info-tooltip" tabindex="0">
-                        <span class="info-icon"></span>
-                        <span class="tooltip-text">Select a mood category to find songs matching that mood.</span>
-                    </span>
-                </label>
-                <select id="mood_select">
-                    <option value="">-- Select a mood --</option>
-                </select>
-
-                <div id="centroid-select-container" class="hidden" style="margin-top:1rem;">
-                    <label for="centroid_select" class="label-with-tooltip">
-                        Centroid:
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Each centroid represents a sub-cluster within the mood. The top tags describe the dominant genres of that cluster.</span>
-                        </span>
-                    </label>
-                    <select id="centroid_select">
-                        <option value="">-- Select a centroid --</option>
-                    </select>
+                <style>
+                    #sunburst-wrapper { max-width: 480px; }
+                    @media (min-width: 768px) { #sunburst-wrapper { max-width: 360px; } }
+                </style>
+                <div id="sunburst-wrapper" style="position:relative;width:100%;margin:0 auto;">
+                    <canvas id="sunburst-canvas" class="sunburst-canvas" width="480" height="480" style="width:100%;cursor:pointer;"></canvas>
                 </div>
+                <div id="sunburst-selection" class="sunburst-selection" style="text-align:center;margin-top:0.5rem;font-size:0.95rem;font-weight:500;color:var(--text-title);min-height:1.4em;"></div>
+                <div id="sunburst-breadcrumb" class="sunburst-breadcrumb" style="text-align:center;margin-top:0.25rem;font-size:0.8rem;color:var(--text-muted);cursor:pointer;" title="Click to go back"></div>
+                <!-- Hidden inputs to keep form submission compatible -->
+                <select id="mood_select" style="display:none;"><option value="">--</option></select>
+                <select id="centroid_select" style="display:none;"><option value="">--</option></select>
             </div>
 
             <!-- Anchor mode: anchor selection (hidden by default) -->
@@ -193,6 +182,7 @@
 {% endblock %}
 
 {% block bodyAdditions %}
+    <script src="{{ url_for('static', filename='sunburst.js') }}"></script>
     <script>
         let _currentMode = 'song';
 
@@ -221,7 +211,6 @@
 
             const moodSelect = document.getElementById('mood_select');
             const centroidSelect = document.getElementById('centroid_select');
-            const centroidContainer = document.getElementById('centroid-select-container');
             const modeToggleBtn = document.getElementById('similarity-mode-toggle');
             const anchorSelect = document.getElementById('anchor_select');
 
@@ -242,19 +231,38 @@
                 }
             });
 
+            // --- Sunburst chart for mood centroid selection (external: sunburst.js) ---
+
+            let _sunburstState = null;
+
             // --- Load mood centroids on page load ---
             async function loadMoodCentroids() {
                 try {
                     const resp = await fetch(`{{ url_for('voyager_bp.get_mood_centroids_endpoint') }}`);
                     if (resp.ok) {
                         moodCentroidsCache = await resp.json();
-                        // Populate mood dropdown
+                        // Populate hidden mood select for form compat
                         for (const mood of Object.keys(moodCentroidsCache).sort()) {
                             const opt = document.createElement('option');
                             opt.value = mood;
-                            opt.textContent = mood.charAt(0).toUpperCase() + mood.slice(1);
+                            opt.textContent = mood;
                             moodSelect.appendChild(opt);
                         }
+                        const tree = SunburstChart.buildTree(moodCentroidsCache);
+                        _sunburstState = SunburstChart.init(
+                            document.getElementById('mood-mode-container'),
+                            tree,
+                            (node, best) => {
+                                moodSelect.value = node.mood;
+                                centroidSelect.innerHTML = '';
+                                const opt = document.createElement('option');
+                                opt.value = best.centroidIndex;
+                                opt.textContent = node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' - ' + best.tags.slice(0, 3).join('/');
+                                centroidSelect.appendChild(opt);
+                                centroidSelect.value = best.centroidIndex;
+                            },
+                            () => { moodSelect.value = ''; centroidSelect.value = ''; }
+                        );
                     }
                 } catch (e) {
                     console.error('Failed to load mood centroids:', e);
@@ -288,24 +296,7 @@
             }
             loadAnchors();
 
-            // --- Mood select change -> populate centroids ---
-            moodSelect.addEventListener('change', () => {
-                const mood = moodSelect.value;
-                centroidSelect.innerHTML = '<option value="">-- Select a centroid --</option>';
-                if (!mood || !moodCentroidsCache || !moodCentroidsCache[mood]) {
-                    centroidContainer.classList.add('hidden');
-                    return;
-                }
-                const centroids = moodCentroidsCache[mood];
-                centroids.forEach(c => {
-                    const opt = document.createElement('option');
-                    opt.value = c.index;
-                    const moodLabel = mood.charAt(0).toUpperCase() + mood.slice(1);
-                    opt.textContent = moodLabel + ' - ' + c.top_tags.join('/');
-                    centroidSelect.appendChild(opt);
-                });
-                centroidContainer.classList.remove('hidden');
-            });
+            // (Mood/centroid selection is now handled by the sunburst chart above)
 
             // --- Autocomplete Logic ---
             const handleSearchInput = () => {
