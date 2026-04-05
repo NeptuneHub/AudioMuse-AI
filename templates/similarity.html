@@ -389,7 +389,7 @@
                     sunburstCtx.rotate(rot);
                     sunburstCtx.fillStyle = isDark ? '#fff' : '#1a1a2e';
                     let label = arc.node.name.charAt(0).toUpperCase() + arc.node.name.slice(1);
-                    const fontSize = Math.min(16, Math.max(9, arcLen / (label.length * 0.55)));
+                    const fontSize = Math.min(20, Math.max(12, arcLen / (label.length * 0.55)));
                     sunburstCtx.font = `600 ${fontSize}px system-ui, sans-serif`;
                     sunburstCtx.textAlign = 'center';
                     sunburstCtx.textBaseline = 'middle';
@@ -418,13 +418,13 @@
                 sunburstCtx.textAlign = 'center';
                 sunburstCtx.textBaseline = 'middle';
                 if (focus !== sunburstTree) {
-                    sunburstCtx.font = 'bold 14px system-ui, sans-serif';
-                    sunburstCtx.fillText('\u2190 Back', cx, cy - 9);
-                    sunburstCtx.font = '12px system-ui, sans-serif';
+                    sunburstCtx.font = 'bold 18px system-ui, sans-serif';
+                    sunburstCtx.fillText('\u2190 Back', cx, cy - 11);
+                    sunburstCtx.font = '18px system-ui, sans-serif';
                     const lbl = focus.name.charAt(0).toUpperCase() + focus.name.slice(1);
-                    sunburstCtx.fillText(lbl, cx, cy + 9);
+                    sunburstCtx.fillText(lbl, cx, cy + 11);
                 } else {
-                    sunburstCtx.font = 'bold 16px system-ui, sans-serif';
+                    sunburstCtx.font = 'bold 18px system-ui, sans-serif';
                     sunburstCtx.fillText('Mood', cx, cy);
                 }
 
@@ -487,21 +487,19 @@
                 const prevHover = sunburstHover;
                 sunburstHover = hit && hit.type === 'arc' ? hit.arc : null;
                 if (sunburstHover !== prevHover) drawSunburst();
-                // Tooltip
+                // Cursor + tooltip (don't overwrite an active selection)
                 if (hit && hit.type === 'arc') {
-                    const n = hit.arc.node;
-                    if (n.isTerminal && n.bestCentroid) {
-                        sunburstSelectionDiv.textContent = n.mood.charAt(0).toUpperCase() + n.mood.slice(1) + ' — ' + n.bestCentroid.tags.slice(0, 3).join(' / ') + ` (${n.candidates.length} centroid${n.candidates.length > 1 ? 's' : ''})`;
-                    } else {
-                        sunburstSelectionDiv.textContent = n.name + ` (${n.size} centroids)`;
-                    }
                     sunburstCanvas.style.cursor = 'pointer';
+                    if (!sunburstSelected) {
+                        const n = hit.arc.node;
+                        sunburstSelectionDiv.textContent = n.name.charAt(0).toUpperCase() + n.name.slice(1);
+                    }
                 } else if (hit && hit.type === 'center') {
                     sunburstCanvas.style.cursor = sunburstFocus && sunburstFocus !== sunburstTree ? 'pointer' : 'default';
-                    sunburstSelectionDiv.textContent = '';
+                    if (!sunburstSelected) sunburstSelectionDiv.textContent = '';
                 } else {
                     sunburstCanvas.style.cursor = 'default';
-                    sunburstSelectionDiv.textContent = '';
+                    if (!sunburstSelected) sunburstSelectionDiv.textContent = '';
                 }
             });
 
