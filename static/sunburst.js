@@ -234,7 +234,14 @@ const SunburstChart = (() => {
         function doSelect(node) {
             st.selected = node;
             const best = node.bestCentroid;
-            selDiv.innerHTML = '<strong>\u2713 Selected:</strong> ' + node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' \u2014 ' + best.tags.slice(0, 3).join(' / ');
+            // Build label from what the user actually clicked, not the auto-resolved path
+            const path = [];
+            let nd = node;
+            while (nd && nd !== tree) {
+                path.unshift(nd.name.charAt(0).toUpperCase() + nd.name.slice(1));
+                nd = findParent(tree, nd);
+            }
+            selDiv.innerHTML = '<strong>\u2713 Selected:</strong> ' + path.join(' \u2014 ');
             if (onSelect) onSelect(node, best);
         }
 
