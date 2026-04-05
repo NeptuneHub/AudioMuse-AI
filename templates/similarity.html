@@ -248,7 +248,10 @@
             };
 
             function buildSunburstTree(data) {
-                // Build hierarchical tree: root -> moods -> tag1 -> tag2 -> ... -> leaf (centroid)
+                // Build tree: root -> mood -> tag1 -> tag2 -> tag3 (terminal).
+                // Only 3 tag levels. At tag3, store all matching centroids so
+                // we can auto-select the best one (highest mood_score, then lowest cluster_id).
+                const TAG_DEPTH = 3;
                 const root = {name: 'root', children: [], depth: 0};
                 for (const mood of Object.keys(data).sort()) {
                     const moodNode = {name: mood, children: [], depth: 1, mood: mood};
@@ -256,37 +259,52 @@
                     centroids.forEach(c => {
                         let parent = moodNode;
                         const tags = c.top_tags || [];
-                        for (let lvl = 0; lvl < tags.length; lvl++) {
+                        for (let lvl = 0; lvl < TAG_DEPTH && lvl < tags.length; lvl++) {
                             const tag = tags[lvl];
-                            let child = parent.children.find(ch => !ch.isLeaf && ch.name === tag);
+                            const isTerminal = (lvl === TAG_DEPTH - 1);
+                            let child = parent.children.find(ch => ch.name === tag);
                             if (!child) {
-                                child = {name: tag, children: [], depth: parent.depth + 1, mood: mood};
+                                child = {
+                                    name: tag, children: [], depth: parent.depth + 1,
+                                    mood: mood, isTerminal: isTerminal,
+                                    candidates: isTerminal ? [] : undefined
+                                };
                                 parent.children.push(child);
+                            }
+                            if (isTerminal) {
+                                // Collect all centroids landing here
+                                if (!child.candidates) child.candidates = [];
+                                child.candidates.push({
+                                    centroidIndex: c.index,
+                                    nSongs: c.n_songs,
+                                    moodScore: c.mood_score || 0,
+                                    clusterId: c.cluster_id != null ? c.cluster_id : c.index,
+                                    tags: tags
+                                });
                             }
                             parent = child;
                         }
-                        // leaf = centroid
-                        parent.children.push({
-                            name: tags.join('/'),
-                            isLeaf: true,
-                            mood: mood,
-                            centroidIndex: c.index,
-                            nSongs: c.n_songs,
-                            tags: tags,
-                            depth: parent.depth + 1
-                        });
                     });
                     root.children.push(moodNode);
                 }
-                // Compute sizes bottom-up (leaf=1, parent=sum of children)
-                function computeSize(node) {
-                    if (node.isLeaf) { node.size = 1; return 1; }
-                    let s = 0;
-                    for (const ch of node.children) s += computeSize(ch);
-                    node.size = s;
-                    return s;
+                // For each terminal node, pick the best centroid
+                function resolveBest(node) {
+                    if (node.isTerminal && node.candidates && node.candidates.length > 0) {
+                        node.candidates.sort((a, b) => {
+                            if (b.moodScore !== a.moodScore) return b.moodScore - a.moodScore;
+                            return a.clusterId - b.clusterId;
+                        });
+                        const best = node.candidates[0];
+                        node.bestCentroid = best;
+                        node.size = 1;
+                        return;
+                    }
+                    if (node.children) {
+                        node.children.forEach(resolveBest);
+                        node.size = node.children.reduce((s, ch) => s + (ch.size || 1), 0);
+                    }
                 }
-                computeSize(root);
+                resolveBest(root);
                 return root;
             }
 
@@ -342,8 +360,8 @@
                 // Draw arcs
                 for (const arc of arcs) {
                     const isHovered = sunburstHover === arc;
-                    const isSelected = sunburstSelected && arc.node.isLeaf &&
-                        arc.node.mood === sunburstSelected.mood && arc.node.centroidIndex === sunburstSelected.centroidIndex;
+                    const isSelected = sunburstSelected && arc.node.isTerminal &&
+                        sunburstSelected.isTerminal && arc.node === sunburstSelected;
                     sunburstCtx.beginPath();
                     sunburstCtx.arc(cx, cy, arc.outerR, arc.startAngle - Math.PI/2, arc.endAngle - Math.PI/2);
                     sunburstCtx.arc(cx, cy, arc.innerR, arc.endAngle - Math.PI/2, arc.startAngle - Math.PI/2, true);
@@ -369,9 +387,7 @@
                     if (rot > Math.PI/2 && rot < Math.PI*1.5) rot += Math.PI;
                     sunburstCtx.rotate(rot);
                     sunburstCtx.fillStyle = isDark ? '#fff' : '#1a1a2e';
-                    let label = arc.node.isLeaf
-                        ? arc.node.tags.join('/') + ` (${arc.node.nSongs})`
-                        : arc.node.name.charAt(0).toUpperCase() + arc.node.name.slice(1);
+                    let label = arc.node.name.charAt(0).toUpperCase() + arc.node.name.slice(1);
                     const fontSize = Math.min(13, Math.max(7, arcLen / (label.length * 0.6)));
                     sunburstCtx.font = `600 ${fontSize}px system-ui, sans-serif`;
                     sunburstCtx.textAlign = 'center';
@@ -473,8 +489,8 @@
                 // Tooltip
                 if (hit && hit.type === 'arc') {
                     const n = hit.arc.node;
-                    if (n.isLeaf) {
-                        sunburstSelectionDiv.textContent = n.mood.charAt(0).toUpperCase() + n.mood.slice(1) + ' — ' + n.tags.join(' / ') + ` (${n.nSongs} songs)`;
+                    if (n.isTerminal && n.bestCentroid) {
+                        sunburstSelectionDiv.textContent = n.mood.charAt(0).toUpperCase() + n.mood.slice(1) + ' — ' + n.bestCentroid.tags.slice(0, 3).join(' / ') + ` (${n.candidates.length} centroid${n.candidates.length > 1 ? 's' : ''})`;
                     } else {
                         sunburstSelectionDiv.textContent = n.name + ` (${n.size} centroids)`;
                     }
@@ -510,24 +526,27 @@
                 }
                 if (hit.type === 'arc') {
                     const node = hit.arc.node;
-                    if (node.isLeaf) {
-                        // Select this centroid
+                    if (node.isTerminal && node.bestCentroid) {
+                        // 4th click: auto-select the best centroid
+                        const best = node.bestCentroid;
                         sunburstSelected = node;
                         moodSelect.value = node.mood;
-                        // Ensure centroid option exists
                         centroidSelect.innerHTML = '';
                         const opt = document.createElement('option');
-                        opt.value = node.centroidIndex;
-                        opt.textContent = node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' - ' + node.tags.join('/');
+                        opt.value = best.centroidIndex;
+                        opt.textContent = node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' - ' + best.tags.slice(0, 3).join('/');
                         centroidSelect.appendChild(opt);
-                        centroidSelect.value = node.centroidIndex;
-                        sunburstSelectionDiv.innerHTML = '<strong>✓ Selected:</strong> ' + node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' — ' + node.tags.join(' / ') + ` (${node.nSongs} songs)`;
+                        centroidSelect.value = best.centroidIndex;
+                        const extra = node.candidates.length > 1 ? ` (best of ${node.candidates.length}, score ${best.moodScore.toFixed(3)})` : '';
+                        sunburstSelectionDiv.innerHTML = '<strong>✓ Selected:</strong> ' + node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' — ' + best.tags.slice(0, 3).join(' / ') + extra;
                         drawSunburst();
-                    } else {
+                    } else if (!node.isTerminal && node.children && node.children.length > 0) {
                         // Drill down
                         sunburstFocus = node;
+                        sunburstSelected = null;
                         moodSelect.value = '';
                         centroidSelect.value = '';
+                        sunburstSelectionDiv.textContent = '';
                         drawSunburst();
                     }
                 }

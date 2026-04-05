@@ -37,6 +37,8 @@ def _load_mood_centroids_for_similarity():
                     'index': i,
                     'top_tags': [t[0] for t in top5],
                     'n_songs': c.get('n_songs', 0),
+                    'mood_score': c.get('mood_score', 0),
+                    'cluster_id': c.get('cluster_id', i),
                 })
             _MOOD_CENTROIDS_META[mood] = meta_list
         logger.info(f"Loaded mood centroids for similarity: {', '.join(f'{m}({len(cs)})' for m, cs in _MOOD_CENTROIDS_DATA.items())}")
