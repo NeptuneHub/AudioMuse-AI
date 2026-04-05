@@ -10,11 +10,12 @@
 <li><a href="{{ url_for('sonic_fingerprint_bp.sonic_fingerprint_page') }}" {% if active == 'sonic_fingerprint' %}class="active"{% endif %}>Sonic Fingerprint</a></li>
 <li><a href="{{ url_for('waveform_bp.waveform_page') }}" {% if active == 'waveform' %}class="active"{% endif %}>Waveform</a></li>
 <!-- <li><a href="{{ url_for('collection_bp.collection_page') }}" {% if active == 'collection' %}class="active"{% endif %}">Collection Sync</a></li> -->
-<li class="has-submenu{% if active in ('cleaning', 'cron') %} open{% endif %}">
+<li class="has-submenu{% if active in ('cleaning', 'cron', 'backup') %} open{% endif %}">
     <a href="#" class="submenu-toggle">Administration <span class="submenu-arrow">›</span></a>
     <ul class="submenu">
         <li><a href="{{ url_for('analysis_bp.cleaning_page') }}" {% if active == 'cleaning' %}class="active"{% endif %}>Cleaning</a></li>
         <li><a href="{{ url_for('cron_bp.cron_page') }}" {% if active == 'cron' %}class="active"{% endif %}>Scheduled Tasks</a></li>
+        <li><a href="{{ url_for('backup_bp.backup_page') }}" {% if active == 'backup' %}class="active"{% endif %}>Backup</a></li>
     </ul>
 </li>
 <li><button type="button" id="dark-mode-toggle" aria-pressed="false" aria-label="Toggle dark mode">🌙 Dark Mode</button></li>
