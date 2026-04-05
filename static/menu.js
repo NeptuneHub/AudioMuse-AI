@@ -49,11 +49,11 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // --- Submenu accordion toggle ---
-    document.querySelectorAll('.submenu-toggle').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+    document.querySelectorAll('.has-submenu > .submenu-toggle').forEach(link => {
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
             e.stopPropagation();
-            const li = btn.closest('.has-submenu');
-            li.classList.toggle('open');
+            link.closest('.has-submenu').classList.toggle('open');
         });
     });
 

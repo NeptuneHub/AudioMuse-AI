@@ -154,7 +154,7 @@ html.dark-mode .sidebar.open + .main-content .menu-toggle {
 }
 
 /* --- Submenu / Accordion --- */
-.submenu-toggle {
+.has-submenu > .submenu-toggle {
     display: flex;
     align-items: center;
     justify-content: space-between;
