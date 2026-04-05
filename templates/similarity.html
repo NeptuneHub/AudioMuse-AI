@@ -311,13 +311,12 @@
 
                 function layout(node, startAngle, sweep, ring) {
                     if (ring > maxRings) return;
-                    if (node === focusNode && node.name !== 'root') {
-                        // The focused node itself is the center - skip, show children only
-                    }
+                    const nChildren = node.children.length;
+                    if (nChildren === 0) return;
+                    // Equal-size segments: every child gets the same angular sweep
+                    const childSweep = sweep / nChildren;
                     let offset = startAngle;
                     for (const child of node.children) {
-                        const childSweep = (child.size / node.size) * sweep;
-                        if (childSweep < 0.001) { offset += childSweep; continue; }
                         const iR = centerR + (ring - 1) * ringW;
                         const oR = centerR + ring * ringW;
                         arcs.push({
