@@ -81,31 +81,19 @@
                 <div id="autocomplete-results" class="autocomplete-results hidden"></div>
             </div>
 
-            <!-- Mood mode: mood + centroid selection (hidden by default) -->
+            <!-- Mood mode: sunburst chart (hidden by default) -->
             <div id="mood-mode-container" class="hidden">
-                <label for="mood_select" class="label-with-tooltip">
-                    Mood:
-                    <span class="info-tooltip" tabindex="0">
-                        <span class="info-icon"></span>
-                        <span class="tooltip-text">Select a mood category to find songs matching that mood.</span>
-                    </span>
-                </label>
-                <select id="mood_select">
-                    <option value="">-- Select a mood --</option>
-                </select>
-
-                <div id="centroid-select-container" class="hidden" style="margin-top:1rem;">
-                    <label for="centroid_select" class="label-with-tooltip">
-                        Centroid:
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Each centroid represents a sub-cluster within the mood. The top tags describe the dominant genres of that cluster.</span>
-                        </span>
-                    </label>
-                    <select id="centroid_select">
-                        <option value="">-- Select a centroid --</option>
-                    </select>
+                <div style="text-align:center;margin-bottom:0.5rem;font-size:0.9rem;color:var(--text-muted);">
+                    Click a mood, then drill into genres to select a centroid.
                 </div>
+                <div id="sunburst-wrapper" style="position:relative;width:100%;max-width:480px;margin:0 auto;">
+                    <canvas id="sunburst-canvas" width="480" height="480" style="width:100%;cursor:pointer;"></canvas>
+                </div>
+                <div id="sunburst-selection" style="text-align:center;margin-top:0.5rem;font-size:0.95rem;font-weight:500;color:var(--text-title);min-height:1.4em;"></div>
+                <div id="sunburst-breadcrumb" style="text-align:center;margin-top:0.25rem;font-size:0.8rem;color:var(--text-muted);cursor:pointer;" title="Click to go back"></div>
+                <!-- Hidden inputs to keep form submission compatible -->
+                <select id="mood_select" style="display:none;"><option value="">--</option></select>
+                <select id="centroid_select" style="display:none;"><option value="">--</option></select>
             </div>
 
             <!-- Anchor mode: anchor selection (hidden by default) -->
@@ -221,7 +209,6 @@
 
             const moodSelect = document.getElementById('mood_select');
             const centroidSelect = document.getElementById('centroid_select');
-            const centroidContainer = document.getElementById('centroid-select-container');
             const modeToggleBtn = document.getElementById('similarity-mode-toggle');
             const anchorSelect = document.getElementById('anchor_select');
 
@@ -242,19 +229,347 @@
                 }
             });
 
+            // --- Sunburst chart for mood centroid selection ---
+            const sunburstCanvas = document.getElementById('sunburst-canvas');
+            const sunburstCtx = sunburstCanvas.getContext('2d');
+            const sunburstSelectionDiv = document.getElementById('sunburst-selection');
+            const sunburstBreadcrumb = document.getElementById('sunburst-breadcrumb');
+            let sunburstTree = null;     // full tree root
+            let sunburstFocus = null;    // current focused node (for drill-down)
+            let sunburstHover = null;    // hovered arc for tooltip
+            let sunburstSelected = null; // selected leaf node
+            const MOOD_COLORS = {
+                happy:      {h:48,  s:90, l:55},
+                sad:        {h:220, s:70, l:55},
+                aggressive: {h:0,   s:80, l:50},
+                party:      {h:300, s:75, l:55},
+                relaxed:    {h:160, s:60, l:45},
+                danceable:  {h:270, s:70, l:55}
+            };
+
+            function buildSunburstTree(data) {
+                // Build hierarchical tree: root -> moods -> tag1 -> tag2 -> ... -> leaf (centroid)
+                const root = {name: 'root', children: [], depth: 0};
+                for (const mood of Object.keys(data).sort()) {
+                    const moodNode = {name: mood, children: [], depth: 1, mood: mood};
+                    const centroids = data[mood];
+                    centroids.forEach(c => {
+                        let parent = moodNode;
+                        const tags = c.top_tags || [];
+                        for (let lvl = 0; lvl < tags.length; lvl++) {
+                            const tag = tags[lvl];
+                            let child = parent.children.find(ch => !ch.isLeaf && ch.name === tag);
+                            if (!child) {
+                                child = {name: tag, children: [], depth: parent.depth + 1, mood: mood};
+                                parent.children.push(child);
+                            }
+                            parent = child;
+                        }
+                        // leaf = centroid
+                        parent.children.push({
+                            name: tags.join('/'),
+                            isLeaf: true,
+                            mood: mood,
+                            centroidIndex: c.index,
+                            nSongs: c.n_songs,
+                            tags: tags,
+                            depth: parent.depth + 1
+                        });
+                    });
+                    root.children.push(moodNode);
+                }
+                // Compute sizes bottom-up (leaf=1, parent=sum of children)
+                function computeSize(node) {
+                    if (node.isLeaf) { node.size = 1; return 1; }
+                    let s = 0;
+                    for (const ch of node.children) s += computeSize(ch);
+                    node.size = s;
+                    return s;
+                }
+                computeSize(root);
+                return root;
+            }
+
+            function getArcColor(node, alpha) {
+                const mc = MOOD_COLORS[node.mood] || {h:0,s:0,l:60};
+                // Vary lightness by depth for visual distinction
+                const depthOffset = (node.depth - 1) * 8;
+                const l = Math.min(80, mc.l + depthOffset);
+                const a = alpha !== undefined ? alpha : 1;
+                return `hsla(${mc.h}, ${mc.s}%, ${l}%, ${a})`;
+            }
+
+            function layoutArcs(focusNode) {
+                // Lay out arcs for the focused node's subtree.
+                // Returns flat array of {node, startAngle, endAngle, innerR, outerR}
+                const arcs = [];
+                const maxRings = 4; // how many rings to show from focus
+                const cx = 240, cy = 240;
+                const maxR = cx - 10;
+                const centerR = maxR * 0.18; // center circle
+                const ringW = (maxR - centerR) / maxRings;
+
+                function layout(node, startAngle, sweep, ring) {
+                    if (ring > maxRings) return;
+                    if (node === focusNode && node.name !== 'root') {
+                        // The focused node itself is the center - skip, show children only
+                    }
+                    let offset = startAngle;
+                    for (const child of node.children) {
+                        const childSweep = (child.size / node.size) * sweep;
+                        if (childSweep < 0.001) { offset += childSweep; continue; }
+                        const iR = centerR + (ring - 1) * ringW;
+                        const oR = centerR + ring * ringW;
+                        arcs.push({
+                            node: child,
+                            startAngle: offset,
+                            endAngle: offset + childSweep,
+                            innerR: iR,
+                            outerR: oR,
+                            ring: ring
+                        });
+                        if (!child.isLeaf && child.children.length > 0) {
+                            layout(child, offset, childSweep, ring + 1);
+                        }
+                        offset += childSweep;
+                    }
+                }
+                layout(focusNode, 0, Math.PI * 2, 1);
+                return arcs;
+            }
+
+            function drawSunburst() {
+                if (!sunburstTree) return;
+                const focus = sunburstFocus || sunburstTree;
+                const cx = 240, cy = 240;
+                const maxR = cx - 10;
+                const centerR = maxR * 0.18;
+                const dpr = window.devicePixelRatio || 1;
+                sunburstCanvas.width = 480 * dpr;
+                sunburstCanvas.height = 480 * dpr;
+                sunburstCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                sunburstCtx.clearRect(0, 0, 480, 480);
+
+                const arcs = layoutArcs(focus);
+                sunburstCanvas._arcs = arcs;
+                sunburstCanvas._focus = focus;
+
+                // Draw arcs
+                for (const arc of arcs) {
+                    const isHovered = sunburstHover === arc;
+                    const isSelected = sunburstSelected && arc.node.isLeaf &&
+                        arc.node.mood === sunburstSelected.mood && arc.node.centroidIndex === sunburstSelected.centroidIndex;
+                    sunburstCtx.beginPath();
+                    sunburstCtx.arc(cx, cy, arc.outerR, arc.startAngle - Math.PI/2, arc.endAngle - Math.PI/2);
+                    sunburstCtx.arc(cx, cy, arc.innerR, arc.endAngle - Math.PI/2, arc.startAngle - Math.PI/2, true);
+                    sunburstCtx.closePath();
+                    sunburstCtx.fillStyle = getArcColor(arc.node, isHovered || isSelected ? 1 : 0.82);
+                    sunburstCtx.fill();
+                    if (isSelected) {
+                        sunburstCtx.strokeStyle = '#fff';
+                        sunburstCtx.lineWidth = 3;
+                    } else {
+                        sunburstCtx.strokeStyle = document.body.classList.contains('dark-mode') ? '#1F2937' : '#fff';
+                        sunburstCtx.lineWidth = 1.5;
+                    }
+                    sunburstCtx.stroke();
+
+                    // Label
+                    const midAngle = (arc.startAngle + arc.endAngle) / 2 - Math.PI/2;
+                    const midR = (arc.innerR + arc.outerR) / 2;
+                    const sweepDeg = (arc.endAngle - arc.startAngle) * 180 / Math.PI;
+                    const arcLen = midR * (arc.endAngle - arc.startAngle);
+                    if (arcLen > 18 && sweepDeg > 4) {
+                        sunburstCtx.save();
+                        sunburstCtx.translate(cx + Math.cos(midAngle) * midR, cy + Math.sin(midAngle) * midR);
+                        let rot = midAngle;
+                        if (rot > Math.PI/2 && rot < Math.PI*1.5) rot += Math.PI; // flip for readability
+                        sunburstCtx.rotate(rot);
+                        sunburstCtx.fillStyle = document.body.classList.contains('dark-mode') ? '#fff' : '#1a1a2e';
+                        const fontSize = Math.min(11, Math.max(7, arcLen / (arc.node.name.length * 0.7)));
+                        sunburstCtx.font = `${fontSize}px system-ui, sans-serif`;
+                        sunburstCtx.textAlign = 'center';
+                        sunburstCtx.textBaseline = 'middle';
+                        const label = arc.node.isLeaf ? `♪${arc.node.nSongs}` : arc.node.name;
+                        const maxChars = Math.floor(arcLen / (fontSize * 0.55));
+                        sunburstCtx.fillText(label.length > maxChars ? label.slice(0, maxChars-1) + '…' : label, 0, 0);
+                        sunburstCtx.restore();
+                    }
+                }
+
+                // Draw center circle (back button or root label)
+                sunburstCtx.beginPath();
+                sunburstCtx.arc(cx, cy, centerR, 0, Math.PI * 2);
+                const isDark = document.body.classList.contains('dark-mode');
+                sunburstCtx.fillStyle = isDark ? '#374151' : '#f3f4f6';
+                sunburstCtx.fill();
+                sunburstCtx.strokeStyle = isDark ? '#6B7280' : '#d1d5db';
+                sunburstCtx.lineWidth = 1;
+                sunburstCtx.stroke();
+                sunburstCtx.fillStyle = isDark ? '#e5e7eb' : '#374151';
+                sunburstCtx.font = 'bold 13px system-ui, sans-serif';
+                sunburstCtx.textAlign = 'center';
+                sunburstCtx.textBaseline = 'middle';
+                if (focus !== sunburstTree) {
+                    sunburstCtx.fillText('← Back', cx, cy - 7);
+                    sunburstCtx.font = '11px system-ui, sans-serif';
+                    const lbl = focus.name === 'root' ? '' : focus.name.charAt(0).toUpperCase() + focus.name.slice(1);
+                    sunburstCtx.fillText(lbl, cx, cy + 9);
+                } else {
+                    sunburstCtx.fillText('Mood', cx, cy);
+                }
+
+                // Update breadcrumb
+                updateBreadcrumb(focus);
+            }
+
+            function updateBreadcrumb(focus) {
+                if (!focus || focus === sunburstTree) {
+                    sunburstBreadcrumb.textContent = '';
+                    return;
+                }
+                // Build path from root to focus
+                const path = [];
+                let n = focus;
+                while (n && n !== sunburstTree) {
+                    path.unshift(n.name.charAt(0).toUpperCase() + n.name.slice(1));
+                    // find parent
+                    n = findParent(sunburstTree, n);
+                }
+                sunburstBreadcrumb.textContent = path.length ? '⬅ ' + path.join(' › ') + ' (click to go back)' : '';
+            }
+
+            function findParent(root, target) {
+                if (!root.children) return null;
+                for (const ch of root.children) {
+                    if (ch === target) return root;
+                    const p = findParent(ch, target);
+                    if (p) return p;
+                }
+                return null;
+            }
+
+            function hitTestSunburst(x, y) {
+                const cw = 480, ch = 480;
+                const cx = cw/2, cy = ch/2;
+                const dx = x - cx, dy = y - cy;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                const maxR = Math.min(cx, cy) - 10;
+                const centerR = maxR * 0.18;
+                // Center circle?
+                if (dist <= centerR) return {type: 'center'};
+                // Angle (convert to our coordinate system: 0=top, clockwise)
+                let angle = Math.atan2(dy, dx) + Math.PI/2;
+                if (angle < 0) angle += Math.PI * 2;
+                const arcs = sunburstCanvas._arcs || [];
+                for (const arc of arcs) {
+                    if (dist >= arc.innerR && dist <= arc.outerR &&
+                        angle >= arc.startAngle && angle <= arc.endAngle) {
+                        return {type: 'arc', arc: arc};
+                    }
+                }
+                return null;
+            }
+
+            sunburstCanvas.addEventListener('mousemove', (e) => {
+                const rect = sunburstCanvas.getBoundingClientRect();
+                const x = (e.clientX - rect.left) * (480 / rect.width);
+                const y = (e.clientY - rect.top) * (480 / rect.height);
+                const hit = hitTestSunburst(x, y);
+                const prevHover = sunburstHover;
+                sunburstHover = hit && hit.type === 'arc' ? hit.arc : null;
+                if (sunburstHover !== prevHover) drawSunburst();
+                // Tooltip
+                if (hit && hit.type === 'arc') {
+                    const n = hit.arc.node;
+                    if (n.isLeaf) {
+                        sunburstSelectionDiv.textContent = n.mood.charAt(0).toUpperCase() + n.mood.slice(1) + ' — ' + n.tags.join(' / ') + ` (${n.nSongs} songs)`;
+                    } else {
+                        sunburstSelectionDiv.textContent = n.name + ` (${n.size} centroids)`;
+                    }
+                    sunburstCanvas.style.cursor = 'pointer';
+                } else if (hit && hit.type === 'center') {
+                    sunburstCanvas.style.cursor = sunburstFocus && sunburstFocus !== sunburstTree ? 'pointer' : 'default';
+                    sunburstSelectionDiv.textContent = '';
+                } else {
+                    sunburstCanvas.style.cursor = 'default';
+                    sunburstSelectionDiv.textContent = '';
+                }
+            });
+
+            sunburstCanvas.addEventListener('click', (e) => {
+                const rect = sunburstCanvas.getBoundingClientRect();
+                const x = (e.clientX - rect.left) * (480 / rect.width);
+                const y = (e.clientY - rect.top) * (480 / rect.height);
+                const hit = hitTestSunburst(x, y);
+                if (!hit) return;
+                if (hit.type === 'center') {
+                    // Go back
+                    if (sunburstFocus && sunburstFocus !== sunburstTree) {
+                        const parent = findParent(sunburstTree, sunburstFocus);
+                        sunburstFocus = parent && parent !== sunburstTree ? parent : sunburstTree;
+                        // Clear selection when navigating back
+                        sunburstSelected = null;
+                        moodSelect.value = '';
+                        centroidSelect.value = '';
+                        sunburstSelectionDiv.textContent = '';
+                        drawSunburst();
+                    }
+                    return;
+                }
+                if (hit.type === 'arc') {
+                    const node = hit.arc.node;
+                    if (node.isLeaf) {
+                        // Select this centroid
+                        sunburstSelected = node;
+                        moodSelect.value = node.mood;
+                        // Ensure centroid option exists
+                        centroidSelect.innerHTML = '';
+                        const opt = document.createElement('option');
+                        opt.value = node.centroidIndex;
+                        opt.textContent = node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' - ' + node.tags.join('/');
+                        centroidSelect.appendChild(opt);
+                        centroidSelect.value = node.centroidIndex;
+                        sunburstSelectionDiv.innerHTML = '<strong>✓ Selected:</strong> ' + node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' — ' + node.tags.join(' / ') + ` (${node.nSongs} songs)`;
+                        drawSunburst();
+                    } else {
+                        // Drill down
+                        sunburstFocus = node;
+                        moodSelect.value = '';
+                        centroidSelect.value = '';
+                        drawSunburst();
+                    }
+                }
+            });
+
+            sunburstBreadcrumb.addEventListener('click', () => {
+                if (sunburstFocus && sunburstFocus !== sunburstTree) {
+                    const parent = findParent(sunburstTree, sunburstFocus);
+                    sunburstFocus = parent && parent !== sunburstTree ? parent : sunburstTree;
+                    sunburstSelected = null;
+                    moodSelect.value = '';
+                    centroidSelect.value = '';
+                    sunburstSelectionDiv.textContent = '';
+                    drawSunburst();
+                }
+            });
+
             // --- Load mood centroids on page load ---
             async function loadMoodCentroids() {
                 try {
                     const resp = await fetch(`{{ url_for('voyager_bp.get_mood_centroids_endpoint') }}`);
                     if (resp.ok) {
                         moodCentroidsCache = await resp.json();
-                        // Populate mood dropdown
+                        // Populate hidden mood select for form compat
                         for (const mood of Object.keys(moodCentroidsCache).sort()) {
                             const opt = document.createElement('option');
                             opt.value = mood;
-                            opt.textContent = mood.charAt(0).toUpperCase() + mood.slice(1);
+                            opt.textContent = mood;
                             moodSelect.appendChild(opt);
                         }
+                        sunburstTree = buildSunburstTree(moodCentroidsCache);
+                        sunburstFocus = sunburstTree;
+                        drawSunburst();
                     }
                 } catch (e) {
                     console.error('Failed to load mood centroids:', e);
@@ -288,24 +603,7 @@
             }
             loadAnchors();
 
-            // --- Mood select change -> populate centroids ---
-            moodSelect.addEventListener('change', () => {
-                const mood = moodSelect.value;
-                centroidSelect.innerHTML = '<option value="">-- Select a centroid --</option>';
-                if (!mood || !moodCentroidsCache || !moodCentroidsCache[mood]) {
-                    centroidContainer.classList.add('hidden');
-                    return;
-                }
-                const centroids = moodCentroidsCache[mood];
-                centroids.forEach(c => {
-                    const opt = document.createElement('option');
-                    opt.value = c.index;
-                    const moodLabel = mood.charAt(0).toUpperCase() + mood.slice(1);
-                    opt.textContent = moodLabel + ' - ' + c.top_tags.join('/');
-                    centroidSelect.appendChild(opt);
-                });
-                centroidContainer.classList.remove('hidden');
-            });
+            // (Mood/centroid selection is now handled by the sunburst chart above)
 
             // --- Autocomplete Logic ---
             const handleSearchInput = () => {
