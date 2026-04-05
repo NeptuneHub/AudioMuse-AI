@@ -71,6 +71,36 @@ def _get_artist_gmm_vectors_and_weights(artist_identifier: str) -> Tuple[List[np
     return [means[i] for i in range(len(means))], weights.tolist()
 
 
+def _get_mood_centroid_vector(item_id: str):
+    """Parse 'mood_name:centroid_index' and return the centroid vector as np.ndarray, or None."""
+    parts = str(item_id).split(':', 1)
+    if len(parts) != 2:
+        return None
+    mood_name, idx_str = parts[0].strip().lower(), parts[1].strip()
+    try:
+        cidx = int(idx_str)
+        import json as _json
+        with open(config.MOOD_CENTROIDS_FILE) as _f:
+            _mcdata = _json.load(_f)
+        centroids_list = _mcdata.get(mood_name, {}).get('centroids', [])
+        if 0 <= cidx < len(centroids_list):
+            vec = centroids_list[cidx].get('centroid')
+            if vec:
+                return np.array(vec, dtype=float)
+    except (ValueError, FileNotFoundError) as exc:
+        logger.warning(f"Failed to load mood centroid from '{item_id}': {exc}")
+    return None
+
+
+def _get_mood_label(item_id: str) -> str:
+    """Return a human-readable label for a mood centroid id like 'happy:3'."""
+    parts = str(item_id).split(':', 1)
+    if len(parts) != 2:
+        return str(item_id)
+    mood_name = parts[0].strip()
+    return f"{mood_name.capitalize()} #{parts[1].strip()}"
+
+
 def _compute_centroid_from_items(items: List[dict]) -> np.ndarray:
     """
     Compute weighted centroid from mixed song/artist items.
@@ -104,7 +134,13 @@ def _compute_centroid_from_items(items: List[dict]) -> np.ndarray:
             if anchor and anchor.get('centroid') and isinstance(anchor.get('centroid'), list):
                 vectors.append(np.array(anchor['centroid'], dtype=float))
                 weights.append(1.0)
-    
+
+        elif item_type == 'mood':
+            vec = _get_mood_centroid_vector(item_id)
+            if vec is not None:
+                vectors.append(vec)
+                weights.append(1.0)
+
     if not vectors:
         return None
     
@@ -487,6 +523,16 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     proj_ids.append(f'__add_anchor__{anchor_id}')
                     add_meta.append({'item_id': anchor_id, 'title': anchor.get('name', 'Anchor'), 'author': '', 'type': 'anchor'})
         
+        # Add mood centroids as individual points
+        add_mood_items = [item for item in add_items if item.get('type') == 'mood']
+        for item in add_mood_items:
+            mood_id = item['id']
+            vec = _get_mood_centroid_vector(mood_id)
+            if vec is not None:
+                proj_vectors.append(vec)
+                proj_ids.append(f'__add_mood__{mood_id}')
+                add_meta.append({'item_id': mood_id, 'title': _get_mood_label(mood_id), 'author': '', 'type': 'mood'})
+
         # Add artist GMM components - metadata only (projections will be looked up from precomputed cache)
         add_artist_items = [item for item in add_items if item.get('type') == 'artist']
         for item in add_artist_items:
@@ -539,6 +585,16 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     proj_ids.append(f'__sub_anchor__{anchor_id}')
                     sub_meta.append({'item_id': anchor_id, 'title': anchor.get('name', 'Anchor'), 'author': '', 'type': 'anchor'})
         
+        # Add mood centroids as individual points
+        subtract_mood_items = [item for item in subtract_items if item.get('type') == 'mood']
+        for item in subtract_mood_items:
+            mood_id = item['id']
+            vec = _get_mood_centroid_vector(mood_id)
+            if vec is not None:
+                proj_vectors.append(vec)
+                proj_ids.append(f'__sub_mood__{mood_id}')
+                sub_meta.append({'item_id': mood_id, 'title': _get_mood_label(mood_id), 'author': '', 'type': 'mood'})
+
         # Add artist GMM components - metadata only (projections will be looked up from precomputed cache)
         subtract_artist_items = [item for item in subtract_items if item.get('type') == 'artist']
         for item in subtract_artist_items:
@@ -709,6 +765,13 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                 if c is not None:
                     coords.append(np.array(c, dtype=float))
                     weights.append(1.0)
+            elif item.get('type') == 'mood':
+                # Mood centroids won't be in id_to_coord; use proj_map instead
+                prefix = '__add_mood__' if is_add else '__sub_mood__'
+                c = proj_map.get(f"{prefix}{item['id']}")
+                if c is not None:
+                    coords.append(np.array(c, dtype=float))
+                    weights.append(1.0)
 
         # Collect artist component coordinates (with their GMM weights) from precomputed projections
         for item in items:
@@ -772,6 +835,9 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                 vec = np.array(anchor['centroid'], dtype=float)
             else:
                 vec = None
+        elif isinstance(pid, str) and (pid.startswith('__add_mood__') or pid.startswith('__sub_mood__')):
+            mood_id = pid.split('__', 3)[-1]  # extract 'happy:3' from '__add_mood__happy:3'
+            vec = _get_mood_centroid_vector(mood_id)
         else:
             # regular track_id
             vec = get_vector_by_id(int(pid))
@@ -991,6 +1057,8 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
             logger.debug(f"Looking for ADD artist component: item_id={m['item_id']}, pid={pid}, found={pid in proj_map}")
         elif m.get('type') == 'anchor':
             pid = f"__add_anchor__{m['item_id']}"
+        elif m.get('type') == 'mood':
+            pid = f"__add_mood__{m['item_id']}"
         else:
             pid = f"__add_id__{m['item_id']}"
         coord = proj_map.get(pid)
@@ -1003,6 +1071,8 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
             logger.debug(f"Looking for SUB artist component: item_id={m['item_id']}, pid={pid}, found={pid in proj_map}")
         elif m.get('type') == 'anchor':
             pid = f"__sub_anchor__{m['item_id']}"
+        elif m.get('type') == 'mood':
+            pid = f"__sub_mood__{m['item_id']}"
         else:
             pid = f"__sub_id__{m['item_id']}"
         coord = proj_map.get(pid)
