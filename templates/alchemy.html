@@ -93,6 +93,10 @@
         }
     }
 </style>
+<style>
+    .alchemy-sunburst-wrapper { position:relative; width:100%; max-width:480px; margin:0 auto; }
+    @media (min-width: 768px) { .alchemy-sunburst-wrapper { max-width:360px; } }
+</style>
 {% endblock %}
 
 {% block content %}
@@ -224,6 +228,7 @@
 {% endblock %}
 
 {% block bodyAdditions %}
+<script src="{{ url_for('static', filename='sunburst.js') }}"></script>
 <script>
     (async () => {
         // Fetch config to get ALCHEMY defaults
@@ -256,18 +261,9 @@
                 _moodCentroidsLoaded = true;
             } catch (e) { console.warn('Failed to load mood centroids', e); }
         };
-        const _loadMoodOptionsForCard = async (selectEl) => {
-            await _loadMoodCentroids();
-            const curVal = selectEl.value;
-            selectEl.innerHTML = '<option value="">-- Select mood --</option>';
-            for (const mood of Object.keys(_moodCentroidsCache)) {
-                const opt = document.createElement('option');
-                opt.value = mood;
-                opt.textContent = mood.charAt(0).toUpperCase() + mood.slice(1);
-                selectEl.appendChild(opt);
-            }
-            selectEl.value = curVal || '';
-        };
+
+        let _sunburstTree = null; // shared tree built once
+
         const refreshAnchors = async () => {
             try {
                 const response = await fetch('/api/anchors');
@@ -344,13 +340,13 @@
                     </select>
                 </div>
                 <div class="field-row mood-field-row hidden">
-                    <label>Select Mood &amp; Centroid</label>
-                    <select class="mood-select" style="width:100%;padding:0.5rem;border-radius:0.35rem;border:1px solid #ccc;margin-bottom:0.4rem;">
-                        <option value="">-- Select mood --</option>
-                    </select>
-                    <select class="centroid-select" style="width:100%;padding:0.5rem;border-radius:0.35rem;border:1px solid #ccc;" disabled>
-                        <option value="">-- Select centroid --</option>
-                    </select>
+                    <div class="alchemy-sunburst-wrapper">
+                        <canvas class="sunburst-canvas" width="480" height="480" style="width:100%;cursor:pointer;"></canvas>
+                    </div>
+                    <div class="sunburst-selection" style="text-align:center;margin-top:0.5rem;font-size:0.95rem;font-weight:500;color:var(--text-title);min-height:1.4em;"></div>
+                    <div class="sunburst-breadcrumb" style="text-align:center;margin-top:0.25rem;font-size:0.8rem;color:var(--text-muted);cursor:pointer;" title="Click to go back"></div>
+                    <select class="mood-select" style="display:none;"><option value="">--</option></select>
+                    <select class="centroid-select" style="display:none;"><option value="">--</option></select>
                 </div>
                 <input type="hidden" class="song-id" />
                 <input type="hidden" class="item-type" value="song" />
@@ -382,8 +378,11 @@
                 resultsArtistEl.classList.add('hidden');
                 anchorSelect.value = '';
                 moodSelect.value = '';
-                centroidSelect.innerHTML = '<option value="">-- Select centroid --</option>';
-                centroidSelect.disabled = true;
+                centroidSelect.innerHTML = '<option value="">--</option>';
+                // Reset sunburst state if initialized
+                const sbCanvas = card.querySelector('.sunburst-canvas');
+                const sbState = sbCanvas ? sbCanvas._sbState : null;
+                if (sbState) sbState.reset();
             };
 
             const setType = (type) => {
@@ -414,7 +413,11 @@
                     typeCycleBtn.textContent = '🎭 Mood';
                     typeCycleBtn.style.background = '#F59E0B';
                     moodFieldRow.classList.remove('hidden');
-                    _loadMoodOptionsForCard(moodSelect);
+                    // Load centroids + build shared tree + init sunburst for this card
+                    _loadMoodCentroids().then(() => {
+                        if (!_sunburstTree) _sunburstTree = SunburstChart.buildTree(_moodCentroidsCache);
+                        _initSunburstOnce();
+                    });
                 }
                 clearSelection();
             };
@@ -436,32 +439,28 @@
                 }
             });
 
-            // Mood centroid selection handlers
-            moodSelect.addEventListener('change', () => {
-                const mood = moodSelect.value;
-                centroidSelect.innerHTML = '<option value="">-- Select centroid --</option>';
-                idEl.value = '';
-                selectedSongNameEl.textContent = '';
-                if (!mood || !_moodCentroidsCache[mood]) {
-                    centroidSelect.disabled = true;
-                    return;
-                }
-                _moodCentroidsCache[mood].forEach(c => {
-                    const opt = document.createElement('option');
-                    opt.value = `${mood}:${c.index}`;
-                    opt.textContent = `${mood} - ${c.top_tags.join('/')}`;
-                    centroidSelect.appendChild(opt);
-                });
-                centroidSelect.disabled = false;
-            });
-            centroidSelect.addEventListener('change', () => {
-                idEl.value = centroidSelect.value || '';
-                if (centroidSelect.value) {
-                    selectedSongNameEl.textContent = `Mood: ${centroidSelect.options[centroidSelect.selectedIndex].text}`;
-                } else {
-                    selectedSongNameEl.textContent = '';
-                }
-            });
+            // Mood sunburst — init when mood type is set (triggered lazily)
+            let _sbInitialized = false;
+            const _initSunburstOnce = () => {
+                if (_sbInitialized) return;
+                _sbInitialized = true;
+                SunburstChart.init(
+                    moodFieldRow,
+                    _sunburstTree,
+                    (node, best) => {
+                        moodSelect.value = node.mood;
+                        centroidSelect.innerHTML = '';
+                        const opt = document.createElement('option');
+                        opt.value = `${node.mood}:${best.centroidIndex}`;
+                        opt.textContent = node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' - ' + best.tags.slice(0, 3).join('/');
+                        centroidSelect.appendChild(opt);
+                        centroidSelect.value = opt.value;
+                        idEl.value = opt.value;
+                        selectedSongNameEl.textContent = 'Mood: ' + node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' \u2014 ' + best.tags.slice(0, 3).join(' / ');
+                    },
+                    () => { moodSelect.value = ''; centroidSelect.value = ''; idEl.value = ''; selectedSongNameEl.textContent = ''; }
+                );
+            };
 
             // Operation button handlers
             opAddBtn.addEventListener('click', () => {
