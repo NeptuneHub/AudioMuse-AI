@@ -300,40 +300,25 @@
             }
 
             function layoutArcs(focusNode) {
-                // Lay out arcs for the focused node's subtree.
-                // Returns flat array of {node, startAngle, endAngle, innerR, outerR}
+                // Show only ONE ring: the direct children of the focused node.
                 const arcs = [];
-                const maxRings = 4; // how many rings to show from focus
-                const cx = 240, cy = 240;
-                const maxR = cx - 10;
-                const centerR = maxR * 0.18; // center circle
-                const ringW = (maxR - centerR) / maxRings;
-
-                function layout(node, startAngle, sweep, ring) {
-                    if (ring > maxRings) return;
-                    const nChildren = node.children.length;
-                    if (nChildren === 0) return;
-                    // Equal-size segments: every child gets the same angular sweep
-                    const childSweep = sweep / nChildren;
-                    let offset = startAngle;
-                    for (const child of node.children) {
-                        const iR = centerR + (ring - 1) * ringW;
-                        const oR = centerR + ring * ringW;
-                        arcs.push({
-                            node: child,
-                            startAngle: offset,
-                            endAngle: offset + childSweep,
-                            innerR: iR,
-                            outerR: oR,
-                            ring: ring
-                        });
-                        if (!child.isLeaf && child.children.length > 0) {
-                            layout(child, offset, childSweep, ring + 1);
-                        }
-                        offset += childSweep;
-                    }
+                const maxR = 230;
+                const centerR = maxR * 0.32;
+                const nChildren = focusNode.children.length;
+                if (nChildren === 0) return arcs;
+                const childSweep = (Math.PI * 2) / nChildren;
+                let offset = 0;
+                for (const child of focusNode.children) {
+                    arcs.push({
+                        node: child,
+                        startAngle: offset,
+                        endAngle: offset + childSweep,
+                        innerR: centerR + 4,
+                        outerR: maxR,
+                        ring: 1
+                    });
+                    offset += childSweep;
                 }
-                layout(focusNode, 0, Math.PI * 2, 1);
                 return arcs;
             }
 
@@ -341,8 +326,8 @@
                 if (!sunburstTree) return;
                 const focus = sunburstFocus || sunburstTree;
                 const cx = 240, cy = 240;
-                const maxR = cx - 10;
-                const centerR = maxR * 0.18;
+                const maxR = 230;
+                const centerR = maxR * 0.32;
                 const dpr = window.devicePixelRatio || 1;
                 sunburstCanvas.width = 480 * dpr;
                 sunburstCanvas.height = 480 * dpr;
@@ -352,6 +337,7 @@
                 const arcs = layoutArcs(focus);
                 sunburstCanvas._arcs = arcs;
                 sunburstCanvas._focus = focus;
+                const isDark = document.body.classList.contains('dark-mode');
 
                 // Draw arcs
                 for (const arc of arcs) {
@@ -362,63 +348,69 @@
                     sunburstCtx.arc(cx, cy, arc.outerR, arc.startAngle - Math.PI/2, arc.endAngle - Math.PI/2);
                     sunburstCtx.arc(cx, cy, arc.innerR, arc.endAngle - Math.PI/2, arc.startAngle - Math.PI/2, true);
                     sunburstCtx.closePath();
-                    sunburstCtx.fillStyle = getArcColor(arc.node, isHovered || isSelected ? 1 : 0.82);
+                    sunburstCtx.fillStyle = getArcColor(arc.node, isHovered || isSelected ? 1 : 0.78);
                     sunburstCtx.fill();
                     if (isSelected) {
                         sunburstCtx.strokeStyle = '#fff';
                         sunburstCtx.lineWidth = 3;
                     } else {
-                        sunburstCtx.strokeStyle = document.body.classList.contains('dark-mode') ? '#1F2937' : '#fff';
-                        sunburstCtx.lineWidth = 1.5;
+                        sunburstCtx.strokeStyle = isDark ? '#1F2937' : '#fff';
+                        sunburstCtx.lineWidth = 2;
                     }
                     sunburstCtx.stroke();
 
-                    // Label
+                    // Label — placed along the arc midpoint
                     const midAngle = (arc.startAngle + arc.endAngle) / 2 - Math.PI/2;
                     const midR = (arc.innerR + arc.outerR) / 2;
-                    const sweepDeg = (arc.endAngle - arc.startAngle) * 180 / Math.PI;
                     const arcLen = midR * (arc.endAngle - arc.startAngle);
-                    if (arcLen > 18 && sweepDeg > 4) {
-                        sunburstCtx.save();
-                        sunburstCtx.translate(cx + Math.cos(midAngle) * midR, cy + Math.sin(midAngle) * midR);
-                        let rot = midAngle;
-                        if (rot > Math.PI/2 && rot < Math.PI*1.5) rot += Math.PI; // flip for readability
-                        sunburstCtx.rotate(rot);
-                        sunburstCtx.fillStyle = document.body.classList.contains('dark-mode') ? '#fff' : '#1a1a2e';
-                        const fontSize = Math.min(11, Math.max(7, arcLen / (arc.node.name.length * 0.7)));
-                        sunburstCtx.font = `${fontSize}px system-ui, sans-serif`;
-                        sunburstCtx.textAlign = 'center';
-                        sunburstCtx.textBaseline = 'middle';
-                        const label = arc.node.isLeaf ? `♪${arc.node.nSongs}` : arc.node.name;
-                        const maxChars = Math.floor(arcLen / (fontSize * 0.55));
-                        sunburstCtx.fillText(label.length > maxChars ? label.slice(0, maxChars-1) + '…' : label, 0, 0);
-                        sunburstCtx.restore();
-                    }
+                    sunburstCtx.save();
+                    sunburstCtx.translate(cx + Math.cos(midAngle) * midR, cy + Math.sin(midAngle) * midR);
+                    let rot = midAngle;
+                    if (rot > Math.PI/2 && rot < Math.PI*1.5) rot += Math.PI;
+                    sunburstCtx.rotate(rot);
+                    sunburstCtx.fillStyle = isDark ? '#fff' : '#1a1a2e';
+                    let label = arc.node.isLeaf
+                        ? arc.node.tags.join('/') + ` (${arc.node.nSongs})`
+                        : arc.node.name.charAt(0).toUpperCase() + arc.node.name.slice(1);
+                    const fontSize = Math.min(13, Math.max(7, arcLen / (label.length * 0.6)));
+                    sunburstCtx.font = `600 ${fontSize}px system-ui, sans-serif`;
+                    sunburstCtx.textAlign = 'center';
+                    sunburstCtx.textBaseline = 'middle';
+                    const maxChars = Math.floor(arcLen / (fontSize * 0.52));
+                    if (label.length > maxChars && maxChars > 2) label = label.slice(0, maxChars - 1) + '\u2026';
+                    sunburstCtx.fillText(label, 0, 0);
+                    sunburstCtx.restore();
                 }
 
-                // Draw center circle (back button or root label)
+                // Draw center circle
                 sunburstCtx.beginPath();
                 sunburstCtx.arc(cx, cy, centerR, 0, Math.PI * 2);
-                const isDark = document.body.classList.contains('dark-mode');
-                sunburstCtx.fillStyle = isDark ? '#374151' : '#f3f4f6';
+                if (focus !== sunburstTree) {
+                    const mc = MOOD_COLORS[focus.mood] || {h:0,s:0,l:60};
+                    sunburstCtx.fillStyle = `hsl(${mc.h}, ${mc.s}%, ${isDark ? mc.l - 10 : mc.l + 20}%)`;
+                } else {
+                    sunburstCtx.fillStyle = isDark ? '#374151' : '#f3f4f6';
+                }
                 sunburstCtx.fill();
                 sunburstCtx.strokeStyle = isDark ? '#6B7280' : '#d1d5db';
-                sunburstCtx.lineWidth = 1;
+                sunburstCtx.lineWidth = 1.5;
                 sunburstCtx.stroke();
+
+                // Center text
                 sunburstCtx.fillStyle = isDark ? '#e5e7eb' : '#374151';
-                sunburstCtx.font = 'bold 13px system-ui, sans-serif';
                 sunburstCtx.textAlign = 'center';
                 sunburstCtx.textBaseline = 'middle';
                 if (focus !== sunburstTree) {
-                    sunburstCtx.fillText('← Back', cx, cy - 7);
-                    sunburstCtx.font = '11px system-ui, sans-serif';
-                    const lbl = focus.name === 'root' ? '' : focus.name.charAt(0).toUpperCase() + focus.name.slice(1);
+                    sunburstCtx.font = 'bold 14px system-ui, sans-serif';
+                    sunburstCtx.fillText('\u2190 Back', cx, cy - 9);
+                    sunburstCtx.font = '12px system-ui, sans-serif';
+                    const lbl = focus.name.charAt(0).toUpperCase() + focus.name.slice(1);
                     sunburstCtx.fillText(lbl, cx, cy + 9);
                 } else {
+                    sunburstCtx.font = 'bold 16px system-ui, sans-serif';
                     sunburstCtx.fillText('Mood', cx, cy);
                 }
 
-                // Update breadcrumb
                 updateBreadcrumb(focus);
             }
 
@@ -453,8 +445,8 @@
                 const cx = cw/2, cy = ch/2;
                 const dx = x - cx, dy = y - cy;
                 const dist = Math.sqrt(dx*dx + dy*dy);
-                const maxR = Math.min(cx, cy) - 10;
-                const centerR = maxR * 0.18;
+                const maxR = 230;
+                const centerR = maxR * 0.32;
                 // Center circle?
                 if (dist <= centerR) return {type: 'center'};
                 // Angle (convert to our coordinate system: 0=top, clockwise)
