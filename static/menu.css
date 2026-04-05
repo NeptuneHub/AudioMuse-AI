@@ -158,22 +158,6 @@ html.dark-mode .sidebar.open + .main-content .menu-toggle {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    width: 100%;
-    background: none;
-    border: none;
-    cursor: pointer;
-    font: inherit;
-    color: #d1d5db;
-    padding: 0.75rem 0.5rem;
-    font-size: 1rem;
-    white-space: nowrap;
-    border-radius: 0.375rem;
-    transition: background-color 0.2s, color 0.2s;
-}
-
-.submenu-toggle:hover {
-    color: #ffffff;
-    background-color: #374151;
 }
 
 .submenu-arrow {
@@ -223,17 +207,6 @@ html.dark-mode .sidebar.open + .main-content .menu-toggle {
 }
 
 /* Submenu — dark mode */
-body.dark-mode .submenu-toggle,
-html.dark-mode .submenu-toggle {
-    color: var(--text-sub);
-}
-
-body.dark-mode .submenu-toggle:hover,
-html.dark-mode .submenu-toggle:hover {
-    color: var(--text-title);
-    background-color: var(--bg-body);
-}
-
 body.dark-mode .submenu li a,
 html.dark-mode .submenu li a {
     color: var(--text-sub);
