@@ -83,10 +83,11 @@
 
             <!-- Mood mode: sunburst chart (hidden by default) -->
             <div id="mood-mode-container" class="hidden">
-                <div style="text-align:center;margin-bottom:0.5rem;font-size:0.9rem;color:var(--text-muted);">
-                    Click a mood, then drill into genres to select a centroid.
-                </div>
-                <div id="sunburst-wrapper" style="position:relative;width:100%;max-width:480px;margin:0 auto;">
+                <style>
+                    #sunburst-wrapper { max-width: 480px; }
+                    @media (min-width: 768px) { #sunburst-wrapper { max-width: 360px; } }
+                </style>
+                <div id="sunburst-wrapper" style="position:relative;width:100%;margin:0 auto;">
                     <canvas id="sunburst-canvas" width="480" height="480" style="width:100%;cursor:pointer;"></canvas>
                 </div>
                 <div id="sunburst-selection" style="text-align:center;margin-top:0.5rem;font-size:0.95rem;font-weight:500;color:var(--text-title);min-height:1.4em;"></div>
@@ -388,7 +389,7 @@
                     sunburstCtx.rotate(rot);
                     sunburstCtx.fillStyle = isDark ? '#fff' : '#1a1a2e';
                     let label = arc.node.name.charAt(0).toUpperCase() + arc.node.name.slice(1);
-                    const fontSize = Math.min(13, Math.max(7, arcLen / (label.length * 0.6)));
+                    const fontSize = Math.min(16, Math.max(9, arcLen / (label.length * 0.55)));
                     sunburstCtx.font = `600 ${fontSize}px system-ui, sans-serif`;
                     sunburstCtx.textAlign = 'center';
                     sunburstCtx.textBaseline = 'middle';
