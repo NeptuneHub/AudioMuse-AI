@@ -41,6 +41,14 @@ def create_backup():
     """Full pg_dump of the application database and return the .sql file."""
     os.makedirs(BACKUP_DIR, exist_ok=True)
 
+    # Remove old backup files
+    for old in os.listdir(BACKUP_DIR):
+        if old.startswith('audiomuse_backup_') and old.endswith('.sql'):
+            try:
+                os.remove(os.path.join(BACKUP_DIR, old))
+            except OSError:
+                pass
+
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     filename = f"audiomuse_backup_{timestamp}.sql"
     filepath = os.path.join(BACKUP_DIR, filename)
