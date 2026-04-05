@@ -369,8 +369,8 @@
                     sunburstCtx.fillStyle = getArcColor(arc.node, isHovered || isSelected ? 1 : 0.78);
                     sunburstCtx.fill();
                     if (isSelected) {
-                        sunburstCtx.strokeStyle = '#fff';
-                        sunburstCtx.lineWidth = 3;
+                        sunburstCtx.strokeStyle = '#000';
+                        sunburstCtx.lineWidth = 4;
                     } else {
                         sunburstCtx.strokeStyle = isDark ? '#1F2937' : '#fff';
                         sunburstCtx.lineWidth = 2;
@@ -537,16 +537,36 @@
                         opt.textContent = node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' - ' + best.tags.slice(0, 3).join('/');
                         centroidSelect.appendChild(opt);
                         centroidSelect.value = best.centroidIndex;
-                        const extra = node.candidates.length > 1 ? ` (best of ${node.candidates.length}, score ${best.moodScore.toFixed(3)})` : '';
-                        sunburstSelectionDiv.innerHTML = '<strong>✓ Selected:</strong> ' + node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' — ' + best.tags.slice(0, 3).join(' / ') + extra;
+                        sunburstSelectionDiv.innerHTML = '<strong>✓ Selected:</strong> ' + node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' — ' + best.tags.slice(0, 3).join(' / ');
                         drawSunburst();
                     } else if (!node.isTerminal && node.children && node.children.length > 0) {
-                        // Drill down
-                        sunburstFocus = node;
-                        sunburstSelected = null;
-                        moodSelect.value = '';
-                        centroidSelect.value = '';
-                        sunburstSelectionDiv.textContent = '';
+                        // Drill down — auto-skip levels with a single child
+                        let target = node;
+                        while (!target.isTerminal && target.children && target.children.length === 1) {
+                            target = target.children[0];
+                        }
+                        if (target.isTerminal && target.bestCentroid) {
+                            // Landed on a terminal node — auto-select
+                            const best = target.bestCentroid;
+                            sunburstSelected = target;
+                            moodSelect.value = target.mood;
+                            centroidSelect.innerHTML = '';
+                            const opt2 = document.createElement('option');
+                            opt2.value = best.centroidIndex;
+                            opt2.textContent = target.mood.charAt(0).toUpperCase() + target.mood.slice(1) + ' - ' + best.tags.slice(0, 3).join('/');
+                            centroidSelect.appendChild(opt2);
+                            centroidSelect.value = best.centroidIndex;
+                            sunburstSelectionDiv.innerHTML = '<strong>✓ Selected:</strong> ' + target.mood.charAt(0).toUpperCase() + target.mood.slice(1) + ' — ' + best.tags.slice(0, 3).join(' / ');
+                            // Set focus to target's parent so it's visible as selected
+                            const p = findParent(sunburstTree, target);
+                            if (p) sunburstFocus = p;
+                        } else {
+                            sunburstFocus = target;
+                            sunburstSelected = null;
+                            moodSelect.value = '';
+                            centroidSelect.value = '';
+                            sunburstSelectionDiv.textContent = '';
+                        }
                         drawSunburst();
                     }
                 }
