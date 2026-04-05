@@ -17,33 +17,6 @@
         margin-bottom: 1rem;
         color: var(--text-sub);
     }
-    .backup-table {
-        width: 100%;
-        border-collapse: collapse;
-        margin-top: 1rem;
-    }
-    .backup-table th,
-    .backup-table td {
-        text-align: left;
-        padding: 0.6rem 0.75rem;
-        border-bottom: 1px solid var(--border-color);
-    }
-    .backup-table th {
-        font-weight: 600;
-        color: var(--text-title);
-    }
-    .backup-table tr:last-child td {
-        border-bottom: none;
-    }
-    .backup-table tr.selected {
-        background-color: var(--status-pending-bg);
-    }
-    .backup-table tr {
-        cursor: pointer;
-    }
-    .backup-table tr:hover {
-        background-color: var(--status-pending-bg);
-    }
     .restore-confirm-area {
         margin-top: 1rem;
         padding: 1rem;
@@ -112,20 +85,12 @@
         <!-- Restore Backup -->
         <div class="backup-card">
             <h2>Restore Backup</h2>
-            <p>Select an existing backup and restore the database to that state. <strong>This will replace all current data.</strong></p>
+            <p>Upload a backup file (.sql) from your machine and restore the database to that state. <strong>This will replace all current data.</strong></p>
 
-            <div id="backup-list-area">
-                <p id="backup-list-empty" style="display:none; color:var(--text-muted);">No backups found.</p>
-                <table class="backup-table" id="backup-table" style="display:none;">
-                    <thead>
-                        <tr>
-                            <th>Filename</th>
-                            <th>Date</th>
-                            <th class="size-col">Size</th>
-                        </tr>
-                    </thead>
-                    <tbody id="backup-table-body"></tbody>
-                </table>
+            <div style="margin-bottom:1rem;">
+                <label for="restore-file-input" style="display:block; margin-bottom:0.5rem; font-weight:600;">Select backup file:</label>
+                <input type="file" id="restore-file-input" accept=".sql">
+                <p id="restore-file-name" style="margin-top:0.5rem; color:var(--text-sub); display:none;"></p>
             </div>
 
             <div class="restore-confirm-area" id="restore-confirm-area">
@@ -148,58 +113,30 @@
 document.addEventListener('DOMContentLoaded', () => {
     const createBtn = document.getElementById('create-backup-btn');
     const backupStatus = document.getElementById('backup-status');
-    const tableEl = document.getElementById('backup-table');
-    const tbody = document.getElementById('backup-table-body');
-    const emptyMsg = document.getElementById('backup-list-empty');
+    const fileInput = document.getElementById('restore-file-input');
+    const fileNameDisplay = document.getElementById('restore-file-name');
     const confirmArea = document.getElementById('restore-confirm-area');
     const confirmInput = document.getElementById('restore-confirm-input');
     const restoreBtn = document.getElementById('restore-btn');
     const cancelBtn = document.getElementById('restore-cancel-btn');
     const restoreStatus = document.getElementById('restore-status');
 
-    let selectedFile = null;
-
     const EXPECTED_PHRASE = "I want to restore the database from the backup. This action is not reversible";
 
-    function formatSize(bytes) {
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / 1048576).toFixed(1) + ' MB';
-    }
-
-    async function loadBackups() {
-        try {
-            const res = await fetch("{{ url_for('backup_bp.list_backups') }}");
-            const files = await res.json();
-            tbody.innerHTML = '';
-            if (files.length === 0) {
-                tableEl.style.display = 'none';
-                emptyMsg.style.display = 'block';
-                return;
-            }
-            emptyMsg.style.display = 'none';
-            tableEl.style.display = 'table';
-            files.forEach(f => {
-                const tr = document.createElement('tr');
-                tr.dataset.filename = f.filename;
-                tr.innerHTML = `<td>${f.filename}</td><td>${f.created}</td><td class="size-col">${formatSize(f.size)}</td>`;
-                tr.addEventListener('click', () => selectBackup(f.filename, tr));
-                tbody.appendChild(tr);
-            });
-        } catch (e) {
-            console.error('Failed to load backups', e);
+    // Show confirmation area when a file is selected
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length > 0) {
+            fileNameDisplay.textContent = 'Selected: ' + fileInput.files[0].name;
+            fileNameDisplay.style.display = 'block';
+            confirmArea.classList.add('visible');
+            confirmInput.value = '';
+            restoreBtn.disabled = true;
+            restoreStatus.textContent = '';
+        } else {
+            fileNameDisplay.style.display = 'none';
+            confirmArea.classList.remove('visible');
         }
-    }
-
-    function selectBackup(filename, tr) {
-        tbody.querySelectorAll('tr').forEach(r => r.classList.remove('selected'));
-        tr.classList.add('selected');
-        selectedFile = filename;
-        confirmArea.classList.add('visible');
-        confirmInput.value = '';
-        restoreBtn.disabled = true;
-        restoreStatus.textContent = '';
-    }
+    });
 
     confirmInput.addEventListener('input', () => {
         restoreBtn.disabled = confirmInput.value !== EXPECTED_PHRASE;
@@ -207,8 +144,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     cancelBtn.addEventListener('click', () => {
         confirmArea.classList.remove('visible');
-        tbody.querySelectorAll('tr').forEach(r => r.classList.remove('selected'));
-        selectedFile = null;
+        fileInput.value = '';
+        fileNameDisplay.style.display = 'none';
         confirmInput.value = '';
         restoreBtn.disabled = true;
         restoreStatus.textContent = '';
@@ -225,11 +162,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const err = await res.json();
                 throw new Error(err.error || 'Backup failed');
             }
-            // Trigger download
             const blob = await res.blob();
             const disposition = res.headers.get('Content-Disposition') || '';
             const match = disposition.match(/filename="?([^"]+)"?/);
-            const name = match ? match[1] : 'backup.sql';
+            const name = match ? match[1] : 'backup.zip';
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
             a.download = name;
@@ -239,7 +175,6 @@ document.addEventListener('DOMContentLoaded', () => {
             URL.revokeObjectURL(a.href);
             backupStatus.textContent = 'Backup created and download started.';
             backupStatus.style.color = 'var(--color-success, green)';
-            loadBackups();
         } catch (e) {
             backupStatus.textContent = 'Error: ' + e.message;
             backupStatus.style.color = 'var(--color-danger, red)';
@@ -248,17 +183,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Restore backup
+    // Restore backup via file upload
     restoreBtn.addEventListener('click', async () => {
-        if (!selectedFile || confirmInput.value !== EXPECTED_PHRASE) return;
+        if (!fileInput.files.length || confirmInput.value !== EXPECTED_PHRASE) return;
         restoreBtn.disabled = true;
-        restoreStatus.textContent = 'Restoring database… please wait.';
+        restoreStatus.textContent = 'Uploading and restoring database… please wait.';
         restoreStatus.style.color = 'var(--text-sub)';
         try {
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('confirmation', confirmInput.value);
             const res = await fetch("{{ url_for('backup_bp.restore_backup') }}", {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename: selectedFile, confirmation: confirmInput.value })
+                body: formData
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Restore failed');
@@ -271,8 +208,6 @@ document.addEventListener('DOMContentLoaded', () => {
             restoreBtn.disabled = confirmInput.value !== EXPECTED_PHRASE;
         }
     });
-
-    loadBackups();
 });
 </script>
 <script src="{{ url_for('static', filename='menu.js') }}"></script>
