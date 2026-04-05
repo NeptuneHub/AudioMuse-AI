@@ -234,6 +234,21 @@
             // --- Sunburst chart for mood centroid selection (external: sunburst.js) ---
 
             let _sunburstState = null;
+            let selectedMoodLabel = '';
+
+            function capitalizeLabel(text) {
+                return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+            }
+
+            function findNodePath(current, target) {
+                if (current === target) return current.name === 'root' ? [] : [current.name];
+                if (!current.children) return null;
+                for (const child of current.children) {
+                    const path = findNodePath(child, target);
+                    if (path) return current.name === 'root' ? path : [current.name, ...path];
+                }
+                return null;
+            }
 
             // --- Load mood centroids on page load ---
             async function loadMoodCentroids() {
@@ -260,8 +275,14 @@
                                 opt.textContent = node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' - ' + best.tags.slice(0, 3).join('/');
                                 centroidSelect.appendChild(opt);
                                 centroidSelect.value = best.centroidIndex;
+                                const path = findNodePath(tree, node);
+                                if (path) {
+                                    selectedMoodLabel = path.map(capitalizeLabel).join(' — ');
+                                } else {
+                                    selectedMoodLabel = capitalizeLabel(node.mood || '');
+                                }
                             },
-                            () => { moodSelect.value = ''; centroidSelect.value = ''; }
+                            () => { moodSelect.value = ''; centroidSelect.value = ''; selectedMoodLabel = ''; }
                         );
                     }
                 } catch (e) {
@@ -453,7 +474,7 @@
                         eliminate_duplicates: eliminateDuplicates
                     });
                     const selectedOption = centroidSelect.options[centroidSelect.selectedIndex];
-                    playlistLabel = selectedOption ? selectedOption.textContent : mood;
+                    playlistLabel = selectedMoodLabel || (selectedOption ? selectedOption.textContent : mood);
                 } else if (_currentMode === 'anchor') {
                     // --- Anchor mode ---
                     const anchorId = anchorSelect.value;
