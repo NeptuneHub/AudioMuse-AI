@@ -88,9 +88,10 @@
             <p>Upload a backup file (.sql) from your machine and restore the database to that state. <strong>This will replace all current data.</strong></p>
 
             <div style="margin-bottom:1rem;">
-                <label for="restore-file-input" style="display:block; margin-bottom:0.5rem; font-weight:600;">Select backup file:</label>
-                <input type="file" id="restore-file-input" accept=".sql">
-                <p id="restore-file-name" style="margin-top:0.5rem; color:var(--text-sub); display:none;"></p>
+                <label style="display:block; margin-bottom:0.5rem; font-weight:600;">Select backup file:</label>
+                <input type="file" id="restore-file-input" accept=".sql" style="display:none;">
+                <button type="button" id="restore-file-btn" class="btn btn-primary">Choose File</button>
+                <span id="restore-file-name" style="margin-left:0.75rem; color:var(--text-sub);">No file selected</span>
             </div>
 
             <div class="restore-confirm-area" id="restore-confirm-area">
@@ -114,6 +115,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const createBtn = document.getElementById('create-backup-btn');
     const backupStatus = document.getElementById('backup-status');
     const fileInput = document.getElementById('restore-file-input');
+    const fileBtn = document.getElementById('restore-file-btn');
     const fileNameDisplay = document.getElementById('restore-file-name');
     const confirmArea = document.getElementById('restore-confirm-area');
     const confirmInput = document.getElementById('restore-confirm-input');
@@ -123,17 +125,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const EXPECTED_PHRASE = "I want to restore the database from the backup. This action is not reversible";
 
+    // Open file picker via styled button
+    fileBtn.addEventListener('click', () => fileInput.click());
+
     // Show confirmation area when a file is selected
     fileInput.addEventListener('change', () => {
         if (fileInput.files.length > 0) {
-            fileNameDisplay.textContent = 'Selected: ' + fileInput.files[0].name;
-            fileNameDisplay.style.display = 'block';
+            fileNameDisplay.textContent = fileInput.files[0].name;
             confirmArea.classList.add('visible');
             confirmInput.value = '';
             restoreBtn.disabled = true;
             restoreStatus.textContent = '';
         } else {
-            fileNameDisplay.style.display = 'none';
+            fileNameDisplay.textContent = 'No file selected';
             confirmArea.classList.remove('visible');
         }
     });
@@ -145,7 +149,7 @@ document.addEventListener('DOMContentLoaded', () => {
     cancelBtn.addEventListener('click', () => {
         confirmArea.classList.remove('visible');
         fileInput.value = '';
-        fileNameDisplay.style.display = 'none';
+        fileNameDisplay.textContent = 'No file selected';
         confirmInput.value = '';
         restoreBtn.disabled = true;
         restoreStatus.textContent = '';
