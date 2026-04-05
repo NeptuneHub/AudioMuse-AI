@@ -15,7 +15,7 @@
     <ul class="submenu">
         <li><a href="{{ url_for('analysis_bp.cleaning_page') }}" {% if active == 'cleaning' %}class="active"{% endif %}>Cleaning</a></li>
         <li><a href="{{ url_for('cron_bp.cron_page') }}" {% if active == 'cron' %}class="active"{% endif %}>Scheduled Tasks</a></li>
-        <li><a href="{{ url_for('backup_bp.backup_page') }}" {% if active == 'backup' %}class="active"{% endif %}>Backup</a></li>
+        <li><a href="{{ url_for('backup_bp.backup_page') }}" {% if active == 'backup' %}class="active"{% endif %}>Backup and Restore</a></li>
     </ul>
 </li>
 <li><button type="button" id="dark-mode-toggle" aria-pressed="false" aria-label="Toggle dark mode">🌙 Dark Mode</button></li>

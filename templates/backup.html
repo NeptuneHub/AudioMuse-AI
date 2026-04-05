@@ -77,7 +77,7 @@
         <!-- Create Backup -->
         <div class="backup-card">
             <h2>Create Backup</h2>
-            <p>Dump the entire database. The backup file will be saved on the server and downloaded to your browser.</p>
+            <p>Dump the entire audiomuse database. The backup file will be downloaded to your browser when ready.</p>
             <button id="create-backup-btn" class="btn btn-primary">Create Backup</button>
             <div id="backup-status"></div>
         </div>
@@ -85,7 +85,7 @@
         <!-- Restore Backup -->
         <div class="backup-card">
             <h2>Restore Backup</h2>
-            <p>Upload a backup file (.sql) from your machine and restore the database to that state. <strong>This will replace all current data.</strong></p>
+            <p>Upload a backup file (.sql) from your machine and restore the database to that state. <strong>This will replace all current data.</strong><br>After the restore you need to restart flask and worker container.</p>
 
             <div style="margin-bottom:1rem;">
                 <label style="display:block; margin-bottom:0.5rem; font-weight:600;">Select backup file:</label>
@@ -98,10 +98,7 @@
                 <label>To confirm, type the following phrase exactly:</label>
                 <p style="font-style:italic; margin-bottom:0.5rem; color:var(--text-main);">I want to restore the database from the backup. This action is not reversible</p>
                 <input type="text" id="restore-confirm-input" placeholder="Type the phrase above..." autocomplete="off">
-                <div style="display:flex; gap:0.5rem;">
-                    <button id="restore-btn" class="btn danger-button" disabled>Restore</button>
-                    <button id="restore-cancel-btn" class="btn btn-secondary">Cancel</button>
-                </div>
+                <button id="restore-btn" class="btn danger-button" disabled>Restore</button>
                 <div id="restore-status" style="margin-top:0.75rem; font-size:0.95rem;"></div>
             </div>
         </div>
@@ -120,7 +117,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const confirmArea = document.getElementById('restore-confirm-area');
     const confirmInput = document.getElementById('restore-confirm-input');
     const restoreBtn = document.getElementById('restore-btn');
-    const cancelBtn = document.getElementById('restore-cancel-btn');
     const restoreStatus = document.getElementById('restore-status');
 
     const EXPECTED_PHRASE = "I want to restore the database from the backup. This action is not reversible";
@@ -144,15 +140,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     confirmInput.addEventListener('input', () => {
         restoreBtn.disabled = confirmInput.value !== EXPECTED_PHRASE;
-    });
-
-    cancelBtn.addEventListener('click', () => {
-        confirmArea.classList.remove('visible');
-        fileInput.value = '';
-        fileNameDisplay.textContent = 'No file selected';
-        confirmInput.value = '';
-        restoreBtn.disabled = true;
-        restoreStatus.textContent = '';
     });
 
     // Create backup
