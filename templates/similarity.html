@@ -235,6 +235,7 @@
 
             let _sunburstState = null;
             let selectedMoodLabel = '';
+            let selectedMoodLabelForPlaylist = '';
 
             function capitalizeLabel(text) {
                 return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
@@ -278,8 +279,10 @@
                                 const path = findNodePath(tree, node);
                                 if (path) {
                                     selectedMoodLabel = path.map(capitalizeLabel).join(' — ');
+                                    selectedMoodLabelForPlaylist = path.map(capitalizeLabel).join('/');
                                 } else {
                                     selectedMoodLabel = capitalizeLabel(node.mood || '');
+                                    selectedMoodLabelForPlaylist = capitalizeLabel(node.mood || '');
                                 }
                             },
                             () => { moodSelect.value = ''; centroidSelect.value = ''; selectedMoodLabel = ''; }
@@ -581,7 +584,15 @@
                     resultsTableWrapper.innerHTML = tableHTML;
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
-                    document.getElementById('playlist_name').value = isVectorMode ? (_currentMode === 'anchor' ? 'Anchor: ' : 'Mood: ') + playlistLabel : 'Similar to ' + playlistLabel;
+                    let defaultPlaylistName;
+                    if (_currentMode === 'mood') {
+                        defaultPlaylistName = 'Similar to Mood: ' + selectedMoodLabelForPlaylist;
+                    } else if (_currentMode === 'anchor') {
+                        defaultPlaylistName = 'Similar to Anchor: ' + playlistLabel;
+                    } else {
+                        defaultPlaylistName = 'Similar to ' + playlistLabel;
+                    }
+                    document.getElementById('playlist_name').value = defaultPlaylistName;
 
                 } catch (error) {
                     statusDiv.textContent = `Error: ${error.message}`;
