@@ -10,7 +10,9 @@ logger = logging.getLogger(__name__)
 
 backup_bp = Blueprint('backup_bp', __name__)
 
-BACKUP_DIR = os.environ.get("BACKUP_DIR", "/app/backup")
+BACKUP_DIR = os.environ.get("BACKUP_DIR") or os.path.join(
+    os.environ.get("TEMP_DIR", "/app/temp_audio"), "backups"
+)
 
 
 def _pg_env():
@@ -120,14 +122,25 @@ def restore_backup():
 
         # Re-initialize schema and run migrations if the backup is from an older version
         try:
-            from app_helper import init_db
+            from app_helper import init_db, is_schema_ready
             init_db()
+            if not is_schema_ready():
+                logger.warning("Post-restore migration failed — schema still uses old item_id format.")
+                return jsonify({
+                    'success': True,
+                    'warning': 'Database restored but the track_id migration failed. '
+                               'Check the container logs for details and restart the application to retry.'
+                }), 200
             logger.info("Post-restore schema init and migration check completed.")
         except Exception as e:
             logger.warning("Post-restore init_db failed: %s", e)
-            return jsonify({'success': True, 'warning': f'Database restored but schema migration failed: {e}. Restart the application to retry.'}), 200
+            return jsonify({
+                'success': True,
+                'warning': f'Database restored but schema initialization failed: {e}. '
+                           f'Restart the application to retry.'
+            }), 200
 
-        return jsonify({'success': True, 'message': 'Database restored successfully.'})
+        return jsonify({'success': True, 'message': 'Database restored and migration completed successfully.'})
     except FileNotFoundError:
         logger.error("psql not found on system PATH")
         return jsonify({'error': 'psql is not installed or not on PATH'}), 500

@@ -823,81 +823,91 @@ if not _is_worker:
       logger.warning("See deployment/.env.example for configuration options.")
       logger.warning("=" * 60)
 
-    # --- Initial Voyager Index Load ---
-    from tasks.voyager_manager import load_voyager_index_for_querying
-    load_voyager_index_for_querying()
-    # --- Load Artist Similarity Index ---
-    from tasks.artist_gmm_manager import load_artist_index_for_querying
-    try:
-      load_artist_index_for_querying()
-      logger.info("Artist similarity index loaded at startup.")
-    except Exception as e:
-      logger.warning(f"Failed to load artist similarity index at startup: {e}")
-    # Also try to load precomputed map projection into memory if available
-    try:
-      from app_helper import load_map_projection
-      load_map_projection('main_map')
-      logger.info("In-memory map projection loaded at startup.")
-    except Exception as e:
-      logger.debug(f"No precomputed map projection to load at startup or load failed: {e}")
-    # Also try to load artist component projection into memory
-    try:
-      from app_helper import load_artist_projection
-      load_artist_projection('artist_map')
-      logger.info("In-memory artist component projection loaded at startup.")
-    except Exception as e:
-      logger.debug(f"No precomputed artist projection to load at startup or load failed: {e}")
-    # Load CLAP embeddings cache (model will lazy-load on first use)
-    try:
-      from config import CLAP_ENABLED
-      if CLAP_ENABLED:
-        # Load CLAP embeddings cache (15MB) - model lazy-loads on first search to save 3GB RAM
-        from tasks.clap_text_search import load_clap_cache_from_db, load_top_queries_from_db
-        if load_clap_cache_from_db():
-          logger.info("CLAP text search cache loaded at startup (embeddings only).")
-          logger.info("CLAP model will lazy-load on first text search (~1-2s delay, saves 3GB RAM).")
-        
-        # Load top queries from database (default queries only, no computation)
-        # This must run even if no CLAP embeddings exist yet (first startup)
-        has_existing = load_top_queries_from_db()
-        if has_existing:
-          logger.info("Loaded top queries from database (defaults).")
-        else:
-          logger.info("No queries found in database (should not happen - check DB)")
-    except Exception as e:
-      logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
-    # Load MuLan embeddings cache (model will lazy-load on first use)
-    try:
-      from config import MULAN_ENABLED
-      if MULAN_ENABLED:
-        # Load MuLan embeddings cache - models lazy-load on first search to save RAM
-        from tasks.mulan_text_search import load_mulan_cache_from_db, load_top_queries_from_db as load_mulan_top_queries_from_db
-        if load_mulan_cache_from_db():
-          logger.info("MuLan text search cache loaded at startup (embeddings only).")
-          logger.info("MuLan models will lazy-load on first text search.")
-        
-        # Load top queries from database
-        # This must run even if no MuLan embeddings exist yet (first startup)
-        has_existing = load_mulan_top_queries_from_db()
-        if has_existing:
-          logger.info("Loaded MuLan top queries from database (defaults).")
-        else:
-          logger.info("No MuLan queries found in database (defaults inserted)")
-    except Exception as e:
-      logger.debug(f"MuLan cache not loaded at startup (may be disabled or failed): {e}")
-
-    def _start_map_init_background():
+    # --- Guard: only load caches if the DB schema is fully migrated ---
+    from app_helper import is_schema_ready
+    if not is_schema_ready():
+      logger.error("=" * 60)
+      logger.error("DATABASE MIGRATION INCOMPLETE — skipping cache loading.")
+      logger.error("The app will start but search, similarity, and map")
+      logger.error("features will not work until the migration succeeds.")
+      logger.error("Fix the migration issue and restart the container.")
+      logger.error("=" * 60)
+    else:
+      # --- Initial Voyager Index Load ---
+      from tasks.voyager_manager import load_voyager_index_for_querying
+      load_voyager_index_for_querying()
+      # --- Load Artist Similarity Index ---
+      from tasks.artist_gmm_manager import load_artist_index_for_querying
       try:
-        from app_map import init_map_cache
-        logger.info('Starting background map JSON cache build.')
-        with app.app_context():
-          init_map_cache()
-        logger.info('Background map JSON cache build finished.')
-      except Exception:
-        logger.exception('Background init_map_cache failed')
+        load_artist_index_for_querying()
+        logger.info("Artist similarity index loaded at startup.")
+      except Exception as e:
+        logger.warning(f"Failed to load artist similarity index at startup: {e}")
+      # Also try to load precomputed map projection into memory if available
+      try:
+        from app_helper import load_map_projection
+        load_map_projection('main_map')
+        logger.info("In-memory map projection loaded at startup.")
+      except Exception as e:
+        logger.debug(f"No precomputed map projection to load at startup or load failed: {e}")
+      # Also try to load artist component projection into memory
+      try:
+        from app_helper import load_artist_projection
+        load_artist_projection('artist_map')
+        logger.info("In-memory artist component projection loaded at startup.")
+      except Exception as e:
+        logger.debug(f"No precomputed artist projection to load at startup or load failed: {e}")
+      # Load CLAP embeddings cache (model will lazy-load on first use)
+      try:
+        from config import CLAP_ENABLED
+        if CLAP_ENABLED:
+          # Load CLAP embeddings cache (15MB) - model lazy-loads on first search to save 3GB RAM
+          from tasks.clap_text_search import load_clap_cache_from_db, load_top_queries_from_db
+          if load_clap_cache_from_db():
+            logger.info("CLAP text search cache loaded at startup (embeddings only).")
+            logger.info("CLAP model will lazy-load on first text search (~1-2s delay, saves 3GB RAM).")
 
-    t = threading.Thread(target=_start_map_init_background, daemon=True)
-    t.start()
+          # Load top queries from database (default queries only, no computation)
+          # This must run even if no CLAP embeddings exist yet (first startup)
+          has_existing = load_top_queries_from_db()
+          if has_existing:
+            logger.info("Loaded top queries from database (defaults).")
+          else:
+            logger.info("No queries found in database (should not happen - check DB)")
+      except Exception as e:
+        logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
+      # Load MuLan embeddings cache (model will lazy-load on first use)
+      try:
+        from config import MULAN_ENABLED
+        if MULAN_ENABLED:
+          # Load MuLan embeddings cache - models lazy-load on first search to save RAM
+          from tasks.mulan_text_search import load_mulan_cache_from_db, load_top_queries_from_db as load_mulan_top_queries_from_db
+          if load_mulan_cache_from_db():
+            logger.info("MuLan text search cache loaded at startup (embeddings only).")
+            logger.info("MuLan models will lazy-load on first text search.")
+
+          # Load top queries from database
+          # This must run even if no MuLan embeddings exist yet (first startup)
+          has_existing = load_mulan_top_queries_from_db()
+          if has_existing:
+            logger.info("Loaded MuLan top queries from database (defaults).")
+          else:
+            logger.info("No MuLan queries found in database (defaults inserted)")
+      except Exception as e:
+        logger.debug(f"MuLan cache not loaded at startup (may be disabled or failed): {e}")
+
+      def _start_map_init_background():
+        try:
+          from app_map import init_map_cache
+          logger.info('Starting background map JSON cache build.')
+          with app.app_context():
+            init_map_cache()
+          logger.info('Background map JSON cache build finished.')
+        except Exception:
+          logger.exception('Background init_map_cache failed')
+
+      t = threading.Thread(target=_start_map_init_background, daemon=True)
+      t.start()
 
 # --- Start Background Listener Thread (Flask server only) ---
 if not _is_worker:

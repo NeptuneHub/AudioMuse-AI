@@ -100,7 +100,22 @@ def close_db(e=None):
     if db is not None:
         db.close()
 
+# Track whether the database schema is fully migrated and ready for queries
+# that reference track_id columns. Set by init_db() after migration check.
+_schema_ready = True
+
+
+def is_schema_ready():
+    """Return True if the database schema is fully migrated to track_id.
+
+    When False, code that queries track_id columns (Voyager, CLAP, map cache, etc.)
+    should skip loading to avoid crashing with 'column does not exist' errors.
+    """
+    return _schema_ready
+
+
 def init_db():
+    global _schema_ready
     db = get_db()
     with db.cursor() as cur:
         # Serialize DDL across containers (flask + worker start simultaneously)
@@ -471,10 +486,19 @@ def init_db():
                     logger.info("Running canonical track_id migration...")
                     db.commit()  # Commit pending work before migration
                     if not run_migration():
-                        logger.error("Canonical track_id migration failed! Check logs for details.")
+                        _schema_ready = False
+                        logger.error("=" * 70)
+                        logger.error("CRITICAL: track_id migration FAILED.")
+                        logger.error("The database still uses the old item_id schema.")
+                        logger.error("Features requiring track_id (search, similarity, maps)")
+                        logger.error("will be disabled until the migration succeeds.")
+                        logger.error("Check the migration error above and restart.")
+                        logger.error("=" * 70)
                     else:
+                        _schema_ready = True
                         logger.info("Canonical track_id migration completed successfully.")
                 else:
+                    _schema_ready = True
                     logger.info("Canonical track_id migration already completed.")
             except ImportError:
                 logger.warning("migration_track_id.py not found — skipping migration.")

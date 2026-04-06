@@ -30,8 +30,10 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
+from datetime import datetime
 from urllib.parse import unquote, quote
 
 # ---------------------------------------------------------------------------
@@ -69,6 +71,59 @@ def get_database_url():
     user_esc = quote(user, safe="")
     pass_esc = quote(password, safe="")
     return f"postgresql://{user_esc}:{pass_esc}@{host}:{port}/{db}"
+
+
+def _create_pre_migration_backup():
+    """Create a pg_dump backup before migration. Returns True on success, False on failure."""
+    # Use explicit BACKUP_DIR if set, otherwise fall back to temp_audio/backups
+    # which is already a persistent named volume in default docker-compose setups
+    backup_dir = os.environ.get("BACKUP_DIR") or os.path.join(
+        os.environ.get("TEMP_DIR", "/app/temp_audio"), "backups"
+    )
+    host = os.environ.get("POSTGRES_HOST", "postgres-service.playlist")
+    port = os.environ.get("POSTGRES_PORT", "5432")
+    user = os.environ.get("POSTGRES_USER", "audiomuse")
+    password = os.environ.get("POSTGRES_PASSWORD", "audiomusepassword")
+    db = os.environ.get("POSTGRES_DB", "audiomusedb")
+
+    try:
+        os.makedirs(backup_dir, exist_ok=True)
+    except OSError as e:
+        logger.warning(f"Cannot create backup directory {backup_dir}: {e}")
+        return False
+
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"pre_migration_backup_{timestamp}.sql"
+    filepath = os.path.join(backup_dir, filename)
+
+    env = os.environ.copy()
+    env['PGPASSWORD'] = password
+    cmd = ['pg_dump', '-h', host, '-p', port, '-U', user, '--clean', '--if-exists', '-d', db]
+
+    try:
+        with open(filepath, 'w') as f:
+            result = subprocess.run(cmd, env=env, stdout=f, stderr=subprocess.PIPE, text=True, timeout=600)
+        if result.returncode != 0:
+            logger.warning(f"Pre-migration pg_dump failed: {result.stderr}")
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            return False
+    except FileNotFoundError:
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        logger.warning("pg_dump not found — skipping pre-migration backup (not critical)")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.warning("Pre-migration pg_dump timed out")
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        return False
+    except Exception as e:
+        logger.warning(f"Pre-migration backup failed: {e}")
+        return False
+
+    logger.info(f"Pre-migration backup saved to: {filepath}")
+    return True
 
 
 def get_connection():
@@ -492,23 +547,31 @@ def step4_create_provider_track(cur, provider_id, item_to_track):
     score_meta = {row[0]: (row[1], row[2], row[3]) for row in cur.fetchall()}
 
     inserted = 0
+    skipped_dupes = 0
     items = list(item_to_track.items())
 
     for batch_start in range(0, len(items), BATCH_SIZE):
         batch = items[batch_start:batch_start + BATCH_SIZE]
         for item_id, track_id in batch:
             title, artist, album = score_meta.get(item_id, (None, None, None))
+            # ON CONFLICT DO NOTHING handles both unique constraints:
+            #   UNIQUE(provider_id, item_id) — same item_id re-inserted
+            #   UNIQUE(provider_id, track_id) — multiple item_ids share same track (file path dedup)
             cur.execute("""
                 INSERT INTO provider_track (provider_id, track_id, item_id, title, artist, album, last_synced)
                 VALUES (%s, %s, %s, %s, %s, %s, NOW())
-                ON CONFLICT (provider_id, item_id) DO NOTHING
+                ON CONFLICT DO NOTHING
             """, (provider_id, track_id, item_id, title, artist, album))
             if cur.rowcount > 0:
                 inserted += 1
+            else:
+                skipped_dupes += 1
 
         if (batch_start + BATCH_SIZE) % 5000 == 0 or batch_start + BATCH_SIZE >= len(items):
             logger.info(f"  provider_track insert progress: {min(batch_start + BATCH_SIZE, len(items))}/{len(items)}")
 
+    if skipped_dupes > 0:
+        logger.info(f"  provider_track duplicates skipped: {skipped_dupes} (multiple item_ids mapped to same track via file path dedup)")
     logger.info(f"  provider_track entries created: {inserted}")
 
 
@@ -1098,6 +1161,15 @@ def run_migration():
 
             logger.info(f"Pre-flight: {score_count} rows in score table")
             logger.info("")
+
+            # Safety backup before any destructive changes
+            if score_count > 0:
+                logger.info("Creating pre-migration database backup...")
+                if _create_pre_migration_backup():
+                    logger.info("Backup complete — safe to proceed with migration.")
+                else:
+                    logger.warning("Could not create backup (pg_dump may not be available).")
+                    logger.warning("Proceeding with migration anyway — data is still intact until commit.")
 
             # Step 1: Infrastructure tables
             step1_create_infrastructure(cur)
