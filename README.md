@@ -112,18 +112,20 @@ For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](d
    EMBY_USER_ID=your-user-id
    EMBY_TOKEN=your-api-token
    ```
-3. **Set your user and password:**
+3. **Edit `.env` to set your AudioMuse-AI user and password:**
 
-From v0.9.6 AudioMuse-AI come with authentication enabled, so you need to set at least your user, password an API Token if you want to call the API with an external plugin:
+   In the env file you also need to put your AudioMuse-AI credentials as in the below example:
    ```env
-  AUTH_ENABLED=true
-  AUDIOMUSE_USER=alice
-  AUDIOMUSE_PASSWORD=secret123
-  API_TOKEN=foo-bar-baz
+   AUTH_ENABLED=true
+   AUDIOMUSE_USER=alice
+   AUDIOMUSE_PASSWORD=secret123
+   API_TOKEN=api-token
    ```
-More details can be found in the [AUTHENTICATION](docs/AUTH.md) docs
+   Alternative you can disabled the authentication layer with `AUTH_ENABLED` set to false, but we suggest to keep it enabled.
    
-5. **Start the services:**
+   More details can be found in the [AUTHENTICATION](docs/AUTH.md) docs
+   
+4. **Start the services:**
    ```bash
    docker compose -f deployment/docker-compose.yaml up -d
    ```
@@ -133,10 +135,10 @@ More details can be found in the [AUTHENTICATION](docs/AUTH.md) docs
 > You also have docker-compose-navidrome.yaml, docker-compose-lyrion.yaml, dokcer-compose-emby.yaml
 
 > Other example are for advanced deployment.
-6. **Access the application:**
+5. **Access the application:**
    Open your browser at `http://localhost:8000`
 
-7. **Run your first analysis:**
+6. **Run your first analysis:**
    - Navigate to "Analysis and Clustering" page
    - Click "Start Analysis" to scan your library
    - Wait for completion, then explore features like clustering and music map
