@@ -1,21 +1,13 @@
 # Authentication
 
-Authentication is off by default; the server runs in legacy (open) mode when
-any of `AUDIOMUSE_USER`, `AUDIOMUSE_PASSWORD` or `API_TOKEN` are empty.
+Authentication is enabled by default from v0.9.6 thanks to the env var `AUTH_ENABLED`; it use the env var `AUDIOMUSE_USER`, `AUDIOMUSE_PASSWORD` and optionally `API_TOKEN`
 
-To enable auth set all three environment variables (for example in a `.env`).
 If you deploy to Kubernetes, **do not place these values in a ConfigMap**; use a
 Secret resource so the credentials aren’t stored in plaintext imagery or git
 history:
 
 ```yaml
-AUDIOMUSE_USER=alice
-AUDIOMUSE_PASSWORD=secret123
-API_TOKEN=foo-bar-baz
-JWT_SECRET=<random-string>
-```
-
-```
+AUTH_ENABLED=true
 AUDIOMUSE_USER=alice
 AUDIOMUSE_PASSWORD=secret123
 API_TOKEN=foo-bar-baz
@@ -61,8 +53,6 @@ spec:
 ```
 
 ## Plugin 
-
-Before enabling the authentication be sure that the plugin that use AudioMuse-AI support it.
 
 > Actually Jellyfin plugin `v0.1.51` (for Jellyfin 10.10.7) and `v0.1.52` (for jellyfin 10.11) already added this support
 > 
