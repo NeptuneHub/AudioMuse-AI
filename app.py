@@ -74,7 +74,28 @@ app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
 
 # --- Authentication Setup ---
 # AUTH_ENABLED is the raw env toggle. If enabled, auth is enforced everywhere.
-# A warning is shown when auth is enabled but credentials are not fully configured.
+# If auth is enabled and the user/pass env vars are missing, we provide defaults.
+
+effective_audiomuse_user = AUDIOMUSE_USER
+effective_audiomuse_password = AUDIOMUSE_PASSWORD
+new_password_generated = False
+
+if AUTH_ENABLED:
+    if not effective_audiomuse_user:
+        effective_audiomuse_user = "admin"
+    if not effective_audiomuse_password:
+        alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        effective_audiomuse_password = ''.join(secrets.choice(alphabet) for _ in range(16))
+        new_password_generated = True
+    if effective_audiomuse_user != AUDIOMUSE_USER or effective_audiomuse_password != AUDIOMUSE_PASSWORD:
+        print('\n*** AUTH_ENABLED=true: using default authentication values ***')
+        print(f'AUDIOMUSE_USER defaulted to: {effective_audiomuse_user}')
+        if new_password_generated:
+            print(f'AUDIOMUSE_PASSWORD auto-generated to: {effective_audiomuse_password}')
+        else:
+            print('AUDIOMUSE_PASSWORD taken from environment value')
+        print('*** Persist these values in your environment if you want stable credentials ***')
+        print('*** Set AUDIOMUSE_USER and AUDIOMUSE_PASSWORD in your env vars, and API_TOKEN too if you need external/token access ***\n')
 
 # Finalize JWT_SECRET — auto-generate if not configured
 _jwt_secret = JWT_SECRET
@@ -86,7 +107,7 @@ if not _jwt_secret and AUTH_ENABLED:
         "Set JWT_SECRET in your .env for persistent sessions."
     )
 
-auth_configured = bool(AUDIOMUSE_USER and AUDIOMUSE_PASSWORD)
+auth_configured = bool(effective_audiomuse_user and effective_audiomuse_password)
 
 # --- Context Processor to Inject Version and Feature Flags ---
 @app.context_processor
@@ -205,7 +226,7 @@ def auth_endpoint():
     user = data.get('user', '')
     password = data.get('password', '')
 
-    if user != AUDIOMUSE_USER or password != AUDIOMUSE_PASSWORD:
+    if user != effective_audiomuse_user or password != effective_audiomuse_password:
         app.logger.warning(f"Failed login attempt for user: {user!r}")
         return jsonify({"error": "Invalid credentials"}), 401
 
