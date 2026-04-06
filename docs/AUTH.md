@@ -1,6 +1,8 @@
 # Authentication
 
-Authentication is enabled by default from v0.9.6 thanks to the env var `AUTH_ENABLED`; it use the env var `AUDIOMUSE_USER`, `AUDIOMUSE_PASSWORD` and optionally `API_TOKEN`
+Authentication is enabled by default from v0.9.6 thanks to the env var `AUTH_ENABLED`; it use this mandatory env var `AUDIOMUSE_USER`, `AUDIOMUSE_PASSWORD` and this optional env var `API_TOKEN` 
+`JWT_SECRET`.
+The api token is needee only for the plugin use. the JWT_SECRET if you want to keep the session when you restart the container.
 
 If you deploy to Kubernetes, **do not place these values in a ConfigMap**; use a
 Secret resource so the credentials aren’t stored in plaintext imagery or git
