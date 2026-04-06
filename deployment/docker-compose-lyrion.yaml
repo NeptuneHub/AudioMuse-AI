@@ -48,6 +48,7 @@ services:
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
+      AUTH_ENABLED: "${AUTH_ENABLED:-true}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio
@@ -78,6 +79,7 @@ services:
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
+      AUTH_ENABLED: "${AUTH_ENABLED:-true}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-worker:/app/temp_audio

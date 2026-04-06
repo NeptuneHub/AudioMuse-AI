@@ -51,6 +51,7 @@ services:
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
+      AUTH_ENABLED: "${AUTH_ENABLED:-true}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
@@ -91,6 +92,7 @@ services:
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
       CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
+      AUTH_ENABLED: "${AUTH_ENABLED:-true}"
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"

@@ -34,7 +34,7 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
   TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, ALCHEMY_SUBTRACT_DISTANCE, \
   ENABLE_PROXY_FIX, \
   ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN, \
-  AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, API_TOKEN, JWT_SECRET
+  AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, API_TOKEN, JWT_SECRET, AUTH_ENABLED
 
 if ENABLE_PROXY_FIX:
   # Werkzeug import for reverse proxy support
@@ -73,7 +73,8 @@ if ENABLE_PROXY_FIX:
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
 
 # --- Authentication Setup ---
-AUTH_ENABLED = bool(AUDIOMUSE_USER and AUDIOMUSE_PASSWORD and API_TOKEN)
+# AUTH_ENABLED is the raw env toggle. If enabled, auth is enforced everywhere.
+# A warning is shown when auth is enabled but credentials are not fully configured.
 
 # Finalize JWT_SECRET — auto-generate if not configured
 _jwt_secret = JWT_SECRET
@@ -84,6 +85,8 @@ if not _jwt_secret and AUTH_ENABLED:
         "All browser sessions will be invalidated on container restart. "
         "Set JWT_SECRET in your .env for persistent sessions."
     )
+
+auth_configured = bool(AUDIOMUSE_USER and AUDIOMUSE_PASSWORD)
 
 # --- Context Processor to Inject Version and Feature Flags ---
 @app.context_processor
@@ -171,7 +174,15 @@ def login_page():
             return redirect(url_for('index'))
         except pyjwt.InvalidTokenError:
             pass
-    return render_template('login.html', title='Login — AudioMuse-AI')
+
+    auth_warning = None
+    if AUTH_ENABLED and not auth_configured:
+        auth_warning = (
+            'AUTH_ENABLED is true by default. Set the environment variables AUDIOMUSE_USER and AUDIOMUSE_PASSWORD, '
+            'or disable authentication (not recommended). Optionally configure API_TOKEN as an env var for external/plugin calls.'
+        )
+
+    return render_template('login.html', title='Login — AudioMuse-AI', auth_warning=auth_warning)
 
 @app.route('/auth', methods=['POST'])
 def auth_endpoint():
@@ -183,6 +194,11 @@ def auth_endpoint():
     The API_TOKEN is NEVER returned in the response body.
     """
     if not AUTH_ENABLED:
+        return jsonify({"error": "Auth not configured"}), 404
+    if not auth_configured:
+        app.logger.warning(
+            "Auth is enabled but AUDIOMUSE_USER or AUDIOMUSE_PASSWORD is missing. API_TOKEN is optional for external/plugin calls."
+        )
         return jsonify({"error": "Auth not configured"}), 404
 
     data = request.get_json(silent=True) or {}

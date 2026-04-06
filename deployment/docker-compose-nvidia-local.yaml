@@ -63,6 +63,7 @@ services:
       AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
       AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
       JWT_SECRET: "${JWT_SECRET:-}"
+      AUTH_ENABLED: "${AUTH_ENABLED:-true}"
     volumes:
       - temp-audio-flask:/app/temp_audio
     depends_on:
@@ -115,6 +116,7 @@ services:
       AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
       AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
       JWT_SECRET: "${JWT_SECRET:-}"
+      AUTH_ENABLED: "${AUTH_ENABLED:-true}"
     volumes:
       - temp-audio-worker:/app/temp_audio
     depends_on:

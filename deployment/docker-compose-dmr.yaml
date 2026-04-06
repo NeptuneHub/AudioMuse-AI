@@ -53,6 +53,7 @@ services:
       AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
       AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
       JWT_SECRET: "${JWT_SECRET:-}"
+      AUTH_ENABLED: "${AUTH_ENABLED:-true}"
     # Use tmpfs to process audio files in memory for better performance. this reduuces disk I/O but might use more RAM.
     # Mounted directories are not shared between containers, so each container gets its own tmpfs instance.
     # Increase tmpfs size for very large audio files as needed.
@@ -94,6 +95,7 @@ services:
       AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
       AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
       JWT_SECRET: "${JWT_SECRET:-}"
+      AUTH_ENABLED: "${AUTH_ENABLED:-true}"
     # Use tmpfs to process audio files in memory for better performance. this reduuces disk I/O but might use more RAM.
     # Mounted directories are not shared between containers, so each container gets its own tmpfs instance.
     # Increase tmpfs size for very large audio files as needed.
