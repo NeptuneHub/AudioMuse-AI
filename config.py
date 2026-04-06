@@ -481,3 +481,7 @@ API_TOKEN = os.environ.get("API_TOKEN", "")
 # JWT secret for signing session tokens. Auto-generated if not set (sessions lost on restart).
 # Note: the warning for missing JWT_SECRET is emitted in app.py after logging is configured
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
+
+# Enable or disable authentication independently of whether credentials are set.
+# Default is True to preserve the current secure behavior.
+AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
