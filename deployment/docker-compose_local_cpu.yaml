@@ -61,6 +61,7 @@ services:
       AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
       AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
       JWT_SECRET: "${JWT_SECRET:-}"
+      AUTH_ENABLED: "${AUTH_ENABLED:-true}"
       USE_GPU_CLUSTERING: "false"
     volumes:
       - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
@@ -102,6 +103,7 @@ services:
       AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
       AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
       JWT_SECRET: "${JWT_SECRET:-}"
+      AUTH_ENABLED: "${AUTH_ENABLED:-true}"
       USE_GPU_CLUSTERING: "false"
     volumes:
       - temp-audio-worker:/app/temp_audio # Volume for temporary audio files
