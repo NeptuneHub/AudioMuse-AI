@@ -47,6 +47,44 @@
             cursor: not-allowed;
             border-color: var(--border-color-darker);
         }
+        .mode-toggle-btn {
+            background: #3B82F6;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 4px 10px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 500;
+            line-height: 1.2;
+            text-align: center;
+            min-width: 55px;
+            margin-left: 0.5rem;
+            margin-top: 0;
+            width: auto;
+            flex-grow: 0;
+            vertical-align: middle;
+            transition: background-color 0.2s;
+        }
+        .mode-toggle-btn:hover {
+            background: #2563EB;
+        }
+        .mode-toggle-btn.mood-active {
+            background: #8B5CF6;
+        }
+        .mode-toggle-btn.mood-active:hover {
+            background: #7C3AED;
+        }
+        .mood-select {
+            width: 100%;
+            padding: 0.5rem;
+            border-radius: 0.375rem;
+            border: 1px solid var(--border-color-darker);
+            background-color: var(--bg-card);
+            color: var(--text-main);
+            font-size: 1rem;
+            margin-top: 0.25rem;
+        }
 </style>
 {% endblock %}
 
@@ -54,7 +92,7 @@
 <section>
     <header class="page-header">
         <h1>AudioMuse-AI - Song Path</h1>
-        <p>Find a path of similar songs between two tracks.</p>
+        <p>Find a path between a song and another song, mood, or anchor.</p>
     </header>
 
     <form id="path-form">
@@ -64,32 +102,88 @@
         <div class="param-group">
             <div class="autocomplete-container">
                 <label for="start_search" class="label-with-tooltip">
-                    Start Song, Artist or Album name:
+                    Start:
+                    <button type="button" class="mode-toggle-btn" id="start-mode-toggle" title="Click to cycle Song/Mood/Anchor">🎵 Song</button>
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Type the song, artist or album you want to find similar tracks to. As you type, suggestions will appear below</span>
+                        <span class="tooltip-text">Click the button to cycle between Song (search by name), Mood, and Anchor.</span>
                     </span>
                 </label>
-                <input type="text" id="start_search" name="start_search" placeholder="Start typing..." autocomplete="off">
-                <div id="start_title_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
-                <div id="start_artist_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
-                <div id="start_album_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
-                <div id="start-autocomplete-results" class="autocomplete-results hidden"></div>
+                <div id="start-song-fields">
+                    <input type="text" id="start_search" name="start_search" placeholder="Start typing..." autocomplete="off">
+                    <div id="start_title_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                    <div id="start_artist_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                    <div id="start_album_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                    <div id="start-autocomplete-results" class="autocomplete-results hidden"></div>
+                </div>
+                <div id="start-mood-fields" class="hidden">
+                    <select id="start_mood_select" class="mood-select">
+                        <option value="">-- Select a mood --</option>
+                        <option value="happy">Happy</option>
+                        <option value="sad">Sad</option>
+                        <option value="aggressive">Aggressive</option>
+                        <option value="relaxed">Relaxed</option>
+                        <option value="danceable">Danceable</option>
+                    </select>
+                    <div class="param-row" style="margin-top:0.4rem;">
+                        <input id="start_mood_pct" type="range" min="10" max="100" step="1" value="100" />
+                        <span id="start_mood_pct_label" style="font-weight:500;">100%</span>
+                        <input id="start_mood_pct_input" type="number" min="10" max="100" step="1" value="100" />
+                    </div>
+                </div>
+                <div id="start-anchor-fields" class="hidden">
+                    <select id="start_anchor_select" class="mood-select">
+                        <option value="">-- Select anchor --</option>
+                    </select>
+                    <div class="param-row" style="margin-top:0.4rem;">
+                        <input id="start_anchor_pct" type="range" min="10" max="100" step="1" value="100" />
+                        <span id="start_anchor_pct_label" style="font-weight:500;">100%</span>
+                        <input id="start_anchor_pct_input" type="number" min="10" max="100" step="1" value="100" />
+                    </div>
+                </div>
             </div>
 
             <div class="autocomplete-container">
                 <label for="end_search" class="label-with-tooltip">
-                    End Song, Artist or Album name:
+                    End:
+                    <button type="button" class="mode-toggle-btn" id="end-mode-toggle" title="Click to cycle Song/Mood/Anchor">🎵 Song</button>
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Type the song, artist or album you want to find similar tracks to. As you type, suggestions will appear below</span>
+                        <span class="tooltip-text">Click the button to cycle between Song (search by name), Mood, and Anchor.</span>
                     </span>
                 </label>
-                <input type="text" id="end_search" name="end_search" placeholder="Start typing..." autocomplete="off">
-                <div id="end_title_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
-                <div id="end_artist_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
-                <div id="end_album_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
-                <div id="end-autocomplete-results" class="autocomplete-results hidden"></div>
+                <div id="end-song-fields">
+                    <input type="text" id="end_search" name="end_search" placeholder="Start typing..." autocomplete="off">
+                    <div id="end_title_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                    <div id="end_artist_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                    <div id="end_album_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                    <div id="end-autocomplete-results" class="autocomplete-results hidden"></div>
+                </div>
+                <div id="end-mood-fields" class="hidden">
+                    <select id="end_mood_select" class="mood-select">
+                        <option value="">-- Select a mood --</option>
+                        <option value="happy">Happy</option>
+                        <option value="sad">Sad</option>
+                        <option value="aggressive">Aggressive</option>
+                        <option value="relaxed">Relaxed</option>
+                        <option value="danceable">Danceable</option>
+                    </select>
+                    <div class="param-row" style="margin-top:0.4rem;">
+                        <input id="end_mood_pct" type="range" min="10" max="100" step="1" value="100" />
+                        <span id="end_mood_pct_label" style="font-weight:500;">100%</span>
+                        <input id="end_mood_pct_input" type="number" min="10" max="100" step="1" value="100" />
+                    </div>
+                </div>
+                <div id="end-anchor-fields" class="hidden">
+                    <select id="end_anchor_select" class="mood-select">
+                        <option value="">-- Select anchor --</option>
+                    </select>
+                    <div class="param-row" style="margin-top:0.4rem;">
+                        <input id="end_anchor_pct" type="range" min="10" max="100" step="1" value="100" />
+                        <span id="end_anchor_pct_label" style="font-weight:500;">100%</span>
+                        <input id="end_anchor_pct_input" type="number" min="10" max="100" step="1" value="100" />
+                    </div>
+                </div>
             </div>
 
             <div>
@@ -311,6 +405,134 @@
                     endAutocompleteResults.classList.add('hidden');
                 }
             });
+
+            // --- Mood / Song toggle logic ---
+            let startMode = 'song'; // 'song' or 'mood'
+            let endMode = 'song';
+            const startSongFields = document.getElementById('start-song-fields');
+            const startMoodFields = document.getElementById('start-mood-fields');
+            const startAnchorFields = document.getElementById('start-anchor-fields');
+            const endSongFields = document.getElementById('end-song-fields');
+            const endMoodFields = document.getElementById('end-mood-fields');
+            const endAnchorFields = document.getElementById('end-anchor-fields');
+            const startMoodSelect = document.getElementById('start_mood_select');
+            const startAnchorSelect = document.getElementById('start_anchor_select');
+            const endMoodSelect = document.getElementById('end_mood_select');
+            const endAnchorSelect = document.getElementById('end_anchor_select');
+
+            const refreshPathAnchors = async () => {
+                try {
+                    const resp = await fetch('/api/anchors');
+                    const data = await resp.json();
+                    const anchors = Array.isArray(data.anchors) ? data.anchors : [];
+                    [startAnchorSelect, endAnchorSelect].forEach(select => {
+                        if (!select) return;
+                        const current = select.value;
+                        select.innerHTML = '<option value="">-- Select anchor (optional) --</option>';
+                        anchors.forEach(a => {
+                            const opt = document.createElement('option');
+                            opt.value = a.id;
+                            opt.textContent = a.name;
+                            select.appendChild(opt);
+                        });
+                        if (current) select.value = current;
+                    });
+                } catch (e) {
+                    console.warn('Could not refresh anchors', e);
+                }
+            };
+
+
+            const setMode = (endpoint, mode) => {
+                const isStart = endpoint === 'start';
+                const toggleBtn = document.getElementById(`${endpoint}-mode-toggle`);
+                const songFields = isStart ? startSongFields : endSongFields;
+                const moodFields = isStart ? startMoodFields : endMoodFields;
+                const anchorFields = isStart ? startAnchorFields : endAnchorFields;
+
+                if (mode === 'song') {
+                    songFields.classList.remove('hidden');
+                    moodFields.classList.add('hidden');
+                    anchorFields.classList.add('hidden');
+                    toggleBtn.innerHTML = '🎵 Song';
+                    toggleBtn.classList.remove('mood-active');
+                    toggleBtn.classList.remove('anchor-active');
+                } else if (mode === 'mood') {
+                    songFields.classList.add('hidden');
+                    moodFields.classList.remove('hidden');
+                    anchorFields.classList.add('hidden');
+                    toggleBtn.innerHTML = '🎭 Mood';
+                    toggleBtn.classList.add('mood-active');
+                    toggleBtn.classList.remove('anchor-active');
+                    // Force the other endpoint back to song if already mode mood/anchor is active so only one
+                    const other = isStart ? 'end' : 'start';
+                    if ((isStart ? endMode : startMode) !== 'song') {
+                        setMode(other, 'song');
+                    }
+                } else {
+                    songFields.classList.add('hidden');
+                    moodFields.classList.add('hidden');
+                    anchorFields.classList.remove('hidden');
+                    toggleBtn.innerHTML = '🔖 Anchor';
+                    toggleBtn.classList.remove('mood-active');
+                    toggleBtn.classList.add('anchor-active');
+                    const other = isStart ? 'end' : 'start';
+                    if ((isStart ? endMode : startMode) !== 'song') {
+                        setMode(other, 'song');
+                    }
+                }
+                if (isStart) startMode = mode; else endMode = mode;
+            };
+
+            const cycleMode = (endpoint) => {
+                const current = endpoint === 'start' ? startMode : endMode;
+                const next = current === 'song' ? 'mood' : (current === 'mood' ? 'anchor' : 'song');
+                setMode(endpoint, next);
+            };
+
+            document.getElementById('start-mode-toggle').addEventListener('click', () => cycleMode('start'));
+            document.getElementById('end-mode-toggle').addEventListener('click', () => cycleMode('end'));
+
+
+            document.getElementById('start_mood_pct').addEventListener('input', function() {
+                document.getElementById('start_mood_pct_label').textContent = this.value + '%';
+                document.getElementById('start_mood_pct_input').value = this.value;
+            });
+            document.getElementById('start_mood_pct_input').addEventListener('input', function() {
+                const v = Math.max(10, Math.min(100, parseInt(this.value) || 100));
+                document.getElementById('start_mood_pct').value = v;
+                document.getElementById('start_mood_pct_label').textContent = v + '%';
+            });
+            document.getElementById('end_mood_pct').addEventListener('input', function() {
+                document.getElementById('end_mood_pct_label').textContent = this.value + '%';
+                document.getElementById('end_mood_pct_input').value = this.value;
+            });
+            document.getElementById('end_mood_pct_input').addEventListener('input', function() {
+                const v = Math.max(10, Math.min(100, parseInt(this.value) || 100));
+                document.getElementById('end_mood_pct').value = v;
+                document.getElementById('end_mood_pct_label').textContent = v + '%';
+            });
+
+            document.getElementById('start_anchor_pct').addEventListener('input', function() {
+                document.getElementById('start_anchor_pct_label').textContent = this.value + '%';
+                document.getElementById('start_anchor_pct_input').value = this.value;
+            });
+            document.getElementById('start_anchor_pct_input').addEventListener('input', function() {
+                const v = Math.max(10, Math.min(100, parseInt(this.value) || 100));
+                document.getElementById('start_anchor_pct').value = v;
+                document.getElementById('start_anchor_pct_label').textContent = v + '%';
+            });
+            document.getElementById('end_anchor_pct').addEventListener('input', function() {
+                document.getElementById('end_anchor_pct_label').textContent = this.value + '%';
+                document.getElementById('end_anchor_pct_input').value = this.value;
+            });
+            document.getElementById('end_anchor_pct_input').addEventListener('input', function() {
+                const v = Math.max(10, Math.min(100, parseInt(this.value) || 100));
+                document.getElementById('end_anchor_pct').value = v;
+                document.getElementById('end_anchor_pct_label').textContent = v + '%';
+            });
+
+            refreshPathAnchors();
 
             // --- Normalization Function with Fixed Range ---
             const normalizeValue = (value, min, max) => {
@@ -728,6 +950,10 @@
 
                 const startSongId = startSongIdInput.value;
                 const endSongId = endSongIdInput.value;
+                const startMood = startMode === 'mood' ? startMoodSelect.value : '';
+                const endMood = endMode === 'mood' ? endMoodSelect.value : '';
+                const startAnchor = startMode === 'anchor' ? startAnchorSelect.value : '';
+                const endAnchor = endMode === 'anchor' ? endAnchorSelect.value : '';
                 const maxSteps = document.getElementById('max_steps').value;
 
                 resultsContainer.classList.remove('hidden');
@@ -737,20 +963,43 @@
                 statusDiv.className = '';
                 resultsTableWrapper.innerHTML = '';
 
-                if (!startSongId || !endSongId) {
-                    statusDiv.textContent = 'Please select both a start and end song.';
+                // Validate: each endpoint must have a song ID, mood, or anchor selected
+                const hasStart = startMode === 'song' ? !!startSongId : !!startMood || !!startAnchor;
+                const hasEnd = endMode === 'song' ? !!endSongId : !!endMood || !!endAnchor;
+                if (!hasStart || !hasEnd) {
+                    statusDiv.textContent = 'Please select a song, mood, or anchor for both start and end.';
                     statusDiv.className = 'status-error';
                     return;
                 }
 
                 try {
                     const pathFixSize = document.getElementById('path_fix_size_checkbox')?.checked ? 'true' : 'false';
-                    const params = new URLSearchParams({
-                        start_song_id: startSongId,
-                        end_song_id: endSongId,
-                        max_steps: maxSteps,
-                        path_fix_size: pathFixSize
-                    });
+                    const params = new URLSearchParams({ max_steps: maxSteps, path_fix_size: pathFixSize });
+                    if (startMode === 'song') {
+                        params.set('start_song_id', startSongId);
+                    } else if (startAnchor) {
+                        params.set('start_anchor', startAnchor);
+                    } else {
+                        params.set('start_mood', startMood);
+                    }
+                    if (endMode === 'song') {
+                        params.set('end_song_id', endSongId);
+                    } else if (endAnchor) {
+                        params.set('end_anchor', endAnchor);
+                    } else {
+                        params.set('end_mood', endMood);
+                    }
+                    // Send mood intensity percentage
+                    const moodPct = startMode === 'mood'
+                        ? document.getElementById('start_mood_pct').value
+                        : startMode === 'anchor'
+                            ? document.getElementById('start_anchor_pct').value
+                            : endMode === 'mood'
+                                ? document.getElementById('end_mood_pct').value
+                                : endMode === 'anchor'
+                                    ? document.getElementById('end_anchor_pct').value
+                                    : '100';
+                    params.set('mood_pct', moodPct);
                     // Start fetching the full map projection in parallel (non-blocking) so both network requests
                     // can be performed concurrently. Always fetch fresh data and do not reuse any in-page cached promise.
                     const mapPromise = fetch("{{ url_for('map_bp.map_api') }}?percent=100", { cache: 'no-store' })
@@ -833,7 +1082,17 @@
 
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
-                    document.getElementById('playlist_name').value = `Path: ${startTitleDiv.value} to ${endTitleDiv.value}`;
+                    const startLabel = startMode === 'song'
+                        ? (startTitleDiv.textContent || '').replace(/^Title:\s*/, '')
+                        : startMode === 'mood'
+                        ? (startMoodSelect.options[startMoodSelect.selectedIndex]?.text || 'Mood')
+                        : (startAnchorSelect.options[startAnchorSelect.selectedIndex]?.text || 'Anchor');
+                    const endLabel = endMode === 'song'
+                        ? (endTitleDiv.textContent || '').replace(/^Title:\s*/, '')
+                        : endMode === 'mood'
+                        ? (endMoodSelect.options[endMoodSelect.selectedIndex]?.text || 'Mood')
+                        : (endAnchorSelect.options[endAnchorSelect.selectedIndex]?.text || 'Anchor');
+                    document.getElementById('playlist_name').value = `Path: ${startLabel} to ${endLabel}`;
                 } catch (error) {
                     statusDiv.textContent = `Error: ${error.message}`;
                     statusDiv.className = 'status-error';

@@ -90,7 +90,7 @@ RUN set -ux; \
             libsndfile1=1.2.2-1ubuntu5.24.04.1 libsndfile1-dev \
             libopenblas-dev \
             liblapack-dev=3.12.0-3build1.1 \
-            libpq-dev \
+            libpq-dev postgresql-client \
             ffmpeg wget curl \
             supervisor procps \
             gcc g++ \

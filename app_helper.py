@@ -100,7 +100,22 @@ def close_db(e=None):
     if db is not None:
         db.close()
 
+# Track whether the database schema is fully migrated and ready for queries
+# that reference track_id columns. Set by init_db() after migration check.
+_schema_ready = True
+
+
+def is_schema_ready():
+    """Return True if the database schema is fully migrated to track_id.
+
+    When False, code that queries track_id columns (Voyager, CLAP, map cache, etc.)
+    should skip loading to avoid crashing with 'column does not exist' errors.
+    """
+    return _schema_ready
+
+
 def init_db():
+    global _schema_ready
     db = get_db()
     with db.cursor() as cur:
         # Serialize DDL across containers (flask + worker start simultaneously)
@@ -408,6 +423,9 @@ def init_db():
                 logger.warning(f"DROP CONSTRAINT failed (non-critical): {e}")
                 db.rollback()
 
+            # Create 'alchemy_anchors' table to persist named user anchors for reuse
+            cur.execute("CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+
             # Performance indexes for hot queries (brainstorm, artist search)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author_lower ON score(LOWER(author))")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_title_author_lower ON score(LOWER(title), LOWER(author))")
@@ -468,10 +486,19 @@ def init_db():
                     logger.info("Running canonical track_id migration...")
                     db.commit()  # Commit pending work before migration
                     if not run_migration():
-                        logger.error("Canonical track_id migration failed! Check logs for details.")
+                        _schema_ready = False
+                        logger.error("=" * 70)
+                        logger.error("CRITICAL: track_id migration FAILED.")
+                        logger.error("The database still uses the old item_id schema.")
+                        logger.error("Features requiring track_id (search, similarity, maps)")
+                        logger.error("will be disabled until the migration succeeds.")
+                        logger.error("Check the migration error above and restart.")
+                        logger.error("=" * 70)
                     else:
+                        _schema_ready = True
                         logger.info("Canonical track_id migration completed successfully.")
                 else:
+                    _schema_ready = True
                     logger.info("Canonical track_id migration already completed.")
             except ImportError:
                 logger.warning("migration_track_id.py not found — skipping migration.")
@@ -565,6 +592,40 @@ def clean_up_previous_main_tasks():
     except Exception as e_main_clean:
         db.rollback()
         logger.error(f"Error during the main task cleanup process: {e_main_clean}")
+    finally:
+        cur.close()
+
+
+def get_active_main_task(task_type=None):
+    """Return the currently active main task.
+
+    If task_type is provided, only return an active task of that type.
+    If task_type is None, return any active main task.
+    """
+    db = get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    try:
+        non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
+
+        if task_type:
+            cur.execute("""
+                SELECT task_id, task_type, status, details
+                FROM task_status
+                WHERE task_type = %s AND status IN %s AND parent_task_id IS NULL
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """, (task_type, non_terminal_statuses))
+        else:
+            cur.execute("""
+                SELECT task_id, task_type, status, details
+                FROM task_status
+                WHERE status IN %s AND parent_task_id IS NULL
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """, (non_terminal_statuses,))
+
+        active_task = cur.fetchone()
+        return dict(active_task) if active_task else None
     finally:
         cur.close()
 
@@ -1019,6 +1080,105 @@ def get_score_data_by_ids(track_ids_list):
         row_dict['item_id'] = str(row_dict['track_id'])  # frontend compat
         results.append(row_dict)
     return results
+
+
+def save_alchemy_anchor(name, centroid):
+    """Save a named anchor centroid into DB."""
+    if not name or not centroid or not isinstance(centroid, list):
+        raise ValueError('Anchor name and centroid list are required.')
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        centroid_json = json.dumps(centroid)
+        cur.execute(
+            "INSERT INTO alchemy_anchors (name, centroid) VALUES (%s, %s) "
+            "ON CONFLICT (name) DO UPDATE SET centroid = EXCLUDED.centroid, created_at = NOW() "
+            "RETURNING id, name, created_at",
+            (name, centroid_json)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to save alchemy anchor '{name}': {e}")
+        return None
+    finally:
+        cur.close()
+
+
+def get_alchemy_anchors():
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute("SELECT id, name, created_at FROM alchemy_anchors ORDER BY created_at DESC")
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to load alchemy anchors: {e}")
+        return []
+    finally:
+        cur.close()
+
+
+def delete_alchemy_anchor(anchor_id):
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM alchemy_anchors WHERE id = %s", (anchor_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to delete alchemy anchor id={anchor_id}: {e}")
+        return False
+    finally:
+        cur.close()
+
+
+def get_alchemy_anchor_by_id(anchor_id):
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute("SELECT id, name, centroid, created_at FROM alchemy_anchors WHERE id = %s", (anchor_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        anchor = dict(row)
+        if isinstance(anchor.get('centroid'), str):
+            try:
+                anchor['centroid'] = json.loads(anchor['centroid'])
+            except Exception:
+                anchor['centroid'] = None
+        return anchor
+    except Exception as e:
+        logger.error(f"Failed to fetch alchemy anchor id={anchor_id}: {e}")
+        return None
+    finally:
+        cur.close()
+
+
+def update_alchemy_anchor_name(anchor_id, name):
+    if not name or not isinstance(name, str):
+        return None
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(
+            "UPDATE alchemy_anchors SET name = %s WHERE id = %s RETURNING id, name",
+            (name.strip(), anchor_id)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        if not row:
+            return None
+        return dict(row)
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to rename alchemy anchor id={anchor_id}: {e}")
+        return None
+    finally:
+        cur.close()
 
 
 def save_map_projection(index_name, id_map, projection_array):

@@ -59,7 +59,7 @@ def get_media_server_defaults():
         default_user_id = (sc.get('user_id') if sc else None) or JELLYFIN_USER_ID
         return jsonify({"default_user_id": default_user_id})
     elif provider_type == 'navidrome':
-        default_user = (sc.get('username') if sc else None) or NAVIDROME_USER
+        default_user = (sc.get('user') if sc else None) or NAVIDROME_USER
         return jsonify({"default_user": default_user})
     return jsonify({})
 
@@ -173,7 +173,7 @@ def generate_sonic_fingerprint_endpoint():
             user_creds['token'] = token
 
         elif provider_type == 'navidrome':
-            default_user = (sc.get('username') if sc else None) or NAVIDROME_USER
+            default_user = (sc.get('user') if sc else None) or NAVIDROME_USER
             default_pass = (sc.get('password') if sc else None) or NAVIDROME_PASSWORD
             user_creds['user'] = data.get('navidrome_user') or default_user
             user_creds['password'] = data.get('navidrome_password') or default_pass

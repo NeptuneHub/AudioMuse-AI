@@ -46,6 +46,11 @@ class TestCleaningPage:
 class TestStartAnalysisEndpoint:
     """Tests for the /api/analysis/start endpoint"""
 
+    @pytest.fixture(autouse=True)
+    def patch_active_analysis_task(self):
+        with patch('app_helper.get_active_main_task', return_value=None) as mock_active_task:
+            yield mock_active_task
+
     @patch('app_helper.rq_queue_high')
     @patch('app_helper.clean_up_previous_main_tasks')
     @patch('app_helper.save_task_status')
@@ -209,6 +214,11 @@ class TestStartAnalysisEndpoint:
 class TestStartCleaningEndpoint:
     """Tests for the /api/cleaning/start endpoint"""
 
+    @pytest.fixture(autouse=True)
+    def patch_active_cleaning_task(self):
+        with patch('app_helper.get_active_main_task', return_value=None) as mock_active_task:
+            yield mock_active_task
+
     @patch('app_helper.rq_queue_high')
     @patch('app_helper.clean_up_previous_main_tasks')
     @patch('app_helper.save_task_status')
@@ -298,15 +308,33 @@ class TestStartCleaningEndpoint:
         # Verify cleanup was called before enqueueing new task
         mock_cleanup.assert_called_once()
 
+    @patch('app_helper.get_active_main_task', return_value={'task_id': 'existing-cleaning-123', 'status': 'STARTED'})
+    @patch('app_helper.rq_queue_high')
+    @patch('app_helper.clean_up_previous_main_tasks')
+    @patch('app_helper.save_task_status')
+    def test_cleaning_blocks_when_active_task_exists(
+        self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
+    ):
+        response = client.post('/api/cleaning/start')
+
+        assert response.status_code == 409
+        data = response.get_json()
+        assert data['task_id'] == 'existing-cleaning-123'
+        assert data['status'] == 'STARTED'
+        # Cleanup runs before the active-task check to clear stale rows
+        mock_cleanup.assert_called_once()
+        mock_queue.enqueue.assert_not_called()
+
 
 class TestEndpointErrorHandling:
     """Tests for error handling in endpoints"""
 
+    @patch('app_helper.get_active_main_task', return_value=None)
     @patch('app_helper.rq_queue_high')
     @patch('app_helper.clean_up_previous_main_tasks')
     @patch('app_helper.save_task_status')
     def test_analysis_handles_enqueue_failure(
-        self, mock_save_status, mock_cleanup, mock_queue, client
+        self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
     ):
         """Test handling of task enqueue failures"""
         mock_queue.enqueue.side_effect = Exception("Queue error")
@@ -314,6 +342,24 @@ class TestEndpointErrorHandling:
         # Should raise exception (Flask will handle with 500)
         with pytest.raises(Exception):
             response = client.post('/api/analysis/start', json={})
+
+    @patch('app_helper.get_active_main_task', return_value={'task_id': 'existing-cleaning-123', 'status': 'STARTED', 'task_type': 'cleaning'})
+    @patch('app_helper.rq_queue_high')
+    @patch('app_helper.clean_up_previous_main_tasks')
+    @patch('app_helper.save_task_status')
+    def test_analysis_blocks_when_another_batch_is_active(
+        self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
+    ):
+        """Test that analysis returns 409 when any other batch task is already active"""
+
+        response = client.post('/api/analysis/start', json={})
+
+        assert response.status_code == 409
+        assert response.get_json()['task_id'] == 'existing-cleaning-123'
+        assert response.get_json()['status'] == 'STARTED'
+        # Cleanup runs before the active-task check to clear stale rows
+        mock_cleanup.assert_called_once()
+        mock_queue.enqueue.assert_not_called()
 
     @patch('app_helper.rq_queue_high')
     @patch('app_helper.clean_up_previous_main_tasks')

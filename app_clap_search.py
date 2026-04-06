@@ -99,19 +99,19 @@ def clap_search_api():
         })
         
     except ValueError as e:
-        logger.warning(f"ValueError in CLAP search API: {e}")
+        logger.warning(f"ValueError in DCLAP search API: {e}")
         return jsonify({'error': 'Invalid or missing request parameter.'}), 400
     except Exception as e:
-        logger.error(f"CLAP search API error: {e}")
+        logger.error(f"DCLAP search API error: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({'error': 'An internal server error occurred during CLAP search.'}), 500
+        return jsonify({'error': 'An internal server error occurred during DCLAP search.'}), 500
 
 
 @clap_search_bp.route('/api/clap/warmup', methods=['POST'])
 def warmup_model_api():
     """
-    API endpoint to preload CLAP model and start/reset 10-minute timer.
+    API endpoint to preload DCLAP model and start/reset 10-minute timer.
     Call this when the search page loads to ensure fast searches.
     
     Returns:

@@ -5,16 +5,22 @@
 <li><a href="{{ url_for('path_bp.path_page') }}" {% if active == 'path' %}class="active"{% endif %}>Song Path</a></li>
 <li><a href="{{ url_for('alchemy_bp.alchemy_page') }}" {% if active == 'alchemy' %}class="active"{% endif %}>Song Alchemy</a></li>
 <li><a href="{{ url_for('playlist_curator_bp.playlist_curator_page') }}" {% if active == 'playlist_curator' %}class="active"{% endif %}>Playlist Curator</a></li>
-{% if clap_enabled %}<li><a href="{{ url_for('clap_search_bp.clap_search_page') }}" {% if active == 'clap_search' %}class="active"{% endif %}>Text Search (CLAP)</a></li>{% endif %}
+{% if clap_enabled %}<li><a href="{{ url_for('clap_search_bp.clap_search_page') }}" {% if active == 'clap_search' %}class="active"{% endif %}>Text Search (DCLAP)</a></li>{% endif %}
 {% if mulan_enabled %}<li><a href="{{ url_for('mulan_search_bp.mulan_search_page') }}" {% if active == 'mulan_search' %}class="active"{% endif %}>Text Search (MuLan)</a></li>{% endif %}
 <li><a href="{{ url_for('map_bp.map_ui') }}" {% if active == 'map' %}class="active"{% endif %}>Music Map</a></li>
 <li><a href="{{ url_for('sonic_fingerprint_bp.sonic_fingerprint_page') }}" {% if active == 'sonic_fingerprint' %}class="active"{% endif %}>Sonic Fingerprint</a></li>
 <li><a href="{{ url_for('waveform_bp.waveform_page') }}" {% if active == 'waveform' %}class="active"{% endif %}>Waveform</a></li>
 <!-- <li><a href="{{ url_for('collection_bp.collection_page') }}" {% if active == 'collection' %}class="active"{% endif %}">Collection Sync</a></li> -->
-<li><a href="{{ url_for('analysis_bp.cleaning_page') }}" {% if active == 'cleaning' %}class="active"{% endif %}>Cleaning</a></li>
-<li><a href="{{ url_for('cron_bp.cron_page') }}" {% if active == 'cron' %}class="active"{% endif %}>Scheduled Tasks</a></li>
-<li><a href="{{ url_for('setup.settings_page') }}" {% if active == 'settings' %}class="active"{% endif %}>Settings</a></li>
-<li><a href="{{ url_for('setup.setup_page') }}" {% if active == 'setup' %}class="active"{% endif %}>Setup Wizard</a></li>
+<li class="has-submenu{% if active in ('cleaning', 'cron', 'backup', 'settings', 'setup') %} open{% endif %}">
+    <a href="#" class="submenu-toggle">Administration <span class="submenu-arrow">›</span></a>
+    <ul class="submenu">
+        <li><a href="{{ url_for('analysis_bp.cleaning_page') }}" {% if active == 'cleaning' %}class="active"{% endif %}>Cleaning</a></li>
+        <li><a href="{{ url_for('cron_bp.cron_page') }}" {% if active == 'cron' %}class="active"{% endif %}>Scheduled Tasks</a></li>
+        <li><a href="{{ url_for('backup_bp.backup_page') }}" {% if active == 'backup' %}class="active"{% endif %}>Backup and Restore</a></li>
+        <li><a href="{{ url_for('setup.settings_page') }}" {% if active == 'settings' %}class="active"{% endif %}>Settings</a></li>
+        <li><a href="{{ url_for('setup.setup_page') }}" {% if active == 'setup' %}class="active"{% endif %}>Setup Wizard</a></li>
+    </ul>
+</li>
 <li><button type="button" id="dark-mode-toggle" aria-pressed="false" aria-label="Toggle dark mode">🌙 Dark Mode</button></li>
 {% if auth_enabled %}
 <li><a href="#" id="logout-btn" aria-label="Logout">🔓 Logout</a></li>
