@@ -34,7 +34,7 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
   TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, ALCHEMY_SUBTRACT_DISTANCE, \
   ENABLE_PROXY_FIX, \
   ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN, \
-  AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, API_TOKEN, JWT_SECRET
+  AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, API_TOKEN, JWT_SECRET, AUTH_ENABLED
 
 if ENABLE_PROXY_FIX:
   # Werkzeug import for reverse proxy support
@@ -73,7 +73,7 @@ if ENABLE_PROXY_FIX:
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
 
 # --- Authentication Setup ---
-AUTH_ENABLED = bool(AUDIOMUSE_USER and AUDIOMUSE_PASSWORD and API_TOKEN)
+# AUTH_ENABLED is loaded directly from config.py to reflect the AUTH_ENABLED env var.
 
 # Finalize JWT_SECRET — auto-generate if not configured
 _jwt_secret = JWT_SECRET
@@ -171,7 +171,15 @@ def login_page():
             return redirect(url_for('index'))
         except pyjwt.InvalidTokenError:
             pass
-    return render_template('login.html', title='Login — AudioMuse-AI')
+
+    auth_warning = None
+    if AUTH_ENABLED and (not AUDIOMUSE_USER or not AUDIOMUSE_PASSWORD):
+        auth_warning = (
+            'AUTH_ENABLED is true by default. Set AUDIOMUSE_USER and AUDIOMUSE_PASSWORD, '
+            'or disable authentication (not recommended).'
+        )
+
+    return render_template('login.html', title='Login — AudioMuse-AI', auth_warning=auth_warning)
 
 @app.route('/auth', methods=['POST'])
 def auth_endpoint():
