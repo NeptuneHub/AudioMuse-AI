@@ -17,6 +17,7 @@ The **mandatory** parameter that you need to change from the example are this:
 
 | Parameter            | Description                                                             | Default Value                     |
 |----------------------|-------------------------------------------------------------------------|-----------------------------------|
+| **Mediaserver General**                        |                                                                 |                 |
 | `JELLYFIN_URL`       | (Required) Your Jellyfin server's full URL                              | `http://YOUR_JELLYFIN_IP:8096`    |
 | `JELLYFIN_USER_ID`   | (Required) Jellyfin User ID.                                            | *(N/A - from Secret)* |
 | `JELLYFIN_TOKEN`     | (Required) Jellyfin API Token.                                          | *(N/A - from Secret)* |
@@ -36,6 +37,12 @@ The **mandatory** parameter that you need to change from the example are this:
 | `GEMINI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is GEMINI) Your Google Gemini API Key. | *(N/A - from Secret)* |
 | `MISTRAL_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MISTRAL) Your Mistral API Key.      | *(N/A - from Secret)* |
 | `OPENAI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is OPENAI) Your OpenAI / OpenRouter API Key. | *(N/A - from Secret)* |
+| **AudioMuse-AI Authentication**                        |                                                                 |                 |
+| `AUTH_ENABLED`     | Enable the AudioMuse-AI authentication layer | `true`|
+| `AUDIOMUSE_USER`    | User to login on the AudioMuse-AI integrated frontned     | *(N/A - from Secret)* |
+| `AUDIOMUSE_PASSWORD`     | Password to login on the AudioMuse-AI integrated frontned   | *(N/A - from Secret)* |
+| `API_TOKEN`     | API_TOLEN for plugin authentication | *(N/A - from Secret)* |
+| `JWT_SECRET`     | Used to inizializate the JWT session with a predefined value | *from Secret OR automatically created if blank* |
 
 The following additional environment variables control authentication.  Leave
 all four empty to disable auth (default).
