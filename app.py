@@ -86,7 +86,7 @@ if not _jwt_secret and AUTH_ENABLED:
         "Set JWT_SECRET in your .env for persistent sessions."
     )
 
-auth_configured = bool(AUDIOMUSE_USER and AUDIOMUSE_PASSWORD and API_TOKEN)
+auth_configured = bool(AUDIOMUSE_USER and AUDIOMUSE_PASSWORD)
 
 # --- Context Processor to Inject Version and Feature Flags ---
 @app.context_processor
@@ -178,8 +178,8 @@ def login_page():
     auth_warning = None
     if AUTH_ENABLED and not auth_configured:
         auth_warning = (
-            'AUTH_ENABLED is true by default. Set env var AUDIOMUSE_USER, AUDIOMUSE_PASSWORD and API_TOKEN, '
-            'or disable authentication (not recommended).'
+            'AUTH_ENABLED is true by default. Set the environment variables AUDIOMUSE_USER and AUDIOMUSE_PASSWORD, '
+            'or disable authentication (not recommended). Optionally configure API_TOKEN as an env var for external/plugin calls.'
         )
 
     return render_template('login.html', title='Login — AudioMuse-AI', auth_warning=auth_warning)
@@ -197,7 +197,7 @@ def auth_endpoint():
         return jsonify({"error": "Auth not configured"}), 404
     if not auth_configured:
         app.logger.warning(
-            "Auth is enabled but AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, or API_TOKEN is missing."
+            "Auth is enabled but AUDIOMUSE_USER or AUDIOMUSE_PASSWORD is missing. API_TOKEN is optional for external/plugin calls."
         )
         return jsonify({"error": "Auth not configured"}), 404
 
