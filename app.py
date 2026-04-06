@@ -73,7 +73,8 @@ if ENABLE_PROXY_FIX:
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
 
 # --- Authentication Setup ---
-# AUTH_ENABLED is loaded directly from config.py to reflect the AUTH_ENABLED env var.
+# AUTH_ENABLED is the raw env toggle. If enabled, auth is enforced everywhere.
+# A warning is shown when auth is enabled but credentials are not fully configured.
 
 # Finalize JWT_SECRET — auto-generate if not configured
 _jwt_secret = JWT_SECRET
@@ -84,6 +85,8 @@ if not _jwt_secret and AUTH_ENABLED:
         "All browser sessions will be invalidated on container restart. "
         "Set JWT_SECRET in your .env for persistent sessions."
     )
+
+auth_configured = bool(AUDIOMUSE_USER and AUDIOMUSE_PASSWORD and API_TOKEN)
 
 # --- Context Processor to Inject Version and Feature Flags ---
 @app.context_processor
@@ -173,9 +176,9 @@ def login_page():
             pass
 
     auth_warning = None
-    if AUTH_ENABLED and (not AUDIOMUSE_USER or not AUDIOMUSE_PASSWORD):
+    if AUTH_ENABLED and not auth_configured:
         auth_warning = (
-            'AUTH_ENABLED is true by default. Set AUDIOMUSE_USER and AUDIOMUSE_PASSWORD, '
+            'AUTH_ENABLED is true by default. Set AUDIOMUSE_USER, AUDIOMUSE_PASSWORD and API_TOKEN, '
             'or disable authentication (not recommended).'
         )
 
@@ -191,6 +194,11 @@ def auth_endpoint():
     The API_TOKEN is NEVER returned in the response body.
     """
     if not AUTH_ENABLED:
+        return jsonify({"error": "Auth not configured"}), 404
+    if not auth_configured:
+        app.logger.warning(
+            "Auth is enabled but AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, or API_TOKEN is missing."
+        )
         return jsonify({"error": "Auth not configured"}), 404
 
     data = request.get_json(silent=True) or {}
