@@ -178,7 +178,7 @@ def login_page():
     auth_warning = None
     if AUTH_ENABLED and not auth_configured:
         auth_warning = (
-            'AUTH_ENABLED is true by default. Set AUDIOMUSE_USER, AUDIOMUSE_PASSWORD and API_TOKEN, '
+            'AUTH_ENABLED is true by default. Set env var AUDIOMUSE_USER, AUDIOMUSE_PASSWORD and API_TOKEN, '
             'or disable authentication (not recommended).'
         )
 
