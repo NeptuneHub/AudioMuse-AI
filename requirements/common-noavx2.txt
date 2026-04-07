@@ -7,7 +7,7 @@ Flask-Cors
 redis
 requests
 scikit-learn==1.7.2
-rq
+rq==2.7.0
 pyyaml
 six
 rapidfuzz
