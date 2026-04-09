@@ -1,4 +1,6 @@
+{% if can_access_admin_pages %}
 <li><a href="{{ url_for('index') }}" {% if active == 'index' %}class="active"{% endif %}>Analysis and Clustering</a></li>
+{% endif %}
 <li><a href="{{ url_for('chat_bp.chat_home') }}" {% if active == 'chat' %}class="active"{% endif %}>Instant Playlist</a></li>
 <li><a href="{{ url_for('voyager_bp.similarity_page') }}" {% if active == 'similarity' %}class="active"{% endif %}>Playlist from Similar Song</a></li>
 <li><a href="{{ url_for('artist_similarity_bp.artist_similarity_page') }}" {% if active == 'artist_similarity' %}class="active"{% endif %}>Artist Similarity</a></li>
@@ -10,6 +12,7 @@
 <li><a href="{{ url_for('sonic_fingerprint_bp.sonic_fingerprint_page') }}" {% if active == 'sonic_fingerprint' %}class="active"{% endif %}>Sonic Fingerprint</a></li>
 <li><a href="{{ url_for('waveform_bp.waveform_page') }}" {% if active == 'waveform' %}class="active"{% endif %}>Waveform</a></li>
 <!-- <li><a href="{{ url_for('collection_bp.collection_page') }}" {% if active == 'collection' %}class="active"{% endif %}">Collection Sync</a></li> -->
+{% if can_access_admin_pages %}
 <li class="has-submenu{% if active in ('cleaning', 'cron', 'backup') %} open{% endif %}">
     <a href="#" class="submenu-toggle">Administration <span class="submenu-arrow">›</span></a>
     <ul class="submenu">
@@ -18,6 +21,7 @@
         <li><a href="{{ url_for('backup_bp.backup_page') }}" {% if active == 'backup' %}class="active"{% endif %}>Backup and Restore</a></li>
     </ul>
 </li>
+{% endif %}
 <li><button type="button" id="dark-mode-toggle" aria-pressed="false" aria-label="Toggle dark mode">🌙 Dark Mode</button></li>
 {% if auth_enabled %}
 <li><a href="#" id="logout-btn" aria-label="Logout">🔓 Logout</a></li>

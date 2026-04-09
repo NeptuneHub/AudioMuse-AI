@@ -1,4 +1,5 @@
 import os
+import re
 import psycopg2
 from psycopg2.extras import DictCursor
 from flask import Flask, jsonify, request, render_template, g, make_response, redirect, url_for
@@ -58,6 +59,33 @@ from app_helper import (
 # NOTE: Annoy Manager import is moved to be local where used to prevent circular imports.
 
 logger = logging.getLogger(__name__)
+
+def _is_proxy_admin(groups_header_value):
+    if not groups_header_value:
+        return False
+    # Authentik merges group names with '|'. (ps: those group names can contain spaces)
+    groups = [token.strip().lower() for token in re.split(r'\|+', groups_header_value) if token.strip()]
+    return 'audiomuse-admins' in groups
+
+def _is_admin_only_path(path):
+    return any(pattern.match(path) for pattern in (
+      re.compile(r'^/$'),
+      re.compile(r'^/cleaning$'),
+      re.compile(r'^/cron$'),
+      re.compile(r'^/backup$'),
+      re.compile(r'^/api/analysis/'),
+      re.compile(r'^/api/clustering/'),
+      re.compile(r'^/api/cleaning/'),
+      re.compile(r'^/api/cron(?:$|/)'),
+      re.compile(r'^/api/backup/'),
+      re.compile(r'^/api/cancel(?:$|/)'),
+      re.compile(r'^/api/cancel_all/'),
+      re.compile(r'^/api/active_tasks$'),
+      re.compile(r'^/api/last_task$'),
+      re.compile(r'^/api/status/'),
+      re.compile(r'^/api/config$'),
+      re.compile(r'^/api/playlists$'),
+    ))
 
 # Configure basic logging for the entire application
 logging.basicConfig(
@@ -124,6 +152,9 @@ auth_configured = is_local_auth and bool(
 def inject_globals():
     """Injects global variables into all templates."""
     from config import CLAP_ENABLED, MULAN_ENABLED
+    can_access_admin_pages = True
+    if is_proxy_auth:
+        can_access_admin_pages = bool(getattr(g, 'proxy_is_admin', False))
     return dict(
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
@@ -131,6 +162,7 @@ def inject_globals():
         auth_enabled=is_auth_enforced,
         auth_mode=AUTH_MODE,
         auth_logout_url=AUTH_LOGOUT_URL,
+        can_access_admin_pages=can_access_admin_pages,
     )
 
 # --- Authentication Middleware ---
@@ -173,9 +205,17 @@ def check_auth():
         # Accept common upstream identity headers set by reverse proxies / IdP bridges.
         # IMPORTANT: only run this mode behind a trusted proxy boundary.
         proxy_user = request.headers.get('Remote-User')
+        proxy_groups = request.headers.get('Remote-Groups', '')
                 
         if proxy_user:
             g.remote_user = proxy_user
+            g.proxy_is_admin = _is_proxy_admin(proxy_groups)
+
+            if _is_admin_only_path(request.path) and not g.proxy_is_admin:
+                if request.path.startswith('/api/'):
+                    return jsonify({"error": "Forbidden: admin group required"}), 403
+                return "Forbidden", 403
+
             return
 
         if request.path.startswith('/api/'):
