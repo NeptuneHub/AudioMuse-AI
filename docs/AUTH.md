@@ -29,6 +29,8 @@ JWT_SECRET=<random-string>
 # Proxy mode example (e.g. Authentik/Caddy/Traefik)
 AUTH_MODE=proxy
 API_TOKEN=foo-bar-baz
+# Optional: where UI logout should redirect (for example your IdP logout URL)
+AUTH_LOGOUT_URL=https://auth.example.com/application/o/audiomuse/end-session/
 ```
 
 In `local` mode, the web UI provides a `/login` page where the user posts the username/password and receives a JWT cookie on success. Subsequent browser requests are authenticated via that cookie.

@@ -34,7 +34,7 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
   TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, ALCHEMY_SUBTRACT_DISTANCE, \
   ENABLE_PROXY_FIX, \
   ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN, \
-  AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, API_TOKEN, JWT_SECRET, AUTH_ENABLED, AUTH_MODE
+  AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, API_TOKEN, JWT_SECRET, AUTH_ENABLED, AUTH_MODE, AUTH_LOGOUT_URL
 
 if ENABLE_PROXY_FIX:
   # Werkzeug import for reverse proxy support
@@ -130,6 +130,7 @@ def inject_globals():
         mulan_enabled=MULAN_ENABLED,
         auth_enabled=is_auth_enforced,
         auth_mode=AUTH_MODE,
+        auth_logout_url=AUTH_LOGOUT_URL,
     )
 
 # --- Authentication Middleware ---
@@ -294,7 +295,7 @@ def auth_endpoint():
 @app.route('/logout', methods=['POST'])
 def logout_endpoint():
     """Clear the JWT session cookie and redirect to /login."""
-    resp = make_response(jsonify({"status": "logged_out"}), 200)
+    resp = make_response(jsonify({"status": "logged_out", "logout_url": AUTH_LOGOUT_URL}), 200)
     resp.delete_cookie('audiomuse_jwt', samesite='Strict')
     return resp
 

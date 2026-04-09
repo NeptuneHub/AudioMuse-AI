@@ -44,6 +44,7 @@ The **mandatory** parameter that you need to change from the example are this:
 | `AUDIOMUSE_PASSWORD`     | Password to login on the AudioMuse-AI integrated frontned   | *(N/A - from Secret)* |
 | `API_TOKEN`     | API_TOLEN for plugin authentication | *(N/A - from Secret)* |
 | `JWT_SECRET`     | Used to inizializate the JWT session with a predefined value | *from Secret OR automatically created if blank* |
+| `AUTH_LOGOUT_URL` | Optional redirect target after clicking UI logout (useful for proxy/SSO logout) | `/login` in `local`, `/` in `proxy`/`none` |
 
 The following additional environment variables control authentication behavior.
 `AUTH_MODE` is preferred, while `AUTH_ENABLED` is kept as a legacy fallback.
@@ -55,6 +56,7 @@ The following additional environment variables control authentication behavior.
 | `API_TOKEN`          | Bearer token for API/worker requests                 | ``      |
 | `JWT_SECRET`         | HMAC key used to sign session JWTs                   | ``      |
 | `AUTH_MODE`          | `local`, `proxy`, or `none`                          | `local` |
+| `AUTH_LOGOUT_URL`    | UI logout redirect URL                               | mode-dependent |
 
 
 These parameters can be left as-is:

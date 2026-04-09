@@ -124,12 +124,19 @@ document.addEventListener('DOMContentLoaded', function() {
         logoutBtn.addEventListener('click', async (e) => {
             e.preventDefault();
             e.stopPropagation();
+            let logoutUrl = '/login';
             try {
-                await fetch('/logout', { method: 'POST' });
+                const resp = await fetch('/logout', { method: 'POST' });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    if (data && typeof data.logout_url === 'string' && data.logout_url.trim()) {
+                        logoutUrl = data.logout_url;
+                    }
+                }
             } catch (_) {
                 // Ignore network errors — proceed to redirect anyway
             }
-            window.location.href = '/login';
+            window.location.href = logoutUrl;
         });
     }
 });
