@@ -69,7 +69,6 @@ def _is_proxy_admin(groups_header_value):
 
 def _is_admin_only_path(path):
     return any(pattern.match(path) for pattern in (
-      re.compile(r'^/$'),
       re.compile(r'^/cleaning$'),
       re.compile(r'^/cron$'),
       re.compile(r'^/backup$'),
@@ -354,6 +353,9 @@ def index():
             schema:
               type: string
     """
+    if is_proxy_auth and not bool(getattr(g, 'proxy_is_admin', False)):
+        return redirect(url_for('chat_bp.chat_home'))
+
     return render_template('index.html', title = 'AudioMuse-AI - Home Page', active='index')
 
 
