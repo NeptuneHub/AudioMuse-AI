@@ -485,3 +485,20 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "")
 # Enable or disable authentication independently of whether credentials are set.
 # Default is True to preserve the current secure behavior.
 AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
+
+# Authentication mode:
+# - local: built-in login page + JWT session cookie
+# - proxy: trust reverse proxy identity headers (e.g. Authentik via Caddy/Traefik)
+# - none: no authentication checks
+# Legacy fallback: if AUTH_MODE is unset/invalid, AUTH_ENABLED decides between local/none.
+_auth_mode_raw = os.environ.get("AUTH_MODE", "").strip().lower()
+if _auth_mode_raw in ("local", "proxy", "none"):
+    AUTH_MODE = _auth_mode_raw
+else:
+    AUTH_MODE = "local" if AUTH_ENABLED else "none"
+
+# Optional URL used by the UI logout button. Useful with proxy auth providers.
+# If empty, defaults to /login for local auth and / for proxy/none.
+AUTH_LOGOUT_URL = os.environ.get("AUTH_LOGOUT_URL", "").strip() or (
+    "/login" if AUTH_MODE == "local" else "/"
+)

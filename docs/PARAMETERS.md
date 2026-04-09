@@ -38,14 +38,15 @@ The **mandatory** parameter that you need to change from the example are this:
 | `MISTRAL_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MISTRAL) Your Mistral API Key.      | *(N/A - from Secret)* |
 | `OPENAI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is OPENAI) Your OpenAI / OpenRouter API Key. | *(N/A - from Secret)* |
 | **AudioMuse-AI Authentication**                        |                                                                 |                 |
+| `AUTH_MODE`     | Authentication mode: `local`, `proxy`, `none` | `local` (or legacy fallback from `AUTH_ENABLED`) |
 | `AUTH_ENABLED`     | Enable the AudioMuse-AI authentication layer | `true`|
 | `AUDIOMUSE_USER`    | User to login on the AudioMuse-AI integrated frontned     | *(N/A - from Secret)* |
 | `AUDIOMUSE_PASSWORD`     | Password to login on the AudioMuse-AI integrated frontned   | *(N/A - from Secret)* |
 | `API_TOKEN`     | API_TOLEN for plugin authentication | *(N/A - from Secret)* |
 | `JWT_SECRET`     | Used to inizializate the JWT session with a predefined value | *from Secret OR automatically created if blank* |
 
-The following additional environment variables control authentication.  Leave
-all four empty to disable auth (default).
+The following additional environment variables control authentication behavior.
+`AUTH_MODE` is preferred, while `AUTH_ENABLED` is kept as a legacy fallback.
 
 | Parameter            | Description                                          | Default |
 |----------------------|------------------------------------------------------|---------|
@@ -53,6 +54,7 @@ all four empty to disable auth (default).
 | `AUDIOMUSE_PASSWORD` | Password for web UI login                            | ``      |
 | `API_TOKEN`          | Bearer token for API/worker requests                 | ``      |
 | `JWT_SECRET`         | HMAC key used to sign session JWTs                   | ``      |
+| `AUTH_MODE`          | `local`, `proxy`, or `none`                          | `local` |
 
 
 These parameters can be left as-is:

@@ -34,7 +34,7 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
   TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, ALCHEMY_SUBTRACT_DISTANCE, \
   ENABLE_PROXY_FIX, \
   ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN, \
-  AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, API_TOKEN, JWT_SECRET, AUTH_ENABLED
+  AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, API_TOKEN, JWT_SECRET, AUTH_ENABLED, AUTH_MODE
 
 if ENABLE_PROXY_FIX:
   # Werkzeug import for reverse proxy support
@@ -73,15 +73,22 @@ if ENABLE_PROXY_FIX:
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
 
 # --- Authentication Setup ---
-# AUTH_ENABLED is the raw env toggle. If enabled, auth is enforced everywhere.
-# If auth is enabled and the user/pass env vars are missing, we provide defaults.
+# AUTH_MODE is the source of truth.
+# - local: built-in login page + JWT cookie
+# - proxy: trust reverse-proxy identity headers
+# - none: no auth enforcement
+# AUTH_ENABLED remains a legacy fallback interpreted in config.py.
+
+is_local_auth = AUTH_MODE == 'local'
+is_proxy_auth = AUTH_MODE == 'proxy'
+is_auth_enforced = AUTH_MODE != 'none'
 
 effective_audiomuse_user = AUDIOMUSE_USER
 effective_audiomuse_password = AUDIOMUSE_PASSWORD
 user_defaulted = False
 new_password_generated = False
 
-if AUTH_ENABLED:
+if is_local_auth:
     if not effective_audiomuse_user or not effective_audiomuse_user.strip():
         effective_audiomuse_user = "admin"
         user_defaulted = True
@@ -90,7 +97,7 @@ if AUTH_ENABLED:
         effective_audiomuse_password = ''.join(secrets.choice(alphabet) for _ in range(16))
         new_password_generated = True
     if user_defaulted or new_password_generated:
-        print('\n*** AUTH_ENABLED=true: using default authentication values ***')
+        print('\n*** Local auth enabled: using default authentication values ***')
         if user_defaulted:
             print(f'AUDIOMUSE_USER defaulted to: {effective_audiomuse_user}')
         if new_password_generated:
@@ -100,7 +107,7 @@ if AUTH_ENABLED:
 
 # Finalize JWT_SECRET — auto-generate if not configured
 _jwt_secret = JWT_SECRET
-if not _jwt_secret and AUTH_ENABLED:
+if not _jwt_secret and is_local_auth:
     _jwt_secret = secrets.token_hex(32)
     app.logger.warning(
         "JWT_SECRET is not set. A random secret has been generated. "
@@ -108,7 +115,9 @@ if not _jwt_secret and AUTH_ENABLED:
         "Set JWT_SECRET in your .env for persistent sessions."
     )
 
-auth_configured = bool(effective_audiomuse_user and effective_audiomuse_password)
+auth_configured = is_local_auth and bool(
+    effective_audiomuse_user and effective_audiomuse_password
+)
 
 # --- Context Processor to Inject Version and Feature Flags ---
 @app.context_processor
@@ -119,7 +128,8 @@ def inject_globals():
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
         mulan_enabled=MULAN_ENABLED,
-        auth_enabled=AUTH_ENABLED,
+        auth_enabled=is_auth_enforced,
+        auth_mode=AUTH_MODE,
     )
 
 # --- Authentication Middleware ---
@@ -127,21 +137,55 @@ def inject_globals():
 def check_auth():
     """
     Enforce authentication on all routes when auth is enabled.
-    Skipped entirely when AUTH_ENABLED is False (legacy mode).
+    Skipped entirely when AUTH_ENABLED is `false` and/or AUTH_MODE is 'none' (legacy mode).
     Accepts:
-      - Valid JWT in HttpOnly cookie  (browser sessions)
-      - Valid API_TOKEN Bearer header (M2M / scripts)
-    Public routes: /login, /auth, /logout, /static/*
+      - Valid JWT in HttpOnly cookie  (browser sessions in `local` mode)
+      - Trusted proxy identity headers (browser sessions in `proxy` mode)
+      - Valid API_TOKEN Bearer header (M2M / scripts; all modes)
+    Public routes:
+      - `local` mode: /login, /auth, /logout, /static/*
+      - `proxy` mode: /logout, /static/*
+      - `none` mode: all routes are public (no auth enforcement)
     """
-    if not AUTH_ENABLED:
+    if not is_auth_enforced:
         return  # Auth disabled — zero impact on existing deployments
 
-    # Always allow public routes
-    public = ('/login', '/auth', '/logout')
-    if request.path in public or request.path.startswith('/static/'):
+    # Always allow static resources
+    if request.path.startswith('/static/'):
         return
 
-    # Check 1: valid JWT cookie (browser users)
+    if request.path == '/logout':
+        return
+
+    # In non-local auth modes, let /login and /auth reach their handlers:
+    # - /login handler redirects to /
+    # - /auth handler intentionally returns 404
+    if not is_local_auth and request.path in ('/login', '/auth'):
+        return
+
+    # Always allow valid Bearer API token (M2M callers), including proxy mode
+    auth_header = request.headers.get('Authorization', '')
+    if API_TOKEN and auth_header.startswith('Bearer ') and auth_header[7:] == API_TOKEN:
+        return  # Valid M2M token
+
+    if is_proxy_auth:
+        # Accept common upstream identity headers set by reverse proxies / IdP bridges.
+        # IMPORTANT: only run this mode behind a trusted proxy boundary.
+        proxy_user = request.headers.get('Remote-User')
+                
+        if proxy_user:
+            g.remote_user = proxy_user
+            return
+
+        if request.path.startswith('/api/'):
+            return jsonify({"error": "Unauthorized"}), 401
+        return "Unauthorized", 401
+
+    # Local mode public routes
+    if request.path in ('/login', '/auth'):
+        return
+
+    # Check valid JWT cookie (browser users in local mode)
     token = request.cookies.get('audiomuse_jwt')
     if token:
         try:
@@ -151,11 +195,6 @@ def check_auth():
             pass  # Fall through to 401/redirect
         except pyjwt.InvalidTokenError:
             pass  # Fall through to 401/redirect
-
-    # Check 2: valid Bearer token (M2M callers)
-    auth_header = request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer ') and auth_header[7:] == API_TOKEN:
-        return  # Valid M2M token
 
     # Not authenticated
     if request.path.startswith('/api/'):
@@ -187,7 +226,7 @@ with app.app_context():
 @app.route('/login')
 def login_page():
     """Serve the login page. Redirects to / if already authenticated."""
-    if not AUTH_ENABLED:
+    if not is_local_auth:
         return redirect(url_for('index'))
     token = request.cookies.get('audiomuse_jwt')
     if token:
@@ -198,9 +237,9 @@ def login_page():
             pass
 
     auth_warning = None
-    if AUTH_ENABLED and (not AUDIOMUSE_USER or not AUDIOMUSE_PASSWORD):
+    if is_local_auth and (not AUDIOMUSE_USER or not AUDIOMUSE_PASSWORD):
         auth_warning = (
-            'AUTH_ENABLED is true by default and one or more credentials were autogenerated and visible in FLASK log. '
+            'Local authentication is enabled and one or more credentials were autogenerated and visible in FLASK log. '
             'You should set the final values for AUDIOMUSE_USER and AUDIOMUSE_PASSWORD in your environment variables. '
             'Optionally set API_TOKEN if you need external/plugin access.'
         )
@@ -216,7 +255,7 @@ def auth_endpoint():
     On failure: returns 401.
     The API_TOKEN is NEVER returned in the response body.
     """
-    if not AUTH_ENABLED:
+    if not is_local_auth:
         return jsonify({"error": "Auth not configured"}), 404
     if not auth_configured:
         app.logger.warning(
