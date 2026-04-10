@@ -9,6 +9,7 @@ import time
 import datetime
 import secrets
 import jwt as pyjwt
+import config
 
 # RQ imports
 from rq.job import Job, JobStatus
@@ -110,9 +111,28 @@ if not _jwt_secret and AUTH_ENABLED:
         "Set JWT_SECRET in your .env for persistent sessions."
     )
 
+# Auth is considered configured whenever the app has effective credentials,
+# including runtime-generated temporary auth values.
 auth_configured = bool(effective_audiomuse_user and effective_audiomuse_password)
+bootstrap_auth_mode = AUTH_ENABLED and not (AUDIOMUSE_USER and AUDIOMUSE_PASSWORD)
 
-# --- Context Processor to Inject Version and Feature Flags ---
+# If auth is enabled but no explicit credentials were provided, the app is
+# in bootstrap auth mode. Setup can be accessed via the temporary credentials.
+def is_bootstrap_mode():
+    return not AUTH_ENABLED or bootstrap_auth_mode
+
+
+def refresh_auth_state():
+    global AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, effective_audiomuse_user, effective_audiomuse_password, auth_configured, bootstrap_auth_mode
+    AUDIOMUSE_USER = config.AUDIOMUSE_USER
+    AUDIOMUSE_PASSWORD = config.AUDIOMUSE_PASSWORD
+    if AUDIOMUSE_USER and AUDIOMUSE_USER.strip():
+        effective_audiomuse_user = AUDIOMUSE_USER
+    if AUDIOMUSE_PASSWORD and AUDIOMUSE_PASSWORD.strip():
+        effective_audiomuse_password = AUDIOMUSE_PASSWORD
+    auth_configured = bool(AUDIOMUSE_USER and AUDIOMUSE_PASSWORD)
+    bootstrap_auth_mode = AUTH_ENABLED and not auth_configured
+
 @app.context_processor
 def inject_globals():
     """Injects global variables into all templates."""
@@ -143,6 +163,10 @@ def check_auth():
     if request.path in public or request.path.startswith('/static/'):
         return
 
+    # Always allow bootstrap setup when auth is not configured or auth is disabled.
+    if is_bootstrap_mode() and (request.path == '/setup' or request.path.startswith('/api/setup')):
+        return
+
     # Check 1: valid JWT cookie (browser users)
     token = request.cookies.get('audiomuse_jwt')
     if token:
@@ -167,14 +191,33 @@ def check_auth():
 
 @app.before_request
 def require_setup_completion():
+    if request.path.startswith('/static/'):
+        return
+    if setup_manager.is_setup_saved():
+        return
+
     if not AUTH_ENABLED:
-        return
-    if request.path in ('/login', '/auth', '/logout', '/setup') or request.path.startswith('/static/') or request.path.startswith('/api/setup'):
-        return
-    if not setup_manager.is_setup_saved():
+        if request.path in ('/setup',) or request.path.startswith('/api/setup'):
+            return
         if request.path.startswith('/api/'):
             return jsonify({"error": "Setup required"}), 403
         return redirect(url_for('setup_page'))
+
+    if is_bootstrap_mode():
+        if request.path in ('/login', '/auth', '/logout', '/setup') or request.path.startswith('/api/setup'):
+            return
+        if request.path.startswith('/api/'):
+            return jsonify({"error": "Setup required"}), 403
+        return redirect(url_for('setup_page'))
+
+    # Auth is configured, but setup is still incomplete.
+    if request.path in ('/login', '/auth', '/logout'):
+        return
+    if request.path.startswith('/api/setup'):
+        return
+    if request.path.startswith('/api/'):
+        return jsonify({"error": "Setup required"}), 403
+    return redirect(url_for('setup_page'))
 
 # --- Swagger Setup ---
 app.config['SWAGGER'] = {
@@ -192,6 +235,7 @@ def teardown_db(e=None):
 # This is safe because it doesn't import other application modules.
 with app.app_context():
     init_db()
+    setup_manager.bootstrap_env_config_if_empty(config)
 
 import app_setup
 
@@ -203,6 +247,8 @@ def login_page():
     """Serve the login page. Redirects to / if already authenticated."""
     if not AUTH_ENABLED:
         return redirect(url_for('index'))
+    if bootstrap_auth_mode:
+        return redirect(url_for('setup_page'))
     token = request.cookies.get('audiomuse_jwt')
     if token:
         try:

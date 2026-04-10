@@ -77,9 +77,16 @@ def setup_api():
         return jsonify({'error': 'No valid configuration values were provided'}), 400
 
     try:
+        was_bootstrap = app.is_bootstrap_mode()
         setup_manager.save_config_values(filtered_values)
         config.refresh_config()
+        app.refresh_auth_state()
+        require_login = was_bootstrap and not app.is_bootstrap_mode()
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
 
-    return jsonify({'status': 'ok', 'saved_keys': list(filtered_values.keys())})
+    return jsonify({
+        'status': 'ok',
+        'saved_keys': list(filtered_values.keys()),
+        'require_login': require_login,
+    })

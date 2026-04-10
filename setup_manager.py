@@ -5,6 +5,34 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 DEFAULT_CONFIG_TABLE = "app_config"
+CONNECTION_FIELDS = {
+    'DATABASE_URL',
+    'POSTGRES_USER',
+    'POSTGRES_PASSWORD',
+    'POSTGRES_HOST',
+    'POSTGRES_PORT',
+    'POSTGRES_DB',
+    'REDIS_URL'
+}
+BASIC_SERVER_FIELDS = {
+    'MEDIASERVER_TYPE',
+    'JELLYFIN_URL',
+    'JELLYFIN_USER_ID',
+    'JELLYFIN_TOKEN',
+    'NAVIDROME_URL',
+    'NAVIDROME_USER',
+    'NAVIDROME_PASSWORD',
+    'LYRION_URL',
+    'EMBY_URL',
+    'EMBY_USER_ID',
+    'EMBY_TOKEN'
+}
+AUTH_FIELDS = {
+    'AUTH_ENABLED',
+    'AUDIOMUSE_USER',
+    'AUDIOMUSE_PASSWORD',
+    'API_TOKEN'
+}
 
 class SetupManager:
     def __init__(self, database_url=None):
@@ -56,6 +84,115 @@ class SetupManager:
         except Exception as exc:
             self.logger.warning(f"Unable to read setup config overrides from DB: {exc}")
             return {}
+
+    def is_config_table_empty(self):
+        try:
+            self.ensure_table()
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT EXISTS (SELECT 1 FROM {DEFAULT_CONFIG_TABLE})")
+                    return not cur.fetchone()[0]
+        except Exception as exc:
+            self.logger.warning(f"Unable to determine app_config state: {exc}")
+            return True
+
+    def _looks_like_placeholder(self, value):
+        if not isinstance(value, str):
+            return False
+        normalized = value.strip().lower()
+        if not normalized:
+            return True
+        placeholders = [
+            'your_',
+            'your default',
+            'your-default',
+            'no-key-needed',
+            'your-gemini-api-key-here',
+            'your_jellyfin_url',
+            'your_navidrome_url',
+            'your_lyrion_url',
+            'your_navidrome_user',
+            'your_navidrome_password',
+            'your_default_user_id',
+            'your_default_token',
+            'http://your_jellyfin_server',
+            'http://your-navidrome-server',
+            'http://your-lyrion-server'
+        ]
+        for placeholder in placeholders:
+            if placeholder in normalized:
+                return True
+        return False
+
+    def _get_env_config_values(self, config_module):
+        values = {}
+        for name, default_value in sorted(vars(config_module).items()):
+            if not name.isupper() or name.startswith('_'):
+                continue
+            values[name] = default_value
+        return values
+
+    def _is_valid_string(self, value):
+        return isinstance(value, str) and value.strip() and not self._looks_like_placeholder(value)
+
+    def _is_valid_server_config(self, config_module):
+        media_type = getattr(config_module, 'MEDIASERVER_TYPE', '').strip().lower()
+        if media_type not in {'jellyfin', 'navidrome', 'lyrion', 'emby'}:
+            return False
+        if media_type == 'jellyfin':
+            return all(
+                self._is_valid_string(getattr(config_module, field, ''))
+                for field in ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN']
+            )
+        if media_type == 'navidrome':
+            return all(
+                self._is_valid_string(getattr(config_module, field, ''))
+                for field in ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD']
+            )
+        if media_type == 'lyrion':
+            return self._is_valid_string(getattr(config_module, 'LYRION_URL', ''))
+        if media_type == 'emby':
+            return all(
+                self._is_valid_string(getattr(config_module, field, ''))
+                for field in ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN']
+            )
+        return False
+
+    def _is_valid_connection_config(self, config_module):
+        for field in CONNECTION_FIELDS:
+            value = getattr(config_module, field, None)
+            if value is None:
+                return False
+            if isinstance(value, str) and not value.strip():
+                return False
+        return True
+
+    def _is_valid_auth_config(self, config_module):
+        enabled = getattr(config_module, 'AUTH_ENABLED', True)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() == 'true'
+        if not enabled:
+            return True
+        return all(
+            self._is_valid_string(getattr(config_module, field, ''))
+            for field in ['AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD', 'API_TOKEN']
+        )
+
+    def is_valid_env_config(self, config_module):
+        return (
+            self._is_valid_server_config(config_module)
+            and self._is_valid_connection_config(config_module)
+            and self._is_valid_auth_config(config_module)
+        )
+
+    def bootstrap_env_config_if_empty(self, config_module):
+        if not self.is_config_table_empty():
+            return False
+        if not self.is_valid_env_config(config_module):
+            return False
+        values = self._get_env_config_values(config_module)
+        self.save_config_values(values)
+        return True
 
     def cast_value(self, default_value, stored_value):
         if isinstance(default_value, bool):

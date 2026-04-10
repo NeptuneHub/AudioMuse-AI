@@ -249,6 +249,7 @@
             input.type = field.inputType || 'text';
             input.placeholder = field.placeholder || '';
             input.value = value || '';
+            input.dataset.originalValue = input.value;
             if (field.type === 'boolean') {
                 input.type = 'text';
                 input.placeholder = 'true or false';
@@ -334,7 +335,12 @@
             const formData = new FormData(setupForm);
             const config = {};
             for (const [key, value] of formData.entries()) {
-                if (!value) {
+                const input = document.getElementById(key);
+                const original = input ? input.dataset.originalValue : undefined;
+                if (original !== undefined && value === original) {
+                    continue;
+                }
+                if (value === '' && original === undefined) {
                     continue;
                 }
                 config[key] = value;
@@ -352,8 +358,13 @@
                 }
                 feedback.style.display = 'block';
                 feedback.style.color = '#0f5132';
-                feedback.textContent = 'Configuration saved successfully. Redirecting...';
-                setTimeout(() => window.location.href = '/', 1100);
+                if (data.require_login) {
+                    feedback.textContent = 'Configuration saved successfully. Please log in with your new credentials.';
+                    setTimeout(() => window.location.href = '/login', 1100);
+                } else {
+                    feedback.textContent = 'Configuration saved successfully. Redirecting...';
+                    setTimeout(() => window.location.href = '/', 1100);
+                }
             } catch (err) {
                 feedback.style.display = 'block';
                 feedback.style.color = '#c0392b';
