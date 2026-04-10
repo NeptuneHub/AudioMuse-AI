@@ -179,6 +179,11 @@ def teardown_db(e=None):
 # This is safe because it doesn't import other application modules.
 with app.app_context():
     init_db()
+    # Provider migration tool: apply any runtime active-provider override from
+    # app_settings, then listen for further overrides on the Redis pub/sub
+    # channel so a migration can hot-reload all processes without a restart.
+    apply_provider_overrides_from_db()
+    subscribe_to_provider_migrated_channel()
 
 
 # --- API Endpoints ---
@@ -750,6 +755,7 @@ from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
 from app_mulan_search import mulan_search_bp
 from app_backup import backup_bp
+from app_provider_migration import migration_bp, apply_provider_overrides_from_db, subscribe_to_provider_migrated_channel
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -767,6 +773,7 @@ app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
 app.register_blueprint(mulan_search_bp)
 app.register_blueprint(backup_bp)
+app.register_blueprint(migration_bp)
 
 # --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
 # RQ workers import app.py but should NOT load indexes or start background threads.

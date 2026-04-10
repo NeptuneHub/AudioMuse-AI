@@ -1,0 +1,759 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    .mig-card {
+        background-color: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 1.25rem 1.5rem;
+        margin-bottom: 1rem;
+    }
+    .mig-card.locked {
+        opacity: 0.55;
+        pointer-events: none;
+    }
+    .mig-card h2 {
+        margin: 0 0 0.25rem;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-size: 1.15rem;
+    }
+    .mig-step-num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.6rem;
+        height: 1.6rem;
+        border-radius: 50%;
+        background-color: var(--border-color);
+        color: var(--text-sub);
+        font-size: 0.85rem;
+        font-weight: 700;
+    }
+    .mig-card.done .mig-step-num {
+        background-color: var(--color-success, #16a34a);
+        color: white;
+    }
+    .mig-card.active .mig-step-num {
+        background-color: var(--color-primary, #3b82f6);
+        color: white;
+    }
+    .mig-card p {
+        color: var(--text-sub);
+        margin: 0.25rem 0 0.75rem;
+    }
+    .mig-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+        margin-top: 0.5rem;
+    }
+    .mig-row label {
+        font-weight: 600;
+        min-width: 120px;
+    }
+    .mig-row input[type="text"],
+    .mig-row input[type="password"],
+    .mig-row input[type="number"] {
+        flex: 1;
+        min-width: 200px;
+        padding: 0.45rem 0.6rem;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        font-size: 0.95rem;
+        background: var(--bg-input, var(--bg-card));
+        color: var(--text-main);
+    }
+    .mig-status {
+        margin-top: 0.75rem;
+        font-size: 0.92rem;
+        color: var(--text-sub);
+    }
+    .mig-warning {
+        background-color: var(--status-warn-bg, #fff7ed);
+        border: 1px solid var(--color-warn, #f59e0b);
+        color: var(--text-main);
+        padding: 0.75rem 1rem;
+        border-radius: 6px;
+        margin-top: 0.75rem;
+        font-size: 0.92rem;
+    }
+    .mig-error {
+        background-color: var(--status-error-bg, #fef2f2);
+        border: 1px solid var(--color-danger, #ef4444);
+        color: var(--color-danger, #ef4444);
+        padding: 0.6rem 0.9rem;
+        border-radius: 6px;
+        margin-top: 0.5rem;
+        font-size: 0.9rem;
+    }
+    .mig-success {
+        background-color: var(--status-success-bg, #f0fdf4);
+        border: 1px solid var(--color-success, #16a34a);
+        color: var(--text-main);
+        padding: 0.6rem 0.9rem;
+        border-radius: 6px;
+        margin-top: 0.5rem;
+        font-size: 0.9rem;
+    }
+    .mig-tier-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 0.5rem;
+        margin-top: 0.75rem;
+    }
+    .mig-tier-cell {
+        padding: 0.5rem 0.75rem;
+        background: var(--bg-body, #f9fafb);
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        font-size: 0.9rem;
+    }
+    .mig-tier-cell .mig-tier-num {
+        display: block;
+        font-size: 1.4rem;
+        font-weight: 700;
+        color: var(--text-main);
+    }
+    .mig-album-list {
+        max-height: 380px;
+        overflow-y: auto;
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        margin-top: 0.75rem;
+    }
+    .mig-album-item {
+        padding: 0.6rem 0.9rem;
+        border-bottom: 1px solid var(--border-color);
+        cursor: pointer;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.75rem;
+    }
+    .mig-album-item:last-child { border-bottom: none; }
+    .mig-album-item:hover { background: var(--bg-body, #f9fafb); }
+    .mig-album-item.matched { opacity: 0.5; text-decoration: line-through; }
+    .mig-album-item .mig-album-meta {
+        font-size: 0.85rem;
+        color: var(--text-sub);
+    }
+    .mig-match-pane {
+        margin-top: 0.75rem;
+        padding: 0.9rem;
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        background: var(--bg-body, #f9fafb);
+        display: none;
+    }
+    .mig-match-pane.visible { display: block; }
+    .mig-candidate {
+        padding: 0.45rem 0.6rem;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        margin-top: 0.4rem;
+        cursor: pointer;
+        background: var(--bg-card);
+    }
+    .mig-candidate:hover {
+        border-color: var(--color-primary, #3b82f6);
+    }
+    .mig-checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 0.75rem;
+    }
+    .mig-checkbox-row input[type="checkbox"] { width: auto; }
+    .mig-confirm-phrase {
+        font-family: monospace;
+        font-size: 0.92rem;
+        padding: 0.4rem 0.55rem;
+        background: var(--bg-body, #f3f4f6);
+        border-radius: 4px;
+        display: inline-block;
+        user-select: all;
+    }
+    .mig-danger-btn {
+        background-color: var(--color-danger, #ef4444) !important;
+        color: white !important;
+        border-color: var(--color-danger, #ef4444) !important;
+    }
+    .mig-danger-btn:disabled {
+        background-color: var(--text-muted, #9ca3af) !important;
+        border-color: var(--text-muted, #9ca3af) !important;
+        cursor: not-allowed;
+        opacity: 0.6;
+    }
+    .mig-log {
+        font-family: monospace;
+        font-size: 0.85rem;
+        background: var(--bg-body, #111827);
+        color: var(--text-main, #e5e7eb);
+        padding: 0.75rem;
+        border-radius: 6px;
+        max-height: 260px;
+        overflow-y: auto;
+        margin-top: 0.75rem;
+        white-space: pre-wrap;
+    }
+    .mig-cred-field { display: none; }
+    .mig-cred-field.active { display: flex; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="main-content-inner">
+    <section>
+        <div class="page-header">
+            <h1>Provider Migration</h1>
+            <p class="subtitle">
+                Switch to a different media server (Jellyfin, Navidrome, Emby&hellip;) without losing
+                any analysis data, embeddings, or local playlists.
+            </p>
+        </div>
+
+        <!-- ======================== STEP 1: BACKUP ======================== -->
+        <div id="mig-step-1" class="mig-card active">
+            <h2><span class="mig-step-num">1</span> Back up your database</h2>
+            <p>
+                This tool rewrites every <code>item_id</code> in your database. Mistakes cannot be
+                undone without a backup. Download a full pg_dump from the
+                <a href="{{ url_for('backup_bp.backup_page') }}" target="_blank">Backup &amp; Restore</a>
+                page first.
+            </p>
+            <div class="mig-checkbox-row">
+                <input type="checkbox" id="mig-backup-confirmed">
+                <label for="mig-backup-confirmed">
+                    I have downloaded and safely stored a full database backup.
+                </label>
+            </div>
+        </div>
+
+        <!-- ================ STEP 2: TARGET PROVIDER + CREDS ================ -->
+        <div id="mig-step-2" class="mig-card locked">
+            <h2><span class="mig-step-num">2</span> Choose the new provider</h2>
+            <p>Select the media server you want to switch to and provide credentials.</p>
+
+            <div class="mig-row">
+                <label for="mig-target-type">Provider:</label>
+                <select id="mig-target-type">
+                    <option value="">— Select —</option>
+                    <option value="jellyfin">Jellyfin</option>
+                    <option value="navidrome">Navidrome</option>
+                    <option value="emby">Emby</option>
+                    <option value="lyrion">Lyrion (LMS) — not yet supported</option>
+                    <option value="mpd">MPD — not yet supported</option>
+                </select>
+            </div>
+
+            <!-- Jellyfin / Emby creds -->
+            <div class="mig-cred-field" data-for="jellyfin emby">
+                <div class="mig-row">
+                    <label>Server URL:</label>
+                    <input type="text" data-cred="url" placeholder="http://jellyfin.local:8096">
+                </div>
+                <div class="mig-row">
+                    <label>User ID:</label>
+                    <input type="text" data-cred="user_id" placeholder="abc123...">
+                </div>
+                <div class="mig-row">
+                    <label>API Token:</label>
+                    <input type="password" data-cred="token">
+                </div>
+            </div>
+
+            <!-- Navidrome creds -->
+            <div class="mig-cred-field" data-for="navidrome">
+                <div class="mig-row">
+                    <label>Server URL:</label>
+                    <input type="text" data-cred="url" placeholder="http://navidrome.local:4533">
+                </div>
+                <div class="mig-row">
+                    <label>Username:</label>
+                    <input type="text" data-cred="user">
+                </div>
+                <div class="mig-row">
+                    <label>Password:</label>
+                    <input type="password" data-cred="password">
+                </div>
+            </div>
+
+            <div class="mig-cred-field" data-for="lyrion">
+                <div class="mig-row">
+                    <label>LMS URL:</label>
+                    <input type="text" data-cred="url" placeholder="http://lms.local:9000">
+                </div>
+            </div>
+
+            <div class="mig-cred-field" data-for="mpd">
+                <div class="mig-row">
+                    <label>Host:</label>
+                    <input type="text" data-cred="host" placeholder="localhost">
+                    <label>Port:</label>
+                    <input type="number" data-cred="port" value="6600">
+                </div>
+            </div>
+
+            <div class="mig-row">
+                <button id="mig-test-connection" class="btn btn-primary">Test Connection</button>
+            </div>
+            <div id="mig-probe-result"></div>
+        </div>
+
+        <!-- ====================== STEP 3: DRY RUN ====================== -->
+        <div id="mig-step-3" class="mig-card locked">
+            <h2><span class="mig-step-num">3</span> Dry run — automatic matching</h2>
+            <p>
+                Match every track in your AudioMuse database against the new provider. You can
+                re-run this as many times as you want (e.g. after fixing Navidrome's
+                &ldquo;Report Real Path&rdquo; setting).
+            </p>
+            <div class="mig-row">
+                <button id="mig-run-dry" class="btn btn-primary">Run Dry Run</button>
+            </div>
+            <div id="mig-dry-result"></div>
+        </div>
+
+        <!-- ================ STEP 4: MANUAL ALBUM MATCHING ================ -->
+        <div id="mig-step-4" class="mig-card locked">
+            <h2><span class="mig-step-num">4</span> Manual album matching</h2>
+            <p>
+                Review unmatched albums. For each one, either find the correct album on the new
+                provider (tracks will auto-fill by title) or skip the album to delete its tracks
+                from your database.
+            </p>
+            <div id="mig-album-list" class="mig-album-list"></div>
+            <div id="mig-match-pane" class="mig-match-pane">
+                <div style="display:flex; align-items:center; gap:0.5rem;">
+                    <strong id="mig-match-album-title"></strong>
+                </div>
+                <div class="mig-row">
+                    <input type="text" id="mig-match-query" placeholder="Search target provider...">
+                    <button id="mig-match-search" class="btn btn-primary">Search</button>
+                    <button id="mig-match-skip" class="btn mig-danger-btn">Skip &amp; delete this album</button>
+                </div>
+                <div id="mig-match-candidates"></div>
+            </div>
+        </div>
+
+        <!-- ================ STEP 5: FINALIZE + EXECUTE GATE ================ -->
+        <div id="mig-step-5" class="mig-card locked">
+            <h2><span class="mig-step-num">5</span> Finalize &amp; execute</h2>
+            <p>Review the final counts and unlock the execute button.</p>
+            <div class="mig-row">
+                <button id="mig-finalize" class="btn btn-primary">Finalize Dry Run</button>
+                <a id="mig-dl-report" href="#" class="btn" target="_blank" style="display:none;">
+                    Download dry-run report
+                </a>
+            </div>
+            <div id="mig-final-counts"></div>
+
+            <div id="mig-execute-gate" style="display:none; margin-top:1rem;">
+                <div class="mig-checkbox-row">
+                    <input type="checkbox" id="mig-final-backup-ok">
+                    <label for="mig-final-backup-ok">
+                        I have created a backup and I understand that orphan tracks will be deleted.
+                    </label>
+                </div>
+                <div class="mig-row">
+                    <label style="min-width:auto;">Type exactly:</label>
+                    <span id="mig-expected-phrase" class="mig-confirm-phrase"></span>
+                </div>
+                <div class="mig-row">
+                    <input type="text" id="mig-confirm-phrase" placeholder="Type the phrase above...">
+                </div>
+                <div class="mig-row">
+                    <button id="mig-execute" class="btn mig-danger-btn" disabled>
+                        Execute Migration
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================== STEP 6: EXECUTION PROGRESS ================== -->
+        <div id="mig-step-6" class="mig-card locked">
+            <h2><span class="mig-step-num">6</span> Execution</h2>
+            <p>Watch the migration run and see the final state.</p>
+            <div id="mig-exec-status"></div>
+            <div id="mig-exec-log" class="mig-log" style="display:none;"></div>
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block bodyAdditions %}
+<script>
+(function() {
+    // ---------- State ----------
+    let sessionId   = null;
+    let targetType  = '';
+    let targetCreds = {};
+    let unmatchedAlbums = [];
+    let currentAlbumKey = null;
+    let dryRunCounts    = null;
+    let finalCounts     = null;
+
+    // ---------- DOM handles ----------
+    const $ = id => document.getElementById(id);
+    const steps = [1, 2, 3, 4, 5, 6].map(n => $('mig-step-' + n));
+
+    // ---------- Helpers ----------
+    function unlock(step) { steps[step - 1].classList.remove('locked'); }
+    function lock(step)   { steps[step - 1].classList.add('locked'); }
+    function setActive(step) {
+        steps.forEach((el, i) => {
+            el.classList.remove('active');
+            if (i + 1 < step) el.classList.add('done');
+            if (i + 1 === step) el.classList.add('active');
+        });
+    }
+    function resetFromStep(step) {
+        for (let i = step; i <= 6; i++) {
+            lock(i);
+            steps[i - 1].classList.remove('done');
+        }
+    }
+    function showError(container, msg) {
+        container.innerHTML = '<div class="mig-error">' + msg + '</div>';
+    }
+    function showSuccess(container, html) {
+        container.innerHTML = '<div class="mig-success">' + html + '</div>';
+    }
+    function showWarn(container, msg) {
+        container.innerHTML = '<div class="mig-warning">' + msg + '</div>';
+    }
+    async function jsonFetch(url, opts) {
+        const res = await fetch(url, opts || {});
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); } catch { data = { error: text }; }
+        if (!res.ok) throw new Error(data.error || 'Request failed: ' + res.status);
+        return data;
+    }
+
+    // ---------- Step 1 ----------
+    $('mig-backup-confirmed').addEventListener('change', e => {
+        if (e.target.checked) {
+            unlock(2);
+            setActive(2);
+        } else {
+            resetFromStep(2);
+            setActive(1);
+        }
+    });
+
+    // ---------- Step 2 ----------
+    $('mig-target-type').addEventListener('change', e => {
+        targetType = e.target.value;
+        document.querySelectorAll('.mig-cred-field').forEach(f => {
+            const forList = (f.dataset.for || '').split(/\s+/);
+            f.classList.toggle('active', targetType && forList.includes(targetType));
+        });
+        $('mig-probe-result').innerHTML = '';
+        resetFromStep(3);
+    });
+
+    function collectCreds() {
+        targetCreds = {};
+        const active = document.querySelector('.mig-cred-field.active');
+        if (!active) return;
+        active.querySelectorAll('[data-cred]').forEach(inp => {
+            const v = inp.value.trim();
+            if (v) targetCreds[inp.dataset.cred] = v;
+        });
+    }
+
+    $('mig-test-connection').addEventListener('click', async () => {
+        if (!targetType) return;
+        collectCreds();
+        $('mig-probe-result').innerHTML = '<div class="mig-status">Testing connection…</div>';
+        try {
+            const result = await jsonFetch("{{ url_for('migration_bp.probe_test') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: targetType, creds: targetCreds })
+            });
+            if (!result.ok) {
+                showError($('mig-probe-result'),
+                    'Connection failed: ' + (result.error || 'unknown'));
+                resetFromStep(3);
+                return;
+            }
+            let html = '<div class="mig-success">✓ Connected. Sampled ' +
+                result.sample_count + ' tracks. Path format: <strong>' +
+                result.path_format + '</strong>.</div>';
+            if (result.warnings && result.warnings.length) {
+                result.warnings.forEach(w => {
+                    html += '<div class="mig-warning">' + w + '</div>';
+                });
+            }
+            $('mig-probe-result').innerHTML = html;
+
+            // Create/reuse session
+            if (!sessionId) {
+                const s = await jsonFetch("{{ url_for('migration_bp.session_start') }}", {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ target_type: targetType, target_creds: targetCreds })
+                });
+                sessionId = s.session_id;
+            }
+            unlock(3);
+            setActive(3);
+        } catch (e) {
+            showError($('mig-probe-result'), e.message);
+        }
+    });
+
+    // ---------- Step 3 ----------
+    $('mig-run-dry').addEventListener('click', async () => {
+        if (!sessionId) return;
+        $('mig-dry-result').innerHTML = '<div class="mig-status">Running dry run — this can take a few minutes on large libraries…</div>';
+        try {
+            const result = await jsonFetch("{{ url_for('migration_bp.dry_run') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId })
+            });
+            dryRunCounts = result;
+            const tc = result.tier_counts || {};
+            let html = '<div class="mig-tier-grid">';
+            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + (tc.path || 0) + '</span>matched by path</div>';
+            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + (tc.tail || 0) + '</span>matched by path tail</div>';
+            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + (tc.exact_meta || 0) + '</span>matched by exact metadata</div>';
+            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + (tc.norm_meta || 0) + '</span>matched by normalized metadata</div>';
+            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + result.unmatched + '</span>unmatched tracks (' + result.unmatched_albums_count + ' albums)</div>';
+            html += '</div>';
+            $('mig-dry-result').innerHTML = html;
+            await loadUnmatchedAlbums();
+            unlock(4);
+            setActive(4);
+            resetFromStep(5);
+        } catch (e) {
+            showError($('mig-dry-result'), e.message);
+        }
+    });
+
+    // ---------- Step 4 ----------
+    async function loadUnmatchedAlbums() {
+        // Fetch the session state to get unmatched_albums
+        const s = await jsonFetch("{{ url_for('migration_bp.session_get', session_id=0) }}".replace('/0', '/' + sessionId));
+        unmatchedAlbums = ((s.state.dry_run || {}).unmatched_albums || []).slice();
+        const list = $('mig-album-list');
+        if (!unmatchedAlbums.length) {
+            list.innerHTML = '<div class="mig-status" style="padding:0.75rem;">All tracks matched automatically — nothing to do in this step. Proceed to step 5.</div>';
+            return;
+        }
+        list.innerHTML = '';
+        unmatchedAlbums.forEach((a, idx) => {
+            const div = document.createElement('div');
+            div.className = 'mig-album-item';
+            div.dataset.idx = idx;
+            div.innerHTML = '<div><strong>' + (a.album || '(no album)') + '</strong> — ' +
+                (a.album_artist || '(no artist)') +
+                '<div class="mig-album-meta">' + a.track_count + ' track(s)</div></div>' +
+                '<div>›</div>';
+            div.addEventListener('click', () => openAlbum(idx));
+            list.appendChild(div);
+        });
+    }
+
+    function openAlbum(idx) {
+        const a = unmatchedAlbums[idx];
+        currentAlbumKey = [a.album_artist, a.album];
+        $('mig-match-album-title').textContent =
+            (a.album_artist || '?') + ' — ' + (a.album || '?') + ' (' + a.track_count + ' tracks)';
+        $('mig-match-query').value = ((a.album_artist || '') + ' ' + (a.album || '')).trim();
+        $('mig-match-candidates').innerHTML = '';
+        $('mig-match-pane').classList.add('visible');
+    }
+
+    $('mig-match-search').addEventListener('click', async () => {
+        const query = $('mig-match-query').value.trim();
+        $('mig-match-candidates').innerHTML = '<div class="mig-status">Searching…</div>';
+        try {
+            const res = await jsonFetch("{{ url_for('migration_bp.search_albums') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, query: query })
+            });
+            const albums = res.albums || [];
+            if (!albums.length) {
+                $('mig-match-candidates').innerHTML = '<div class="mig-status">No results.</div>';
+                return;
+            }
+            $('mig-match-candidates').innerHTML = '';
+            albums.forEach(a => {
+                const row = document.createElement('div');
+                row.className = 'mig-candidate';
+                row.innerHTML = '<strong>' + (a.name || '?') + '</strong> — ' +
+                    (a.artist || '?') + (a.year ? ' · ' + a.year : '') +
+                    (a.track_count ? ' · ' + a.track_count + ' tracks' : '');
+                row.addEventListener('click', () => pickCandidate(a.id, row));
+                $('mig-match-candidates').appendChild(row);
+            });
+        } catch (e) {
+            showError($('mig-match-candidates'), e.message);
+        }
+    });
+
+    async function pickCandidate(newAlbumId, rowEl) {
+        if (!currentAlbumKey) return;
+        rowEl.style.opacity = 0.6;
+        try {
+            const res = await jsonFetch("{{ url_for('migration_bp.match_album') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    old_album_key: currentAlbumKey,
+                    new_album_id: newAlbumId,
+                })
+            });
+            markAlbumResolved(currentAlbumKey);
+            showSuccess($('mig-match-candidates'),
+                'Matched ' + res.matched + ' tracks. ' +
+                res.unmatched + ' tracks in this album will be deleted.');
+        } catch (e) {
+            showError($('mig-match-candidates'), e.message);
+            rowEl.style.opacity = 1;
+        }
+    }
+
+    $('mig-match-skip').addEventListener('click', async () => {
+        if (!currentAlbumKey || !confirm('Delete all tracks from this album during migration?')) return;
+        try {
+            await jsonFetch("{{ url_for('migration_bp.skip_album') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    old_album_key: currentAlbumKey,
+                })
+            });
+            markAlbumResolved(currentAlbumKey);
+            $('mig-match-pane').classList.remove('visible');
+        } catch (e) {
+            showError($('mig-match-candidates'), e.message);
+        }
+    });
+
+    function markAlbumResolved(key) {
+        const list = $('mig-album-list');
+        list.querySelectorAll('.mig-album-item').forEach(el => {
+            const idx = parseInt(el.dataset.idx, 10);
+            const a = unmatchedAlbums[idx];
+            if (a.album_artist === key[0] && a.album === key[1]) {
+                el.classList.add('matched');
+            }
+        });
+        const unresolved = Array.from(list.querySelectorAll('.mig-album-item'))
+            .filter(e => !e.classList.contains('matched')).length;
+        if (unresolved === 0) {
+            unlock(5);
+            setActive(5);
+        }
+    }
+
+    // ---------- Step 5 ----------
+    $('mig-finalize').addEventListener('click', async () => {
+        try {
+            const result = await jsonFetch("{{ url_for('migration_bp.finalize_dry_run') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId })
+            });
+            finalCounts = result;
+            let html = '<div class="mig-tier-grid">';
+            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + result.matched + '</span>tracks to be rewritten</div>';
+            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + result.orphans + '</span>tracks to be deleted as orphans</div>';
+            html += '</div>';
+            $('mig-final-counts').innerHTML = html;
+            $('mig-dl-report').href = "{{ url_for('migration_bp.dry_run_report', session_id=0) }}".replace('/0', '/' + sessionId);
+            $('mig-dl-report').style.display = '';
+            $('mig-expected-phrase').textContent =
+                'I want to migrate to ' + targetType + ' and delete unmatched tracks';
+            $('mig-execute-gate').style.display = '';
+            updateExecuteBtnState();
+        } catch (e) {
+            showError($('mig-final-counts'), e.message);
+        }
+    });
+
+    function updateExecuteBtnState() {
+        const okBox = $('mig-final-backup-ok').checked;
+        const expected = $('mig-expected-phrase').textContent;
+        const typed = $('mig-confirm-phrase').value;
+        $('mig-execute').disabled = !(okBox && typed === expected);
+    }
+    $('mig-final-backup-ok').addEventListener('change', updateExecuteBtnState);
+    $('mig-confirm-phrase').addEventListener('input', updateExecuteBtnState);
+
+    $('mig-execute').addEventListener('click', async () => {
+        if (!confirm('This will rewrite your database. Are you absolutely sure?')) return;
+        $('mig-execute').disabled = true;
+        try {
+            const result = await jsonFetch("{{ url_for('migration_bp.execute') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    backup_confirmed: $('mig-final-backup-ok').checked,
+                    confirmation_text: $('mig-confirm-phrase').value,
+                })
+            });
+            unlock(6);
+            setActive(6);
+            pollJob(result.task_id);
+        } catch (e) {
+            $('mig-execute').disabled = false;
+            showError($('mig-final-counts'), e.message);
+        }
+    });
+
+    // ---------- Step 6 ----------
+    async function pollJob(taskId) {
+        const statusEl = $('mig-exec-status');
+        const logEl    = $('mig-exec-log');
+        statusEl.innerHTML = '<div class="mig-status">Running migration — do not close this tab.</div>';
+        const statusUrl = "{{ url_for('migration_bp.job_status', task_id='__TID__') }}".replace('__TID__', taskId);
+
+        while (true) {
+            try {
+                const res = await jsonFetch(statusUrl);
+                const s = res.status || 'unknown';
+                statusEl.innerHTML = '<div class="mig-status">Status: <strong>' + s + '</strong></div>';
+                if (s === 'finished') {
+                    showSuccess(statusEl,
+                        '<strong>Migration complete.</strong> ' +
+                        'The running app has already switched to <code>' + targetType + '</code>.<br><br>' +
+                        '<small><strong>Plays and listening history:</strong> never stored locally. They come from your media server and now reflect the new provider automatically.</small><br><br>' +
+                        '<small><strong>To persist across container restarts:</strong> update your docker-compose.yaml to set <code>MEDIASERVER_TYPE=' + targetType + '</code> and the matching credentials.</small>'
+                    );
+                    return;
+                }
+                if (s === 'failed') {
+                    showError(statusEl,
+                        '<strong>Migration failed.</strong><br>' +
+                        (res.error || 'Unknown error') +
+                        '<br><br>Your database is unchanged (transaction rolled back). ' +
+                        'Fix the issue and re-run the wizard. If you see corruption, ' +
+                        'restore from the backup you made in step 1.'
+                    );
+                    return;
+                }
+            } catch (e) {
+                showError(statusEl, 'Status poll failed: ' + e.message);
+                return;
+            }
+            await new Promise(r => setTimeout(r, 2000));
+        }
+    }
+})();
+</script>
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}
