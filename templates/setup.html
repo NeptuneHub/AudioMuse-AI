@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
+    <style>
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: system-ui, sans-serif;
+            background: var(--bg-body, #f5f7fb);
+            color: var(--text-main, #111);
+        }
+        .page-shell {
+            max-width: 1024px;
+            margin: 0 auto;
+            padding: 2rem 1rem;
+        }
+        .card {
+            background: var(--bg-card, #ffffff);
+            border: 1px solid var(--border-color, #d6d8dc);
+            border-radius: 16px;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.06);
+            padding: 1.75rem;
+        }
+        h1 {
+            margin-top: 0;
+        }
+        label {
+            display: block;
+            margin-bottom: 0.35rem;
+            font-weight: 600;
+        }
+        input[type="text"], input[type="password"], select, textarea {
+            width: 100%;
+            border: 1px solid var(--border-color, #ccc);
+            border-radius: 8px;
+            padding: 0.85rem 0.9rem;
+            margin-bottom: 1rem;
+            font-size: 0.98rem;
+            background: var(--bg-input, #fff);
+            color: var(--text-main, #111);
+        }
+        textarea {
+            min-height: 92px;
+            font-family: inherit;
+            resize: vertical;
+        }
+        .section {
+            margin-top: 1.5rem;
+        }
+        .field-grid {
+            display: grid;
+            gap: 1rem;
+        }
+        .field-grid.two-col {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .summary {
+            margin: 1.5rem 0 1rem;
+            font-size: 0.95rem;
+            color: var(--text-muted, #666);
+        }
+        button {
+            border: none;
+            border-radius: 10px;
+            padding: 0.95rem 1.25rem;
+            cursor: pointer;
+            color: #fff;
+            background: var(--accent-color, #3675f1);
+            font-weight: 700;
+            font-size: 1rem;
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .notice {
+            padding: 1rem 1.15rem;
+            margin: 1rem 0;
+            border-radius: 10px;
+            background: #eef5ff;
+            color: #1f3c72;
+            border: 1px solid #d6e4ff;
+        }
+        details {
+            margin-top: 1rem;
+            border: 1px solid var(--border-color, #ccc);
+            border-radius: 12px;
+            padding: 1rem;
+            background: var(--bg-card, #fafbff);
+        }
+        details summary {
+            cursor: pointer;
+            font-weight: 700;
+        }
+        .field-row {
+            margin-bottom: 1rem;
+        }
+        .field-row small {
+            color: var(--text-muted, #666);
+        }
+    </style>
+</head>
+<body>
+    <div class="page-shell">
+        <div class="card">
+            <h1>AudioMuse-AI Setup</h1>
+            <p class="summary">Complete the first-time configuration. Environment variables are used as defaults and saved to the database after you submit.</p>
+
+            <div class="notice">
+                This setup page is shown automatically on first login when no saved setup data exists.
+            </div>
+
+            <form id="setup-form">
+                <section class="section">
+                    <h2>Media Server</h2>
+                    <div class="field-row">
+                        <label for="MEDIASERVER_TYPE">Media server type</label>
+                        <select id="MEDIASERVER_TYPE" name="MEDIASERVER_TYPE" required>
+                            <option value="jellyfin">Jellyfin</option>
+                            <option value="navidrome">Navidrome</option>
+                            <option value="lyrion">Lyrion</option>
+                            <option value="emby">Emby</option>
+                        </select>
+                    </div>
+                    <div id="server-config-fields"></div>
+                </section>
+
+                <section class="section">
+                    <h2>Authentication</h2>
+                    <div class="field-row">
+                        <label for="AUTH_ENABLED">Enable authentication</label>
+                        <select id="AUTH_ENABLED" name="AUTH_ENABLED">
+                            <option value="true">True</option>
+                            <option value="false">False</option>
+                        </select>
+                    </div>
+                    <div id="auth-credentials" class="field-grid two-col">
+                        <div>
+                            <label for="AUDIOMUSE_USER">Username</label>
+                            <input id="AUDIOMUSE_USER" name="AUDIOMUSE_USER" type="text" placeholder="alice">
+                        </div>
+                        <div>
+                            <label for="AUDIOMUSE_PASSWORD">Password</label>
+                            <input id="AUDIOMUSE_PASSWORD" name="AUDIOMUSE_PASSWORD" type="password" placeholder="secret123">
+                        </div>
+                    </div>
+                    <div id="api-token-row" class="field-row">
+                        <label for="API_TOKEN">API token</label>
+                        <input id="API_TOKEN" name="API_TOKEN" type="password" placeholder="api-token">
+                    </div>
+                </section>
+
+                <details id="advanced-config">
+                    <summary>Advanced configuration</summary>
+                    <div id="advanced-fields"></div>
+                </details>
+
+                <div class="field-row">
+                    <button id="save-button" type="submit">Save configuration</button>
+                </div>
+                <p id="feedback" style="display:none; margin-top:1rem;"></p>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const basicFields = new Set([
+            'MEDIASERVER_TYPE',
+            'JELLYFIN_URL',
+            'JELLYFIN_USER_ID',
+            'JELLYFIN_TOKEN',
+            'NAVIDROME_URL',
+            'NAVIDROME_USER',
+            'NAVIDROME_PASSWORD',
+            'LYRION_URL',
+            'EMBY_URL',
+            'EMBY_USER_ID',
+            'EMBY_TOKEN',
+            'AUTH_ENABLED',
+            'AUDIOMUSE_USER',
+            'AUDIOMUSE_PASSWORD',
+            'API_TOKEN'
+        ]);
+
+        const serverFields = {
+            jellyfin: [
+                {name: 'JELLYFIN_URL', label: 'Jellyfin URL', placeholder: 'http://your-jellyfin-server:8096'},
+                {name: 'JELLYFIN_USER_ID', label: 'Jellyfin user ID', placeholder: 'your-user-id'},
+                {name: 'JELLYFIN_TOKEN', label: 'Jellyfin API token', placeholder: 'your-api-token'}
+            ],
+            navidrome: [
+                {name: 'NAVIDROME_URL', label: 'Navidrome URL', placeholder: 'http://your-navidrome-server:4533'},
+                {name: 'NAVIDROME_USER', label: 'Navidrome username', placeholder: 'your-username'},
+                {name: 'NAVIDROME_PASSWORD', label: 'Navidrome password', placeholder: 'your-password'}
+            ],
+            lyrion: [
+                {name: 'LYRION_URL', label: 'Lyrion URL', placeholder: 'http://your-lyrion-server:9000'}
+            ],
+            emby: [
+                {name: 'EMBY_URL', label: 'Emby URL', placeholder: 'http://your-emby-server:8096'},
+                {name: 'EMBY_USER_ID', label: 'Emby user ID', placeholder: 'your-user-id'},
+                {name: 'EMBY_TOKEN', label: 'Emby API token', placeholder: 'your-api-token'}
+            ]
+        };
+
+        const feedback = document.getElementById('feedback');
+        const saveButton = document.getElementById('save-button');
+        const serverConfigFields = document.getElementById('server-config-fields');
+        const advancedFields = document.getElementById('advanced-fields');
+        const authCredentials = document.getElementById('auth-credentials');
+        const apiTokenRow = document.getElementById('api-token-row');
+        const authCredentialInputs = [
+            document.getElementById('AUDIOMUSE_USER'),
+            document.getElementById('AUDIOMUSE_PASSWORD')
+        ];
+        const setupForm = document.getElementById('setup-form');
+
+        function updateAuthVisibility() {
+            const enabled = document.getElementById('AUTH_ENABLED').value === 'true';
+            authCredentials.style.display = enabled ? 'grid' : 'none';
+            apiTokenRow.style.display = enabled ? 'block' : 'none';
+            authCredentialInputs.forEach((input) => {
+                if (input) {
+                    input.disabled = !enabled;
+                }
+            });
+            const apiTokenInput = document.getElementById('API_TOKEN');
+            if (apiTokenInput) {
+                apiTokenInput.disabled = !enabled;
+            }
+        }
+
+        function createInputField(field, value) {
+            const row = document.createElement('div');
+            row.className = 'field-row';
+            const label = document.createElement('label');
+            label.setAttribute('for', field.name);
+            label.textContent = field.label;
+            const input = field.type === 'textarea'
+                ? document.createElement('textarea')
+                : document.createElement('input');
+            input.id = field.name;
+            input.name = field.name;
+            input.type = field.inputType || 'text';
+            input.placeholder = field.placeholder || '';
+            input.value = value || '';
+            if (field.type === 'boolean') {
+                input.type = 'text';
+                input.placeholder = 'true or false';
+            }
+            if (field.name === 'API_TOKEN' || field.name === 'AUDIOMUSE_PASSWORD') {
+                input.type = 'password';
+            }
+            row.appendChild(label);
+            row.appendChild(input);
+            if (field.description) {
+                const hint = document.createElement('small');
+                hint.textContent = field.description;
+                row.appendChild(hint);
+            }
+            return row;
+        }
+
+        function renderServerFields(serverType, values) {
+            serverConfigFields.innerHTML = '';
+            const fields = serverFields[serverType] || [];
+            fields.forEach((field) => {
+                const value = values[field.name] || '';
+                serverConfigFields.appendChild(createInputField(field, value));
+            });
+        }
+
+        function renderAdvancedFields(fields) {
+            advancedFields.innerHTML = '';
+            fields.forEach((field) => {
+                const fieldConfig = {
+                    name: field.name,
+                    label: field.name,
+                    placeholder: field.default || '',
+                    type: field.type === 'bool' ? 'boolean' : field.type,
+                    inputType: field.type === 'boolean' ? 'text' : 'text',
+                };
+                advancedFields.appendChild(createInputField(fieldConfig, field.value));
+            });
+        }
+
+        async function loadSetupData() {
+            try {
+                const resp = await fetch('/api/setup');
+                if (!resp.ok) {
+                    throw new Error('Failed to load setup data');
+                }
+                const data = await resp.json();
+                const basicData = {};
+                data.basic_fields.forEach(f => basicData[f.name] = f.value);
+                const advancedData = data.advanced_fields;
+
+                document.getElementById('MEDIASERVER_TYPE').value = basicData.MEDIASERVER_TYPE || 'jellyfin';
+                document.getElementById('AUTH_ENABLED').value = String(basicData.AUTH_ENABLED || 'true').toLowerCase();
+                document.getElementById('AUDIOMUSE_USER').value = basicData.AUDIOMUSE_USER || '';
+                document.getElementById('AUDIOMUSE_PASSWORD').value = basicData.AUDIOMUSE_PASSWORD || '';
+                document.getElementById('API_TOKEN').value = basicData.API_TOKEN || '';
+                renderServerFields(document.getElementById('MEDIASERVER_TYPE').value, basicData);
+                renderAdvancedFields(advancedData);
+                updateAuthVisibility();
+            } catch (err) {
+                feedback.style.display = 'block';
+                feedback.style.color = '#c0392b';
+                feedback.textContent = 'Unable to load setup data. Refresh the page or check the server logs.';
+            }
+        }
+
+        function updateServerFields() {
+            const serverType = document.getElementById('MEDIASERVER_TYPE').value;
+            const currentValues = {};
+            ['JELLYFIN_URL','JELLYFIN_USER_ID','JELLYFIN_TOKEN','NAVIDROME_URL','NAVIDROME_USER','NAVIDROME_PASSWORD','LYRION_URL','EMBY_URL','EMBY_USER_ID','EMBY_TOKEN'].forEach((key) => {
+                const input = document.getElementById(key);
+                if (input) {
+                    currentValues[key] = input.value;
+                }
+            });
+            renderServerFields(serverType, currentValues);
+        }
+
+        setupForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            saveButton.disabled = true;
+            feedback.style.display = 'none';
+            const formData = new FormData(setupForm);
+            const config = {};
+            for (const [key, value] of formData.entries()) {
+                if (!value) {
+                    continue;
+                }
+                config[key] = value;
+            }
+
+            try {
+                const resp = await fetch('/api/setup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    throw new Error(data.error || 'Unable to save configuration');
+                }
+                feedback.style.display = 'block';
+                feedback.style.color = '#0f5132';
+                feedback.textContent = 'Configuration saved successfully. Redirecting...';
+                setTimeout(() => window.location.href = '/', 1100);
+            } catch (err) {
+                feedback.style.display = 'block';
+                feedback.style.color = '#c0392b';
+                feedback.textContent = err.message;
+            } finally {
+                saveButton.disabled = false;
+            }
+        });
+
+        document.getElementById('MEDIASERVER_TYPE').addEventListener('change', updateServerFields);
+        document.getElementById('AUTH_ENABLED').addEventListener('change', updateAuthVisibility);
+        loadSetupData();
+    </script>
+</body>
+</html>

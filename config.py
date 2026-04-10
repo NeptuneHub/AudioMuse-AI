@@ -485,3 +485,28 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "")
 # Enable or disable authentication independently of whether credentials are set.
 # Default is True to preserve the current secure behavior.
 AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
+
+try:
+    from setup_manager import SetupManager
+    _setup_manager = SetupManager()
+    _setup_manager.ensure_table()
+    _overrides = _setup_manager.get_raw_overrides()
+    for _key, _value in _overrides.items():
+        if _key in globals():
+            globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
+        else:
+            globals()[_key] = _value
+
+    def refresh_config():
+        """Reload database-backed overrides into the config module."""
+        _overrides = _setup_manager.get_raw_overrides()
+        for _key, _value in _overrides.items():
+            if _key in globals():
+                globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
+            else:
+                globals()[_key] = _value
+except Exception as _exc:
+    import logging
+    logging.getLogger(__name__).warning(f"Could not load config overrides from DB: {_exc}")
+    def refresh_config():
+        pass

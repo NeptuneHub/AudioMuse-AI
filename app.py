@@ -13,6 +13,7 @@ import jwt as pyjwt
 # RQ imports
 from rq.job import Job, JobStatus
 from rq.exceptions import NoSuchJobError
+from setup_manager import SetupManager
 
 # Redis client
 from redis import Redis
@@ -42,6 +43,7 @@ if ENABLE_PROXY_FIX:
 
 # --- Flask App Setup ---
 app = Flask(__name__)
+setup_manager = SetupManager()
 
 # Import helper functions
 from app_helper import (
@@ -163,6 +165,17 @@ def check_auth():
     else:
         return redirect(url_for('login_page'))
 
+@app.before_request
+def require_setup_completion():
+    if not AUTH_ENABLED:
+        return
+    if request.path in ('/login', '/auth', '/logout', '/setup') or request.path.startswith('/static/') or request.path.startswith('/api/setup'):
+        return
+    if not setup_manager.is_setup_saved():
+        if request.path.startswith('/api/'):
+            return jsonify({"error": "Setup required"}), 403
+        return redirect(url_for('setup_page'))
+
 # --- Swagger Setup ---
 app.config['SWAGGER'] = {
     'title': 'AudioMuse-AI API',
@@ -180,6 +193,7 @@ def teardown_db(e=None):
 with app.app_context():
     init_db()
 
+import app_setup
 
 # --- API Endpoints ---
 
