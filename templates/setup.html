@@ -149,6 +149,10 @@
                             <input id="AUDIOMUSE_PASSWORD" name="AUDIOMUSE_PASSWORD" type="password" placeholder="secret123">
                         </div>
                     </div>
+                    <div class="field-row">
+                        <label for="AUDIOMUSE_PASSWORD_CONFIRM">Confirm password</label>
+                        <input id="AUDIOMUSE_PASSWORD_CONFIRM" type="password" placeholder="secret123">
+                    </div>
                     <div id="api-token-row" class="field-row">
                         <label for="API_TOKEN">API token</label>
                         <input id="API_TOKEN" name="API_TOKEN" type="password" placeholder="api-token">
@@ -216,7 +220,8 @@
         const apiTokenRow = document.getElementById('api-token-row');
         const authCredentialInputs = [
             document.getElementById('AUDIOMUSE_USER'),
-            document.getElementById('AUDIOMUSE_PASSWORD')
+            document.getElementById('AUDIOMUSE_PASSWORD'),
+            document.getElementById('AUDIOMUSE_PASSWORD_CONFIRM')
         ];
         const setupForm = document.getElementById('setup-form');
 
@@ -230,8 +235,12 @@
                 }
             });
             const apiTokenInput = document.getElementById('API_TOKEN');
+            const passwordConfirmInput = document.getElementById('AUDIOMUSE_PASSWORD_CONFIRM');
             if (apiTokenInput) {
                 apiTokenInput.disabled = !enabled;
+            }
+            if (passwordConfirmInput) {
+                passwordConfirmInput.disabled = !enabled;
             }
         }
 
@@ -248,13 +257,17 @@
             input.name = field.name;
             input.type = field.inputType || 'text';
             input.placeholder = field.placeholder || '';
-            input.value = value || '';
-            input.dataset.originalValue = input.value;
+            const hasSecretValue = Boolean(field.secret && field.has_value);
+            if (field.secret && hasSecretValue) {
+                input.placeholder = '****';
+            }
+            input.value = hasSecretValue ? '' : (value || '');
+            input.dataset.originalValue = hasSecretValue ? '' : input.value;
             if (field.type === 'boolean') {
                 input.type = 'text';
                 input.placeholder = 'true or false';
             }
-            if (field.name === 'API_TOKEN' || field.name === 'AUDIOMUSE_PASSWORD') {
+            if (field.secret) {
                 input.type = 'password';
             }
             row.appendChild(label);
@@ -267,12 +280,17 @@
             return row;
         }
 
-        function renderServerFields(serverType, values) {
+        function renderServerFields(serverType, values, hasValueMap = {}) {
             serverConfigFields.innerHTML = '';
             const fields = serverFields[serverType] || [];
             fields.forEach((field) => {
                 const value = values[field.name] || '';
-                serverConfigFields.appendChild(createInputField(field, value));
+                const fieldCopy = {
+                    ...field,
+                    secret: ['NAVIDROME_PASSWORD', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JELLYFIN_TOKEN', 'EMBY_TOKEN'].includes(field.name) || field.name.endsWith('_API_KEY'),
+                    has_value: Boolean(hasValueMap[field.name])
+                };
+                serverConfigFields.appendChild(createInputField(fieldCopy, value));
             });
         }
 
@@ -285,6 +303,8 @@
                     placeholder: field.default || '',
                     type: field.type === 'bool' ? 'boolean' : field.type,
                     inputType: field.type === 'boolean' ? 'text' : 'text',
+                    secret: field.secret || field.name.endsWith('_API_KEY'),
+                    has_value: Boolean(field.has_value)
                 };
                 advancedFields.appendChild(createInputField(fieldConfig, field.value));
             });
@@ -298,15 +318,37 @@
                 }
                 const data = await resp.json();
                 const basicData = {};
-                data.basic_fields.forEach(f => basicData[f.name] = f.value);
+                const secretHasValue = {};
+                data.basic_fields.forEach(f => {
+                    basicData[f.name] = f.value;
+                    if (f.secret) {
+                        secretHasValue[f.name] = f.has_value;
+                    }
+                });
                 const advancedData = data.advanced_fields;
 
                 document.getElementById('MEDIASERVER_TYPE').value = basicData.MEDIASERVER_TYPE || 'jellyfin';
                 document.getElementById('AUTH_ENABLED').value = String(basicData.AUTH_ENABLED || 'true').toLowerCase();
                 document.getElementById('AUDIOMUSE_USER').value = basicData.AUDIOMUSE_USER || '';
-                document.getElementById('AUDIOMUSE_PASSWORD').value = basicData.AUDIOMUSE_PASSWORD || '';
-                document.getElementById('API_TOKEN').value = basicData.API_TOKEN || '';
-                renderServerFields(document.getElementById('MEDIASERVER_TYPE').value, basicData);
+                const passwordInput = document.getElementById('AUDIOMUSE_PASSWORD');
+                const tokenInput = document.getElementById('API_TOKEN');
+                if (secretHasValue.AUDIOMUSE_PASSWORD) {
+                    passwordInput.value = '';
+                    passwordInput.placeholder = '****';
+                    passwordInput.dataset.originalValue = '';
+                } else {
+                    passwordInput.value = basicData.AUDIOMUSE_PASSWORD || '';
+                    passwordInput.dataset.originalValue = passwordInput.value;
+                }
+                if (secretHasValue.API_TOKEN) {
+                    tokenInput.value = '';
+                    tokenInput.placeholder = '****';
+                    tokenInput.dataset.originalValue = '';
+                } else {
+                    tokenInput.value = basicData.API_TOKEN || '';
+                    tokenInput.dataset.originalValue = tokenInput.value;
+                }
+                renderServerFields(document.getElementById('MEDIASERVER_TYPE').value, basicData, secretHasValue);
                 renderAdvancedFields(advancedData);
                 updateAuthVisibility();
             } catch (err) {
@@ -332,6 +374,19 @@
             event.preventDefault();
             saveButton.disabled = true;
             feedback.style.display = 'none';
+            const passwordInput = document.getElementById('AUDIOMUSE_PASSWORD');
+            const confirmInput = document.getElementById('AUDIOMUSE_PASSWORD_CONFIRM');
+            const passwordValue = passwordInput ? passwordInput.value : '';
+            const confirmValue = confirmInput ? confirmInput.value : '';
+            if (passwordValue || confirmValue) {
+                if (passwordValue !== confirmValue) {
+                    feedback.style.display = 'block';
+                    feedback.style.color = '#c0392b';
+                    feedback.textContent = 'Password and confirmation do not match.';
+                    saveButton.disabled = false;
+                    return;
+                }
+            }
             const formData = new FormData(setupForm);
             const config = {};
             for (const [key, value] of formData.entries()) {
@@ -354,7 +409,8 @@
                 });
                 const data = await resp.json();
                 if (!resp.ok) {
-                    throw new Error(data.error || 'Unable to save configuration');
+                    console.error('Setup save failed:', data.error);
+                    throw new Error('Unable to save configuration. Please try again or check server logs.');
                 }
                 feedback.style.display = 'block';
                 feedback.style.color = '#0f5132';

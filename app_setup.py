@@ -1,8 +1,8 @@
 import json
 import re
-from flask import request, jsonify, render_template
+from flask import request, jsonify, render_template, make_response
 import config
-from app import app, setup_manager
+from app import app, setup_manager, is_bootstrap_mode, refresh_auth_state
 
 BASIC_SERVER_FIELDS = [
     "MEDIASERVER_TYPE",
@@ -19,6 +19,7 @@ BASIC_SERVER_FIELDS = [
 ]
 
 AUTH_FIELDS = ["AUTH_ENABLED", "AUDIOMUSE_USER", "AUDIOMUSE_PASSWORD", "API_TOKEN"]
+SECRET_FIELDS = {"AUDIOMUSE_PASSWORD", "API_TOKEN", "JELLYFIN_TOKEN", "EMBY_TOKEN", "NAVIDROME_PASSWORD"}
 BASIC_FIELDS = set(BASIC_SERVER_FIELDS + AUTH_FIELDS)
 CONNECTION_FIELDS = {
     'DATABASE_URL',
@@ -54,8 +55,26 @@ def setup_page():
 def setup_api():
     if request.method == 'GET':
         all_fields = setup_manager.get_all_fields(config)
-        basic_fields = [f for f in all_fields if f['name'] in BASIC_FIELDS]
-        advanced_fields = [f for f in all_fields if f['name'] not in BASIC_FIELDS and should_show_advanced(f['name'])]
+        basic_fields = []
+        advanced_fields = []
+        for f in all_fields:
+            if f['name'] in SECRET_FIELDS or f['name'].endswith('_API_KEY'):
+                f['secret'] = True
+                f['has_value'] = bool(f.get('value'))
+                f['value'] = ''
+            else:
+                f['secret'] = False
+                f['has_value'] = bool(f.get('overridden', False))
+
+            if f['name'] in CONNECTION_FIELDS and not f.get('overridden', False):
+                f['value'] = ''
+                f['has_value'] = False
+
+            if f['name'] in BASIC_FIELDS:
+                basic_fields.append(f)
+            elif should_show_advanced(f['name']):
+                advanced_fields.append(f)
+
         return jsonify({
             'basic_fields': basic_fields,
             'advanced_fields': advanced_fields,
@@ -77,16 +96,20 @@ def setup_api():
         return jsonify({'error': 'No valid configuration values were provided'}), 400
 
     try:
-        was_bootstrap = app.is_bootstrap_mode()
+        was_bootstrap = is_bootstrap_mode()
         setup_manager.save_config_values(filtered_values)
         config.refresh_config()
-        app.refresh_auth_state()
-        require_login = was_bootstrap and not app.is_bootstrap_mode()
+        refresh_auth_state()
+        require_login = was_bootstrap and not is_bootstrap_mode()
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 500
+        app.logger.error('Setup save failed: %s', exc, exc_info=True)
+        return jsonify({'error': 'Unable to save configuration. Check the server log for details.'}), 500
 
-    return jsonify({
+    response = make_response(jsonify({
         'status': 'ok',
         'saved_keys': list(filtered_values.keys()),
-        'require_login': require_login,
-    })
+        'require_login': config.AUTH_ENABLED,
+    }), 200)
+    if config.AUTH_ENABLED:
+        response.delete_cookie('audiomuse_jwt', samesite='Strict')
+    return response
