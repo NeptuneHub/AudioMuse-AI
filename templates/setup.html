@@ -148,10 +148,14 @@
                             <label for="AUDIOMUSE_PASSWORD">Password</label>
                             <input id="AUDIOMUSE_PASSWORD" name="AUDIOMUSE_PASSWORD" type="password" placeholder="secret123">
                         </div>
-                    </div>
-                    <div class="field-row">
-                        <label for="AUDIOMUSE_PASSWORD_CONFIRM">Confirm password</label>
-                        <input id="AUDIOMUSE_PASSWORD_CONFIRM" type="password" placeholder="secret123">
+                        <div>
+                            <label for="AUDIOMUSE_PASSWORD_CONFIRM">Confirm password</label>
+                            <input id="AUDIOMUSE_PASSWORD_CONFIRM" type="password" placeholder="secret123">
+                        </div>
+                        <div>
+                            <label for="JWT_SECRET">JWT Secret</label>
+                            <input id="JWT_SECRET" name="JWT_SECRET" type="password" placeholder="********">
+                        </div>
                     </div>
                     <div id="api-token-row" class="field-row">
                         <label for="API_TOKEN">API token</label>
@@ -173,6 +177,40 @@
     </div>
 
     <script>
+        const hiddenAdvancedFields = new Set([
+            'TEMP_DIR',
+            'CLAP_AUDIO_FMAX',
+            'CLAP_AUDIO_FMIN',
+            'CLAP_AUDIO_HOP_LENGTH',
+            'CLAP_AUDIO_MEL_TRANSPOSE',
+            'CLAP_AUDIO_N_FFT',
+            'CLAP_AUDIO_N_MELS',
+            'CLAP_CATEGORY_WEIGHTS',
+            'CLAP_CATEGORY_WEIGHTS_DEFAULT',
+            'CLAP_EMBEDDING_DIMENSION',
+            'CLAP_OTHER_FEATURES_REDIS_KEY',
+            'INDEX_NAME',
+            'MINIBATCH_KMEANS_PROCESSING_BATCH_SIZE',
+            'MOOD_CENTROIDS_FILE',
+            'MPD_HOST',
+            'MPD_MUSIC_DIRECTORY',
+            'MPD_PASSWORD',
+            'MPD_PORT',
+            'MULAN_CATEGORY_WEIGHTS',
+            'MULAN_CATEGORY_WEIGHTS_DEFAULT',
+            'MULAN_EMBEDDING_DIMENSION',
+            'MULAN_ENABLED',
+            'MULAN_MODEL_DIR',
+            'MULAN_TEXT_SEARCH_WARMUP_DURATION',
+            'MULAN_TOP_QUERIES_COUNT',
+            'OTHER_FEATURE_LABELS',
+            'STRATIFIED_GENRES',
+            'TEMP_DIR',
+            'TEMPO_MAX_BPM',
+            'TEMPO_MIN_BPM',
+            'USE_MINIBATCH_KMEANS',
+            'JWT_SECRET'
+        ]);
         const basicFields = new Set([
             'MEDIASERVER_TYPE',
             'JELLYFIN_URL',
@@ -188,7 +226,8 @@
             'AUTH_ENABLED',
             'AUDIOMUSE_USER',
             'AUDIOMUSE_PASSWORD',
-            'API_TOKEN'
+            'API_TOKEN',
+            'JWT_SECRET'
         ]);
 
         const serverFields = {
@@ -221,7 +260,8 @@
         const authCredentialInputs = [
             document.getElementById('AUDIOMUSE_USER'),
             document.getElementById('AUDIOMUSE_PASSWORD'),
-            document.getElementById('AUDIOMUSE_PASSWORD_CONFIRM')
+            document.getElementById('AUDIOMUSE_PASSWORD_CONFIRM'),
+            document.getElementById('JWT_SECRET')
         ];
         const setupForm = document.getElementById('setup-form');
 
@@ -236,11 +276,15 @@
             });
             const apiTokenInput = document.getElementById('API_TOKEN');
             const passwordConfirmInput = document.getElementById('AUDIOMUSE_PASSWORD_CONFIRM');
+            const jwtInput = document.getElementById('JWT_SECRET');
             if (apiTokenInput) {
                 apiTokenInput.disabled = !enabled;
             }
             if (passwordConfirmInput) {
                 passwordConfirmInput.disabled = !enabled;
+            }
+            if (jwtInput) {
+                jwtInput.disabled = !enabled;
             }
         }
 
@@ -259,10 +303,12 @@
             input.placeholder = field.placeholder || '';
             const hasSecretValue = Boolean(field.secret && field.has_value);
             if (field.secret && hasSecretValue) {
-                input.placeholder = '****';
+                input.value = '********';
+                input.dataset.originalValue = '********';
+            } else {
+                input.value = value || '';
+                input.dataset.originalValue = input.value;
             }
-            input.value = hasSecretValue ? '' : (value || '');
-            input.dataset.originalValue = hasSecretValue ? '' : input.value;
             if (field.type === 'boolean') {
                 input.type = 'text';
                 input.placeholder = 'true or false';
@@ -333,23 +379,35 @@
                 const passwordInput = document.getElementById('AUDIOMUSE_PASSWORD');
                 const tokenInput = document.getElementById('API_TOKEN');
                 if (secretHasValue.AUDIOMUSE_PASSWORD) {
-                    passwordInput.value = '';
-                    passwordInput.placeholder = '****';
-                    passwordInput.dataset.originalValue = '';
+                    passwordInput.value = '********';
+                    passwordInput.placeholder = '********';
+                    passwordInput.dataset.originalValue = '********';
                 } else {
                     passwordInput.value = basicData.AUDIOMUSE_PASSWORD || '';
                     passwordInput.dataset.originalValue = passwordInput.value;
                 }
                 if (secretHasValue.API_TOKEN) {
-                    tokenInput.value = '';
-                    tokenInput.placeholder = '****';
-                    tokenInput.dataset.originalValue = '';
+                    tokenInput.value = '********';
+                    tokenInput.placeholder = '********';
+                    tokenInput.dataset.originalValue = '********';
                 } else {
                     tokenInput.value = basicData.API_TOKEN || '';
                     tokenInput.dataset.originalValue = tokenInput.value;
                 }
+                const jwtInput = document.getElementById('JWT_SECRET');
+                if (jwtInput) {
+                    if (secretHasValue.JWT_SECRET) {
+                        jwtInput.value = '********';
+                        jwtInput.placeholder = '********';
+                        jwtInput.dataset.originalValue = '********';
+                    } else {
+                        jwtInput.value = basicData.JWT_SECRET || '';
+                        jwtInput.dataset.originalValue = jwtInput.value;
+                    }
+                }
+                const visibleAdvancedData = advancedData.filter(f => !hiddenAdvancedFields.has(f.name));
                 renderServerFields(document.getElementById('MEDIASERVER_TYPE').value, basicData, secretHasValue);
-                renderAdvancedFields(advancedData);
+                renderAdvancedFields(visibleAdvancedData);
                 updateAuthVisibility();
             } catch (err) {
                 feedback.style.display = 'block';
@@ -378,7 +436,8 @@
             const confirmInput = document.getElementById('AUDIOMUSE_PASSWORD_CONFIRM');
             const passwordValue = passwordInput ? passwordInput.value : '';
             const confirmValue = confirmInput ? confirmInput.value : '';
-            if (passwordValue || confirmValue) {
+            const passwordUnchanged = passwordValue === '********' && !confirmValue;
+            if (!passwordUnchanged && (passwordValue || confirmValue)) {
                 if (passwordValue !== confirmValue) {
                     feedback.style.display = 'block';
                     feedback.style.color = '#c0392b';
