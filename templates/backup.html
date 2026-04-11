@@ -20,10 +20,20 @@
     .restore-confirm-area {
         margin-top: 1rem;
         padding: 1rem;
-        background-color: var(--status-error-bg, #fef2f2);
+        background-color: #fef2f2;
         border: 1px solid var(--color-danger, #ef4444);
         border-radius: 8px;
         display: none;
+        color: #7f1d1d;
+    }
+    body.dark-mode .restore-confirm-area,
+    html.dark-mode .restore-confirm-area {
+        background-color: rgba(239, 68, 68, 0.12);
+        color: var(--text-main);
+    }
+    body.dark-mode .restore-confirm-area p,
+    html.dark-mode .restore-confirm-area p {
+        color: var(--text-main) !important;
     }
     .restore-confirm-area.visible {
         display: block;
