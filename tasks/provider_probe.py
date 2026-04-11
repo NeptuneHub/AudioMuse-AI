@@ -103,17 +103,52 @@ def _jellyfin_track(item):
     }
 
 
-def _jellyfin_fetch_all(creds):
+def _jellyfin_fetch_page(creds, start_index=0, limit=None):
+    """Single page of /Users/{uid}/Items with StartIndex/Limit.
+
+    Returns (items, total_record_count). ``limit=None`` lets Jellyfin
+    return whatever it considers a page (effectively "everything from
+    StartIndex") which is fine when we're walking page-by-page.
+    """
     url = f"{creds['url'].rstrip('/')}/Users/{creds['user_id']}/Items"
     params = {
         'IncludeItemTypes': 'Audio',
         'Recursive': 'true',
         'Fields': 'Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album',
+        'StartIndex': start_index,
     }
+    if limit is not None:
+        params['Limit'] = limit
     r = requests.get(url, headers=_jellyfin_headers(creds), params=params, timeout=REQUESTS_TIMEOUT)
     r.raise_for_status()
-    items = r.json().get('Items', []) or []
-    return [_jellyfin_track(i) for i in items]
+    body = r.json() or {}
+    items = body.get('Items') or []
+    total = body.get('TotalRecordCount')
+    return items, total
+
+
+def _jellyfin_fetch_all(creds):
+    """Walk every audio item with StartIndex/Limit pagination.
+
+    Large Jellyfin libraries time out if we ask for everything in one
+    request (no Limit), so we page at 500/call. Stops when a page
+    returns fewer items than the page size or when cumulative reaches
+    TotalRecordCount.
+    """
+    all_tracks = []
+    start = 0
+    page_size = 500
+    while True:
+        items, total = _jellyfin_fetch_page(creds, start_index=start, limit=page_size)
+        if not items:
+            break
+        all_tracks.extend(_jellyfin_track(i) for i in items)
+        if len(items) < page_size:
+            break
+        start += len(items)
+        if total is not None and start >= total:
+            break
+    return all_tracks
 
 
 def _jellyfin_search_albums(creds, query):
@@ -154,13 +189,16 @@ def _jellyfin_get_album_tracks(creds, album_id):
 
 
 def _jellyfin_test_connection(creds):
+    # Sample a single small page instead of the full library — big
+    # libraries took >60s to serve the Recursive=true, no-Limit call
+    # and the wizard saw Read timed out.
     try:
-        tracks = _jellyfin_fetch_all(creds)
+        items, _total = _jellyfin_fetch_page(creds, start_index=0, limit=_SAMPLE_LIMIT)
     except Exception as e:
         logger.warning("Jellyfin/Emby probe failed: %s", e)
         return {'ok': False, 'error': str(e), 'sample_count': 0,
                 'path_format': 'none', 'warnings': []}
-    sample = tracks[:_SAMPLE_LIMIT]
+    sample = [_jellyfin_track(i) for i in items]
     return {
         'ok':           True,
         'error':        None,
