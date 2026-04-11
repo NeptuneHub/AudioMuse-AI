@@ -88,6 +88,18 @@
         margin-top: 0.75rem;
         font-size: 0.92rem;
     }
+    .mig-info-box {
+        background-color: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-left: 4px solid var(--color-primary, #3b82f6);
+        border-radius: 6px;
+        padding: 0.9rem 1.1rem;
+        margin: 0.5rem 0 1.25rem;
+        font-size: 0.92rem;
+        color: var(--text-main);
+        line-height: 1.45;
+    }
+    .mig-info-box em { font-style: italic; }
     .mig-warning a { color: #1d4ed8; }
     .mig-error {
         background-color: #fef2f2;
@@ -230,9 +242,28 @@
         <div class="page-header">
             <h1>Provider Migration</h1>
             <p class="subtitle">
-                Switch to a different media server (Jellyfin, Navidrome, Emby&hellip;) without losing
-                any analysis data, embeddings, or local playlists.
+                Rewrite every track&rsquo;s internal ID from your <strong>old media provider</strong> to
+                the matching ID on a <strong>new one</strong> (Jellyfin, Navidrome, Emby, Lyrion&hellip;)
+                so your analysis data, embeddings, and local playlists keep pointing at the right songs.
             </p>
+            <div class="mig-info-box">
+                <p style="margin:0 0 0.5rem;">
+                    <strong>When to use this:</strong> you&rsquo;ve switched the media server in front of
+                    the <em>same music library</em> and need AudioMuse-AI to follow along. For example,
+                    you replaced Navidrome with Emby but both point at the same files on disk.
+                </p>
+                <p style="margin:0 0 0.5rem;">
+                    <strong>Best results:</strong> both providers expose the library from the
+                    <em>same mount path</em>. The matcher&rsquo;s most reliable tier is full file-path
+                    matching; metadata fallbacks work but are looser and can&rsquo;t always disambiguate
+                    multi-disc albums or tracks with identical titles.
+                </p>
+                <p style="margin:0;">
+                    <strong>Not designed for:</strong> merging two different libraries, or migrating
+                    between providers that expose <em>different</em> sets of files. Tracks that don&rsquo;t
+                    exist on the new provider will be deleted as orphans.
+                </p>
+            </div>
         </div>
 
         <!-- ======================== STEP 1: BACKUP ======================== -->
