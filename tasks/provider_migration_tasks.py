@@ -306,17 +306,63 @@ def _load_session(cur, session_id):
     }
 
 
-def _merge_mapping(state):
-    """Merge the dry_run matches with any manual overrides.
+def build_mapping(state):
+    """Build the final ``old_id -> new_id`` mapping plus a list of dropped
+    collisions. Shared by ``_merge_mapping`` (execute) and
+    ``finalize_dry_run`` (so the wizard can surface collision counts).
 
-    Manual matches win when both exist for the same old_id.
+    Precedence:
+      1. ``manual_unmatches`` drops auto matches for those old_ids (user
+         explicitly orphaned them in the step-4 rematch flow).
+      2. ``manual_matches`` wins over surviving dry_run matches for the same
+         old_id.
+      3. Collisions on ``new_id`` are resolved first-write-wins. The temp
+         ``item_id_migration_map`` table has ``UNIQUE(new_id)``, so any
+         duplicate would fail the whole transaction with an opaque constraint
+         violation after the user already typed the confirmation phrase.
+         Collisions can happen when the user re-targets an album and the
+         matcher picks the same new track for two different old rows.
+
+    Returns ``(deduped, dropped)`` where ``deduped`` is the final mapping
+    dict and ``dropped`` is a list of ``(old_id, new_id, winner_old_id)``
+    tuples — one per row that was orphaned to resolve a collision.
     """
-    merged = {}
     dry = (state.get('dry_run') or {}).get('matches') or {}
     manual = state.get('manual_matches') or {}
-    merged.update(dry)
+    manual_unmatches = set(state.get('manual_unmatches') or [])
+
+    merged = {}
+    for old_id, new_id in dry.items():
+        if old_id in manual_unmatches:
+            continue
+        merged[old_id] = new_id
     merged.update(manual)
-    return merged
+
+    seen_new = {}
+    deduped = {}
+    dropped = []
+    for old_id, new_id in merged.items():
+        key = str(new_id)
+        if key in seen_new:
+            dropped.append((old_id, new_id, seen_new[key]))
+            continue
+        seen_new[key] = old_id
+        deduped[old_id] = new_id
+    return deduped, dropped
+
+
+def _merge_mapping(state):
+    """Execute-path wrapper around :func:`build_mapping` that logs dropped
+    collisions and returns only the mapping dict (tests assert this shape)."""
+    deduped, dropped = build_mapping(state)
+    if dropped:
+        logger.warning(
+            "provider migration: dropped %d mapping(s) that collided on "
+            "new_id (multiple source rows pointed at the same target id); "
+            "those rows will be orphaned on execute. First 10: %s",
+            len(dropped), dropped[:10],
+        )
+    return deduped
 
 
 def _run_migration_transaction(cur, mapping, new_meta,

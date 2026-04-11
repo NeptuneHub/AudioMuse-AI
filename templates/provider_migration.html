@@ -268,19 +268,35 @@
                 </select>
             </div>
 
-            <!-- Jellyfin / Emby creds -->
-            <div class="mig-cred-field" data-for="jellyfin emby">
+            <!-- Jellyfin creds -->
+            <div class="mig-cred-field" data-for="jellyfin">
                 <div class="mig-row">
                     <label>Server URL:</label>
                     <input type="text" data-cred="url" placeholder="http://jellyfin.local:8096">
                 </div>
                 <div class="mig-row">
                     <label>User ID:</label>
-                    <input type="text" data-cred="user_id" placeholder="abc123...">
+                    <input type="text" data-cred="user_id" placeholder="0721e115a43d4898ae06676d86b9e4f2">
                 </div>
                 <div class="mig-row">
                     <label>API Token:</label>
-                    <input type="password" data-cred="token">
+                    <input type="password" data-cred="token" placeholder="35a447f357ff47939a953101bc3ace35">
+                </div>
+            </div>
+
+            <!-- Emby creds -->
+            <div class="mig-cred-field" data-for="emby">
+                <div class="mig-row">
+                    <label>Server URL:</label>
+                    <input type="text" data-cred="url" placeholder="http://emby.local:8096">
+                </div>
+                <div class="mig-row">
+                    <label>User ID:</label>
+                    <input type="text" data-cred="user_id" placeholder="0721e115a43d4898ae06676d86b9e4f2">
+                </div>
+                <div class="mig-row">
+                    <label>API Token:</label>
+                    <input type="password" data-cred="token" placeholder="35a447f357ff47939a953101bc3ace35">
                 </div>
             </div>
 
@@ -873,10 +889,61 @@
                 body: JSON.stringify({ session_id: sessionId })
             });
             finalCounts = result;
+            const collisions = result.collisions || 0;
             let html = '<div class="mig-tier-grid">';
             html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + result.matched + '</span>tracks to be rewritten</div>';
-            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + result.orphans + '</span>tracks to be deleted as orphans</div>';
+            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + result.orphans + '</span>tracks to be deleted (no match on new provider)</div>';
+            if (collisions > 0) {
+                html += '<div class="mig-tier-cell" style="background:#fff4e5; border:1px solid #e09f3e; color:#3a2a10;">';
+                html += '<span class="mig-tier-num" style="color:#a04000;">' + collisions + '</span>';
+                html += 'tracks to be deleted (duplicate target)</div>';
+            }
             html += '</div>';
+            if (collisions > 0) {
+                html += '<div style="margin-top:0.75rem; padding:0.75rem 1rem; background:#fff4e5; border-left:4px solid #e09f3e; border-radius:4px; color:#3a2a10;">';
+                html += '<strong style="color:#a04000;">Heads up:</strong> ' + collisions + ' source track' + (collisions === 1 ? '' : 's') + ' ';
+                html += 'would have been rewritten to the same target as another track. ';
+                html += 'The database only allows one-to-one mappings, so these will be <strong>deleted</strong> on execute. ';
+                html += 'To fix: go back to <strong>Step 4</strong>, open <em>&ldquo;Show auto-matched albums&rdquo;</em>, ';
+                html += 'find each album listed below, and re-target it so each source row maps to a unique target. ';
+                html += 'Then click Finalize again.';
+                html += '</div>';
+
+                const details = result.collision_details || [];
+                if (details.length) {
+                    html += '<div style="margin-top:0.5rem; padding:0.75rem 1rem; background:#fff4e5; border-left:4px solid #e09f3e; border-radius:4px; color:#3a2a10;">';
+                    html += '<strong style="color:#a04000;">Duplicates:</strong>';
+                    html += '<div style="margin:0.25rem 0 0.5rem; font-size:0.85em;">';
+                    html += 'Each row shows two source tracks that match the same target on the new provider. ';
+                    html += 'The file path is the best way to tell them apart (e.g. multi-disc albums often have ';
+                    html += '<code>01-XX</code> vs <code>02-XX</code> prefixes).';
+                    html += '</div>';
+                    html += '<table style="width:100%; margin-top:0.5rem; border-collapse:collapse; font-size:0.85em; background:#fff4e5; color:#3a2a10;">';
+                    html += '<thead><tr style="background:#fbe8c9; color:#3a2a10; border-bottom:1px solid #e09f3e;">';
+                    html += '<th style="text-align:left; padding:0.35rem 0.5rem;">Will be deleted</th>';
+                    html += '<th style="text-align:left; padding:0.35rem 0.5rem;">Keeps the target</th>';
+                    html += '<th style="text-align:left; padding:0.35rem 0.5rem;">Target on new provider</th>';
+                    html += '</tr></thead><tbody>';
+                    const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    const cell = (t, a, al, p) => {
+                        let out = '<div><strong>' + esc(t || '(untitled)') + '</strong></div>';
+                        out += '<div style="opacity:0.85; font-size:0.9em;">' + esc(a) + ' &mdash; ' + esc(al) + '</div>';
+                        if (p) {
+                            out += '<div style="opacity:0.7; font-size:0.85em; font-family:monospace; word-break:break-all; margin-top:0.15rem;">' + esc(p) + '</div>';
+                        }
+                        return out;
+                    };
+                    details.forEach((d, i) => {
+                        const rowBg = i % 2 ? '#fff4e5' : '#fdecd0';
+                        html += '<tr style="background:' + rowBg + '; color:#3a2a10; border-bottom:1px solid #f0d8a8;">';
+                        html += '<td style="padding:0.5rem; vertical-align:top;">' + cell(d.loser_title,  d.loser_artist,  d.loser_album,  d.loser_path)  + '</td>';
+                        html += '<td style="padding:0.5rem; vertical-align:top;">' + cell(d.winner_title, d.winner_artist, d.winner_album, d.winner_path) + '</td>';
+                        html += '<td style="padding:0.5rem; vertical-align:top;">' + cell(d.target_title, d.target_artist, d.target_album, d.target_path) + '</td>';
+                        html += '</tr>';
+                    });
+                    html += '</tbody></table></div>';
+                }
+            }
             $('mig-final-counts').innerHTML = html;
             $('mig-dl-report').href = "{{ url_for('migration_bp.dry_run_report', session_id=0) }}".replace('/0', '/' + sessionId);
             $('mig-dl-report').style.display = '';

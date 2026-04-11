@@ -272,6 +272,60 @@ class TestMatchTracks:
         assert len(result['unmatched']) == 1
         assert result['unmatched'][0]['item_id'] == 'old_by_meta'
 
+    def test_multidisc_disambiguates_by_disc_track(self, matcher):
+        # Real-world shape: Navidrome vs Emby with a 2-disc "Japanese Edition"
+        # album where disc 1 and disc 2 share the same track titles. Path and
+        # tail tiers fail because Emby's directory format differs and its
+        # filenames use "1-5 Title.flac" vs Navidrome's "01-05 - Title.flac".
+        # Exact-meta tier would collide without disc/track disambiguation.
+        old_rows = [
+            _old('nav_d1',
+                 file_path='Green Day/American Idiot (Japanese Edition)/01-05 - Are We The Waiting.flac',
+                 title='Are We The Waiting', author='Green Day',
+                 album='American Idiot (Japanese Edition)',
+                 album_artist='Green Day'),
+            _old('nav_d2',
+                 file_path='Green Day/American Idiot (Japanese Edition)/02-04 - Are We The Waiting.flac',
+                 title='Are We The Waiting', author='Green Day',
+                 album='American Idiot (Japanese Edition)',
+                 album_artist='Green Day'),
+        ]
+        new_tracks = [
+            _new('emby_d1',
+                 path='/media/music/American Idiot (Japanese Edition) (2004) {CD}/1-5 Are We The Waiting.flac',
+                 title='Are We The Waiting', artist='Green Day',
+                 album='American Idiot (Japanese Edition)',
+                 album_artist='Green Day'),
+            _new('emby_d2',
+                 path='/media/music/American Idiot (Japanese Edition) (2004) {CD}/2-4 Are We The Waiting.flac',
+                 title='Are We The Waiting', artist='Green Day',
+                 album='American Idiot (Japanese Edition)',
+                 album_artist='Green Day'),
+        ]
+        result = matcher.match_tracks(old_rows, new_tracks)
+        # Both sides should match, each to the correct disc
+        assert result['matches'] == {'nav_d1': 'emby_d1', 'nav_d2': 'emby_d2'}
+        assert len(result['unmatched']) == 0
+
+    def test_extract_disc_track_various_formats(self, matcher):
+        # Padded with dash
+        assert matcher.extract_disc_track('01-05 - Are We The Waiting.flac') == (1, 5)
+        # Unpadded with dash, no separator before title
+        assert matcher.extract_disc_track('1-5 Are We The Waiting.flac') == (1, 5)
+        # Dot separator
+        assert matcher.extract_disc_track('2.4 Song.mp3') == (2, 4)
+        # Space separator
+        assert matcher.extract_disc_track('2 4 Song.mp3') == (2, 4)
+        # Full path (directory stripped first)
+        assert matcher.extract_disc_track('/music/Album/02-07 Song.flac') == (2, 7)
+        # Single disc-less track (no match)
+        assert matcher.extract_disc_track('Song.flac') is None
+        # Single leading number is NOT disc/track
+        assert matcher.extract_disc_track('07 Song.flac') is None
+        # Empty / None
+        assert matcher.extract_disc_track('') is None
+        assert matcher.extract_disc_track(None) is None
+
     def test_unmatched_grouped_by_album(self, matcher):
         old_rows = [
             _old('o1', album='Abbey Road', album_artist='Beatles', title='T1'),

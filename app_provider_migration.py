@@ -77,6 +77,30 @@ _SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'mpd'
 # Runtime config override — called at app/worker startup from app.py
 # ---------------------------------------------------------------------------
 
+def _read_active_provider_row():
+    """Open a dedicated psycopg2 connection and fetch the active provider row.
+
+    Isolated into its own helper so ``apply_provider_overrides_from_db``
+    can be called from contexts without ``flask.g`` (pub/sub listener
+    thread, worker startup). Returns the row tuple or ``None``. Tests
+    patch this helper to avoid needing a real DB.
+    """
+    import config
+    import psycopg2
+    db = psycopg2.connect(config.DATABASE_URL, connect_timeout=10)
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT value FROM app_settings WHERE key = 'migration.active_provider'"
+            )
+            return cur.fetchone()
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
 def apply_provider_overrides_from_db():
     """Read ``migration.active_provider`` from ``app_settings`` and mutate
     the ``config`` module's globals.
@@ -87,16 +111,15 @@ def apply_provider_overrides_from_db():
       * the DB isn't reachable (returns silently with a warning log).
 
     Called from ``app.py``, ``rq_worker.py``, and ``rq_worker_high_priority.py``
-    immediately after ``init_db()``.
+    immediately after ``init_db()``. Also called from the pub/sub listener
+    thread on ``provider-migrated`` — that thread has no Flask app context,
+    so this function must NOT rely on ``flask.g``. The actual DB read lives
+    in :func:`_read_active_provider_row`, which opens a dedicated psycopg2
+    connection.
     """
     try:
         import config
-        db = get_db()
-        with db.cursor() as cur:
-            cur.execute(
-                "SELECT value FROM app_settings WHERE key = 'migration.active_provider'"
-            )
-            row = cur.fetchone()
+        row = _read_active_provider_row()
         if not row:
             return
         raw = row[0]
@@ -436,7 +459,14 @@ def skip_album():
 
 @migration_bp.route('/api/migration/finalize-dry-run', methods=['POST'])
 def finalize_dry_run():
-    """Compute final counts and transition session.status to 'dry_run_ready'."""
+    """Compute final counts and transition session.status to 'dry_run_ready'.
+
+    Final counts expose the same one-to-one dedup logic as execute so the
+    user sees any collisions (multiple source rows fighting for the same
+    target track) before they type the confirmation phrase. Without this the
+    execute transaction would trip ``UNIQUE(new_id)`` on the temp rewrite
+    table and roll back with an opaque Postgres error.
+    """
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
 
@@ -445,23 +475,52 @@ def finalize_dry_run():
         return jsonify({'error': 'session not found'}), 404
 
     dry = state.get('dry_run') or {}
-    manual = state.get('manual_matches') or {}
-    manual_unmatches = set(state.get('manual_unmatches') or [])
+    new_meta = state.get('new_meta') or {}
 
-    merged = {}
-    for old_id, new_id in (dry.get('matches') or {}).items():
-        if old_id not in manual_unmatches:
-            merged[old_id] = new_id
-    merged.update(manual)
+    import importlib
+    mig_tasks = importlib.import_module('tasks.provider_migration_tasks')
+    merged, dropped = mig_tasks.build_mapping(state)
 
     total_score = _count_score_rows()
     matched = len(merged)
-    orphans = max(0, total_score - matched)
+    collisions = len(dropped)
+    # Rows with no match at all = total - (rows that were matched) - (rows
+    # dropped by collision dedup). Both collision losers and no-match rows
+    # get deleted on execute; showing them separately lets the user decide
+    # whether to go back to step 4 and fix the duplicates.
+    orphans = max(0, total_score - matched - collisions)
+
+    # Build human-readable collision details so the UI can tell the user
+    # exactly which albums to rematch. Only hit the DB for score rows if
+    # there's anything to report.
+    collision_details = []
+    if dropped:
+        old_by_id = {r['item_id']: r for r in _load_score_rows_as_dicts()}
+        for loser_old_id, new_id, winner_old_id in dropped:
+            loser = old_by_id.get(loser_old_id) or {}
+            winner = old_by_id.get(winner_old_id) or {}
+            tgt = new_meta.get(str(new_id)) or new_meta.get(new_id) or {}
+            collision_details.append({
+                'loser_title':   loser.get('title') or '',
+                'loser_artist':  loser.get('album_artist') or loser.get('author') or '',
+                'loser_album':   loser.get('album') or '',
+                'loser_path':    loser.get('file_path') or '',
+                'winner_title':  winner.get('title') or '',
+                'winner_artist': winner.get('album_artist') or winner.get('author') or '',
+                'winner_album':  winner.get('album') or '',
+                'winner_path':   winner.get('file_path') or '',
+                'target_title':  tgt.get('title') or '',
+                'target_artist': tgt.get('artist') or '',
+                'target_album':  tgt.get('album') or '',
+                'target_path':   tgt.get('path') or '',
+            })
 
     final_counts = {
-        'matched':          matched,
-        'orphans':          orphans,
-        'tier_counts':      dry.get('tier_counts') or {},
+        'matched':            matched,
+        'orphans':            orphans,
+        'collisions':         collisions,
+        'collision_details':  collision_details,
+        'tier_counts':        dry.get('tier_counts') or {},
     }
 
     db = get_db()

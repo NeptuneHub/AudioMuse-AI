@@ -96,6 +96,35 @@ def path_tail_key(path, n=3):
     return '/'.join(tail)
 
 
+# Regex for extracting disc/track number from a filename. Matches common
+# multi-disc naming conventions like "01-05 Title.flac", "1-5 Title.flac",
+# "02 04 Title.flac", "1.05 - Title.flac". Applied to the filename basename
+# only (directory parts are stripped first). Leading zero-padding is
+# removed via int() so "01-05" and "1-5" compare equal.
+_DISC_TRACK_RE = re.compile(r'^(\d+)[\s._-]+(\d+)(?=\D|$)')
+
+
+def extract_disc_track(path):
+    """Return ``(disc, track)`` as ``(int, int)`` parsed from the filename,
+    or ``None`` if the pattern doesn't match.
+
+    Used to disambiguate multi-disc albums where two tracks on different
+    discs share the same (title, artist, album). The matcher's metadata
+    tiers would otherwise collapse them into one target.
+    """
+    if not path:
+        return None
+    p = str(path).replace('\\', '/')
+    basename = p.rsplit('/', 1)[-1]
+    m = _DISC_TRACK_RE.match(basename)
+    if not m:
+        return None
+    try:
+        return (int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return None
+
+
 # Regex patterns for metadata noise stripping. Applied to lowercased input.
 # Each pattern matches a parenthesized or bracketed group containing the noise.
 _META_NOISE_WORDS = (
@@ -199,11 +228,14 @@ def match_tracks(old_rows, new_tracks):
     Collision handling: if two old rows would map to the same new_id, the one
     matched by the higher-priority tier wins. Losers become unmatched.
     """
-    # Build new-track indexes. First-write-wins per key.
+    # Build new-track indexes. Path/tail are first-write-wins (unique enough);
+    # metadata indexes store candidate LISTS because multi-disc albums can
+    # have several tracks sharing (title, artist, album), and we need to
+    # pick the right one by disc/track at match time.
     by_norm_path = {}
     by_tail = {}
-    by_exact_meta = {}
-    by_norm_meta = {}
+    by_exact_meta = {}  # key -> list of new tracks
+    by_norm_meta = {}   # key -> list of new tracks
     for n in new_tracks:
         np = normalize_path(n.get('path'))
         if np and np not in by_norm_path:
@@ -212,15 +244,31 @@ def match_tracks(old_rows, new_tracks):
         if tk and tk not in by_tail:
             by_tail[tk] = n['id']
         ek = _new_exact_meta_key(n)
-        if ek and ek not in by_exact_meta:
-            by_exact_meta[ek] = n['id']
+        if ek:
+            by_exact_meta.setdefault(ek, []).append(n)
         nk = _new_norm_meta_key(n)
-        if nk and nk not in by_norm_meta:
-            by_norm_meta[nk] = n['id']
+        if nk:
+            by_norm_meta.setdefault(nk, []).append(n)
 
     tier_counts = {t: 0 for t in _TIERS}
     # tier rank: lower number = higher priority
     tier_rank = {t: i for i, t in enumerate(_TIERS)}
+
+    def _pick_meta_candidate(old, candidates):
+        """Pick the best new track from a list of candidates that all share
+        the same (title, artist, album). Uses disc/track extracted from the
+        file path as a tiebreaker; falls back to the first candidate.
+        """
+        if len(candidates) == 1:
+            return candidates[0]
+        old_dt = extract_disc_track(old.get('file_path'))
+        if old_dt is not None:
+            for c in candidates:
+                if extract_disc_track(c.get('path')) == old_dt:
+                    return c
+        # No disc/track info or no candidate matched — fall back to first.
+        # This preserves legacy behavior for single-disc albums.
+        return candidates[0]
 
     # First pass: determine best tier match per old row.
     proposals = []  # list of (tier, old_row, new_id)
@@ -238,12 +286,14 @@ def match_tracks(old_rows, new_tracks):
             continue
         ek = _old_exact_meta_key(old)
         if ek and ek in by_exact_meta:
-            proposals.append(('exact_meta', old, by_exact_meta[ek]))
+            chosen = _pick_meta_candidate(old, by_exact_meta[ek])
+            proposals.append(('exact_meta', old, chosen['id']))
             matched = True
             continue
         nk = _old_norm_meta_key(old)
         if nk and nk in by_norm_meta:
-            proposals.append(('norm_meta', old, by_norm_meta[nk]))
+            chosen = _pick_meta_candidate(old, by_norm_meta[nk])
+            proposals.append(('norm_meta', old, chosen['id']))
             matched = True
             continue
         if not matched:
