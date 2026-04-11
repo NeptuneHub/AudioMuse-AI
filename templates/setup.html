@@ -59,6 +59,10 @@
         .field-grid.two-col {
             grid-template-columns: repeat(2, minmax(0, 1fr));
         }
+        .required-label::after {
+            content: ' *';
+            color: #c0392b;
+        }
         .summary {
             margin: 1.5rem 0 1rem;
             font-size: 0.95rem;
@@ -133,13 +137,13 @@
                 <section class="section">
                     <h2>Authentication</h2>
                     <div class="field-row">
-                        <label for="AUTH_ENABLED">Enable authentication</label>
-                        <select id="AUTH_ENABLED" name="AUTH_ENABLED">
+                        <label for="AUTH_ENABLED" class="required-label">Enable authentication</label>
+                        <select id="AUTH_ENABLED" name="AUTH_ENABLED" required>
                             <option value="true">True</option>
                             <option value="false">False</option>
                         </select>
                     </div>
-                    <div id="auth-credentials" class="field-grid two-col">
+                    <div id="auth-credentials" class="field-grid">
                         <div>
                             <label for="AUDIOMUSE_USER">Username</label>
                             <input id="AUDIOMUSE_USER" name="AUDIOMUSE_USER" type="text" placeholder="alice">
@@ -272,6 +276,9 @@
             authCredentialInputs.forEach((input) => {
                 if (input) {
                     input.disabled = !enabled;
+                    if (input.id !== 'JWT_SECRET') {
+                        input.required = enabled;
+                    }
                 }
             });
             const apiTokenInput = document.getElementById('API_TOKEN');
@@ -279,9 +286,11 @@
             const jwtInput = document.getElementById('JWT_SECRET');
             if (apiTokenInput) {
                 apiTokenInput.disabled = !enabled;
+                apiTokenInput.required = enabled;
             }
             if (passwordConfirmInput) {
                 passwordConfirmInput.disabled = !enabled;
+                passwordConfirmInput.required = enabled;
             }
             if (jwtInput) {
                 jwtInput.disabled = !enabled;
@@ -301,6 +310,10 @@
             input.name = field.name;
             input.type = field.inputType || 'text';
             input.placeholder = field.placeholder || '';
+            if (field.required) {
+                label.classList.add('required-label');
+                input.required = true;
+            }
             const hasSecretValue = Boolean(field.secret && field.has_value);
             if (field.secret && hasSecretValue) {
                 input.value = '********';
@@ -334,6 +347,7 @@
                 const fieldCopy = {
                     ...field,
                     secret: ['NAVIDROME_PASSWORD', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JELLYFIN_TOKEN', 'EMBY_TOKEN'].includes(field.name) || field.name.endsWith('_API_KEY'),
+                    required: true,
                     has_value: Boolean(hasValueMap[field.name])
                 };
                 serverConfigFields.appendChild(createInputField(fieldCopy, value));
