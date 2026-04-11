@@ -364,7 +364,10 @@ RUN set -eux; \
 
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app
+COPY deployment/docker-entrypoint.sh /app/docker-entrypoint.sh
 COPY deployment/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+RUN chmod +x /app/docker-entrypoint.sh
+RUN ls -l /etc/supervisor/conf.d && test -f /etc/supervisor/conf.d/supervisord.conf
 
 # ============================================================================
 # CPU CONSISTENCY SETTINGS
@@ -403,4 +406,5 @@ ENV PYTHONPATH=/usr/local/lib/python3/dist-packages:/app
 EXPOSE 8000
 
 WORKDIR /workspace
-CMD ["bash", "-c", "if [ -n \"$TZ\" ] && [ -f \"/usr/share/zoneinfo/$TZ\" ]; then ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone; elif [ -n \"$TZ\" ]; then echo \"Warning: timezone '$TZ' not found in /usr/share/zoneinfo\" >&2; fi; if [ \"$SERVICE_TYPE\" = \"worker\" ]; then echo 'Starting worker processes via supervisord...' && /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf; else echo 'Starting web service...' && gunicorn --bind 0.0.0.0:8000 --workers 1 --timeout 300 app:app; fi"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD []

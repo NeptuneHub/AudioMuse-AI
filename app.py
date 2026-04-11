@@ -160,7 +160,7 @@ def check_auth():
         return  # Auth disabled — zero impact on existing deployments
 
     # Always allow public routes
-    public = ('/login', '/auth', '/logout')
+    public = ('/login', '/auth', '/logout', '/api/health')
     if request.path in public or request.path.startswith('/static/'):
         return
 
@@ -227,6 +227,12 @@ def require_setup_completion():
     if request.path.startswith('/api/'):
         return jsonify({"error": "Setup required"}), 403
     return redirect(url_for('setup_page'))
+
+@app.route('/api/health')
+def health_check():
+    return jsonify({
+        'status': 'ok',
+    })
 
 # --- Swagger Setup ---
 app.config['SWAGGER'] = {

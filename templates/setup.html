@@ -492,6 +492,44 @@
         renderServerFields(serverType, currentValues);
     }
 
+    function waitForHealthAndRedirect(redirectUrl) {
+        var attempts = 0;
+        var maxAttempts = 40;
+        feedback.style.display = 'block';
+        feedback.style.color = '#0f5132';
+        feedback.textContent = 'Configuration saved. Restarting services — please wait 5-10 seconds...';
+
+        function checkHealth() {
+            attempts += 1;
+            fetch('/api/health', { cache: 'no-store' })
+                .then(function(resp) {
+                    if (!resp.ok) {
+                        throw new Error('Service not ready');
+                    }
+                    return resp.json();
+                })
+                .then(function(data) {
+                    if (data && data.status === 'ok') {
+                        window.location.href = redirectUrl;
+                    } else {
+                        throw new Error('Service not ready');
+                    }
+                })
+                .catch(function() {
+                    if (attempts < maxAttempts) {
+                        setTimeout(checkHealth, 1500);
+                    } else {
+                        feedback.style.display = 'block';
+                        feedback.style.color = '#c0392b';
+                        feedback.textContent = 'Restart timeout. Please refresh the page in a moment.';
+                        saveButton.disabled = false;
+                    }
+                });
+        }
+
+        setTimeout(checkHealth, 1500);
+    }
+
     setupForm.addEventListener('submit', function(event) {
         event.preventDefault();
         saveButton.disabled = true;
@@ -551,6 +589,11 @@
         }).then(function(data) {
             feedback.style.display = 'block';
             feedback.style.color = '#0f5132';
+            if (data.restart_requested) {
+                var redirectUrl = data.require_login ? '/login' : '/';
+                waitForHealthAndRedirect(redirectUrl);
+                return;
+            }
             if (data.require_login) {
                 feedback.textContent = 'Configuration saved successfully. Please log in with your new credentials.';
                 setTimeout(function() { window.location.href = '/login'; }, 1100);

@@ -3,6 +3,7 @@ import re
 from flask import request, jsonify, render_template, make_response
 import config
 from app import app, setup_manager, is_bootstrap_mode, refresh_auth_state
+import restart_manager
 
 BASIC_SERVER_FIELDS = [
     "MEDIASERVER_TYPE",
@@ -100,6 +101,9 @@ def setup_api():
         setup_manager.save_config_values(filtered_values)
         config.refresh_config()
         refresh_auth_state()
+        restart_signal_sent = restart_manager.publish_restart_request()
+        restart_scheduled = restart_manager.schedule_flask_restart()
+        restart_requested = restart_signal_sent or restart_scheduled
         require_login = was_bootstrap and not is_bootstrap_mode()
     except Exception as exc:
         app.logger.error('Setup save failed: %s', exc, exc_info=True)
@@ -109,6 +113,7 @@ def setup_api():
         'status': 'ok',
         'saved_keys': list(filtered_values.keys()),
         'require_login': config.AUTH_ENABLED,
+        'restart_requested': restart_requested,
     }), 200)
     if config.AUTH_ENABLED:
         response.delete_cookie('audiomuse_jwt', samesite='Strict')
