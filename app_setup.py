@@ -49,7 +49,7 @@ def should_show_advanced(name):
 
 @app.route('/setup')
 def setup_page():
-    return render_template('setup.html', title='AudioMuse-AI Setup')
+    return render_template('setup.html', title='AudioMuse-AI Setup', active='setup')
 
 @app.route('/api/setup', methods=['GET', 'POST'])
 def setup_api():
@@ -78,7 +78,7 @@ def setup_api():
         return jsonify({
             'basic_fields': basic_fields,
             'advanced_fields': advanced_fields,
-            'setup_saved': setup_manager.is_setup_saved(),
+            'setup_saved': setup_manager.is_setup_complete(config),
         })
 
     data = request.get_json(silent=True) or {}

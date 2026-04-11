@@ -498,13 +498,10 @@ try:
             globals()[_key] = _value
 
     def refresh_config():
-        """Reload database-backed overrides into the config module."""
-        _overrides = _setup_manager.get_raw_overrides()
-        for _key, _value in _overrides.items():
-            if _key in globals():
-                globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
-            else:
-                globals()[_key] = _value
+        """Reload the config module from the current database and environment."""
+        import importlib
+        import sys
+        importlib.reload(sys.modules[__name__])
 except Exception as _exc:
     import logging
     logging.getLogger(__name__).warning(f"Could not load config overrides from DB: {_exc}")

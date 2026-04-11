@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import psycopg2
+import config
 from psycopg2.extras import RealDictCursor
 
 DEFAULT_CONFIG_TABLE = "app_config"
@@ -236,10 +237,18 @@ class SetupManager:
         except Exception as exc:
             self.logger.warning(f"Unable to save setup config values: {exc}")
             raise
+        try:
+            if hasattr(config, 'refresh_config'):
+                config.refresh_config()
+        except Exception as exc:
+            self.logger.warning(f'Failed to refresh config after saving values: {exc}')
 
     def is_setup_saved(self):
         overrides = self.get_raw_overrides()
         return bool(overrides)
+
+    def is_setup_complete(self, config_module):
+        return self.is_valid_env_config(config_module)
 
     def get_all_fields(self, config_module):
         raw = self.get_raw_overrides()

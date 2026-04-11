@@ -1,3 +1,4 @@
+{% if setup_saved %}
 <li><a href="{{ url_for('index') }}" {% if active == 'index' %}class="active"{% endif %}>Analysis and Clustering</a></li>
 <li><a href="{{ url_for('chat_bp.chat_home') }}" {% if active == 'chat' %}class="active"{% endif %}>Instant Playlist</a></li>
 <li><a href="{{ url_for('voyager_bp.similarity_page') }}" {% if active == 'similarity' %}class="active"{% endif %}>Playlist from Similar Song</a></li>
@@ -16,8 +17,14 @@
         <li><a href="{{ url_for('analysis_bp.cleaning_page') }}" {% if active == 'cleaning' %}class="active"{% endif %}>Cleaning</a></li>
         <li><a href="{{ url_for('cron_bp.cron_page') }}" {% if active == 'cron' %}class="active"{% endif %}>Scheduled Tasks</a></li>
         <li><a href="{{ url_for('backup_bp.backup_page') }}" {% if active == 'backup' %}class="active"{% endif %}>Backup and Restore</a></li>
+        {% if setup_saved %}
+        <li><a href="{{ url_for('setup_page') }}" {% if active == 'setup' %}class="active"{% endif %}>Setup Wizard</a></li>
+        {% endif %}
     </ul>
 </li>
+{% else %}
+<li><a href="{{ url_for('setup_page') }}" class="active">Setup Wizard</a></li>
+{% endif %}
 <li><button type="button" id="dark-mode-toggle" aria-pressed="false" aria-label="Toggle dark mode">🌙 Dark Mode</button></li>
 {% if auth_enabled %}
 <li><a href="#" id="logout-btn" aria-label="Logout">🔓 Logout</a></li>
