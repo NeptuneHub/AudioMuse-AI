@@ -199,6 +199,8 @@ def require_setup_completion():
     if not AUTH_ENABLED:
         if request.path in ('/setup',) or request.path.startswith('/api/setup'):
             return
+        if setup_manager.is_valid_env_config(config):
+            return
         if request.path.startswith('/api/'):
             return jsonify({"error": "Setup required"}), 403
         return redirect(url_for('setup_page'))

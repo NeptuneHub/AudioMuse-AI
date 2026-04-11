@@ -117,6 +117,7 @@
 
             <div class="notice">
                 This setup page is shown automatically on first login when no saved setup data exists.
+                Fields marked with * are mandatory.
             </div>
 
             <form id="setup-form">
@@ -276,8 +277,14 @@
             authCredentialInputs.forEach((input) => {
                 if (input) {
                     input.disabled = !enabled;
+                    const label = document.querySelector(`label[for="${input.id}"]`);
                     if (input.id !== 'JWT_SECRET') {
                         input.required = enabled;
+                        if (label) {
+                            label.classList.toggle('required-label', enabled);
+                        }
+                    } else if (label) {
+                        label.classList.toggle('required-label', false);
                     }
                 }
             });
@@ -287,10 +294,18 @@
             if (apiTokenInput) {
                 apiTokenInput.disabled = !enabled;
                 apiTokenInput.required = enabled;
+                const label = document.querySelector('label[for="API_TOKEN"]');
+                if (label) {
+                    label.classList.toggle('required-label', enabled);
+                }
             }
             if (passwordConfirmInput) {
                 passwordConfirmInput.disabled = !enabled;
                 passwordConfirmInput.required = enabled;
+                const label = document.querySelector('label[for="AUDIOMUSE_PASSWORD_CONFIRM"]');
+                if (label) {
+                    label.classList.toggle('required-label', enabled);
+                }
             }
             if (jwtInput) {
                 jwtInput.disabled = !enabled;
