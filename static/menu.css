@@ -9,6 +9,8 @@
     color: white;
     padding: 1.5rem;
     height: 100vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     position: fixed;
     top: 0;
     left: 0;
