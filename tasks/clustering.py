@@ -657,7 +657,6 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
     CRITICAL: This prevents the main task from hanging at 4980/5000 runs
     by implementing timeouts and forced progress tracking.
     """
-    import time
     from app_helper import (redis_conn, get_child_tasks_from_db, get_task_info_from_db,
                     TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED, 
                     TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
@@ -893,7 +892,6 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
     state_dict["active_jobs"][new_job.id] = new_job
     
     # Record batch start time for timeout detection
-    import time
     state_dict.setdefault("batch_start_times", {})[new_job.id] = time.time()
     
     logger.info(f"Enqueued batch job {new_job.id} for runs {start_run}-{start_run + num_iterations - 1}.")
