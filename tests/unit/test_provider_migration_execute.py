@@ -68,6 +68,40 @@ class TestRewriteIdMapJson:
         parsed = json.loads(new)
         assert parsed == {}
 
+    def test_list_format_rewrites_in_place(self, mig):
+        # map_projection_data.id_map_json is a flat list where position N
+        # corresponds to row N of the projection matrix. The rewrite must
+        # keep the list length (and therefore row alignment) intact.
+        old = json.dumps(['old_a', 'old_b', 'old_c'])
+        mapping = {'old_a': 'new_a', 'old_b': 'new_b', 'old_c': 'new_c'}
+        new = mig.rewrite_id_map_json(old, mapping)
+        parsed = json.loads(new)
+        assert parsed == ['new_a', 'new_b', 'new_c']
+
+    def test_list_format_orphans_become_none(self, mig):
+        # Can't drop slots from a list — that would desync row positions
+        # from the projection matrix. Orphan slots become None and the
+        # consumer in app_map.py falls through to compute on-the-fly.
+        old = json.dumps(['keep', 'orphan', 'keep2'])
+        mapping = {'keep': 'new1', 'keep2': 'new2'}
+        new = mig.rewrite_id_map_json(old, mapping)
+        parsed = json.loads(new)
+        assert parsed == ['new1', None, 'new2']
+        assert len(parsed) == 3  # length preserved
+
+    def test_list_format_empty_mapping(self, mig):
+        old = json.dumps(['a', 'b', 'c'])
+        new = mig.rewrite_id_map_json(old, {})
+        parsed = json.loads(new)
+        assert parsed == [None, None, None]
+
+    def test_unknown_top_level_type_is_left_alone(self, mig):
+        # Defensive: if someone stores a JSON scalar we don't know how to
+        # rewrite, leave the blob untouched rather than crashing the job.
+        old = json.dumps('scalar_value')
+        new = mig.rewrite_id_map_json(old, {'scalar_value': 'new'})
+        assert new == old  # unchanged
+
 
 # ---------------------------------------------------------------------------
 # find_fk — reflects the actual FK constraint name

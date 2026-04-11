@@ -51,15 +51,24 @@ _DRAIN_TIMEOUT_SECONDS = 60
 # ---------------------------------------------------------------------------
 
 def rewrite_id_map_json(id_map_json, mapping):
-    """Rewrite a Voyager / map projection id_map JSON blob in place.
+    """Rewrite a Voyager / map-projection id_map JSON blob in place.
 
-    The on-disk format is ``{voyager_int_id_str: old_item_id_str}``. Voyager's
-    internal HNSW index keys its vectors by the integer IDs, so those must be
-    preserved verbatim. We only swap the **string values** using ``mapping``.
+    Two on-disk formats live in this DB:
 
-    Entries whose old_id is not in ``mapping`` are **dropped** — they refer to
-    orphan tracks that were deleted during the migration, so keeping them would
-    leave dead pointers.
+    1. Voyager (``voyager_index_data.id_map_json``) is a dict
+       ``{voyager_int_id_str: old_item_id_str}``. The integer key is the
+       HNSW vector slot and must be preserved verbatim; we only swap the
+       string values. Orphan entries (old id not in ``mapping``) are
+       dropped — consumers already tolerate missing keys, and dropping
+       keeps the map small.
+
+    2. Map projection (``map_projection_data.id_map_json``) is a flat
+       list ``[item_id_0, item_id_1, ...]`` where position N corresponds
+       to row N of the projection matrix. Here we can NOT drop orphans
+       because the list has to stay in lockstep with the projection
+       array — we replace orphan slots with ``None`` so the slot is kept
+       but the consumer (app_map.py:149) falls through to compute the
+       projection on the fly for that item.
 
     Returns the rewritten JSON string (or the original empty/None value).
     """
@@ -70,12 +79,21 @@ def rewrite_id_map_json(id_map_json, mapping):
     except Exception:
         logger.warning("Could not parse id_map_json, leaving it unchanged")
         return id_map_json
-    rewritten = {}
-    for k, v in m.items():
-        if v in mapping:
-            rewritten[k] = mapping[v]
-        # else: drop — orphan, no mapping
-    return json.dumps(rewritten)
+    if isinstance(m, dict):
+        rewritten = {}
+        for k, v in m.items():
+            if v in mapping:
+                rewritten[k] = mapping[v]
+            # else: drop — orphan, no mapping
+        return json.dumps(rewritten)
+    if isinstance(m, list):
+        rewritten = [mapping[v] if v in mapping else None for v in m]
+        return json.dumps(rewritten)
+    logger.warning(
+        "id_map_json has unexpected top-level type %s, leaving it unchanged",
+        type(m).__name__,
+    )
+    return id_map_json
 
 
 def find_fk(cur, table, column, ref_table='score', ref_column='item_id'):

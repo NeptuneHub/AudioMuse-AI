@@ -521,7 +521,7 @@ def execute():
         session_id,
         job_timeout=3600,
     )
-    return jsonify({'task_id': job.get_id()})
+    return jsonify({'task_id': job.id})
 
 
 @migration_bp.route('/api/migration/status/<task_id>', methods=['GET'])
@@ -530,7 +530,7 @@ def job_status(task_id):
         from rq.job import Job
         job = Job.fetch(task_id, connection=redis_conn)
         return jsonify({
-            'id': job.get_id(),
+            'id': job.id,
             'status': job.get_status(),
             'result': job.result if job.is_finished else None,
             'error': str(job.exc_info) if job.is_failed else None,
