@@ -219,7 +219,7 @@ class TestExecuteGate:
         cur._fetchone_queue.append(('navidrome', 'dry_run_ready'))
         fake_queue = MagicMock()
         fake_job = MagicMock()
-        fake_job.get_id.return_value = 'job-xyz'
+        fake_job.id = 'job-xyz'
         fake_queue.enqueue.return_value = fake_job
         bp_mod.rq_queue_high = fake_queue
 
