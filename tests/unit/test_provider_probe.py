@@ -282,6 +282,196 @@ class TestNavidromeProbe:
 
 
 # ---------------------------------------------------------------------------
+# Lyrion (LMS JSON-RPC)
+# ---------------------------------------------------------------------------
+
+def _lyrion_wrap(result):
+    """LMS JSON-RPC response envelope: ``{'id':1,'method':..,'params':[..],'result':result}``."""
+    return {'id': 1, 'method': 'slim.request', 'params': ['', []], 'result': result}
+
+
+class TestLyrionProbe:
+    CREDS = {'url': 'http://lms.local:9000'}
+
+    def test_decode_url_file_scheme(self, probe):
+        assert probe._lyrion_decode_url('file:///music/artist/album/01.flac') == '/music/artist/album/01.flac'
+
+    def test_decode_url_url_encoded(self, probe):
+        assert probe._lyrion_decode_url('file:///music/My%20Artist/My%20Album/01%20Intro.flac') \
+            == '/music/My Artist/My Album/01 Intro.flac'
+
+    def test_decode_url_none(self, probe):
+        assert probe._lyrion_decode_url(None) is None
+        assert probe._lyrion_decode_url('') is None
+
+    def test_decode_url_passthrough_for_non_file_scheme(self, probe):
+        # Non-file URIs come back URL-decoded but otherwise untouched.
+        assert probe._lyrion_decode_url('spotify:track:abc') == 'spotify:track:abc'
+
+    def test_is_spotify_url(self, probe):
+        assert probe._lyrion_is_spotify({'url': 'spotify:track:xyz'}) is True
+        assert probe._lyrion_is_spotify({'url': 'https://api.spotify.com/v1/tracks/xyz'}) is True
+
+    def test_is_spotify_genre(self, probe):
+        assert probe._lyrion_is_spotify({'url': 'file:///a.flac', 'genre': 'Spotify'}) is True
+
+    def test_is_spotify_negative(self, probe):
+        assert probe._lyrion_is_spotify({'url': 'file:///a.flac', 'genre': 'Rock'}) is False
+        assert probe._lyrion_is_spotify({}) is False
+
+    def test_track_shape_full(self, probe):
+        raw = {
+            'id': 42, 'title': 'Song', 'artist': 'Track Artist',
+            'albumartist': 'Album Artist', 'album': 'Album Name',
+            'url': 'file:///music/a/b/01.flac', 'year': 2021,
+            'tracknum': 1, 'disc': 1,
+        }
+        t = probe._lyrion_track(raw)
+        assert t['id'] == '42'
+        assert t['title'] == 'Song'
+        assert t['artist'] == 'Track Artist'
+        assert t['album_artist'] == 'Album Artist'
+        assert t['album'] == 'Album Name'
+        assert t['path'] == '/music/a/b/01.flac'
+        assert t['year'] == 2021
+        assert t['track_number'] == 1
+
+    def test_track_artist_fallback_to_albumartist(self, probe):
+        raw = {'id': 1, 'title': 'x', 'albumartist': 'AA', 'album': 'x', 'url': 'file:///a.flac'}
+        t = probe._lyrion_track(raw)
+        assert t['artist'] == 'AA'
+        assert t['album_artist'] == 'AA'
+
+    def test_track_year_coerced_from_string(self, probe):
+        t = probe._lyrion_track({'id': 1, 'title': 'x', 'year': '2015', 'url': None})
+        assert t['year'] == 2015
+
+    def test_track_year_invalid_becomes_none(self, probe):
+        t = probe._lyrion_track({'id': 1, 'title': 'x', 'year': 'not a year', 'url': None})
+        assert t['year'] is None
+
+    def test_fetch_all_tracks_paginates(self, probe):
+        page1 = _lyrion_wrap({'titles_loop': [
+            {'id': i, 'title': f'T{i}', 'artist': 'A', 'albumartist': 'A',
+             'album': 'Album', 'url': f'file:///m/t{i}.flac'}
+            for i in range(1, 501)
+        ]})
+        page2 = _lyrion_wrap({'titles_loop': [
+            {'id': i, 'title': f'T{i}', 'artist': 'A', 'albumartist': 'A',
+             'album': 'Album', 'url': f'file:///m/t{i}.flac'}
+            for i in range(501, 701)
+        ]})
+        responses = [_mock_response(page1), _mock_response(page2)]
+        with patch.object(probe.requests, 'post', side_effect=responses) as mock_post:
+            tracks = probe.fetch_all_tracks('lyrion', self.CREDS)
+        assert len(tracks) == 700
+        # Two POST calls (page 2 was a short page, so the loop terminated)
+        assert mock_post.call_count == 2
+        # Offset advances correctly
+        body_p2 = mock_post.call_args_list[1][1]['json']
+        assert body_p2['params'][1][1] == 500  # offset
+
+    def test_fetch_all_tracks_empty(self, probe):
+        with patch.object(probe.requests, 'post', return_value=_mock_response(_lyrion_wrap({'titles_loop': []}))):
+            tracks = probe.fetch_all_tracks('lyrion', self.CREDS)
+        assert tracks == []
+
+    def test_fetch_all_tracks_skips_spotify(self, probe):
+        page = _lyrion_wrap({'titles_loop': [
+            {'id': 1, 'title': 'Local', 'artist': 'X', 'album': 'Y', 'url': 'file:///a.flac'},
+            {'id': 2, 'title': 'Remote', 'artist': 'X', 'album': 'Y', 'url': 'spotify:track:xyz'},
+            {'id': 3, 'title': 'AlsoSpotify', 'genre': 'Spotify', 'url': 'file:///b.flac'},
+        ]})
+        with patch.object(probe.requests, 'post', return_value=_mock_response(page)):
+            tracks = probe.fetch_all_tracks('lyrion', self.CREDS)
+        assert len(tracks) == 1
+        assert tracks[0]['id'] == '1'
+
+    def test_search_albums(self, probe):
+        resp = _lyrion_wrap({'albums_loop': [
+            {'id': 10, 'album': 'Abbey Road', 'artist': 'The Beatles', 'year': 1969},
+            {'id': 11, 'album': 'Let It Be', 'artist': 'The Beatles', 'year': 1970},
+        ]})
+        with patch.object(probe.requests, 'post', return_value=_mock_response(resp)) as mock_post:
+            albums = probe.search_albums('lyrion', self.CREDS, 'Abbey')
+
+        assert len(albums) == 2
+        assert albums[0]['id'] == '10'
+        assert albums[0]['name'] == 'Abbey Road'
+        assert albums[0]['artist'] == 'The Beatles'
+        assert albums[0]['year'] == 1969
+        # Verify the JSON-RPC payload carried the search param
+        body = mock_post.call_args[1]['json']
+        params = body['params'][1]
+        assert params[0] == 'albums'
+        assert any(p == 'search:Abbey' for p in params)
+
+    def test_get_album_tracks(self, probe):
+        resp = _lyrion_wrap({'titles_loop': [
+            {'id': 100, 'title': 'Come Together', 'artist': 'Beatles', 'album': 'Abbey Road',
+             'albumartist': 'The Beatles', 'url': 'file:///music/beatles/come_together.flac',
+             'year': 1969},
+        ]})
+        with patch.object(probe.requests, 'post', return_value=_mock_response(resp)) as mock_post:
+            tracks = probe.get_album_tracks('lyrion', self.CREDS, 'alb1')
+
+        assert len(tracks) == 1
+        assert tracks[0]['id'] == '100'
+        assert tracks[0]['title'] == 'Come Together'
+        # JSON-RPC should carry album_id filter
+        body = mock_post.call_args[1]['json']
+        params = body['params'][1]
+        assert params[0] == 'titles'
+        assert any(p == 'album_id:alb1' for p in params)
+
+    def test_test_connection_ok(self, probe):
+        resp = _lyrion_wrap({'titles_loop': [
+            {'id': 1, 'title': 'a', 'artist': 'x', 'album': 'y', 'url': 'file:///music/a.flac'}
+        ]})
+        with patch.object(probe.requests, 'post', return_value=_mock_response(resp)):
+            result = probe.test_connection('lyrion', self.CREDS)
+        assert result['ok'] is True
+        assert result['sample_count'] == 1
+        assert result['path_format'] == 'absolute'
+        assert result['warnings'] == []
+
+    def test_test_connection_failure(self, probe):
+        def _raise(*_a, **_k):
+            raise RuntimeError('connection refused')
+        with patch.object(probe.requests, 'post', side_effect=_raise):
+            result = probe.test_connection('lyrion', self.CREDS)
+        assert result['ok'] is False
+        assert 'connection refused' in result['error']
+        assert result['sample_count'] == 0
+
+    def test_test_connection_warns_when_paths_not_absolute(self, probe):
+        resp = _lyrion_wrap({'titles_loop': [
+            {'id': 1, 'title': 'a', 'artist': 'x', 'album': 'y', 'url': 'spotify:track:abc'}
+        ]})
+        # Spotify tracks are skipped, so sample ends up empty → path_format='none' → warning
+        with patch.object(probe.requests, 'post', return_value=_mock_response(resp)):
+            result = probe.test_connection('lyrion', self.CREDS)
+        assert result['ok'] is True
+        assert len(result['warnings']) == 1
+        assert 'path' in result['warnings'][0].lower()
+
+    def test_jsonrpc_sends_basic_auth_when_creds_have_user(self, probe):
+        creds = {'url': 'http://lms.local:9000', 'user': 'admin', 'password': 'secret'}
+        resp = _lyrion_wrap({'titles_loop': []})
+        with patch.object(probe.requests, 'post', return_value=_mock_response(resp)) as mock_post:
+            probe.fetch_all_tracks('lyrion', creds)
+        kwargs = mock_post.call_args[1]
+        assert kwargs.get('auth') == ('admin', 'secret')
+
+    def test_jsonrpc_no_auth_when_creds_empty(self, probe):
+        resp = _lyrion_wrap({'titles_loop': []})
+        with patch.object(probe.requests, 'post', return_value=_mock_response(resp)) as mock_post:
+            probe.fetch_all_tracks('lyrion', self.CREDS)
+        kwargs = mock_post.call_args[1]
+        assert kwargs.get('auth') is None
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 

@@ -262,10 +262,12 @@ def match_tracks(old_rows, new_tracks):
     winners = {id(old): new_id for new_id, (_tier, old) in best_for_new.items()}
 
     matches = {}
+    match_tiers = {}
     unmatched = []
     for tier, old, new_id in proposals:
         if tier is not None and winners.get(id(old)) == new_id:
             matches[old['item_id']] = new_id
+            match_tiers[old['item_id']] = tier
             tier_counts[tier] += 1
         else:
             unmatched.append(old)
@@ -277,6 +279,7 @@ def match_tracks(old_rows, new_tracks):
 
     return {
         'matches': matches,
+        'match_tiers': match_tiers,
         'tier_counts': tier_counts,
         'unmatched': unmatched,
         'unmatched_by_album': unmatched_by_album,

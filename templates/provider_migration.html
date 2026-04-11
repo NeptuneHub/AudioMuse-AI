@@ -72,28 +72,36 @@
         font-size: 0.92rem;
         color: var(--text-sub);
     }
+    .mig-card a {
+        color: #60a5fa;
+        text-decoration: underline;
+    }
+    .mig-card a:hover {
+        color: #93c5fd;
+    }
     .mig-warning {
-        background-color: var(--status-warn-bg, #fff7ed);
-        border: 1px solid var(--color-warn, #f59e0b);
-        color: var(--text-main);
+        background-color: #fff7ed;
+        border: 1px solid #f59e0b;
+        color: #92400e;
         padding: 0.75rem 1rem;
         border-radius: 6px;
         margin-top: 0.75rem;
         font-size: 0.92rem;
     }
+    .mig-warning a { color: #1d4ed8; }
     .mig-error {
-        background-color: var(--status-error-bg, #fef2f2);
-        border: 1px solid var(--color-danger, #ef4444);
-        color: var(--color-danger, #ef4444);
+        background-color: #fef2f2;
+        border: 1px solid #ef4444;
+        color: #991b1b;
         padding: 0.6rem 0.9rem;
         border-radius: 6px;
         margin-top: 0.5rem;
         font-size: 0.9rem;
     }
     .mig-success {
-        background-color: var(--status-success-bg, #f0fdf4);
-        border: 1px solid var(--color-success, #16a34a);
-        color: var(--text-main);
+        background-color: #f0fdf4;
+        border: 1px solid #16a34a;
+        color: #166534;
         padding: 0.6rem 0.9rem;
         border-radius: 6px;
         margin-top: 0.5rem;
@@ -111,6 +119,17 @@
         border: 1px solid var(--border-color);
         border-radius: 6px;
         font-size: 0.9rem;
+    }
+    .mig-tier-cell.mig-tier-clickable {
+        cursor: pointer;
+        transition: border-color 0.15s, background 0.15s;
+    }
+    .mig-tier-cell.mig-tier-clickable:hover {
+        border-color: var(--color-primary, #3b82f6);
+    }
+    .mig-tier-cell.mig-tier-active {
+        border-color: var(--color-primary, #3b82f6);
+        box-shadow: 0 0 0 2px var(--color-primary, #3b82f6) inset;
     }
     .mig-tier-cell .mig-tier-num {
         display: block;
@@ -245,8 +264,7 @@
                     <option value="jellyfin">Jellyfin</option>
                     <option value="navidrome">Navidrome</option>
                     <option value="emby">Emby</option>
-                    <option value="lyrion">Lyrion (LMS) — not yet supported</option>
-                    <option value="mpd">MPD — not yet supported</option>
+                    <option value="lyrion">Lyrion (LMS)</option>
                 </select>
             </div>
 
@@ -287,14 +305,13 @@
                     <label>LMS URL:</label>
                     <input type="text" data-cred="url" placeholder="http://lms.local:9000">
                 </div>
-            </div>
-
-            <div class="mig-cred-field" data-for="mpd">
                 <div class="mig-row">
-                    <label>Host:</label>
-                    <input type="text" data-cred="host" placeholder="localhost">
-                    <label>Port:</label>
-                    <input type="number" data-cred="port" value="6600">
+                    <label>Username:</label>
+                    <input type="text" data-cred="user" placeholder="(leave blank if no auth)">
+                </div>
+                <div class="mig-row">
+                    <label>Password:</label>
+                    <input type="password" data-cred="password" placeholder="(leave blank if no auth)">
                 </div>
             </div>
 
@@ -304,16 +321,16 @@
             <div id="mig-probe-result"></div>
         </div>
 
-        <!-- ====================== STEP 3: DRY RUN ====================== -->
+        <!-- ================ STEP 3: AUTOMATIC MATCHING ================ -->
         <div id="mig-step-3" class="mig-card locked">
-            <h2><span class="mig-step-num">3</span> Dry run — automatic matching</h2>
+            <h2><span class="mig-step-num">3</span> Automatic matching</h2>
             <p>
                 Match every track in your AudioMuse database against the new provider. You can
                 re-run this as many times as you want (e.g. after fixing Navidrome's
                 &ldquo;Report Real Path&rdquo; setting).
             </p>
             <div class="mig-row">
-                <button id="mig-run-dry" class="btn btn-primary">Run Dry Run</button>
+                <button id="mig-run-dry" class="btn btn-primary">Run automatic matching</button>
             </div>
             <div id="mig-dry-result"></div>
         </div>
@@ -327,6 +344,27 @@
                 from your database.
             </p>
             <div id="mig-album-list" class="mig-album-list"></div>
+
+            <div id="mig-matched-section" style="margin-top:1rem;">
+                <div id="mig-matched-toggle"
+                     style="cursor:pointer; user-select:none; display:flex; align-items:center; gap:0.5rem; padding:0.5rem 0; font-weight:600;">
+                    <span id="mig-matched-arrow">&#9654;</span>
+                    <span>Show auto-matched albums (<span id="mig-matched-count">0</span>)</span>
+                </div>
+                <div id="mig-matched-content" style="display:none; margin-top:0.5rem;">
+                    <p style="margin:0 0 0.5rem; font-size:0.9em;">
+                        Click any album to re-target it if the automatic match is wrong. Tracks that
+                        don&rsquo;t exist in the new target will become orphans and be deleted on execute.
+                    </p>
+                    <div id="mig-matched-list" class="mig-album-list"></div>
+                    <div class="mig-row" style="justify-content:center; margin-top:0.5rem;">
+                        <button id="mig-matched-prev" class="btn">&laquo; Prev</button>
+                        <span id="mig-matched-pageinfo" style="min-width:8rem; text-align:center;"></span>
+                        <button id="mig-matched-next" class="btn">Next &raquo;</button>
+                    </div>
+                </div>
+            </div>
+
             <div id="mig-match-pane" class="mig-match-pane">
                 <div style="display:flex; align-items:center; gap:0.5rem;">
                     <strong id="mig-match-album-title"></strong>
@@ -396,6 +434,19 @@
     let currentAlbumKey = null;
     let dryRunCounts    = null;
     let finalCounts     = null;
+    let matchedAlbums   = [];
+    let matchedPage     = 1;
+    let isRematch       = false;
+    let tierFilter      = null;  // null | 'path' | 'tail' | 'exact_meta' | 'norm_meta' | 'manual'
+    const MATCHED_PER_PAGE = 20;
+    const TIER_LABEL = {
+        path:       'via path',
+        tail:       'via path tail',
+        exact_meta: 'via exact metadata',
+        norm_meta:  'via normalized metadata',
+        manual:     'manually re-targeted',
+        unknown:    '',
+    };
 
     // ---------- DOM handles ----------
     const $ = id => document.getElementById(id);
@@ -454,6 +505,7 @@
             f.classList.toggle('active', targetType && forList.includes(targetType));
         });
         $('mig-probe-result').innerHTML = '';
+        $('mig-test-connection').disabled = false;
         resetFromStep(3);
     });
 
@@ -512,7 +564,7 @@
     // ---------- Step 3 ----------
     $('mig-run-dry').addEventListener('click', async () => {
         if (!sessionId) return;
-        $('mig-dry-result').innerHTML = '<div class="mig-status">Running dry run — this can take a few minutes on large libraries…</div>';
+        $('mig-dry-result').innerHTML = '<div class="mig-status">Running automatic matching — this can take a few minutes on large libraries…</div>';
         try {
             const result = await jsonFetch("{{ url_for('migration_bp.dry_run') }}", {
                 method: 'POST',
@@ -522,17 +574,26 @@
             dryRunCounts = result;
             const tc = result.tier_counts || {};
             let html = '<div class="mig-tier-grid">';
-            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + (tc.path || 0) + '</span>matched by path</div>';
-            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + (tc.tail || 0) + '</span>matched by path tail</div>';
-            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + (tc.exact_meta || 0) + '</span>matched by exact metadata</div>';
-            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + (tc.norm_meta || 0) + '</span>matched by normalized metadata</div>';
-            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + result.unmatched + '</span>unmatched tracks (' + result.unmatched_albums_count + ' albums)</div>';
+            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="path"><span class="mig-tier-num">' + (tc.path || 0) + '</span>matched by path</div>';
+            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="tail"><span class="mig-tier-num">' + (tc.tail || 0) + '</span>matched by path tail</div>';
+            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="exact_meta"><span class="mig-tier-num">' + (tc.exact_meta || 0) + '</span>matched by exact metadata</div>';
+            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="norm_meta"><span class="mig-tier-num">' + (tc.norm_meta || 0) + '</span>matched by normalized metadata</div>';
+            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="unmatched"><span class="mig-tier-num">' + result.unmatched + '</span>unmatched tracks (' + result.unmatched_albums_count + ' albums)</div>';
             html += '</div>';
             $('mig-dry-result').innerHTML = html;
+            $('mig-dry-result').querySelectorAll('.mig-tier-cell[data-tier]').forEach(cell => {
+                cell.addEventListener('click', () => handleTierClick(cell.dataset.tier));
+            });
+            tierFilter = null;
             await loadUnmatchedAlbums();
+            await loadMatchedAlbums();
             unlock(4);
             setActive(4);
             resetFromStep(5);
+            if (unmatchedAlbums.length === 0) {
+                unlock(5);
+                setActive(5);
+            }
         } catch (e) {
             showError($('mig-dry-result'), e.message);
         }
@@ -564,13 +625,135 @@
 
     function openAlbum(idx) {
         const a = unmatchedAlbums[idx];
+        isRematch = false;
         currentAlbumKey = [a.album_artist, a.album];
         $('mig-match-album-title').textContent =
             (a.album_artist || '?') + ' — ' + (a.album || '?') + ' (' + a.track_count + ' tracks)';
         $('mig-match-query').value = ((a.album_artist || '') + ' ' + (a.album || '')).trim();
         $('mig-match-candidates').innerHTML = '';
         $('mig-match-pane').classList.add('visible');
+        $('mig-match-pane').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        $('mig-match-query').focus();
     }
+
+    async function loadMatchedAlbums() {
+        try {
+            const res = await jsonFetch("{{ url_for('migration_bp.matched_albums', session_id=0) }}".replace('/0', '/' + sessionId));
+            matchedAlbums = res.albums || [];
+        } catch (e) {
+            matchedAlbums = [];
+        }
+        $('mig-matched-count').textContent = matchedAlbums.length;
+        matchedPage = 1;
+        renderMatchedPage();
+    }
+
+    function filteredMatchedAlbums() {
+        if (!tierFilter || tierFilter === 'unmatched') return matchedAlbums;
+        return matchedAlbums.filter(a => a.tier === tierFilter);
+    }
+
+    function renderMatchedPage() {
+        const list = $('mig-matched-list');
+        const view = filteredMatchedAlbums();
+        const total = view.length;
+        const totalPages = Math.max(1, Math.ceil(total / MATCHED_PER_PAGE));
+        if (matchedPage > totalPages) matchedPage = totalPages;
+        const start = (matchedPage - 1) * MATCHED_PER_PAGE;
+        const slice = view.slice(start, start + MATCHED_PER_PAGE);
+        list.innerHTML = '';
+        if (!total) {
+            const msg = tierFilter
+                ? 'No matched albums in this category.'
+                : 'No matched albums yet.';
+            list.innerHTML = '<div class="mig-status" style="padding:0.75rem;">' + msg + '</div>';
+        } else {
+            slice.forEach(a => {
+                const div = document.createElement('div');
+                div.className = 'mig-album-item';
+                const oldLabel = (a.old_album_artist || '(no artist)') + ' — ' + (a.old_album || '(no album)');
+                const newLabel = (a.new_album_artist || '?')          + ' — ' + (a.new_album || '?');
+                const tierTag = TIER_LABEL[a.tier] || '';
+                div.innerHTML = '<div><strong>' + oldLabel + '</strong>' +
+                    '<div class="mig-album-meta">' + a.track_count + ' track(s) &rarr; ' + newLabel +
+                    (tierTag ? ' · <em>' + tierTag + '</em>' : '') + '</div></div>' +
+                    '<div>&#9998;</div>';
+                div.addEventListener('click', () => openAlbumRematch(a));
+                list.appendChild(div);
+            });
+        }
+        const filterSuffix = tierFilter && tierFilter !== 'unmatched'
+            ? ' · filter: ' + (TIER_LABEL[tierFilter] || tierFilter)
+            : '';
+        $('mig-matched-pageinfo').textContent = 'Page ' + matchedPage + ' of ' + totalPages + filterSuffix;
+        $('mig-matched-prev').disabled = matchedPage <= 1;
+        $('mig-matched-next').disabled = matchedPage >= totalPages;
+    }
+
+    function handleTierClick(tier) {
+        // The "unmatched tracks" cell scrolls to the unmatched list (which is
+        // already the primary step 4 view) rather than filtering the matched list.
+        if (tier === 'unmatched') {
+            updateTierCellActive(null);
+            tierFilter = null;
+            renderMatchedPage();
+            $('mig-step-4').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            return;
+        }
+        // Toggle: click the active filter again to clear it.
+        if (tierFilter === tier) {
+            tierFilter = null;
+            updateTierCellActive(null);
+            renderMatchedPage();
+            return;
+        }
+        tierFilter = tier;
+        updateTierCellActive(tier);
+        matchedPage = 1;
+        // Ensure the matched section is expanded so filtered results are visible.
+        const content = $('mig-matched-content');
+        const arrow   = $('mig-matched-arrow');
+        if (content.style.display === 'none') {
+            content.style.display = '';
+            arrow.innerHTML = '&#9660;';
+        }
+        renderMatchedPage();
+        $('mig-matched-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function updateTierCellActive(tier) {
+        document.querySelectorAll('#mig-dry-result .mig-tier-cell').forEach(cell => {
+            cell.classList.toggle('mig-tier-active', cell.dataset.tier === tier);
+        });
+    }
+
+    function openAlbumRematch(a) {
+        isRematch = true;
+        currentAlbumKey = [a.old_album_artist, a.old_album];
+        $('mig-match-album-title').textContent =
+            'Re-target: ' + (a.old_album_artist || '?') + ' — ' + (a.old_album || '?') +
+            ' (' + a.track_count + ' tracks, currently → ' +
+            (a.new_album_artist || '?') + ' — ' + (a.new_album || '?') + ')';
+        $('mig-match-query').value = ((a.old_album_artist || '') + ' ' + (a.old_album || '')).trim();
+        $('mig-match-candidates').innerHTML = '';
+        $('mig-match-pane').classList.add('visible');
+        $('mig-match-pane').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    $('mig-matched-toggle').addEventListener('click', () => {
+        const content = $('mig-matched-content');
+        const arrow   = $('mig-matched-arrow');
+        const open = content.style.display === 'none';
+        content.style.display = open ? '' : 'none';
+        arrow.innerHTML = open ? '&#9660;' : '&#9654;';
+    });
+    $('mig-matched-prev').addEventListener('click', () => {
+        if (matchedPage > 1) { matchedPage--; renderMatchedPage(); }
+    });
+    $('mig-matched-next').addEventListener('click', () => {
+        const totalPages = Math.max(1, Math.ceil(matchedAlbums.length / MATCHED_PER_PAGE));
+        if (matchedPage < totalPages) { matchedPage++; renderMatchedPage(); }
+    });
 
     $('mig-match-search').addEventListener('click', async () => {
         const query = $('mig-match-query').value.trim();
@@ -604,6 +787,7 @@
     async function pickCandidate(newAlbumId, rowEl) {
         if (!currentAlbumKey) return;
         rowEl.style.opacity = 0.6;
+        const wasRematch = isRematch;
         try {
             const res = await jsonFetch("{{ url_for('migration_bp.match_album') }}", {
                 method: 'POST',
@@ -612,12 +796,20 @@
                     session_id: sessionId,
                     old_album_key: currentAlbumKey,
                     new_album_id: newAlbumId,
+                    rematch: wasRematch,
                 })
             });
-            markAlbumResolved(currentAlbumKey);
-            showSuccess($('mig-match-candidates'),
-                'Matched ' + res.matched + ' tracks. ' +
-                res.unmatched + ' tracks in this album will be deleted.');
+            if (wasRematch) {
+                showSuccess($('mig-match-candidates'),
+                    'Re-targeted ' + res.matched + ' tracks. ' +
+                    res.unmatched + ' will be orphaned and deleted.');
+                await loadMatchedAlbums();
+            } else {
+                markAlbumResolved(currentAlbumKey);
+                showSuccess($('mig-match-candidates'),
+                    'Matched ' + res.matched + ' tracks. ' +
+                    res.unmatched + ' tracks in this album will be deleted.');
+            }
         } catch (e) {
             showError($('mig-match-candidates'), e.message);
             rowEl.style.opacity = 1;
@@ -626,6 +818,7 @@
 
     $('mig-match-skip').addEventListener('click', async () => {
         if (!currentAlbumKey || !confirm('Delete all tracks from this album during migration?')) return;
+        const wasRematch = isRematch;
         try {
             await jsonFetch("{{ url_for('migration_bp.skip_album') }}", {
                 method: 'POST',
@@ -633,9 +826,14 @@
                 body: JSON.stringify({
                     session_id: sessionId,
                     old_album_key: currentAlbumKey,
+                    rematch: wasRematch,
                 })
             });
-            markAlbumResolved(currentAlbumKey);
+            if (wasRematch) {
+                await loadMatchedAlbums();
+            } else {
+                markAlbumResolved(currentAlbumKey);
+            }
             $('mig-match-pane').classList.remove('visible');
         } catch (e) {
             showError($('mig-match-candidates'), e.message);
@@ -730,9 +928,24 @@
                 if (s === 'finished') {
                     showSuccess(statusEl,
                         '<strong>Migration complete.</strong> ' +
-                        'The running app has already switched to <code>' + targetType + '</code>.<br><br>' +
-                        '<small><strong>Plays and listening history:</strong> never stored locally. They come from your media server and now reflect the new provider automatically.</small><br><br>' +
-                        '<small><strong>To persist across container restarts:</strong> update your docker-compose.yaml to set <code>MEDIASERVER_TYPE=' + targetType + '</code> and the matching credentials.</small>'
+                        'The running app has already hot-reloaded to <code>' + targetType + '</code>, ' +
+                        'but there are three things you still need to do:' +
+                        '<ol style="margin:0.5rem 0 0.5rem 1.25rem; padding:0;">' +
+                        '<li><strong>Update <code>docker-compose.yaml</code></strong> — set ' +
+                        '<code>MEDIASERVER_TYPE=' + targetType + '</code> and the matching ' +
+                        'credentials for the new provider. Without this, the next container ' +
+                        'restart will boot against your old provider env vars.</li>' +
+                        '<li><strong>Restart the containers</strong> ' +
+                        '(<code>docker compose down &amp;&amp; docker compose up -d</code>) so flask and the ' +
+                        'workers pick up the new env vars cleanly.</li>' +
+                        '<li><strong>Run a full analysis</strong> from the Analysis page. ' +
+                        'This rebuilds the artist similarity index (which the migration had to ' +
+                        'truncate because artist mappings are provider-specific) and re-verifies ' +
+                        'every track against the new provider. Until you do this, the ' +
+                        '&ldquo;Similar artists&rdquo; feature will fail.</li>' +
+                        '</ol>' +
+                        '<small><strong>Plays and listening history:</strong> never stored locally. ' +
+                        'They come from your media server and now reflect the new provider automatically.</small>'
                     );
                     return;
                 }

@@ -20,6 +20,8 @@ to ``tasks.provider_probe`` (which also never reads ``config``), so the
 current live provider keeps working throughout the dry-run and manual matching
 steps of the wizard.
 """
+import csv
+import io
 import json
 import logging
 import os
@@ -307,6 +309,7 @@ def dry_run():
     # keep it light; unmatched_by_album is reconstructed from unmatched on demand)
     state_dry_run = {
         'matches':           result['matches'],
+        'match_tiers':       result['match_tiers'],
         'tier_counts':       result['tier_counts'],
         'unmatched_albums':  _albums_payload(result['unmatched_by_album']),
     }
@@ -324,7 +327,7 @@ def dry_run():
     }
 
     _update_state(session_id, dry_run=state_dry_run, new_meta=new_meta,
-                  manual_matches={}, final_counts=None)
+                  manual_matches={}, manual_unmatches=[], final_counts=None)
 
     return jsonify({
         'tier_counts': result['tier_counts'],
@@ -339,13 +342,18 @@ def match_album():
     """User picked a target album for one of the unmatched old albums. We
     fetch the target album's tracks and auto-match inside it by title.
 
-    Tracks we can't auto-match are left as orphans — the user sees them in
-    the UI and can explicitly skip the album or re-run.
+    With ``rematch: true`` in the payload, the endpoint also reprocesses
+    rows that were already auto-matched for this album — any auto-match
+    for this album is discarded and replaced by the new target (with rows
+    that don't match in the new target becoming explicit orphans via
+    ``manual_unmatches``). This is how step 4 lets the user correct an
+    incorrect automatic match.
     """
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
     old_album_key = payload.get('old_album_key')  # [album_artist, album]
     new_album_id = payload.get('new_album_id')
+    rematch = bool(payload.get('rematch'))
 
     session = _fetch_session_creds(session_id)
     if session is None:
@@ -360,9 +368,11 @@ def match_album():
     import importlib
     matcher = importlib.import_module('tasks.provider_migration_matcher')
 
-    # Load the unmatched tracks for this album
     old_album_tuple = tuple(old_album_key) if isinstance(old_album_key, list) else old_album_key
-    old_rows = _load_unmatched_for_album(session_id, old_album_tuple)
+    if rematch:
+        old_rows = _load_rows_for_album(old_album_tuple)
+    else:
+        old_rows = _load_unmatched_for_album(session_id, old_album_tuple)
 
     # Match within the album: exact title, then normalized title
     by_title = {}
@@ -387,7 +397,10 @@ def match_album():
         else:
             still_unmatched.append(old['item_id'])
 
-    _merge_manual_matches(session_id, newly_matched)
+    if rematch:
+        _rematch_album_rows(session_id, newly_matched, still_unmatched)
+    else:
+        _merge_manual_matches(session_id, newly_matched)
     return jsonify({
         'matched':   len(newly_matched),
         'unmatched': len(still_unmatched),
@@ -397,14 +410,27 @@ def match_album():
 
 @migration_bp.route('/api/migration/skip-album', methods=['POST'])
 def skip_album():
-    """Mark an unmatched album as explicitly orphaned — those rows will be
-    deleted by execute. Achieved by NOT adding anything to manual_matches
-    (execute deletes everything not in the merged mapping)."""
+    """Mark an album as explicitly orphaned — those rows will be deleted by
+    execute.
+
+    For first-time skips (unmatched albums), a ledger note is enough because
+    the merged mapping already doesn't contain these rows. For rematch skips
+    (album was already auto-matched), we also have to push every row in the
+    album into ``manual_unmatches`` so finalize overrides the existing
+    auto-match.
+    """
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
-    # Record the skip in state so the UI can show progress; execution doesn't
-    # care (orphans = anything not in mapping).
-    _mark_album_skipped(session_id, payload.get('old_album_key'))
+    old_album_key = payload.get('old_album_key')
+    rematch = bool(payload.get('rematch'))
+
+    if rematch:
+        album_tuple = tuple(old_album_key) if isinstance(old_album_key, list) else old_album_key
+        old_rows = _load_rows_for_album(album_tuple)
+        all_ids = [r['item_id'] for r in old_rows]
+        _rematch_album_rows(session_id, newly_matched={}, newly_unmatched=all_ids)
+
+    _mark_album_skipped(session_id, old_album_key)
     return jsonify({'ok': True})
 
 
@@ -420,9 +446,12 @@ def finalize_dry_run():
 
     dry = state.get('dry_run') or {}
     manual = state.get('manual_matches') or {}
+    manual_unmatches = set(state.get('manual_unmatches') or [])
 
     merged = {}
-    merged.update(dry.get('matches') or {})
+    for old_id, new_id in (dry.get('matches') or {}).items():
+        if old_id not in manual_unmatches:
+            merged[old_id] = new_id
     merged.update(manual)
 
     total_score = _count_score_rows()
@@ -512,29 +541,151 @@ def job_status(task_id):
 
 @migration_bp.route('/api/migration/dry-run-report/<int:session_id>', methods=['GET'])
 def dry_run_report(session_id):
-    """Download the full session state as a JSON file for audit."""
-    db = get_db()
-    with db.cursor() as cur:
-        cur.execute(
-            "SELECT state FROM migration_session WHERE id = %s",
-            (session_id,),
-        )
-        row = cur.fetchone()
-    if not row:
+    """Download the dry-run result as a CSV with both-provider columns.
+
+    Row set = every ``score`` row at dry-run time. Matched rows get both
+    old-side and new-side columns populated; orphans (rows that will be
+    deleted on execute) have blank new-side columns so the user can see
+    exactly what is about to disappear.
+    """
+    state = _load_state(session_id)
+    if state is None:
         return jsonify({'error': 'session not found'}), 404
-    state = row[0]
-    if isinstance(state, str):
-        try:
-            state = json.loads(state)
-        except Exception:
-            pass
+
+    dry_run = state.get('dry_run') or {}
+    auto_matches     = dry_run.get('matches') or {}
+    manual_matches   = state.get('manual_matches') or {}
+    manual_unmatches = set(state.get('manual_unmatches') or [])
+    new_meta         = state.get('new_meta') or {}
+
+    # Same effective-merge logic as finalize: drop auto rows the user
+    # force-orphaned, then manual_matches wins on any remaining conflict.
+    matches = {}
+    for old_id, new_id in auto_matches.items():
+        if old_id not in manual_unmatches:
+            matches[old_id] = new_id
+    matches.update(manual_matches)
+
+    old_rows = _load_score_rows_as_dicts()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        'old_id', 'old_artist', 'old_album', 'old_track', 'old_path',
+        'new_id', 'new_artist', 'new_album', 'new_track', 'new_path',
+        'match_source',
+    ])
+    for old in old_rows:
+        old_id = old.get('item_id')
+        new_id = matches.get(old_id)
+        meta = new_meta.get(new_id) if new_id else None
+        if new_id and manual_matches.get(old_id):
+            source = 'manual'
+        elif new_id:
+            source = 'auto'
+        else:
+            source = 'orphan'
+        writer.writerow([
+            old_id,
+            old.get('album_artist') or old.get('author') or '',
+            old.get('album') or '',
+            old.get('title') or '',
+            old.get('file_path') or '',
+            new_id or '',
+            (meta or {}).get('artist') or '',
+            (meta or {}).get('album') or '',
+            (meta or {}).get('title') or '',
+            (meta or {}).get('path') or '',
+            source,
+        ])
+
     from flask import Response
-    pretty = json.dumps(state, indent=2, default=str)
     return Response(
-        pretty,
-        mimetype='application/json',
-        headers={'Content-Disposition': f'attachment; filename=migration_session_{session_id}.json'},
+        buf.getvalue(),
+        mimetype='text/csv',
+        headers={
+            'Content-Disposition':
+                f'attachment; filename=migration_session_{session_id}_dry_run.csv',
+        },
     )
+
+
+@migration_bp.route('/api/migration/matched-albums/<int:session_id>', methods=['GET'])
+def matched_albums(session_id):
+    """Return all currently-matched albums grouped by old (album_artist, album).
+
+    Powers the step-4 inspection/correction view: the wizard paginates this
+    list client-side and lets the user click any row to re-target an album
+    whose automatic match was wrong. New-side columns use the most common
+    target album across the matched tracks in the group (they're almost
+    always unanimous).
+    """
+    state = _load_state(session_id)
+    if state is None:
+        return jsonify({'error': 'session not found'}), 404
+
+    dry = state.get('dry_run') or {}
+    auto_matches     = dry.get('matches') or {}
+    match_tiers      = dry.get('match_tiers') or {}
+    manual_matches   = state.get('manual_matches') or {}
+    manual_unmatches = set(state.get('manual_unmatches') or [])
+    new_meta         = state.get('new_meta') or {}
+
+    merged = {}
+    for old_id, new_id in auto_matches.items():
+        if old_id not in manual_unmatches:
+            merged[old_id] = new_id
+    merged.update(manual_matches)
+
+    if not merged:
+        return jsonify({'albums': []})
+
+    old_rows = _load_score_rows_as_dicts()
+    groups = {}  # (old_artist, old_album) -> {'count', 'new_ids', 'tiers'}
+    for r in old_rows:
+        old_id = r['item_id']
+        new_id = merged.get(old_id)
+        if new_id is None:
+            continue
+        key = (r.get('album_artist') or r.get('author') or '', r.get('album') or '')
+        g = groups.setdefault(key, {'count': 0, 'new_ids': [], 'tiers': []})
+        g['count'] += 1
+        g['new_ids'].append(new_id)
+        # Manual rematch wins over the original auto tier if the user changed it.
+        if old_id in manual_matches:
+            g['tiers'].append('manual')
+        else:
+            g['tiers'].append(match_tiers.get(old_id) or 'unknown')
+
+    albums = []
+    for (old_artist, old_album), g in groups.items():
+        tally = {}  # (new_artist, new_album) -> count
+        for new_id in g['new_ids']:
+            meta = new_meta.get(new_id) or {}
+            tally_key = (meta.get('artist') or '', meta.get('album') or '')
+            tally[tally_key] = tally.get(tally_key, 0) + 1
+        if tally:
+            (new_artist, new_album), _ = max(tally.items(), key=lambda kv: kv[1])
+        else:
+            new_artist, new_album = '', ''
+        tier_tally = {}
+        for t in g['tiers']:
+            tier_tally[t] = tier_tally.get(t, 0) + 1
+        dominant_tier = max(tier_tally.items(), key=lambda kv: kv[1])[0] if tier_tally else 'unknown'
+        albums.append({
+            'old_album_artist': old_artist,
+            'old_album':        old_album,
+            'track_count':      g['count'],
+            'new_album_artist': new_artist,
+            'new_album':        new_album,
+            'tier':             dominant_tier,
+        })
+
+    albums.sort(key=lambda a: (
+        (a['old_album_artist'] or '').lower(),
+        (a['old_album'] or '').lower(),
+    ))
+    return jsonify({'albums': albums})
 
 
 # ---------------------------------------------------------------------------
@@ -599,6 +750,21 @@ def _load_unmatched_for_album(session_id, album_key):
     return out
 
 
+def _load_rows_for_album(album_key):
+    """Return all old rows in the given (album_artist, album) regardless of
+    whether they were matched. Used by the step-4 re-match flow, which needs
+    to overwrite existing match state for the whole album at once."""
+    target_artist, target_album = (album_key[0] if album_key else None,
+                                   album_key[1] if album_key and len(album_key) > 1 else None)
+    rows = _load_score_rows_as_dicts()
+    out = []
+    for r in rows:
+        ra = r.get('album_artist') or r.get('author')
+        if ra == target_artist and r.get('album') == target_album:
+            out.append(r)
+    return out
+
+
 def _albums_payload(unmatched_by_album):
     """Serialize ``{(album_artist, album): [rows]}`` into a JSON-safe list
     suitable for the wizard UI."""
@@ -657,6 +823,38 @@ def _merge_manual_matches(session_id, new_matches):
     manual.update(new_matches)
     state['manual_matches'] = manual
     # Invalidate final_counts so the user must re-finalize
+    state.pop('final_counts', None)
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            "UPDATE migration_session SET state = %s::jsonb WHERE id = %s",
+            (json.dumps(state), session_id),
+        )
+    db.commit()
+
+
+def _rematch_album_rows(session_id, newly_matched, newly_unmatched):
+    """Atomically replace match state for a re-targeted album.
+
+    For each row we found in the new target: put it in manual_matches (which
+    wins over dry.matches at finalize time) and make sure it's not stuck in
+    manual_unmatches from a previous rematch.
+
+    For each row we could NOT find in the new target: drop any stale
+    manual_matches entry and add it to manual_unmatches so finalize treats
+    it as an orphan regardless of what dry.matches said.
+    """
+    state = _load_state(session_id) or {}
+    manual = dict(state.get('manual_matches') or {})
+    unmatches = set(state.get('manual_unmatches') or [])
+    for old_id, new_id in newly_matched.items():
+        manual[old_id] = new_id
+        unmatches.discard(old_id)
+    for old_id in newly_unmatched:
+        manual.pop(old_id, None)
+        unmatches.add(old_id)
+    state['manual_matches']   = manual
+    state['manual_unmatches'] = sorted(unmatches)
     state.pop('final_counts', None)
     db = get_db()
     with db.cursor() as cur:

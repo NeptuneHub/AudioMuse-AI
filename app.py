@@ -55,6 +55,14 @@ from app_helper import (
     TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
 )
 
+# Provider migration tool — imported early because app_context() below
+# calls apply_provider_overrides_from_db() and subscribe_to_provider_migrated_channel().
+from app_provider_migration import (
+    migration_bp,
+    apply_provider_overrides_from_db,
+    subscribe_to_provider_migrated_channel,
+)
+
 # NOTE: Annoy Manager import is moved to be local where used to prevent circular imports.
 
 logger = logging.getLogger(__name__)
@@ -755,7 +763,6 @@ from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
 from app_mulan_search import mulan_search_bp
 from app_backup import backup_bp
-from app_provider_migration import migration_bp, apply_provider_overrides_from_db, subscribe_to_provider_migrated_channel
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)

@@ -7,7 +7,7 @@ provider without mutating the running app's active configuration.
 Supported providers:
   * ``jellyfin`` / ``emby`` — X-Emby-Token header API, identical shape
   * ``navidrome``           — Subsonic JSON API
-  * ``lyrion``              — JSON-RPC (stub — raises NotImplementedError)
+  * ``lyrion``              — Logitech Media Server JSON-RPC (``/jsonrpc.js``)
   * ``mpd``                 — Socket protocol (stub — raises NotImplementedError)
 
 Unified track dict shape returned by ``fetch_all_tracks`` and
@@ -46,6 +46,8 @@ Unified album dict shape returned by ``search_albums``::
     }
 """
 import logging
+from urllib.parse import unquote, urlparse
+
 import requests
 
 logger = logging.getLogger(__name__)
@@ -286,9 +288,10 @@ def _navidrome_test_connection(creds):
         warnings.append(
             'Navidrome is returning relative paths or no paths at all. '
             'This happens when "Report Real Path" is disabled in Navidrome '
-            '(Settings > Personal > Subsonic). Automatic path-based matching '
-            'will not work well. Enable Report Real Path and re-test, or you '
-            'will need to manually match most albums in Step 4.'
+            '(Settings > Players > AudioMuse-AI [python-requests]). '
+            'Automatic path-based matching will not work well. Enable Report '
+            'Real Path and re-test, or you will need to manually match most '
+            'albums in Step 4.'
         )
 
     return {
@@ -301,15 +304,193 @@ def _navidrome_test_connection(creds):
 
 
 # ---------------------------------------------------------------------------
-# Lyrion / MPD — stubs
+# Lyrion (Logitech Media Server — JSON-RPC at /jsonrpc.js)
 # ---------------------------------------------------------------------------
+#
+# LMS tag letters used in the ``titles`` query:
+#   g = genre          a = artist     l = album     d = duration
+#   u = url (file://)  A = albumartist  y = year     R = rating
+#
+# The request shape is always::
+#
+#     POST {url}/jsonrpc.js
+#     {"id":1,"method":"slim.request","params":["",[<method>, <arg1>, <arg2>, ...]]}
+#
+# Most LMS installs have no auth, but self-hosted setups may gate it with HTTP
+# basic auth — so ``_lyrion_jsonrpc`` honors ``creds['user']``/``creds['password']``
+# when either is present.
+#
+# ``fetch_all_tracks`` skips tracks whose ``url`` or ``genre``/``service`` field
+# contains "spotify" — those are streamed-from-Spotify entries that have no
+# local file path and can't be matched for migration.
 
-def _lyrion_not_supported(*_args, **_kwargs):
-    raise NotImplementedError(
-        'Lyrion migration is not yet supported by the migration tool. '
-        'As a workaround, migrate to Jellyfin or Navidrome first, then to Lyrion.'
+
+def _lyrion_jsonrpc(creds, method, params):
+    """POST one slim.request to Lyrion and return the parsed JSON body."""
+    base = (creds.get('url') or '').rstrip('/')
+    if not base:
+        raise ValueError('Lyrion creds missing "url"')
+    url = f"{base}/jsonrpc.js"
+    payload = {
+        'id':     1,
+        'method': 'slim.request',
+        'params': ['', [method, *params]],
+    }
+    auth = None
+    user, password = creds.get('user'), creds.get('password')
+    if user or password:
+        auth = (user or '', password or '')
+    r = requests.post(url, json=payload, timeout=REQUESTS_TIMEOUT, auth=auth)
+    r.raise_for_status()
+    return r.json() or {}
+
+
+def _lyrion_decode_url(url):
+    """Turn a Lyrion ``url`` field into a filesystem path if possible.
+
+    LMS returns ``file:///music/artist/album/track.flac`` for local tracks
+    and leaves remote streams as plain ``http://`` or ``spotify:`` URIs.
+    We return filesystem paths as-is and pass other schemes through so the
+    caller can decide (the matcher only path-matches strings that start
+    with ``/``).
+    """
+    if not url:
+        return None
+    if url.startswith('file://'):
+        return unquote(urlparse(url).path) or None
+    return unquote(url)
+
+
+def _lyrion_is_spotify(raw):
+    """Return True for LMS entries that point at Spotify instead of a file.
+
+    Those rows show up in the ``titles`` response when the user has the
+    Spotty plugin installed. They have no usable file path, so we drop them
+    before they reach the matcher."""
+    url = (raw.get('url') or '').lower()
+    if 'spotify' in url:
+        return True
+    for fld in ('genre', 'service', 'source'):
+        val = raw.get(fld)
+        if isinstance(val, str) and 'spotify' in val.lower():
+            return True
+    return False
+
+
+def _lyrion_track(raw):
+    """Translate a titles_loop entry into the unified track dict shape."""
+    track_artist = (
+        raw.get('trackartist')
+        or raw.get('artist')
+        or raw.get('albumartist')
     )
+    album_artist = raw.get('albumartist') or raw.get('artist')
+    year = raw.get('year')
+    if not isinstance(year, int):
+        try:
+            year = int(year) if year not in (None, '') else None
+        except (TypeError, ValueError):
+            year = None
+    return {
+        'id':           str(raw.get('id', '')) or None,
+        'path':         _lyrion_decode_url(raw.get('url')),
+        'title':        raw.get('title'),
+        'artist':       track_artist,
+        'album_artist': album_artist,
+        'album':        raw.get('album'),
+        'year':         year,
+        'track_number': raw.get('tracknum'),
+        'disc_number':  raw.get('disc'),
+    }
 
+
+def _lyrion_fetch_all(creds):
+    """Walk every track via paginated ``titles`` calls (500/page)."""
+    all_tracks = []
+    offset = 0
+    page_size = 500
+    while True:
+        body = _lyrion_jsonrpc(creds, 'titles', [offset, page_size, 'tags:galduAyR'])
+        result = body.get('result') or {}
+        page = result.get('titles_loop') or []
+        if not page:
+            break
+        for raw in page:
+            if _lyrion_is_spotify(raw):
+                continue
+            all_tracks.append(_lyrion_track(raw))
+        if len(page) < page_size:
+            break
+        offset += len(page)
+    return all_tracks
+
+
+def _lyrion_search_albums(creds, query):
+    body = _lyrion_jsonrpc(creds, 'albums', [0, 10, f'search:{query}', 'tags:lyja'])
+    result = body.get('result') or {}
+    albums = result.get('albums_loop') or []
+    out = []
+    for a in albums:
+        year = a.get('year')
+        if not isinstance(year, int):
+            try:
+                year = int(year) if year not in (None, '') else None
+            except (TypeError, ValueError):
+                year = None
+        out.append({
+            'id':          str(a.get('id', '')) or None,
+            'name':        a.get('album') or a.get('title'),
+            'artist':      a.get('artist') or a.get('albumartist'),
+            'year':        year,
+            'track_count': a.get('tracks') or a.get('count'),
+        })
+    return out
+
+
+def _lyrion_get_album_tracks(creds, album_id):
+    body = _lyrion_jsonrpc(
+        creds, 'titles',
+        [0, 999999, f'album_id:{album_id}', 'tags:galduAyR'],
+    )
+    result = body.get('result') or {}
+    page = result.get('titles_loop') or []
+    return [_lyrion_track(raw) for raw in page if not _lyrion_is_spotify(raw)]
+
+
+def _lyrion_test_connection(creds):
+    warnings = []
+    try:
+        body = _lyrion_jsonrpc(creds, 'titles', [0, _SAMPLE_LIMIT, 'tags:galduAyR'])
+    except Exception as e:
+        logger.warning("Lyrion probe failed: %s", e)
+        return {'ok': False, 'error': str(e), 'sample_count': 0,
+                'path_format': 'none', 'warnings': []}
+
+    result = body.get('result') or {}
+    raws = result.get('titles_loop') or []
+    sample = [_lyrion_track(r) for r in raws if not _lyrion_is_spotify(r)]
+    path_format = _detect_path_format(sample)
+
+    if path_format != 'absolute':
+        warnings.append(
+            'Lyrion is returning relative paths, stream URIs, or no paths at '
+            'all. Automatic path-based matching may be unreliable for this '
+            'library — expect to manually match most albums in Step 4. '
+            'Metadata-based matching still works.'
+        )
+
+    return {
+        'ok':           True,
+        'error':        None,
+        'sample_count': len(sample),
+        'path_format':  path_format,
+        'warnings':     warnings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# MPD — stub
+# ---------------------------------------------------------------------------
 
 def _mpd_not_supported(*_args, **_kwargs):
     raise NotImplementedError(
@@ -344,10 +525,10 @@ _DISPATCH = {
         'test_connection':  _navidrome_test_connection,
     },
     'lyrion': {
-        'fetch_all_tracks': _lyrion_not_supported,
-        'search_albums':    _lyrion_not_supported,
-        'get_album_tracks': _lyrion_not_supported,
-        'test_connection':  _lyrion_not_supported,
+        'fetch_all_tracks': _lyrion_fetch_all,
+        'search_albums':    _lyrion_search_albums,
+        'get_album_tracks': _lyrion_get_album_tracks,
+        'test_connection':  _lyrion_test_connection,
     },
     'mpd': {
         'fetch_all_tracks': _mpd_not_supported,
