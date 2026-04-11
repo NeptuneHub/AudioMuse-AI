@@ -15,7 +15,7 @@ Supports:
 
 import logging
 import numpy as np
-from config import GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -359,7 +359,7 @@ def get_clustering_model(method, params, use_gpu=False):
         elif method == 'gmm':
             return GaussianMixture(
                 n_components=params['n_components'],
-                covariance_type=GMM_COVARIANCE_TYPE,
+                covariance_type=config.GMM_COVARIANCE_TYPE,
                 init_params='k-means++',
                 n_init=10,
                 random_state=None,
@@ -370,7 +370,7 @@ def get_clustering_model(method, params, use_gpu=False):
                 n_clusters=params['n_clusters'],
                 assign_labels='kmeans',
                 affinity='nearest_neighbors',
-                n_neighbors=SPECTRAL_N_NEIGHBORS,
+                n_neighbors=config.SPECTRAL_N_NEIGHBORS,
                 random_state=params.get("random_state"),
                 n_init=10,
                 verbose=False
@@ -384,7 +384,7 @@ def get_clustering_model(method, params, use_gpu=False):
     elif method == 'gmm':
         return GPUGaussianMixture(
             n_components=params['n_components'],
-            covariance_type=GMM_COVARIANCE_TYPE,
+            covariance_type=config.GMM_COVARIANCE_TYPE,
             init_params='k-means++',
             n_init=10,
             random_state=None,
@@ -395,7 +395,7 @@ def get_clustering_model(method, params, use_gpu=False):
             n_clusters=params['n_clusters'],
             assign_labels='kmeans',
             affinity='nearest_neighbors',
-            n_neighbors=SPECTRAL_N_NEIGHBORS,
+            n_neighbors=config.SPECTRAL_N_NEIGHBORS,
             random_state=params.get("random_state"),
             n_init=10,
             verbose=False

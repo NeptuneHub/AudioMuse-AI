@@ -27,23 +27,6 @@ from rq.job import Job
 from rq.exceptions import NoSuchJobError
 
 # Import configuration from the user's provided config file
-from config import (
-    TEMP_DIR, MAX_DISTANCE, MAX_SONGS_PER_CLUSTER, MAX_SONGS_PER_ARTIST,
-    GMM_COVARIANCE_TYPE, MOOD_LABELS, EMBEDDING_MODEL_PATH, PREDICTION_MODEL_PATH, ENERGY_MIN, ENERGY_MAX,
-    TEMPO_MIN_BPM, TEMPO_MAX_BPM, JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, EMBY_URL, EMBY_USER_ID, EMBY_TOKEN, OTHER_FEATURE_LABELS, REDIS_URL, DATABASE_URL,
-    OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, AI_MODEL_PROVIDER, GEMINI_API_KEY, GEMINI_MODEL_NAME,
-    SCORE_WEIGHT_SILHOUETTE, SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ,
-    SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_PURITY, SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY, SCORE_WEIGHT_OTHER_FEATURE_PURITY,
-    MUTATION_KMEANS_COORD_FRACTION, MUTATION_INT_ABS_DELTA, MUTATION_FLOAT_ABS_DELTA,
-    TOP_N_ELITES, EXPLOITATION_START_FRACTION, EXPLOITATION_PROBABILITY_CONFIG, TOP_N_MOODS, TOP_N_OTHER_FEATURES,
-    STRATIFIED_GENRES, MIN_SONGS_PER_GENRE_FOR_STRATIFICATION, SAMPLING_PERCENTAGE_CHANGE_PER_RUN, ITERATIONS_PER_BATCH_JOB, MAX_CONCURRENT_BATCH_JOBS, REBUILD_INDEX_BATCH_SIZE,
-    MAX_QUEUED_ANALYSIS_JOBS, PER_SONG_MODEL_RELOAD,
-    TOP_K_MOODS_FOR_PURITY_CALCULATION, LN_MOOD_DIVERSITY_STATS, LN_MOOD_PURITY_STATS,
-    LN_OTHER_FEATURES_DIVERSITY_STATS, LN_OTHER_FEATURES_PURITY_STATS,
-    STRATIFIED_SAMPLING_TARGET_PERCENTILE,
-    OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY as CONFIG_OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
-    AUDIO_LOAD_TIMEOUT # Add this to your config.py, e.g., AUDIO_LOAD_TIMEOUT = 600 (for a 10-minute timeout)
-)
 
 
 # Import other project modules
@@ -175,7 +158,7 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
     
     # --- Primary Method: Direct Librosa Load ---
     try:
-        audio, sr = librosa.load(file_path, sr=target_sr, mono=True, duration=AUDIO_LOAD_TIMEOUT)
+        audio, sr = librosa.load(file_path, sr=target_sr, mono=True, duration=config.AUDIO_LOAD_TIMEOUT)
         
         # An empty audio signal is a failure condition, so we raise an error to trigger the fallback.
         if audio is None or audio.size == 0:
@@ -229,7 +212,7 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
         logger.info(f"Fallback: Converted {os.path.basename(file_path)} to temporary WAV for robust loading.")
         
         # Load the safe, downsampled WAV file
-        audio, sr = librosa.load(temp_wav_path, sr=target_sr, mono=True, duration=AUDIO_LOAD_TIMEOUT)
+        audio, sr = librosa.load(temp_wav_path, sr=target_sr, mono=True, duration=config.AUDIO_LOAD_TIMEOUT)
         
         # Final check on the fallback's output for silence or emptiness
         if audio is None or audio.size == 0 or not np.any(audio):
@@ -552,7 +535,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                      TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import analyze_audio_file as clap_analyze, is_clap_available, get_or_cache_other_feature_text_embeddings, compute_other_features_from_clap
     from .mulan_analyzer import analyze_audio_file as mulan_analyze
-    from config import MULAN_ENABLED
     
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -564,8 +546,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         current_task_logs = initial_details["log"]
         
         model_paths = {
-            'embedding': EMBEDDING_MODEL_PATH,
-            'prediction': PREDICTION_MODEL_PATH,
+            'embedding': config.EMBEDDING_MODEL_PATH,
+            'prediction': config.PREDICTION_MODEL_PATH,
         }
         
         # Load or compute CLAP text embeddings for OTHER_FEATURE_LABELS (cached in Redis)
@@ -590,9 +572,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         # Interval depends on PER_SONG_MODEL_RELOAD setting:
         # - true: Reload every 1 song (aggressive, prevents memory leaks)
         # - false: Reload every 20 songs (original behavior, faster but may accumulate memory)
-        recycle_interval = 1 if PER_SONG_MODEL_RELOAD else 20
+        recycle_interval = 1 if config.PER_SONG_MODEL_RELOAD else 20
         session_recycler = SessionRecycler(recycle_interval=recycle_interval)
-        logger.info(f"MusiCNN session recycling: every {recycle_interval} song(s) (PER_SONG_MODEL_RELOAD={PER_SONG_MODEL_RELOAD})")
+        logger.info(f"MusiCNN session recycling: every {recycle_interval} song(s) (PER_SONG_MODEL_RELOAD={config.PER_SONG_MODEL_RELOAD})")
 
         def log_and_update_album_task(message, progress, **kwargs):
             nonlocal current_progress_val, current_task_logs
@@ -646,7 +628,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
 
             existing_track_ids_set = get_existing_track_ids([str(t['Id']) for t in tracks])
             missing_clap_ids_set = get_missing_clap_track_ids([str(t['Id']) for t in tracks]) if is_clap_available() else set()
-            missing_mulan_ids_set = get_missing_mulan_track_ids([str(t['Id']) for t in tracks]) if MULAN_ENABLED else set()
+            missing_mulan_ids_set = get_missing_mulan_track_ids([str(t['Id']) for t in tracks]) if config.MULAN_ENABLED else set()
             total_tracks_in_album = len(tracks)
 
             for idx, item in enumerate(tracks, 1):
@@ -695,13 +677,13 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     status_parts = ["MusiCNN: ✓"]
                     if is_clap_available():
                         status_parts.append("CLAP: ✓")
-                    if MULAN_ENABLED:
+                    if config.MULAN_ENABLED:
                         status_parts.append("MuLan: ✓")
                     logger.info(f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)})")
                     continue
                 
                 # MODIFIED: Call to download_track simplified. Assumes it gets server details from config.
-                path = download_track(TEMP_DIR, item)
+                path = download_track(config.TEMP_DIR, item)
                 if not path:
                     continue
 
@@ -801,7 +783,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             # Mark as recycled
                             session_recycler.mark_recycled()
                         
-                        analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions)
+                        analysis, embedding = analyze_track(path, config.MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions)
                         if analysis is None:
                             logger.warning(f"Skipping track {track_name_full} as analysis returned None.")
                             tracks_skipped_count += 1
@@ -843,7 +825,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             # session, keeping the text model and its cached label
                             # embeddings alive (much smaller footprint and faster to
                             # reload later).
-                            if PER_SONG_MODEL_RELOAD:
+                            if config.PER_SONG_MODEL_RELOAD:
                                 from .clap_analyzer import unload_clap_audio_only
                                 unload_clap_audio_only()
                                 logger.debug(f"  - CLAP audio model unloaded after song (PER_SONG_MODEL_RELOAD=true)")
@@ -859,21 +841,21 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         # Compute other_features from CLAP audio embedding
                         if clap_embedding_for_track is not None and clap_label_embeddings is not None:
                             other_features_dict = compute_other_features_from_clap(clap_embedding_for_track, clap_label_embeddings)
-                            other_features = ",".join([f"{k}:{other_features_dict.get(k, 0.0):.2f}" for k in OTHER_FEATURE_LABELS])
+                            other_features = ",".join([f"{k}:{other_features_dict.get(k, 0.0):.2f}" for k in config.OTHER_FEATURE_LABELS])
                         elif not needs_clap and clap_label_embeddings is not None:
                             # CLAP embedding already in DB - load it to compute other_features
                             try:
                                 existing_clap = get_clap_embedding(item['Id'])
                                 if existing_clap is not None:
                                     other_features_dict = compute_other_features_from_clap(existing_clap, clap_label_embeddings)
-                                    other_features = ",".join([f"{k}:{other_features_dict.get(k, 0.0):.2f}" for k in OTHER_FEATURE_LABELS])
+                                    other_features = ",".join([f"{k}:{other_features_dict.get(k, 0.0):.2f}" for k in config.OTHER_FEATURE_LABELS])
                                 else:
-                                    other_features = ",".join([f"{k}:0.00" for k in OTHER_FEATURE_LABELS])
+                                    other_features = ",".join([f"{k}:0.00" for k in config.OTHER_FEATURE_LABELS])
                             except Exception as e:
                                 logger.warning(f"  - Failed to load existing CLAP embedding for other_features: {e}")
-                                other_features = ",".join([f"{k}:0.00" for k in OTHER_FEATURE_LABELS])
+                                other_features = ",".join([f"{k}:0.00" for k in config.OTHER_FEATURE_LABELS])
                         else:
-                            other_features = ",".join([f"{k}:0.00" for k in OTHER_FEATURE_LABELS])
+                            other_features = ",".join([f"{k}:0.00" for k in config.OTHER_FEATURE_LABELS])
                         
                         logger.info(f"SUCCESSFULLY ANALYZED '{track_name_full}' (ID: {item['Id']}):")
                         logger.info(f"  - Tempo: {musicnn_analysis['tempo']:.2f}, Energy: {musicnn_analysis['energy']:.4f}, Key: {musicnn_analysis['key']} {musicnn_analysis['scale']}")
@@ -912,7 +894,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             logger.warning(f"  - Failed to save CLAP embedding: {e}")
                     
                     # MuLan analysis (only if enabled AND needed)
-                    if needs_mulan and MULAN_ENABLED:
+                    if needs_mulan and config.MULAN_ENABLED:
                         logger.info(f"  - Starting MuLan analysis for {track_name_full}...")
                         try:
                             mulan_embedding, duration, num_segments = mulan_analyze(path)
@@ -923,7 +905,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                 track_processed = True
                         except Exception as e:
                             logger.warning(f"  - MuLan analysis failed: {e}")
-                    elif not needs_mulan and MULAN_ENABLED:
+                    elif not needs_mulan and config.MULAN_ENABLED:
                         logger.info(f"  - MuLan embedding already exists, skipping")
                     
                     # Count track as analyzed if we processed MusiCNN, CLAP, or MuLan
@@ -1057,7 +1039,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
         try:
             log_and_update_main("🚀 Starting main analysis process...", 0)
-            clean_temp(TEMP_DIR)
+            clean_temp(config.TEMP_DIR)
             # MODIFIED: Call to get_recent_albums no longer needs server parameters.
             all_albums = get_recent_albums(num_recent_albums)
             if not all_albums:
@@ -1145,7 +1127,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     logger.error(f"Failed to reconcile child tasks from DB: {e}", exc_info=True)
 
                 # Enqueue index rebuild as subtask on default queue (runs serially with song analysis)
-                if albums_completed > last_rebuild_count and (albums_completed - last_rebuild_count) >= REBUILD_INDEX_BATCH_SIZE:
+                if albums_completed > last_rebuild_count and (albums_completed - last_rebuild_count) >= config.REBUILD_INDEX_BATCH_SIZE:
                     log_and_update_main(f"Batch of {albums_completed - last_rebuild_count} albums complete. Enqueueing index rebuild...", current_progress)
                     
                     rebuild_job = rq_queue_default.enqueue(
@@ -1166,7 +1148,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     albums_skipped += 1
                     continue
                 
-                while len(active_jobs) >= MAX_QUEUED_ANALYSIS_JOBS:
+                while len(active_jobs) >= config.MAX_QUEUED_ANALYSIS_JOBS:
                     monitor_and_clear_jobs()
                     time.sleep(5)
                 
@@ -1209,7 +1191,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     
                     # Check MuLan only if enabled
                     needs_mulan_analysis = False
-                    if MULAN_ENABLED:
+                    if config.MULAN_ENABLED:
                         with get_db() as conn, conn.cursor() as cur:
                             track_ids_as_strings = [str(id) for id in track_ids]
                             cur.execute("SELECT item_id FROM mulan_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
@@ -1241,7 +1223,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     status_parts = ["MusiCNN"]
                     if is_clap_available():
                         status_parts.append("CLAP")
-                    if MULAN_ENABLED:
+                    if config.MULAN_ENABLED:
                         status_parts.append("MuLan")
                     logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {existing_count}/{len(tracks)} tracks already analyzed ({' + '.join(status_parts)}).")
                     continue
@@ -1321,7 +1303,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
             final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
             log_and_update_main(final_message, 100, task_state=TASK_STATUS_SUCCESS)
-            clean_temp(TEMP_DIR)
+            clean_temp(config.TEMP_DIR)
             return {"status": "SUCCESS", "message": final_message}
 
         except OperationalError as e:

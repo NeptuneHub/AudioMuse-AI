@@ -5,6 +5,7 @@ Provides web interface and API for natural language music search.
 
 from flask import Blueprint, render_template, request, jsonify
 import logging
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,6 @@ clap_search_bp = Blueprint('clap_search_bp', __name__, template_folder='../templ
 @clap_search_bp.route('/clap_search', methods=['GET'])
 def clap_search_page():
     """Render CLAP text search page."""
-    from config import CLAP_ENABLED, APP_VERSION
     from tasks.clap_text_search import get_cache_stats
     
     cache_stats = get_cache_stats()
@@ -23,8 +23,8 @@ def clap_search_page():
         'clap_search.html',
         title='Text Search - AudioMuse-AI',
         active='clap_search',
-        app_version=APP_VERSION,
-        clap_enabled=CLAP_ENABLED,
+        app_version=config.APP_VERSION,
+        clap_enabled=config.CLAP_ENABLED,
         cache_stats=cache_stats
     )
 
@@ -55,10 +55,9 @@ def clap_search_api():
         "count": 100
     }
     """
-    from config import CLAP_ENABLED
     from tasks.clap_text_search import search_by_text, is_clap_cache_loaded
     
-    if not CLAP_ENABLED:
+    if not config.CLAP_ENABLED:
         return jsonify({
             'error': 'CLAP text search is disabled. Set CLAP_ENABLED=true in config.',
             'results': []
@@ -120,10 +119,9 @@ def warmup_model_api():
         "expiry_seconds": 600
     }
     """
-    from config import CLAP_ENABLED
     from tasks.clap_text_search import warmup_text_search_model
     
-    if not CLAP_ENABLED:
+    if not config.CLAP_ENABLED:
         return jsonify({
             'error': 'CLAP text search is disabled',
             'loaded': False
@@ -151,10 +149,9 @@ def warmup_status_api():
         "seconds_remaining": 423
     }
     """
-    from config import CLAP_ENABLED
     from tasks.clap_text_search import get_warm_cache_status
     
-    if not CLAP_ENABLED:
+    if not config.CLAP_ENABLED:
         return jsonify({'active': False, 'seconds_remaining': 0})
     
     try:
@@ -168,10 +165,9 @@ def warmup_status_api():
 @clap_search_bp.route('/api/clap/cache/refresh', methods=['POST'])
 def refresh_cache_api():
     """Refresh CLAP cache from database."""
-    from config import CLAP_ENABLED
     from tasks.clap_text_search import refresh_clap_cache, get_cache_stats
     
-    if not CLAP_ENABLED:
+    if not config.CLAP_ENABLED:
         return jsonify({'error': 'CLAP is disabled'}), 400
     
     try:
@@ -202,11 +198,10 @@ def refresh_cache_api():
 @clap_search_bp.route('/api/clap/stats', methods=['GET'])
 def cache_stats_api():
     """Get CLAP cache statistics."""
-    from config import CLAP_ENABLED
     from tasks.clap_text_search import get_cache_stats
     
     stats = get_cache_stats()
-    stats['clap_enabled'] = CLAP_ENABLED
+    stats['clap_enabled'] = config.CLAP_ENABLED
     
     return jsonify(stats)
 
@@ -217,10 +212,9 @@ def top_queries_api():
     Return precomputed top 50 diverse queries.
     Returns empty array if not ready yet (still computing in background).
     """
-    from config import CLAP_ENABLED
     from tasks.clap_text_search import get_cached_top_queries
     
-    if not CLAP_ENABLED:
+    if not config.CLAP_ENABLED:
         return jsonify({'queries': [], 'ready': False, 'message': 'CLAP disabled'}), 200
     
     try:
@@ -232,4 +226,3 @@ def top_queries_api():
     except Exception as e:
         logger.exception("Failed to get top queries")
         return jsonify({'error': 'An internal error occurred. Please try again later.', 'queries': [], 'ready': False}), 500
-

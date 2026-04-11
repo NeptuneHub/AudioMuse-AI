@@ -949,8 +949,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
     # Temperature was already normalized earlier in the function, but double-check here
     if temperature is None:
         try:
-            from config import ALCHEMY_TEMPERATURE as _cfg_temp
-            temperature = float(_cfg_temp)
+            temperature = float(config.ALCHEMY_TEMPERATURE)
         except Exception:
             temperature = 1.0
     

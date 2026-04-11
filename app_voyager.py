@@ -5,7 +5,7 @@ import json
 import numpy as np
 
 # Import the new config option
-from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_CENTROIDS_FILE
+import config
 from tasks.voyager_manager import (
     find_nearest_neighbors_by_id, 
     find_nearest_neighbors_by_vector,
@@ -24,7 +24,7 @@ _MOOD_CENTROIDS_META = {}  # mood_name -> list of {cluster_id, top_tags (top 3)}
 def _load_mood_centroids_for_similarity():
     global _MOOD_CENTROIDS_DATA, _MOOD_CENTROIDS_META
     try:
-        with open(MOOD_CENTROIDS_FILE) as f:
+        with open(config.MOOD_CENTROIDS_FILE) as f:
             data = json.load(f)
         for mood, info in data.items():
             centroids = info.get('centroids', [])
@@ -43,7 +43,7 @@ def _load_mood_centroids_for_similarity():
             _MOOD_CENTROIDS_META[mood] = meta_list
         logger.info(f"Loaded mood centroids for similarity: {', '.join(f'{m}({len(cs)})' for m, cs in _MOOD_CENTROIDS_DATA.items())}")
     except Exception as e:
-        logger.warning(f"Could not load mood centroids from {MOOD_CENTROIDS_FILE}: {e}")
+        logger.warning(f"Could not load mood centroids from {config.MOOD_CENTROIDS_FILE}: {e}")
 
 _load_mood_centroids_for_similarity()
 
@@ -266,14 +266,14 @@ def get_similar_tracks_endpoint():
     
     eliminate_duplicates_str = request.args.get('eliminate_duplicates')
     if eliminate_duplicates_str is None:
-        eliminate_duplicates = SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
+        eliminate_duplicates = config.SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
     else:
         eliminate_duplicates = eliminate_duplicates_str.lower() == 'true'
 
     radius_similarity_str = request.args.get('radius_similarity')
     if radius_similarity_str is None:
         # Use configured default when parameter is omitted
-        radius_similarity = SIMILARITY_RADIUS_DEFAULT
+        radius_similarity = config.SIMILARITY_RADIUS_DEFAULT
     else:
         radius_similarity = radius_similarity_str.lower() == 'true'
 

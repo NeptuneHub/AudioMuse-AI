@@ -4,7 +4,7 @@ import logging
 
 from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
 from tasks.mediaserver import resolve_emby_jellyfin_user # Import the new resolver function
-from config import MEDIASERVER_TYPE, JELLYFIN_USER_ID, JELLYFIN_TOKEN, NAVIDROME_USER, NAVIDROME_PASSWORD # Import configs
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ def sonic_fingerprint_page():
     """
     try:
         # The default user info will now be fetched by an API call from the frontend
-        return render_template('sonic_fingerprint.html', mediaserver_type=MEDIASERVER_TYPE, title = 'AudioMuse-AI - Sonic Fingerprint', active='sonic_fingerprint')
+        return render_template('sonic_fingerprint.html', mediaserver_type=config.MEDIASERVER_TYPE, title = 'AudioMuse-AI - Sonic Fingerprint', active='sonic_fingerprint')
     except Exception as e:
          logger.error(f"Error rendering sonic_fingerprint.html: {e}", exc_info=True)
          return "Sonic Fingerprint page not implemented yet. Use the API at /api/sonic_fingerprint/generate"
@@ -51,13 +51,13 @@ def get_media_server_defaults():
     """
     # MODIFIED: Removed the security credentials from the response.
     # We only return the user ID/username to pre-fill forms, but not the tokens/passwords.
-    if MEDIASERVER_TYPE == 'jellyfin':
+    if config.MEDIASERVER_TYPE == 'jellyfin':
         return jsonify({
-            "default_user_id": JELLYFIN_USER_ID,
+            "default_user_id": config.JELLYFIN_USER_ID,
         })
-    elif MEDIASERVER_TYPE == 'navidrome':
+    elif config.MEDIASERVER_TYPE == 'navidrome':
         return jsonify({
-            "default_user": NAVIDROME_USER,
+            "default_user": config.NAVIDROME_USER,
         })
     return jsonify({})
 
@@ -146,12 +146,12 @@ def generate_sonic_fingerprint_endpoint():
                 return jsonify({"error": "Parameter 'n' must be a valid integer."}), 400
         
         user_creds = {}
-        if MEDIASERVER_TYPE == 'jellyfin':
+        if config.MEDIASERVER_TYPE == 'jellyfin':
             user_identifier = data.get('jellyfin_user_identifier')
             if not user_identifier:
                 return jsonify({"error": "Jellyfin User Identifier is required."}), 400
 
-            token = data.get('jellyfin_token') or JELLYFIN_TOKEN
+            token = data.get('jellyfin_token') or config.JELLYFIN_TOKEN
             
             if not token:
                 return jsonify({"error": "Jellyfin API Token is required. Please provide one or set it in the server configuration."}), 400
@@ -165,9 +165,9 @@ def generate_sonic_fingerprint_endpoint():
             user_creds['user_id'] = resolved_user_id
             user_creds['token'] = token
 
-        elif MEDIASERVER_TYPE == 'navidrome':
-            user_creds['user'] = data.get('navidrome_user') or NAVIDROME_USER
-            user_creds['password'] = data.get('navidrome_password') or NAVIDROME_PASSWORD
+        elif config.MEDIASERVER_TYPE == 'navidrome':
+            user_creds['user'] = data.get('navidrome_user') or config.NAVIDROME_USER
+            user_creds['password'] = data.get('navidrome_password') or config.NAVIDROME_PASSWORD
             if not user_creds['user'] or not user_creds['password']:
                 return jsonify({"error": "Navidrome username and password are required. Please provide them or set them in the server configuration."}), 400
         

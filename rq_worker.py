@@ -14,6 +14,7 @@ os.environ['AUDIOMUSE_ROLE'] = 'worker'
 
 # Import Worker from rq
 from rq import Worker
+import config
 
 # Import the redis_conn, rq_queue (which is the 'default' queue),
 # and the Flask app instance from your main app.py.
@@ -23,7 +24,6 @@ try:
     # Import the specific queues we defined
     from app import app
     from app_helper import redis_conn
-    from config import APP_VERSION
 except ImportError as e:
     print(f"Error importing from app.py: {e}")
     print("Please ensure app.py is in the Python path and does not have top-level errors.")
@@ -38,7 +38,7 @@ if __name__ == '__main__':
     # The queues_to_listen are already configured with this connection.
 
     # Use the list of names directly for the log message
-    print(f"DEFAULT RQ Worker starting. Version: {APP_VERSION}. Listening on queues: {queues_to_listen}")
+    print(f"DEFAULT RQ Worker starting. Version: {config.APP_VERSION}. Listening on queues: {queues_to_listen}")
     print(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
 
     # Preload CLAP model to avoid loading delays on first text search

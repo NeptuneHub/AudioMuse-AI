@@ -13,9 +13,7 @@ from rq import get_current_job
 from rq.exceptions import NoSuchJobError
 
 # Import configuration
-from config import (
-    REDIS_URL, DATABASE_URL, MAX_QUEUED_ANALYSIS_JOBS, CLEANING_SAFETY_LIMIT
-)
+import config
 
 # Import other project modules
 from .mediaserver import get_recent_albums, get_tracks_from_album
@@ -169,11 +167,14 @@ def identify_and_clean_orphaned_albums_task():
             # Safety check: limit deletion to prevent accidents
             total_orphaned_albums = len(orphaned_albums_list)
             safety_limit_applied = False
-            if total_orphaned_albums > CLEANING_SAFETY_LIMIT:
+            if total_orphaned_albums > config.CLEANING_SAFETY_LIMIT:
                 safety_limit_applied = True
-                log_and_update_main(f"⚠️ Safety limit: Found {total_orphaned_albums} orphaned albums, limiting to first {CLEANING_SAFETY_LIMIT} for safety", 92)
+                log_and_update_main(
+                    f"⚠️ Safety limit: Found {total_orphaned_albums} orphaned albums, limiting to first {config.CLEANING_SAFETY_LIMIT} for safety",
+                    92,
+                )
                 # Keep only first CLEANING_SAFETY_LIMIT albums
-                orphaned_albums_list = orphaned_albums_list[:CLEANING_SAFETY_LIMIT]
+                orphaned_albums_list = orphaned_albums_list[:config.CLEANING_SAFETY_LIMIT]
                 # Recalculate track IDs for limited albums
                 limited_track_ids = set()
                 for album in orphaned_albums_list:

@@ -28,7 +28,7 @@ from sklearn.mixture import GaussianMixture
 import voyager  # type: ignore
 
 logger = logging.getLogger(__name__)
-from config import ARTIST_INDEX_MAX_PART_SIZE_MB
+import config
 
 # --- Configuration ---
 ARTIST_INDEX_NAME = 'artist_similarity_index'
@@ -38,7 +38,7 @@ GMM_COVARIANCE_TYPE = 'diag'  # 'diag' is faster than 'full' and works well for 
 GMM_MAX_ITER = 100
 GMM_N_INIT = 3
 MIN_TRACKS_PER_ARTIST = 1  # Minimum tracks needed to build a GMM for an artist (lowered to include all artists)
-ARTIST_INDEX_MAX_PART_SIZE = ARTIST_INDEX_MAX_PART_SIZE_MB * 1024 * 1024  # bytes threshold for segmented artist index storage
+ARTIST_INDEX_MAX_PART_SIZE = config.ARTIST_INDEX_MAX_PART_SIZE_MB * 1024 * 1024  # bytes threshold for segmented artist index storage
 
 def _split_bytes(data: bytes, part_size: int) -> list:
     """Split `data` into byte chunks, each <= part_size."""
@@ -683,7 +683,7 @@ def build_and_store_artist_index(db_conn=None):
             else:
                 parts = _split_bytes(index_bytes, ARTIST_INDEX_MAX_PART_SIZE)
                 num_parts = len(parts)
-                logger.info(f"Artist index size {len(index_bytes)} exceeds {ARTIST_INDEX_MAX_PART_SIZE_MB}MB - storing as {num_parts} segmented rows.")
+                logger.info(f"Artist index size {len(index_bytes)} exceeds {config.ARTIST_INDEX_MAX_PART_SIZE_MB}MB - storing as {num_parts} segmented rows.")
 
                 insert_q = "INSERT INTO artist_index_data (index_name, index_data, artist_map_json, gmm_params_json, created_at) VALUES (%s, %s, %s, %s, NOW())"
                 for idx, part in enumerate(parts, start=1):

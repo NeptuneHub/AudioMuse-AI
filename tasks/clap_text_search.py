@@ -142,9 +142,8 @@ def load_clap_cache_from_db():
     global _CLAP_CACHE
     
     from app_helper import get_db
-    from config import CLAP_ENABLED, CLAP_EMBEDDING_DIMENSION
     
-    if not CLAP_ENABLED:
+    if not config.CLAP_ENABLED:
         logger.info("CLAP is disabled, skipping cache load.")
         return False
     
@@ -186,8 +185,8 @@ def load_clap_cache_from_db():
             # Convert BYTEA to numpy array
             embedding = np.frombuffer(embedding_blob, dtype=np.float32)
             
-            if embedding.shape[0] != CLAP_EMBEDDING_DIMENSION:
-                logger.warning(f"Skipping {item_id}: wrong dimension {embedding.shape[0]} (expected {CLAP_EMBEDDING_DIMENSION})")
+            if embedding.shape[0] != config.CLAP_EMBEDDING_DIMENSION:
+                logger.warning(f"Skipping {item_id}: wrong dimension {embedding.shape[0]} (expected {config.CLAP_EMBEDDING_DIMENSION})")
                 continue
             
             embeddings_list.append(embedding)
@@ -251,9 +250,8 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         List of dicts with item_id, title, author, similarity
     """
     from .clap_analyzer import get_text_embedding
-    from config import CLAP_ENABLED
-    
-    if not CLAP_ENABLED:
+
+    if not config.CLAP_ENABLED:
         return []
     
     # Cache must be loaded at startup - no lazy loading
@@ -277,8 +275,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         
         # Over-fetch candidates to allow per-artist filtering.
         # Formula matches voyager: n + max(20, n * 4) + 1
-        from config import MAX_SONGS_PER_ARTIST
-        artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+        artist_cap = config.MAX_SONGS_PER_ARTIST if config.MAX_SONGS_PER_ARTIST and config.MAX_SONGS_PER_ARTIST > 0 else 0
         fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
         top_indices = np.argsort(similarities)[::-1][:fetch_size]
         

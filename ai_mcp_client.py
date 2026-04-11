@@ -813,8 +813,6 @@ def get_mcp_tools() -> List[Dict]:
     
     CLAP Text Search: Check if available before using text_search tool.
     """
-    from config import CLAP_ENABLED
-    
     tools = [
         {
             "name": "song_similarity",
@@ -842,7 +840,7 @@ def get_mcp_tools() -> List[Dict]:
     ]
     
     # Add text_search only if CLAP is enabled
-    if CLAP_ENABLED:
+    if config.CLAP_ENABLED:
         tools.append({
             "name": "text_search",
             "description": "🥈 PRIORITY #2: HIGH PRIORITY - Natural language search using CLAP. ✅ USE for: INSTRUMENTS (piano, guitar, ukulele), SOUND DESCRIPTIONS (romantic, dreamy, chill vibes), DESCRIPTIVE QUERIES ('energetic workout'). Supports optional tempo/energy filters for hybrid search.",

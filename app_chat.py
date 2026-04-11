@@ -83,15 +83,14 @@ def chat_config_defaults_api():
     API endpoint to provide default configuration values for the chat interface.
     """
     # Read from config module attributes (may be overridden by DB settings via apply_settings_to_config)
-    import config as cfg
     return jsonify({
-        "default_ai_provider": cfg.AI_MODEL_PROVIDER,
-        "default_ollama_model_name": cfg.OLLAMA_MODEL_NAME,
-        "ollama_server_url": cfg.OLLAMA_SERVER_URL,
-        "default_openai_model_name": cfg.OPENAI_MODEL_NAME,
-        "openai_server_url": cfg.OPENAI_SERVER_URL,
-        "default_gemini_model_name": cfg.GEMINI_MODEL_NAME,
-        "default_mistral_model_name": cfg.MISTRAL_MODEL_NAME,
+        "default_ai_provider": config.AI_MODEL_PROVIDER,
+        "default_ollama_model_name": config.OLLAMA_MODEL_NAME,
+        "ollama_server_url": config.OLLAMA_SERVER_URL,
+        "default_openai_model_name": config.OPENAI_MODEL_NAME,
+        "openai_server_url": config.OPENAI_SERVER_URL,
+        "default_gemini_model_name": config.GEMINI_MODEL_NAME,
+        "default_mistral_model_name": config.MISTRAL_MODEL_NAME,
     }), 200
 
 @chat_bp.route('/api/chatPlaylist', methods=['POST'])
@@ -354,7 +353,6 @@ def chat_playlist_api():
     max_iterations = 5  # Prevent infinite loops
     target_song_count = 100
     # Over-collect so artist diversity cap + proportional sampling still yields ~100
-    from config import MAX_SONGS_PER_ARTIST_PLAYLIST
     collection_cap = 1000  # Hard ceiling on raw collection
 
     def _diversified_count(songs, cap):
@@ -369,7 +367,7 @@ def chat_playlist_api():
         return kept
 
     for iteration in range(max_iterations):
-        usable_song_count = _diversified_count(all_songs, MAX_SONGS_PER_ARTIST_PLAYLIST)
+        usable_song_count = _diversified_count(all_songs, config.MAX_SONGS_PER_ARTIST_PLAYLIST)
 
         log_messages.append(f"\n{'='*60}")
         log_messages.append(f"ITERATION {iteration + 1}/{max_iterations}")
@@ -804,7 +802,7 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
                 log_messages.append(f"\n⚠️ Rating filter skipped: {str(e)[:100]}")
 
         # --- Phase 1: Artist Diversity Cap on full collected pool ---
-        max_per_artist = MAX_SONGS_PER_ARTIST_PLAYLIST
+        max_per_artist = config.MAX_SONGS_PER_ARTIST_PLAYLIST
         artist_song_counts = {}
         diversified_pool = []
         diversity_overflow = []
@@ -885,10 +883,8 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
         # --- Song Ordering for Smooth Transitions (Phase 3A) ---
         try:
             from tasks.playlist_ordering import order_playlist
-            from config import PLAYLIST_ENERGY_ARC
-
             song_id_list = [s['item_id'] for s in final_query_results_list]
-            ordered_ids = order_playlist(song_id_list, energy_arc=PLAYLIST_ENERGY_ARC)
+            ordered_ids = order_playlist(song_id_list, energy_arc=config.PLAYLIST_ENERGY_ARC)
 
             # Rebuild list in new order
             id_to_song = {s['item_id']: s for s in final_query_results_list}

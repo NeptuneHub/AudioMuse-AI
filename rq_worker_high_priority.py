@@ -2,6 +2,7 @@
 import os
 import sys
 import logging
+import config
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -12,7 +13,6 @@ from rq import Worker
 
 try:
     from app_helper import redis_conn
-    from config import APP_VERSION
 except ImportError as e:
     print(f"Error importing from app.py: {e}")
     print("Please ensure app.py is in the Python path and does not have top-level errors.")
@@ -22,7 +22,7 @@ except ImportError as e:
 queues_to_listen = ['high']
 
 if __name__ == '__main__':
-    print(f"🚀 DEDICATED HIGH PRIORITY RQ Worker starting. Version: {APP_VERSION}. Listening ONLY on queues: {queues_to_listen}")
+    print(f"🚀 DEDICATED HIGH PRIORITY RQ Worker starting. Version: {config.APP_VERSION}. Listening ONLY on queues: {queues_to_listen}")
     print(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
 
     # High priority worker doesn't analyze songs, so no CLAP preload needed

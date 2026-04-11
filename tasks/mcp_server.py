@@ -12,6 +12,7 @@ from urllib.parse import quote, urlparse, urlunparse
 import psycopg2
 from psycopg2 import OperationalError, sql
 from psycopg2.extras import DictCursor
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +21,15 @@ _library_context_cache = None
 
 
 def _build_ai_chat_db_url():
-    from config import AI_CHAT_DB_USER_NAME, AI_CHAT_DB_USER_PASSWORD, DATABASE_URL
-    if not AI_CHAT_DB_USER_NAME:
-        return DATABASE_URL
-    parsed = urlparse(DATABASE_URL)
+    if not config.AI_CHAT_DB_USER_NAME:
+        return config.DATABASE_URL
+    parsed = urlparse(config.DATABASE_URL)
     host = parsed.hostname or ''
     if parsed.port:
         host = f"{host}:{parsed.port}"
     return urlunparse((
         parsed.scheme,
-        f"{quote(AI_CHAT_DB_USER_NAME,safe='')}:{quote(AI_CHAT_DB_USER_PASSWORD,safe='')}@{host}",
+        f"{quote(config.AI_CHAT_DB_USER_NAME,safe='')}:{quote(config.AI_CHAT_DB_USER_PASSWORD,safe='')}@{host}",
         parsed.path or '', parsed.params or '', parsed.query or '', parsed.fragment or ''
     ))
 
@@ -41,24 +41,23 @@ def _ensure_ai_chat_db_user():
     global _ai_chat_db_user_configured
     if _ai_chat_db_user_configured:
         return
-    from config import AI_CHAT_DB_USER_NAME, AI_CHAT_DB_USER_PASSWORD, DATABASE_URL
-    if not AI_CHAT_DB_USER_NAME or not AI_CHAT_DB_USER_PASSWORD:
+    if not config.AI_CHAT_DB_USER_NAME or not config.AI_CHAT_DB_USER_PASSWORD:
         return
     try:
-        with psycopg2.connect(DATABASE_URL) as admin_conn, admin_conn.cursor() as cur:
-            cur.execute('SELECT 1 FROM pg_roles WHERE rolname = %s', (AI_CHAT_DB_USER_NAME,))
+        with psycopg2.connect(config.DATABASE_URL) as admin_conn, admin_conn.cursor() as cur:
+            cur.execute('SELECT 1 FROM pg_roles WHERE rolname = %s', (config.AI_CHAT_DB_USER_NAME,))
             if cur.fetchone() is None:
-                cur.execute(sql.SQL('CREATE USER {} WITH LOGIN PASSWORD %s').format(sql.Identifier(AI_CHAT_DB_USER_NAME)), [AI_CHAT_DB_USER_PASSWORD])
+                cur.execute(sql.SQL('CREATE USER {} WITH LOGIN PASSWORD %s').format(sql.Identifier(config.AI_CHAT_DB_USER_NAME)), [config.AI_CHAT_DB_USER_PASSWORD])
             else:
                 try:
                     psycopg2.connect(_build_ai_chat_db_url()).close()
                 except OperationalError:
-                    cur.execute(sql.SQL('ALTER USER {} WITH PASSWORD %s').format(sql.Identifier(AI_CHAT_DB_USER_NAME)), [AI_CHAT_DB_USER_PASSWORD])
+                    cur.execute(sql.SQL('ALTER USER {} WITH PASSWORD %s').format(sql.Identifier(config.AI_CHAT_DB_USER_NAME)), [config.AI_CHAT_DB_USER_PASSWORD])
             dbname = admin_conn.get_dsn_parameters().get('dbname')
             if dbname:
-                cur.execute(sql.SQL('GRANT CONNECT ON DATABASE {} TO {}').format(sql.Identifier(dbname), sql.Identifier(AI_CHAT_DB_USER_NAME)))
-            cur.execute(sql.SQL('GRANT USAGE ON SCHEMA public TO {}').format(sql.Identifier(AI_CHAT_DB_USER_NAME)))
-            cur.execute(sql.SQL('GRANT SELECT ON ALL TABLES IN SCHEMA public TO {}').format(sql.Identifier(AI_CHAT_DB_USER_NAME)))
+                cur.execute(sql.SQL('GRANT CONNECT ON DATABASE {} TO {}').format(sql.Identifier(dbname), sql.Identifier(config.AI_CHAT_DB_USER_NAME)))
+            cur.execute(sql.SQL('GRANT USAGE ON SCHEMA public TO {}').format(sql.Identifier(config.AI_CHAT_DB_USER_NAME)))
+            cur.execute(sql.SQL('GRANT SELECT ON ALL TABLES IN SCHEMA public TO {}').format(sql.Identifier(config.AI_CHAT_DB_USER_NAME)))
             admin_conn.commit()
             _ai_chat_db_user_configured = True
     except Exception as exc:
@@ -66,12 +65,10 @@ def _ensure_ai_chat_db_user():
 
 
 def get_db_connection():
-    from config import AI_CHAT_DB_USER_NAME
-    if AI_CHAT_DB_USER_NAME:
+    if config.AI_CHAT_DB_USER_NAME:
         _ensure_ai_chat_db_user()
         return psycopg2.connect(_build_ai_chat_db_url())
-    from config import DATABASE_URL
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(config.DATABASE_URL)
 
 
 def get_library_context(force_refresh: bool = False) -> Dict:
@@ -429,13 +426,12 @@ List the famous songs by {artist} now:"""
 def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filter: Optional[str], get_songs: int) -> Dict:
     """Synchronous implementation of CLAP text search with optional hybrid filtering."""
     from tasks.clap_text_search import search_by_text
-    from config import CLAP_ENABLED
     
     db_conn = get_db_connection()
     log_messages = []
     
     try:
-        if not CLAP_ENABLED:
+        if not config.CLAP_ENABLED:
             log_messages.append("CLAP text search is disabled")
             return {"songs": [], "message": "CLAP text search is not enabled. Please enable CLAP_ENABLED in config."}
         

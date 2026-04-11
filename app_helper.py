@@ -19,7 +19,7 @@ from rq.exceptions import NoSuchJobError
 # Note: get_db, redis_conn will now be defined *in this file*.
 
 # Import configuration
-from config import DATABASE_URL, REDIS_URL
+import config
 
 # Import RQ specifics
 from rq.command import send_stop_job_command
@@ -46,7 +46,7 @@ MAX_LOG_ENTRIES_STORED = 10 # Max number of recent log entries to store in the d
 # - health_check_interval: seconds between health checks on idle connections
 # - retry_on_timeout: automatically retry on timeout errors
 redis_conn = Redis.from_url(
-    REDIS_URL, 
+    config.REDIS_URL, 
     socket_connect_timeout=30,
     socket_timeout=60,
     socket_keepalive=True,
@@ -63,7 +63,7 @@ def get_db():
     if 'db' not in g:
         try:
             g.db = psycopg2.connect(
-                DATABASE_URL,
+                config.DATABASE_URL,
                 connect_timeout=30,        # Time to establish connection (increased from 15)
                 keepalives_idle=600,       # Start keepalives after 10 min idle
                 keepalives_interval=30,    # Send keepalive every 30 sec
@@ -188,8 +188,7 @@ def init_db():
         cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')")
         if not cur.fetchone()[0]: cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
         # Create 'mulan_embedding' table only if MuLan is enabled
-        from config import MULAN_ENABLED
-        if MULAN_ENABLED:
+        if config.MULAN_ENABLED:
             cur.execute("CREATE TABLE IF NOT EXISTS mulan_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
             cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'mulan_embedding' AND column_name = 'embedding')")
             if not cur.fetchone()[0]: cur.execute("ALTER TABLE mulan_embedding ADD COLUMN embedding BYTEA")

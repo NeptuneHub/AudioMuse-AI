@@ -24,7 +24,7 @@ from collections import defaultdict
 from scipy.spatial.distance import cdist
 from psycopg2.extras import DictCursor
 
-from config import (OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DISTANCE, MAX_SONGS_PER_ARTIST)
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +72,8 @@ def apply_distance_filtering_direct(song_results: list, db_conn, log_prefix=""):
     Returns:
         Filtered list of song dictionaries
     """
-    from config import (DUPLICATE_DISTANCE_CHECK_LOOKBACK, 
-                       DUPLICATE_DISTANCE_THRESHOLD_COSINE, 
-                       DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, 
-                       VOYAGER_METRIC)
     
-    if DUPLICATE_DISTANCE_CHECK_LOOKBACK <= 0:
+    if config.DUPLICATE_DISTANCE_CHECK_LOOKBACK <= 0:
         return song_results
 
     if not song_results:
@@ -107,13 +103,13 @@ def apply_distance_filtering_direct(song_results: list, db_conn, log_prefix=""):
             details_map[row['item_id']] = {'title': row['title'], 'author': row['author']}
     
     # Use the same thresholds as voyager_manager
-    threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if VOYAGER_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
-    metric_name = 'Angular' if VOYAGER_METRIC == 'angular' else 'Euclidean'
+    threshold = config.DUPLICATE_DISTANCE_THRESHOLD_COSINE if config.VOYAGER_METRIC == 'angular' else config.DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
+    metric_name = 'Angular' if config.VOYAGER_METRIC == 'angular' else 'Euclidean'
     
     filtered_songs = []
     distance_filtered_count = 0
     
-    logger.debug(f"{log_prefix}Starting distance filtering with threshold {threshold:.4f} ({metric_name}), lookback window: {DUPLICATE_DISTANCE_CHECK_LOOKBACK}")
+    logger.debug(f"{log_prefix}Starting distance filtering with threshold {threshold:.4f} ({metric_name}), lookback window: {config.DUPLICATE_DISTANCE_CHECK_LOOKBACK}")
     
     # *** DIAGNOSTIC: Track some statistics ***
     total_comparisons = 0
@@ -132,7 +128,7 @@ def apply_distance_filtering_direct(song_results: list, db_conn, log_prefix=""):
         closest_song = None
         
         # Check against the last N songs in the filtered list
-        lookback_window = filtered_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]
+        lookback_window = filtered_songs[-config.DUPLICATE_DISTANCE_CHECK_LOOKBACK:]
         for recent_song in lookback_window:
             recent_vector = vectors_map.get(recent_song['item_id'])
             if recent_vector is None:
@@ -142,7 +138,7 @@ def apply_distance_filtering_direct(song_results: list, db_conn, log_prefix=""):
             total_comparisons += 1
             
             # Calculate direct distance using the same functions as voyager_manager
-            if VOYAGER_METRIC == 'angular':
+            if config.VOYAGER_METRIC == 'angular':
                 # Angular distance calculation
                 if np.linalg.norm(current_vector) > 0 and np.linalg.norm(recent_vector) > 0:
                     v1_u = current_vector / np.linalg.norm(current_vector)

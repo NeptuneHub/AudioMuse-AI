@@ -4,7 +4,7 @@ import uuid
 import logging
 
 # Import configuration from the main config.py
-from config import NUM_RECENT_ALBUMS, TOP_N_MOODS
+import config
 
 # RQ import
 from rq import Retry
@@ -95,8 +95,8 @@ def start_analysis_endpoint():
     data = request.json or {}
     # MODIFIED: Removed jellyfin_url, jellyfin_user_id, and jellyfin_token as they are no longer passed to the task.
     # The task now gets these details from the central config.
-    num_recent_albums = int(data.get('num_recent_albums', NUM_RECENT_ALBUMS))
-    top_n_moods = int(data.get('top_n_moods', TOP_N_MOODS))
+    num_recent_albums = int(data.get('num_recent_albums', config.NUM_RECENT_ALBUMS))
+    top_n_moods = int(data.get('top_n_moods', config.TOP_N_MOODS))
     logger.info(f"Starting analysis request: num_recent_albums={num_recent_albums}, top_n_moods={top_n_moods}")
 
     job_id = str(uuid.uuid4())

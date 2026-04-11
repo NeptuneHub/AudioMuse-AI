@@ -2,7 +2,7 @@ import logging
 import numpy as np
 from datetime import datetime, timezone
 
-from config import SONIC_FINGERPRINT_TOP_N_SONGS, SONIC_FINGERPRINT_NEIGHBORS
+import config
 from .mediaserver import get_top_played_songs, get_last_played_time
 from .voyager_manager import find_nearest_neighbors_by_vector
 
@@ -26,11 +26,11 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
     logger.info("Generating sonic fingerprint...")
 
     # Determine the total desired size for the final playlist
-    total_desired_size = num_neighbors if num_neighbors is not None else SONIC_FINGERPRINT_NEIGHBORS
+    total_desired_size = num_neighbors if num_neighbors is not None else config.SONIC_FINGERPRINT_NEIGHBORS
     logger.info(f"Targeting a total playlist size of {total_desired_size}.")
 
     # 1. Get top N played songs from the media server, passing user credentials
-    top_songs = get_top_played_songs(limit=SONIC_FINGERPRINT_TOP_N_SONGS, user_creds=user_creds)
+    top_songs = get_top_played_songs(limit=config.SONIC_FINGERPRINT_TOP_N_SONGS, user_creds=user_creds)
     if not top_songs:
         logger.warning("No top played songs found. Cannot generate sonic fingerprint.")
         return []

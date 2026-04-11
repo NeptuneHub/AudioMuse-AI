@@ -8,7 +8,7 @@ import unicodedata
 import google.genai as genai # Import Gemini library
 from mistralai import Mistral
 import os # Import os to potentially read GEMINI_API_CALL_DELAY_SECONDS
-from config import MAX_SONGS_IN_AI_PROMPT, AI_MODEL_PROVIDER
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
         str: The extracted playlist name from the model's response, or an error message.
     """
     # Detect which format to use: OpenAI chat-completions (messages array) vs Ollama generate (prompt string). fix 360
-    is_openai_format = AI_MODEL_PROVIDER == "OPENAI"
+    is_openai_format = config.AI_MODEL_PROVIDER == "OPENAI"
 
     headers = {
         "Content-Type": "application/json"
@@ -449,12 +449,12 @@ def get_ai_playlist_name(provider, ollama_url, ollama_model_name, gemini_api_key
 
     # Format the song list for the prompt
     # Truncate to MAX_SONGS_IN_AI_PROMPT to avoid token limit issues with large playlists
-    songs_for_prompt = song_list[:MAX_SONGS_IN_AI_PROMPT]
+    songs_for_prompt = song_list[:config.MAX_SONGS_IN_AI_PROMPT]
     formatted_song_list = "\n".join([f"- {song.get('title', 'Unknown Title')} by {song.get('author', 'Unknown Artist')}" for song in songs_for_prompt])
     
     # Log if we truncated the list
-    if len(song_list) > MAX_SONGS_IN_AI_PROMPT:
-        logger.info("Truncated song list from %d to %d songs for AI prompt to avoid token limits", len(song_list), MAX_SONGS_IN_AI_PROMPT)
+    if len(song_list) > config.MAX_SONGS_IN_AI_PROMPT:
+        logger.info("Truncated song list from %d to %d songs for AI prompt to avoid token limits", len(song_list), config.MAX_SONGS_IN_AI_PROMPT)
 
     # Construct the full prompt using the template and all features
     # The new prompt only requires the song list sample # type: ignore

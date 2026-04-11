@@ -3,10 +3,7 @@
 import numpy as np
 
 # Import necessary constants from config
-from config import (
-    TEMPO_MAX_BPM, TEMPO_MIN_BPM,
-    ENERGY_MAX, ENERGY_MIN
-)
+import config
 
 def score_vector(row, mood_labels_list, other_feature_labels_list): # other_feature_labels_list is now passed
     """Converts a database row into a numerical feature vector for clustering."""
@@ -16,13 +13,13 @@ def score_vector(row, mood_labels_list, other_feature_labels_list): # other_feat
     mood_str = row['mood_vector'] or ""
     
     # Normalize tempo to 0-1 range
-    tempo_range = TEMPO_MAX_BPM - TEMPO_MIN_BPM
-    tempo_norm = (tempo - TEMPO_MIN_BPM) / tempo_range if tempo_range > 0 else 0.0
+    tempo_range = config.TEMPO_MAX_BPM - config.TEMPO_MIN_BPM
+    tempo_norm = (tempo - config.TEMPO_MIN_BPM) / tempo_range if tempo_range > 0 else 0.0
     tempo_norm = np.clip(tempo_norm, 0.0, 1.0)
 
     # Normalize energy to 0-1 range
-    energy_range = ENERGY_MAX - ENERGY_MIN
-    energy_norm = (energy - ENERGY_MIN) / energy_range if energy_range > 0 else 0.0
+    energy_range = config.ENERGY_MAX - config.ENERGY_MIN
+    energy_norm = (energy - config.ENERGY_MIN) / energy_range if energy_range > 0 else 0.0
     energy_norm = np.clip(energy_norm, 0.0, 1.0)
 
     tempo_val = tempo_norm

@@ -16,7 +16,7 @@ except ImportError:
     logger = logging.getLogger(__name__)
     logger.warning("librosa not available. Waveform generation will not work. Install with: pip install librosa")
 
-from config import MEDIASERVER_TYPE
+import config
 from app_helper import get_db
 
 logger = logging.getLogger(__name__)
@@ -212,7 +212,7 @@ def get_waveform_endpoint():
         
         # For better compatibility, we need to fetch the full track details from the media server
         # This ensures we have all the metadata needed for proper file extension detection
-        if MEDIASERVER_TYPE == "navidrome":
+        if config.MEDIASERVER_TYPE == "navidrome":
             # Import Navidrome-specific function to get full song details
             from tasks.mediaserver_navidrome import _navidrome_request
             song_response = _navidrome_request("getSong", {"id": item_id})

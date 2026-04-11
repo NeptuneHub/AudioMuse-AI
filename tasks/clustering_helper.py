@@ -28,14 +28,7 @@ except ImportError:
 from rq.job import Job
 from rq.exceptions import NoSuchJobError
 
-from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DISTANCE,
-                    MAX_SONGS_PER_ARTIST, GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS,
-                    TOP_K_MOODS_FOR_PURITY_CALCULATION, LN_MOOD_DIVERSITY_STATS,
-                    LN_MOOD_PURITY_STATS, LN_MOOD_DIVERSITY_EMBEDING_STATS,
-                    LN_MOOD_PURITY_EMBEDING_STATS, LN_OTHER_FEATURES_DIVERSITY_STATS,
-                    LN_OTHER_FEATURES_PURITY_STATS,
-                    OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
-                    USE_GPU_CLUSTERING)
+import config
 from .commons import score_vector
 
 logger = logging.getLogger(__name__)
@@ -87,7 +80,7 @@ def _perform_single_clustering_iteration(
         pca_model, data_after_pca = None, data_to_cluster
         if params['pca_config']['enabled']:
             # Use GPU PCA if available and enabled
-            if USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE:
+            if config.USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE:
                 pca_model = get_pca_model(n_components=params['pca_config']['components'], use_gpu=True)
             else:
                 pca_model = PCA(n_components=params['pca_config']['components'])
@@ -125,7 +118,7 @@ def _prepare_iteration_data(item_ids, active_mood_labels, use_embeddings, log_pr
     valid_tracks, X_feat_orig_list, X_embed_raw_list = [], [], []
     for row_data in (dict(r) for r in rows if r):
         try:
-            feature_vec = score_vector(row_data, active_mood_labels, OTHER_FEATURE_LABELS)
+            feature_vec = score_vector(row_data, active_mood_labels, config.OTHER_FEATURE_LABELS)
             if use_embeddings:
                 embedding_vec = row_data.get('embedding_vector')
                 if embedding_vec is None or embedding_vec.size == 0:
@@ -276,7 +269,7 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
                 return None, None, None
 
         # Use GPU clustering if enabled and available
-        use_gpu = USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE
+        use_gpu = config.USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE
 
         if use_gpu:
             try:
@@ -296,7 +289,7 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
             elif method == 'gmm':
                 model = GaussianMixture(
                     n_components=params['n_components'],
-                    covariance_type=GMM_COVARIANCE_TYPE,
+                    covariance_type=config.GMM_COVARIANCE_TYPE,
                     init_params='k-means++',
                     n_init=10,
                     random_state=None,
@@ -307,7 +300,7 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
                     n_clusters=params['n_clusters'],
                     assign_labels='kmeans',
                     affinity='nearest_neighbors',
-                    n_neighbors=SPECTRAL_N_NEIGHBORS,
+                    n_neighbors=config.SPECTRAL_N_NEIGHBORS,
                     random_state=params.get("random_state"),
                     n_init=10,
                     verbose=False
@@ -385,7 +378,7 @@ def _format_and_score_iteration_result(
     filtered_clusters = defaultdict(list)
     for cid in set(labels):
         if cid == -1: continue
-        cluster_tracks_info = [t_info for t_info in track_info_list if t_info["label"] == cid and t_info["distance"] <= MAX_DISTANCE]
+        cluster_tracks_info = [t_info for t_info in track_info_list if t_info["label"] == cid and t_info["distance"] <= config.MAX_DISTANCE]
         if not cluster_tracks_info: continue
         
         cluster_tracks_info.sort(key=lambda x: x["distance"])
@@ -398,10 +391,10 @@ def _format_and_score_iteration_result(
             author_norm = (author or "").strip().lower()
 
             # If MAX_SONGS_PER_ARTIST is not configured or <= 0, disable per-artist cap.
-            if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
+            if config.MAX_SONGS_PER_ARTIST is None or config.MAX_SONGS_PER_ARTIST <= 0:
                 allowed_by_artist = True
             else:
-                allowed_by_artist = count_per_artist[author_norm] < MAX_SONGS_PER_ARTIST
+                allowed_by_artist = count_per_artist[author_norm] < config.MAX_SONGS_PER_ARTIST
 
             if allowed_by_artist:
                 selected_tracks_for_playlist.append(t_item_info)
@@ -443,15 +436,15 @@ def _format_and_score_iteration_result(
             playlist_to_centroid_vector_map[temp_name] = center_vec
 
             if centroid_details and any(mood in active_moods for mood in centroid_details.keys()):
-                predominant_mood_key = max((k for k in centroid_details if k in MOOD_LABELS), key=centroid_details.get, default=None)
+                predominant_mood_key = max((k for k in centroid_details if k in config.MOOD_LABELS), key=centroid_details.get, default=None)
                 if predominant_mood_key:
                     current_mood_score = centroid_details.get(predominant_mood_key, 0.0)
                     unique_predominant_mood_scores[predominant_mood_key] = max(unique_predominant_mood_scores.get(predominant_mood_key, 0.0), current_mood_score)
             
-            centroid_other_features = {lk: centroid_details.get(lk, 0.0) for lk in OTHER_FEATURE_LABELS if lk in centroid_details}
+            centroid_other_features = {lk: centroid_details.get(lk, 0.0) for lk in config.OTHER_FEATURE_LABELS if lk in centroid_details}
             if centroid_other_features:
                 predominant_other_key = max(centroid_other_features, key=centroid_other_features.get, default=None)
-                if predominant_other_key and centroid_other_features[predominant_other_key] > OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY:
+                if predominant_other_key and centroid_other_features[predominant_other_key] > config.OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY:
                      unique_predominant_other_feature_scores[predominant_other_key] = max(unique_predominant_other_feature_scores.get(predominant_other_key, 0.0), centroid_other_features[predominant_other_key])
 
     # --- 3. Calculate All Metrics ---
@@ -471,14 +464,14 @@ def _format_and_score_iteration_result(
 
     raw_mood_diversity_score = sum(unique_predominant_mood_scores.values())
     ln_mood_diversity = np.log1p(raw_mood_diversity_score)
-    diversity_stats = LN_MOOD_DIVERSITY_EMBEDING_STATS if use_embeddings else LN_MOOD_DIVERSITY_STATS
+    diversity_stats = config.LN_MOOD_DIVERSITY_EMBEDING_STATS if use_embeddings else config.LN_MOOD_DIVERSITY_STATS
     mean_div, sd_div = diversity_stats.get("mean"), diversity_stats.get("sd")
     if mean_div is not None and sd_div is not None and sd_div > 1e-9:
         metrics['mood_diversity'] = (ln_mood_diversity - mean_div) / sd_div
         
     raw_other_diversity_score = sum(unique_predominant_other_feature_scores.values())
     ln_other_diversity = np.log1p(raw_other_diversity_score)
-    other_div_stats = LN_OTHER_FEATURES_DIVERSITY_STATS
+    other_div_stats = config.LN_OTHER_FEATURES_DIVERSITY_STATS
     mean_other_div, sd_other_div = other_div_stats.get("mean"), other_div_stats.get("sd")
     if mean_other_div is not None and sd_other_div is not None and sd_other_div > 1e-9:
         metrics['other_feature_diversity'] = (ln_other_diversity - mean_other_div) / sd_other_div
@@ -489,8 +482,8 @@ def _format_and_score_iteration_result(
             centroid_data = playlist_centroids.get(name)
             if not centroid_data or not songs: continue
             
-            sorted_moods = sorted([(m,s) for m,s in centroid_data.items() if m in MOOD_LABELS], key=lambda item: item[1], reverse=True)
-            top_moods = [m for m, s in sorted_moods[:TOP_K_MOODS_FOR_PURITY_CALCULATION] if s > 0.01]
+            sorted_moods = sorted([(m,s) for m,s in centroid_data.items() if m in config.MOOD_LABELS], key=lambda item: item[1], reverse=True)
+            top_moods = [m for m, s in sorted_moods[:config.TOP_K_MOODS_FOR_PURITY_CALCULATION] if s > 0.01]
             if not top_moods: continue
 
             song_purity_scores = []
@@ -515,7 +508,7 @@ def _format_and_score_iteration_result(
 
     raw_mood_purity = sum(all_playlist_purities)
     ln_mood_purity = np.log1p(raw_mood_purity)
-    purity_stats = LN_MOOD_PURITY_EMBEDING_STATS if use_embeddings else LN_MOOD_PURITY_STATS
+    purity_stats = config.LN_MOOD_PURITY_EMBEDING_STATS if use_embeddings else config.LN_MOOD_PURITY_STATS
     mean_pur, sd_pur = purity_stats.get("mean"), purity_stats.get("sd")
     if mean_pur is not None and sd_pur is not None and sd_pur > 1e-9:
         metrics['mood_purity'] = (ln_mood_purity - mean_pur) / sd_pur
@@ -526,15 +519,15 @@ def _format_and_score_iteration_result(
             centroid_data = playlist_centroids.get(name)
             if not centroid_data or not songs: continue
 
-            other_features = {k: v for k, v in centroid_data.items() if k in OTHER_FEATURE_LABELS}
+            other_features = {k: v for k, v in centroid_data.items() if k in config.OTHER_FEATURE_LABELS}
             if not other_features: continue
             
             predominant_other = max(other_features, key=other_features.get, default=None)
-            if not predominant_other or other_features[predominant_other] < OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY:
+            if not predominant_other or other_features[predominant_other] < config.OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY:
                 continue
 
             try:
-                feature_idx = OTHER_FEATURE_LABELS.index(predominant_other)
+                feature_idx = config.OTHER_FEATURE_LABELS.index(predominant_other)
                 song_purity_scores = []
                 for item_id, _, _ in songs:
                     song_idx = item_id_to_song_index_map.get(item_id)
@@ -551,7 +544,7 @@ def _format_and_score_iteration_result(
 
     raw_other_purity = sum(all_other_feature_purities)
     ln_other_purity = np.log1p(raw_other_purity)
-    other_purity_stats = LN_OTHER_FEATURES_PURITY_STATS
+    other_purity_stats = config.LN_OTHER_FEATURES_PURITY_STATS
     mean_other_pur, sd_other_pur = other_purity_stats.get("mean"), other_purity_stats.get("sd")
     if mean_other_pur is not None and sd_other_pur is not None and sd_other_pur > 1e-9:
         metrics['other_feature_purity'] = (ln_other_purity - mean_other_pur) / sd_other_pur
@@ -629,7 +622,7 @@ def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
 
     if len(interpreted_vector) > other_features_start:
         other_feature_values = interpreted_vector[other_features_start:]
-        for i, label in enumerate(OTHER_FEATURE_LABELS):
+        for i, label in enumerate(config.OTHER_FEATURE_LABELS):
             if i < len(other_feature_values):
                 score = float(other_feature_values[i])
                 details[label] = score
@@ -707,7 +700,7 @@ def _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=None, perc
             new_subset.append(id_to_track_map[track_id])
             new_ids.add(track_id)
 
-    for genre in STRATIFIED_GENRES:
+    for genre in config.STRATIFIED_GENRES:
         current_genre_count = sum(1 for t in new_subset if _get_track_primary_genre(t) == genre)
         needed = target_per_genre - current_genre_count
         if needed > 0:
@@ -723,7 +716,7 @@ def _get_track_primary_genre(track_data):
     """Helper to determine the primary stratified genre for a track."""
     if 'mood_vector' in track_data and track_data['mood_vector']:
         mood_scores = {p.split(':')[0]: float(p.split(':')[1]) for p in track_data['mood_vector'].split(',') if ':' in p}
-        return max((g for g in STRATIFIED_GENRES if g in mood_scores), key=mood_scores.get, default='__other__')
+        return max((g for g in config.STRATIFIED_GENRES if g in mood_scores), key=mood_scores.get, default='__other__')
     return '__other__'
 
 # Post-processing functions have been moved to clustering_postprocessing.py for better organization

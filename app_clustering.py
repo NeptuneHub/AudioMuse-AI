@@ -5,19 +5,7 @@ import logging
 import traceback
 
 # Import all necessary configuration variables
-from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP_DIR, \
-    REDIS_URL, DATABASE_URL, MAX_DISTANCE, MAX_SONGS_PER_CLUSTER, MAX_SONGS_PER_ARTIST, NUM_RECENT_ALBUMS, \
-    SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_SILHOUETTE, SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ, \
-    SCORE_WEIGHT_PURITY, SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY, SCORE_WEIGHT_OTHER_FEATURE_PURITY, \
-    MIN_SONGS_PER_GENRE_FOR_STRATIFICATION, STRATIFIED_SAMPLING_TARGET_PERCENTILE, \
-    CLUSTER_ALGORITHM, NUM_CLUSTERS_MIN, NUM_CLUSTERS_MAX, DBSCAN_EPS_MIN, DBSCAN_EPS_MAX, GMM_COVARIANCE_TYPE, \
-    DBSCAN_MIN_SAMPLES_MIN, DBSCAN_MIN_SAMPLES_MAX, GMM_N_COMPONENTS_MIN, GMM_N_COMPONENTS_MAX, \
-    SPECTRAL_N_CLUSTERS_MIN, SPECTRAL_N_CLUSTERS_MAX, ENABLE_CLUSTERING_EMBEDDINGS, \
-    PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, MOOD_LABELS, TOP_N_MOODS, \
-    AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, \
-    OPENAI_SERVER_URL, OPENAI_MODEL_NAME, OPENAI_API_KEY, \
-    GEMINI_API_KEY, GEMINI_MODEL_NAME, \
-    TOP_N_PLAYLISTS, MISTRAL_API_KEY, MISTRAL_MODEL_NAME
+import config
 
 # RQ import
 from rq import Retry
@@ -287,44 +275,44 @@ def start_clustering_endpoint():
     job = rq_queue_high.enqueue(
         'tasks.clustering.run_clustering_task', # Enqueue by string path
         kwargs={ # Pass all arguments as a dictionary
-            "clustering_method": data.get('clustering_method', CLUSTER_ALGORITHM),
-            "num_clusters_min": int(data.get('num_clusters_min', NUM_CLUSTERS_MIN)),
-            "num_clusters_max": int(data.get('num_clusters_max', NUM_CLUSTERS_MAX)),
-            "dbscan_eps_min": float(data.get('dbscan_eps_min', DBSCAN_EPS_MIN)),
-            "dbscan_eps_max": float(data.get('dbscan_eps_max', DBSCAN_EPS_MAX)),
-            "dbscan_min_samples_min": int(data.get('dbscan_min_samples_min', DBSCAN_MIN_SAMPLES_MIN)),
-            "dbscan_min_samples_max": int(data.get('dbscan_min_samples_max', DBSCAN_MIN_SAMPLES_MAX)),
-            "gmm_n_components_min": int(data.get('gmm_n_components_min', GMM_N_COMPONENTS_MIN)),
-            "gmm_n_components_max": int(data.get('gmm_n_components_max', GMM_N_COMPONENTS_MAX)),
-            "spectral_n_clusters_min": int(data.get('spectral_n_clusters_min', SPECTRAL_N_CLUSTERS_MIN)),
-            "spectral_n_clusters_max": int(data.get('spectral_n_clusters_max', SPECTRAL_N_CLUSTERS_MAX)),
-            "pca_components_min": int(data.get('pca_components_min', PCA_COMPONENTS_MIN)),
-            "pca_components_max": int(data.get('pca_components_max', PCA_COMPONENTS_MAX)),
-            "num_clustering_runs": int(data.get('clustering_runs', CLUSTERING_RUNS)),
-            "max_songs_per_cluster_val": int(data.get('max_songs_per_cluster', MAX_SONGS_PER_CLUSTER)),
-            "top_n_playlists_param": int(data.get('top_n_playlists', TOP_N_PLAYLISTS)),
-            "min_songs_per_genre_for_stratification_param": int(data.get('min_songs_per_genre_for_stratification', MIN_SONGS_PER_GENRE_FOR_STRATIFICATION)),
-            "stratified_sampling_target_percentile_param": int(data.get('stratified_sampling_target_percentile', STRATIFIED_SAMPLING_TARGET_PERCENTILE)),
-            "score_weight_diversity_param": float(data.get('score_weight_diversity', SCORE_WEIGHT_DIVERSITY)),
-            "score_weight_silhouette_param": float(data.get('score_weight_silhouette', SCORE_WEIGHT_SILHOUETTE)),
-            "score_weight_davies_bouldin_param": float(data.get('score_weight_davies_bouldin', SCORE_WEIGHT_DAVIES_BOULDIN)),
-            "score_weight_calinski_harabasz_param": float(data.get('score_weight_calinski_harabasz', SCORE_WEIGHT_CALINSKI_HARABASZ)),
-            "score_weight_purity_param": float(data.get('score_weight_purity', SCORE_WEIGHT_PURITY)),
-            "score_weight_other_feature_diversity_param": float(data.get('score_weight_other_feature_diversity', SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY)),
-            "score_weight_other_feature_purity_param": float(data.get('score_weight_other_feature_purity', SCORE_WEIGHT_OTHER_FEATURE_PURITY)),
-            "ai_model_provider_param": data.get('ai_model_provider', AI_MODEL_PROVIDER).upper(),
-            "ollama_server_url_param": data.get('ollama_server_url', OLLAMA_SERVER_URL),
-            "ollama_model_name_param": data.get('ollama_model_name', OLLAMA_MODEL_NAME),
-            "openai_server_url_param": data.get('openai_server_url', OPENAI_SERVER_URL),
-            "openai_model_name_param": data.get('openai_model_name', OPENAI_MODEL_NAME),
-            "openai_api_key_param": data.get('openai_api_key') or OPENAI_API_KEY,  # Use env var if empty string
+            "clustering_method": data.get('clustering_method', config.CLUSTER_ALGORITHM),
+            "num_clusters_min": int(data.get('num_clusters_min', config.NUM_CLUSTERS_MIN)),
+            "num_clusters_max": int(data.get('num_clusters_max', config.NUM_CLUSTERS_MAX)),
+            "dbscan_eps_min": float(data.get('dbscan_eps_min', config.DBSCAN_EPS_MIN)),
+            "dbscan_eps_max": float(data.get('dbscan_eps_max', config.DBSCAN_EPS_MAX)),
+            "dbscan_min_samples_min": int(data.get('dbscan_min_samples_min', config.DBSCAN_MIN_SAMPLES_MIN)),
+            "dbscan_min_samples_max": int(data.get('dbscan_min_samples_max', config.DBSCAN_MIN_SAMPLES_MAX)),
+            "gmm_n_components_min": int(data.get('gmm_n_components_min', config.GMM_N_COMPONENTS_MIN)),
+            "gmm_n_components_max": int(data.get('gmm_n_components_max', config.GMM_N_COMPONENTS_MAX)),
+            "spectral_n_clusters_min": int(data.get('spectral_n_clusters_min', config.SPECTRAL_N_CLUSTERS_MIN)),
+            "spectral_n_clusters_max": int(data.get('spectral_n_clusters_max', config.SPECTRAL_N_CLUSTERS_MAX)),
+            "pca_components_min": int(data.get('pca_components_min', config.PCA_COMPONENTS_MIN)),
+            "pca_components_max": int(data.get('pca_components_max', config.PCA_COMPONENTS_MAX)),
+            "num_clustering_runs": int(data.get('clustering_runs', config.CLUSTERING_RUNS)),
+            "max_songs_per_cluster_val": int(data.get('max_songs_per_cluster', config.MAX_SONGS_PER_CLUSTER)),
+            "top_n_playlists_param": int(data.get('top_n_playlists', config.TOP_N_PLAYLISTS)),
+            "min_songs_per_genre_for_stratification_param": int(data.get('min_songs_per_genre_for_stratification', config.MIN_SONGS_PER_GENRE_FOR_STRATIFICATION)),
+            "stratified_sampling_target_percentile_param": int(data.get('stratified_sampling_target_percentile', config.STRATIFIED_SAMPLING_TARGET_PERCENTILE)),
+            "score_weight_diversity_param": float(data.get('score_weight_diversity', config.SCORE_WEIGHT_DIVERSITY)),
+            "score_weight_silhouette_param": float(data.get('score_weight_silhouette', config.SCORE_WEIGHT_SILHOUETTE)),
+            "score_weight_davies_bouldin_param": float(data.get('score_weight_davies_bouldin', config.SCORE_WEIGHT_DAVIES_BOULDIN)),
+            "score_weight_calinski_harabasz_param": float(data.get('score_weight_calinski_harabasz', config.SCORE_WEIGHT_CALINSKI_HARABASZ)),
+            "score_weight_purity_param": float(data.get('score_weight_purity', config.SCORE_WEIGHT_PURITY)),
+            "score_weight_other_feature_diversity_param": float(data.get('score_weight_other_feature_diversity', config.SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY)),
+            "score_weight_other_feature_purity_param": float(data.get('score_weight_other_feature_purity', config.SCORE_WEIGHT_OTHER_FEATURE_PURITY)),
+            "ai_model_provider_param": data.get('ai_model_provider', config.AI_MODEL_PROVIDER).upper(),
+            "ollama_server_url_param": data.get('ollama_server_url', config.OLLAMA_SERVER_URL),
+            "ollama_model_name_param": data.get('ollama_model_name', config.OLLAMA_MODEL_NAME),
+            "openai_server_url_param": data.get('openai_server_url', config.OPENAI_SERVER_URL),
+            "openai_model_name_param": data.get('openai_model_name', config.OPENAI_MODEL_NAME),
+            "openai_api_key_param": data.get('openai_api_key') or config.OPENAI_API_KEY,  # Use env var if empty string
             # This line already falls back to the config value if the request doesn't contain it.
-            "gemini_api_key_param": data.get('gemini_api_key', GEMINI_API_KEY),
-            "gemini_model_name_param": data.get('gemini_model_name', GEMINI_MODEL_NAME),
-            "mistral_api_key_param": data.get('mistral_api_key', MISTRAL_API_KEY),
-            "mistral_model_name_param": data.get('mistral_model_name', MISTRAL_MODEL_NAME),
-            "top_n_moods_for_clustering_param": int(data.get('top_n_moods', TOP_N_MOODS)),
-            "enable_clustering_embeddings_param": data.get('enable_clustering_embeddings', ENABLE_CLUSTERING_EMBEDDINGS),
+            "gemini_api_key_param": data.get('gemini_api_key', config.GEMINI_API_KEY),
+            "gemini_model_name_param": data.get('gemini_model_name', config.GEMINI_MODEL_NAME),
+            "mistral_api_key_param": data.get('mistral_api_key', config.MISTRAL_API_KEY),
+            "mistral_model_name_param": data.get('mistral_model_name', config.MISTRAL_MODEL_NAME),
+            "top_n_moods_for_clustering_param": int(data.get('top_n_moods', config.TOP_N_MOODS)),
+            "enable_clustering_embeddings_param": data.get('enable_clustering_embeddings', config.ENABLE_CLUSTERING_EMBEDDINGS),
         },
         job_id=job_id,
         description="Main Music Clustering",

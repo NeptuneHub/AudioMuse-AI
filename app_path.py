@@ -4,7 +4,7 @@ import logging
 import json
 from tasks.path_manager import find_path_between_songs, get_distance
 from tasks.voyager_manager import get_vector_by_id, find_nearest_neighbors_by_vector
-from config import PATH_DEFAULT_LENGTH, PATH_FIX_SIZE, MOOD_CENTROIDS_FILE
+import config
 import numpy as np
 import math # Import the math module
 
@@ -16,13 +16,13 @@ _MOOD_CENTROIDS = {}  # mood_name -> list of np.array centroids
 def _load_mood_centroids():
     global _MOOD_CENTROIDS
     try:
-        with open(MOOD_CENTROIDS_FILE) as f:
+        with open(config.MOOD_CENTROIDS_FILE) as f:
             data = json.load(f)
         for mood, info in data.items():
             _MOOD_CENTROIDS[mood] = [np.array(c['centroid'], dtype=np.float32) for c in info['centroids']]
         logger.info(f"Loaded mood centroids: {', '.join(f'{m}({len(cs)})' for m, cs in _MOOD_CENTROIDS.items())}")
     except Exception as e:
-        logger.warning(f"Could not load mood centroids from {MOOD_CENTROIDS_FILE}: {e}")
+        logger.warning(f"Could not load mood centroids from {config.MOOD_CENTROIDS_FILE}: {e}")
 
 _load_mood_centroids()
 
@@ -108,7 +108,7 @@ def path_page():
     Serves the frontend page for finding a path between songs.
     """
     # Pass the server default for path_fix_size so the UI checkbox reflects config/env
-    return render_template('path.html', path_fix_size=PATH_FIX_SIZE, title = 'AudioMuse-AI - Song Path', active='path')
+    return render_template('path.html', path_fix_size=config.PATH_FIX_SIZE, title = 'AudioMuse-AI - Song Path', active='path')
 
 @path_bp.route('/api/find_path', methods=['GET'])
 def find_path_endpoint():
@@ -125,7 +125,7 @@ def find_path_endpoint():
     end_anchor = request.args.get('end_anchor')
     mood_pct = request.args.get('mood_pct', 100, type=int)
     # Use the default from config if max_steps is not provided in the request
-    max_steps = request.args.get('max_steps', PATH_DEFAULT_LENGTH, type=int)
+    max_steps = request.args.get('max_steps', config.PATH_DEFAULT_LENGTH, type=int)
 
     # Cannot have more than one special endpoint among start/end (mood or anchor)
     if (start_mood or start_anchor) and (end_mood or end_anchor):
@@ -177,7 +177,7 @@ def find_path_endpoint():
         # parse optional path_fix_size override from request (query param)
         pfs = request.args.get('path_fix_size')
         if pfs is None:
-            path_fix_size = PATH_FIX_SIZE
+            path_fix_size = config.PATH_FIX_SIZE
         else:
             path_fix_size = str(pfs).lower() in ('1', 'true', 'yes', 'y')
 

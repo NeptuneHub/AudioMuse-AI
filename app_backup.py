@@ -4,7 +4,7 @@ import logging
 import tempfile
 from datetime import datetime
 from flask import Blueprint, render_template, jsonify, request, send_file
-from config import POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ BACKUP_DIR = os.environ.get("BACKUP_DIR", "/app/backup")
 def _pg_env():
     """Return a copy of os.environ with PGPASSWORD set."""
     env = os.environ.copy()
-    env['PGPASSWORD'] = POSTGRES_PASSWORD
+    env['PGPASSWORD'] = config.POSTGRES_PASSWORD
     return env
 
 
@@ -24,9 +24,9 @@ def _pg_cmd(tool, *extra_args):
     """Build a pg command list with common connection args."""
     return [
         tool,
-        '-h', POSTGRES_HOST,
-        '-p', POSTGRES_PORT,
-        '-U', POSTGRES_USER,
+        '-h', config.POSTGRES_HOST,
+        '-p', config.POSTGRES_PORT,
+        '-U', config.POSTGRES_USER,
         *extra_args,
     ]
 
@@ -53,7 +53,7 @@ def create_backup():
     filename = f"audiomuse_backup_{timestamp}.sql"
     filepath = os.path.join(BACKUP_DIR, filename)
 
-    cmd = _pg_cmd('pg_dump', '--clean', '--if-exists', '-d', POSTGRES_DB)
+    cmd = _pg_cmd('pg_dump', '--clean', '--if-exists', '-d', config.POSTGRES_DB)
 
     try:
         with open(filepath, 'w') as f:
@@ -102,7 +102,7 @@ def restore_backup():
             "EXECUTE 'DROP TABLE IF EXISTS public.' || quote_ident(r.tablename) || ' CASCADE'; "
             "END LOOP; END $$;"
         )
-        drop_cmd = _pg_cmd('psql', '-d', POSTGRES_DB, '-c', drop_sql)
+        drop_cmd = _pg_cmd('psql', '-d', config.POSTGRES_DB, '-c', drop_sql)
         drop_result = subprocess.run(drop_cmd, env=env, capture_output=True, text=True, timeout=60)
         if drop_result.returncode != 0:
             logger.error("Failed to drop tables before restore: %s", drop_result.stderr)
@@ -110,7 +110,7 @@ def restore_backup():
         logger.info("All existing tables dropped before restore.")
 
         # Then: restore from the dump
-        restore_cmd = _pg_cmd('psql', '-d', POSTGRES_DB, '-f', tmp.name)
+        restore_cmd = _pg_cmd('psql', '-d', config.POSTGRES_DB, '-f', tmp.name)
         result = subprocess.run(restore_cmd, env=env, capture_output=True, text=True, timeout=600)
         if result.returncode != 0:
             logger.error("psql restore failed: %s", result.stderr)

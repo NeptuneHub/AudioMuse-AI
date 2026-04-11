@@ -142,9 +142,8 @@ def load_mulan_cache_from_db():
     global _MULAN_CACHE
     
     from app_helper import get_db
-    from config import MULAN_ENABLED, MULAN_EMBEDDING_DIMENSION
     
-    if not MULAN_ENABLED:
+    if not config.MULAN_ENABLED:
         logger.info("MuLan is disabled, skipping cache load.")
         return False
     
@@ -186,8 +185,8 @@ def load_mulan_cache_from_db():
             # Convert BYTEA to numpy array
             embedding = np.frombuffer(embedding_blob, dtype=np.float32)
             
-            if embedding.shape[0] != MULAN_EMBEDDING_DIMENSION:
-                logger.warning(f"Skipping {item_id}: wrong dimension {embedding.shape[0]} (expected {MULAN_EMBEDDING_DIMENSION})")
+            if embedding.shape[0] != config.MULAN_EMBEDDING_DIMENSION:
+                logger.warning(f"Skipping {item_id}: wrong dimension {embedding.shape[0]} (expected {config.MULAN_EMBEDDING_DIMENSION})")
                 continue
             
             embeddings_list.append(embedding)
@@ -209,7 +208,7 @@ def load_mulan_cache_from_db():
         _MULAN_CACHE['item_ids'] = item_ids_list
         _MULAN_CACHE['loaded'] = True
         
-        logger.info(f"MuLan cache loaded: {len(metadata_list)} songs with {MULAN_EMBEDDING_DIMENSION}-dim embeddings in memory")
+        logger.info(f"MuLan cache loaded: {len(metadata_list)} songs with {config.MULAN_EMBEDDING_DIMENSION}-dim embeddings in memory")
         return True
         
     except Exception as e:
@@ -251,9 +250,8 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         List of dicts with item_id, title, author, similarity
     """
     from .mulan_analyzer import get_text_embedding
-    from config import MULAN_ENABLED
-    
-    if not MULAN_ENABLED:
+
+    if not config.MULAN_ENABLED:
         return []
     
     # Cache must be loaded at startup - no lazy loading
@@ -277,8 +275,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         
         # Over-fetch candidates to allow per-artist filtering.
         # Formula matches voyager: n + max(20, n * 4) + 1
-        from config import MAX_SONGS_PER_ARTIST
-        artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+        artist_cap = config.MAX_SONGS_PER_ARTIST if config.MAX_SONGS_PER_ARTIST and config.MAX_SONGS_PER_ARTIST > 0 else 0
         fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
         top_indices = np.argsort(similarities)[::-1][:fetch_size]
         

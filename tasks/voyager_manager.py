@@ -23,14 +23,7 @@ from functools import lru_cache
 import threading
 import math # Import math for ceiling function
 
-from config import (
-    EMBEDDING_DIMENSION, INDEX_NAME, VOYAGER_METRIC, VOYAGER_EF_CONSTRUCTION,
-    VOYAGER_M, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB, MAX_SONGS_PER_ARTIST,
-    DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
-    DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD
-    , SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT,
-    MOOD_SIMILARITY_ENABLE
-)
+import config
 # Import from other project modules
 from .mediaserver import create_instant_playlist
 
@@ -42,7 +35,7 @@ INSTRUMENT_BUCKET_SKIPS = os.environ.get("RADIUS_INSTRUMENTATION", "False").lowe
 # When the serialized Voyager index exceeds this threshold the index
 # will be written into multiple rows as: <INDEX_NAME>_<part_no>_<total_parts>
 # Configurable via `VOYAGER_MAX_PART_SIZE_MB` in `config.py` (default 50 MB).
-VOYAGER_MAX_PART_SIZE = VOYAGER_MAX_PART_SIZE_MB * 1024 * 1024
+VOYAGER_MAX_PART_SIZE = config.VOYAGER_MAX_PART_SIZE_MB * 1024 * 1024
 
 # --- Global cache for the loaded Voyager index ---
 voyager_index = None
@@ -137,7 +130,7 @@ def _get_direct_cosine_distance(v1, v2):
 
 def get_direct_distance(v1, v2):
     """Public helper that picks the metric according to VOYAGER_METRIC."""
-    if VOYAGER_METRIC == 'angular':
+    if config.VOYAGER_METRIC == 'angular':
         return _get_direct_cosine_distance(v1, v2)
     return _get_direct_euclidean_distance(v1, v2)
 
@@ -163,25 +156,25 @@ def load_voyager_index_for_querying(force_reload=False):
     cur = conn.cursor()
     try:
         # 1) Try the classic single-row index first (backwards compatible)
-        cur.execute("SELECT index_data, id_map_json, embedding_dimension FROM voyager_index_data WHERE index_name = %s", (INDEX_NAME,))
+        cur.execute("SELECT index_data, id_map_json, embedding_dimension FROM voyager_index_data WHERE index_name = %s", (config.INDEX_NAME,))
         record = cur.fetchone()
 
         if record:
             index_binary_data, id_map_json, db_embedding_dim = record
 
             if not index_binary_data:
-                logger.error(f"Voyager index '{INDEX_NAME}' data in database is empty.")
+                logger.error(f"Voyager index '{config.INDEX_NAME}' data in database is empty.")
                 voyager_index, id_map, reverse_id_map = None, None, None
                 return
 
-            if db_embedding_dim != EMBEDDING_DIMENSION:
-                logger.error(f"FATAL: Voyager index dimension mismatch! DB has {db_embedding_dim}, config expects {EMBEDDING_DIMENSION}.")
+            if db_embedding_dim != config.EMBEDDING_DIMENSION:
+                logger.error(f"FATAL: Voyager index dimension mismatch! DB has {db_embedding_dim}, config expects {config.EMBEDDING_DIMENSION}.")
                 voyager_index, id_map, reverse_id_map = None, None, None
                 return
 
             index_stream = io.BytesIO(index_binary_data)
             loaded_index = voyager.Index.load(index_stream)
-            loaded_index.ef = VOYAGER_QUERY_EF
+            loaded_index.ef = config.VOYAGER_QUERY_EF
             voyager_index = loaded_index
             id_map = {int(k): v for k, v in json.loads(id_map_json).items()}
             reverse_id_map = {v: k for k, v in id_map.items()}
@@ -190,16 +183,16 @@ def load_voyager_index_for_querying(force_reload=False):
             return
 
         # 2) If not found, look for segmented rows named INDEX_NAME_<part>_<total>
-        cur.execute("SELECT index_name, index_data, id_map_json, embedding_dimension FROM voyager_index_data WHERE index_name LIKE %s", (INDEX_NAME + "_%_%",))
+        cur.execute("SELECT index_name, index_data, id_map_json, embedding_dimension FROM voyager_index_data WHERE index_name LIKE %s", (config.INDEX_NAME + "_%_%",))
         candidates = cur.fetchall()
 
         if not candidates:
-            logger.warning(f"Voyager index '{INDEX_NAME}' not found in the database (single or segmented). Cache will be empty.")
+            logger.warning(f"Voyager index '{config.INDEX_NAME}' not found in the database (single or segmented). Cache will be empty.")
             voyager_index, id_map, reverse_id_map = None, None, None
             return
 
         # Filter and parse segment suffixes (expect format: name_<part_no>_<total_parts>)
-        seg_pattern = re.compile(rf"^{re.escape(INDEX_NAME)}_(\d+)_(\d+)$")
+        seg_pattern = re.compile(rf"^{re.escape(config.INDEX_NAME)}_(\d+)_(\d+)$")
         parts = []
         total_expected = None
         id_map_json_candidate = None
@@ -221,7 +214,7 @@ def load_voyager_index_for_querying(force_reload=False):
                 id_map_json_candidate = part_id_map_json
 
         if not parts:
-            logger.error(f"No valid segmented Voyager index rows found for prefix '{INDEX_NAME}'.")
+            logger.error(f"No valid segmented Voyager index rows found for prefix '{config.INDEX_NAME}'.")
             voyager_index, id_map, reverse_id_map = None, None, None
             return
 
@@ -234,8 +227,8 @@ def load_voyager_index_for_querying(force_reload=False):
         # Sort by part number and validate embedding_dimension consistency
         parts.sort(key=lambda p: p[0])
         for p in parts:
-            if p[3] != EMBEDDING_DIMENSION:
-                logger.error(f"Voyager index embedding_dimension mismatch in segment {p[0]}: {p[3]} != {EMBEDDING_DIMENSION}. Aborting load.")
+            if p[3] != config.EMBEDDING_DIMENSION:
+                logger.error(f"Voyager index embedding_dimension mismatch in segment {p[0]}: {p[3]} != {config.EMBEDDING_DIMENSION}. Aborting load.")
                 voyager_index, id_map, reverse_id_map = None, None, None
                 return
 
@@ -255,7 +248,7 @@ def load_voyager_index_for_querying(force_reload=False):
         try:
             index_stream = io.BytesIO(index_binary_data)
             loaded_index = voyager.Index.load(index_stream)
-            loaded_index.ef = VOYAGER_QUERY_EF
+            loaded_index.ef = config.VOYAGER_QUERY_EF
             # Validate element counts if voyager exposes num_elements
             try:
                 idx_count = getattr(loaded_index, 'num_elements', None)
@@ -308,7 +301,7 @@ def build_and_store_voyager_index(db_conn=None):
     logger.info("Starting to build and store Voyager index...")
 
     # Map the string metric from config to the voyager.Space enum
-    metric_str = VOYAGER_METRIC.lower()
+    metric_str = config.VOYAGER_METRIC.lower()
     if metric_str == 'angular':
         space = voyager.Space.Cosine
     elif metric_str == 'euclidean':
@@ -316,7 +309,7 @@ def build_and_store_voyager_index(db_conn=None):
     elif metric_str == 'dot':
         space = voyager.Space.InnerProduct
     else:
-        logger.warning(f"Unknown Voyager metric '{VOYAGER_METRIC}'. Defaulting to Cosine.")
+        logger.warning(f"Unknown Voyager metric '{config.VOYAGER_METRIC}'. Defaulting to Cosine.")
         space = voyager.Space.Cosine
 
     cur = db_conn.cursor()
@@ -333,9 +326,9 @@ def build_and_store_voyager_index(db_conn=None):
 
         voyager_index_builder = voyager.Index(
             space=space,
-            num_dimensions=EMBEDDING_DIMENSION,
-            M=VOYAGER_M,
-            ef_construction=VOYAGER_EF_CONSTRUCTION
+            num_dimensions=config.EMBEDDING_DIMENSION,
+            M=config.VOYAGER_M,
+            ef_construction=config.VOYAGER_EF_CONSTRUCTION
         )
 
         local_id_map = {}
@@ -350,9 +343,9 @@ def build_and_store_voyager_index(db_conn=None):
 
             embedding_vector = np.frombuffer(embedding_blob, dtype=np.float32)
 
-            if embedding_vector.shape[0] != EMBEDDING_DIMENSION:
+            if embedding_vector.shape[0] != config.EMBEDDING_DIMENSION:
                 logger.warning(f"Skipping item_id {item_id}: embedding dimension mismatch. "
-                               f"Expected {EMBEDDING_DIMENSION}, got {embedding_vector.shape[0]}.")
+                               f"Expected {config.EMBEDDING_DIMENSION}, got {embedding_vector.shape[0]}.")
                 continue
 
             vectors_to_add.append(embedding_vector)
@@ -390,11 +383,11 @@ def build_and_store_voyager_index(db_conn=None):
 
         id_map_json = json.dumps(local_id_map)
 
-        logger.info(f"Storing Voyager index '{INDEX_NAME}' in the database...")
+        logger.info(f"Storing Voyager index '{config.INDEX_NAME}' in the database...")
 
         try:
             # Delete any existing single or segmented rows for this logical index name
-            cur.execute("DELETE FROM voyager_index_data WHERE index_name = %s OR index_name LIKE %s", (INDEX_NAME, INDEX_NAME + "_%_%"))
+            cur.execute("DELETE FROM voyager_index_data WHERE index_name = %s OR index_name LIKE %s", (config.INDEX_NAME, config.INDEX_NAME + "_%_%"))
 
             # Small enough to store in a single row (backwards-compatible)
             if len(index_binary_data) <= VOYAGER_MAX_PART_SIZE:
@@ -407,23 +400,23 @@ def build_and_store_voyager_index(db_conn=None):
                         embedding_dimension = EXCLUDED.embedding_dimension,
                         created_at = CURRENT_TIMESTAMP;
                 """
-                cur.execute(upsert_query, (INDEX_NAME, psycopg2.Binary(index_binary_data), id_map_json, EMBEDDING_DIMENSION))
+                cur.execute(upsert_query, (config.INDEX_NAME, psycopg2.Binary(index_binary_data), id_map_json, config.EMBEDDING_DIMENSION))
                 logger.info("Stored Voyager index as a single row (no segmentation required).")
 
             else:
                 # Split into multiple rows named INDEX_NAME_<part>_<total>
                 parts = _split_bytes(index_binary_data, VOYAGER_MAX_PART_SIZE)
                 num_parts = len(parts)
-                logger.info(f"Index size {len(index_binary_data)} exceeds {VOYAGER_MAX_PART_SIZE_MB}MB - storing as {num_parts} segmented rows.")
+                logger.info(f"Index size {len(index_binary_data)} exceeds {config.VOYAGER_MAX_PART_SIZE_MB}MB - storing as {num_parts} segmented rows.")
 
                 insert_q = "INSERT INTO voyager_index_data (index_name, index_data, id_map_json, embedding_dimension, created_at) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)"
                 for idx, part in enumerate(parts, start=1):
-                    part_name = f"{INDEX_NAME}_{idx}_{num_parts}"
+                    part_name = f"{config.INDEX_NAME}_{idx}_{num_parts}"
                     # store full id_map_json only in the first part to save space; other parts keep an empty string
                     part_id_map_json = id_map_json if idx == 1 else ''
-                    cur.execute(insert_q, (part_name, psycopg2.Binary(part), part_id_map_json, EMBEDDING_DIMENSION))
+                    cur.execute(insert_q, (part_name, psycopg2.Binary(part), part_id_map_json, config.EMBEDDING_DIMENSION))
 
-                logger.info(f"Stored Voyager index in {num_parts} parts (prefix='{INDEX_NAME}_<part>_<total>').")
+                logger.info(f"Stored Voyager index in {num_parts} parts (prefix='{config.INDEX_NAME}_<part>_<total>').")
 
             # Commit the transaction atomically so readers never see partial state
             db_conn.commit()
@@ -518,7 +511,7 @@ def _filter_by_distance(song_results: list, db_conn):
     Filters a list of songs to remove items that are too close in direct vector distance
     to a lookback window of previously kept songs. Uses parallel processing for better performance.
     """
-    if DUPLICATE_DISTANCE_CHECK_LOOKBACK <= 0:
+    if config.DUPLICATE_DISTANCE_CHECK_LOOKBACK <= 0:
         return song_results
 
     if not song_results:
@@ -553,8 +546,8 @@ def _filter_by_distance(song_results: list, db_conn):
         # Use single query for small datasets
         details_map = fetch_details_batch(item_ids)
 
-    threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if VOYAGER_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
-    metric_name = 'Angular' if VOYAGER_METRIC == 'angular' else 'Euclidean'
+    threshold = config.DUPLICATE_DISTANCE_THRESHOLD_COSINE if config.VOYAGER_METRIC == 'angular' else config.DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
+    metric_name = 'Angular' if config.VOYAGER_METRIC == 'angular' else 'Euclidean'
     
     filtered_songs = []
     
@@ -567,7 +560,7 @@ def _filter_by_distance(song_results: list, db_conn):
                 continue
 
             # Check against the last N songs in the filtered list
-            lookback_window = filtered_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]
+            lookback_window = filtered_songs[-config.DUPLICATE_DISTANCE_CHECK_LOOKBACK:]
             for recent_song in lookback_window:
                 recent_vector = _get_cached_vector(recent_song['item_id'])
                 if recent_vector is None:
@@ -598,7 +591,7 @@ def _filter_by_distance(song_results: list, db_conn):
             remaining_songs = remaining_songs[BATCH_SIZE_VECTOR_OPS:]
             
             # Get current lookback window
-            lookback_window = filtered_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:] if filtered_songs else []
+            lookback_window = filtered_songs[-config.DUPLICATE_DISTANCE_CHECK_LOOKBACK:] if filtered_songs else []
             
             # Process batch
             batch_results = _compute_distance_batch(current_batch, lookback_window, threshold, metric_name, details_map)
@@ -712,7 +705,7 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
 
     # Use config value if no threshold provided
     if mood_threshold is None:
-        mood_threshold = MOOD_SIMILARITY_THRESHOLD
+        mood_threshold = config.MOOD_SIMILARITY_THRESHOLD
 
     # Get target song mood features
     with db_conn.cursor(cursor_factory=DictCursor) as cur:
@@ -883,7 +876,7 @@ def _radius_walk_get_candidates(
     # 3) Mood similarity filtering: only apply if globally enabled via config.
     try:
         # Determine effective mood filtering: caller preference takes precedence.
-        effective_mood = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
+        effective_mood = config.MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
         if effective_mood:
             before_mood = len(unique_results_by_song)
             unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_item_id, db_conn)
@@ -972,7 +965,7 @@ def _execute_radius_walk(
             vecs = np.vstack([c['vector'] for c in b])
             dist_anchor_arr = np.array([c['dist_anchor'] for c in b], dtype=np.float32)
         else:
-            vecs = np.empty((0, EMBEDDING_DIMENSION), dtype=np.float32)
+            vecs = np.empty((0, config.EMBEDDING_DIMENSION), dtype=np.float32)
             dist_anchor_arr = np.empty((0,), dtype=np.float32)
 
         buckets.append({
@@ -1108,21 +1101,21 @@ def _execute_radius_walk(
             # This restriction is considered part of the artist-cap behavior.
             # Treat MAX_SONGS_PER_ARTIST <= 0 as DISABLED (no per-bucket restriction).
             try:
-                if eliminate_duplicates and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
+                if eliminate_duplicates and config.MAX_SONGS_PER_ARTIST is not None and config.MAX_SONGS_PER_ARTIST > 0:
                     author = items[i].get('author')
                     if author and author in bucket_artist_set:
                         return False
             except Exception:
                 pass
             # Enforce global artist cap. Treat MAX_SONGS_PER_ARTIST <= 0 as DISABLED.
-            if eliminate_duplicates and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
+            if eliminate_duplicates and config.MAX_SONGS_PER_ARTIST is not None and config.MAX_SONGS_PER_ARTIST > 0:
                 author = items[i].get('author')
                 if author:
                     # If this artist has already appeared in two different buckets
                     # and still hasn't hit the global cap, don't allow them in a third bucket.
-                    if artist_bucket_counts.get(author, 0) >= 2 and artist_counts.get(author, 0) < MAX_SONGS_PER_ARTIST:
+                    if artist_bucket_counts.get(author, 0) >= 2 and artist_counts.get(author, 0) < config.MAX_SONGS_PER_ARTIST:
                         return False
-                    if artist_counts.get(author, 0) >= MAX_SONGS_PER_ARTIST:
+                    if artist_counts.get(author, 0) >= config.MAX_SONGS_PER_ARTIST:
                         return False
             return True
 
@@ -1178,7 +1171,7 @@ def _execute_radius_walk(
                 # Per-bucket: avoid more than one song per artist inside this bucket.
                 # Treat MAX_SONGS_PER_ARTIST <= 0 as DISABLED (no per-bucket restriction).
                 try:
-                    if eliminate_duplicates and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
+                    if eliminate_duplicates and config.MAX_SONGS_PER_ARTIST is not None and config.MAX_SONGS_PER_ARTIST > 0:
                         auth = meta.get('author')
                         if auth and auth in bucket_artist_set:
                             if INSTRUMENT_BUCKET_SKIPS:
@@ -1187,15 +1180,15 @@ def _execute_radius_walk(
                 except Exception:
                     pass
                 # Global artist cap check (only enforce if positive cap configured)
-                if eliminate_duplicates and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
+                if eliminate_duplicates and config.MAX_SONGS_PER_ARTIST is not None and config.MAX_SONGS_PER_ARTIST > 0:
                     auth = meta.get('author')
                     if auth:
                         # if artist already occupies two different buckets and hasn't hit the cap, skip
-                        if artist_bucket_counts.get(auth, 0) >= 2 and artist_counts.get(auth, 0) < MAX_SONGS_PER_ARTIST:
+                        if artist_bucket_counts.get(auth, 0) >= 2 and artist_counts.get(auth, 0) < config.MAX_SONGS_PER_ARTIST:
                             if INSTRUMENT_BUCKET_SKIPS:
                                 logger.debug(f"Bucket {bucket_index}: skipping idx={i} bucket-count-limit {auth}")
                             continue
-                        if artist_counts.get(auth, 0) >= MAX_SONGS_PER_ARTIST:
+                        if artist_counts.get(auth, 0) >= config.MAX_SONGS_PER_ARTIST:
                             if INSTRUMENT_BUCKET_SKIPS:
                                 logger.debug(f"Bucket {bucket_index}: skipping idx={i} artist-cap {auth}")
                             continue
@@ -1392,11 +1385,11 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
 
     # If caller didn't supply radius_similarity explicitly (None), use the configured default.
     if radius_similarity is None:
-        radius_similarity = SIMILARITY_RADIUS_DEFAULT
+        radius_similarity = config.SIMILARITY_RADIUS_DEFAULT
 
     # If caller didn't supply eliminate_duplicates explicitly (None), use configured default
     if eliminate_duplicates is None:
-        eliminate_duplicates = SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
+        eliminate_duplicates = config.SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
 
     # If caller didn't supply mood_similarity explicitly (None), DO NOT force it here.
     # We will treat None as "use the config default". Caller-provided True must
@@ -1496,17 +1489,17 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         unique_results_by_song = _deduplicate_and_filter_neighbors(distance_filtered_results, db_conn, target_song_details)
         
         # 4. Apply mood similarity filtering: caller preference overrides config.
-        effective_mood_nonradius = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
+        effective_mood_nonradius = config.MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
         if effective_mood_nonradius:
             logger.info(f"Mood similarity filtering requested/enabled for target_item_id: {target_item_id}")
             unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_item_id, db_conn)
         else:
-            logger.info(f"Mood filtering skipped (mood_similarity={mood_similarity}, MOOD_SIMILARITY_ENABLE={MOOD_SIMILARITY_ENABLE})")
+            logger.info(f"Mood filtering skipped (mood_similarity={mood_similarity}, MOOD_SIMILARITY_ENABLE={config.MOOD_SIMILARITY_ENABLE})")
         
         # 5. Apply artist cap (eliminate_duplicates)
         if eliminate_duplicates:
             # If MAX_SONGS_PER_ARTIST <= 0, treat as disabled and skip cap enforcement
-            if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
+            if config.MAX_SONGS_PER_ARTIST is None or config.MAX_SONGS_PER_ARTIST <= 0:
                 final_results = unique_results_by_song
             else:
                 item_ids_to_check = [r['item_id'] for r in unique_results_by_song]
@@ -1525,7 +1518,7 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
                         continue
 
                     current_count = artist_counts.get(author, 0)
-                    if current_count < MAX_SONGS_PER_ARTIST:
+                    if current_count < config.MAX_SONGS_PER_ARTIST:
                         final_results.append(song)
                         artist_counts[author] = current_count + 1
         else:
@@ -1546,7 +1539,7 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
 
     # If caller didn't supply eliminate_duplicates explicitly (None), use configured default
     if eliminate_duplicates is None:
-        eliminate_duplicates = SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
+        eliminate_duplicates = config.SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
 
     if eliminate_duplicates:
         num_to_query = n + int(n * 4)
@@ -1627,7 +1620,7 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
 
     if eliminate_duplicates:
         # If MAX_SONGS_PER_ARTIST <= 0, treat as disabled and skip cap enforcement
-        if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
+        if config.MAX_SONGS_PER_ARTIST is None or config.MAX_SONGS_PER_ARTIST <= 0:
             final_results = unique_songs_by_content
         else:
             artist_counts = {}
@@ -1638,7 +1631,7 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
                     continue
 
                 current_count = artist_counts.get(author, 0)
-                if current_count < MAX_SONGS_PER_ARTIST:
+                if current_count < config.MAX_SONGS_PER_ARTIST:
                     final_results.append(song)
                     artist_counts[author] = current_count + 1
     else:

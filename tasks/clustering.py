@@ -21,12 +21,7 @@ from rq.exceptions import NoSuchJobError
 from psycopg2.extras import DictCursor
 
 # Import configuration
-from config import (MAX_SONGS_PER_CLUSTER, MOOD_LABELS, STRATIFIED_GENRES,
-                    MUTATION_KMEANS_COORD_FRACTION, MUTATION_INT_ABS_DELTA, MUTATION_FLOAT_ABS_DELTA,
-                    TOP_N_ELITES, EXPLOITATION_START_FRACTION, EXPLOITATION_PROBABILITY_CONFIG,
-                    SAMPLING_PERCENTAGE_CHANGE_PER_RUN, ITERATIONS_PER_BATCH_JOB, MAX_CONCURRENT_BATCH_JOBS,
-                    MIN_PLAYLIST_SIZE_FOR_TOP_N, CLUSTERING_BATCH_TIMEOUT_MINUTES, CLUSTERING_MAX_FAILED_BATCHES,
-                    CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS)
+import config
 
 # Import AI naming function and prompt template
 from ai import get_ai_playlist_name, creative_prompt_template
@@ -388,7 +383,7 @@ def run_clustering_task(
             _log_and_update(f"Target songs per genre for stratification: {target_songs_per_genre}", 5)
 
             # --- 2. Batch Job Orchestration ---
-            num_total_batches = (num_clustering_runs + ITERATIONS_PER_BATCH_JOB - 1) // ITERATIONS_PER_BATCH_JOB if ITERATIONS_PER_BATCH_JOB > 0 else 0
+            num_total_batches = (num_clustering_runs + config.ITERATIONS_PER_BATCH_JOB - 1) // config.ITERATIONS_PER_BATCH_JOB if config.ITERATIONS_PER_BATCH_JOB > 0 else 0
             next_batch_to_launch = 0
             batches_completed_count = 0
 
@@ -402,7 +397,7 @@ def run_clustering_task(
                 
                 # Determine next batch to launch based on total runs accounted for
                 runs_accounted_for = _main_task_accumulated_details["runs_completed"]
-                next_batch_to_launch = runs_accounted_for // ITERATIONS_PER_BATCH_JOB
+                next_batch_to_launch = runs_accounted_for // config.ITERATIONS_PER_BATCH_JOB
                 
                 logger.info(f"Recovery complete. Resuming. Runs accounted for: {runs_accounted_for}/{num_clustering_runs}. Next batch index to launch: {next_batch_to_launch}")
 
@@ -427,10 +422,10 @@ def run_clustering_task(
                 if _main_task_accumulated_details["runs_completed"] > last_known_runs:
                     last_known_runs = _main_task_accumulated_details["runs_completed"]
                     last_progress_time = time.time()
-                elif time.time() - last_progress_time > CLUSTERING_BATCH_TIMEOUT_MINUTES * 60:
+                elif time.time() - last_progress_time > config.CLUSTERING_BATCH_TIMEOUT_MINUTES * 60:
                     stale_minutes = (time.time() - last_progress_time) / 60
                     _log_and_update(
-                        f"STALENESS WATCHDOG: No progress for {stale_minutes:.1f} min (limit: {CLUSTERING_BATCH_TIMEOUT_MINUTES} min). "
+                        f"STALENESS WATCHDOG: No progress for {stale_minutes:.1f} min (limit: {config.CLUSTERING_BATCH_TIMEOUT_MINUTES} min). "
                         f"Forcing completion at {last_known_runs}/{num_clustering_runs} runs.",
                         progress
                     )
@@ -439,17 +434,17 @@ def run_clustering_task(
 
                 # Check if we should stop launching new batches due to too many failures
                 failed_batch_count = len(_main_task_accumulated_details.get("failed_batches", set()))
-                if failed_batch_count >= CLUSTERING_MAX_FAILED_BATCHES:
-                    logger.warning(f"Stopping new batch launches: {failed_batch_count} batches have failed (max: {CLUSTERING_MAX_FAILED_BATCHES})")
+                if failed_batch_count >= config.CLUSTERING_MAX_FAILED_BATCHES:
+                    logger.warning(f"Stopping new batch launches: {failed_batch_count} batches have failed (max: {config.CLUSTERING_MAX_FAILED_BATCHES})")
                     # Force completion of remaining runs to prevent hanging
                     remaining_runs = num_clustering_runs - _main_task_accumulated_details["runs_completed"]
                     if remaining_runs > 0:
                         _main_task_accumulated_details["runs_completed"] = num_clustering_runs
                         logger.warning(f"Forced completion of {remaining_runs} remaining runs due to batch failures")
                 
-                while (len(_main_task_accumulated_details["active_jobs"]) < MAX_CONCURRENT_BATCH_JOBS 
+                while (len(_main_task_accumulated_details["active_jobs"]) < config.MAX_CONCURRENT_BATCH_JOBS 
                        and next_batch_to_launch < num_total_batches 
-                       and failed_batch_count < CLUSTERING_MAX_FAILED_BATCHES):
+                       and failed_batch_count < config.CLUSTERING_MAX_FAILED_BATCHES):
                     _launch_batch_job(
                         _main_task_accumulated_details, current_task_id, next_batch_to_launch, num_clustering_runs,
                         genre_map, target_songs_per_genre, clustering_method,
@@ -507,7 +502,7 @@ def run_clustering_task(
             # *** STEP 2: Apply minimum size filter to remove small playlists ***
             # Removes playlists with fewer than the configured minimum number of songs
             # Use the configured minimum playlist size from config.py
-            min_size_threshold = MIN_PLAYLIST_SIZE_FOR_TOP_N
+            min_size_threshold = config.MIN_PLAYLIST_SIZE_FOR_TOP_N
             _log_and_update(f"Applying minimum size filter (>= {min_size_threshold} songs)...", 91)
             _log_and_update(f"Before minimum size filtering: {len(best_result.get('named_playlists', {}))} playlists", 91)
             best_result = apply_minimum_size_filter_to_clustering_result(best_result, min_size_threshold, log_prefix="[MinSizeFilter] ")
@@ -632,13 +627,13 @@ def _prepare_genre_map(lightweight_rows):
     for row in lightweight_rows:
         if row.get('mood_vector'):
             mood_scores = {p.split(':')[0]: float(p.split(':')[1]) for p in row['mood_vector'].split(',') if ':' in p}
-            top_genre = max((g for g in STRATIFIED_GENRES if g in mood_scores), key=mood_scores.get, default='__other__')
+            top_genre = max((g for g in config.STRATIFIED_GENRES if g in mood_scores), key=mood_scores.get, default='__other__')
             genre_map[top_genre].append({'item_id': row['item_id'], 'mood_vector': row['mood_vector']})
     return genre_map
 
 def _calculate_target_songs_per_genre(genre_map, percentile, min_songs):
     """Calculates the target number of songs per genre for stratification."""
-    counts = [len(tracks) for g, tracks in genre_map.items() if g in STRATIFIED_GENRES]
+    counts = [len(tracks) for g, tracks in genre_map.items() if g in config.STRATIFIED_GENRES]
     if not counts:
         return min_songs
     target = np.percentile(counts, np.clip(percentile, 0, 100))
@@ -662,7 +657,7 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                     TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
     
     current_time = time.time()
-    timeout_seconds = CLUSTERING_BATCH_TIMEOUT_MINUTES * 60
+    timeout_seconds = config.CLUSTERING_BATCH_TIMEOUT_MINUTES * 60
     processed_jobs = state_dict.get("processed_job_ids", set())
     
     # 1. Check for timed-out batches first - CRITICAL for preventing hangs
@@ -671,7 +666,7 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
         if job_id not in processed_jobs:
             elapsed_time = current_time - start_time
             if elapsed_time > timeout_seconds:
-                logger.warning(f"TIMEOUT: Batch {job_id} has timed out after {elapsed_time/60:.1f} minutes (limit: {CLUSTERING_BATCH_TIMEOUT_MINUTES} min)")
+                logger.warning(f"TIMEOUT: Batch {job_id} has timed out after {elapsed_time/60:.1f} minutes (limit: {config.CLUSTERING_BATCH_TIMEOUT_MINUTES} min)")
                 timed_out_jobs.append(job_id)
                 state_dict.setdefault("timed_out_batches", set()).add(job_id)
                 state_dict.setdefault("failed_batches", set()).add(job_id)  # Timeouts count as failures
@@ -685,8 +680,8 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                 batch_idx = int(job_id.rsplit("_batch_", 1)[1])
             if batch_idx is not None:
                 total_runs = state_dict.get("total_runs", 0)
-                start_run = batch_idx * ITERATIONS_PER_BATCH_JOB
-                num_iterations = min(ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
+                start_run = batch_idx * config.ITERATIONS_PER_BATCH_JOB
+                num_iterations = min(config.ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
                 if num_iterations > 0 and state_dict["runs_completed"] < total_runs:
                     runs_to_add = min(num_iterations, total_runs - state_dict["runs_completed"])
                     state_dict["runs_completed"] += runs_to_add
@@ -782,8 +777,8 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                         batch_idx = int(task_info_for_runs['sub_type_identifier'].split('_')[-1])
                         total_runs = state_dict['total_runs']
                         
-                        start_run = batch_idx * ITERATIONS_PER_BATCH_JOB
-                        num_iterations = min(ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
+                        start_run = batch_idx * config.ITERATIONS_PER_BATCH_JOB
+                        num_iterations = min(config.ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
                         
                         if num_iterations > 0 and state_dict["runs_completed"] < total_runs:
                              runs_to_add = min(num_iterations, total_runs - state_dict["runs_completed"])
@@ -798,8 +793,8 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                     if "_batch_" in job_id:
                         batch_idx = int(job_id.rsplit("_batch_", 1)[1])
                         total_runs = state_dict.get('total_runs', 0)
-                        start_run = batch_idx * ITERATIONS_PER_BATCH_JOB
-                        num_iterations = min(ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
+                        start_run = batch_idx * config.ITERATIONS_PER_BATCH_JOB
+                        num_iterations = min(config.ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
                         if num_iterations > 0 and state_dict["runs_completed"] < total_runs:
                             runs_to_add = min(num_iterations, total_runs - state_dict["runs_completed"])
                             state_dict["runs_completed"] += runs_to_add
@@ -814,12 +809,12 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
 
     # Check if we have too many failed batches
     failed_batch_count = len(state_dict.get("failed_batches", set()))
-    if failed_batch_count >= CLUSTERING_MAX_FAILED_BATCHES:
-        logger.warning(f"Reached maximum failed batches ({failed_batch_count}/{CLUSTERING_MAX_FAILED_BATCHES}). Some jobs may be unstable.")
+    if failed_batch_count >= config.CLUSTERING_MAX_FAILED_BATCHES:
+        logger.warning(f"Reached maximum failed batches ({failed_batch_count}/{config.CLUSTERING_MAX_FAILED_BATCHES}). Some jobs may be unstable.")
 
     # Prune elite solutions to keep only the best
     state_dict["elite_solutions"].sort(key=lambda x: x["score"], reverse=True)
-    state_dict["elite_solutions"] = state_dict["elite_solutions"][:TOP_N_ELITES]
+    state_dict["elite_solutions"] = state_dict["elite_solutions"][:config.TOP_N_ELITES]
 
 
 def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_map, target_per_genre, *args):
@@ -840,10 +835,10 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
     ) = args
 
     batch_job_id = f"{parent_task_id}_batch_{batch_idx}"
-    start_run = batch_idx * ITERATIONS_PER_BATCH_JOB
-    num_iterations = min(ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
+    start_run = batch_idx * config.ITERATIONS_PER_BATCH_JOB
+    num_iterations = min(config.ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
 
-    exploitation_prob = EXPLOITATION_PROBABILITY_CONFIG if start_run >= (total_runs * EXPLOITATION_START_FRACTION) else 0.0
+    exploitation_prob = config.EXPLOITATION_PROBABILITY_CONFIG if start_run >= (total_runs * config.EXPLOITATION_START_FRACTION) else 0.0
 
     # Package parameters for the batch task
     job_args = {
@@ -852,9 +847,9 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
         "num_iterations_in_batch": num_iterations,
         "genre_to_lightweight_track_data_map_json": json.dumps(genre_map),
         "target_songs_per_genre": target_per_genre,
-        "sampling_percentage_change_per_run": SAMPLING_PERCENTAGE_CHANGE_PER_RUN,
+        "sampling_percentage_change_per_run": config.SAMPLING_PERCENTAGE_CHANGE_PER_RUN,
         "clustering_method": clustering_method,
-        "active_mood_labels_for_batch": MOOD_LABELS[:top_n_moods] if top_n_moods > 0 else MOOD_LABELS,
+        "active_mood_labels_for_batch": config.MOOD_LABELS[:top_n_moods] if top_n_moods > 0 else config.MOOD_LABELS,
         "num_clusters_min_max_tuple": (num_clusters_min, num_clusters_max),
         "dbscan_params_ranges_dict": {"eps_min": dbscan_eps_min, "eps_max": dbscan_eps_max, "samples_min": dbscan_min_samples_min, "samples_max": dbscan_min_samples_max},
         "gmm_params_ranges_dict": {"n_components_min": gmm_n_components_min, "n_components_max": gmm_n_components_max},
@@ -874,8 +869,8 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
         "elite_solutions_params_list_json": json.dumps([e["params"] for e in state_dict["elite_solutions"]]),
         "exploitation_probability": exploitation_prob,
         "mutation_config_json": json.dumps({
-            "int_abs_delta": MUTATION_INT_ABS_DELTA, "float_abs_delta": MUTATION_FLOAT_ABS_DELTA,
-            "coord_mutation_fraction": MUTATION_KMEANS_COORD_FRACTION
+            "int_abs_delta": config.MUTATION_INT_ABS_DELTA, "float_abs_delta": config.MUTATION_FLOAT_ABS_DELTA,
+            "coord_mutation_fraction": config.MUTATION_KMEANS_COORD_FRACTION
         }),
         "initial_subset_track_ids_json": json.dumps(state_dict["last_subset_ids"]),
         "enable_clustering_embeddings_param": enable_embeddings
@@ -885,7 +880,7 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
         'tasks.clustering.run_clustering_batch_task',
         kwargs=job_args,
         job_id=batch_job_id,
-        job_timeout=CLUSTERING_BATCH_TIMEOUT_MINUTES * 60,  # Convert minutes to seconds
+        job_timeout=config.CLUSTERING_BATCH_TIMEOUT_MINUTES * 60,  # Convert minutes to seconds
         retry=Retry(max=3),
         on_failure=batch_task_failure_handler
     )
@@ -905,7 +900,7 @@ def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_mod
     final_playlists = {}
     centroids = best_result.get("playlist_centroids", {})
     named_playlists = best_result.get("named_playlists", {})
-    max_songs = best_result.get("parameters", {}).get("max_songs_per_cluster", MAX_SONGS_PER_CLUSTER)
+    max_songs = best_result.get("parameters", {}).get("max_songs_per_cluster", config.MAX_SONGS_PER_CLUSTER)
 
     for original_name, songs in named_playlists.items():
         if not songs:

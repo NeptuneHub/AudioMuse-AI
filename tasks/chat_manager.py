@@ -11,6 +11,7 @@ import logging
 import json
 import re
 from psycopg2.extras import DictCursor
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -403,13 +404,12 @@ def execute_action(action, db_conn, log_messages, ai_config=None):
             Supports hybrid filtering: fetch from CLAP API, then filter by tempo/energy.
             """
             from tasks.clap_text_search import search_by_text
-            from config import CLAP_ENABLED
             
             description = params.get('description')
             tempo_filter = params.get('tempo')  # Optional: slow, medium, fast
             energy_filter = params.get('energy')  # Optional: low, medium, high
             
-            if not CLAP_ENABLED:
+            if not config.CLAP_ENABLED:
                 log_messages.append(f"   ❌ CLAP text search is disabled. Enable CLAP_ENABLED in config.")
                 return []
             

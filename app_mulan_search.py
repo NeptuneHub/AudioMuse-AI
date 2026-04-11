@@ -5,6 +5,7 @@ Provides web interface and API for natural language music search using MuLan.
 
 from flask import Blueprint, render_template, request, jsonify
 import logging
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,6 @@ mulan_search_bp = Blueprint('mulan_search_bp', __name__, template_folder='../tem
 @mulan_search_bp.route('/mulan_search', methods=['GET'])
 def mulan_search_page():
     """Render MuLan text search page."""
-    from config import MULAN_ENABLED, APP_VERSION
     from tasks.mulan_text_search import get_cache_stats
     
     cache_stats = get_cache_stats()
@@ -23,8 +23,8 @@ def mulan_search_page():
         'mulan_search.html',
         title='MuLan Text Search - AudioMuse-AI',
         active='mulan_search',
-        app_version=APP_VERSION,
-        mulan_enabled=MULAN_ENABLED,
+        app_version=config.APP_VERSION,
+        mulan_enabled=config.MULAN_ENABLED,
         cache_stats=cache_stats
     )
 
@@ -55,10 +55,9 @@ def mulan_search_api():
         "count": 100
     }
     """
-    from config import MULAN_ENABLED
     from tasks.mulan_text_search import search_by_text, is_mulan_cache_loaded
     
-    if not MULAN_ENABLED:
+    if not config.MULAN_ENABLED:
         return jsonify({
             'error': 'MuLan text search is disabled. Set MULAN_ENABLED=true in config.',
             'results': []
@@ -120,10 +119,9 @@ def warmup_model_api():
         "expiry_seconds": 600
     }
     """
-    from config import MULAN_ENABLED
     from tasks.mulan_text_search import warmup_text_search_model
     
-    if not MULAN_ENABLED:
+    if not config.MULAN_ENABLED:
         return jsonify({
             'error': 'MuLan text search is disabled',
             'loaded': False
@@ -151,10 +149,9 @@ def warmup_status_api():
         "seconds_remaining": 423
     }
     """
-    from config import MULAN_ENABLED
     from tasks.mulan_text_search import get_warm_cache_status
     
-    if not MULAN_ENABLED:
+    if not config.MULAN_ENABLED:
         return jsonify({'active': False, 'seconds_remaining': 0})
     
     try:
@@ -168,10 +165,9 @@ def warmup_status_api():
 @mulan_search_bp.route('/api/mulan/cache/refresh', methods=['POST'])
 def refresh_cache_api():
     """Refresh MuLan cache from database."""
-    from config import MULAN_ENABLED
     from tasks.mulan_text_search import refresh_mulan_cache, get_cache_stats
     
-    if not MULAN_ENABLED:
+    if not config.MULAN_ENABLED:
         return jsonify({'error': 'MuLan is disabled'}), 400
     
     try:
@@ -202,11 +198,10 @@ def refresh_cache_api():
 @mulan_search_bp.route('/api/mulan/stats', methods=['GET'])
 def cache_stats_api():
     """Get MuLan cache statistics."""
-    from config import MULAN_ENABLED
     from tasks.mulan_text_search import get_cache_stats
     
     stats = get_cache_stats()
-    stats['mulan_enabled'] = MULAN_ENABLED
+    stats['mulan_enabled'] = config.MULAN_ENABLED
     
     return jsonify(stats)
 
@@ -217,10 +212,9 @@ def top_queries_api():
     Return precomputed top 50 diverse queries.
     Returns empty array if not ready yet (still computing in background).
     """
-    from config import MULAN_ENABLED
     from tasks.mulan_text_search import get_cached_top_queries
     
-    if not MULAN_ENABLED:
+    if not config.MULAN_ENABLED:
         return jsonify({'queries': [], 'ready': False, 'message': 'MuLan disabled'}), 200
     
     try:

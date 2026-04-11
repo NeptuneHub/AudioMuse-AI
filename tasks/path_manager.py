@@ -8,15 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 # Imports from the project
 from .voyager_manager import get_vector_by_id, find_nearest_neighbors_by_vector, find_nearest_neighbors_by_id
-from config import (
-    PATH_AVG_JUMP_SAMPLE_SIZE, PATH_CANDIDATES_PER_STEP, PATH_DEFAULT_LENGTH,
-    PATH_DISTANCE_METRIC, VOYAGER_METRIC, PATH_LCORE_MULTIPLIER,
-    PATH_FIX_SIZE,
-    DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
-    DUPLICATE_DISTANCE_CHECK_LOOKBACK
-)
+import config
 # Also import per-artist cap
-from config import MAX_SONGS_PER_ARTIST
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +39,7 @@ def get_angular_distance(v1, v2):
 
 def get_distance(v1, v2):
     """Calculates distance based on the configured metric."""
-    if PATH_DISTANCE_METRIC == 'angular':
+    if config.PATH_DISTANCE_METRIC == 'angular':
         return get_angular_distance(v1, v2)
     else: # Default to euclidean
         return get_euclidean_distance(v1, v2)
@@ -131,12 +124,12 @@ def _create_path_from_ids(path_ids):
     return ordered_path_details
 
 
-def _calculate_local_average_jump_distance(start_item_id, end_item_id, sample_size=PATH_AVG_JUMP_SAMPLE_SIZE):
+def _calculate_local_average_jump_distance(start_item_id, end_item_id, sample_size=config.PATH_AVG_JUMP_SAMPLE_SIZE):
     """
     Calculates the average distance by creating a chain of neighbors and measuring the
     distance between each step in the chain.
     """
-    logger.info(f"Calculating chained average jump distance ({PATH_DISTANCE_METRIC}) for neighbors of {start_item_id} and {end_item_id}.")
+    logger.info(f"Calculating chained average jump distance ({config.PATH_DISTANCE_METRIC}) for neighbors of {start_item_id} and {end_item_id}.")
     
     distances = []
     
@@ -188,8 +181,8 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
     # Local import to prevent circular dependency
     from app_helper import get_score_data_by_ids
 
-    threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if PATH_DISTANCE_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
-    metric_name = 'Angular' if PATH_DISTANCE_METRIC == 'angular' else 'Euclidean'
+    threshold = config.DUPLICATE_DISTANCE_THRESHOLD_COSINE if config.PATH_DISTANCE_METRIC == 'angular' else config.DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
+    metric_name = 'Angular' if config.PATH_DISTANCE_METRIC == 'angular' else 'Euclidean'
 
     found_songs = []
 
@@ -230,9 +223,9 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
 
         # Enforce global per-artist cap if configured. Treat MAX_SONGS_PER_ARTIST <= 0 as DISABLED.
         author_norm = (details.get('author') or '').strip().lower()
-        if artist_counts is not None and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
-            if artist_counts.get(author_norm, 0) >= MAX_SONGS_PER_ARTIST:
-                logger.debug(f"Filtering song (ARTIST CAP) '{details.get('title')}' by '{details.get('author')}' because artist cap {MAX_SONGS_PER_ARTIST} reached.")
+        if artist_counts is not None and config.MAX_SONGS_PER_ARTIST is not None and config.MAX_SONGS_PER_ARTIST > 0:
+            if artist_counts.get(author_norm, 0) >= config.MAX_SONGS_PER_ARTIST:
+                logger.debug(f"Filtering song (ARTIST CAP) '{details.get('title')}' by '{details.get('author')}' because artist cap {config.MAX_SONGS_PER_ARTIST} reached.")
                 continue
 
         candidate_vector = get_vector_by_id(candidate_id)
@@ -242,8 +235,8 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
         is_too_close = False
 
         # Check against songs *already added to the main path*
-        if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 and path_songs_details_so_far:
-            for prev_song_details in path_songs_details_so_far[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]:
+        if config.DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 and path_songs_details_so_far:
+            for prev_song_details in path_songs_details_so_far[-config.DUPLICATE_DISTANCE_CHECK_LOOKBACK:]:
                 if 'vector' in prev_song_details:
                     distance_from_prev = get_distance(candidate_vector, prev_song_details['vector'])
                     if distance_from_prev < threshold:
@@ -258,8 +251,8 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
                 continue
 
         # Also check against songs found *within this same job*
-        if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 and found_songs:
-            for prev_song_details in found_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]:
+        if config.DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 and found_songs:
+            for prev_song_details in found_songs[-config.DUPLICATE_DISTANCE_CHECK_LOOKBACK:]:
                 if 'vector' in prev_song_details:
                     distance_from_prev = get_distance(candidate_vector, prev_song_details['vector'])
                     if distance_from_prev < threshold:
@@ -317,7 +310,7 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
     return found_songs
 
 
-def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH, path_fix_size=PATH_FIX_SIZE):
+def find_path_between_songs(start_item_id, end_item_id, Lreq=config.PATH_DEFAULT_LENGTH, path_fix_size=config.PATH_FIX_SIZE):
     """
     Finds a path between two songs using linear interpolation of centroids
     and a centroid-merging strategy on failure, ensuring exact path length.
@@ -382,7 +375,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
     if num_intermediate > 0:
         logger.info(f"Attempting to find {num_intermediate} intermediate songs for a total path of {Lreq}.")
         # Generate Lreq total centroids (start, ...intermediate..., end)
-        all_centroids = interpolate_centroids(start_vector, end_vector, num=Lreq, metric=PATH_DISTANCE_METRIC)
+        all_centroids = interpolate_centroids(start_vector, end_vector, num=Lreq, metric=config.PATH_DISTANCE_METRIC)
         
         # We only want the intermediate ones
         intermediate_centroids = all_centroids[1:-1] 
@@ -393,7 +386,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
         # - initial_count = max(1, min(num_intermediate, representative // 2))
         # This avoids creating many centroids when the local neighborhood is small.
         try:
-            sample_n = max(10, int(PATH_CANDIDATES_PER_STEP))
+            sample_n = max(10, int(config.PATH_CANDIDATES_PER_STEP))
         except Exception:
             sample_n = 50
 
@@ -510,7 +503,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                         vec_b_orig = intermediate_centroids[idx_b_end]
 
                         # Create new merged vector (midpoint of the two *original* vectors)
-                        merged_vector = interpolate_centroids(vec_a_orig, vec_b_orig, num=3, metric=PATH_DISTANCE_METRIC)[1]
+                        merged_vector = interpolate_centroids(vec_a_orig, vec_b_orig, num=3, metric=config.PATH_DISTANCE_METRIC)[1]
 
                         # Sum k, cap at k_max
                         merged_k = min(job_a['k'] + job_b['k'], k_max)
