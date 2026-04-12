@@ -855,32 +855,67 @@
         cursor: help;
     }
 
-    .hide-duplicates-toggle {
+    /* Duplicate detection controls - grid cell */
+    .dup-detect-cell {
+        grid-column: 1 / -1;
         display: flex;
         align-items: center;
-        gap: 0.5rem;
-        font-size: 0.875rem;
+        justify-content: center;
+        gap: 1rem;
+        padding: 0.6rem 1.25rem;
+        background: rgba(255, 255, 255, 0.025);
+        border-top: 1px solid var(--border-color, rgba(255,255,255,0.08));
+        border-radius: 0;
+        margin-top: 0.25rem;
+        padding-top: 1rem;
     }
 
-    .hide-duplicates-toggle label {
-        cursor: pointer;
-        user-select: none;
-        display: flex;
-        align-items: center;
-        gap: 0.35rem;
-        color: var(--text-muted);
-    }
-
-    .dup-threshold-group {
+    .dup-detect-cell .dup-toggle {
         display: flex;
         align-items: center;
         gap: 0.4rem;
-        font-size: 0.8rem;
-        color: var(--text-muted);
+        cursor: pointer;
+        user-select: none;
+        font-size: 0.85rem;
+        color: var(--text-main);
+        white-space: nowrap;
     }
 
-    .dup-threshold-group input[type="range"] {
-        width: 100px;
+    .dup-detect-cell .dup-toggle input[type="checkbox"] {
+        accent-color: var(--color-primary, #3b82f6);
+        width: 15px;
+        height: 15px;
+        cursor: pointer;
+    }
+
+    .dup-detect-cell .dup-sensitivity {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .dup-detect-cell .dup-sensitivity-label {
+        font-size: 0.8rem;
+        color: var(--text-muted);
+        white-space: nowrap;
+    }
+
+    .dup-detect-cell .dup-sensitivity input[type="range"] {
+        width: 120px;
+    }
+
+    .dup-detect-cell .dup-sensitivity .slider-value {
+        font-size: 0.8rem;
+        min-width: 38px;
+        text-align: right;
+    }
+
+    .dup-detect-cell .dup-sep {
+        width: 1px;
+        height: 1.2rem;
+        background: var(--text-muted, rgba(255,255,255,0.25));
+        opacity: 0.4;
+        flex-shrink: 0;
     }
 </style>
 {% endblock %}
@@ -994,22 +1029,23 @@
                         <div class="dual-range-track" id="year-range-track"></div>
                     </div>
                 </div>
-            </div>
-
-            <div style="display: flex; align-items: center; gap: 1.5rem; margin-top: 0.5rem;">
-                <div class="hide-duplicates-toggle">
-                    <label>
+                <div class="dup-detect-cell">
+                    <label class="dup-toggle">
                         <input type="checkbox" id="flag-duplicates" checked>
-                        Flag duplicates of source tracks
+                        Flag duplicates
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Detect results that are near-duplicates of source tracks (same song on compilations, remasters, etc.) using audio embedding similarity.</span>
+                        </span>
                     </label>
-                </div>
-                <div class="dup-threshold-group">
-                    <span>Sensitivity:</span>
-                    <input type="range" id="dup-threshold-slider" min="0.005" max="0.1" step="0.005" value="0.015">
-                    <span id="dup-threshold-value">0.015</span>
-                </div>
-                <div class="hide-duplicates-toggle">
-                    <label>
+                    <div class="dup-sep"></div>
+                    <div class="dup-sensitivity">
+                        <span class="dup-sensitivity-label">Sensitivity:</span>
+                        <input type="range" id="dup-threshold-slider" min="0.005" max="0.1" step="0.005" value="0.015">
+                        <span id="dup-threshold-value" class="slider-value">0.015</span>
+                    </div>
+                    <div class="dup-sep"></div>
+                    <label class="dup-toggle">
                         <input type="checkbox" id="hide-duplicates">
                         Hide flagged
                     </label>
