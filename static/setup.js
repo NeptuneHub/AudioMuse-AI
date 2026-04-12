@@ -1,6 +1,3 @@
-localStorage.setItem('menuOpen', 'false');
-document.documentElement.classList.remove('sidebar-open');
-
 var serverFields = {
     jellyfin: [
         {name: 'JELLYFIN_URL', label: 'Jellyfin URL', placeholder: 'http://your-jellyfin-server:8096'},
