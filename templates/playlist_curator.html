@@ -604,9 +604,22 @@
         border-color: var(--color-primary);
     }
 
-    .btn-weight.weight-high {
-        background-color: var(--color-primary);
+    .btn-weight.weight-boost {
+        background-color: #2563eb;
         color: white;
+        border-color: #2563eb;
+    }
+
+    .btn-weight.weight-strong {
+        background-color: #9333ea;
+        color: white;
+        border-color: #9333ea;
+    }
+
+    .btn-weight.weight-focus {
+        background-color: #a97c00;
+        color: white;
+        border-color: #a97c00;
     }
 
     /* Remove Button */
@@ -1147,7 +1160,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
 <div id="status"></div>
 
 <section id="results-container" class="hidden">
-    <h2>Search Results</h2>
+    <h2>Search Results <span id="recalc-spinner" class="loading-spinner" style="display:none;"></span></h2>
     <div id="results-table-wrapper" class="results-table-container"></div>
 </section>
 
@@ -1233,7 +1246,15 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
     let sourceWeights = {};           // {item_id: weight} for source playlist tracks
     let includedWeights = {};         // {item_id: weight} for included recommendations
     let sourceTracksData = [];        // Full track objects for drawer display
-    const VALID_WEIGHTS = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
+    const INFLUENCE_LEVELS = [
+        { level: 0, label: 'x1',     css: '',              tip: 'Equal weight — same influence as all other tracks' },
+        { level: 1, label: 'Boost',  css: 'weight-boost',  tip: 'Boost — ~5% centroid influence, nudges results toward this track' },
+        { level: 2, label: 'Strong', css: 'weight-strong', tip: 'Strong — ~15% centroid influence, noticeably shapes results' },
+        { level: 3, label: 'Focus',  css: 'weight-focus',  tip: 'Focus — ~30% centroid influence, dominates the search direction' },
+    ];
+    function getInfluenceInfo(level) {
+        return INFLUENCE_LEVELS[level] || INFLUENCE_LEVELS[0];
+    }
 
     // Media-server playlist cache — fetch once per page load
     let serverPlaylistsLoaded = false;
@@ -1253,9 +1274,8 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
         { value: 'title', label: 'Track Title', type: 'text' },
         { value: 'album', label: 'Album', type: 'text' },
         { value: 'album_artist', label: 'Album Artist', type: 'text' },
-        { value: 'genre', label: 'Genre', type: 'dropdown', optionsKey: 'moods' },
-        { value: 'mood', label: 'Mood / Style', type: 'dropdown', optionsKey: 'moods' },
-        { value: 'features', label: 'Vibe (danceable, aggressive...)', type: 'dropdown', optionsKey: 'features' },
+        { value: 'genre', label: 'Genre (rock, pop, jazz...)', type: 'mood_slider', optionsKey: 'moods' },
+        { value: 'features', label: 'Mood / Style (danceable, aggressive...)', type: 'mood_slider', optionsKey: 'features' },
         { value: 'year', label: 'Year', type: 'number' },
         { value: 'decade', label: 'Decade', type: 'dropdown', optionsKey: 'year_ranges' },
         { value: 'rating', label: 'Rating', type: 'dropdown', optionsKey: 'rating_ranges' },
@@ -1281,6 +1301,10 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
             { value: 'is_not', label: 'is not' },
             { value: 'greater_than', label: 'is greater than' },
             { value: 'less_than', label: 'is less than' }
+        ],
+        mood_slider: [
+            { value: 'greater_than', label: 'at least' },
+            { value: 'less_than', label: 'at most' }
         ]
     };
 
@@ -1423,7 +1447,9 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
         // Update operators
         opSelect.innerHTML = '';
         let ops;
-        if (fieldType === 'dropdown') {
+        if (fieldType === 'mood_slider') {
+            ops = operators.mood_slider;
+        } else if (fieldType === 'dropdown') {
             ops = operators.dropdown;
         } else if (fieldType === 'number') {
             ops = operators.number;
@@ -1441,7 +1467,58 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
         // Update value input
         valueContainer.innerHTML = '';
 
-        if (fieldType === 'dropdown' && optionsKey) {
+        if (fieldType === 'mood_slider' && optionsKey) {
+            // Mood dropdown + threshold slider
+            const wrapper = document.createElement('div');
+            wrapper.style.cssText = 'display:flex;align-items:center;gap:0.5rem;flex:1;';
+
+            const select = document.createElement('select');
+            select.className = 'filter-mood-select filter-value-dropdown';
+            select.style.minWidth = '120px';
+            const emptyOpt = document.createElement('option');
+            emptyOpt.value = '';
+            emptyOpt.textContent = '-- Select --';
+            select.appendChild(emptyOpt);
+            (filterOptions[optionsKey] || []).forEach(opt => {
+                const option = document.createElement('option');
+                option.value = typeof opt === 'object' ? opt.value : opt;
+                option.textContent = typeof opt === 'object' ? opt.label : opt;
+                select.appendChild(option);
+            });
+
+            const slider = document.createElement('input');
+            slider.type = 'range';
+            slider.min = '0';
+            slider.max = '1';
+            slider.step = '0.05';
+            slider.value = '0.55';
+            slider.style.cssText = 'flex:1;min-width:80px;';
+
+            const sliderVal = document.createElement('span');
+            sliderVal.className = 'slider-value';
+            sliderVal.style.minWidth = '32px';
+            sliderVal.textContent = '0.55';
+            slider.addEventListener('input', () => {
+                sliderVal.textContent = parseFloat(slider.value).toFixed(2);
+            });
+
+            // Hidden input that combines mood:threshold for getFilters()
+            const hiddenInput = document.createElement('input');
+            hiddenInput.type = 'hidden';
+            hiddenInput.className = 'filter-value';
+            const updateHidden = () => {
+                hiddenInput.value = select.value ? select.value + ':' + parseFloat(slider.value).toFixed(2) : '';
+            };
+            select.addEventListener('change', updateHidden);
+            slider.addEventListener('input', updateHidden);
+            updateHidden();
+
+            wrapper.appendChild(select);
+            wrapper.appendChild(slider);
+            wrapper.appendChild(sliderVal);
+            valueContainer.appendChild(wrapper);
+            valueContainer.appendChild(hiddenInput);
+        } else if (fieldType === 'dropdown' && optionsKey) {
             const select = document.createElement('select');
             select.className = 'filter-value filter-value-dropdown';
 
@@ -1742,7 +1819,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
             sourceTracksData = data.tracks;
             sourceWeights = {};
             includedWeights = {};
-            sourceTracksData.forEach(t => sourceWeights[t.item_id] = 1);
+            sourceTracksData.forEach(t => sourceWeights[t.item_id] = 0);
             smartFilterSourceIds = sourceTracksData.map(t => t.item_id);
             sourcePlaylistCount = data.resolved_tracks;
 
@@ -1785,7 +1862,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
         }
     }
 
-    window.findSimilarSongs = async function (searchOnly = false) {
+    window.findSimilarSongs = async function (searchOnly = false, isRecalc = false) {
         console.log('findSimilarSongs called', { searchOnly, activeTab, smartFilterSourceIds: smartFilterSourceIds.length });
         const maxSongs = parseInt(document.getElementById('max_songs').value);
         const threshold = parseFloat(document.getElementById('similarity_threshold').value);
@@ -1889,8 +1966,12 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
             }
         }
 
-        setLoadingStatus(searchOnly ? 'Searching...' : 'Finding similar songs...');
-        setSearchButtonsDisabled(true);
+        if (isRecalc) {
+            document.getElementById('recalc-spinner').style.display = 'inline-block';
+        } else {
+            setLoadingStatus(searchOnly ? 'Searching...' : 'Finding similar songs...');
+            setSearchButtonsDisabled(true);
+        }
 
         try {
             const response = await fetch("{{ url_for('playlist_curator_bp.search_api') }}", {
@@ -1924,7 +2005,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
                     if (sourceTracksData.length === 0) {
                         sourceTracksData = data.source_tracks;
                         sourceWeights = {};
-                        sourceTracksData.forEach(t => sourceWeights[t.item_id] = 1);
+                        sourceTracksData.forEach(t => sourceWeights[t.item_id] = 0);
                         smartFilterSourceIds = sourceTracksData.map(t => t.item_id);
                     }
                     // Always display the drawer (preserves existing weights on recalculation)
@@ -1942,7 +2023,8 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
                 displayResults(data.results);
             }
 
-            clearStatus();
+            document.getElementById('recalc-spinner').style.display = 'none';
+            if (!isRecalc) clearStatus();
 
             document.getElementById('results-container').classList.remove('hidden');
             document.getElementById('stats-container').classList.remove('hidden');
@@ -1952,10 +2034,16 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
             }
 
         } catch (error) {
+            document.getElementById('recalc-spinner').style.display = 'none';
             console.error('Search error:', error);
-            setErrorStatus(error.message);
+            if (!isRecalc) {
+                setErrorStatus(error.message);
+                document.getElementById('results-table-wrapper').innerHTML = '';
+                document.getElementById('stats-container').classList.add('hidden');
+                document.getElementById('playlist-creator').classList.add('hidden');
+            }
         } finally {
-            setSearchButtonsDisabled(false);
+            if (!isRecalc) setSearchButtonsDisabled(false);
         }
     };
 
@@ -2032,7 +2120,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
             sourceWeights = {};
             includedWeights = {};
             sourcePlaylistCount = filteredResults.length;
-            sourceTracksData.forEach(t => sourceWeights[t.item_id] = 1);
+            sourceTracksData.forEach(t => sourceWeights[t.item_id] = 0);
 
             // Display the source tracks drawer
             displaySourceTracksDrawer();
@@ -2124,8 +2212,9 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
             // Build weight cell for extend mode
             let weightCell = '';
             if (isExtendMode) {
-                const weight = includedWeights[track.item_id] || 1;
-                weightCell = `<td><button class="btn-weight ${weight > 1 ? 'weight-high' : ''}" data-weight-id="${escapedId}" onclick="cycleWeight(this.dataset.weightId,false)">x${weight}</button></td>`;
+                const level = includedWeights[track.item_id] || 0;
+                const wInfo = getInfluenceInfo(level);
+                weightCell = `<td><button class="btn-weight ${wInfo.css}" title="${wInfo.tip}" data-weight-id="${escapedId}" onclick="cycleWeight(this.dataset.weightId,false)">${wInfo.label}</button></td>`;
             }
 
             // Build actions cell based on mode
@@ -2235,7 +2324,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
                             <span class="track-artist">${escHtml(displayArtist)}</span>
                         </div>
                     </td>
-                    <td>${escHtml(track.album) || '-'}</td>
+                    <td>${escHtml(track.album) || '-'}${track.year ? ' (' + track.year + ')' : ''}</td>
                     <td><div class="action-buttons">
                         ${actionsHtml}
                     </div></td>
@@ -2450,16 +2539,17 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
     // Weight cycling (click to cycle through values)
     window.cycleWeight = function(itemId, isSource) {
         const weights = isSource ? sourceWeights : includedWeights;
-        const current = weights[itemId] || 1;
-        const idx = VALID_WEIGHTS.indexOf(current);
-        const next = VALID_WEIGHTS[(idx + 1) % VALID_WEIGHTS.length];
+        const current = weights[itemId] || 0;
+        const next = (current + 1) % INFLUENCE_LEVELS.length;
         weights[itemId] = next;
 
         // Update button UI
+        const info = getInfluenceInfo(next);
         const btn = document.querySelector(`[data-weight-id="${CSS.escape(itemId)}"]`);
         if (btn) {
-            btn.textContent = `x${next}`;
-            btn.classList.toggle('weight-high', next > 1);
+            btn.textContent = info.label;
+            btn.title = info.tip;
+            btn.className = 'btn-weight' + (info.css ? ' ' + info.css : '');
         }
 
         debouncedRecalculate();
@@ -2481,7 +2571,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
         clearTimeout(recalculateTimeout);
         recalculateTimeout = setTimeout(() => {
             if (activeTab === 'extend' || activeTab === 'playlist') {
-                findSimilarSongs(false);
+                findSimilarSongs(false, true);
             }
         }, 500);
     }
@@ -2510,7 +2600,8 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
         </tr></thead><tbody>`;
 
         sourceTracksData.forEach(track => {
-            const weight = sourceWeights[track.item_id] || 1;
+            const level = sourceWeights[track.item_id] || 0;
+            const wInfo = getInfluenceInfo(level);
             const artist = track.song_artist || track.author || 'Unknown';
             const streamUrl = '/api/curator/stream/' + encodeURIComponent(track.item_id);
             const escapedId = escHtml(track.item_id);
@@ -2519,7 +2610,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
                 <td><button class="btn-play" data-stream="${escHtml(streamUrl)}" data-title="${escHtml(track.title || 'Unknown')}" data-artist="${escHtml(artist)}">&#9658;</button></td>
                 <td><div class="track-info"><span class="track-title">${escHtml(track.title) || 'Unknown'}</span><span class="track-artist">${escHtml(artist)}</span></div></td>
                 <td>${escHtml(track.album) || '-'}</td>
-                <td><button class="btn-weight ${weight > 1 ? 'weight-high' : ''}" data-weight-id="${escapedId}" onclick="cycleWeight(this.dataset.weightId,true)">x${weight}</button></td>
+                <td><button class="btn-weight ${wInfo.css}" title="${wInfo.tip}" data-weight-id="${escapedId}" onclick="cycleWeight(this.dataset.weightId,true)">${wInfo.label}</button></td>
                 <td><button class="btn-remove" data-id="${escapedId}" onclick="removeSourceTrack(this.dataset.id)">Remove</button></td>
             </tr>`;
         });

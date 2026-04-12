@@ -14,19 +14,43 @@ logger = logging.getLogger(__name__)
 
 playlist_curator_bp = Blueprint('playlist_curator_bp', __name__, template_folder='templates')
 
-VALID_WEIGHTS = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024}
+INFLUENCE_LEVELS = {
+    0: 0.0,    # x1 — equal weight
+    1: 0.05,   # Boost — ~5% of centroid
+    2: 0.15,   # Strong — ~15% of centroid
+    3: 0.30,   # Focus — ~30% of centroid
+}
+
+VALID_LEVELS = set(INFLUENCE_LEVELS.keys())
 
 
-def _sanitize_weights(weights_dict):
-    """Ensure weights are valid integers from allowed set."""
+def _sanitize_levels(levels_dict):
+    """Ensure influence levels are valid (0-3)."""
     sanitized = {}
-    for k, v in weights_dict.items():
+    for k, v in levels_dict.items():
         try:
-            w = int(v)
-            sanitized[str(k)] = w if w in VALID_WEIGHTS else 1
+            lvl = int(v)
+            sanitized[str(k)] = lvl if lvl in VALID_LEVELS else 0
         except (ValueError, TypeError):
-            sanitized[str(k)] = 1
+            sanitized[str(k)] = 0
     return sanitized
+
+
+def _levels_to_weights(levels_dict, total_tracks):
+    """Convert influence levels to actual weights based on playlist size.
+
+    For a track with target influence pct in a playlist of N tracks:
+        weight = (pct * (N - 1)) / (1 - pct)
+    Minimum weight is 1.
+    """
+    weights = {}
+    for item_id, level in levels_dict.items():
+        pct = INFLUENCE_LEVELS.get(level, 0.0)
+        if pct <= 0 or total_tracks <= 1:
+            weights[item_id] = 1
+        else:
+            weights[item_id] = max(1, round(pct * (total_tracks - 1) / (1 - pct)))
+    return weights
 
 
 def _compute_centroid_from_ids(ids, weights=None):
@@ -128,10 +152,6 @@ def _build_filter_query(filters, match_mode='all'):
                 # Use regex to match genre label within comma-separated mood_vector
                 clauses.append(f"{db_col} ~ %s")
                 params.append(f"(^|,)\\s*{re.escape(value)}:")
-            elif field == 'features':
-                # other_features is comma-separated: "danceable, aggressive, happy"
-                clauses.append(f"{db_col} ILIKE %s")
-                params.append(f"%{value}%")
             else:
                 clauses.append(f"{db_col} = %s")
                 params.append(value)
@@ -139,20 +159,33 @@ def _build_filter_query(filters, match_mode='all'):
             if field in ('mood', 'genre'):
                 clauses.append(f"{db_col} !~ %s")
                 params.append(f"(^|,)\\s*{re.escape(value)}:")
-            elif field == 'features':
-                clauses.append(f"{db_col} NOT ILIKE %s")
-                params.append(f"%{value}%")
             else:
                 clauses.append(f"{db_col} != %s")
                 params.append(value)
         elif operator in ('greater_than', 'less_than'):
-            try:
-                fval = float(value)
-            except ValueError:
-                continue
-            op_sym = '>' if operator == 'greater_than' else '<'
-            clauses.append(f"{db_col} {op_sym} %s")
-            params.append(fval)
+            if field in ('features', 'genre', 'mood') and ':' in str(value):
+                # Score-aware filter: value is "label:threshold"
+                parts = value.rsplit(':', 1)
+                label = parts[0].strip()
+                try:
+                    threshold = float(parts[1])
+                except (ValueError, IndexError):
+                    continue
+                op_sym = '>=' if operator == 'greater_than' else '<='
+                clauses.append(f"""EXISTS (
+                    SELECT 1 FROM UNNEST(STRING_TO_ARRAY({db_col}, ',')) AS f
+                    WHERE TRIM(SPLIT_PART(f, ':', 1)) = %s
+                    AND CAST(SPLIT_PART(f, ':', 2) AS FLOAT) {op_sym} %s
+                )""")
+                params.extend([label, threshold])
+            else:
+                try:
+                    fval = float(value)
+                except ValueError:
+                    continue
+                op_sym = '>' if operator == 'greater_than' else '<'
+                clauses.append(f"{db_col} {op_sym} %s")
+                params.append(fval)
 
     if not clauses:
         return "1=1", []
@@ -302,12 +335,12 @@ def get_filter_options():
         unique_moods = [row[0] for row in cur.fetchall() if row[0]]
 
         cur.execute("""
-            SELECT DISTINCT TRIM(feature) as feature_label
+            SELECT DISTINCT TRIM(SPLIT_PART(feature, ':', 1)) as feature_label
             FROM (
                 SELECT UNNEST(STRING_TO_ARRAY(other_features, ',')) as feature
                 FROM score WHERE other_features IS NOT NULL AND other_features != ''
             ) t
-            WHERE TRIM(feature) != ''
+            WHERE TRIM(SPLIT_PART(feature, ':', 1)) != ''
             ORDER BY feature_label
         """)
         unique_features = [row[0] for row in cur.fetchall() if row[0]]
@@ -390,8 +423,8 @@ def search_api():
     except (TypeError, ValueError):
         duplicate_threshold = 0.01
 
-    source_weights = _sanitize_weights(payload.get('source_weights', {}))
-    included_weights = _sanitize_weights(payload.get('included_weights', {}))
+    source_levels = _sanitize_levels(payload.get('source_weights', {}))
+    included_levels = _sanitize_levels(payload.get('included_weights', {}))
 
     if not playlist_name and not filters and not source_ids:
         return jsonify({"error": "Missing 'playlist_name', 'filters', or 'source_ids'"}), 400
@@ -440,11 +473,14 @@ def search_api():
         # Combine source + included for positive centroid
         all_ids_for_centroid = list(set(list(playlist_ids) + list(included_ids)))
 
-        combined_weights = {}
+        # Convert influence levels to actual weights based on total track count
+        total_tracks = len(all_ids_for_centroid)
+        combined_levels = {}
         for pid in playlist_ids:
-            combined_weights[str(pid)] = source_weights.get(str(pid), 1)
+            combined_levels[str(pid)] = source_levels.get(str(pid), 0)
         for inc_id in included_ids:
-            combined_weights[str(inc_id)] = included_weights.get(str(inc_id), 1)
+            combined_levels[str(inc_id)] = included_levels.get(str(inc_id), 0)
+        combined_weights = _levels_to_weights(combined_levels, total_tracks)
 
         positive_centroid = _compute_centroid_from_ids(all_ids_for_centroid, combined_weights)
         if positive_centroid is None:
