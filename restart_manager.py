@@ -104,7 +104,7 @@ def _terminate_flask_processes():
     return True
 
 
-def schedule_flask_restart(delay_seconds=1.0):
+def schedule_flask_restart(delay_seconds=2.5):
     """Schedule a Flask container restart after the current response completes.
 
     Initial setup can take longer to settle, so use a longer delay to avoid

@@ -245,6 +245,21 @@ class SetupManager:
         except Exception as exc:
             self.logger.warning(f'Failed to refresh config after saving values: {exc}')
 
+    def delete_config_values(self, keys):
+        if not keys:
+            return
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"DELETE FROM {DEFAULT_CONFIG_TABLE} WHERE key = ANY(%s)",
+                        (list(keys),)
+                    )
+                conn.commit()
+        except Exception as exc:
+            self.logger.warning(f"Unable to delete setup config values: {exc}")
+            raise
+
     def is_setup_saved(self):
         overrides = self.get_raw_overrides()
         return bool(overrides)

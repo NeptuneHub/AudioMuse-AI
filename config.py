@@ -23,14 +23,16 @@ EMBY_TOKEN = os.environ.get("EMBY_TOKEN", "")  # Replace with a suitable default
 # For Jellyfin/Navidrome: Use library/folder names
 MUSIC_LIBRARIES = os.environ.get("MUSIC_LIBRARIES", "") 
 TEMP_DIR = "/app/temp_audio"  # Always use /app/temp_audio
-HEADERS = {"X-Emby-Token": JELLYFIN_TOKEN}
 
-if MEDIASERVER_TYPE == "jellyfin":
-    HEADERS = {"X-Emby-Token": JELLYFIN_TOKEN}
-elif MEDIASERVER_TYPE == "emby":
-    HEADERS = {"X-Emby-Token": EMBY_TOKEN}
-else:
-    HEADERS = {}
+
+def _compute_headers():
+    if MEDIASERVER_TYPE == "jellyfin":
+        return {"X-Emby-Token": JELLYFIN_TOKEN}
+    if MEDIASERVER_TYPE == "emby":
+        return {"X-Emby-Token": EMBY_TOKEN}
+    return {}
+
+HEADERS = _compute_headers()
 
 # --- Navidrome (Subsonic API) Constants ---
 # These are used only if MEDIASERVER_TYPE is "navidrome".
@@ -496,6 +498,8 @@ try:
             globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
         else:
             globals()[_key] = _value
+
+    HEADERS = _compute_headers()
 
     def refresh_config():
         """Reload the config module from the current database and environment."""

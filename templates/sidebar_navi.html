@@ -27,5 +27,9 @@
 {% endif %}
 <li><button type="button" id="dark-mode-toggle" aria-pressed="false" aria-label="Toggle dark mode">🌙 Dark Mode</button></li>
 {% if auth_enabled %}
-<li><a href="#" id="logout-btn" aria-label="Logout">🔓 Logout</a></li>
+<li>
+    <form id="logout-form" action="/logout" method="post" style="display:inline; margin:0; padding:0;">
+        <button type="submit" id="logout-btn" aria-label="Logout" style="border:none; background:none; padding:0; margin:0; font:inherit; color:inherit; cursor:pointer;">🔓 Logout</button>
+    </form>
+</li>
 {% endif %}

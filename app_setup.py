@@ -98,6 +98,19 @@ def setup_api():
 
     try:
         was_bootstrap = is_bootstrap_mode()
+        new_server_type = filtered_values.get('MEDIASERVER_TYPE', config.MEDIASERVER_TYPE)
+        if new_server_type != config.MEDIASERVER_TYPE:
+            obsolete_fields = []
+            if new_server_type == 'jellyfin':
+                obsolete_fields = ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN']
+            elif new_server_type == 'navidrome':
+                obsolete_fields = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN']
+            elif new_server_type == 'lyrion':
+                obsolete_fields = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN']
+            elif new_server_type == 'emby':
+                obsolete_fields = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'LYRION_URL']
+            if obsolete_fields:
+                setup_manager.delete_config_values(obsolete_fields)
         setup_manager.save_config_values(filtered_values)
         config.refresh_config()
         refresh_auth_state()

@@ -299,13 +299,21 @@ def auth_endpoint():
         )
         return jsonify({"error": "Auth not configured"}), 404
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = request.form.to_dict()
+    if not isinstance(data, dict):
+        data = {}
+
     user = data.get('user', '')
     password = data.get('password', '')
+    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
 
     if user != effective_audiomuse_user or password != effective_audiomuse_password:
         app.logger.warning(f"Failed login attempt for user: {user!r}")
-        return jsonify({"error": "Invalid credentials"}), 401
+        if is_ajax:
+            return jsonify({"error": "Invalid credentials"}), 401
+        return render_template('login.html', title='Login — AudioMuse-AI', auth_warning=None, login_error='Invalid username or password.')
 
     # Issue JWT — new token at every login
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -316,7 +324,10 @@ def auth_endpoint():
     }
     token = pyjwt.encode(payload, _jwt_secret, algorithm='HS256')
 
-    resp = make_response(jsonify({"status": "ok"}), 200)
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        resp = make_response(jsonify({"status": "ok"}), 200)
+    else:
+        resp = make_response(redirect(url_for('index')))
     resp.set_cookie(
         'audiomuse_jwt',
         token,
@@ -331,7 +342,11 @@ def auth_endpoint():
 @app.route('/logout', methods=['POST'])
 def logout_endpoint():
     """Clear the JWT session cookie and redirect to /login."""
-    resp = make_response(jsonify({"status": "logged_out"}), 200)
+    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+    if is_ajax:
+        resp = make_response(jsonify({"status": "logged_out"}), 200)
+    else:
+        resp = make_response(redirect(url_for('login_page')))
     resp.delete_cookie('audiomuse_jwt', path='/', samesite='Strict')
     return resp
 
