@@ -68,9 +68,9 @@
         padding: 1rem 1.15rem;
         margin: 1rem 0;
         border-radius: 10px;
-        background: #eef5ff;
-        color: #1f3c72;
-        border: 1px solid #d6e4ff;
+        background: var(--status-idle-bg, #eef5ff);
+        color: var(--status-idle-text, #1f3c72);
+        border: 1px solid var(--border-color, #d6e4ff);
     }
     .field-row {
         margin-bottom: 1rem;
@@ -475,8 +475,8 @@
             renderAdvancedFields(visibleAdvancedData);
             updateAuthVisibility();
         }).catch(function(err) {
+            feedback.className = 'status-failure';
             feedback.style.display = 'block';
-            feedback.style.color = '#c0392b';
             feedback.textContent = 'Unable to load setup data. Refresh the page or check the server logs.';
         });
     }
@@ -501,8 +501,8 @@
     function waitForHealthAndRedirect(redirectUrl) {
         var attempts = 0;
     var maxAttempts = 80;
+    feedback.className = 'status-pending';
     feedback.style.display = 'block';
-    feedback.style.color = '#0f5132';
     feedback.textContent = 'Configuration saved. Restarting services — please wait...';
         function checkHealth() {
             attempts += 1;
@@ -524,8 +524,8 @@
                     if (attempts < maxAttempts) {
                         setTimeout(checkHealth, 1500);
                     } else {
+                        feedback.className = 'status-failure';
                         feedback.style.display = 'block';
-                        feedback.style.color = '#c0392b';
                         feedback.textContent = 'Restart timeout. Please refresh the page in a moment.';
                         saveButton.disabled = false;
                     }
@@ -557,8 +557,8 @@
         }
         if (!passwordUnchanged && (passwordValue || confirmValue)) {
             if (passwordValue !== confirmValue) {
+                feedback.className = 'status-failure';
                 feedback.style.display = 'block';
-                feedback.style.color = '#c0392b';
                 feedback.textContent = 'Password and confirmation do not match.';
                 saveButton.disabled = false;
                 return;
@@ -592,8 +592,8 @@
                 return data;
             });
         }).then(function(data) {
+            feedback.className = 'status-success';
             feedback.style.display = 'block';
-            feedback.style.color = '#0f5132';
             if (data.restart_requested) {
                 var redirectUrl = data.require_login ? '/login' : '/';
                 waitForHealthAndRedirect(redirectUrl);
@@ -607,8 +607,8 @@
                 setTimeout(function() { window.location.href = '/'; }, 1100);
             }
         }).catch(function(err) {
+            feedback.className = 'status-failure';
             feedback.style.display = 'block';
-            feedback.style.color = '#c0392b';
             feedback.textContent = err.message;
         }).finally(function() {
             saveButton.disabled = false;
