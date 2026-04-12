@@ -7,15 +7,6 @@ from psycopg2.extras import RealDictCursor
 from urllib.parse import quote
 
 DEFAULT_CONFIG_TABLE = "app_config"
-CONNECTION_FIELDS = {
-    'DATABASE_URL',
-    'POSTGRES_USER',
-    'POSTGRES_PASSWORD',
-    'POSTGRES_HOST',
-    'POSTGRES_PORT',
-    'POSTGRES_DB',
-    'REDIS_URL'
-}
 BASIC_SERVER_FIELDS = {
     'MEDIASERVER_TYPE',
     'JELLYFIN_URL',
@@ -127,8 +118,11 @@ class SetupManager:
 
     def _get_env_config_values(self, config_module):
         values = {}
+        excluded_keys = getattr(config_module, 'SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
         for name, default_value in sorted(vars(config_module).items()):
             if not name.isupper() or name.startswith('_'):
+                continue
+            if name in excluded_keys:
                 continue
             values[name] = default_value
         return values
@@ -146,15 +140,6 @@ class SetupManager:
             self._is_valid_string(getattr(config_module, field, ''))
             for field in self.SERVER_REQUIRED_FIELDS[media_type]
         )
-
-    def _is_valid_connection_config(self, config_module):
-        for field in CONNECTION_FIELDS:
-            value = getattr(config_module, field, None)
-            if value is None:
-                return False
-            if isinstance(value, str) and not value.strip():
-                return False
-        return True
 
     def _is_valid_auth_config(self, config_module):
         enabled = getattr(config_module, 'AUTH_ENABLED', True)

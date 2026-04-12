@@ -15,19 +15,18 @@ BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
 AUTH_FIELDS = ["AUTH_ENABLED", "AUDIOMUSE_USER", "AUDIOMUSE_PASSWORD", "API_TOKEN", "JWT_SECRET"]
 SECRET_FIELDS = {"AUDIOMUSE_PASSWORD", "API_TOKEN", "JELLYFIN_TOKEN", "EMBY_TOKEN", "NAVIDROME_PASSWORD", "JWT_SECRET"}
 BASIC_FIELDS = set(BASIC_SERVER_FIELDS + AUTH_FIELDS)
-CONNECTION_FIELDS = {
+
+HIDDEN_ADVANCED_FIELDS = {
     'DATABASE_URL',
     'POSTGRES_USER',
     'POSTGRES_PASSWORD',
     'POSTGRES_HOST',
     'POSTGRES_PORT',
     'POSTGRES_DB',
-    'REDIS_URL'
-}
-
-HIDDEN_ADVANCED_FIELDS = {
+    'REDIS_URL',
     'MEDIASERVER_FIELDS_BY_TYPE',
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
+    'SETUP_BOOTSTRAP_EXCLUDED_KEYS',
     'MOOD_LABELS',
     'APP_VERSION',
     'TEMP_DIR',
@@ -128,7 +127,7 @@ def _test_media_server_connection(filtered_values):
 
 
 def should_show_advanced(name):
-    if name in HIDDEN_ADVANCED_FIELDS or name in CONNECTION_FIELDS:
+    if name in HIDDEN_ADVANCED_FIELDS:
         return False
     if name.startswith('POSTGRES_') or name.startswith('REDIS_'):
         return False
@@ -137,6 +136,14 @@ def should_show_advanced(name):
     if re.match(r'.*_PATH$', name):
         return False
     return True
+
+
+def _get_allowed_setup_keys():
+    allowed_keys = set()
+    for f in setup_manager.get_all_fields(config):
+        if f['name'] in BASIC_FIELDS or should_show_advanced(f['name']):
+            allowed_keys.add(f['name'])
+    return allowed_keys
 
 @app.route('/setup')
 def setup_page():
@@ -157,10 +164,6 @@ def setup_api():
                 f['secret'] = False
                 f['has_value'] = bool(f.get('overridden', False))
 
-            if f['name'] in CONNECTION_FIELDS and not f.get('overridden', False):
-                f['value'] = ''
-                f['has_value'] = False
-
             if f['name'] in BASIC_FIELDS:
                 basic_fields.append(f)
             elif should_show_advanced(f['name']):
@@ -177,9 +180,10 @@ def setup_api():
     if not isinstance(config_values, dict):
         return jsonify({'error': 'Missing config data'}), 400
 
+    allowed_setup_keys = _get_allowed_setup_keys()
     filtered_values = {}
     for key, value in config_values.items():
-        if not isinstance(key, str) or not key.isupper():
+        if not isinstance(key, str) or not key.isupper() or key not in allowed_setup_keys:
             continue
         filtered_values[key] = _normalize_config_value(key, value)
 

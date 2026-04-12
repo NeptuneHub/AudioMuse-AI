@@ -64,6 +64,18 @@ MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {
     for media_type in MEDIASERVER_FIELDS_BY_TYPE
 }
 
+SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
+    'DATABASE_URL',
+    'POSTGRES_USER',
+    'POSTGRES_PASSWORD',
+    'POSTGRES_HOST',
+    'POSTGRES_PORT',
+    'POSTGRES_DB',
+    'REDIS_URL',
+    'MEDIASERVER_FIELDS_BY_TYPE',
+    'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
+}
+
 # --- MPD (Music Player Daemon) Constants ---
 # These are used only if MEDIASERVER_TYPE is "mpd".
 MPD_HOST = os.environ.get("MPD_HOST", "localhost")
@@ -513,7 +525,12 @@ try:
     _setup_manager = SetupManager()
     _setup_manager.ensure_table()
     _overrides = _setup_manager.get_raw_overrides()
+    _excluded_override_keys = globals().get('SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
     for _key, _value in _overrides.items():
+        # Skip any keys that are explicitly excluded from overrides (Redis and Postgres)
+        if _key in _excluded_override_keys:
+            continue
+        # Read the value from the db and override the variable
         if _key in globals():
             globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
         else:
