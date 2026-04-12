@@ -230,6 +230,7 @@
         document.getElementById('JWT_SECRET')
     ];
     var setupForm = document.getElementById('setup-form');
+    var serverValues = {};
 
     function updateAuthVisibility() {
         var authEnabled = document.getElementById('AUTH_ENABLED').value === 'true';
@@ -300,7 +301,10 @@
             }
         }
         if (field.secret) {
-            if (hasSecretValue) {
+            if (field.name === 'AUDIOMUSE_PASSWORD') {
+                input.value = '';
+                input.dataset.originalValue = '';
+            } else if (hasSecretValue) {
                 input.value = '********';
                 input.dataset.originalValue = '********';
             } else {
@@ -438,27 +442,16 @@
             }
             var passwordInput = document.getElementById('AUDIOMUSE_PASSWORD');
             var tokenInput = document.getElementById('API_TOKEN');
-            if (secretHasValue.AUDIOMUSE_PASSWORD) {
-                passwordInput.value = '********';
-                passwordInput.dataset.originalValue = '********';
-            } else {
-                if (basicData.AUDIOMUSE_PASSWORD) {
-                    passwordInput.value = basicData.AUDIOMUSE_PASSWORD;
+            passwordInput.value = '';
+            passwordInput.dataset.originalValue = '';
+            if (tokenInput) {
+                if (secretHasValue.API_TOKEN) {
+                    tokenInput.value = '********';
+                    tokenInput.dataset.originalValue = '********';
                 } else {
-                    passwordInput.value = '';
+                    tokenInput.value = basicData.API_TOKEN || '';
+                    tokenInput.dataset.originalValue = tokenInput.value;
                 }
-                passwordInput.dataset.originalValue = passwordInput.value;
-            }
-            if (secretHasValue.API_TOKEN) {
-                tokenInput.value = '********';
-                tokenInput.dataset.originalValue = '********';
-            } else {
-                if (basicData.API_TOKEN) {
-                    tokenInput.value = basicData.API_TOKEN;
-                } else {
-                    tokenInput.value = '';
-                }
-                tokenInput.dataset.originalValue = tokenInput.value;
             }
             var jwtInput = document.getElementById('JWT_SECRET');
             if (jwtInput) {
@@ -477,6 +470,7 @@
             var visibleAdvancedData = advancedData.filter(function(item) {
                 return !hiddenAdvancedFields.has(item.name);
             });
+            serverValues = basicData; // keep the full current server-related values
             renderServerFields(mediaServerSelect.value, basicData, secretHasValue);
             renderAdvancedFields(visibleAdvancedData);
             updateAuthVisibility();
@@ -487,17 +481,21 @@
         });
     }
 
-    function updateServerFields() {
-        var serverType = document.getElementById('MEDIASERVER_TYPE').value;
-        var currentValues = {};
+    function saveCurrentServerValues() {
+        var currentServerType = document.getElementById('MEDIASERVER_TYPE').value;
         var keys = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'];
         keys.forEach(function(key) {
             var input = document.getElementById(key);
             if (input) {
-                currentValues[key] = input.value;
+                serverValues[key] = input.value;
             }
         });
-        renderServerFields(serverType, currentValues);
+    }
+
+    function updateServerFields() {
+        saveCurrentServerValues();
+        var serverType = document.getElementById('MEDIASERVER_TYPE').value;
+        renderServerFields(serverType, serverValues);
     }
 
     function waitForHealthAndRedirect(redirectUrl) {
