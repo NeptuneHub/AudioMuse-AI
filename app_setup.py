@@ -6,18 +6,10 @@ from app import app, setup_manager, is_bootstrap_mode, refresh_auth_state
 import restart_manager
 import tasks.mediaserver as mediaserver
 
-BASIC_SERVER_FIELDS = [
-    "MEDIASERVER_TYPE",
-    "JELLYFIN_URL",
-    "JELLYFIN_USER_ID",
-    "JELLYFIN_TOKEN",
-    "NAVIDROME_URL",
-    "NAVIDROME_USER",
-    "NAVIDROME_PASSWORD",
-    "LYRION_URL",
-    "EMBY_URL",
-    "EMBY_USER_ID",
-    "EMBY_TOKEN",
+BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
+    field
+    for fields in config.MEDIASERVER_FIELDS_BY_TYPE.values()
+    for field in fields
 ]
 
 AUTH_FIELDS = ["AUTH_ENABLED", "AUDIOMUSE_USER", "AUDIOMUSE_PASSWORD", "API_TOKEN", "JWT_SECRET"]
@@ -34,6 +26,8 @@ CONNECTION_FIELDS = {
 }
 
 HIDDEN_ADVANCED_FIELDS = {
+    'MEDIASERVER_FIELDS_BY_TYPE',
+    'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
     'MOOD_LABELS',
     'APP_VERSION',
     'TEMP_DIR',
@@ -207,15 +201,7 @@ def setup_api():
         was_bootstrap = is_bootstrap_mode()
         new_server_type = filtered_values.get('MEDIASERVER_TYPE', config.MEDIASERVER_TYPE)
         if new_server_type != config.MEDIASERVER_TYPE:
-            obsolete_fields = []
-            if new_server_type == 'jellyfin':
-                obsolete_fields = ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN']
-            elif new_server_type == 'navidrome':
-                obsolete_fields = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN']
-            elif new_server_type == 'lyrion':
-                obsolete_fields = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN']
-            elif new_server_type == 'emby':
-                obsolete_fields = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'LYRION_URL']
+            obsolete_fields = config.MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE.get(new_server_type, [])
             if obsolete_fields:
                 setup_manager.delete_config_values(obsolete_fields)
         setup_manager.save_config_values(filtered_values)

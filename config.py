@@ -47,6 +47,23 @@ NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "") # Use the password
 # These are used only if MEDIASERVER_TYPE is "lyrion".
 LYRION_URL = os.environ.get("LYRION_URL", "")
 
+MEDIASERVER_FIELDS_BY_TYPE = {
+    'jellyfin': ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN'],
+    'navidrome': ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD'],
+    'lyrion': ['LYRION_URL'],
+    'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
+}
+
+MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {
+    media_type: [
+        field
+        for other_type, fields in MEDIASERVER_FIELDS_BY_TYPE.items()
+        if other_type != media_type
+        for field in fields
+    ]
+    for media_type in MEDIASERVER_FIELDS_BY_TYPE
+}
+
 # --- MPD (Music Player Daemon) Constants ---
 # These are used only if MEDIASERVER_TYPE is "mpd".
 MPD_HOST = os.environ.get("MPD_HOST", "localhost")

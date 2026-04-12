@@ -136,12 +136,7 @@ class SetupManager:
     def _is_valid_string(self, value):
         return isinstance(value, str) and value.strip() and not self._looks_like_placeholder(value)
 
-    SERVER_REQUIRED_FIELDS = {
-        'jellyfin': ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN'],
-        'navidrome': ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD'],
-        'lyrion': ['LYRION_URL'],
-        'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
-    }
+    SERVER_REQUIRED_FIELDS = config.MEDIASERVER_FIELDS_BY_TYPE
 
     def _is_valid_server_config(self, config_module):
         media_type = getattr(config_module, 'MEDIASERVER_TYPE', '').strip().lower()
