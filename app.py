@@ -160,8 +160,8 @@ def check_auth():
         return  # Auth disabled — zero impact on existing deployments
 
     # Always allow public routes
-    public = ('/login', '/auth', '/logout', '/api/health')
-    if request.path in public or request.path.startswith('/static/'):
+    public = ('/login', '/auth', '/logout')
+    if request.path in public or request.path.startswith('/static/') or request.path.startswith('/api/health'):
         return
 
     # Always allow bootstrap setup when auth is not configured or auth is disabled.
@@ -198,7 +198,7 @@ def log_api_request():
 
 @app.before_request
 def require_setup_completion():
-    if request.path.startswith('/static/'):
+    if request.path.startswith('/static/') or request.path == '/api/health':
         return
     if setup_manager.is_setup_complete(config):
         return
@@ -320,6 +320,7 @@ def auth_endpoint():
     resp.set_cookie(
         'audiomuse_jwt',
         token,
+        path='/',
         httponly=True,           # JS cannot read this cookie
         samesite='Strict',       # CSRF protection
         secure=False,            # Set to True when behind HTTPS (Caddy/Traefik handle TLS)
@@ -331,7 +332,7 @@ def auth_endpoint():
 def logout_endpoint():
     """Clear the JWT session cookie and redirect to /login."""
     resp = make_response(jsonify({"status": "logged_out"}), 200)
-    resp.delete_cookie('audiomuse_jwt', samesite='Strict')
+    resp.delete_cookie('audiomuse_jwt', path='/', samesite='Strict')
     return resp
 
 @app.route('/')

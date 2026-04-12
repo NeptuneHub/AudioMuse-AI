@@ -174,15 +174,17 @@ class SetupManager:
             enabled = enabled.strip().lower() == 'true'
         if not enabled:
             return True
+
+        # When auth is enabled, only username/password are mandatory.
+        # API_TOKEN is optional and does not control setup completeness.
         return all(
             self._is_valid_string(getattr(config_module, field, ''))
-            for field in ['AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD', 'API_TOKEN']
+            for field in ['AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD']
         )
 
     def is_valid_env_config(self, config_module):
         return (
             self._is_valid_server_config(config_module)
-            and self._is_valid_connection_config(config_module)
             and self._is_valid_auth_config(config_module)
         )
 

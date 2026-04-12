@@ -1,6 +1,6 @@
 import json
 import re
-from flask import request, jsonify, render_template, make_response
+from flask import request, jsonify, render_template, make_response, after_this_request
 import config
 from app import app, setup_manager, is_bootstrap_mode, refresh_auth_state
 import restart_manager
@@ -102,8 +102,7 @@ def setup_api():
         config.refresh_config()
         refresh_auth_state()
         restart_signal_sent = restart_manager.publish_restart_request()
-        restart_scheduled = restart_manager.schedule_flask_restart()
-        restart_requested = restart_signal_sent or restart_scheduled
+        restart_requested = restart_signal_sent
         require_login = was_bootstrap and not is_bootstrap_mode()
     except Exception as exc:
         app.logger.error('Setup save failed: %s', exc, exc_info=True)
@@ -115,6 +114,13 @@ def setup_api():
         'require_login': config.AUTH_ENABLED,
         'restart_requested': restart_requested,
     }), 200)
+
+    @after_this_request
+    def schedule_restart(response):
+        if restart_requested:
+            restart_manager.schedule_flask_restart()
+        return response
+
     if config.AUTH_ENABLED:
-        response.delete_cookie('audiomuse_jwt', samesite='Strict')
+        response.delete_cookie('audiomuse_jwt', samesite='Strict', path='/')
     return response

@@ -104,20 +104,21 @@ def _terminate_flask_processes():
     return True
 
 
-def schedule_flask_restart(delay_seconds=0.1):
-    """Schedule a Flask container restart after the current response completes."""
+def schedule_flask_restart(delay_seconds=1.0):
+    """Schedule a Flask container restart after the current response completes.
+
+    Initial setup can take longer to settle, so use a longer delay to avoid
+    killing the running process before the response is fully delivered.
+    """
     if os.environ.get('SERVICE_TYPE', '').lower() != 'flask':
         return False
 
     if os.environ.get('DISABLE_FLASK_RESTART', 'false').lower() == 'true':
         return False
 
-    def _delayed_shutdown():
-        time.sleep(delay_seconds)
-        _terminate_flask_processes()
-
-    thread = threading.Thread(target=_delayed_shutdown, daemon=True)
-    thread.start()
+    timer = threading.Timer(delay_seconds, _terminate_flask_processes)
+    timer.daemon = True
+    timer.start()
     return True
 
 

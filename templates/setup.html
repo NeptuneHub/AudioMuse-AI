@@ -255,7 +255,15 @@
         var apiTokenInput = document.getElementById('API_TOKEN');
         if (apiTokenInput) {
             apiTokenInput.disabled = !authEnabled;
-            apiTokenInput.required = authEnabled;
+            apiTokenInput.required = false;
+            var label = document.querySelector('label[for="API_TOKEN"]');
+            if (label) {
+                if (authEnabled) {
+                    label.textContent = 'API token (optional)';
+                } else {
+                    label.textContent = 'API token';
+                }
+            }
         }
     }
 
@@ -494,11 +502,10 @@
 
     function waitForHealthAndRedirect(redirectUrl) {
         var attempts = 0;
-        var maxAttempts = 40;
-        feedback.style.display = 'block';
-        feedback.style.color = '#0f5132';
-        feedback.textContent = 'Configuration saved. Restarting services — please wait 5-10 seconds...';
-
+    var maxAttempts = 80;
+    feedback.style.display = 'block';
+    feedback.style.color = '#0f5132';
+    feedback.textContent = 'Configuration saved. Restarting services — please wait...';
         function checkHealth() {
             attempts += 1;
             fetch('/api/health', { cache: 'no-store' })
