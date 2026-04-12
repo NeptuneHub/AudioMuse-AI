@@ -109,33 +109,5 @@
             {% endif %}
         </form>
     </div>
-    <script>
-        document.getElementById('login-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const user = document.getElementById('login-user').value;
-            const password = document.getElementById('login-password').value;
-            const errorEl = document.getElementById('login-error');
-            errorEl.style.display = 'none';
-            try {
-                const resp = await fetch('/auth', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-Requested-With': 'XMLHttpRequest'
-                    },
-                    body: JSON.stringify({user, password})
-                });
-                if (resp.ok) {
-                    window.location.href = '/';
-                } else {
-                    errorEl.textContent = 'Invalid username or password.';
-                    errorEl.style.display = 'block';
-                }
-            } catch (err) {
-                errorEl.textContent = 'Connection error. Please try again.';
-                errorEl.style.display = 'block';
-            }
-        });
-    </script>
 </body>
 </html>
