@@ -4,6 +4,7 @@ import logging
 import psycopg2
 import config
 from psycopg2.extras import RealDictCursor
+from urllib.parse import quote
 
 DEFAULT_CONFIG_TABLE = "app_config"
 CONNECTION_FIELDS = {
@@ -50,7 +51,6 @@ class SetupManager:
         host = os.environ.get("POSTGRES_HOST", "postgres-service.playlist")
         port = os.environ.get("POSTGRES_PORT", "5432")
         db = os.environ.get("POSTGRES_DB", "audiomusedb")
-        from urllib.parse import quote
         user_escaped = quote(user, safe='')
         password_escaped = quote(password, safe='')
         return f"postgresql://{user_escaped}:{password_escaped}@{host}:{port}/{db}"
