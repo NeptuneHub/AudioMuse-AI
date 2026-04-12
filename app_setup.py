@@ -72,6 +72,18 @@ HIDDEN_ADVANCED_FIELDS = {
 TEST_CONFIG_KEYS = set(BASIC_SERVER_FIELDS + ['MUSIC_LIBRARIES'])
 
 
+def _normalize_config_value(key, value):
+    if isinstance(value, str) and hasattr(config, key):
+        default_value = getattr(config, key)
+        if isinstance(default_value, bool):
+            normalized = value.strip().lower()
+            if normalized in ('1', 'true', 'yes', 'on'):
+                return True
+            if normalized in ('0', 'false', 'no', 'off'):
+                return False
+    return value
+
+
 def _merge_test_config(filtered_values):
     test_config = {}
     for key in TEST_CONFIG_KEYS:
@@ -80,7 +92,7 @@ def _merge_test_config(filtered_values):
             if key in SECRET_FIELDS and value == '********':
                 test_config[key] = getattr(config, key, '')
             else:
-                test_config[key] = value
+                test_config[key] = _normalize_config_value(key, value)
         else:
             test_config[key] = getattr(config, key, '')
     if 'MEDIASERVER_TYPE' in test_config and isinstance(test_config['MEDIASERVER_TYPE'], str):
@@ -175,7 +187,7 @@ def setup_api():
     for key, value in config_values.items():
         if not isinstance(key, str) or not key.isupper():
             continue
-        filtered_values[key] = value
+        filtered_values[key] = _normalize_config_value(key, value)
 
     is_test_connection = bool(data.get('test_connection', False))
     if not filtered_values and not is_test_connection:
