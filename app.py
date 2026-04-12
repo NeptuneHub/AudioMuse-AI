@@ -14,7 +14,7 @@ import config
 # RQ imports
 from rq.job import Job, JobStatus
 from rq.exceptions import NoSuchJobError
-from setup_manager import SetupManager
+from tasks.setup_manager import SetupManager
 
 # Redis client
 from redis import Redis

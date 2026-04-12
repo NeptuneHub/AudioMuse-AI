@@ -492,7 +492,7 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "")
 AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
 
 try:
-    from setup_manager import SetupManager
+    from tasks.setup_manager import SetupManager
     _setup_manager = SetupManager()
     _setup_manager.ensure_table()
     _overrides = _setup_manager.get_raw_overrides()
