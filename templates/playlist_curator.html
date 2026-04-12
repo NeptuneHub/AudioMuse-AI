@@ -116,6 +116,7 @@
 
     .results-table {
         width: 100%;
+        table-layout: fixed;
         border-collapse: collapse;
         margin-top: 1rem;
         margin-bottom: 60px;
@@ -127,6 +128,9 @@
         padding: 0.75rem;
         text-align: left;
         border-bottom: 1px solid var(--border-color);
+        vertical-align: middle;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 
     .results-table th {
@@ -142,6 +146,8 @@
     .action-buttons {
         display: flex;
         gap: 0.5rem;
+        align-items: center;
+        justify-content: center;
     }
 
     .btn-include {
@@ -627,11 +633,16 @@
     .track-info {
         display: flex;
         flex-direction: column;
+        min-width: 0;
+        overflow: hidden;
     }
 
     .track-title {
         font-weight: 600;
         color: var(--text-main);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .track-artist {
@@ -841,9 +852,8 @@
     }
 
     .duplicate-warning-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.25rem;
+        display: inline-block;
+        max-width: 100%;
         padding: 0.15rem 0.4rem;
         border-radius: 0.25rem;
         font-size: 0.7rem;
@@ -853,6 +863,9 @@
         border: 1px solid rgba(234, 179, 8, 0.3);
         margin-top: 0.2rem;
         cursor: help;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     /* Duplicate detection controls - grid cell */
@@ -1041,8 +1054,15 @@
                     <div class="dup-sep"></div>
                     <div class="dup-sensitivity">
                         <span class="dup-sensitivity-label">Sensitivity:</span>
-                        <input type="range" id="dup-threshold-slider" min="0.005" max="0.1" step="0.005" value="0.015">
-                        <span id="dup-threshold-value" class="slider-value">0.015</span>
+                        <input type="range" id="dup-threshold-slider" min="0.005" max="0.050" step="0.005" value="0.010">
+                        <span id="dup-threshold-value" class="slider-value">0.010</span>
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">How aggressively to flag near-duplicates of source tracks. Adjusts instantly without re-searching.
+0.005-0.010: Same recording, different metadata or album. Few false positives.
+0.010-0.020: Catches most compilation duplicates. Some false positives.
+0.020+: Increasingly loose — many false positives from similar but different songs.</span>
+                        </span>
                     </div>
                     <div class="dup-sep"></div>
                     <label class="dup-toggle">
@@ -1073,14 +1093,14 @@
             <div class="dedup-controls">
                 <div class="dedup-slider-group label-with-tooltip">
                     <span class="dedup-slider-label" id="dedup-sensitivity-label">Strict</span>
-                    <input type="range" id="dedup-threshold" min="0.01" max="0.15" step="0.005" value="0.015">
-                    <span class="dedup-slider-value" id="dedup-threshold-value">0.015</span>
+                    <input type="range" id="dedup-threshold" min="0.005" max="0.050" step="0.005" value="0.010">
+                    <span class="dedup-slider-value" id="dedup-threshold-value">0.010</span>
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Duplicate sensitivity based on audio analysis similarity.
-Strict (0.01-0.03): Same recording, different metadata only.
-Moderate (0.03-0.07): Catches most duplicates across compilations.
-Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</span>
+                        <span class="tooltip-text">Duplicate sensitivity based on audio embedding similarity.
+Strict (0.005-0.010): Same recording, different metadata or album. Few false positives.
+Moderate (0.010-0.020): Catches most compilation duplicates. Some false positives.
+Loose (0.020-0.050): Increasingly loose — many false positives from similar but different songs.</span>
                     </span>
                 </div>
                 <button type="button" id="btn-find-duplicates" class="btn-find-duplicates" onclick="findDuplicates()">Find Duplicates</button>
@@ -1563,10 +1583,14 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         // Duplicate threshold slider
         document.getElementById('dup-threshold-slider').addEventListener('input', (e) => {
             document.getElementById('dup-threshold-value').textContent = parseFloat(e.target.value).toFixed(3);
+            if (extendPlaylistResults.length > 0) displayResults(extendPlaylistResults);
         });
 
-        // Hide-duplicates toggle re-renders results client-side
+        // Hide-duplicates and flag-duplicates toggles re-render results client-side
         document.getElementById('hide-duplicates').addEventListener('change', () => {
+            if (extendPlaylistResults.length > 0) displayResults(extendPlaylistResults);
+        });
+        document.getElementById('flag-duplicates').addEventListener('change', () => {
             if (extendPlaylistResults.length > 0) displayResults(extendPlaylistResults);
         });
 
@@ -1809,7 +1833,9 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         }
 
         const flagDuplicates = document.getElementById('flag-duplicates').checked;
-        const dupThreshold = flagDuplicates ? parseFloat(document.getElementById('dup-threshold-slider').value) : 999;
+        // Always request all potential duplicates up to slider max so the slider can filter client-side
+        const dupSliderMax = parseFloat(document.getElementById('dup-threshold-slider').max);
+        const dupThreshold = flagDuplicates ? dupSliderMax : 999;
 
         let payload = {
             max_songs: maxSongs,
@@ -2035,9 +2061,12 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         // Filter out songs already in includedSongsData to avoid duplicates
         const includedIdsSet = new Set(includedIds);
         const hideDups = document.getElementById('hide-duplicates').checked;
+        const dupSliderVal = parseFloat(document.getElementById('dup-threshold-slider').value);
+        const flagDups = document.getElementById('flag-duplicates').checked;
         const filteredResults = results.filter(r => {
             if (includedIdsSet.has(r.item_id)) return false;
-            if (hideDups && r.duplicate_of) return false;
+            const isDup = flagDups && r.duplicate_of && r.duplicate_of.distance < dupSliderVal;
+            if (hideDups && isDup) return false;
             return true;
         });
         const combinedResults = [...includedSongsData, ...filteredResults];
@@ -2063,7 +2092,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
                         <th style="width: 50px;">Play</th>
                         <th>Title / Artist</th>
                         <th>Album</th>
-                        <th>Distance</th>
+                        <th style="width: 70px; text-align: right;">Distance</th>
                         ${weightHeader}
                         <th style="width: ${actionsWidth};">${actionsHeader}</th>
                     </tr>
@@ -2074,7 +2103,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         combinedResults.forEach(track => {
             const isExcluded = excludedIds.includes(track.item_id);
             const isIncluded = includedIds.includes(track.item_id);
-            const isDuplicate = !!track.duplicate_of;
+            const isDuplicate = flagDups && !!track.duplicate_of && track.duplicate_of.distance < dupSliderVal;
             let rowClass = isExcluded ? 'excluded-row' : (isIncluded ? 'included-row' : (isDuplicate ? 'duplicate-warning-row' : ''));
 
             const displayArtist = track.song_artist || track.author || 'Unknown';
@@ -2089,7 +2118,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
                 const dupArtist = escHtml(dup.author || '');
                 const dupAlbum = escHtml(dup.album || '');
                 const dupDist = dup.distance != null ? dup.distance.toFixed(4) : '?';
-                dupBadge = `<span class="duplicate-warning-badge" title="Near-duplicate of: ${dupTitle} by ${dupArtist} (${dupAlbum}) — distance: ${dupDist}">&#9888; Duplicate (${dupDist})</span>`;
+                dupBadge = `<span class="duplicate-warning-badge" title="Distance: ${dupDist} — ${dupAlbum}">&#9888; Duplicate of: ${dupTitle} — ${dupArtist} (${dupDist})</span>`;
             }
 
             // Build weight cell for extend mode
@@ -2134,12 +2163,12 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
                             ${dupBadge}
                         </div>
                     </td>
-                    <td>${escHtml(track.album) || '-'}${track.year ? ' (' + track.year + ')' : ''}</td>
-                    <td>${track.distance ? track.distance.toFixed(4) : 'N/A'}</td>
+                    <td title="${escHtml(track.album) || ''}">${escHtml(track.album) || '-'}${track.year ? ' (' + track.year + ')' : ''}</td>
+                    <td style="text-align: right;">${track.distance ? track.distance.toFixed(4) : 'N/A'}</td>
                     ${weightCell}
-                    <td class="action-buttons">
+                    <td><div class="action-buttons">
                         ${actionsHtml}
-                    </td>
+                    </div></td>
                 </tr>
             `;
         });
@@ -2207,9 +2236,9 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
                         </div>
                     </td>
                     <td>${escHtml(track.album) || '-'}</td>
-                    <td class="action-buttons">
+                    <td><div class="action-buttons">
                         ${actionsHtml}
-                    </td>
+                    </div></td>
                 </tr>
             `;
         });
@@ -2507,15 +2536,15 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         const val = parseFloat(e.target.value);
         document.getElementById('dedup-threshold-value').textContent = val.toFixed(3);
         const label = document.getElementById('dedup-sensitivity-label');
-        if (val <= 0.03) {
+        if (val <= 0.010) {
             label.textContent = 'Strict';
-            label.title = 'Same recording, different metadata only';
-        } else if (val <= 0.07) {
+            label.title = 'Same recording, different metadata or album';
+        } else if (val <= 0.020) {
             label.textContent = 'Moderate';
-            label.title = 'Catches most duplicates across compilations';
+            label.title = 'Catches most compilation duplicates, some false positives';
         } else {
             label.textContent = 'Loose';
-            label.title = 'Includes remasters, live versions, re-recordings';
+            label.title = 'Increasingly loose — many false positives';
         }
     });
 

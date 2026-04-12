@@ -386,9 +386,9 @@ def search_api():
     source_ids = [str(s) for s in payload.get('source_ids', [])]
 
     try:
-        duplicate_threshold = max(0.005, min(float(payload.get('duplicate_threshold', 0.015)), 0.3))
+        duplicate_threshold = max(0.005, min(float(payload.get('duplicate_threshold', 0.01)), 0.3))
     except (TypeError, ValueError):
-        duplicate_threshold = 0.015
+        duplicate_threshold = 0.01
 
     source_weights = _sanitize_weights(payload.get('source_weights', {}))
     included_weights = _sanitize_weights(payload.get('included_weights', {}))
