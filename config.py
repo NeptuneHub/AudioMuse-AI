@@ -19,9 +19,12 @@ EMBY_TOKEN = os.environ.get("EMBY_TOKEN", "")  # Replace with a suitable default
 
 # NEW: Allow specifying music libraries/folders for analysis across all media servers.
 # Comma-separated list of library/folder names or paths. If empty, all music libraries/folders are scanned.
-# For Lyrion: Use folder paths like "/music/myfolder"  
+# For Lyrion: Use folder paths like "/music/myfolder"
 # For Jellyfin/Navidrome: Use library/folder names
-MUSIC_LIBRARIES = os.environ.get("MUSIC_LIBRARIES", "") 
+MUSIC_LIBRARIES = os.environ.get("MUSIC_LIBRARIES", "")
+# Maximum number of items to fetch during the connection probe.
+# Set to 0 to scan all top-played items, or a small positive integer to keep the probe fast.
+PROBE_TOP_PLAYED_LIMIT = int(os.environ.get("PROBE_TOP_PLAYED_LIMIT", "1"))
 TEMP_DIR = "/app/temp_audio"  # Always use /app/temp_audio
 
 

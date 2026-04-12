@@ -4,6 +4,7 @@ from flask import request, jsonify, render_template, make_response, after_this_r
 import config
 from app import app, setup_manager, is_bootstrap_mode, refresh_auth_state
 import restart_manager
+import tasks.mediaserver as mediaserver
 
 BASIC_SERVER_FIELDS = [
     "MEDIASERVER_TYPE",
@@ -36,6 +37,58 @@ HIDDEN_ADVANCED_FIELDS = {
     'MOOD_LABELS',
     'APP_VERSION',
 }
+
+TEST_CONFIG_KEYS = set(BASIC_SERVER_FIELDS + ['MUSIC_LIBRARIES'])
+
+
+def _merge_test_config(filtered_values):
+    test_config = {}
+    for key in TEST_CONFIG_KEYS:
+        if key in filtered_values:
+            value = filtered_values[key]
+            if key in SECRET_FIELDS and value == '********':
+                test_config[key] = getattr(config, key, '')
+            else:
+                test_config[key] = value
+        else:
+            test_config[key] = getattr(config, key, '')
+    if 'MEDIASERVER_TYPE' in test_config and isinstance(test_config['MEDIASERVER_TYPE'], str):
+        test_config['MEDIASERVER_TYPE'] = test_config['MEDIASERVER_TYPE'].lower()
+    return test_config
+
+
+def _patch_config_for_test(test_config):
+    original_config = {}
+    for key, value in test_config.items():
+        original_config[key] = getattr(config, key, None)
+        setattr(config, key, value)
+    return original_config
+
+
+def _restore_config(original_config):
+    for key, value in original_config.items():
+        setattr(config, key, value)
+
+
+def _test_media_server_connection(filtered_values):
+    test_config = _merge_test_config(filtered_values)
+    original_config = _patch_config_for_test(test_config)
+    try:
+        media_type = test_config.get('MEDIASERVER_TYPE', 'jellyfin')
+        probe_limit = getattr(config, 'PROBE_TOP_PLAYED_LIMIT', 1)
+        items = mediaserver.get_top_played_songs(probe_limit)
+        if not items:
+            raise ValueError(f'Possible problem in connecting to {media_type.capitalize()}. No top-played songs were returned')
+        return {
+            'type': media_type,
+            'probe_count': len(items),
+            'probe_limit_hit': probe_limit and len(items) >= probe_limit,
+        }
+    except Exception as exc:
+        raise ValueError(str(exc) or 'Media server connection test failed.') from exc
+    finally:
+        _restore_config(original_config)
+
 
 def should_show_advanced(name):
     if name in HIDDEN_ADVANCED_FIELDS or name in CONNECTION_FIELDS:
@@ -93,10 +146,21 @@ def setup_api():
             continue
         filtered_values[key] = value
 
-    if not filtered_values:
+    is_test_connection = bool(data.get('test_connection', False))
+    if not filtered_values and not is_test_connection:
         return jsonify({'error': 'No valid configuration values were provided'}), 400
 
     try:
+        if is_test_connection:
+            result = _test_media_server_connection(filtered_values)
+            return jsonify({
+                'status': 'ok',
+                'test_connection': True,
+                'media_server': result['type'],
+                'probe_count': result['probe_count'],
+                'probe_limit_hit': result.get('probe_limit_hit', False),
+            }), 200
+
         was_bootstrap = is_bootstrap_mode()
         new_server_type = filtered_values.get('MEDIASERVER_TYPE', config.MEDIASERVER_TYPE)
         if new_server_type != config.MEDIASERVER_TYPE:
@@ -119,6 +183,8 @@ def setup_api():
         require_login = was_bootstrap and not is_bootstrap_mode()
     except Exception as exc:
         app.logger.error('Setup save failed: %s', exc, exc_info=True)
+        if is_test_connection:
+            return jsonify({'error': 'Unable to get top player song. Check the server log for details.'}), 500
         return jsonify({'error': 'Unable to save configuration. Check the server log for details.'}), 500
 
     response = make_response(jsonify({

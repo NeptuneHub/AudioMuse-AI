@@ -75,8 +75,74 @@
     .field-row {
         margin-bottom: 1rem;
     }
+    .field-row.inline {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+    .field-row.inline .inline-feedback {
+        width: auto;
+        flex: 1;
+        min-width: 220px;
+    }
+    .field-row label {
+        display: block;
+        word-break: break-word;
+        white-space: normal;
+    }
+    .field-row input,
+    .field-row textarea,
+    .field-row select {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+    }
     .field-row small {
         color: var(--text-muted, #666);
+    }
+    .inline-feedback {
+        display: block;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        width: 100%;
+        max-width: 100%;
+        min-height: 2.5rem;
+        padding: 0.8rem 1rem;
+        border-radius: 14px;
+        font-size: 0.96rem;
+        border: 1px solid transparent;
+        line-height: 1.3;
+        background: var(--bg-card, #f8f9fb);
+        color: var(--text-main, #111);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        word-break: break-word;
+        box-sizing: border-box;
+        margin: 0;
+    }
+    @media (max-width: 640px) {
+        button {
+            width: 100%;
+        }
+        .field-row {
+            display: block;
+        }
+    }
+    .inline-feedback.status-success {
+        background: var(--status-success-bg, #e6f4ea);
+        color: var(--status-success-text, #1f4f1f);
+        border-color: var(--status-success-border, #a0d8a8);
+    }
+    .inline-feedback.status-failure {
+        background: var(--status-failure-bg, #fdecea);
+        color: var(--status-failure-text, #7a1f1f);
+        border-color: var(--status-failure-border, #f5c2c0);
+    }
+    .inline-feedback.status-pending {
+        background: var(--status-pending-bg, #fff4db);
+        color: var(--status-pending-text, #7a5c1a);
+        border-color: var(--status-pending-border, #ecd8a9);
     }
     #advanced-config summary {
         cursor: pointer;
@@ -108,6 +174,12 @@
                     </select>
                 </div>
                 <div id="server-config-fields"></div>
+                <div class="field-row">
+                    <button id="test-button" type="button">Test connection</button>
+                </div>
+                <div class="field-row">
+                    <p id="feedback" class="inline-feedback" style="display:none; margin:0; width:100%;"></p>
+                </div>
             </section>
 
             <section class="section">
@@ -151,7 +223,6 @@
             <div class="field-row">
                 <button id="save-button" type="submit">Save configuration</button>
             </div>
-            <p id="feedback" style="display:none; margin-top:1rem;"></p>
         </form>
     </div>
 </div>
@@ -231,6 +302,7 @@
     ];
     var setupForm = document.getElementById('setup-form');
     var serverValues = {};
+    var originalValues = {};
 
     function updateAuthVisibility() {
         var authEnabled = document.getElementById('AUTH_ENABLED').value === 'true';
@@ -303,17 +375,17 @@
         if (field.secret) {
             if (field.name === 'AUDIOMUSE_PASSWORD') {
                 input.value = '';
-                input.dataset.originalValue = '';
+                input.dataset.originalValue = field.originalValue !== undefined ? field.originalValue : '';
             } else if (hasSecretValue) {
                 input.value = '********';
-                input.dataset.originalValue = '********';
+                input.dataset.originalValue = field.originalValue !== undefined ? field.originalValue : '********';
             } else {
                 if (value) {
                     input.value = value;
                 } else {
                     input.value = '';
                 }
-                input.dataset.originalValue = input.value;
+                input.dataset.originalValue = field.originalValue !== undefined ? field.originalValue : input.value;
             }
         } else {
             if (value) {
@@ -321,7 +393,7 @@
             } else {
                 input.value = '';
             }
-            input.dataset.originalValue = input.value;
+            input.dataset.originalValue = field.originalValue !== undefined ? field.originalValue : input.value;
         }
         if (field.type === 'boolean') {
             input.type = 'text';
@@ -374,7 +446,8 @@
                 placeholder: field.placeholder,
                 required: true,
                 secret: secret,
-                has_value: hasValue
+                has_value: hasValue,
+                originalValue: originalValues[field.name] !== undefined ? originalValues[field.name] : value
             };
             serverConfigFields.appendChild(createInputField(fieldCopy, value));
         });
@@ -400,7 +473,8 @@
                 type: field.type === 'bool' ? 'boolean' : field.type,
                 inputType: field.type === 'boolean' ? 'text' : 'text',
                 secret: secret,
-                has_value: field.has_value
+                has_value: field.has_value,
+                originalValue: originalValues[field.name] !== undefined ? originalValues[field.name] : (field.value || '')
             };
             advancedFields.appendChild(createInputField(fieldConfig, field.value));
         });
@@ -470,12 +544,25 @@
             var visibleAdvancedData = advancedData.filter(function(item) {
                 return !hiddenAdvancedFields.has(item.name);
             });
+            originalValues = {};
+            data.basic_fields.forEach(function(item) {
+                originalValues[item.name] = item.value || '';
+                if (item.secret && item.has_value && !item.value) {
+                    originalValues[item.name] = '********';
+                }
+            });
+            data.advanced_fields.forEach(function(item) {
+                originalValues[item.name] = item.value || '';
+                if (item.secret && item.has_value && !item.value) {
+                    originalValues[item.name] = '********';
+                }
+            });
             serverValues = basicData; // keep the full current server-related values
             renderServerFields(mediaServerSelect.value, basicData, secretHasValue);
             renderAdvancedFields(visibleAdvancedData);
             updateAuthVisibility();
         }).catch(function(err) {
-            feedback.className = 'status-failure';
+            feedback.className = 'status-failure inline-feedback';
             feedback.style.display = 'block';
             feedback.textContent = 'Unable to load setup data. Refresh the page or check the server logs.';
         });
@@ -501,7 +588,7 @@
     function waitForHealthAndRedirect(redirectUrl) {
         var attempts = 0;
     var maxAttempts = 80;
-    feedback.className = 'status-pending';
+    feedback.className = 'status-pending inline-feedback';
     feedback.style.display = 'block';
     feedback.textContent = 'Configuration saved. Restarting services — please wait...';
         function checkHealth() {
@@ -524,7 +611,7 @@
                     if (attempts < maxAttempts) {
                         setTimeout(checkHealth, 1500);
                     } else {
-                        feedback.className = 'status-failure';
+                        feedback.className = 'status-failure inline-feedback';
                         feedback.style.display = 'block';
                         feedback.textContent = 'Restart timeout. Please refresh the page in a moment.';
                         saveButton.disabled = false;
@@ -533,6 +620,97 @@
         }
 
         setTimeout(checkHealth, 1500);
+    }
+
+    function collectConfigFromForm(testMode) {
+        var formData = new FormData(setupForm);
+        var config = {};
+        formData.forEach(function(value, key) {
+            var input = document.getElementById(key);
+            if (!input) {
+                return;
+            }
+            var original = input.dataset.originalValue;
+            if (!testMode) {
+                if (original !== undefined && value === original) {
+                    return;
+                }
+                if (value === '' && original === undefined) {
+                    return;
+                }
+            } else {
+                if (input.type === 'password' && original === '********' && value === '********') {
+                    return;
+                }
+            }
+            config[key] = value;
+        });
+        return config;
+    }
+
+    function testConnection() {
+        var testButton = document.getElementById('test-button');
+        var passwordInput = document.getElementById('AUDIOMUSE_PASSWORD');
+        var confirmInput = document.getElementById('AUDIOMUSE_PASSWORD_CONFIRM');
+        var passwordValue = '';
+        if (passwordInput) {
+            passwordValue = passwordInput.value;
+        }
+        var confirmValue = '';
+        if (confirmInput) {
+            confirmValue = confirmInput.value;
+        }
+        var passwordUnchanged = (passwordValue === '********');
+        if (passwordUnchanged && !confirmValue) {
+            passwordUnchanged = true;
+        } else {
+            passwordUnchanged = false;
+        }
+        if (!passwordUnchanged && (passwordValue || confirmValue)) {
+            if (passwordValue !== confirmValue) {
+                feedback.className = 'status-failure inline-feedback';
+                feedback.style.display = 'block';
+                feedback.textContent = 'Password and confirmation do not match.';
+                return;
+            }
+        }
+        testButton.disabled = true;
+        saveButton.disabled = true;
+        feedback.className = 'status-pending inline-feedback';
+        feedback.style.display = 'block';
+        feedback.textContent = 'Testing connection...';
+        var config = collectConfigFromForm(true);
+        fetch('/api/setup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ config: config, test_connection: true })
+        }).then(function(resp) {
+            return resp.json().then(function(data) {
+                if (!resp.ok) {
+                    throw new Error(data.error || 'Unable to test connection.');
+                }
+                return data;
+            });
+        }).then(function(data) {
+            feedback.className = 'status-success inline-feedback';
+            feedback.style.display = 'block';
+            var serverName = data.media_server ? data.media_server.charAt(0).toUpperCase() + data.media_server.slice(1) : 'media server';
+            var count = (typeof data.probe_count === 'number') ? data.probe_count : 0;
+            if (data.probe_limit_hit) {
+                feedback.textContent = '✓ Connected to ' + serverName + '. At least ' + count + ' recent top-played items were returned.';
+            } else if (count === 1) {
+                feedback.textContent = '✓ Connected to ' + serverName + '. 1 top-played item was returned.';
+            } else {
+                feedback.textContent = '✓ Connected to ' + serverName + '. ' + count + ' top-played items were returned.';
+            }
+        }).catch(function(err) {
+            feedback.className = 'status-failure inline-feedback';
+            feedback.style.display = 'block';
+            feedback.textContent = '✕ Connection test failed: ' + err.message;
+        }).finally(function() {
+            testButton.disabled = false;
+            saveButton.disabled = false;
+        });
     }
 
     setupForm.addEventListener('submit', function(event) {
@@ -557,29 +735,14 @@
         }
         if (!passwordUnchanged && (passwordValue || confirmValue)) {
             if (passwordValue !== confirmValue) {
-                feedback.className = 'status-failure';
+                feedback.className = 'status-failure inline-feedback';
                 feedback.style.display = 'block';
                 feedback.textContent = 'Password and confirmation do not match.';
                 saveButton.disabled = false;
                 return;
             }
         }
-        var formData = new FormData(setupForm);
-        var config = {};
-        formData.forEach(function(value, key) {
-            var input = document.getElementById(key);
-            var original = undefined;
-            if (input) {
-                original = input.dataset.originalValue;
-            }
-            if (original !== undefined && value === original) {
-                return;
-            }
-            if (value === '' && original === undefined) {
-                return;
-            }
-            config[key] = value;
-        });
+        var config = collectConfigFromForm();
         fetch('/api/setup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -592,7 +755,7 @@
                 return data;
             });
         }).then(function(data) {
-            feedback.className = 'status-success';
+            feedback.className = 'status-success inline-feedback';
             feedback.style.display = 'block';
             if (data.restart_requested) {
                 var redirectUrl = data.require_login ? '/login' : '/';
@@ -607,7 +770,7 @@
                 setTimeout(function() { window.location.href = '/'; }, 1100);
             }
         }).catch(function(err) {
-            feedback.className = 'status-failure';
+            feedback.className = 'status-failure inline-feedback';
             feedback.style.display = 'block';
             feedback.textContent = err.message;
         }).finally(function() {
@@ -615,6 +778,7 @@
         });
     });
 
+    document.getElementById('test-button').addEventListener('click', testConnection);
     document.getElementById('MEDIASERVER_TYPE').addEventListener('change', updateServerFields);
     document.getElementById('AUTH_ENABLED').addEventListener('change', updateAuthVisibility);
     loadSetupData();
