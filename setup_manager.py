@@ -136,28 +136,21 @@ class SetupManager:
     def _is_valid_string(self, value):
         return isinstance(value, str) and value.strip() and not self._looks_like_placeholder(value)
 
+    SERVER_REQUIRED_FIELDS = {
+        'jellyfin': ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN'],
+        'navidrome': ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD'],
+        'lyrion': ['LYRION_URL'],
+        'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
+    }
+
     def _is_valid_server_config(self, config_module):
         media_type = getattr(config_module, 'MEDIASERVER_TYPE', '').strip().lower()
-        if media_type not in {'jellyfin', 'navidrome', 'lyrion', 'emby'}:
+        if media_type not in self.SERVER_REQUIRED_FIELDS:
             return False
-        if media_type == 'jellyfin':
-            return all(
-                self._is_valid_string(getattr(config_module, field, ''))
-                for field in ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN']
-            )
-        if media_type == 'navidrome':
-            return all(
-                self._is_valid_string(getattr(config_module, field, ''))
-                for field in ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD']
-            )
-        if media_type == 'lyrion':
-            return self._is_valid_string(getattr(config_module, 'LYRION_URL', ''))
-        if media_type == 'emby':
-            return all(
-                self._is_valid_string(getattr(config_module, field, ''))
-                for field in ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN']
-            )
-        return False
+        return all(
+            self._is_valid_string(getattr(config_module, field, ''))
+            for field in self.SERVER_REQUIRED_FIELDS[media_type]
+        )
 
     def _is_valid_connection_config(self, config_module):
         for field in CONNECTION_FIELDS:
