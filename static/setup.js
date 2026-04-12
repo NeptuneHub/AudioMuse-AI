@@ -22,7 +22,8 @@ var serverFields = {
     ]
 };
 
-var feedback = document.getElementById('feedback');
+var testFeedback = document.getElementById('test-feedback');
+var saveFeedback = document.getElementById('save-feedback');
 var saveButton = document.getElementById('save-button');
 var serverConfigFields = document.getElementById('server-config-fields');
 var advancedFields = document.getElementById('advanced-fields');
@@ -294,9 +295,9 @@ function loadSetupData() {
         renderAdvancedFields(visibleAdvancedData);
         updateAuthVisibility();
     }).catch(function(err) {
-        feedback.className = 'status-failure inline-feedback';
-        feedback.style.display = 'block';
-        feedback.textContent = 'Unable to load setup data. Refresh the page or check the server logs.';
+        saveFeedback.className = 'status-failure inline-feedback';
+        saveFeedback.style.display = 'block';
+        saveFeedback.textContent = 'Unable to load setup data. Refresh the page or check the server logs.';
     });
 }
 
@@ -320,9 +321,9 @@ function updateServerFields() {
 function waitForHealthAndRedirect(redirectUrl) {
     var attempts = 0;
     var maxAttempts = 80;
-    feedback.className = 'status-pending inline-feedback';
-    feedback.style.display = 'block';
-    feedback.textContent = 'Configuration saved. Restarting services — please wait...';
+    saveFeedback.className = 'status-pending inline-feedback';
+    saveFeedback.style.display = 'block';
+    saveFeedback.textContent = 'Configuration saved. Restarting services — please wait...';
     function checkHealth() {
         attempts += 1;
         fetch('/api/health', { cache: 'no-store' })
@@ -343,9 +344,9 @@ function waitForHealthAndRedirect(redirectUrl) {
                 if (attempts < maxAttempts) {
                     setTimeout(checkHealth, 1500);
                 } else {
-                    feedback.className = 'status-failure inline-feedback';
-                    feedback.style.display = 'block';
-                    feedback.textContent = 'Restart timeout. Please refresh the page in a moment.';
+                    saveFeedback.className = 'status-failure inline-feedback';
+                    saveFeedback.style.display = 'block';
+                    saveFeedback.textContent = 'Restart timeout. Please refresh the page in a moment.';
                     saveButton.disabled = false;
                 }
             });
@@ -400,17 +401,17 @@ function testConnection() {
     }
     if (!passwordUnchanged && (passwordValue || confirmValue)) {
         if (passwordValue !== confirmValue) {
-            feedback.className = 'status-failure inline-feedback';
-            feedback.style.display = 'block';
-            feedback.textContent = 'Password and confirmation do not match.';
+            testFeedback.className = 'status-failure inline-feedback';
+            testFeedback.style.display = 'block';
+            testFeedback.textContent = 'Password and confirmation do not match.';
             return;
         }
     }
     testButton.disabled = true;
     saveButton.disabled = true;
-    feedback.className = 'status-pending inline-feedback';
-    feedback.style.display = 'block';
-    feedback.textContent = 'Testing connection...';
+    testFeedback.className = 'status-pending inline-feedback';
+    testFeedback.style.display = 'block';
+    testFeedback.textContent = 'Testing connection...';
     var config = collectConfigFromForm(true);
     fetch('/api/setup', {
         method: 'POST',
@@ -424,21 +425,21 @@ function testConnection() {
             return data;
         });
     }).then(function(data) {
-        feedback.className = 'status-success inline-feedback';
-        feedback.style.display = 'block';
+        testFeedback.className = 'status-success inline-feedback';
+        testFeedback.style.display = 'block';
         var serverName = data.media_server ? data.media_server.charAt(0).toUpperCase() + data.media_server.slice(1) : 'media server';
         var count = (typeof data.probe_count === 'number') ? data.probe_count : 0;
         if (data.probe_limit_hit) {
-            feedback.textContent = '✓ Connected to ' + serverName + '. At least ' + count + ' recent top-played items were returned.';
+            testFeedback.textContent = '✓ Connected to ' + serverName + '. At least ' + count + ' recent top-played items were returned.';
         } else if (count === 1) {
-            feedback.textContent = '✓ Connected to ' + serverName + '. 1 top-played item was returned.';
+            testFeedback.textContent = '✓ Connected to ' + serverName + '. 1 top-played item was returned.';
         } else {
-            feedback.textContent = '✓ Connected to ' + serverName + '. ' + count + ' top-played items were returned.';
+            testFeedback.textContent = '✓ Connected to ' + serverName + '. ' + count + ' top-played items were returned.';
         }
     }).catch(function(err) {
-        feedback.className = 'status-failure inline-feedback';
-        feedback.style.display = 'block';
-        feedback.textContent = '✕ Connection test failed: ' + err.message;
+        testFeedback.className = 'status-failure inline-feedback';
+        testFeedback.style.display = 'block';
+        testFeedback.textContent = '✕ Connection test failed: ' + err.message;
     }).finally(function() {
         testButton.disabled = false;
         saveButton.disabled = false;
@@ -448,7 +449,7 @@ function testConnection() {
 setupForm.addEventListener('submit', function(event) {
     event.preventDefault();
     saveButton.disabled = true;
-    feedback.style.display = 'none';
+    saveFeedback.style.display = 'none';
     var passwordInput = document.getElementById('AUDIOMUSE_PASSWORD');
     var confirmInput = document.getElementById('AUDIOMUSE_PASSWORD_CONFIRM');
     var passwordValue = '';
@@ -467,9 +468,9 @@ setupForm.addEventListener('submit', function(event) {
     }
     if (!passwordUnchanged && (passwordValue || confirmValue)) {
         if (passwordValue !== confirmValue) {
-            feedback.className = 'status-failure inline-feedback';
-            feedback.style.display = 'block';
-            feedback.textContent = 'Password and confirmation do not match.';
+            saveFeedback.className = 'status-failure inline-feedback';
+            saveFeedback.style.display = 'block';
+            saveFeedback.textContent = 'Password and confirmation do not match.';
             saveButton.disabled = false;
             return;
         }
@@ -487,24 +488,24 @@ setupForm.addEventListener('submit', function(event) {
             return data;
         });
     }).then(function(data) {
-        feedback.className = 'status-success inline-feedback';
-        feedback.style.display = 'block';
+        saveFeedback.className = 'status-success inline-feedback';
+        saveFeedback.style.display = 'block';
         if (data.restart_requested) {
             var redirectUrl = data.require_login ? '/login' : '/';
             waitForHealthAndRedirect(redirectUrl);
             return;
         }
         if (data.require_login) {
-            feedback.textContent = 'Configuration saved successfully. Please log in with your new credentials.';
+            saveFeedback.textContent = 'Configuration saved successfully. Please log in with your new credentials.';
             setTimeout(function() { window.location.href = '/login'; }, 1100);
         } else {
-            feedback.textContent = 'Configuration saved successfully. Redirecting...';
+            saveFeedback.textContent = 'Configuration saved successfully. Redirecting...';
             setTimeout(function() { window.location.href = '/'; }, 1100);
         }
     }).catch(function(err) {
-        feedback.className = 'status-failure inline-feedback';
-        feedback.style.display = 'block';
-        feedback.textContent = err.message;
+        saveFeedback.className = 'status-failure inline-feedback';
+        saveFeedback.style.display = 'block';
+        saveFeedback.textContent = err.message;
     }).finally(function() {
         saveButton.disabled = false;
     });
