@@ -834,6 +834,54 @@
         color: var(--text-muted);
         font-style: italic;
     }
+
+    /* Duplicate warning in extend results */
+    .duplicate-warning-row {
+        background-color: rgba(234, 179, 8, 0.08) !important;
+    }
+
+    .duplicate-warning-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.15rem 0.4rem;
+        border-radius: 0.25rem;
+        font-size: 0.7rem;
+        font-weight: 600;
+        background-color: rgba(234, 179, 8, 0.2);
+        color: #ca8a04;
+        border: 1px solid rgba(234, 179, 8, 0.3);
+        margin-top: 0.2rem;
+        cursor: help;
+    }
+
+    .hide-duplicates-toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.875rem;
+    }
+
+    .hide-duplicates-toggle label {
+        cursor: pointer;
+        user-select: none;
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        color: var(--text-muted);
+    }
+
+    .dup-threshold-group {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.8rem;
+        color: var(--text-muted);
+    }
+
+    .dup-threshold-group input[type="range"] {
+        width: 100px;
+    }
 </style>
 {% endblock %}
 
@@ -945,6 +993,26 @@
                         <input type="range" id="year_max_slider" class="dual-range dual-range-upper" min="1900" max="2030" step="1" value="2030">
                         <div class="dual-range-track" id="year-range-track"></div>
                     </div>
+                </div>
+            </div>
+
+            <div style="display: flex; align-items: center; gap: 1.5rem; margin-top: 0.5rem;">
+                <div class="hide-duplicates-toggle">
+                    <label>
+                        <input type="checkbox" id="flag-duplicates" checked>
+                        Flag duplicates of source tracks
+                    </label>
+                </div>
+                <div class="dup-threshold-group">
+                    <span>Sensitivity:</span>
+                    <input type="range" id="dup-threshold-slider" min="0.005" max="0.1" step="0.005" value="0.015">
+                    <span id="dup-threshold-value">0.015</span>
+                </div>
+                <div class="hide-duplicates-toggle">
+                    <label>
+                        <input type="checkbox" id="hide-duplicates">
+                        Hide flagged
+                    </label>
                 </div>
             </div>
 
@@ -1456,6 +1524,16 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
             document.getElementById('threshold_value').textContent = parseFloat(e.target.value).toFixed(2);
         });
 
+        // Duplicate threshold slider
+        document.getElementById('dup-threshold-slider').addEventListener('input', (e) => {
+            document.getElementById('dup-threshold-value').textContent = parseFloat(e.target.value).toFixed(3);
+        });
+
+        // Hide-duplicates toggle re-renders results client-side
+        document.getElementById('hide-duplicates').addEventListener('change', () => {
+            if (extendPlaylistResults.length > 0) displayResults(extendPlaylistResults);
+        });
+
         // Update min_rating display
         document.getElementById('min_rating').addEventListener('input', (e) => {
             const val = parseFloat(e.target.value);
@@ -1694,6 +1772,9 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
             extendPlaylistResults = [];
         }
 
+        const flagDuplicates = document.getElementById('flag-duplicates').checked;
+        const dupThreshold = flagDuplicates ? parseFloat(document.getElementById('dup-threshold-slider').value) : 999;
+
         let payload = {
             max_songs: maxSongs,
             similarity_threshold: threshold,
@@ -1704,7 +1785,8 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
             excluded_ids: excludedIds,
             search_only: searchOnly,
             source_weights: sourceWeights,
-            included_weights: includedWeights
+            included_weights: includedWeights,
+            duplicate_threshold: dupThreshold
         };
 
         if (activeTab === 'smart') {
@@ -1916,7 +1998,12 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         // Combine included songs (at top) with extend results
         // Filter out songs already in includedSongsData to avoid duplicates
         const includedIdsSet = new Set(includedIds);
-        const filteredResults = results.filter(r => !includedIdsSet.has(r.item_id));
+        const hideDups = document.getElementById('hide-duplicates').checked;
+        const filteredResults = results.filter(r => {
+            if (includedIdsSet.has(r.item_id)) return false;
+            if (hideDups && r.duplicate_of) return false;
+            return true;
+        });
         const combinedResults = [...includedSongsData, ...filteredResults];
 
         if (combinedResults.length === 0) {
@@ -1951,11 +2038,23 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
         combinedResults.forEach(track => {
             const isExcluded = excludedIds.includes(track.item_id);
             const isIncluded = includedIds.includes(track.item_id);
-            let rowClass = isExcluded ? 'excluded-row' : (isIncluded ? 'included-row' : '');
+            const isDuplicate = !!track.duplicate_of;
+            let rowClass = isExcluded ? 'excluded-row' : (isIncluded ? 'included-row' : (isDuplicate ? 'duplicate-warning-row' : ''));
 
             const displayArtist = track.song_artist || track.author || 'Unknown';
             const streamUrl = '/api/curator/stream/' + encodeURIComponent(track.item_id);
             const escapedId = escHtml(track.item_id);
+
+            // Build duplicate warning badge
+            let dupBadge = '';
+            if (isDuplicate) {
+                const dup = track.duplicate_of;
+                const dupTitle = escHtml(dup.title || 'Unknown');
+                const dupArtist = escHtml(dup.author || '');
+                const dupAlbum = escHtml(dup.album || '');
+                const dupDist = dup.distance != null ? dup.distance.toFixed(4) : '?';
+                dupBadge = `<span class="duplicate-warning-badge" title="Near-duplicate of: ${dupTitle} by ${dupArtist} (${dupAlbum}) — distance: ${dupDist}">&#9888; Duplicate (${dupDist})</span>`;
+            }
 
             // Build weight cell for extend mode
             let weightCell = '';
@@ -1996,6 +2095,7 @@ Loose (0.07-0.15): Also catches remasters, live versions, and re-recordings.</sp
                         <div class="track-info">
                             <span class="track-title">${escHtml(track.title) || 'Unknown'}</span>
                             <span class="track-artist">${escHtml(displayArtist)}</span>
+                            ${dupBadge}
                         </div>
                     </td>
                     <td>${escHtml(track.album) || '-'}${track.year ? ' (' + track.year + ')' : ''}</td>

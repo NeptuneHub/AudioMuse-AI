@@ -385,6 +385,11 @@ def search_api():
     search_only = payload.get('search_only', False)
     source_ids = [str(s) for s in payload.get('source_ids', [])]
 
+    try:
+        duplicate_threshold = max(0.005, min(float(payload.get('duplicate_threshold', 0.015)), 0.3))
+    except (TypeError, ValueError):
+        duplicate_threshold = 0.015
+
     source_weights = _sanitize_weights(payload.get('source_weights', {}))
     included_weights = _sanitize_weights(payload.get('included_weights', {}))
 
@@ -530,6 +535,45 @@ def search_api():
 
         # Source tracks metadata for drawer display
         source_tracks_meta = get_score_data_by_ids(playlist_ids) if playlist_ids else []
+
+        # Annotate results with duplicate warnings against source tracks
+        source_vectors = {}
+        for sid in playlist_ids:
+            vec = get_vector_by_id(str(sid))
+            if vec is not None:
+                v = np.array(vec, dtype=np.float32)
+                norm = np.linalg.norm(v)
+                source_vectors[sid] = v / norm if norm > 0 else v
+
+        if source_vectors:
+            source_meta_map = {m['item_id']: m for m in source_tracks_meta}
+            for result in filtered_results:
+                cand_vec = get_vector_by_id(result['item_id'])
+                if cand_vec is None:
+                    continue
+                v_cand = np.array(cand_vec, dtype=np.float32)
+                norm_cand = np.linalg.norm(v_cand)
+                if norm_cand > 0:
+                    v_cand = v_cand / norm_cand
+
+                best_dist = float('inf')
+                best_source_id = None
+                for sid, v_src in source_vectors.items():
+                    cosine = np.clip(np.dot(v_src, v_cand), -1.0, 1.0)
+                    dist = float(1.0 - cosine)
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_source_id = sid
+
+                if best_dist < duplicate_threshold and best_source_id is not None:
+                    src_meta = source_meta_map.get(best_source_id, {})
+                    result['duplicate_of'] = {
+                        'item_id': best_source_id,
+                        'title': src_meta.get('title'),
+                        'author': src_meta.get('author'),
+                        'album': src_meta.get('album'),
+                        'distance': round(best_dist, 4)
+                    }
 
         return jsonify({
             "results": filtered_results,
