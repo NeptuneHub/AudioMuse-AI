@@ -1639,9 +1639,15 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
         addFilterRow();
 
         // Clear source data when playlist selection changes
-        document.getElementById('playlist_select').addEventListener('change', () => {
+        document.getElementById('playlist_select').addEventListener('change', (e) => {
+            const selected = e.target.value;
+            // When selecting smart filter, restore IDs from cached results
+            if (selected === '__smart_filter__' && smartFilterResults.length > 0) {
+                smartFilterSourceIds = smartFilterResults.map(r => r.item_id);
+            } else {
+                smartFilterSourceIds = [];
+            }
             sourceTracksData = [];
-            smartFilterSourceIds = [];
             sourceWeights = {};
             extendPlaylistResults = [];
             includedIds = [];
