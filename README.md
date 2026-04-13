@@ -94,7 +94,7 @@ From `v1.0.0` the app includes a browser Setup wizard. If the app starts without
    ```bash
    docker compose -f deployment/docker-compose.yaml up -d
    ```
-> You can get the correct version for your Music Server to have the wizard partially preffilled.
+> You can get the correct version for your Music Server to have the wizard partially prefilled.
 
 > docker-compose.yaml is for Jellyfin.
 > You also have docker-compose-navidrome.yaml, docker-compose-lyrion.yaml, dokcer-compose-emby.yaml
