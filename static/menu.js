@@ -107,21 +107,6 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Logout button (only present when auth is enabled)
-    const logoutBtn = document.getElementById('logout-btn');
-    if (logoutBtn) {
-        logoutBtn.addEventListener('click', async (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            try {
-                await fetch('/logout', { method: 'POST' });
-            } catch (_) {
-                // Ignore network errors — proceed to redirect anyway
-            }
-            window.location.href = '/login';
-        });
-    }
-
     // Listen for system preference changes
     if (window.matchMedia) {
         window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {

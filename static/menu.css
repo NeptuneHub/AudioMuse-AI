@@ -118,6 +118,15 @@ html.sidebar-open .sidebar {
     padding-left: 0;
 }
 
+#logout-btn {
+    color: #d1d5db;
+}
+
+body.dark-mode #logout-btn,
+html.dark-mode #logout-btn {
+    color: #d1d5db;
+}
+
 #logout-form {
     display: block;
     margin: 0;
