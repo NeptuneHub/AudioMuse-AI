@@ -12,8 +12,10 @@ Dockerfile
 
 # Deployment files
 # These are for deploying the container, not for running the code inside it.
-deployment/
-!deployment/supervisord.conf
+# deployment/
+# !deployment/**
+# !deployment/supervisord.conf
+# !deployment/docker-entrypoint.sh
 test/
 
 # Student CLAP training (not needed in production)

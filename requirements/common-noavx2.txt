@@ -21,6 +21,7 @@ umap-learn
 pydub
 python-mpd2
 psutil
+argon2-cffi==25.1.0
 onnx==1.14.1
 resampy
 librosa==0.11.0

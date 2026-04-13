@@ -9,6 +9,8 @@
     color: white;
     padding: 1.5rem;
     height: 100vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     position: fixed;
     top: 0;
     left: 0;
@@ -66,6 +68,7 @@ html.sidebar-open .sidebar {
 .sidebar-nav li a,
 .sidebar-nav li button {
     display: block;
+    width: 100%;
     color: #d1d5db;
     text-decoration: none;
     padding: 0.75rem 0;
@@ -74,6 +77,15 @@ html.sidebar-open .sidebar {
     transition: background-color 0.2s, color 0.2s;
     border-radius: 0.375rem;
     padding-left: 0.5rem;
+    background: transparent;
+    border: none;
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+}
+
+.sidebar-nav li button {
+    color: inherit;
 }
 
 .sidebar-nav li a:hover,
@@ -89,7 +101,8 @@ html.sidebar-open .sidebar {
 }
 
 /* Dark mode toggle button styling */
-#dark-mode-toggle {
+#dark-mode-toggle,
+#logout-btn {
     background: none;
     border: none;
     cursor: pointer;
@@ -97,6 +110,27 @@ html.sidebar-open .sidebar {
     color: inherit;
     text-align: left;
     width: 100%;
+    padding: 0.75rem 0;
+    font-size: 1rem;
+    white-space: nowrap;
+    transition: background-color 0.2s, color 0.2s;
+    border-radius: 0.375rem;
+    padding-left: 0;
+}
+
+#logout-btn {
+    color: #d1d5db;
+}
+
+body.dark-mode #logout-btn,
+html.dark-mode #logout-btn {
+    color: #d1d5db;
+}
+
+#logout-form {
+    display: block;
+    margin: 0;
+    padding: 0;
 }
 
 .main-content {

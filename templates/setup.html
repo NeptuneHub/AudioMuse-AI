@@ -1,0 +1,237 @@
+{% extends 'includes/layout.html' %}
+
+{% block headAdditions %}
+<style>
+    .page-shell {
+        max-width: 1024px;
+        margin: 0 auto;
+        padding: 2rem 1rem;
+    }
+    .card {
+        background: var(--bg-card, #ffffff);
+        border: 1px solid var(--border-color, #d6d8dc);
+        border-radius: 16px;
+        box-shadow: 0 12px 40px rgba(0,0,0,0.06);
+        padding: 1.75rem;
+    }
+    .summary {
+        margin: 1.5rem 0 1rem;
+        font-size: 0.95rem;
+        color: var(--text-muted, #666);
+    }
+    label {
+        display: block;
+        margin-bottom: 0.35rem;
+        font-weight: 600;
+    }
+    input[type="text"], input[type="password"], select, textarea {
+        width: 100%;
+        border: 1px solid var(--border-color, #ccc);
+        border-radius: 8px;
+        padding: 0.85rem 0.9rem;
+        margin-bottom: 1rem;
+        font-size: 0.98rem;
+        background: var(--bg-input, #fff);
+        color: var(--text-main, #111);
+    }
+    textarea {
+        min-height: 92px;
+        font-family: inherit;
+        resize: vertical;
+    }
+    .section {
+        margin-top: 1.5rem;
+    }
+    .field-grid {
+        display: grid;
+        gap: 1rem;
+    }
+    .required-label::after {
+        content: ' *';
+        color: #c0392b;
+    }
+    button {
+        border: none;
+        border-radius: 10px;
+        padding: 0.95rem 1.25rem;
+        cursor: pointer;
+        color: #fff;
+        background: var(--accent-color, #3675f1);
+        font-weight: 700;
+        font-size: 1rem;
+    }
+    button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+    }
+    .notice {
+        padding: 1rem 1.15rem;
+        margin: 1rem 0;
+        border-radius: 10px;
+        background: var(--status-idle-bg, #eef5ff);
+        color: var(--status-idle-text, #1f3c72);
+        border: 1px solid var(--border-color, #d6e4ff);
+    }
+    .field-row {
+        margin-bottom: 1rem;
+    }
+    .field-row.inline {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+    .field-row.inline .inline-feedback {
+        width: auto;
+        flex: 1;
+        min-width: 220px;
+    }
+    .field-row label {
+        display: block;
+        word-break: break-word;
+        white-space: normal;
+    }
+    .field-row input,
+    .field-row textarea,
+    .field-row select {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+    }
+    .field-row small {
+        color: var(--text-muted, #666);
+    }
+    .inline-feedback {
+        display: block;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        width: 100%;
+        max-width: 100%;
+        min-height: 2.5rem;
+        padding: 0.8rem 1rem;
+        border-radius: 14px;
+        font-size: 0.96rem;
+        border: 1px solid transparent;
+        line-height: 1.3;
+        background: var(--bg-card, #f8f9fb);
+        color: var(--text-main, #111);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        word-break: break-word;
+        box-sizing: border-box;
+        margin: 0;
+    }
+    @media (max-width: 640px) {
+        button {
+            width: 100%;
+        }
+        .field-row {
+            display: block;
+        }
+    }
+    .inline-feedback.status-success {
+        background: var(--status-success-bg, #e6f4ea);
+        color: var(--status-success-text, #1f4f1f);
+        border-color: var(--status-success-border, #a0d8a8);
+    }
+    .inline-feedback.status-failure {
+        background: var(--status-failure-bg, #fdecea);
+        color: var(--status-failure-text, #7a1f1f);
+        border-color: var(--status-failure-border, #f5c2c0);
+    }
+    .inline-feedback.status-pending {
+        background: var(--status-pending-bg, #fff4db);
+        color: var(--status-pending-text, #7a5c1a);
+        border-color: var(--status-pending-border, #ecd8a9);
+    }
+    #advanced-config summary {
+        cursor: pointer;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-shell">
+    <div class="card">
+        <h1>AudioMuse-AI Setup</h1>
+        <p class="summary">Complete the first-time configuration. Environment variables are used as defaults and saved to the database after you submit.</p>
+
+        <div class="notice">
+            This setup page is shown automatically on first login when no saved setup data exists.
+            Fields marked with * are mandatory.
+        </div>
+
+        <form id="setup-form">
+            <section class="section">
+                <h2>Media Server</h2>
+                <div class="field-row">
+                    <label for="MEDIASERVER_TYPE">Media server type</label>
+                    <select id="MEDIASERVER_TYPE" name="MEDIASERVER_TYPE" required>
+                        <option value="jellyfin">Jellyfin</option>
+                        <option value="navidrome">Navidrome</option>
+                        <option value="lyrion">Lyrion</option>
+                        <option value="emby">Emby</option>
+                    </select>
+                </div>
+                <div id="server-config-fields"></div>
+                <div class="field-row">
+                    <button id="test-button" type="button">Test connection</button>
+                </div>
+                <div class="field-row">
+                    <p id="test-feedback" class="inline-feedback" style="display:none; margin:0; width:100%;"></p>
+                </div>
+            </section>
+
+            <section class="section">
+                <h2>Authentication</h2>
+                <div class="field-row">
+                    <label for="AUTH_ENABLED" class="required-label">Enable authentication</label>
+                    <select id="AUTH_ENABLED" name="AUTH_ENABLED" required>
+                        <option value="true">True</option>
+                        <option value="false">False</option>
+                    </select>
+                </div>
+                <div id="auth-credentials" class="field-grid">
+                    <div>
+                        <label for="AUDIOMUSE_USER">Username</label>
+                        <input id="AUDIOMUSE_USER" name="AUDIOMUSE_USER" type="text" placeholder="alice">
+                    </div>
+                    <div>
+                        <label for="AUDIOMUSE_PASSWORD">Password</label>
+                        <input id="AUDIOMUSE_PASSWORD" name="AUDIOMUSE_PASSWORD" type="password" placeholder="secret123">
+                    </div>
+                    <div>
+                        <label for="AUDIOMUSE_PASSWORD_CONFIRM">Confirm password</label>
+                        <input id="AUDIOMUSE_PASSWORD_CONFIRM" type="password" placeholder="secret123">
+                    </div>
+                    <div>
+                        <label for="JWT_SECRET">JWT Secret</label>
+                        <input id="JWT_SECRET" name="JWT_SECRET" type="password" placeholder="********">
+                    </div>
+                </div>
+                <div id="api-token-row" class="field-row">
+                    <label for="API_TOKEN">API token</label>
+                    <input id="API_TOKEN" name="API_TOKEN" type="password" placeholder="api-token">
+                </div>
+            </section>
+
+            <details id="advanced-config">
+                <summary>Advanced configuration</summary>
+                <div id="advanced-fields"></div>
+            </details>
+
+            <div class="field-row">
+                <button id="save-button" type="submit">Save configuration</button>
+            </div>
+            <div class="field-row">
+                <p id="save-feedback" class="inline-feedback" style="display:none; margin:0; width:100%;"></p>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block bodyAdditions %}
+<script src="{{ url_for('static', filename='setup.js') }}"></script>
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}
