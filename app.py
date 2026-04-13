@@ -188,10 +188,8 @@ def teardown_db(e=None):
 with app.app_context():
     init_db()
     # Provider migration tool: apply any runtime active-provider override from
-    # app_settings, then listen for further overrides on the Redis pub/sub
-    # channel so a migration can hot-reload all processes without a restart.
+    # app_settings so config reflects the last successful migration.
     apply_provider_overrides_from_db()
-    subscribe_to_provider_migrated_channel()
 
 
 # --- API Endpoints ---
@@ -793,6 +791,10 @@ except OSError:
   logger.debug(f"Could not create TEMP_DIR '{TEMP_DIR}' (may be running in test/CI environment)")
 
 if not _is_worker:
+  # Provider migration tool: subscribe to Redis pub/sub so the Flask server
+  # hot-reloads config after a migration.  Workers subscribe in their own
+  # startup scripts (rq_worker.py / rq_worker_high_priority.py).
+  subscribe_to_provider_migrated_channel()
   with app.app_context():
     # --- Initial Voyager Index Load ---
     from tasks.voyager_manager import load_voyager_index_for_querying

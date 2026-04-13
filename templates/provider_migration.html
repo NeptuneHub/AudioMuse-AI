@@ -515,14 +515,15 @@
             steps[i - 1].classList.remove('done');
         }
     }
+    const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     function showError(container, msg) {
-        container.innerHTML = '<div class="mig-error">' + msg + '</div>';
+        container.innerHTML = '<div class="mig-error">' + esc(msg) + '</div>';
     }
     function showSuccess(container, html) {
         container.innerHTML = '<div class="mig-success">' + html + '</div>';
     }
     function showWarn(container, msg) {
-        container.innerHTML = '<div class="mig-warning">' + msg + '</div>';
+        container.innerHTML = '<div class="mig-warning">' + esc(msg) + '</div>';
     }
     async function jsonFetch(url, opts) {
         const res = await fetch(url, opts || {});
@@ -590,11 +591,11 @@
                 return;
             }
             let html = '<div class="mig-success">✓ Connected. Sampled ' +
-                result.sample_count + ' tracks. Path format: <strong>' +
-                result.path_format + '</strong>.</div>';
+                esc(result.sample_count) + ' tracks. Path format: <strong>' +
+                esc(result.path_format) + '</strong>.</div>';
             if (result.warnings && result.warnings.length) {
                 result.warnings.forEach(w => {
-                    html += '<div class="mig-warning">' + w + '</div>';
+                    html += '<div class="mig-warning">' + esc(w) + '</div>';
                 });
             }
             $('mig-probe-result').innerHTML = html;
@@ -668,9 +669,9 @@
             const div = document.createElement('div');
             div.className = 'mig-album-item';
             div.dataset.idx = idx;
-            div.innerHTML = '<div><strong>' + (a.album || '(no album)') + '</strong> — ' +
-                (a.album_artist || '(no artist)') +
-                '<div class="mig-album-meta">' + a.track_count + ' track(s)</div></div>' +
+            div.innerHTML = '<div><strong>' + esc(a.album || '(no album)') + '</strong> — ' +
+                esc(a.album_artist || '(no artist)') +
+                '<div class="mig-album-meta">' + esc(a.track_count) + ' track(s)</div></div>' +
                 '<div>›</div>';
             div.addEventListener('click', () => openAlbum(idx));
             list.appendChild(div);
@@ -725,11 +726,11 @@
             slice.forEach(a => {
                 const div = document.createElement('div');
                 div.className = 'mig-album-item';
-                const oldLabel = (a.old_album_artist || '(no artist)') + ' — ' + (a.old_album || '(no album)');
-                const newLabel = (a.new_album_artist || '?')          + ' — ' + (a.new_album || '?');
+                const oldLabel = esc(a.old_album_artist || '(no artist)') + ' — ' + esc(a.old_album || '(no album)');
+                const newLabel = esc(a.new_album_artist || '?')          + ' — ' + esc(a.new_album || '?');
                 const tierTag = TIER_LABEL[a.tier] || '';
                 div.innerHTML = '<div><strong>' + oldLabel + '</strong>' +
-                    '<div class="mig-album-meta">' + a.track_count + ' track(s) &rarr; ' + newLabel +
+                    '<div class="mig-album-meta">' + esc(a.track_count) + ' track(s) &rarr; ' + newLabel +
                     (tierTag ? ' · <em>' + tierTag + '</em>' : '') + '</div></div>' +
                     '<div>&#9998;</div>';
                 div.addEventListener('click', () => openAlbumRematch(a));
@@ -827,9 +828,9 @@
             albums.forEach(a => {
                 const row = document.createElement('div');
                 row.className = 'mig-candidate';
-                row.innerHTML = '<strong>' + (a.name || '?') + '</strong> — ' +
-                    (a.artist || '?') + (a.year ? ' · ' + a.year : '') +
-                    (a.track_count ? ' · ' + a.track_count + ' tracks' : '');
+                row.innerHTML = '<strong>' + esc(a.name || '?') + '</strong> — ' +
+                    esc(a.artist || '?') + (a.year ? ' · ' + esc(a.year) : '') +
+                    (a.track_count ? ' · ' + esc(a.track_count) + ' tracks' : '');
                 row.addEventListener('click', () => pickCandidate(a.id, row));
                 $('mig-match-candidates').appendChild(row);
             });
@@ -955,7 +956,7 @@
                     html += '<th style="text-align:left; padding:0.35rem 0.5rem;">Keeps the target</th>';
                     html += '<th style="text-align:left; padding:0.35rem 0.5rem;">Target on new provider</th>';
                     html += '</tr></thead><tbody>';
-                    const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    // esc() is defined at top-level scope
                     const cell = (t, a, al, p) => {
                         let out = '<div><strong>' + esc(t || '(untitled)') + '</strong></div>';
                         out += '<div style="opacity:0.85; font-size:0.9em;">' + esc(a) + ' &mdash; ' + esc(al) + '</div>';
@@ -1029,7 +1030,7 @@
             try {
                 const res = await jsonFetch(statusUrl);
                 const s = res.status || 'unknown';
-                statusEl.innerHTML = '<div class="mig-status">Status: <strong>' + s + '</strong></div>';
+                statusEl.innerHTML = '<div class="mig-status">Status: <strong>' + esc(s) + '</strong></div>';
                 if (s === 'finished') {
                     showSuccess(statusEl,
                         '<strong>Migration complete.</strong> ' +

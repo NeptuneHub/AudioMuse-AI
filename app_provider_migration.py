@@ -163,6 +163,9 @@ def apply_provider_overrides_from_db():
         )
 
 
+_subscriber_started = False
+
+
 def subscribe_to_provider_migrated_channel():
     """Subscribe to Redis ``provider-migrated`` in a daemon thread.
 
@@ -171,7 +174,14 @@ def subscribe_to_provider_migrated_channel():
     ``apply_provider_overrides_from_db()`` to hot-reload their config without
     a container restart. Failures inside the listener are logged and the
     thread exits cleanly.
+
+    Safe to call multiple times — only the first call spawns a thread.
     """
+    global _subscriber_started
+    if _subscriber_started:
+        return
+    _subscriber_started = True
+
     def _listen():
         try:
             ps = redis_conn.pubsub(ignore_subscribe_messages=True)

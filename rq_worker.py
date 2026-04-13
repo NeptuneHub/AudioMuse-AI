@@ -26,8 +26,10 @@ try:
     from config import APP_VERSION
     # Provider migration tool: hot-reload the active provider if migration.active_provider
     # has been upserted since this worker last started, and subscribe for future updates.
-    # (app.py's startup hook already runs these once via `from app import app` above;
-    # this explicit call is a no-op second run but keeps wiring intention obvious.)
+    # apply_provider_overrides_from_db() is also called by app.py at import time;
+    # calling it again here is idempotent and harmless.
+    # subscribe_to_provider_migrated_channel() has an internal guard against
+    # double-subscription, so only the first call (here or from app.py) spawns a thread.
     from app_provider_migration import apply_provider_overrides_from_db, subscribe_to_provider_migrated_channel
     apply_provider_overrides_from_db()
     subscribe_to_provider_migrated_channel()
