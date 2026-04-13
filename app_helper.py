@@ -209,8 +209,6 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'alchemy_anchors' table to persist named user anchors for reuse
         cur.execute("CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-        # Provider migration tool: runtime key-value settings (active provider override, etc.)
-        cur.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Provider migration tool: wizard session state (one row per migration attempt)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS migration_session (

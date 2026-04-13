@@ -231,8 +231,8 @@ class TestExecuteProviderMigration:
         assert 'DELETE FROM ARTIST_INDEX_DATA' in joined
         assert 'DELETE FROM ARTIST_COMPONENT_PROJECTION' in joined
         assert 'DELETE FROM ARTIST_MAPPING' in joined
-        # app_settings upsert
-        assert 'INSERT INTO APP_SETTINGS' in joined
+        # app_config upsert (provider credentials)
+        assert 'INSERT INTO APP_CONFIG' in joined
         # Session marked complete
         assert 'UPDATE MIGRATION_SESSION' in joined
 

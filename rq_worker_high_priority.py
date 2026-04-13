@@ -13,16 +13,6 @@ from rq import Worker
 try:
     from app_helper import redis_conn
     from config import APP_VERSION
-    # Provider migration tool: this worker deliberately does NOT import app.py,
-    # but still needs to pick up any runtime active-provider override written by
-    # the migration tool. Push a minimal Flask app context so get_db() works,
-    # then apply the override and start the pub/sub listener.
-    from flask import Flask as _Flask
-    _mig_app = _Flask(__name__)
-    with _mig_app.app_context():
-        from app_provider_migration import apply_provider_overrides_from_db, subscribe_to_provider_migrated_channel
-        apply_provider_overrides_from_db()
-        subscribe_to_provider_migrated_channel()
 except ImportError as e:
     print(f"Error importing from app.py: {e}")
     print("Please ensure app.py is in the Python path and does not have top-level errors.")

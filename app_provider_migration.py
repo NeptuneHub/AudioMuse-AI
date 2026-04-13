@@ -1,24 +1,15 @@
-"""Provider migration tool — Flask blueprint + runtime config override.
+"""Provider migration tool — Flask blueprint.
 
 This module is the single add-on entry point for switching the active media
 server provider on a running AudioMuse-AI install. It adds a wizard page at
 ``/provider-migration`` plus the backing REST API under ``/api/migration/*``.
 
-It also exposes two top-level functions that are wired into ``app.py`` and
-the RQ workers so every process hot-reloads the active provider when the
-migration finishes:
-
-    * ``apply_provider_overrides_from_db()`` — mutates ``config`` globals
-      from the ``app_settings`` row written by the migration.
-    * ``subscribe_to_provider_migrated_channel()`` — background thread that
-      listens on Redis pub/sub so other processes pick up the override
-      without a restart.
-
-The tool itself does NOT touch ``config.py``. Credentials for the *target*
-provider stay in ``migration_session.target_creds`` and are passed explicitly
-to ``tasks.provider_probe`` (which also never reads ``config``), so the
-current live provider keeps working throughout the dry-run and manual matching
-steps of the wizard.
+Credentials for the *target* provider stay in ``migration_session.target_creds``
+and are passed explicitly to ``tasks.provider_probe`` (which never reads
+``config``), so the current live provider keeps working throughout the dry-run
+and manual matching steps of the wizard. On successful execution the migration
+task writes the new provider settings to ``app_config`` and triggers a config
+reload + process restart via ``restart_manager``.
 """
 import csv
 import io
@@ -26,7 +17,6 @@ import json
 import logging
 import os
 import sys
-import threading
 
 from flask import Blueprint, jsonify, render_template, request
 
@@ -71,137 +61,6 @@ provider_probe = _LazyProbe()
 # ---------------------------------------------------------------------------
 
 _SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'mpd'})
-
-
-# ---------------------------------------------------------------------------
-# Runtime config override — called at app/worker startup from app.py
-# ---------------------------------------------------------------------------
-
-def _read_active_provider_row():
-    """Open a dedicated psycopg2 connection and fetch the active provider row.
-
-    Isolated into its own helper so ``apply_provider_overrides_from_db``
-    can be called from contexts without ``flask.g`` (pub/sub listener
-    thread, worker startup). Returns the row tuple or ``None``. Tests
-    patch this helper to avoid needing a real DB.
-    """
-    import config
-    import psycopg2
-    db = psycopg2.connect(config.DATABASE_URL, connect_timeout=10)
-    try:
-        with db.cursor() as cur:
-            cur.execute(
-                "SELECT value FROM app_settings WHERE key = 'migration.active_provider'"
-            )
-            return cur.fetchone()
-    finally:
-        try:
-            db.close()
-        except Exception:
-            pass
-
-
-def apply_provider_overrides_from_db():
-    """Read ``migration.active_provider`` from ``app_settings`` and mutate
-    the ``config`` module's globals.
-
-    Safe no-op when:
-      * the row doesn't exist (fresh install, no migration run yet),
-      * the JSON is malformed,
-      * the DB isn't reachable (returns silently with a warning log).
-
-    Called from ``app.py``, ``rq_worker.py``, and ``rq_worker_high_priority.py``
-    immediately after ``init_db()``. Also called from the pub/sub listener
-    thread on ``provider-migrated`` — that thread has no Flask app context,
-    so this function must NOT rely on ``flask.g``. The actual DB read lives
-    in :func:`_read_active_provider_row`, which opens a dedicated psycopg2
-    connection.
-    """
-    try:
-        import config
-        row = _read_active_provider_row()
-        if not row:
-            return
-        raw = row[0]
-        data = json.loads(raw) if isinstance(raw, str) else (raw or {})
-        t = (data or {}).get('type')
-        creds = (data or {}).get('credentials') or {}
-        if not t:
-            return
-
-        config.MEDIASERVER_TYPE = t
-        if t == 'jellyfin':
-            config.JELLYFIN_URL     = creds.get('url')     or config.JELLYFIN_URL
-            config.JELLYFIN_USER_ID = creds.get('user_id') or config.JELLYFIN_USER_ID
-            config.JELLYFIN_TOKEN   = creds.get('token')   or config.JELLYFIN_TOKEN
-            config.HEADERS          = {"X-Emby-Token": config.JELLYFIN_TOKEN}
-        elif t == 'emby':
-            config.EMBY_URL     = creds.get('url')     or config.EMBY_URL
-            config.EMBY_USER_ID = creds.get('user_id') or config.EMBY_USER_ID
-            config.EMBY_TOKEN   = creds.get('token')   or config.EMBY_TOKEN
-            config.HEADERS      = {"X-Emby-Token": config.EMBY_TOKEN}
-        elif t == 'navidrome':
-            config.NAVIDROME_URL      = creds.get('url')      or config.NAVIDROME_URL
-            config.NAVIDROME_USER     = creds.get('user')     or config.NAVIDROME_USER
-            config.NAVIDROME_PASSWORD = creds.get('password') or config.NAVIDROME_PASSWORD
-            config.HEADERS            = {}
-        elif t == 'lyrion':
-            config.LYRION_URL = creds.get('url') or config.LYRION_URL
-        elif t == 'mpd':
-            config.MPD_HOST            = creds.get('host')             or config.MPD_HOST
-            config.MPD_PORT            = int(creds.get('port') or config.MPD_PORT)
-            config.MPD_PASSWORD        = creds.get('password')         or config.MPD_PASSWORD
-            config.MPD_MUSIC_DIRECTORY = creds.get('music_directory')  or config.MPD_MUSIC_DIRECTORY
-
-        logger.info(
-            "provider migration: runtime override applied (type=%s)", t
-        )
-    except Exception as e:
-        logger.warning(
-            "provider migration: apply_provider_overrides_from_db failed "
-            "(ignored): %s", e
-        )
-
-
-_subscriber_started = False
-
-
-def subscribe_to_provider_migrated_channel():
-    """Subscribe to Redis ``provider-migrated`` in a daemon thread.
-
-    When the migration tool publishes a message after a successful execute,
-    other Flask/worker processes pick it up here and re-run
-    ``apply_provider_overrides_from_db()`` to hot-reload their config without
-    a container restart. Failures inside the listener are logged and the
-    thread exits cleanly.
-
-    Safe to call multiple times — only the first call spawns a thread.
-    """
-    global _subscriber_started
-    if _subscriber_started:
-        return
-    _subscriber_started = True
-
-    def _listen():
-        try:
-            ps = redis_conn.pubsub(ignore_subscribe_messages=True)
-            ps.subscribe('provider-migrated')
-            for msg in ps.listen():
-                if msg.get('type') == 'message':
-                    logger.info(
-                        "provider migration: received provider-migrated "
-                        "pub/sub, reloading config"
-                    )
-                    apply_provider_overrides_from_db()
-        except Exception as e:
-            logger.warning(
-                "provider migration: pub/sub subscriber died: %s", e
-            )
-
-    t = threading.Thread(
-        target=_listen, daemon=True, name='provider-migrated-sub'
-    )
-    t.start()
 
 
 # ---------------------------------------------------------------------------

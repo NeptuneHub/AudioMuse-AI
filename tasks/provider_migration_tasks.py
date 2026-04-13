@@ -2,9 +2,9 @@
 
 This module rewrites every ``item_id`` in the database to point at the
 corresponding track on a new media server provider, then persists the new
-provider as the runtime active provider via ``app_settings``. See
-``docs/superpowers/plans/optimized-mapping-alpaca.md`` (and the initial plan at
-``~/.claude/plans/optimized-mapping-alpaca.md``) for the full design.
+provider credentials in ``app_config`` (the same table the setup wizard uses).
+After commit, ``config.refresh_config()`` + ``restart_manager`` propagate the
+change to all processes without a manual container restart.
 
 The transaction is atomic:
     - orphan tracks deleted first (cascades through embedding FKs),
@@ -18,11 +18,11 @@ The transaction is atomic:
     - artist_index_data / artist_component_projection / artist_mapping
       truncated — they contain provider-specific artist IDs and will lazily
       rebuild on next use,
-    - app_settings upserted with the new active provider JSON,
+    - ``app_config`` updated with MEDIASERVER_TYPE + provider credentials,
     - migration_session row marked completed.
 
-Post-commit best-effort: re-apply config override in this process, publish
-``provider-migrated`` on Redis, rebuild artist_mapping via HTTP probe,
+Post-commit best-effort: ``config.refresh_config()`` to reload the local
+process, ``restart_manager.publish_restart_request()`` to notify workers,
 clear the ``migration:paused`` Redis key.
 
 Safety invariants enforced by the test suite:
@@ -239,8 +239,8 @@ def execute_provider_migration(session_id):
                 pass
             raise
 
-        # 6. Post-commit: hot-reload local config, notify other processes
-        _post_commit_hotreload(redis, target_type)
+        # 6. Post-commit: reload config, notify other processes to restart
+        _post_commit_reload(redis)
 
         return {
             'ok': True,
@@ -519,13 +519,8 @@ def _run_migration_transaction(cur, mapping, new_meta,
     cur.execute("DELETE FROM artist_component_projection")
     cur.execute("DELETE FROM artist_mapping")
 
-    # 10. Persist the new active provider for runtime override
-    active = json.dumps({'type': target_type, 'credentials': target_creds})
-    cur.execute(
-        "INSERT INTO app_settings (key, value) VALUES ('migration.active_provider', %s) "
-        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
-        (active,),
-    )
+    # 10. Persist the new provider in app_config (same table as setup wizard)
+    _write_provider_to_app_config(cur, target_type, target_creds)
 
     # 11. Mark the session row completed
     cur.execute(
@@ -535,18 +530,63 @@ def _run_migration_transaction(cur, mapping, new_meta,
     )
 
 
-def _post_commit_hotreload(redis, target_type):
-    """Notify the local process and other processes to reload config.
+_CREDS_TO_CONFIG = {
+    'jellyfin':  {'url': 'JELLYFIN_URL', 'user_id': 'JELLYFIN_USER_ID', 'token': 'JELLYFIN_TOKEN'},
+    'emby':      {'url': 'EMBY_URL', 'user_id': 'EMBY_USER_ID', 'token': 'EMBY_TOKEN'},
+    'navidrome': {'url': 'NAVIDROME_URL', 'user': 'NAVIDROME_USER', 'password': 'NAVIDROME_PASSWORD'},
+    'lyrion':    {'url': 'LYRION_URL'},
+    'mpd':       {'host': 'MPD_HOST', 'port': 'MPD_PORT', 'password': 'MPD_PASSWORD',
+                  'music_directory': 'MPD_MUSIC_DIRECTORY'},
+}
+
+
+def _write_provider_to_app_config(cur, target_type, target_creds):
+    """Write MEDIASERVER_TYPE + provider credentials into ``app_config``.
+
+    Runs inside the caller's transaction so a rollback undoes everything.
+    Also deletes obsolete credential keys from the old provider (same
+    pattern the setup wizard uses via ``MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE``).
+    """
+    import config as cfg
+
+    # Build the key→value pairs to upsert
+    values = {'MEDIASERVER_TYPE': target_type}
+    key_map = _CREDS_TO_CONFIG.get(target_type, {})
+    for cred_key, config_key in key_map.items():
+        val = target_creds.get(cred_key)
+        if val is not None:
+            values[config_key] = str(val)
+
+    for key, value in values.items():
+        cur.execute(
+            "INSERT INTO app_config (key, value) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
+            "updated_at = CURRENT_TIMESTAMP",
+            (key, value),
+        )
+
+    # Remove credentials for providers we're switching away from
+    obsolete = cfg.MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE.get(target_type, [])
+    if obsolete:
+        cur.execute(
+            "DELETE FROM app_config WHERE key = ANY(%s)",
+            (list(obsolete),),
+        )
+
+
+def _post_commit_reload(redis):
+    """Reload config and notify other processes via restart_manager.
 
     Best-effort: any failure here is logged but does not fail the migration
     (the DB state is already committed and will load correctly on restart).
     """
     try:
-        from app_provider_migration import apply_provider_overrides_from_db
-        apply_provider_overrides_from_db()
+        import config
+        config.refresh_config()
     except Exception as e:
-        logger.warning("local config hot-reload failed: %s", e)
+        logger.warning("config.refresh_config() failed: %s", e)
     try:
-        redis.publish('provider-migrated', json.dumps({'type': target_type}))
+        import restart_manager
+        restart_manager.publish_restart_request()
     except Exception as e:
-        logger.warning("provider-migrated pub/sub publish failed: %s", e)
+        logger.warning("restart_manager.publish_restart_request() failed: %s", e)

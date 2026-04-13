@@ -68,60 +68,6 @@ def fake_db(bp_mod):
 
 
 # ---------------------------------------------------------------------------
-# apply_provider_overrides_from_db — runs in app.py / workers at startup
-# ---------------------------------------------------------------------------
-
-class TestApplyProviderOverrides:
-    def test_noop_when_no_app_settings_row(self, bp_mod):
-        # Patch the context-free DB reader so we don't need a real connection.
-        bp_mod._read_active_provider_row = MagicMock(return_value=None)
-        import config
-        before = getattr(config, 'MEDIASERVER_TYPE', None)
-        bp_mod.apply_provider_overrides_from_db()
-        assert getattr(config, 'MEDIASERVER_TYPE', None) == before
-
-    def test_applies_navidrome_override(self, bp_mod):
-        row_value = json.dumps({
-            'type': 'navidrome',
-            'credentials': {'url': 'http://nav.new:4533', 'user': 'u', 'password': 'p'},
-        })
-        bp_mod._read_active_provider_row = MagicMock(return_value=(row_value,))
-        bp_mod.apply_provider_overrides_from_db()
-        import config
-        assert config.MEDIASERVER_TYPE == 'navidrome'
-        assert config.NAVIDROME_URL == 'http://nav.new:4533'
-        assert config.NAVIDROME_USER == 'u'
-        assert config.NAVIDROME_PASSWORD == 'p'
-
-    def test_applies_jellyfin_override_and_sets_headers(self, bp_mod):
-        row_value = json.dumps({
-            'type': 'jellyfin',
-            'credentials': {'url': 'http://jf.new:8096', 'user_id': 'uid', 'token': 'tok'},
-        })
-        bp_mod._read_active_provider_row = MagicMock(return_value=(row_value,))
-        bp_mod.apply_provider_overrides_from_db()
-        import config
-        assert config.MEDIASERVER_TYPE == 'jellyfin'
-        assert config.JELLYFIN_URL == 'http://jf.new:8096'
-        assert config.JELLYFIN_TOKEN == 'tok'
-        assert config.HEADERS == {'X-Emby-Token': 'tok'}
-
-    def test_exception_is_swallowed(self, bp_mod):
-        # DB reader raises — function should log and continue (not raise)
-        bp_mod._read_active_provider_row = MagicMock(side_effect=RuntimeError('db down'))
-        bp_mod.apply_provider_overrides_from_db()
-
-    def test_does_not_touch_flask_g(self, bp_mod):
-        # Regression: the pub/sub listener thread has no Flask app context,
-        # so this function MUST NOT import or touch flask.g. Patch get_db
-        # to explode if called — it should never be invoked.
-        bp_mod.get_db = MagicMock(side_effect=RuntimeError(
-            'Working outside of application context.'))
-        bp_mod._read_active_provider_row = MagicMock(return_value=None)
-        bp_mod.apply_provider_overrides_from_db()  # must not raise
-
-
-# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 

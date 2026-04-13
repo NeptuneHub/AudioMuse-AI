@@ -1034,22 +1034,14 @@
                 if (s === 'finished') {
                     showSuccess(statusEl,
                         '<strong>Migration complete.</strong> ' +
-                        'The running app has already hot-reloaded to <code>' + targetType + '</code>, ' +
-                        'but there are three things you still need to do:' +
-                        '<ol style="margin:0.5rem 0 0.5rem 1.25rem; padding:0;">' +
-                        '<li><strong>Update <code>docker-compose.yaml</code></strong> — set ' +
-                        '<code>MEDIASERVER_TYPE=' + targetType + '</code> and the matching ' +
-                        'credentials for the new provider. Without this, the next container ' +
-                        'restart will boot against your old provider env vars.</li>' +
-                        '<li><strong>Restart the containers</strong> ' +
-                        '(<code>docker compose down &amp;&amp; docker compose up -d</code>) so flask and the ' +
-                        'workers pick up the new env vars cleanly.</li>' +
-                        '<li><strong>Run a full analysis</strong> from the Analysis page. ' +
+                        'Your active provider is now <code>' + targetType + '</code>. ' +
+                        'The new settings have been saved to the database and all processes ' +
+                        'are being reloaded automatically.' +
+                        '<p style="margin:0.5rem 0 0;"><strong>Next step:</strong> ' +
+                        'Run a <strong>full analysis</strong> from the Analysis page. ' +
                         'This rebuilds the artist similarity index (which the migration had to ' +
                         'truncate because artist mappings are provider-specific) and re-verifies ' +
-                        'every track against the new provider. Until you do this, the ' +
-                        '&ldquo;Similar artists&rdquo; feature will fail.</li>' +
-                        '</ol>' +
+                        'every track against the new provider.</p>' +
                         '<small><strong>Plays and listening history:</strong> never stored locally. ' +
                         'They come from your media server and now reflect the new provider automatically.</small>'
                     );
