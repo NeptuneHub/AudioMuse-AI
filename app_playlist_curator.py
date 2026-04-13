@@ -419,7 +419,8 @@ def search_api():
     source_ids = [str(s) for s in payload.get('source_ids', [])]
 
     try:
-        duplicate_threshold = max(0.005, min(float(payload.get('duplicate_threshold', 0.01)), 0.3))
+        raw_dup_threshold = float(payload.get('duplicate_threshold', 0.01))
+        duplicate_threshold = max(0.005, min(raw_dup_threshold, 0.3)) if raw_dup_threshold > 0 else 0
     except (TypeError, ValueError):
         duplicate_threshold = 0.01
 
@@ -574,12 +575,13 @@ def search_api():
 
         # Annotate results with duplicate warnings against source tracks
         source_vectors = {}
-        for sid in playlist_ids:
-            vec = get_vector_by_id(str(sid))
-            if vec is not None:
-                v = np.array(vec, dtype=np.float32)
-                norm = np.linalg.norm(v)
-                source_vectors[sid] = v / norm if norm > 0 else v
+        if duplicate_threshold > 0:
+            for sid in playlist_ids:
+                vec = get_vector_by_id(str(sid))
+                if vec is not None:
+                    v = np.array(vec, dtype=np.float32)
+                    norm = np.linalg.norm(v)
+                    source_vectors[sid] = v / norm if norm > 0 else v
 
         if source_vectors:
             source_meta_map = {m['item_id']: m for m in source_tracks_meta}

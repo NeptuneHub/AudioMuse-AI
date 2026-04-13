@@ -1918,7 +1918,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
         const flagDuplicates = document.getElementById('flag-duplicates').checked;
         // Always request all potential duplicates up to slider max so the slider can filter client-side
         const dupSliderMax = parseFloat(document.getElementById('dup-threshold-slider').max);
-        const dupThreshold = flagDuplicates ? dupSliderMax : 999;
+        const dupThreshold = flagDuplicates ? dupSliderMax : -1;
 
         let payload = {
             max_songs: maxSongs,
@@ -2757,8 +2757,10 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
         clicked._keep = !currentState;
 
         // Ensure at least one track is KEEP - if none are, force this one back to KEEP
-        const anyKeep = group.tracks.some(t => t._keep !== undefined ? t._keep : false);
-        if (!anyKeep) {
+        const anyOtherKeep = group.tracks.some((t, i) =>
+            i !== trackIdx && (t._keep !== undefined ? t._keep : (i === 0))
+        );
+        if (!anyOtherKeep && !clicked._keep) {
             clicked._keep = true;
         }
 
