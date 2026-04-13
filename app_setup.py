@@ -218,7 +218,6 @@ def setup_api():
         refresh_auth_state()
         restart_manager.publish_restart_request()
         restart_requested = True
-        require_login = was_bootstrap and not is_bootstrap_mode()
     except Exception as exc:
         app.logger.error('Setup save failed: %s', exc, exc_info=True)
         if is_test_connection:
@@ -228,7 +227,6 @@ def setup_api():
     response = make_response(jsonify({
         'status': 'ok',
         'saved_keys': list(filtered_values.keys()),
-        'require_login': config.AUTH_ENABLED,
         'restart_requested': restart_requested,
     }), 200)
 

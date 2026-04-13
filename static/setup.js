@@ -510,18 +510,7 @@ setupForm.addEventListener('submit', function(event) {
     }).then(function(data) {
         saveFeedback.className = 'status-success inline-feedback';
         saveFeedback.style.display = 'block';
-        if (data.restart_requested) {
-            var redirectUrl = data.require_login ? '/login' : '/';
-            waitForHealthAndRedirect(redirectUrl);
-            return;
-        }
-        if (data.require_login) {
-            saveFeedback.textContent = 'Configuration saved successfully. Please log in with your new credentials.';
-            setTimeout(function() { window.location.href = '/login'; }, 1100);
-        } else {
-            saveFeedback.textContent = 'Configuration saved successfully. Redirecting...';
-            setTimeout(function() { window.location.href = '/'; }, 1100);
-        }
+        waitForHealthAndRedirect('/');
     }).catch(function(err) {
         saveFeedback.className = 'status-failure inline-feedback';
         saveFeedback.style.display = 'block';
