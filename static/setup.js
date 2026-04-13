@@ -247,9 +247,24 @@ function loadSetupData() {
             usernameInput.value = '';
         }
         var passwordInput = document.getElementById('AUDIOMUSE_PASSWORD');
+        var confirmInput = document.getElementById('AUDIOMUSE_PASSWORD_CONFIRM');
         var tokenInput = document.getElementById('API_TOKEN');
-        passwordInput.value = '';
-        passwordInput.dataset.originalValue = '';
+        if (passwordInput && secretHasValue.AUDIOMUSE_PASSWORD) {
+            passwordInput.value = '********';
+            passwordInput.dataset.originalValue = '********';
+            passwordInput.placeholder = '********';
+        } else if (passwordInput) {
+            passwordInput.value = '';
+            passwordInput.dataset.originalValue = '';
+        }
+        if (confirmInput && secretHasValue.AUDIOMUSE_PASSWORD) {
+            confirmInput.value = '********';
+            confirmInput.dataset.originalValue = '********';
+            confirmInput.placeholder = '********';
+        } else if (confirmInput) {
+            confirmInput.value = '';
+            confirmInput.dataset.originalValue = '';
+        }
         if (tokenInput) {
             if (secretHasValue.API_TOKEN) {
                 tokenInput.value = '********';
