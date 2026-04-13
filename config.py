@@ -7,40 +7,74 @@ MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Poss
 # --- Jellyfin and DB Constants (Read from Environment Variables first) ---
 
 # JELLYFIN_USER_ID and JELLYFIN_TOKEN come from a Kubernetes Secret
-JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "http://your_jellyfin_url:8096") # Replace with your default URL
-JELLYFIN_USER_ID = os.environ.get("JELLYFIN_USER_ID", "your_default_user_id")  # Replace with a suitable default or handle missing case
-JELLYFIN_TOKEN = os.environ.get("JELLYFIN_TOKEN", "your_default_token")  # Replace with a suitable default or handle missing case
+JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "") # Replace with your default URL
+JELLYFIN_USER_ID = os.environ.get("JELLYFIN_USER_ID", "")  # Replace with a suitable default or handle missing case
+JELLYFIN_TOKEN = os.environ.get("JELLYFIN_TOKEN", "")  # Replace with a suitable default or handle missing case
 
 # EMBY_USER_ID and JELLYFIN_TOKEN come from a Kubernetes Secret
-EMBY_URL = os.environ.get("EMBY_URL", "http://embymediaserver:8096") # Replace with your default URL
-EMBY_USER_ID = os.environ.get("EMBY_USER_ID", "your_default_user_id")  # Replace with a suitable default or handle missing case
-EMBY_TOKEN = os.environ.get("EMBY_TOKEN", "your_default_token")  # Replace with a suitable default or handle missing case
+EMBY_URL = os.environ.get("EMBY_URL", "") # Replace with your default URL
+EMBY_USER_ID = os.environ.get("EMBY_USER_ID", "")  # Replace with a suitable default or handle missing case
+EMBY_TOKEN = os.environ.get("EMBY_TOKEN", "")  # Replace with a suitable default or handle missing case
 
 
 # NEW: Allow specifying music libraries/folders for analysis across all media servers.
 # Comma-separated list of library/folder names or paths. If empty, all music libraries/folders are scanned.
-# For Lyrion: Use folder paths like "/music/myfolder"  
+# For Lyrion: Use folder paths like "/music/myfolder"
 # For Jellyfin/Navidrome: Use library/folder names
-MUSIC_LIBRARIES = os.environ.get("MUSIC_LIBRARIES", "") 
+MUSIC_LIBRARIES = os.environ.get("MUSIC_LIBRARIES", "")
+# Maximum number of items to fetch during the connection probe.
+# Set to 0 to scan all top-played items, or a small positive integer to keep the probe fast.
+PROBE_TOP_PLAYED_LIMIT = int(os.environ.get("PROBE_TOP_PLAYED_LIMIT", "1"))
 TEMP_DIR = "/app/temp_audio"  # Always use /app/temp_audio
-HEADERS = {"X-Emby-Token": JELLYFIN_TOKEN}
 
-if MEDIASERVER_TYPE == "jellyfin":
-    HEADERS = {"X-Emby-Token": JELLYFIN_TOKEN}
-elif MEDIASERVER_TYPE == "emby":
-    HEADERS = {"X-Emby-Token": EMBY_TOKEN}
-else:
-    HEADERS = {}
+
+def _compute_headers():
+    if MEDIASERVER_TYPE == "jellyfin":
+        return {"X-Emby-Token": JELLYFIN_TOKEN}
+    if MEDIASERVER_TYPE == "emby":
+        return {"X-Emby-Token": EMBY_TOKEN}
+    return {}
+
+HEADERS = _compute_headers()
 
 # --- Navidrome (Subsonic API) Constants ---
 # These are used only if MEDIASERVER_TYPE is "navidrome".
-NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "http://your_navidrome_url:4533")
-NAVIDROME_USER = os.environ.get("NAVIDROME_USER", "your_navidrome_user")
-NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "your_navidrome_password") # Use the password directly
+NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "")
+NAVIDROME_USER = os.environ.get("NAVIDROME_USER", "")
+NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "") # Use the password directly
 
 # --- Lyrion (LMS) Constants ---
 # These are used only if MEDIASERVER_TYPE is "lyrion".
-LYRION_URL = os.environ.get("LYRION_URL", "http://your_lyrion_url:9000")
+LYRION_URL = os.environ.get("LYRION_URL", "")
+
+MEDIASERVER_FIELDS_BY_TYPE = {
+    'jellyfin': ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN'],
+    'navidrome': ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD'],
+    'lyrion': ['LYRION_URL'],
+    'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
+}
+
+MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {
+    media_type: [
+        field
+        for other_type, fields in MEDIASERVER_FIELDS_BY_TYPE.items()
+        if other_type != media_type
+        for field in fields
+    ]
+    for media_type in MEDIASERVER_FIELDS_BY_TYPE
+}
+
+SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
+    'DATABASE_URL',
+    'POSTGRES_USER',
+    'POSTGRES_PASSWORD',
+    'POSTGRES_HOST',
+    'POSTGRES_PORT',
+    'POSTGRES_DB',
+    'REDIS_URL',
+    'MEDIASERVER_FIELDS_BY_TYPE',
+    'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
+}
 
 # --- MPD (Music Player Daemon) Constants ---
 # These are used only if MEDIASERVER_TYPE is "mpd".
@@ -212,10 +246,10 @@ OPENAI_SERVER_URL = os.environ.get("OPENAI_SERVER_URL", os.environ.get("OLLAMA_S
 OPENAI_MODEL_NAME = os.environ.get("OPENAI_MODEL_NAME", os.environ.get("OLLAMA_MODEL_NAME", "llama3.1:8b"))
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "no-key-needed") # Set to "no-key-needed" for Ollama, or your actual API key for OpenAI/OpenRouter
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR-GEMINI-API-KEY-HERE") # Default API key
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "") # Default API key
 GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro") # Default Gemini model gemini-2.5-pro, alternative gemini-2.5-flash
 
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "YOUR-GEMINI-API-KEY-HERE")
+MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
 MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 
 # AI Request Timeout Configuration
@@ -485,3 +519,32 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "")
 # Enable or disable authentication independently of whether credentials are set.
 # Default is True to preserve the current secure behavior.
 AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
+
+try:
+    from tasks.setup_manager import SetupManager
+    _setup_manager = SetupManager()
+    _setup_manager.ensure_table()
+    _overrides = _setup_manager.get_raw_overrides()
+    _excluded_override_keys = globals().get('SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
+    for _key, _value in _overrides.items():
+        # Skip any keys that are explicitly excluded from overrides (Redis and Postgres)
+        if _key in _excluded_override_keys:
+            continue
+        # Read the value from the db and override the variable
+        if _key in globals():
+            globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
+        else:
+            globals()[_key] = _value
+
+    HEADERS = _compute_headers()
+
+    def refresh_config():
+        """Reload the config module from the current database and environment."""
+        import importlib
+        import sys
+        importlib.reload(sys.modules[__name__])
+except Exception as _exc:
+    import logging
+    logging.getLogger(__name__).warning(f"Could not load config overrides from DB: {_exc}")
+    def refresh_config():
+        pass

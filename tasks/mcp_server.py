@@ -7,7 +7,10 @@ import logging
 import json
 import re
 from typing import List, Dict, Optional
+from urllib.parse import quote, urlparse, urlunparse
+
 import psycopg2
+from psycopg2 import OperationalError, sql
 from psycopg2.extras import DictCursor
 
 logger = logging.getLogger(__name__)
@@ -16,8 +19,57 @@ logger = logging.getLogger(__name__)
 _library_context_cache = None
 
 
+def _build_ai_chat_db_url():
+    from config import AI_CHAT_DB_USER_NAME, AI_CHAT_DB_USER_PASSWORD, DATABASE_URL
+    if not AI_CHAT_DB_USER_NAME:
+        return DATABASE_URL
+    parsed = urlparse(DATABASE_URL)
+    host = parsed.hostname or ''
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    return urlunparse((
+        parsed.scheme,
+        f"{quote(AI_CHAT_DB_USER_NAME,safe='')}:{quote(AI_CHAT_DB_USER_PASSWORD,safe='')}@{host}",
+        parsed.path or '', parsed.params or '', parsed.query or '', parsed.fragment or ''
+    ))
+
+
+_ai_chat_db_user_configured = False
+
+
+def _ensure_ai_chat_db_user():
+    global _ai_chat_db_user_configured
+    if _ai_chat_db_user_configured:
+        return
+    from config import AI_CHAT_DB_USER_NAME, AI_CHAT_DB_USER_PASSWORD, DATABASE_URL
+    if not AI_CHAT_DB_USER_NAME or not AI_CHAT_DB_USER_PASSWORD:
+        return
+    try:
+        with psycopg2.connect(DATABASE_URL) as admin_conn, admin_conn.cursor() as cur:
+            cur.execute('SELECT 1 FROM pg_roles WHERE rolname = %s', (AI_CHAT_DB_USER_NAME,))
+            if cur.fetchone() is None:
+                cur.execute(sql.SQL('CREATE USER {} WITH LOGIN PASSWORD %s').format(sql.Identifier(AI_CHAT_DB_USER_NAME)), [AI_CHAT_DB_USER_PASSWORD])
+            else:
+                try:
+                    psycopg2.connect(_build_ai_chat_db_url()).close()
+                except OperationalError:
+                    cur.execute(sql.SQL('ALTER USER {} WITH PASSWORD %s').format(sql.Identifier(AI_CHAT_DB_USER_NAME)), [AI_CHAT_DB_USER_PASSWORD])
+            dbname = admin_conn.get_dsn_parameters().get('dbname')
+            if dbname:
+                cur.execute(sql.SQL('GRANT CONNECT ON DATABASE {} TO {}').format(sql.Identifier(dbname), sql.Identifier(AI_CHAT_DB_USER_NAME)))
+            cur.execute(sql.SQL('GRANT USAGE ON SCHEMA public TO {}').format(sql.Identifier(AI_CHAT_DB_USER_NAME)))
+            cur.execute(sql.SQL('GRANT SELECT ON ALL TABLES IN SCHEMA public TO {}').format(sql.Identifier(AI_CHAT_DB_USER_NAME)))
+            admin_conn.commit()
+            _ai_chat_db_user_configured = True
+    except Exception as exc:
+        logger.warning('AI chat user setup failed: %s', exc)
+
+
 def get_db_connection():
-    """Get database connection using config settings."""
+    from config import AI_CHAT_DB_USER_NAME
+    if AI_CHAT_DB_USER_NAME:
+        _ensure_ai_chat_db_user()
+        return psycopg2.connect(_build_ai_chat_db_url())
     from config import DATABASE_URL
     return psycopg2.connect(DATABASE_URL)
 
