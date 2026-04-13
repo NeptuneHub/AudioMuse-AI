@@ -216,8 +216,8 @@ def setup_api():
         setup_manager.save_config_values(filtered_values)
         config.refresh_config()
         refresh_auth_state()
-        restart_signal_sent = restart_manager.publish_restart_request()
-        restart_requested = restart_signal_sent
+        restart_manager.publish_restart_request()
+        restart_requested = True
         require_login = was_bootstrap and not is_bootstrap_mode()
     except Exception as exc:
         app.logger.error('Setup save failed: %s', exc, exc_info=True)

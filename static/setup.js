@@ -333,6 +333,7 @@ function updateServerFields() {
 function waitForHealthAndRedirect(redirectUrl) {
     var attempts = 0;
     var maxAttempts = 80;
+    var consecutiveOk = 0;
     saveFeedback.className = 'status-pending inline-feedback';
     saveFeedback.style.display = 'block';
     saveFeedback.textContent = 'Configuration saved. Restarting services — please wait...';
@@ -347,12 +348,19 @@ function waitForHealthAndRedirect(redirectUrl) {
             })
             .then(function(data) {
                 if (data && data.status === 'ok') {
-                    window.location.href = redirectUrl;
+                    consecutiveOk += 1;
+                    if (consecutiveOk >= 2) {
+                        window.location.href = redirectUrl;
+                        return;
+                    }
+                    setTimeout(checkHealth, 1500);
                 } else {
+                    consecutiveOk = 0;
                     throw new Error('Service not ready');
                 }
             })
             .catch(function() {
+                consecutiveOk = 0;
                 if (attempts < maxAttempts) {
                     setTimeout(checkHealth, 1500);
                 } else {
@@ -364,7 +372,7 @@ function waitForHealthAndRedirect(redirectUrl) {
             });
     }
 
-    setTimeout(checkHealth, 1500);
+    setTimeout(checkHealth, 3000);
 }
 
 function collectConfigFromForm(testMode) {
