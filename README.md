@@ -66,7 +66,7 @@ For a full list of configuration parameter take a look at [PARAMETERS](docs/PARA
 
 For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](docs/ARCHITECTURE.md) page.
 
-From `v0.9.7` the app includes a browser Setup wizard. If the app starts without the required media server or auth values, it will show a simple setup page so you can finish configuration from the UI. Env vars still work as the initial quick-start values, and once setup is complete those settings are saved in the database and can be edited later from the Setup menu.
+From `v1.0.0` the app includes a browser Setup wizard. If the app starts without the required media server or auth values, it will show a simple setup page so you can finish configuration from the UI. Env vars still work as the initial quick-start values, and once setup is complete those settings are saved in the database and can be edited later from the Setup menu.
 
 > **IMPORTANT:** `DATABASE_URL` / `POSTGRES_*` and `REDIS_URL` must remain environment variables.
 >
