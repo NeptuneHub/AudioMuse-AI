@@ -1,115 +1,159 @@
-# Deploymnet strategy
-## **Quick Start Deployment on K3S WITH HELM**
+# Deployment strategy
 
-The best way to install AudioMuse-AI on K3S (kubernetes) is by [AudioMuse-AI Helm Chart repository](https://github.com/NeptuneHub/AudioMuse-AI-helm)
+From `v0.9.7` the app includes a browser Setup wizard. If the app starts without the required media server or auth values, it will show a simple setup page so you can finish configuration from the UI. Env vars still work as the initial quick-start values, and once setup is complete those settings are saved in the database and can be edited later from the Setup menu.
 
-*  **Prerequisites:**
-    *   A running `K3S cluster`.
-    *   `kubectl` configured to interact with your cluster.
-    *   `helm` installed.
-    *   `Jellyfin` or `Navidrome` or `Lyrion` installed.
-    *   Respect the HW requirements (look the specific chapter)
+> **IMPORTANT:** `DATABASE_URL` / `POSTGRES_*` and `REDIS_URL` must remain environment variables.
+>
+> **IMPORTANT:** After the first startup, setup values are loaded from the database and managed through the Setup wizard. Updating those values in `.env` later will not change the running configuration, except for database and Redis connection settings.
 
-You can directly check the Helm Chart repo for more details and deployments examples.
 
-## **Quick Start Deployment on K3S**
+## Quick Start Deployment on K3S WITH HELM
 
-This section provides a minimal guide to deploy AudioMuse-AI on a K3S (Kubernetes) cluster by directly using the `deployment` manifests.
+The easiest way to install AudioMuse-AI on K3S is with the [AudioMuse-AI Helm Chart repository](https://github.com/NeptuneHub/AudioMuse-AI-helm).
 
 * **Prerequisites:**
-    *   A running K3S cluster.
-    *   `kubectl` configured to interact with your cluster.
-    *   `Jellyfin` or `Navidrome` or `Lyrion` installed.
-    *   Respect the HW requirements (look the specific chapter)
+  * A running K3S cluster
+  * `kubectl` configured for your cluster
+  * `helm` installed
+  * A media server already installed: Jellyfin, Emby, Navidrome, or Lyrion
+  * See the hardware requirements in the documentation
 
-*  **Jellyfin Configuration:**
-    *   Navigate to the `deployment/` directory.
-    *   Edit `deployment.yaml` to configure mandatory parameters:
-        *   **Secrets:**
-            *   `jellyfin-credentials`: Update `api_token` and `user_id`.
-            *   `postgres-credentials`: Update `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`.
-            *   `gemini-api-credentials` (if using Gemini for AI Naming): Update `GEMINI_API_KEY`.
-            *   `mistral-api-credentials` (if using Mistral for AI Naming): Update `MISTRAL_API_KEY`.
-        *   **ConfigMap (`audiomuse-ai-config`):**
-            *   Update `JELLYFIN_URL`.
-            *   Ensure `POSTGRES_HOST`, `POSTGRES_PORT`, and `REDIS_URL` are correct for your setup (defaults are for in-cluster services).
+Use the Helm chart for the simplest, most production-ready K3S deploy.
 
-*  **Navidrome/LMS (Open Subsonic API Music Server) Configuration:**
-    *   Navigate to the `deployment/` directory.
-    *   Edit `deployment-navidrome.yaml` to configure mandatory parameters:
-        *   **Secrets:**
-            *   `navidrome-credentials`: Update `NAVIDROME_USER` and `NAVIDROME_PASSWORD`.
-            *   `postgres-credentials`: Update `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`.
-            *   `gemini-api-credentials` (if using Gemini for AI Naming): Update `GEMINI_API_KEY`.
-            *   `mistral-api-credentials` (if using Mistral for AI Naming): Update `MISTRAL_API_KEY`.
-        *   **ConfigMap (`audiomuse-ai-config`):**
-            *   Update `NAVIDROME_URL`.
-            *   Ensure `POSTGRES_HOST`, `POSTGRES_PORT`, and `REDIS_URL` are correct for your setup (defaults are for in-cluster services).
-        *   > The same instruction used for Navidrome could apply to other Mediaserver that support Subsonic API. LMS for example is supported, only remember to user the Subsonic API token instead of the password.
+## Quick Start Deployment on K3S
 
-*  **Lyrion Configuration:**
-    *   Navigate to the `deployment/` directory.
-    *   Edit `deployment-lyrion.yaml` to configure mandatory parameters:
-        *   **Secrets:**
-            *   `postgres-credentials`: Update `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`.
-            *   `gemini-api-credentials` (if using Gemini for AI Naming): Update `GEMINI_API_KEY`.
-        *   **ConfigMap (`audiomuse-ai-config`):**
-            *   Update `LYRION_URL`.
-            *   Ensure `POSTGRES_HOST`, `POSTGRES_PORT`, and `REDIS_URL` are correct for your setup (defaults are for in-cluster services).
-            
-*  **Deploy:**
-    ```bash
-    kubectl apply -f deployment/deployment.yaml
-    ```
-*  **Access:**
-    *   **Main UI:** Access at `http://<EXTERNAL-IP>:8000`
-    *   **API Docs (Swagger UI):** Explore the API at `http://<EXTERNAL-IP>:8000/apidocs`
- 
-## **Local Deployment with Docker Compose**
+This section covers direct deployment with the `deployment/*.yaml` manifests.
+
+* **Prerequisites:**
+  * A running K3S cluster
+  * `kubectl` configured for your cluster
+  * A media server already installed: Jellyfin, Emby, Navidrome, or Lyrion
+  * See the hardware requirements in the documentation
+
+* **Choose the right manifest:**
+  * `deployment/deployment.yaml` — Jellyfin
+  * `deployment/deployment-emby.yaml` — Emby
+  * `deployment/deployment-navidrome.yaml` — Navidrome
+  * `deployment/deployment-lyrion.yaml` — Lyrion
+
+* **Edit the manifest:**
+  * Set your media server values (optional; can also be entered later via the UI wizard):
+    * Jellyfin: `JELLYFIN_URL`, `JELLYFIN_USER_ID`, `JELLYFIN_TOKEN`
+    * Navidrome: `NAVIDROME_URL`, `NAVIDROME_USER`, `NAVIDROME_PASSWORD`
+    * Lyrion: `LYRION_URL`
+  * Set database secrets in the matching secret object (mandatory; env-only):
+    * `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`
+  * Ensure cluster connection values are correct (mandatory; env-only):
+    * `POSTGRES_HOST`, `POSTGRES_PORT`, `REDIS_URL`
+  * Optional AI keys (optional; can also be entered later via the UI wizard):
+    * `GEMINI_API_KEY`, `MISTRAL_API_KEY`
+
+* **Deploy:**
+  ```bash
+  kubectl apply -f deployment/deployment.yaml
+  ```
+
+* **Access:**
+  * Web UI: `http://<EXTERNAL-IP>:8000`
+  * Swagger: `http://<EXTERNAL-IP>:8000/apidocs`
+
+## Local Deployment with Docker Compose
 
 AudioMuse-AI provides Docker Compose files for different media server backends:
 
-- **Jellyfin**: Use `deployment/docker-compose.yaml`
-- **Navidrome**: Use `deployment/docker-compose-navidrome.yaml`
-- **Lyrion**: Use `deployment/docker-compose-lyrion.yaml`
-- **Emby**: Use `deployment/docker-compose-emby.yaml`
+- **Jellyfin**: `deployment/docker-compose.yaml`
+- **Navidrome**: `deployment/docker-compose-navidrome.yaml`
+- **Lyrion**: `deployment/docker-compose-lyrion.yaml`
+- **Emby**: `deployment/docker-compose-emby.yaml`
 
-Choose the appropriate file based on your media server setup.
+If you want to use the UI wizard instead of editing env vars first, you can skip steps 1–3 and configure the app in the browser after startup.
 
 **Prerequisites:**
-*   Docker and Docker Compose installed.
-*   `Jellyfin` or `Navidrome` or `Lyrion` or `Emby` installed.
-*   Respect the [hardware requirements](../README.md#hardware-requirements)
-*   Optionally, you can install the `docker-model-plugin` to enable the use of the [Docker Model Runner](https://docs.docker.com/ai/model-runner/get-started/#docker-engine) for running AI models locally. If you choose this setup, use `deployment/docker-compose-dmr.yaml` to configure AudioMuse-AI to communicate with DMR through an OpenAI-compatible API interface.
+* Docker and Docker Compose installed
+* A media server already installed: Jellyfin, Navidrome, Lyrion, or Emby
+* See the [hardware requirements](../README.md#hardware-requirements)
 
 **Steps:**
-1.  **Create your environment file:**
-    ```bash
-    cp deployment/.env.example deployment/.env
-    ```
-    you can find the example here: [deployment/.env.example](../deployment/.env.example)
-    
-2.  **Review and Customize:**
-    Edit `.env` and provide the media-server credentials (e.g., `JELLYFIN_URL`, `JELLYFIN_USER_ID`, `JELLYFIN_TOKEN` or `NAVIDROME_*`, `EMBY_*`, `LYRION_URL`) along with any API keys (`GEMINI_API_KEY`, `MISTRAL_API_KEY`). The same values are injected into every compose file, so you only need to edit them here.
-3.  **Start the Services:**
-    ```bash
-    docker compose -f deployment/docker-compose.yaml up -d
-    ```
-    Swap the compose filename if you're targeting Navidrome (`docker-compose-navidrome.yaml`), Lyrion (`docker-compose-lyrion.yaml`) or Emby (`docker-compose-emby.yaml`). This command starts all services (Flask app, RQ workers, Redis, PostgreSQL) in detached mode (`-d`).
+1. **Create your environment file:**
+   ```bash
+   cp deployment/.env.example deployment/.env
+   ```
+   You can find the example here: [deployment/.env.example](../deployment/.env.example)
 
-    **IMPORTANT:** both `docker-compose.yaml` and `.env` file need to be in the same directory.
-5.  **Access the Application:**
-    Once the containers are up, you can access the web UI at `http://localhost:8000`. You can change the value of the used port by changing the FRONTEND_PORT value
-6.  **Stopping the Services:**
-    ```bash
-    docker compose -f deployment/docker-compose.yaml down
-    ```
-    Swap the compose filename here as well if you started a different variant.
+2. **Edit `.env` with your environment values (optional; media server/auth can also be set later via the UI wizard):**
+   **For Jellyfin:**
+   ```env
+   MEDIASERVER_TYPE=jellyfin
+   JELLYFIN_URL=http://your-jellyfin-server:8096
+   JELLYFIN_USER_ID=your-user-id
+   JELLYFIN_TOKEN=your-api-token
+   ```
+   **For Navidrome:**
+   ```env
+   MEDIASERVER_TYPE=navidrome
+   NAVIDROME_URL=http://your-navidrome-server:4533
+   NAVIDROME_USER=your-username
+   NAVIDROME_PASSWORD=your-password
+   ```
+   **For Lyrion:**
+   ```env
+   MEDIASERVER_TYPE=lyrion
+   LYRION_URL=http://your-lyrion-server:9000
+   ```
+   **For Emby:**
+   ```env
+   MEDIASERVER_TYPE=emby
+   EMBY_URL=http://your-emby-server:8096
+   EMBY_USER_ID=your-user-id
+   EMBY_TOKEN=your-api-token
+   ```
+
+   **Database and Redis (mandatory; env-only):**
+   ```env
+   REDIS_URL=redis://localhost:6379/0
+   POSTGRES_USER=audiomuse
+   POSTGRES_PASSWORD=audiomusepassword
+   POSTGRES_HOST=postgres
+   POSTGRES_PORT=5432
+   POSTGRES_DB=audiomusedb
+   ```
+
+   **Optional AI keys (optional; can also be set later via the UI wizard):**
+   ```env
+   GEMINI_API_KEY=your-gemini-key
+   MISTRAL_API_KEY=your-mistral-key
+   ```
+
+3. **Add auth values if you want to preconfigure login: (optional, can be done in the UI wizard)**
+   ```env
+   AUTH_ENABLED=true
+   AUDIOMUSE_USER=alice
+   AUDIOMUSE_PASSWORD=secret123
+   API_TOKEN=api-token
+   ```
+   We recommend leaving `AUTH_ENABLED=true` enabled for secure local use.
+
+4. **Start the services:**
+   ```bash
+   docker compose -f deployment/docker-compose.yaml up -d
+   ```
+   Use the matching compose file for your media server:  `docker-compose.yaml` for Jellyfin,`docker-compose-navidrome.yaml`, `docker-compose-lyrion.yaml`, or `docker-compose-emby.yaml`.
+
+5. **Access the app:**
+   Open `http://localhost:8000` in your browser.
+
+6. **Stop the services:**
+   ```bash
+   docker compose -f deployment/docker-compose.yaml down
+   ```
+
+> `DATABASE_URL` / `POSTGRES_*` and `REDIS_URL` are still managed as environment settings and MUST be configured in the compose environment.
+
 **Note:**
-  > If you use LMS instead of the password you need to create and use the Subsonic API token. Additional Subsonic API based Mediaserver could require it in place of the password.
+> If you use LMS, create and use the Subsonic API token instead of a password. Other Subsonic-compatible servers may require the same token-based auth.
 
 **Remote worker tip:**
-If you deploy a worker on different hardware (using `docker-compose-worker.yaml` or `docker-compose-worker-nvidia.yaml`), copy your `.env` to that machine and update `WORKER_POSTGRES_HOST` and `WORKER_REDIS_URL` so the worker can reach the main server.
+If you deploy a worker on separate hardware, copy your `.env` to that machine and update `WORKER_POSTGRES_HOST` and `WORKER_REDIS_URL` so the worker can reach the main server.
 
 ## **Local Deployment with Podman Quadlets**
 
