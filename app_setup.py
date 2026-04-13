@@ -191,6 +191,11 @@ def setup_api():
     if not filtered_values and not is_test_connection:
         return jsonify({'error': 'No valid configuration values were provided'}), 400
 
+    if not is_test_connection:
+        for key, value in filtered_values.items():
+            if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == '********':
+                return jsonify({'error': 'Placeholder secret values are not accepted on save. Enter the real secret or leave the field blank.'}), 400
+
     try:
         if is_test_connection:
             result = _test_media_server_connection(filtered_values)
