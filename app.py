@@ -780,7 +780,6 @@ def listen_for_index_reloads():
   """
   # Create a new Redis connection for this thread.
   # Sharing the main redis_conn object across threads is not recommended.
-  from redis import Redis
   thread_redis_conn = Redis.from_url(
     REDIS_URL,
     socket_connect_timeout=30,
