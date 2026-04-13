@@ -2,6 +2,8 @@ import os
 import psycopg2
 from psycopg2.extras import DictCursor
 from flask import Flask, jsonify, request, render_template, g, make_response, redirect, url_for
+from argon2 import PasswordHasher
+from argon2 import exceptions as argon2_exceptions
 import json
 import logging
 import threading
@@ -9,10 +11,12 @@ import time
 import datetime
 import secrets
 import jwt as pyjwt
+import config
 
 # RQ imports
 from rq.job import Job, JobStatus
 from rq.exceptions import NoSuchJobError
+from tasks.setup_manager import SetupManager
 
 # Redis client
 from redis import Redis
@@ -42,6 +46,7 @@ if ENABLE_PROXY_FIX:
 
 # --- Flask App Setup ---
 app = Flask(__name__)
+setup_manager = SetupManager()
 
 # Import helper functions
 from app_helper import (
@@ -116,9 +121,52 @@ if not _jwt_secret and AUTH_ENABLED:
         "Set JWT_SECRET in your .env for persistent sessions."
     )
 
+# Auth is considered configured whenever the app has effective credentials,
+# including runtime-generated temporary auth values.
 auth_configured = bool(effective_audiomuse_user and effective_audiomuse_password)
+bootstrap_auth_mode = AUTH_ENABLED and not (AUDIOMUSE_USER and AUDIOMUSE_PASSWORD)
 
-# --- Context Processor to Inject Version and Feature Flags ---
+# If auth is enabled but no explicit credentials were provided, the app is
+# in bootstrap auth mode. Setup can be accessed via the temporary credentials.
+def is_bootstrap_mode():
+    return not config.AUTH_ENABLED or bootstrap_auth_mode
+
+
+def refresh_auth_state():
+    global AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, effective_audiomuse_user, effective_audiomuse_password, auth_configured, bootstrap_auth_mode
+    AUDIOMUSE_USER = config.AUDIOMUSE_USER
+    AUDIOMUSE_PASSWORD = config.AUDIOMUSE_PASSWORD
+    if AUDIOMUSE_USER and AUDIOMUSE_USER.strip():
+        effective_audiomuse_user = AUDIOMUSE_USER
+    if AUDIOMUSE_PASSWORD and AUDIOMUSE_PASSWORD.strip():
+        effective_audiomuse_password = AUDIOMUSE_PASSWORD
+    auth_configured = bool(AUDIOMUSE_USER and AUDIOMUSE_PASSWORD)
+    bootstrap_auth_mode = config.AUTH_ENABLED and not auth_configured
+
+
+_password_hasher = PasswordHasher()
+
+
+def _is_argon2_password_hash(value):
+    return isinstance(value, str) and value.startswith('$argon2')
+
+
+def _verify_audiomuse_password(stored_password, provided_password):
+    if not isinstance(stored_password, str) or not isinstance(provided_password, str):
+        return False
+    if _is_argon2_password_hash(stored_password):
+        try:
+            return _password_hasher.verify(stored_password, provided_password)
+        except argon2_exceptions.VerifyMismatchError:
+            return False
+        except argon2_exceptions.VerificationError as exc:
+            app.logger.error(f"Argon2 verification failed for stored password hash: {exc}", exc_info=True)
+            return False
+        except Exception as exc:
+            app.logger.error(f"Unexpected Argon2 verification error: {exc}", exc_info=True)
+            return False
+    return stored_password == provided_password
+
 @app.context_processor
 def inject_globals():
     """Injects global variables into all templates."""
@@ -127,7 +175,8 @@ def inject_globals():
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
         mulan_enabled=MULAN_ENABLED,
-        auth_enabled=AUTH_ENABLED,
+        auth_enabled=config.AUTH_ENABLED,
+        setup_saved=setup_manager.is_setup_complete(config),
     )
 
 # --- Authentication Middleware ---
@@ -141,12 +190,16 @@ def check_auth():
       - Valid API_TOKEN Bearer header (M2M / scripts)
     Public routes: /login, /auth, /logout, /static/*
     """
-    if not AUTH_ENABLED:
+    if not config.AUTH_ENABLED:
         return  # Auth disabled — zero impact on existing deployments
 
     # Always allow public routes
     public = ('/login', '/auth', '/logout')
-    if request.path in public or request.path.startswith('/static/'):
+    if request.path in public or request.path.startswith('/static/') or request.path.startswith('/api/health'):
+        return
+
+    # Always allow bootstrap setup when auth is not configured or auth is disabled.
+    if is_bootstrap_mode() and (request.path == '/setup' or request.path.startswith('/api/setup')):
         return
 
     # Check 1: valid JWT cookie (browser users)
@@ -162,7 +215,7 @@ def check_auth():
 
     # Check 2: valid Bearer token (M2M callers)
     auth_header = request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer ') and auth_header[7:] == API_TOKEN:
+    if auth_header.startswith('Bearer ') and auth_header[7:] == config.API_TOKEN:
         return  # Valid M2M token
 
     # Not authenticated
@@ -170,6 +223,50 @@ def check_auth():
         return jsonify({"error": "Unauthorized"}), 401
     else:
         return redirect(url_for('login_page'))
+
+@app.before_request
+def log_api_request():
+    if request.path.startswith('/api/') and not request.path.startswith('/static/'):
+        app.logger.info('API request: %s %s', request.method, request.path)
+
+
+@app.before_request
+def require_setup_completion():
+    if request.path.startswith('/static/') or request.path == '/api/health':
+        return
+    if setup_manager.is_setup_complete(config):
+        return
+
+    if not config.AUTH_ENABLED:
+        if request.path in ('/setup',) or request.path.startswith('/api/setup'):
+            return
+        if setup_manager.is_valid_env_config(config):
+            return
+        if request.path.startswith('/api/'):
+            return jsonify({"error": "Setup required"}), 403
+        return redirect(url_for('setup_page'))
+
+    if is_bootstrap_mode():
+        if request.path in ('/login', '/auth', '/logout', '/setup') or request.path.startswith('/api/setup'):
+            return
+        if request.path.startswith('/api/'):
+            return jsonify({"error": "Setup required"}), 403
+        return redirect(url_for('setup_page'))
+
+    # Auth is configured, but setup is still incomplete.
+    if request.path in ('/login', '/auth', '/logout'):
+        return
+    if request.path.startswith('/api/setup'):
+        return
+    if request.path.startswith('/api/'):
+        return jsonify({"error": "Setup required"}), 403
+    return redirect(url_for('setup_page'))
+
+@app.route('/api/health')
+def health_check():
+    return jsonify({
+        'status': 'ok',
+    })
 
 # --- Swagger Setup ---
 app.config['SWAGGER'] = {
@@ -187,10 +284,12 @@ def teardown_db(e=None):
 # This is safe because it doesn't import other application modules.
 with app.app_context():
     init_db()
+    setup_manager.bootstrap_env_config_if_empty(config)
     # Provider migration tool: apply any runtime active-provider override from
     # app_settings so config reflects the last successful migration.
     apply_provider_overrides_from_db()
 
+import app_setup
 
 # --- API Endpoints ---
 
@@ -198,8 +297,10 @@ with app.app_context():
 @app.route('/login')
 def login_page():
     """Serve the login page. Redirects to / if already authenticated."""
-    if not AUTH_ENABLED:
+    if not config.AUTH_ENABLED:
         return redirect(url_for('index'))
+    if bootstrap_auth_mode:
+        return redirect(url_for('setup_page'))
     token = request.cookies.get('audiomuse_jwt')
     if token:
         try:
@@ -209,7 +310,7 @@ def login_page():
             pass
 
     auth_warning = None
-    if AUTH_ENABLED and (not AUDIOMUSE_USER or not AUDIOMUSE_PASSWORD):
+    if config.AUTH_ENABLED and (not AUDIOMUSE_USER or not AUDIOMUSE_PASSWORD):
         auth_warning = (
             'AUTH_ENABLED is true by default and one or more credentials were autogenerated and visible in FLASK log. '
             'You should set the final values for AUDIOMUSE_USER and AUDIOMUSE_PASSWORD in your environment variables. '
@@ -227,7 +328,7 @@ def auth_endpoint():
     On failure: returns 401.
     The API_TOKEN is NEVER returned in the response body.
     """
-    if not AUTH_ENABLED:
+    if not config.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
     if not auth_configured:
         app.logger.warning(
@@ -235,13 +336,21 @@ def auth_endpoint():
         )
         return jsonify({"error": "Auth not configured"}), 404
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = request.form.to_dict()
+    if not isinstance(data, dict):
+        data = {}
+
     user = data.get('user', '')
     password = data.get('password', '')
+    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
 
-    if user != effective_audiomuse_user or password != effective_audiomuse_password:
+    if user != effective_audiomuse_user or not _verify_audiomuse_password(effective_audiomuse_password, password):
         app.logger.warning(f"Failed login attempt for user: {user!r}")
-        return jsonify({"error": "Invalid credentials"}), 401
+        if is_ajax:
+            return jsonify({"error": "Invalid credentials"}), 401
+        return render_template('login.html', title='Login — AudioMuse-AI', auth_warning=None, login_error='Invalid username or password.')
 
     # Issue JWT — new token at every login
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -252,10 +361,14 @@ def auth_endpoint():
     }
     token = pyjwt.encode(payload, _jwt_secret, algorithm='HS256')
 
-    resp = make_response(jsonify({"status": "ok"}), 200)
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        resp = make_response(jsonify({"status": "ok"}), 200)
+    else:
+        resp = make_response(redirect(url_for('index')))
     resp.set_cookie(
         'audiomuse_jwt',
         token,
+        path='/',
         httponly=True,           # JS cannot read this cookie
         samesite='Strict',       # CSRF protection
         secure=False,            # Set to True when behind HTTPS (Caddy/Traefik handle TLS)
@@ -266,8 +379,12 @@ def auth_endpoint():
 @app.route('/logout', methods=['POST'])
 def logout_endpoint():
     """Clear the JWT session cookie and redirect to /login."""
-    resp = make_response(jsonify({"status": "logged_out"}), 200)
-    resp.delete_cookie('audiomuse_jwt', samesite='Strict')
+    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+    if is_ajax:
+        resp = make_response(jsonify({"status": "logged_out"}), 200)
+    else:
+        resp = make_response(redirect(url_for('login_page')))
+    resp.delete_cookie('audiomuse_jwt', path='/', samesite='Strict')
     return resp
 
 @app.route('/')
@@ -674,7 +791,6 @@ def listen_for_index_reloads():
   """
   # Create a new Redis connection for this thread.
   # Sharing the main redis_conn object across threads is not recommended.
-  from redis import Redis
   thread_redis_conn = Redis.from_url(
     REDIS_URL,
     socket_connect_timeout=30,

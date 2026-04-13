@@ -98,37 +98,16 @@
         {% if auth_warning %}
         <p id="login-warning" style="margin:0; font-size:0.9rem; color: var(--warning-color, #b45309);">{{ auth_warning }}</p>
         {% endif %}
-        <form id="login-form">
-            <input type="text" id="login-user" placeholder="Username" autocomplete="username" required>
-            <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" required>
+        <form id="login-form" action="/auth" method="post">
+            <input type="text" id="login-user" name="user" placeholder="Username" autocomplete="username" required>
+            <input type="password" id="login-password" name="password" placeholder="Password" autocomplete="current-password" required>
             <button type="submit">Sign In</button>
-            <p id="login-error" style="display:none; color: var(--error-color, #c0392b);"></p>
+            {% if login_error %}
+            <p id="login-error" style="display: block; color: var(--error-color, #c0392b);">{{ login_error }}</p>
+            {% else %}
+            <p id="login-error" style="display: none; color: var(--error-color, #c0392b);"></p>
+            {% endif %}
         </form>
     </div>
-    <script>
-        document.getElementById('login-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const user = document.getElementById('login-user').value;
-            const password = document.getElementById('login-password').value;
-            const errorEl = document.getElementById('login-error');
-            errorEl.style.display = 'none';
-            try {
-                const resp = await fetch('/auth', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({user, password})
-                });
-                if (resp.ok) {
-                    window.location.href = '/';
-                } else {
-                    errorEl.textContent = 'Invalid username or password.';
-                    errorEl.style.display = 'block';
-                }
-            } catch (err) {
-                errorEl.textContent = 'Connection error. Please try again.';
-                errorEl.style.display = 'block';
-            }
-        });
-    </script>
 </body>
 </html>

@@ -31,6 +31,7 @@ The following table details the most important paths in the repository, their pu
 | tasks/mediaserver.py | In this fail the generic method to interact with the mediaservers are specialized to call the specific one |
 | ai.py | This module centralizes all interactions with Large Language Models (LLMs). It contains the logic for communicating with services like self-hosted Ollama or the Google Gemini API for tasks such as AI-powered playlist naming and translating natural language requests into SQL queries. |
 | config.py | Contains the application's default, non-sensitive configuration parameters. These values serve as fallbacks and can be easily overridden by environment variables, providing a flexible and secure configuration system. |
+| Authentication | Configured in `config.py` by `AUTH_ENABLED`, `AUDIOMUSE_USER`, `AUDIOMUSE_PASSWORD`, `API_TOKEN`, and `JWT_SECRET`. Enforcement happens in `app.py` via `check_auth()` and `require_setup_completion()` middleware. Static assets, setup pages, health checks, and unauthenticated setup flows are excluded from auth, while all other API/UI routes require a valid JWT session when auth is enabled. |
 | static/ & templates/ | These directories contain all frontend assets. |
 | deployment/ | This contains deployment example but also the supervisord configuration |
 | Dockerfile, Dockerfile.nvidia | These files contain the instructions for building the OCI-compatible container images for the application. |
