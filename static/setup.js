@@ -510,10 +510,17 @@ setupForm.addEventListener('submit', function(event) {
     }).then(function(data) {
         saveFeedback.className = 'status-success inline-feedback';
         saveFeedback.style.display = 'block';
-        saveFeedback.textContent = 'Configuration saved. Redirecting in 3 seconds...';
-        setTimeout(function() {
-            window.location.href = '/';
-        }, 3000);
+        var countdown = 5;
+        saveFeedback.textContent = 'Configuration saved. Redirecting in ' + countdown + ' seconds...';
+        var countdownInterval = setInterval(function() {
+            countdown -= 1;
+            if (countdown > 0) {
+                saveFeedback.textContent = 'Configuration saved. Redirecting in ' + countdown + ' seconds...';
+            } else {
+                clearInterval(countdownInterval);
+                window.location.href = '/';
+            }
+        }, 1000);
     }).catch(function(err) {
         saveFeedback.className = 'status-failure inline-feedback';
         saveFeedback.style.display = 'block';
