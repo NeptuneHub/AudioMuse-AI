@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo "ENTRYPOINT: SERVICE_TYPE=${SERVICE_TYPE:-<unset>}"
 
-if [ -n "$TZ" ]; then
+if [ -n "${TZ:-}" ]; then
   if [ -f "/usr/share/zoneinfo/$TZ" ]; then
     ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime
     echo "$TZ" > /etc/timezone
