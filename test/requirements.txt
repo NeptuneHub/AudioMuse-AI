@@ -42,6 +42,7 @@ flasgger
 umap-learn
 python-mpd2
 google-genai==1.57.0
+argon2-cffi==25.1.0
 mistralai>=1.11.1,<2.0.0
 
 # Notes:

@@ -205,6 +205,8 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'artist_mapping' table to map artist names to media server artist IDs
         cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
+        # Create application configuration table to persist setup values.
+        cur.execute("CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'alchemy_anchors' table to persist named user anchors for reuse
         cur.execute("CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'text_search_queries' table for precomputed CLAP text search queries
