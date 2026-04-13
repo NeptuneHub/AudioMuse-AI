@@ -2,6 +2,8 @@ import os
 import json
 import logging
 import psycopg2
+from argon2 import PasswordHasher
+from argon2 import exceptions as argon2_exceptions
 import config
 from psycopg2.extras import RealDictCursor
 from urllib.parse import quote
@@ -31,6 +33,7 @@ class SetupManager:
     def __init__(self, database_url=None):
         self.database_url = database_url or self._get_database_url()
         self.logger = logging.getLogger(__name__)
+        self._password_hasher = PasswordHasher()
 
     def _get_database_url(self):
         env_url = os.environ.get("DATABASE_URL")
@@ -170,6 +173,9 @@ class SetupManager:
         self.save_config_values(values)
         return True
 
+    def _is_argon2_password_hash(self, value):
+        return isinstance(value, str) and value.startswith('$argon2')
+
     def cast_value(self, default_value, stored_value):
         if isinstance(default_value, bool):
             return str(stored_value).strip().lower() in ("1", "true", "yes", "on")
@@ -203,6 +209,12 @@ class SetupManager:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
                     for key, value in values.items():
+                        if key == 'AUDIOMUSE_PASSWORD' and isinstance(value, str) and value and value != '********' and not self._is_argon2_password_hash(value):
+                            try:
+                                value = self._password_hasher.hash(value)
+                            except argon2_exceptions.HashingError as exc:
+                                self.logger.error(f"Unable to hash AUDIOMUSE_PASSWORD: {exc}", exc_info=True)
+                                raise
                         cur.execute(
                             f"INSERT INTO {DEFAULT_CONFIG_TABLE} (key, value) VALUES (%s, %s) "
                             f"ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP",

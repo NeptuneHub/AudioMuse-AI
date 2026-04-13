@@ -2,6 +2,8 @@ import os
 import psycopg2
 from psycopg2.extras import DictCursor
 from flask import Flask, jsonify, request, render_template, g, make_response, redirect, url_for
+from argon2 import PasswordHasher
+from argon2 import exceptions as argon2_exceptions
 import json
 import logging
 import threading
@@ -132,6 +134,30 @@ def refresh_auth_state():
         effective_audiomuse_password = AUDIOMUSE_PASSWORD
     auth_configured = bool(AUDIOMUSE_USER and AUDIOMUSE_PASSWORD)
     bootstrap_auth_mode = config.AUTH_ENABLED and not auth_configured
+
+
+_password_hasher = PasswordHasher()
+
+
+def _is_argon2_password_hash(value):
+    return isinstance(value, str) and value.startswith('$argon2')
+
+
+def _verify_audiomuse_password(stored_password, provided_password):
+    if not isinstance(stored_password, str) or not isinstance(provided_password, str):
+        return False
+    if _is_argon2_password_hash(stored_password):
+        try:
+            return _password_hasher.verify(stored_password, provided_password)
+        except argon2_exceptions.VerifyMismatchError:
+            return False
+        except argon2_exceptions.VerificationError as exc:
+            app.logger.error(f"Argon2 verification failed for stored password hash: {exc}", exc_info=True)
+            return False
+        except Exception as exc:
+            app.logger.error(f"Unexpected Argon2 verification error: {exc}", exc_info=True)
+            return False
+    return stored_password == provided_password
 
 @app.context_processor
 def inject_globals():
@@ -309,7 +335,7 @@ def auth_endpoint():
     password = data.get('password', '')
     is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
 
-    if user != effective_audiomuse_user or password != effective_audiomuse_password:
+    if user != effective_audiomuse_user or not _verify_audiomuse_password(effective_audiomuse_password, password):
         app.logger.warning(f"Failed login attempt for user: {user!r}")
         if is_ajax:
             return jsonify({"error": "Invalid credentials"}), 401
