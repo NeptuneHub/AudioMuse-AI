@@ -137,7 +137,7 @@ If you want to use the UI wizard instead of editing env vars first, you can skip
    ```bash
    docker compose -f deployment/docker-compose.yaml up -d
    ```
-   Use the matching compose file for your media server:  `docker-compose.yaml` for Jellyfin,`docker-compose-navidrome.yaml`, `docker-compose-lyrion.yaml`, or `docker-compose-emby.yaml`.
+   Use the matching compose file for your media server: `docker-compose.yaml` for Jellyfin, `docker-compose-navidrome.yaml`, `docker-compose-lyrion.yaml`, or `docker-compose-emby.yaml`.
 
 5. **Access the app:**
    Open `http://localhost:8000` in your browser.
