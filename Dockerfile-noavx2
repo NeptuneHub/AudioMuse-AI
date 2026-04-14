@@ -358,7 +358,11 @@ RUN set -eux; \
 COPY . /app
 COPY deployment/docker-entrypoint.sh /app/docker-entrypoint.sh
 COPY deployment/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-RUN chmod +x /app/docker-entrypoint.sh
+# Strip CRLF from container files in case they were checked out on Windows
+# with core.autocrlf=true (git's initial-clone checkout may not honor
+# .gitattributes eol=lf, which would break the entrypoint shebang).
+RUN sed -i 's/\r$//' /app/docker-entrypoint.sh /etc/supervisor/conf.d/supervisord.conf \
+ && chmod +x /app/docker-entrypoint.sh
 RUN ls -l /etc/supervisor/conf.d && test -f /etc/supervisor/conf.d/supervisord.conf
 
 # ============================================================================
