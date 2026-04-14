@@ -549,6 +549,17 @@ def _write_provider_to_app_config(cur, target_type, target_creds):
     """
     import config as cfg
 
+    # Ensure ``app_config`` exists. ``init_db()`` and the setup wizard both
+    # create it on startup, but a DB restored from a pre-setup-wizard backup
+    # won't have it — ``app_backup.restore`` drops all tables and replays the
+    # backup file without re-running ``init_db()``. Creating it here keeps the
+    # migration transactional (same cursor, rolls back with everything else).
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS app_config ("
+        "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
+        "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    )
+
     # Build the key→value pairs to upsert
     values = {'MEDIASERVER_TYPE': target_type}
     key_map = _CREDS_TO_CONFIG.get(target_type, {})

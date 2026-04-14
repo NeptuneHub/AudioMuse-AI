@@ -233,6 +233,10 @@ class TestExecuteProviderMigration:
         assert 'DELETE FROM ARTIST_MAPPING' in joined
         # app_config upsert (provider credentials)
         assert 'INSERT INTO APP_CONFIG' in joined
+        # app_config table is created if missing (legacy DBs restored from
+        # backups predating the setup wizard don't have this table; the
+        # migration must create it transactionally before inserting).
+        assert 'CREATE TABLE IF NOT EXISTS APP_CONFIG' in joined
         # Session marked complete
         assert 'UPDATE MIGRATION_SESSION' in joined
 
