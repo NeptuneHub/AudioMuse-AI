@@ -68,8 +68,8 @@ app.logger.info(f"Starting AudioMuse-AI Backend version {config.APP_VERSION}")
 # AUTH_ENABLED is the raw env toggle. If enabled, auth is enforced everywhere.
 # If auth is enabled and the user/pass env vars are missing, we provide defaults.
 
-effective_audiomuse_user = AUDIOMUSE_USER
-effective_audiomuse_password = AUDIOMUSE_PASSWORD
+effective_audiomuse_user = config.AUDIOMUSE_USER
+effective_audiomuse_password = config.AUDIOMUSE_PASSWORD
 user_defaulted = False
 new_password_generated = False
 
@@ -103,7 +103,7 @@ if not _jwt_secret and config.AUTH_ENABLED:
 # Auth is considered configured whenever the app has effective credentials,
 # including runtime-generated temporary auth values.
 auth_configured = bool(effective_audiomuse_user and effective_audiomuse_password)
-bootstrap_auth_mode = AUTH_ENABLED and not (AUDIOMUSE_USER and AUDIOMUSE_PASSWORD)
+bootstrap_auth_mode = config.AUTH_ENABLED and not (config.AUDIOMUSE_USER and config.AUDIOMUSE_PASSWORD)
 
 # If auth is enabled but no explicit credentials were provided, the app is
 # in bootstrap auth mode. Setup can be accessed via the temporary credentials.
