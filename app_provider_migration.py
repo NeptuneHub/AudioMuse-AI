@@ -64,6 +64,87 @@ _SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'mpd'
 
 
 # ---------------------------------------------------------------------------
+# Source path sanity check — matching tiers 1 (path) and 2 (path tail) need
+# absolute filesystem paths in ``score.file_path``. If the user's current
+# provider stored garbage (Navidrome without Report Real Path, Lyrion stream
+# URIs, etc.), we can re-probe the current provider to get real paths and
+# apply them to ``old_rows`` before matching.
+# ---------------------------------------------------------------------------
+
+_SOURCE_PATH_SAMPLE_SIZE = 100
+
+
+def _sample_score_file_paths(limit=_SOURCE_PATH_SAMPLE_SIZE):
+    """Return up to ``limit`` ``file_path`` values from the score table."""
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT file_path FROM score WHERE file_path IS NOT NULL LIMIT %s",
+            (limit,),
+        )
+        rows = cur.fetchall() or []
+    return [r[0] for r in rows]
+
+
+def _detect_source_path_format():
+    """Classify ``score.file_path`` values by sampling and running
+    ``_detect_path_format`` from provider_probe. Returns one of
+    ``'absolute' | 'relative' | 'none' | 'mixed'``.
+    """
+    samples = _sample_score_file_paths()
+    # provider_probe._detect_path_format expects track dicts with a 'path' key
+    tracks = [{'path': p} for p in samples]
+    return provider_probe._detect_path_format(tracks)
+
+
+def _current_provider_creds():
+    """Build a creds dict from ``config`` for the currently active provider.
+
+    Returns ``(provider_type, creds_dict)`` or ``(None, {})`` when the
+    provider isn't one we can re-probe (e.g. MPD — its paths come from the
+    filesystem directly and don't need refreshing).
+    """
+    import config as cfg
+    t = (getattr(cfg, 'MEDIASERVER_TYPE', '') or '').lower()
+    if t == 'jellyfin':
+        return t, {
+            'url':     getattr(cfg, 'JELLYFIN_URL', ''),
+            'user_id': getattr(cfg, 'JELLYFIN_USER_ID', ''),
+            'token':   getattr(cfg, 'JELLYFIN_TOKEN', ''),
+        }
+    if t == 'emby':
+        return t, {
+            'url':     getattr(cfg, 'EMBY_URL', ''),
+            'user_id': getattr(cfg, 'EMBY_USER_ID', ''),
+            'token':   getattr(cfg, 'EMBY_TOKEN', ''),
+        }
+    if t == 'navidrome':
+        return t, {
+            'url':      getattr(cfg, 'NAVIDROME_URL', ''),
+            'user':     getattr(cfg, 'NAVIDROME_USER', ''),
+            'password': getattr(cfg, 'NAVIDROME_PASSWORD', ''),
+        }
+    if t == 'lyrion':
+        return t, {'url': getattr(cfg, 'LYRION_URL', '')}
+    return None, {}
+
+
+def _apply_source_path_overrides(old_rows, overrides):
+    """Patch ``old_rows[i]['file_path']`` from the overrides dict in place.
+
+    Pure function: the caller runs it before handing ``old_rows`` to the
+    matcher, so matcher tests don't need to know about overrides at all.
+    """
+    if not overrides:
+        return old_rows
+    for r in old_rows:
+        real = overrides.get(r.get('item_id'))
+        if real:
+            r['file_path'] = real
+    return old_rows
+
+
+# ---------------------------------------------------------------------------
 # Routes — wizard page
 # ---------------------------------------------------------------------------
 
@@ -173,17 +254,100 @@ def search_albums():
 # Routes — dry run, manual match, finalize
 # ---------------------------------------------------------------------------
 
+@migration_bp.route('/api/migration/source-paths/refresh', methods=['POST'])
+def source_paths_refresh():
+    """Re-probe the currently active provider and build a {item_id: real_path}
+    override map, stored in ``migration_session.state->'source_path_overrides'``.
+
+    Called when the UI detects that ``score.file_path`` values are unusable
+    (e.g. Navidrome was analyzed without "Report Real Path"). After refresh,
+    the dry-run can use the fresh paths for matcher tiers 1 (path) and
+    2 (path tail) without the user rebuilding their analysis from scratch.
+    """
+    payload = request.get_json(silent=True) or {}
+    session_id = payload.get('session_id')
+    if session_id is None:
+        return jsonify({'error': 'session_id is required'}), 400
+
+    source_type, creds = _current_provider_creds()
+    if not source_type:
+        return jsonify({
+            'ok': False,
+            'error': 'The current provider does not support path refresh.',
+        }), 400
+
+    try:
+        tracks = provider_probe.fetch_all_tracks(source_type, creds)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+    path_format = provider_probe._detect_path_format(tracks)
+    overrides = {
+        t['id']: t['path']
+        for t in tracks
+        if t.get('id') and t.get('path')
+    }
+
+    warnings = []
+    if path_format != 'absolute':
+        warnings.append(
+            f'{source_type} is still not returning absolute paths. '
+            'Double-check that "Report Real Path" (Navidrome) or the '
+            'equivalent setting is enabled, then refresh again. You can '
+            'also proceed with metadata-only matching.'
+        )
+
+    _update_state(session_id, source_path_overrides=overrides)
+    return jsonify({
+        'ok':              True,
+        'source_type':     source_type,
+        'path_format':     path_format,
+        'overrides_count': len(overrides),
+        'warnings':        warnings,
+    })
+
+
 @migration_bp.route('/api/migration/dry-run', methods=['POST'])
 def dry_run():
     """Fetch all tracks from the target provider, match them against score,
-    persist the result in ``migration_session.state->'dry_run'``."""
+    persist the result in ``migration_session.state->'dry_run'``.
+
+    Before matching, the source ``score.file_path`` values are sanity-checked.
+    If they don't look like absolute filesystem paths (e.g. Navidrome library
+    analyzed without Report Real Path), the route returns 409 with
+    ``needs_source_refresh=True`` so the UI can prompt the user to enable
+    Real Path and hit ``/source-paths/refresh``. Pass
+    ``bypass_source_check=True`` to skip the gate and use metadata-only
+    matching."""
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
+    bypass_source_check = bool(payload.get('bypass_source_check'))
+    allow_title_artist_only = bool(payload.get('allow_title_artist_only'))
 
     session = _fetch_session_creds(session_id)
     if session is None:
         return jsonify({'error': 'session not found'}), 404
     target_type, creds = session
+
+    # Gate on source path quality. Skip if the user has already refreshed
+    # (overrides present) or explicitly opted to proceed with metadata-only.
+    state = _load_state(session_id) or {}
+    source_overrides = state.get('source_path_overrides') or {}
+    if not source_overrides and not bypass_source_check:
+        source_format = _detect_source_path_format()
+        if source_format != 'absolute':
+            source_type, _ = _current_provider_creds()
+            return jsonify({
+                'needs_source_refresh': True,
+                'current_source_type':  source_type,
+                'path_format':          source_format,
+                'hint': (
+                    'Your score.file_path values are not absolute filesystem '
+                    'paths. Automatic path-based matching will fall back to '
+                    'metadata only. Refresh source paths, or proceed with '
+                    'metadata-only matching.'
+                ),
+            }), 409
 
     try:
         new_tracks = provider_probe.fetch_all_tracks(target_type, creds)
@@ -191,11 +355,15 @@ def dry_run():
         return jsonify({'error': str(e)}), 500
 
     old_rows = _load_score_rows_as_dicts()
+    _apply_source_path_overrides(old_rows, source_overrides)
 
     # Lazy import of matcher — same reasoning as provider_probe
     import importlib
     matcher = importlib.import_module('tasks.provider_migration_matcher')
-    result = matcher.match_tracks(old_rows, new_tracks)
+    result = matcher.match_tracks(
+        old_rows, new_tracks,
+        allow_title_artist_only=allow_title_artist_only,
+    )
 
     # Serialize only what we need for persistence (no unmatched row dicts in state —
     # keep it light; unmatched_by_album is reconstructed from unmatched on demand)
@@ -457,9 +625,20 @@ def job_status(task_id):
     try:
         from rq.job import Job
         job = Job.fetch(task_id, connection=redis_conn)
+        status = job.get_status()
+        # The execute worker reloads its own config and publishes a restart
+        # request for other workers, but Flask (this process) isn't on that
+        # pub/sub path. Reload here when the job finishes so subsequent
+        # requests see the new provider.
+        if status == 'finished':
+            try:
+                import config as _cfg
+                _cfg.refresh_config()
+            except Exception as _e:
+                logger.warning("post-migration config reload failed: %s", _e)
         return jsonify({
             'id': job.id,
-            'status': job.get_status(),
+            'status': status,
             'result': job.result if job.is_finished else None,
             'error': str(job.exc_info) if job.is_failed else None,
         })

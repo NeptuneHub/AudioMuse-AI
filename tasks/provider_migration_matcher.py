@@ -8,11 +8,15 @@ Used by the dry-run step of the migration wizard to match existing
 multi-provider-setup-gui branch.
 
 Tiered matching strategy (first match wins):
-  1. ``path``      - normalized absolute path (mount prefixes stripped)
-  2. ``tail``      - last 3 path components only
-  3. ``exact_meta``- exact (title, artist, album) lowercased
-  4. ``norm_meta`` - metadata with noise stripped ("(Remastered)", "feat.",
-                    leading "the ", etc.)
+  1. ``path``         - normalized absolute path (mount prefixes stripped)
+  2. ``tail``         - last 3 path components only
+  3. ``exact_meta``   - exact (title, artist, album) lowercased
+  4. ``norm_meta``    - metadata with noise stripped ("(Remastered)", "feat.",
+                       leading "the ", etc.)
+  5. ``title_artist`` - normalized (title, artist) only, ignoring album.
+                       Disabled by default — must be enabled by the caller
+                       because it can pair tracks from different album versions
+                       (studio vs. compilation vs. live).
 """
 import re
 from urllib.parse import unquote
@@ -163,8 +167,12 @@ def normalize_meta(s):
     return out
 
 
-# Tier names in priority order (highest first).
+# Tier names in priority order (highest first). ``title_artist`` is opt-in and
+# is always the lowest-priority tier when enabled — callers must explicitly
+# set ``allow_title_artist_only=True`` because it can pair different album
+# versions of the same song.
 _TIERS = ('path', 'tail', 'exact_meta', 'norm_meta')
+_OPT_TIER_TITLE_ARTIST = 'title_artist'
 
 
 def _best_artist(row):
@@ -208,7 +216,23 @@ def _new_norm_meta_key(new):
     return (t, a, alb)
 
 
-def match_tracks(old_rows, new_tracks):
+def _old_title_artist_key(old):
+    t = normalize_meta(old.get('title'))
+    a = normalize_meta(_best_artist(old))
+    if not (t and a):
+        return None
+    return (t, a)
+
+
+def _new_title_artist_key(new):
+    t = normalize_meta(new.get('title'))
+    a = normalize_meta(new.get('album_artist') or new.get('artist'))
+    if not (t and a):
+        return None
+    return (t, a)
+
+
+def match_tracks(old_rows, new_tracks, allow_title_artist_only=False):
     """Match existing score rows against a probed target-provider track list.
 
     Args:
@@ -216,11 +240,14 @@ def match_tracks(old_rows, new_tracks):
             ``title``, ``author``, ``album``, ``album_artist``.
         new_tracks: iterable of dicts with keys ``id``, ``path``, ``title``,
             ``artist``, ``album``, ``album_artist``.
+        allow_title_artist_only: opt-in looser fallback that matches by
+            normalized (title, artist) only. Only fires when all strict tiers
+            miss. Can pair tracks from different album versions.
 
     Returns a dict:
         {
           'matches':            dict[old_item_id -> new_id],
-          'tier_counts':        dict[tier_name -> int] (always has all 4 tiers),
+          'tier_counts':        dict[tier_name -> int],
           'unmatched':          list[old_row],
           'unmatched_by_album': dict[(album_artist, album) -> list[old_row]],
         }
@@ -228,14 +255,19 @@ def match_tracks(old_rows, new_tracks):
     Collision handling: if two old rows would map to the same new_id, the one
     matched by the higher-priority tier wins. Losers become unmatched.
     """
+    tiers = list(_TIERS)
+    if allow_title_artist_only:
+        tiers.append(_OPT_TIER_TITLE_ARTIST)
+
     # Build new-track indexes. Path/tail are first-write-wins (unique enough);
     # metadata indexes store candidate LISTS because multi-disc albums can
     # have several tracks sharing (title, artist, album), and we need to
     # pick the right one by disc/track at match time.
     by_norm_path = {}
     by_tail = {}
-    by_exact_meta = {}  # key -> list of new tracks
-    by_norm_meta = {}   # key -> list of new tracks
+    by_exact_meta = {}     # key -> list of new tracks
+    by_norm_meta = {}      # key -> list of new tracks
+    by_title_artist = {}   # key -> list of new tracks (opt-in tier)
     for n in new_tracks:
         np = normalize_path(n.get('path'))
         if np and np not in by_norm_path:
@@ -249,10 +281,14 @@ def match_tracks(old_rows, new_tracks):
         nk = _new_norm_meta_key(n)
         if nk:
             by_norm_meta.setdefault(nk, []).append(n)
+        if allow_title_artist_only:
+            tak = _new_title_artist_key(n)
+            if tak:
+                by_title_artist.setdefault(tak, []).append(n)
 
-    tier_counts = {t: 0 for t in _TIERS}
+    tier_counts = {t: 0 for t in tiers}
     # tier rank: lower number = higher priority
-    tier_rank = {t: i for i, t in enumerate(_TIERS)}
+    tier_rank = {t: i for i, t in enumerate(tiers)}
 
     def _pick_meta_candidate(old, candidates):
         """Pick the best new track from a list of candidates that all share
@@ -296,6 +332,13 @@ def match_tracks(old_rows, new_tracks):
             proposals.append(('norm_meta', old, chosen['id']))
             matched = True
             continue
+        if allow_title_artist_only:
+            tak = _old_title_artist_key(old)
+            if tak and tak in by_title_artist:
+                chosen = _pick_meta_candidate(old, by_title_artist[tak])
+                proposals.append((_OPT_TIER_TITLE_ARTIST, old, chosen['id']))
+                matched = True
+                continue
         if not matched:
             proposals.append((None, old, None))
 

@@ -341,3 +341,62 @@ class TestMatchTracks:
         assert ('Fleetwood Mac', 'Rumours') in by_album
         assert len(by_album[('Beatles', 'Abbey Road')]) == 2
         assert len(by_album[('Fleetwood Mac', 'Rumours')]) == 1
+
+
+class TestTitleArtistTier:
+    """Opt-in ``title_artist`` tier: match by normalized (title, artist) only,
+    ignoring album. Only fires when all strict tiers miss."""
+
+    def test_disabled_by_default_different_album_stays_unmatched(self, matcher):
+        # Same song, same artist, different album (studio vs. compilation).
+        # Default behavior: no match.
+        old_rows = [_old('old1', file_path=None,
+                         title='Yesterday', author='Beatles',
+                         album='Help!', album_artist='Beatles')]
+        new_tracks = [_new('new1', path=None,
+                           title='Yesterday', artist='Beatles',
+                           album='1967-1970', album_artist='Beatles')]
+        result = matcher.match_tracks(old_rows, new_tracks)
+        assert result['matches'] == {}
+        assert len(result['unmatched']) == 1
+
+    def test_enabled_matches_across_albums(self, matcher):
+        old_rows = [_old('old1', file_path=None,
+                         title='Yesterday', author='Beatles',
+                         album='Help!', album_artist='Beatles')]
+        new_tracks = [_new('new1', path=None,
+                           title='Yesterday', artist='Beatles',
+                           album='1967-1970', album_artist='Beatles')]
+        result = matcher.match_tracks(old_rows, new_tracks,
+                                      allow_title_artist_only=True)
+        assert result['matches'] == {'old1': 'new1'}
+        assert result['tier_counts']['title_artist'] == 1
+
+    def test_lower_priority_than_norm_meta(self, matcher):
+        # Old row matches two new tracks: one by full metadata (norm_meta tier),
+        # one only by title+artist (title_artist tier). Strict tier must win.
+        old_rows = [_old('old1', file_path=None,
+                         title='Yesterday', author='The Beatles',
+                         album='Help!', album_artist='The Beatles')]
+        new_tracks = [
+            _new('new_compilation', path=None,
+                 title='Yesterday', artist='Beatles',
+                 album='1967-1970', album_artist='Beatles'),  # title_artist only
+            _new('new_studio', path=None,
+                 title='Yesterday', artist='Beatles',
+                 album='Help!', album_artist='Beatles'),      # norm_meta
+        ]
+        result = matcher.match_tracks(old_rows, new_tracks,
+                                      allow_title_artist_only=True)
+        assert result['matches'] == {'old1': 'new_studio'}
+        assert result['tier_counts']['norm_meta'] == 1
+        assert result['tier_counts']['title_artist'] == 0
+
+    def test_tier_counts_include_title_artist_only_when_enabled(self, matcher):
+        # When disabled, the key isn't present in tier_counts.
+        result_off = matcher.match_tracks([], [])
+        assert 'title_artist' not in result_off['tier_counts']
+
+        result_on = matcher.match_tracks([], [], allow_title_artist_only=True)
+        assert 'title_artist' in result_on['tier_counts']
+        assert result_on['tier_counts']['title_artist'] == 0

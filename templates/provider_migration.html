@@ -119,6 +119,30 @@
         margin-top: 0.5rem;
         font-size: 0.9rem;
     }
+    /* Alert boxes keep their pastel backgrounds in both themes, so their text
+       must also stay dark. .mig-card p globally forces var(--text-sub) which
+       in dark mode is light grey — invisible on the pastel backgrounds.
+       Force descendants to inherit the alert's own dark color. */
+    .mig-success p, .mig-warning p, .mig-error p,
+    .mig-success small, .mig-warning small, .mig-error small,
+    .mig-success code, .mig-warning code, .mig-error code {
+        color: inherit;
+    }
+    /* Plain .btn has white text with no background — invisible on the pastel
+       alert backgrounds. Give secondary buttons inside alerts a mode-agnostic
+       dark-on-light style since the alert bg is itself mode-agnostic. */
+    .mig-warning .btn:not(.btn-primary):not(.btn-danger),
+    .mig-success .btn:not(.btn-primary):not(.btn-danger),
+    .mig-error   .btn:not(.btn-primary):not(.btn-danger) {
+        background-color: rgba(0, 0, 0, 0.08);
+        color: #374151;
+        border: 1px solid rgba(0, 0, 0, 0.18);
+    }
+    .mig-warning .btn:not(.btn-primary):not(.btn-danger):hover,
+    .mig-success .btn:not(.btn-primary):not(.btn-danger):hover,
+    .mig-error   .btn:not(.btn-primary):not(.btn-danger):hover {
+        background-color: rgba(0, 0, 0, 0.14);
+    }
     .mig-tier-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -376,19 +400,39 @@
                 re-run this as many times as you want (e.g. after fixing Navidrome's
                 &ldquo;Report Real Path&rdquo; setting).
             </p>
+            <div class="mig-row" style="align-items:center;">
+                <label style="display:flex; align-items:center; gap:0.4rem; margin:0;">
+                    <input type="checkbox" id="mig-loose-match">
+                    <span id="mig-loose-match-label">Also match by title + artist (ignore album)</span>
+                </label>
+            </div>
+            <div id="mig-loose-match-disclaimer" class="mig-warning" style="display:none; margin-top:0.5rem;">
+                <strong>Looser fallback — review before executing.</strong>
+                When strict tiers (path + full metadata) can&rsquo;t match a track, the
+                matcher will try normalized (title, artist) alone. This can pair
+                tracks with different album versions &mdash; studio vs. compilation,
+                original vs. remaster/live &mdash; which you may not want. Review
+                auto-matched albums in step 4 before executing.
+                <div class="mig-row" style="margin-top:0.5rem;">
+                    <button id="mig-loose-accept" class="btn btn-primary" type="button">I understand &mdash; enable</button>
+                    <button id="mig-loose-cancel" class="btn" type="button">Cancel</button>
+                </div>
+            </div>
             <div class="mig-row">
                 <button id="mig-run-dry" class="btn btn-primary">Run automatic matching</button>
             </div>
+            <div id="mig-source-refresh" style="display:none;"></div>
             <div id="mig-dry-result"></div>
         </div>
 
         <!-- ================ STEP 4: MANUAL ALBUM MATCHING ================ -->
         <div id="mig-step-4" class="mig-card locked">
-            <h2><span class="mig-step-num">4</span> Manual album matching</h2>
+            <h2><span class="mig-step-num">4</span> Manual album matching <span style="font-weight:normal; font-size:0.9em; opacity:0.7;">(optional)</span></h2>
             <p>
-                Review unmatched albums. For each one, either find the correct album on the new
-                provider (tracks will auto-fill by title) or skip the album to delete its tracks
-                from your database.
+                This step is optional. Any albums you don&rsquo;t match here will be treated as
+                orphans and their tracks deleted when you execute. If that&rsquo;s fine for you,
+                skip straight to step 5. Otherwise, find the correct album on the new provider
+                (tracks auto-fill by title) for any you want to keep.
             </p>
             <div id="mig-album-list" class="mig-album-list"></div>
 
@@ -480,16 +524,18 @@
     let unmatchedAlbums = [];
     let currentAlbumKey = null;
     let dryRunCounts    = null;
+    let looseMatchEnabled = false;
     let finalCounts     = null;
     let matchedAlbums   = [];
     let matchedPage     = 1;
     let isRematch       = false;
-    let tierFilter      = null;  // null | 'path' | 'tail' | 'exact_meta' | 'norm_meta' | 'manual'
+    let tierFilter      = null;  // null | 'path' | 'tail' | 'exact_meta' | 'norm_meta' | 'title_artist' | 'manual'
     const MATCHED_PER_PAGE = 20;
     const TIER_LABEL = {
-        path:       'via path',
-        tail:       'via path tail',
-        exact_meta: 'via exact metadata',
+        path:         'via path',
+        tail:         'via path tail',
+        exact_meta:   'via exact metadata',
+        title_artist: 'via title + artist only',
         norm_meta:  'via normalized metadata',
         manual:     'manually re-targeted',
         unknown:    '',
@@ -617,40 +663,151 @@
     });
 
     // ---------- Step 3 ----------
-    $('mig-run-dry').addEventListener('click', async () => {
-        if (!sessionId) return;
-        $('mig-dry-result').innerHTML = '<div class="mig-status">Running automatic matching — this can take a few minutes on large libraries…</div>';
+    // Loose-match opt-in with disclaimer gate.
+    $('mig-loose-match').addEventListener('change', e => {
+        if (e.target.checked && !looseMatchEnabled) {
+            $('mig-loose-match-disclaimer').style.display = '';
+        } else if (!e.target.checked) {
+            // Disabling never needs confirmation.
+            looseMatchEnabled = false;
+            $('mig-loose-match-disclaimer').style.display = 'none';
+            $('mig-loose-match-label').textContent = 'Also match by title + artist (ignore album)';
+        }
+    });
+    $('mig-loose-accept').addEventListener('click', () => {
+        looseMatchEnabled = true;
+        $('mig-loose-match-disclaimer').style.display = 'none';
+        $('mig-loose-match-label').textContent = 'Also match by title + artist (ignore album) — enabled';
+    });
+    $('mig-loose-cancel').addEventListener('click', () => {
+        looseMatchEnabled = false;
+        $('mig-loose-match').checked = false;
+        $('mig-loose-match-disclaimer').style.display = 'none';
+    });
+
+    async function runDryRun(extraBody) {
+        const body = Object.assign({
+            session_id: sessionId,
+            allow_title_artist_only: looseMatchEnabled,
+        }, extraBody || {});
+        const res = await fetch("{{ url_for('migration_bp.dry_run') }}", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); }
+        catch { data = { error: 'Server error (HTTP ' + res.status + ')' }; }
+        // 409 = source paths need refreshing; show the refresh panel.
+        if (res.status === 409 && data.needs_source_refresh) {
+            renderSourceRefreshPanel(data);
+            throw new Error('__source_refresh__');  // caught below, message discarded
+        }
+        if (!res.ok) throw new Error(data.error || 'Request failed: ' + res.status);
+        return data;
+    }
+
+    function renderSourceRefreshPanel(info) {
+        const el = $('mig-source-refresh');
+        const src = info.current_source_type || 'current provider';
+        const fmt = info.path_format || 'unknown';
+        el.style.display = '';
+        el.innerHTML =
+            '<div class="mig-warning">' +
+            '<strong>Source file paths are unusable (' + esc(fmt) + ').</strong> ' +
+            'Your current ' + esc(src) + ' library was analyzed without real filesystem paths, ' +
+            'so automatic path-based matching can\u2019t run. ' +
+            (src === 'navidrome'
+                ? 'In Navidrome: <em>Settings &rarr; Players &rarr; AudioMuse-AI &rarr; enable Report Real Path</em>, then click Refresh below.'
+                : 'Enable the equivalent \u201Creport real path\u201D setting on your server, then click Refresh below.') +
+            '<div class="mig-row" style="margin-top:0.5rem;">' +
+            '<button id="mig-refresh-src" class="btn btn-primary">Refresh source paths</button> ' +
+            '<button id="mig-bypass-src" class="btn">Proceed with metadata-only matching</button>' +
+            '</div>' +
+            '<div id="mig-source-refresh-status" style="margin-top:0.5rem;"></div>' +
+            '</div>';
+        $('mig-refresh-src').addEventListener('click', refreshSourcePaths);
+        $('mig-bypass-src').addEventListener('click', () => {
+            $('mig-source-refresh').style.display = 'none';
+            $('mig-dry-result').innerHTML = '<div class="mig-status">Running automatic matching (metadata only) — this can take a few minutes…</div>';
+            runDryRun({ bypass_source_check: true })
+                .then(renderDryRunResult)
+                .catch(e => { if (e.message !== '__source_refresh__') showError($('mig-dry-result'), e.message); });
+        });
+    }
+
+    async function refreshSourcePaths() {
+        const statusEl = $('mig-source-refresh-status');
+        statusEl.innerHTML = '<div class="mig-status">Fetching fresh paths from current provider…</div>';
         try {
-            const result = await jsonFetch("{{ url_for('migration_bp.dry_run') }}", {
+            const result = await jsonFetch("{{ url_for('migration_bp.source_paths_refresh') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session_id: sessionId })
+                body: JSON.stringify({ session_id: sessionId }),
             });
-            dryRunCounts = result;
-            const tc = result.tier_counts || {};
-            let html = '<div class="mig-tier-grid">';
-            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="path"><span class="mig-tier-num">' + (tc.path || 0) + '</span>matched by path</div>';
-            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="tail"><span class="mig-tier-num">' + (tc.tail || 0) + '</span>matched by path tail</div>';
-            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="exact_meta"><span class="mig-tier-num">' + (tc.exact_meta || 0) + '</span>matched by exact metadata</div>';
-            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="norm_meta"><span class="mig-tier-num">' + (tc.norm_meta || 0) + '</span>matched by normalized metadata</div>';
-            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="unmatched"><span class="mig-tier-num">' + result.unmatched + '</span>unmatched tracks (' + result.unmatched_albums_count + ' albums)</div>';
-            html += '</div>';
-            $('mig-dry-result').innerHTML = html;
-            $('mig-dry-result').querySelectorAll('.mig-tier-cell[data-tier]').forEach(cell => {
-                cell.addEventListener('click', () => handleTierClick(cell.dataset.tier));
-            });
-            tierFilter = null;
-            await loadUnmatchedAlbums();
-            await loadMatchedAlbums();
-            unlock(4);
-            setActive(4);
-            resetFromStep(5);
-            if (unmatchedAlbums.length === 0) {
-                unlock(5);
-                setActive(5);
+            if (result.path_format === 'absolute') {
+                statusEl.innerHTML = '<div class="mig-success">Loaded ' + result.overrides_count +
+                    ' real paths from ' + esc(result.source_type) + '. You can run automatic matching now.</div>';
+                $('mig-source-refresh').style.display = '';
+                // Keep panel visible so user can still bypass if they want to re-check;
+                // dry-run will now skip the gate because overrides are stored.
+            } else {
+                const warn = (result.warnings && result.warnings[0])
+                    || 'Paths are still not absolute — try enabling Report Real Path and refresh again.';
+                statusEl.innerHTML = '<div class="mig-warning">' + esc(warn) + '</div>';
             }
         } catch (e) {
-            showError($('mig-dry-result'), e.message);
+            statusEl.innerHTML = '<div class="mig-error">' + esc(e.message) + '</div>';
+        }
+    }
+
+    async function renderDryRunResult(result) {
+        dryRunCounts = result;
+        const tc = result.tier_counts || {};
+        let html = '<div class="mig-tier-grid">';
+        html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="path"><span class="mig-tier-num">' + (tc.path || 0) + '</span>matched by path</div>';
+        html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="tail"><span class="mig-tier-num">' + (tc.tail || 0) + '</span>matched by path tail</div>';
+        html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="exact_meta"><span class="mig-tier-num">' + (tc.exact_meta || 0) + '</span>matched by exact metadata</div>';
+        html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="norm_meta"><span class="mig-tier-num">' + (tc.norm_meta || 0) + '</span>matched by normalized metadata</div>';
+        if ('title_artist' in tc) {
+            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="title_artist"><span class="mig-tier-num">' + (tc.title_artist || 0) + '</span>matched by title + artist only</div>';
+        }
+        html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="unmatched"><span class="mig-tier-num">' + result.unmatched + '</span>unmatched tracks (' + result.unmatched_albums_count + ' albums)</div>';
+        html += '</div>';
+        $('mig-dry-result').innerHTML = html;
+        $('mig-dry-result').querySelectorAll('.mig-tier-cell[data-tier]').forEach(cell => {
+            cell.addEventListener('click', () => handleTierClick(cell.dataset.tier));
+        });
+        tierFilter = null;
+        await loadUnmatchedAlbums();
+        await loadMatchedAlbums();
+        unlock(4);
+        setActive(4);
+        resetFromStep(5);
+        // Step 4 is optional — unmatched albums get deleted on execute, so
+        // the user can always skip to step 5. If nothing is unmatched,
+        // auto-advance to step 5 for convenience.
+        unlock(5);
+        if (unmatchedAlbums.length === 0) {
+            setActive(5);
+        }
+    }
+
+    $('mig-run-dry').addEventListener('click', async () => {
+        if (!sessionId) return;
+        $('mig-source-refresh').style.display = 'none';
+        $('mig-dry-result').innerHTML = '<div class="mig-status">Running automatic matching — this can take a few minutes on large libraries…</div>';
+        try {
+            const result = await runDryRun();
+            await renderDryRunResult(result);
+        } catch (e) {
+            if (e.message !== '__source_refresh__') {
+                showError($('mig-dry-result'), e.message);
+            } else {
+                // Source refresh panel is now visible; clear the status line.
+                $('mig-dry-result').innerHTML = '';
+            }
         }
     });
 
