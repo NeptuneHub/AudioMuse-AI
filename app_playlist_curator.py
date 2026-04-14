@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, request, render_template, Response
+from flask import Blueprint, jsonify, request, render_template, Response, stream_with_context
 import logging
 import os
 import re
@@ -809,40 +809,103 @@ def _fetch_server_playlist_item_ids(playlist_id):
         return None
 
 
+_ITEM_ID_RE = re.compile(r'[A-Za-z0-9_\-]{1,128}')
+
+
 @playlist_curator_bp.route('/api/curator/stream/<path:item_id>', methods=['GET'])
 def stream_track(item_id):
-    """Redirect to media-server stream URL for the configured server."""
-    from flask import redirect as flask_redirect
+    """Proxy the audio stream through the AudioMuse backend so media-server
+    credentials never reach the client."""
     try:
+        if not _ITEM_ID_RE.fullmatch(item_id):
+            return jsonify({"error": "Invalid item id"}), 400
+
         mstype = config.MEDIASERVER_TYPE
+        params = None
 
         if mstype == 'jellyfin':
-            base_url = config.JELLYFIN_URL.rstrip('/')
-            return flask_redirect(f"{base_url}/Items/{item_id}/Download?api_key={config.JELLYFIN_TOKEN}")
+            upstream_url = f"{config.JELLYFIN_URL.rstrip('/')}/Items/{item_id}/Download"
+            upstream_headers = {"X-Emby-Token": config.JELLYFIN_TOKEN}
 
         elif mstype == 'emby':
-            base_url = config.EMBY_URL.rstrip('/')
-            return flask_redirect(f"{base_url}/Items/{item_id}/Download?api_key={config.EMBY_TOKEN}")
+            upstream_url = f"{config.EMBY_URL.rstrip('/')}/Items/{item_id}/Download"
+            upstream_headers = {"X-Emby-Token": config.EMBY_TOKEN}
 
         elif mstype == 'navidrome':
-            base_url = config.NAVIDROME_URL.rstrip('/')
-            hex_pass = config.NAVIDROME_PASSWORD.encode('utf-8').hex() if config.NAVIDROME_PASSWORD else ''
-            return flask_redirect(
-                f"{base_url}/rest/stream?id={item_id}&u={config.NAVIDROME_USER}"
-                f"&p=enc:{hex_pass}&v=1.16.1&c=AudioMuse-AI&f=json"
-            )
+            from tasks.mediaserver_navidrome import get_navidrome_auth_params
+            auth_params = get_navidrome_auth_params()
+            if not auth_params:
+                return jsonify({"error": "Navidrome credentials not configured"}), 500
+            upstream_url = f"{config.NAVIDROME_URL.rstrip('/')}/rest/stream.view"
+            params = {"id": item_id, **auth_params}
+            upstream_headers = {}
 
         elif mstype == 'lyrion':
-            base_url = config.LYRION_URL.rstrip('/')
-            return flask_redirect(f"{base_url}/music/{item_id}/download")
+            upstream_url = f"{config.LYRION_URL.rstrip('/')}/music/{item_id}/download"
+            upstream_headers = {}
 
         elif mstype == 'mpd':
             return jsonify({"error": "MPD streaming is not supported by the playlist curator"}), 501
 
-        return jsonify({"error": "Stream not supported for this media server type"}), 501
+        else:
+            return jsonify({"error": "Stream not supported for this media server type"}), 501
 
-    except Exception as e:
-        logger.exception(f"Stream failed for item_id={item_id}")
+        client_range = request.headers.get('Range')
+        if client_range:
+            upstream_headers['Range'] = client_range
+
+        try:
+            upstream = http_requests.get(
+                upstream_url,
+                params=params,
+                headers=upstream_headers,
+                stream=True,
+                timeout=(10, 60),
+                allow_redirects=True,
+            )
+        except http_requests.exceptions.RequestException as e:
+            logger.warning(
+                f"Upstream connection failed for item_id={item_id} "
+                f"backend={mstype} error_type={type(e).__name__}"
+            )
+            return jsonify({"error": "Upstream stream error"}), 502
+
+        if upstream.status_code >= 400:
+            logger.warning(
+                f"Upstream stream request failed for item_id={item_id} "
+                f"backend={mstype} status={upstream.status_code}"
+            )
+            upstream.close()
+            return jsonify({"error": "Upstream stream error"}), 502
+
+        def generate():
+            try:
+                for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                    if chunk:
+                        yield chunk
+            finally:
+                upstream.close()
+
+        passthrough = ('Content-Type', 'Content-Length', 'Content-Range',
+                       'Accept-Ranges', 'Last-Modified', 'ETag')
+        response_headers = {}
+        for h in passthrough:
+            v = upstream.headers.get(h)
+            if v is not None:
+                response_headers[h] = v
+        response_headers.setdefault('Content-Type', 'audio/mpeg')
+        response_headers.setdefault('Accept-Ranges', 'bytes')
+
+        resp = Response(
+            stream_with_context(generate()),
+            status=upstream.status_code,
+            headers=response_headers,
+        )
+        resp.call_on_close(upstream.close)
+        return resp
+
+    except Exception:
+        logger.exception(f"Stream failed for item_id={item_id} backend={config.MEDIASERVER_TYPE}")
         return jsonify({"error": "Stream error"}), 500
 
 
