@@ -526,15 +526,22 @@
         gap: 0.375rem;
         font-weight: 600;
         margin-right: 0.5rem;
+        white-space: nowrap;
+        flex-shrink: 0;
     }
     .dup-mode-select {
         background-color: var(--bg-input);
         color: var(--text-main);
         border: 1px solid var(--border-color-darker);
-        padding: 0.375rem 0.5rem;
+        padding: 0.375rem 1.5rem 0.375rem 0.5rem;
         border-radius: 0.375rem;
         font-size: 0.875rem;
         margin-right: 0.5rem;
+        /* Override global `select { width: 100% }` from style.css */
+        width: auto;
+        min-width: 5.5rem;
+        flex: 0 0 auto;
+        box-shadow: none;
     }
 
     /* Hidden class utility */
@@ -2283,7 +2290,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
 
         // Add Weight column header for extend mode
         const weightHeader = isExtendMode
-            ? '<th style="width: 95px;">Influence <span class="info-tooltip" tabindex="0"><span class="info-icon"></span><span class="tooltip-text">Click the button in this column to cycle how strongly a track anchors the search:\nx1 — equal weight\nBoost — ~5% centroid influence\nStrong — ~15%\nFocus — ~30% (dominates the search direction)</span></span></th>'
+            ? '<th style="width: 90px;" title="Click a button in this column to cycle how strongly a track anchors the search: x1 (equal) → Boost (~5%) → Strong (~15%) → Focus (~30%).">Influence</th>'
             : '';
 
         let html = `
