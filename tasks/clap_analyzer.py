@@ -26,10 +26,6 @@ from typing import Tuple, Optional
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
 
 import config
-try:
-    from config import AUDIO_LOAD_TIMEOUT
-except Exception:
-    AUDIO_LOAD_TIMEOUT = None
 from tasks.memory_utils import cleanup_cuda_memory, handle_onnx_memory_error, comprehensive_memory_cleanup
 
 logger = logging.getLogger(__name__)
