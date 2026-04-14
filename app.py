@@ -116,7 +116,7 @@ if not _jwt_secret and AUTH_ENABLED:
 # Auth is considered configured whenever the app has effective credentials,
 # including runtime-generated temporary auth values.
 auth_configured = bool(effective_audiomuse_user and effective_audiomuse_password)
-bootstrap_auth_mode = AUTH_ENABLED and not (AUDIOMUSE_USER and AUDIOMUSE_PASSWORD)
+bootstrap_auth_mode = config.AUTH_ENABLED and not auth_configured
 
 # If auth is enabled but no explicit credentials were provided, the app is
 # in bootstrap auth mode. Setup can be accessed via the temporary credentials.
