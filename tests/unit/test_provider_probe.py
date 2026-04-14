@@ -84,6 +84,68 @@ class TestJellyfinProbe:
         # Token must be sent in header
         headers = call_args[1]['headers']
         assert headers['X-Emby-Token'] == 'tok'
+        # Fields must request the artist-resolution fields so the probe can
+        # apply the same ArtistItems → Artists → AlbumArtist hierarchy that
+        # mediaserver_jellyfin uses.
+        fields = call_args[1]['params']['Fields']
+        assert 'ArtistItems' in fields
+        assert 'Artists' in fields
+        assert 'AlbumArtist' in fields
+
+    def test_artist_hierarchy_prefers_artist_items_first(self, probe):
+        # Mirrors mediaserver_jellyfin._select_best_artist:
+        # ArtistItems[0].Name > Artists[0] > AlbumArtist > "Unknown Artist".
+        api_response = {
+            'Items': [{
+                'Id': 'j1', 'Name': 'Compilation Track', 'Album': 'Various Hits',
+                'AlbumArtist': 'Various Artists',
+                'Artists': ['Backup Artist'],
+                'ArtistItems': [{'Id': 'a1', 'Name': 'Real Performer'}],
+                'Path': '/music/compilation/01.flac',
+            }]
+        }
+        with patch.object(probe.requests, 'get', return_value=_mock_response(api_response)):
+            tracks = probe.fetch_all_tracks('jellyfin', self.CREDS)
+        t = tracks[0]
+        # Track-level = real performer; album-level preserved separately
+        assert t['artist'] == 'Real Performer'
+        assert t['album_artist'] == 'Various Artists'
+
+    def test_artist_hierarchy_falls_back_to_artists_array(self, probe):
+        api_response = {
+            'Items': [{
+                'Id': 'j1', 'Name': 'x', 'Album': 'y',
+                'AlbumArtist': 'Various Artists',
+                'Artists': ['Real Performer'],
+                'Path': '/music/x.flac',
+            }]
+        }
+        with patch.object(probe.requests, 'get', return_value=_mock_response(api_response)):
+            tracks = probe.fetch_all_tracks('jellyfin', self.CREDS)
+        assert tracks[0]['artist'] == 'Real Performer'
+        assert tracks[0]['album_artist'] == 'Various Artists'
+
+    def test_artist_hierarchy_falls_back_to_album_artist(self, probe):
+        api_response = {
+            'Items': [{
+                'Id': 'j1', 'Name': 'x', 'Album': 'y',
+                'AlbumArtist': 'Album Only Artist',
+                'Path': '/music/x.flac',
+            }]
+        }
+        with patch.object(probe.requests, 'get', return_value=_mock_response(api_response)):
+            tracks = probe.fetch_all_tracks('jellyfin', self.CREDS)
+        assert tracks[0]['artist'] == 'Album Only Artist'
+        assert tracks[0]['album_artist'] == 'Album Only Artist'
+
+    def test_artist_hierarchy_ultimate_fallback_unknown(self, probe):
+        api_response = {
+            'Items': [{'Id': 'j1', 'Name': 'x', 'Album': 'y', 'Path': '/music/x.flac'}]
+        }
+        with patch.object(probe.requests, 'get', return_value=_mock_response(api_response)):
+            tracks = probe.fetch_all_tracks('jellyfin', self.CREDS)
+        assert tracks[0]['artist'] == 'Unknown Artist'
+        assert tracks[0]['album_artist'] is None
 
     def test_test_connection_detects_absolute_paths(self, probe):
         api_response = {
@@ -280,6 +342,42 @@ class TestNavidromeProbe:
         assert tracks[0]['id'] == 's1'
         assert tracks[0]['title'] == 'Come Together'
 
+    def test_artist_hierarchy_prefers_artist_over_album_artist(self, probe):
+        # Compilation track where albumArtist='Various Artists' but
+        # track-level artist is the real performer.
+        songs_page = self._subsonic_wrap({
+            'searchResult3': {
+                'song': [{
+                    'id': 'n1', 'title': 'Hotel California',
+                    'artist': 'Eagles',
+                    'albumArtist': 'Various Artists',
+                    'album': 'Rock Hits', 'path': '/music/va/01.flac',
+                }]
+            }
+        })
+        empty_page = self._subsonic_wrap({'searchResult3': {}})
+        with patch.object(probe.requests, 'get', side_effect=[
+            _mock_response(songs_page), _mock_response(empty_page),
+        ]):
+            tracks = probe.fetch_all_tracks('navidrome', self.CREDS)
+        assert tracks[0]['artist'] == 'Eagles'
+        assert tracks[0]['album_artist'] == 'Various Artists'
+
+    def test_artist_hierarchy_falls_back_to_unknown(self, probe):
+        songs_page = self._subsonic_wrap({
+            'searchResult3': {
+                'song': [{'id': 'n1', 'title': 'x', 'album': 'y', 'path': '/a.flac'}]
+            }
+        })
+        empty_page = self._subsonic_wrap({'searchResult3': {}})
+        with patch.object(probe.requests, 'get', side_effect=[
+            _mock_response(songs_page), _mock_response(empty_page),
+        ]):
+            tracks = probe.fetch_all_tracks('navidrome', self.CREDS)
+        assert tracks[0]['artist'] == 'Unknown Artist'
+        # album_artist stays None (not overwritten with 'Unknown Artist')
+        assert tracks[0]['album_artist'] is None
+
 
 # ---------------------------------------------------------------------------
 # Lyrion (LMS JSON-RPC)
@@ -341,6 +439,50 @@ class TestLyrionProbe:
         t = probe._lyrion_track(raw)
         assert t['artist'] == 'AA'
         assert t['album_artist'] == 'AA'
+
+    def test_track_artist_prefers_trackartist_over_everything(self, probe):
+        # Hierarchy: trackartist > contributor > artist > albumartist > band
+        raw = {
+            'id': 1, 'title': 'x', 'album': 'y',
+            'trackartist': 'Track Role',
+            'contributor': 'Contributor Role',
+            'artist': 'Artist Role',
+            'albumartist': 'Album Role',
+            'band': 'Band Role',
+            'url': 'file:///a.flac',
+        }
+        t = probe._lyrion_track(raw)
+        assert t['artist'] == 'Track Role'
+        # album_artist is the album-level value, NOT the chosen track artist
+        assert t['album_artist'] == 'Album Role'
+
+    def test_track_artist_falls_back_to_contributor(self, probe):
+        raw = {
+            'id': 1, 'title': 'x', 'album': 'y',
+            'contributor': 'Contributor Role',
+            'artist': 'Artist Role',
+            'albumartist': 'Album Role',
+            'url': 'file:///a.flac',
+        }
+        t = probe._lyrion_track(raw)
+        assert t['artist'] == 'Contributor Role'
+
+    def test_track_artist_falls_back_to_band(self, probe):
+        # When only `band` is populated — e.g. classical orchestra recordings.
+        raw = {
+            'id': 1, 'title': 'x', 'album': 'y',
+            'band': 'Berlin Philharmonic',
+            'url': 'file:///a.flac',
+        }
+        t = probe._lyrion_track(raw)
+        assert t['artist'] == 'Berlin Philharmonic'
+        assert t['album_artist'] is None
+
+    def test_track_artist_unknown_when_all_missing(self, probe):
+        raw = {'id': 1, 'title': 'x', 'album': 'y', 'url': 'file:///a.flac'}
+        t = probe._lyrion_track(raw)
+        assert t['artist'] == 'Unknown Artist'
+        assert t['album_artist'] is None
 
     def test_track_year_coerced_from_string(self, probe):
         t = probe._lyrion_track({'id': 1, 'title': 'x', 'year': '2015', 'url': None})

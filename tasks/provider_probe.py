@@ -88,13 +88,47 @@ def _jellyfin_headers(creds):
     return {'X-Emby-Token': creds.get('token', '')}
 
 
+def _jellyfin_pick_artist(item):
+    """Resolve the track-level artist for a Jellyfin/Emby Audio item.
+
+    Mirrors ``mediaserver_jellyfin._select_best_artist`` /
+    ``mediaserver_emby._select_best_artist`` so the matcher sees the same
+    artist value regardless of whether a track is read via the main app
+    (mediaserver_*.py) or the migration probe.
+
+    Precedence: ``ArtistItems[0].Name`` → ``Artists[0]`` → ``AlbumArtist`` →
+    ``'Unknown Artist'``. The first two are track-level (correct performer on
+    compilations); ``AlbumArtist`` is the compilation placeholder ("Various
+    Artists") and is only used as a final fallback.
+    """
+    artist_items = item.get('ArtistItems') or []
+    if artist_items:
+        first = artist_items[0]
+        if isinstance(first, dict):
+            name = first.get('Name')
+            if name:
+                return name
+    artists = item.get('Artists') or []
+    if artists and isinstance(artists[0], str) and artists[0]:
+        return artists[0]
+    album_artist = item.get('AlbumArtist')
+    if album_artist:
+        return album_artist
+    return 'Unknown Artist'
+
+
 def _jellyfin_track(item):
-    """Translate a Jellyfin/Emby Items entry into the unified shape."""
+    """Translate a Jellyfin/Emby Items entry into the unified shape.
+
+    ``artist`` is the track-level performer (see ``_jellyfin_pick_artist``);
+    ``album_artist`` preserves the album-level ``AlbumArtist`` field verbatim
+    so callers can still tell compilation tracks apart.
+    """
     return {
         'id':           item.get('Id'),
         'path':         item.get('Path'),
         'title':        item.get('Name'),
-        'artist':       item.get('AlbumArtist'),
+        'artist':       _jellyfin_pick_artist(item),
         'album_artist': item.get('AlbumArtist'),
         'album':        item.get('Album'),
         'year':         item.get('ProductionYear'),
@@ -114,7 +148,7 @@ def _jellyfin_fetch_page(creds, start_index=0, limit=None):
     params = {
         'IncludeItemTypes': 'Audio',
         'Recursive': 'true',
-        'Fields': 'Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album',
+        'Fields': 'Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists',
         'StartIndex': start_index,
     }
     if limit is not None:
@@ -180,7 +214,7 @@ def _jellyfin_get_album_tracks(creds, album_id):
     params = {
         'ParentId': album_id,
         'IncludeItemTypes': 'Audio',
-        'Fields': 'Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album',
+        'Fields': 'Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists',
     }
     r = requests.get(url, headers=_jellyfin_headers(creds), params=params, timeout=REQUESTS_TIMEOUT)
     r.raise_for_status()
@@ -240,11 +274,20 @@ def _navidrome_request(creds, endpoint, extra_params=None):
 
 
 def _navidrome_track(song):
+    """Translate a Subsonic ``song`` entry into the unified track dict shape.
+
+    Track-level artist precedence mirrors ``mediaserver_navidrome``:
+    ``artist`` → ``albumArtist`` → ``'Unknown Artist'``. Subsonic's ``artist``
+    field is already the track performer, so it's preferred over the
+    album-level ``albumArtist``. ``album_artist`` keeps the unfallback'd
+    ``albumArtist`` value so compilation tracks remain distinguishable.
+    """
+    track_artist = song.get('artist') or song.get('albumArtist') or 'Unknown Artist'
     return {
         'id':           song.get('id'),
         'path':         song.get('path'),
         'title':        song.get('title'),
-        'artist':       song.get('artist'),
+        'artist':       track_artist,
         'album_artist': song.get('albumArtist') or song.get('artist'),
         'album':        song.get('album'),
         'year':         song.get('year'),
@@ -416,11 +459,23 @@ def _lyrion_is_spotify(raw):
 
 
 def _lyrion_track(raw):
-    """Translate a titles_loop entry into the unified track dict shape."""
+    """Translate a titles_loop entry into the unified track dict shape.
+
+    Track-level artist precedence mirrors ``mediaserver_lyrion``:
+    ``trackartist`` → ``contributor`` → ``artist`` → ``albumartist`` →
+    ``band`` → ``'Unknown Artist'``. LMS populates these from different
+    ID3/Vorbis roles — ``trackartist`` is the per-track artist tag,
+    ``contributor`` covers guest/featured artists, and ``band`` is the
+    orchestra/ensemble role. ``album_artist`` still preserves the
+    album-level value so the matcher can compare it separately.
+    """
     track_artist = (
         raw.get('trackartist')
+        or raw.get('contributor')
         or raw.get('artist')
         or raw.get('albumartist')
+        or raw.get('band')
+        or 'Unknown Artist'
     )
     album_artist = raw.get('albumartist') or raw.get('artist')
     year = raw.get('year')

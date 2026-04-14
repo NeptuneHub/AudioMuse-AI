@@ -400,3 +400,117 @@ class TestTitleArtistTier:
         result_on = matcher.match_tracks([], [], allow_title_artist_only=True)
         assert 'title_artist' in result_on['tier_counts']
         assert result_on['tier_counts']['title_artist'] == 0
+
+
+class TestArtistHierarchy:
+    """The artist used for metadata keys must be the track-level performer,
+    not the album-level ``album_artist``. Compilation albums typically have
+    ``album_artist='Various Artists'`` while each track's ``author`` (source)
+    / ``artist`` (target) holds the real performer — matching on the album
+    field would never resolve compilations to the new provider.
+    """
+
+    def test_source_prefers_author_over_various_artists_album_artist(self, matcher):
+        # Source row: compilation track where album_artist is the placeholder.
+        old_rows = [_old('old1', file_path=None,
+                         title='Hotel California',
+                         author='Eagles',
+                         album='Ultimate Rock Hits',
+                         album_artist='Various Artists')]
+        # Target: same compilation, real performer in `artist`.
+        new_tracks = [_new('new1', path=None,
+                           title='Hotel California',
+                           artist='Eagles',
+                           album='Ultimate Rock Hits',
+                           album_artist='Various Artists')]
+        result = matcher.match_tracks(old_rows, new_tracks)
+        assert result['matches'] == {'old1': 'new1'}
+        assert result['tier_counts']['exact_meta'] == 1
+
+    def test_title_artist_tier_uses_author_not_various_artists(self, matcher):
+        # Same real performer, different album versions, album_artist is the
+        # compilation placeholder. Only the title_artist tier can resolve this
+        # — and only if it reads `author` rather than `album_artist`.
+        old_rows = [_old('old1', file_path=None,
+                         title='Hotel California',
+                         author='Eagles',
+                         album='Ultimate Rock Hits',
+                         album_artist='Various Artists')]
+        new_tracks = [_new('new1', path=None,
+                           title='Hotel California',
+                           artist='Eagles',
+                           album='Hotel California',
+                           album_artist='Eagles')]
+        result = matcher.match_tracks(old_rows, new_tracks,
+                                      allow_title_artist_only=True)
+        assert result['matches'] == {'old1': 'new1'}
+        assert result['tier_counts']['title_artist'] == 1
+
+    def test_target_prefers_artist_over_various_artists_album_artist(self, matcher):
+        # Source row has clean author; target row (e.g. Navidrome song) has
+        # album_artist='Various Artists' but artist=real performer. Matcher
+        # must use target's `artist`, not `album_artist`.
+        old_rows = [_old('old1', file_path=None,
+                         title='Stairway to Heaven',
+                         author='Led Zeppelin',
+                         album='Classic Rock Anthems',
+                         album_artist='Led Zeppelin')]
+        new_tracks = [_new('new1', path=None,
+                           title='Stairway to Heaven',
+                           artist='Led Zeppelin',
+                           album='Classic Rock Anthems',
+                           album_artist='Various Artists')]
+        result = matcher.match_tracks(old_rows, new_tracks)
+        assert result['matches'] == {'old1': 'new1'}
+        assert result['tier_counts']['exact_meta'] == 1
+
+    def test_source_falls_back_to_album_artist_when_author_missing(self, matcher):
+        # Defensive: ingesters that leave `author` blank but populate
+        # `album_artist` should still match when the target carries the same
+        # value in `artist`.
+        old_rows = [_old('old1', file_path=None,
+                         title='Bohemian Rhapsody',
+                         author=None,
+                         album='A Night at the Opera',
+                         album_artist='Queen')]
+        new_tracks = [_new('new1', path=None,
+                           title='Bohemian Rhapsody',
+                           artist='Queen',
+                           album='A Night at the Opera',
+                           album_artist='Queen')]
+        result = matcher.match_tracks(old_rows, new_tracks)
+        assert result['matches'] == {'old1': 'new1'}
+        assert result['tier_counts']['exact_meta'] == 1
+
+    def test_target_falls_back_to_album_artist_when_artist_missing(self, matcher):
+        # Defensive: probe that couldn't resolve a per-track artist (e.g. very
+        # thin Navidrome metadata) still matches when album_artist is
+        # populated on both sides.
+        old_rows = [_old('old1', file_path=None,
+                         title='Riders on the Storm',
+                         author='The Doors',
+                         album='L.A. Woman',
+                         album_artist='The Doors')]
+        new_tracks = [_new('new1', path=None,
+                           title='Riders on the Storm',
+                           artist=None,
+                           album='L.A. Woman',
+                           album_artist='The Doors')]
+        result = matcher.match_tracks(old_rows, new_tracks)
+        assert result['matches'] == {'old1': 'new1'}
+        assert result['tier_counts']['exact_meta'] == 1
+
+    def test_best_artist_old_helper_precedence(self, matcher):
+        fn = matcher._best_artist_old
+        assert fn({'author': 'A', 'artist': 'B', 'album_artist': 'C'}) == 'A'
+        assert fn({'author': None, 'artist': 'B', 'album_artist': 'C'}) == 'B'
+        assert fn({'author': None, 'artist': None, 'album_artist': 'C'}) == 'C'
+        assert fn({'author': '', 'artist': '', 'album_artist': 'C'}) == 'C'
+        assert fn({}) is None
+
+    def test_best_artist_new_helper_precedence(self, matcher):
+        fn = matcher._best_artist_new
+        assert fn({'artist': 'A', 'album_artist': 'B'}) == 'A'
+        assert fn({'artist': None, 'album_artist': 'B'}) == 'B'
+        assert fn({'artist': '', 'album_artist': 'B'}) == 'B'
+        assert fn({}) is None

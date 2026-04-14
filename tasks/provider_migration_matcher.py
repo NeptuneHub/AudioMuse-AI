@@ -175,14 +175,35 @@ _TIERS = ('path', 'tail', 'exact_meta', 'norm_meta')
 _OPT_TIER_TITLE_ARTIST = 'title_artist'
 
 
-def _best_artist(row):
-    """Prefer album_artist, then artist/author."""
-    return row.get('album_artist') or row.get('artist') or row.get('author')
+def _best_artist_old(row):
+    """Track-level artist for a source (``score``) row.
+
+    Precedence: ``author`` → ``artist`` → ``album_artist``.
+    ``score.author`` holds the track performer that mediaserver_*.py picked via
+    ``_select_best_artist``, while ``score.album_artist`` preserves the
+    album-level artist (often "Various Artists" on compilations). Preferring
+    ``author`` keeps compilation tracks matchable to their real performer on
+    the target provider. The ``artist`` fallback is defensive — the score
+    schema has no ``artist`` column today, but future importers may write one.
+    """
+    return row.get('author') or row.get('artist') or row.get('album_artist')
+
+
+def _best_artist_new(row):
+    """Track-level artist for a target (probe) track.
+
+    Precedence: ``artist`` → ``album_artist``. ``provider_probe.py`` already
+    collapses the provider-specific hierarchy (e.g. Jellyfin's
+    ``ArtistItems[0].Name`` → ``Artists[0]`` → ``AlbumArtist``) into the
+    unified ``artist`` field, so ``album_artist`` is only consulted when the
+    probe couldn't resolve a track artist at all.
+    """
+    return row.get('artist') or row.get('album_artist')
 
 
 def _old_exact_meta_key(old):
     t = (old.get('title') or '').lower()
-    a = (_best_artist(old) or '').lower()
+    a = (_best_artist_old(old) or '').lower()
     alb = (old.get('album') or '').lower()
     if not (t and a and alb):
         return None
@@ -191,7 +212,7 @@ def _old_exact_meta_key(old):
 
 def _new_exact_meta_key(new):
     t = (new.get('title') or '').lower()
-    a = ((new.get('album_artist') or new.get('artist') or '')).lower()
+    a = (_best_artist_new(new) or '').lower()
     alb = (new.get('album') or '').lower()
     if not (t and a and alb):
         return None
@@ -200,7 +221,7 @@ def _new_exact_meta_key(new):
 
 def _old_norm_meta_key(old):
     t = normalize_meta(old.get('title'))
-    a = normalize_meta(_best_artist(old))
+    a = normalize_meta(_best_artist_old(old))
     alb = normalize_meta(old.get('album'))
     if not (t and a and alb):
         return None
@@ -209,7 +230,7 @@ def _old_norm_meta_key(old):
 
 def _new_norm_meta_key(new):
     t = normalize_meta(new.get('title'))
-    a = normalize_meta(new.get('album_artist') or new.get('artist'))
+    a = normalize_meta(_best_artist_new(new))
     alb = normalize_meta(new.get('album'))
     if not (t and a and alb):
         return None
@@ -218,7 +239,7 @@ def _new_norm_meta_key(new):
 
 def _old_title_artist_key(old):
     t = normalize_meta(old.get('title'))
-    a = normalize_meta(_best_artist(old))
+    a = normalize_meta(_best_artist_old(old))
     if not (t and a):
         return None
     return (t, a)
@@ -226,7 +247,7 @@ def _old_title_artist_key(old):
 
 def _new_title_artist_key(new):
     t = normalize_meta(new.get('title'))
-    a = normalize_meta(new.get('album_artist') or new.get('artist'))
+    a = normalize_meta(_best_artist_new(new))
     if not (t and a):
         return None
     return (t, a)
