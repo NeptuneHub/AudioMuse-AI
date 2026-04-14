@@ -1,1 +1,7 @@
 *.pb filter=lfs diff=lfs merge=lfs -text
+
+# Force LF for files that run inside Linux containers
+*.sh text eol=lf
+*.py text eol=lf
+*.conf text eol=lf
+Dockerfile* text eol=lf
