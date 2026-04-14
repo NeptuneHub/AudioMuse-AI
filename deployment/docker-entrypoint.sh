@@ -25,6 +25,25 @@ exec_supervisorctl() {
 /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf &
 SUPERVISORD_PID=$!
 
+shutdown_supervisord() {
+  local signal="${1:-TERM}"
+  echo "ENTRYPOINT: received SIG${signal}, forwarding to supervisord pid ${SUPERVISORD_PID}"
+
+  set +e
+  if [ -n "${SUPERVISORD_PID:-}" ] && kill -0 "$SUPERVISORD_PID" 2>/dev/null; then
+    kill -"$signal" "$SUPERVISORD_PID" 2>/dev/null
+    wait "$SUPERVISORD_PID"
+    local exit_code=$?
+    echo "ENTRYPOINT: supervisord stopped with code ${exit_code}"
+    exit "$exit_code"
+  fi
+  echo "ENTRYPOINT: supervisord pid is not running"
+  exit 0
+}
+
+trap 'shutdown_supervisord TERM' TERM
+trap 'shutdown_supervisord INT' INT
+
 SUPERVISOR_SOCK=/tmp/supervisor.sock
 while true; do
   if [ -S "$SUPERVISOR_SOCK" ]; then
