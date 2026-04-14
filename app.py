@@ -129,10 +129,14 @@ def refresh_auth_state():
     AUDIOMUSE_USER = config.AUDIOMUSE_USER
     AUDIOMUSE_PASSWORD = config.AUDIOMUSE_PASSWORD
     if AUDIOMUSE_USER and AUDIOMUSE_USER.strip():
-        effective_audiomuse_user = AUDIOMUSE_USER
+        effective_audiomuse_user = AUDIOMUSE_USER.strip()
+    else:
+        effective_audiomuse_user = ""
     if AUDIOMUSE_PASSWORD and AUDIOMUSE_PASSWORD.strip():
-        effective_audiomuse_password = AUDIOMUSE_PASSWORD
-    auth_configured = bool(AUDIOMUSE_USER and AUDIOMUSE_PASSWORD)
+        effective_audiomuse_password = AUDIOMUSE_PASSWORD.strip()
+    else:
+        effective_audiomuse_password = ""
+    auth_configured = bool(effective_audiomuse_user and effective_audiomuse_password)
     bootstrap_auth_mode = config.AUTH_ENABLED and not auth_configured
 
 
