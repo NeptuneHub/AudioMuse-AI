@@ -137,6 +137,30 @@
         background-color: var(--bg-table-header);
         font-weight: 600;
         color: var(--text-sub);
+        overflow: visible;
+    }
+
+    /* Flip tooltips inside table headers to show below, so they aren't clipped by the top of the viewport when the table is scrolled near the top. */
+    .results-table thead .tooltip-text {
+        bottom: auto;
+        top: 125%;
+    }
+    .results-table thead .tooltip-text::after {
+        top: auto;
+        bottom: 100%;
+        border-color: transparent transparent #1F2937 transparent;
+    }
+
+    /* Anchor the last column's tooltip to its right edge so it doesn't overflow the right of the page. */
+    .results-table thead th:last-child .tooltip-text {
+        left: auto;
+        right: 0;
+        margin-left: 0;
+    }
+    .results-table thead th:last-child .tooltip-text::after {
+        left: auto;
+        right: 8px;
+        margin-left: 0;
     }
 
     .results-table tr:hover {
@@ -1057,7 +1081,7 @@
 <section>
     <header class="page-header">
         <h1>AudioMuse-AI - Playlist Curator</h1>
-        <p>Create dynamic playlists using Smart Search or existing playlists, and discover similar tracks.</p>
+        <p>A workspace for manually curating playlists. <strong>Smart Search</strong> builds a candidate pool from rules you design. <strong>Playlist Extender</strong> grows from a seed playlist by audio similarity, with per-track influence weights that let you steer which seeds shape the results most. Use either alone, or pipe Smart Search into Extender. Every track is a decision: preview, choose, refine.</p>
     </header>
 
     <!-- Source Selection Tabs -->
@@ -1169,9 +1193,9 @@
                             <span class="info-icon"></span>
                             <span class="tooltip-text">Applies to the results table above. Detects when a candidate song is a near-duplicate of one of your SOURCE tracks (same song on a compilation, a remaster, etc.) using audio-embedding similarity.
 
-Off — show all results as-is.
-Mark — highlight duplicates with a warning badge.
-Hide — exclude flagged duplicates from the table.
+Off: show all results as-is.
+Mark: highlight duplicates with a warning.
+Hide: exclude duplicates from the results.
 
 Not the same as the "Find Duplicates in Playlist" button below, which scans your assembled playlist (sources + included) for duplicates among themselves.</span>
                         </span>
@@ -1222,7 +1246,7 @@ Not the same as the "Find Duplicates in Playlist" button below, which scans your
                     <span class="dedup-slider-value" id="dedup-threshold-value">0.010</span>
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Sensitivity for the "Find Duplicates in Playlist" scan below. Separate from the search-result duplicate filter above.
+                        <span class="tooltip-text">Sensitivity for the "Find Duplicates in Playlist" scan below.
 Strict (0.005-0.010): Same recording, different metadata or album. Few false positives.
 Moderate (0.010-0.020): Catches most compilation duplicates. Some false positives.
 Loose (0.020-0.050): Increasingly loose — many false positives from similar but different songs.</span>
@@ -1359,10 +1383,10 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
     let includedWeights = {};         // {item_id: weight} for included recommendations
     let sourceTracksData = [];        // Full track objects for drawer display
     const INFLUENCE_LEVELS = [
-        { level: 0, label: 'x1',     css: '',              tip: 'Equal weight — same influence as all other tracks' },
-        { level: 1, label: 'Boost',  css: 'weight-boost',  tip: 'Boost — ~5% centroid influence, nudges results toward this track' },
-        { level: 2, label: 'Strong', css: 'weight-strong', tip: 'Strong — ~15% centroid influence, noticeably shapes results' },
-        { level: 3, label: 'Focus',  css: 'weight-focus',  tip: 'Focus — ~30% centroid influence, dominates the search direction' },
+        { level: 0, label: 'Normal', css: '',              tip: 'Normal: same influence as all other tracks' },
+        { level: 1, label: 'Boost',  css: 'weight-boost',  tip: 'Boost: ~5% centroid influence, nudges results toward this track' },
+        { level: 2, label: 'Strong', css: 'weight-strong', tip: 'Strong: ~15% centroid influence, noticeably shapes results' },
+        { level: 3, label: 'Focus',  css: 'weight-focus',  tip: 'Focus: ~30% centroid influence, dominates the search direction' },
     ];
     function getInfluenceInfo(level) {
         return INFLUENCE_LEVELS[level] || INFLUENCE_LEVELS[0];
@@ -2287,10 +2311,13 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
         const isExtendMode = (activeTab === 'playlist' || activeTab === 'extend');
         const actionsHeader = isExtendMode ? 'Actions' : 'Exclude';
         const actionsWidth = isExtendMode ? '180px' : '100px';
+        const actionsTooltip = isExtendMode
+            ? ' <span class="info-tooltip" tabindex="0"><span class="info-icon"></span><span class="tooltip-text">Decide each candidate. Include adds it to your playlist and steers recommendations toward it; Avoid drops it and actively steers recommendations away.</span></span>'
+            : '';
 
-        // Add Weight column header for extend mode
+        // Add Influence column header for extend mode
         const weightHeader = isExtendMode
-            ? '<th style="width: 90px;" title="Click a button in this column to cycle how strongly a track anchors the search: x1 (equal) → Boost (~5%) → Strong (~15%) → Focus (~30%).">Influence</th>'
+            ? '<th style="width: 120px;">Influence <span class="info-tooltip" tabindex="0"><span class="info-icon"></span><span class="tooltip-text">Click a button in this column to cycle how strongly a track anchors the search: Normal → Boost (~5%) → Strong (~15%) → Focus (~30%).</span></span></th>'
             : '';
 
         let html = `
@@ -2302,7 +2329,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
                         <th>Album</th>
                         <th style="width: 70px; text-align: right;">Distance</th>
                         ${weightHeader}
-                        <th style="width: ${actionsWidth};">${actionsHeader}</th>
+                        <th style="width: ${actionsWidth};">${actionsHeader}${actionsTooltip}</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -2340,15 +2367,15 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
             // Build actions cell based on mode
             let actionsHtml;
             if (isExtendMode) {
-                // Extend mode: Show both Include and Exclude buttons
+                // Extend mode: Show both Include and Avoid buttons
                 if (isIncluded) {
                     actionsHtml = '<span class="status-badge status-included">INCLUDED</span>';
                 } else if (isExcluded) {
-                    actionsHtml = '<span class="status-badge status-excluded">EXCLUDED</span>';
+                    actionsHtml = '<span class="status-badge status-excluded">AVOIDED</span>';
                 } else {
                     actionsHtml = `
-                        <button class="btn-include" data-id="${escapedId}" onclick="includeSong(this.dataset.id)">Include</button>
-                        <button class="btn-exclude" data-id="${escapedId}" onclick="excludeSong(this.dataset.id)">Exclude</button>
+                        <button class="btn-include" data-id="${escapedId}" title="Adds this track to your playlist and steers future recommendations toward it." onclick="includeSong(this.dataset.id)">Include</button>
+                        <button class="btn-exclude" data-id="${escapedId}" title="Drops this track from results and actively steers future recommendations away from it." onclick="excludeSong(this.dataset.id)">Avoid</button>
                     `;
                 }
             } else {
@@ -2356,7 +2383,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
                 if (isExcluded) {
                     actionsHtml = '<span class="status-badge status-excluded">EXCLUDED</span>';
                 } else {
-                    actionsHtml = `<button class="btn-exclude" data-id="${escapedId}" onclick="excludeSong(this.dataset.id)">Exclude</button>`;
+                    actionsHtml = `<button class="btn-exclude" data-id="${escapedId}" title="Drops this track from the playlist. Smart Search results are all added by default, Exclude opts a track out." onclick="excludeSong(this.dataset.id)">Exclude</button>`;
                 }
             }
 
@@ -2715,7 +2742,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
             <th style="width:50px;">Play</th>
             <th>Title / Artist</th>
             <th>Album</th>
-            <th style="width:70px;">Weight</th>
+            <th style="width:90px;" title="Click a button in this column to cycle how strongly a track anchors the search: Normal → Boost (~5%) → Strong (~15%) → Focus (~30%).">Influence</th>
             <th style="width:90px;">Remove</th>
         </tr></thead><tbody>`;
 
