@@ -158,7 +158,7 @@ class SetupManager:
             for field in ['AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD']
         )
 
-    def is_valid_env_config(self, config_module):
+    def is_setup_complete(self, config_module):
         return (
             self._is_valid_server_config(config_module)
             and self._is_valid_auth_config(config_module)
@@ -167,7 +167,7 @@ class SetupManager:
     def bootstrap_env_config_if_empty(self, config_module):
         if not self.is_config_table_empty():
             return False
-        if not self.is_valid_env_config(config_module):
+        if not self.is_setup_complete(config_module):
             return False
         values = self._get_env_config_values(config_module)
         self.save_config_values(values)
@@ -248,9 +248,6 @@ class SetupManager:
     def is_setup_saved(self):
         overrides = self.get_raw_overrides()
         return bool(overrides)
-
-    def is_setup_complete(self, config_module):
-        return self.is_valid_env_config(config_module)
 
     def get_all_fields(self, config_module):
         raw = self.get_raw_overrides()
