@@ -2,7 +2,7 @@ import json
 import re
 from flask import request, jsonify, render_template, make_response, after_this_request
 import config
-from app import app, setup_manager, is_bootstrap_mode, refresh_auth_state
+from app import app, setup_manager, refresh_auth_state
 import restart_manager
 import tasks.mediaserver as mediaserver
 
@@ -208,7 +208,6 @@ def setup_api():
                 'probe_limit_hit': result.get('probe_limit_hit', False),
             }), 200
 
-        was_bootstrap = is_bootstrap_mode()
         new_server_type = filtered_values.get('MEDIASERVER_TYPE', config.MEDIASERVER_TYPE)
         if new_server_type != config.MEDIASERVER_TYPE:
             obsolete_fields = config.MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE.get(new_server_type, [])

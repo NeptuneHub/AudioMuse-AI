@@ -118,11 +118,6 @@ if not _jwt_secret and AUTH_ENABLED:
 auth_configured = bool(effective_audiomuse_user and effective_audiomuse_password)
 bootstrap_auth_mode = AUTH_ENABLED and not (AUDIOMUSE_USER and AUDIOMUSE_PASSWORD)
 
-# If auth is enabled but no explicit credentials were provided, the app is
-# in bootstrap auth mode. Setup can be accessed via the temporary credentials.
-def is_bootstrap_mode():
-    return not config.AUTH_ENABLED or bootstrap_auth_mode
-
 
 def refresh_auth_state():
     global AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, effective_audiomuse_user, effective_audiomuse_password, auth_configured, bootstrap_auth_mode
@@ -226,8 +221,6 @@ def log_api_request():
 def require_setup_completion():
     if request.path.startswith('/static/') or request.path == '/api/health':
         return
-    if setup_manager.is_setup_complete(config):
-        return
 
     if not config.AUTH_ENABLED:
         if request.path in ('/setup',) or request.path.startswith('/api/setup'):
@@ -238,7 +231,7 @@ def require_setup_completion():
             return jsonify({"error": "Setup required"}), 403
         return redirect(url_for('setup_page'))
 
-    if is_bootstrap_mode():
+    if bootstrap_auth_mode:
         if request.path in ('/login', '/auth', '/logout', '/setup') or request.path.startswith('/api/setup'):
             return
         if request.path.startswith('/api/'):
