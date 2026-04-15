@@ -77,15 +77,17 @@ docker-compose up --build -d
 ## **PR**
 ### Before You Start
 1. **Check existing PRs and issues** to avoid duplicate work
-2. **Open a Draft PR early** for significant changes to discuss your approach and get feedback before investing too much time
+2. **Discuss WHAT you want to implement and HOW first** or in an existing issue (if you want to solve it) or creating a new one if the topic is not already covered (use feature label for feature, bug for bugfix).
+4. **Open a Draft PR early** for significant changes to discuss your approach and get feedback before investing too much time
    - When creating a PR on GitHub, click the dropdown next to "Create Pull Request" and select **"Create Draft Pull Request"**
    - This gives visibility to other contributors and maintainers can provide early guidance
-3. **Discuss breaking changes** or major architectural decisions in an issue or draft PR first
+5. **Discuss breaking changes** or major architectural decisions in an issue or draft PR first
 
 ### PR Requirements
 When submitting a pull request, ensure:
 
-* **Clear description:** Explain what the PR achieves and why the change is needed with **HUMAN generated** text. Also cleary explain how you tested it and how to replicate those test.
+* **Clear description:** Explain what the PR achieves and why the change is needed with **HUMAN generated** text. Also cleary explain how you tested it and how to replicate those test
+* **Link the PR to an existing issue:** in this way you work on something already agreed on and you avoid many rework.
 * **Testing:** Verify core features work on at least one architecture (Intel/ARM) and one media server:
   * Analysis and Clustering
   * Instant Playlist
