@@ -1,0 +1,20 @@
+[Unit]
+Description=A redis unit for AudioMuse-AI
+Documentation=https://neptunehub.github.io/AudioMuse-AI/
+
+[Container]
+ContainerName=audiomuse-redis
+Image=docker.io/redis:7-alpine
+Pod=audiomuse.pod
+Volume=audiomuse-redis-data:/data:U
+AutoUpdate=registry
+
+#Healthcheck
+HealthCmd=nc -z localhost 6379 || exit 1
+HealthInterval=60s
+HealthTimeout=5s
+HealthStartPeriod=60s
+HealthOnFailure=kill
+
+[Service]
+Restart=always

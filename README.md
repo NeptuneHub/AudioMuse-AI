@@ -66,11 +66,7 @@ For a full list of configuration parameter take a look at [PARAMETERS](docs/PARA
 
 For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](docs/ARCHITECTURE.md) page.
 
-From `v1.0.0` the app includes a browser Setup wizard. If the app starts without the required media server or auth values, it will show a simple setup page so you can finish configuration from the UI. Env vars still work as the initial quick-start values, and once setup is complete those settings are saved in the database and can be edited later from the Setup menu.
-
-> **IMPORTANT:** `DATABASE_URL` / `POSTGRES_*` and `REDIS_URL` must remain environment variables.
->
-> **IMPORTANT:** After the first startup, setup values are loaded from the database and managed through the Setup wizard. Updating those values in `.env` later will not change the running configuration, except for database and Redis connection settings.
+From `v1.0.0`, only PostgreSQL and Redis connection parameters must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
 
 **Prerequisites:**
 * Docker and Docker Compose installed
@@ -84,7 +80,7 @@ From `v1.0.0` the app includes a browser Setup wizard. If the app starts without
    cp deployment/.env.example deployment/.env
    ```
 
-   If you want, you can also prefill the UI wizard by editing `deployment/.env` before startup. At a minimum, change the default database password, it can only be changed by `env` variable file:
+   You can customize the setup by editing `deployment/.env` before startup. As a minimum, it is suggested to change the default database password, but you can also override other PostgreSQL and Redis connection parameters if you want to reuse already existent deployment:
 
    ```env
    POSTGRES_PASSWORD=your-secure-password
@@ -94,12 +90,6 @@ From `v1.0.0` the app includes a browser Setup wizard. If the app starts without
    ```bash
    docker compose -f deployment/docker-compose.yaml up -d
    ```
-> You can get the correct version for your Music Server to have the wizard partially prefilled.
-
-> docker-compose.yaml is for Jellyfin.
-> You also have docker-compose-navidrome.yaml, docker-compose-lyrion.yaml, docker-compose-emby.yaml
-
-> Other example are for advanced deployment.
 
 3. **Access the application:**
    Open your browser at `http://localhost:8000`

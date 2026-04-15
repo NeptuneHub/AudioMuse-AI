@@ -1,10 +1,6 @@
 # Deployment strategy
 
-From `v1.0.0` the app includes a browser Setup wizard. If the app starts without the required media server or auth values, it will show a simple setup page so you can finish configuration from the UI. Env vars still work as the initial quick-start values, and once setup is complete those settings are saved in the database and can be edited later from the Setup menu.
-
-> **IMPORTANT:** `DATABASE_URL` / `POSTGRES_*` and `REDIS_URL` must remain environment variables.
->
-> **IMPORTANT:** After the first startup, setup values are loaded from the database and managed through the Setup wizard. Updating those values in `.env` later will not change the running configuration, except for database and Redis connection settings.
+From `v1.0.0`, only PostgreSQL and Redis connection parameters must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
 
 
 ## Quick Start Deployment on K3S WITH HELM
@@ -30,23 +26,15 @@ This section covers direct deployment with the `deployment/*.yaml` manifests.
   * A media server already installed: Jellyfin, Emby, Navidrome, or Lyrion
   * See the hardware requirements in the documentation
 
-* **Choose the right manifest:**
-  * `deployment/deployment.yaml` — Jellyfin
-  * `deployment/deployment-emby.yaml` — Emby
-  * `deployment/deployment-navidrome.yaml` — Navidrome
-  * `deployment/deployment-lyrion.yaml` — Lyrion
+* **Get manifest example:**
+  * `deployment/deployment.yaml`
 
 * **Edit the manifest:**
-  * Set your media server values (optional; can also be entered later via the UI wizard):
-    * Jellyfin: `JELLYFIN_URL`, `JELLYFIN_USER_ID`, `JELLYFIN_TOKEN`
-    * Navidrome: `NAVIDROME_URL`, `NAVIDROME_USER`, `NAVIDROME_PASSWORD`
-    * Lyrion: `LYRION_URL`
   * Set database secrets in the matching secret object (mandatory; env-only):
     * `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`
   * Ensure cluster connection values are correct (mandatory; env-only):
     * `POSTGRES_HOST`, `POSTGRES_PORT`, `REDIS_URL`
-  * Optional AI keys (optional; can also be entered later via the UI wizard):
-    * `GEMINI_API_KEY`, `MISTRAL_API_KEY`
+  * Optional: set the timezone with `TZ`
 
 * **Deploy:**
   ```bash
@@ -55,18 +43,16 @@ This section covers direct deployment with the `deployment/*.yaml` manifests.
 
 * **Access:**
   * Web UI: `http://<EXTERNAL-IP>:8000`
-  * Swagger: `http://<EXTERNAL-IP>:8000/apidocs`
+
+**Setup Wizard:**
+   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI atuhentication and other optional paramter. They will be saved directly in the database.
 
 ## Local Deployment with Docker Compose
 
-AudioMuse-AI provides Docker Compose files for different media server backends:
+AudioMuse-AI provides Docker Compose files example:
 
-- **Jellyfin**: `deployment/docker-compose.yaml`
-- **Navidrome**: `deployment/docker-compose-navidrome.yaml`
-- **Lyrion**: `deployment/docker-compose-lyrion.yaml`
-- **Emby**: `deployment/docker-compose-emby.yaml`
-
-If you want to use the UI wizard instead of editing env vars first, you can skip steps 1–3 and configure the app in the browser after startup.
+- `deployment/docker-compose.yaml` - all music server, cpu only.
+- `deployment/docker-compose-nvidia.yaml` - all music server, GPU with fallback to CPU.
 
 **Prerequisites:**
 * Docker and Docker Compose installed
@@ -80,35 +66,7 @@ If you want to use the UI wizard instead of editing env vars first, you can skip
    ```
    You can find the example here: [deployment/.env.example](../deployment/.env.example)
 
-2. **Edit `.env` with your environment values (optional; media server/auth can also be set later via the UI wizard):**
-   **For Jellyfin:**
-   ```env
-   MEDIASERVER_TYPE=jellyfin
-   JELLYFIN_URL=http://your-jellyfin-server:8096
-   JELLYFIN_USER_ID=your-user-id
-   JELLYFIN_TOKEN=your-api-token
-   ```
-   **For Navidrome:**
-   ```env
-   MEDIASERVER_TYPE=navidrome
-   NAVIDROME_URL=http://your-navidrome-server:4533
-   NAVIDROME_USER=your-username
-   NAVIDROME_PASSWORD=your-password
-   ```
-   **For Lyrion:**
-   ```env
-   MEDIASERVER_TYPE=lyrion
-   LYRION_URL=http://your-lyrion-server:9000
-   ```
-   **For Emby:**
-   ```env
-   MEDIASERVER_TYPE=emby
-   EMBY_URL=http://your-emby-server:8096
-   EMBY_USER_ID=your-user-id
-   EMBY_TOKEN=your-api-token
-   ```
-
-   **Database and Redis (mandatory; env-only):**
+2. **Edit `.env` with your environment values for **Database and Redis (mandatory; env-only):**
    ```env
    REDIS_URL=redis://localhost:6379/0
    POSTGRES_USER=audiomuse
@@ -116,38 +74,25 @@ If you want to use the UI wizard instead of editing env vars first, you can skip
    POSTGRES_HOST=postgres
    POSTGRES_PORT=5432
    POSTGRES_DB=audiomusedb
+   TZ=UTC
    ```
 
-   **Optional AI keys (optional; can also be set later via the UI wizard):**
-   ```env
-   GEMINI_API_KEY=your-gemini-key
-   MISTRAL_API_KEY=your-mistral-key
-   ```
-
-3. **Add auth values if you want to preconfigure login: (optional, can be done in the UI wizard)**
-   ```env
-   AUTH_ENABLED=true
-   AUDIOMUSE_USER=alice
-   AUDIOMUSE_PASSWORD=secret123
-   API_TOKEN=api-token
-   ```
-   We recommend leaving `AUTH_ENABLED=true` enabled for secure local use.
-
-4. **Start the services:**
+3. **Start the services:**
    ```bash
    docker compose -f deployment/docker-compose.yaml up -d
    ```
-   Use the matching compose file for your media server: `docker-compose.yaml` for Jellyfin, `docker-compose-navidrome.yaml`, `docker-compose-lyrion.yaml`, or `docker-compose-emby.yaml`.
+   Use the matching compose file `docker-compose.yaml`or `docker-compose-nvidia.yaml`.
 
-5. **Access the app:**
+4. **Access the app:**
    Open `http://localhost:8000` in your browser.
+
+5. **Setup Wizard:**
+   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI atuhentication and other optional paramter. They will be saved directly in the database.
 
 6. **Stop the services:**
    ```bash
    docker compose -f deployment/docker-compose.yaml down
    ```
-
-> `DATABASE_URL` / `POSTGRES_*` and `REDIS_URL` are still managed as environment settings and MUST be configured in the compose environment.
 
 **Note:**
 > If you use LMS, create and use the Subsonic API token instead of a password. Other Subsonic-compatible servers may require the same token-based auth.
@@ -157,13 +102,13 @@ If you deploy a worker on separate hardware, copy your `.env` to that machine an
 
 ## **Local Deployment with Podman Quadlets**
 
-For an alternative local setup, [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files are provided in the `deployment/podman-quadlets` directory for interacting with **Navidrome**. The unit files can  be edited for use with **Jellyfin**. 
+For an alternative local setup, [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files are provided in the `deployment/podman-quadlets` directory.
 
 These files are configured to automatically update AudioMuse-AI using the [latest](../README.md#docker-image-tagging-strategy) stable release and should perform an automatic rollback if the updated image fails to start.
 
 **Prerequisites:**
 *   Podman and systemd.
-*   `Jellyfin` or `Navidrome` installed.
+*   Supported music server installed
 *   Respect the [hardware requirements](../README.md#hardware-requirements)
 
 **Steps:**
@@ -175,8 +120,6 @@ These files are configured to automatically update AudioMuse-AI using the [lates
 
     The `audiomuse-ai-postgres.container` and `audiomuse-redis.container` files are pre-configured with default credentials and settings suitable for local testing. <BR>
     You will need to edit environment variables within `audiomuse-ai-worker.container` and `audiomuse-ai-flask.container` files to reflect your personal credentials and environment.
-    * For **Navidrome**, update `NAVIDROME_URL`, `NAVIDROME_USER` and `NAVIDROME_PASSWORD` with your real credentials.  
-    * For **Jellyfin** replace these variables with `JELLYFIN_URL`, `JELLYFIN_USER_ID`, `JELLYFIN_TOKEN`; add your real credentials; and change the `MEDIASERVER_TYPE` to `jellyfin`. 
 
     Once you've customized the unit files, you will need to copy all of them into a systemd container directory, such as `/etc/containers/systemd/user/`.<BR>
 
@@ -186,9 +129,14 @@ These files are configured to automatically update AudioMuse-AI using the [lates
     systemctl --user start audiomuse-pod
     ```
     The first command reloads systemd (generating the systemd service files) and the second command starts all AudioMuse services (Flask app, RQ worker, Redis, PostgreSQL).
+
 4.  **Access the Application:**
     Once the containers are up, you can access the web UI at `http://localhost:8000`.
-5.  **Stopping the Services:**
+
+5. **Setup Wizard:**
+   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI atuhentication and other optional paramter. They will be saved directly in the database.
+   
+6.  **Stopping the Services:**
     ```bash
     systemctl --user stop audiomuse-pod
     ```
