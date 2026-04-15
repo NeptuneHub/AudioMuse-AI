@@ -2,7 +2,7 @@ import json
 import re
 from flask import request, jsonify, render_template, make_response, after_this_request
 import config
-from app import app, setup_manager, refresh_auth_state
+from app import app, setup_manager
 import restart_manager
 import tasks.mediaserver as mediaserver
 
@@ -215,7 +215,6 @@ def setup_api():
                 setup_manager.delete_config_values(obsolete_fields)
         setup_manager.save_config_values(filtered_values)
         config.refresh_config()
-        refresh_auth_state()
         restart_manager.publish_restart_request()
         restart_requested = True
     except Exception as exc:
