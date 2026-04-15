@@ -116,7 +116,6 @@ if not _jwt_secret and config.AUTH_ENABLED:
 # Auth is considered configured whenever the app has effective credentials,
 # including runtime-generated temporary auth values.
 auth_configured = bool(effective_audiomuse_user and effective_audiomuse_password)
-bootstrap_auth_mode = config.AUTH_ENABLED and not (effective_audiomuse_user and effective_audiomuse_password)
 
 
 _password_hasher = PasswordHasher()
@@ -174,7 +173,7 @@ def check_auth():
         return
 
     # Always allow bootstrap setup when auth is not configured or auth is disabled.
-    if is_bootstrap_mode() and (request.path == '/setup' or request.path.startswith('/api/setup')):
+    if not setup_manager.is_setup_complete(config) and (request.path == '/setup' or request.path.startswith('/api/setup')):
         return
 
     # Check 1: valid JWT cookie (browser users)
@@ -210,7 +209,7 @@ def require_setup_completion():
     if request.path.startswith('/static/') or request.path == '/api/health':
         return
 
-    if bootstrap_auth_mode:
+    if setup_manager.is_setup_complete(config):
         if request.path in ('/login', '/auth', '/logout', '/setup') or request.path.startswith('/api/setup'):
             return
         if request.path.startswith('/api/'):
@@ -251,7 +250,7 @@ def login_page():
     """Serve the login page. Redirects to / if already authenticated."""
     if not config.AUTH_ENABLED:
         return redirect(url_for('index'))
-    if bootstrap_auth_mode:
+    if not setup_manager.is_setup_complete(config):
         return redirect(url_for('setup_page'))
     token = request.cookies.get('audiomuse_jwt')
     if token:
