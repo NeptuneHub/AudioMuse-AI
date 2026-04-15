@@ -1382,6 +1382,10 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
     let sourceWeights = {};           // {item_id: weight} for source playlist tracks
     let includedWeights = {};         // {item_id: weight} for included recommendations
     let sourceTracksData = [];        // Full track objects for drawer display
+
+    // Aborts any in-flight search when a new one supersedes it (e.g. rapid weight cycling)
+    let currentSearchController = null;
+    let currentSearchIsRecalc = false;
     const INFLUENCE_LEVELS = [
         { level: 0, label: 'Normal', css: '',              tip: 'Normal: same influence as all other tracks' },
         { level: 1, label: 'Boost',  css: 'weight-boost',  tip: 'Boost: ~5% centroid influence, nudges results toward this track' },
@@ -2114,11 +2118,23 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
             setSearchButtonsDisabled(true);
         }
 
+        if (currentSearchController) {
+            const prevWasNonRecalc = !currentSearchIsRecalc;
+            currentSearchController.abort();
+            // A recalc doesn't re-enable buttons in its finally; if it just aborted a
+            // non-recalc (which did disable them), re-enable here to avoid stuck state.
+            if (isRecalc && prevWasNonRecalc) setSearchButtonsDisabled(false);
+        }
+        currentSearchController = new AbortController();
+        currentSearchIsRecalc = isRecalc;
+        const signal = currentSearchController.signal;
+
         try {
             const response = await fetch("{{ url_for('playlist_curator_bp.search_api') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
+                body: JSON.stringify(payload),
+                signal: signal
             });
 
             const data = await response.json();
@@ -2175,6 +2191,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
             }
 
         } catch (error) {
+            if (error.name === 'AbortError' || signal.aborted) return;
             document.getElementById('recalc-spinner').style.display = 'none';
             console.error('Search error:', error);
             if (!isRecalc) {
@@ -2184,7 +2201,7 @@ Loose (0.020-0.050): Increasingly loose — many false positives from similar bu
                 document.getElementById('playlist-creator').classList.add('hidden');
             }
         } finally {
-            if (!isRecalc) setSearchButtonsDisabled(false);
+            if (!isRecalc && !signal.aborted) setSearchButtonsDisabled(false);
         }
     };
 
