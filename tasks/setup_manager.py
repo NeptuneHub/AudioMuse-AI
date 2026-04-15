@@ -32,7 +32,7 @@ AUTH_FIELDS = {
 class SetupManager:
     def __init__(self, database_url=None):
         self.database_url = database_url or self._get_database_url()
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger(__name__)   # TODO: Logs dont appear to actually work for this class/module
         self._password_hasher = PasswordHasher()
 
     def _get_database_url(self):
