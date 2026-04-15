@@ -210,30 +210,12 @@ def require_setup_completion():
     if request.path.startswith('/static/') or request.path == '/api/health':
         return
 
-    if not config.AUTH_ENABLED:
-        if request.path in ('/setup',) or request.path.startswith('/api/setup'):
-            return
-        if setup_manager.is_valid_env_config(config):
-            return
-        if request.path.startswith('/api/'):
-            return jsonify({"error": "Setup required"}), 403
-        return redirect(url_for('setup_page'))
-
     if bootstrap_auth_mode:
         if request.path in ('/login', '/auth', '/logout', '/setup') or request.path.startswith('/api/setup'):
             return
         if request.path.startswith('/api/'):
             return jsonify({"error": "Setup required"}), 403
         return redirect(url_for('setup_page'))
-
-    # Auth is configured, but setup is still incomplete.
-    if request.path in ('/login', '/auth', '/logout'):
-        return
-    if request.path.startswith('/api/setup'):
-        return
-    if request.path.startswith('/api/'):
-        return jsonify({"error": "Setup required"}), 403
-    return redirect(url_for('setup_page'))
 
 @app.route('/api/health')
 def health_check():
