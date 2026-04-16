@@ -488,7 +488,7 @@ setupForm.addEventListener('submit', function(event) {
     }).then(function(data) {
         saveFeedback.className = 'status-success inline-feedback';
         saveFeedback.style.display = 'block';
-        var countdown = 5;
+        var countdown = 20;
         saveFeedback.textContent = 'Configuration saved. Redirecting in ' + countdown + ' seconds...';
         var countdownInterval = setInterval(function() {
             countdown -= 1;
