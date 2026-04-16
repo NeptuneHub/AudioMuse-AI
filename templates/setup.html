@@ -14,11 +14,7 @@
         box-shadow: 0 12px 40px rgba(0,0,0,0.06);
         padding: 1.75rem;
     }
-    .summary {
-        margin: 1.5rem 0 1rem;
-        font-size: 0.95rem;
-        color: var(--text-muted, #666);
-    }
+
     label {
         display: block;
         margin-bottom: 0.35rem;
@@ -153,12 +149,9 @@
 {% block content %}
 <div class="page-shell">
     <div class="card">
-        <h1>AudioMuse-AI Setup</h1>
-        <p class="summary">Complete the first-time configuration. Environment variables are used as defaults and saved to the database after you submit.</p>
-
-        <div class="notice">
-            This setup page is shown automatically on first login when no saved setup data exists.
-            Fields marked with * are mandatory.
+        <div class="page-header">
+            <h1>AudioMuse-AI - Setup Wizard</h1>
+            <p class="subtitle">Configure your media server, authentication and advanced settings.</p>
         </div>
 
         <form id="setup-form">
@@ -175,7 +168,7 @@
                 </div>
                 <div id="server-config-fields"></div>
                 <div class="field-row">
-                    <button id="test-button" type="button">Test connection</button>
+                    <button id="test-button" type="button" disabled>Test connection</button>
                 </div>
                 <div class="field-row">
                     <p id="test-feedback" class="inline-feedback" style="display:none; margin:0; width:100%;"></p>

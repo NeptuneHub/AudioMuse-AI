@@ -245,10 +245,6 @@ class SetupManager:
             self.logger.warning(f"Unable to delete setup config values: {exc}")
             raise
 
-    def is_setup_saved(self):
-        overrides = self.get_raw_overrides()
-        return bool(overrides)
-
     def is_setup_complete(self, config_module):
         return self.is_valid_env_config(config_module)
 

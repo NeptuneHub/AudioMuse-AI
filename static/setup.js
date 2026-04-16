@@ -34,6 +34,7 @@ var authCredentialInputs = [
 ];
 var setupForm = document.getElementById('setup-form');
 var serverValues = {};
+var serverSecretHasValue = {};
 var originalValues = {};
 
 function updateAuthVisibility() {
@@ -145,8 +146,10 @@ function createInputField(field, value) {
 }
 
 function renderServerFields(serverType, values, hasValueMap) {
+    hasValueMap = hasValueMap || {};
     serverConfigFields.innerHTML = '';
     if (!serverFields[serverType]) {
+        updateTestButtonState();
         return;
     }
     var fields = serverFields[serverType];
@@ -183,6 +186,7 @@ function renderServerFields(serverType, values, hasValueMap) {
         };
         serverConfigFields.appendChild(createInputField(fieldCopy, value));
     });
+    updateTestButtonState();
 }
 
 function renderAdvancedFields(fields) {
@@ -227,6 +231,7 @@ function loadSetupData() {
                 secretHasValue[item.name] = item.has_value;
             }
         });
+        serverSecretHasValue = secretHasValue;
         var advancedData = data.advanced_fields;
         var mediaServerSelect = document.getElementById('MEDIASERVER_TYPE');
         if (basicData.MEDIASERVER_TYPE) {
@@ -324,55 +329,28 @@ function saveCurrentServerValues() {
     });
 }
 
+function testConfigFieldsFilled() {
+    var requiredFields = serverConfigFields.querySelectorAll('input[required], textarea[required], select[required]');
+    if (!requiredFields.length) {
+        return false;
+    }
+    return Array.prototype.every.call(requiredFields, function(input) {
+        if (input.disabled) {
+            return true;
+        }
+        return input.value.trim() !== '';
+    });
+}
+
+function updateTestButtonState() {
+    var testButton = document.getElementById('test-button');
+    testButton.disabled = !testConfigFieldsFilled();
+}
+
 function updateServerFields() {
     saveCurrentServerValues();
     var serverType = document.getElementById('MEDIASERVER_TYPE').value;
-    renderServerFields(serverType, serverValues);
-}
-
-function waitForHealthAndRedirect(redirectUrl) {
-    var attempts = 0;
-    var maxAttempts = 80;
-    var consecutiveOk = 0;
-    saveFeedback.className = 'status-pending inline-feedback';
-    saveFeedback.style.display = 'block';
-    saveFeedback.textContent = 'Configuration saved. Restarting services — please wait...';
-    function checkHealth() {
-        attempts += 1;
-        fetch('/api/health', { cache: 'no-store' })
-            .then(function(resp) {
-                if (!resp.ok) {
-                    throw new Error('Service not ready');
-                }
-                return resp.json();
-            })
-            .then(function(data) {
-                if (data && data.status === 'ok') {
-                    consecutiveOk += 1;
-                    if (consecutiveOk >= 2) {
-                        window.location.href = redirectUrl;
-                        return;
-                    }
-                    setTimeout(checkHealth, 1500);
-                } else {
-                    consecutiveOk = 0;
-                    throw new Error('Service not ready');
-                }
-            })
-            .catch(function() {
-                consecutiveOk = 0;
-                if (attempts < maxAttempts) {
-                    setTimeout(checkHealth, 1500);
-                } else {
-                    saveFeedback.className = 'status-failure inline-feedback';
-                    saveFeedback.style.display = 'block';
-                    saveFeedback.textContent = 'Restart timeout. Please refresh the page in a moment.';
-                    saveButton.disabled = false;
-                }
-            });
-    }
-
-    setTimeout(checkHealth, 3000);
+    renderServerFields(serverType, serverValues, serverSecretHasValue);
 }
 
 function collectConfigFromForm(testMode) {
@@ -531,6 +509,7 @@ setupForm.addEventListener('submit', function(event) {
 });
 
 document.getElementById('test-button').addEventListener('click', testConnection);
+serverConfigFields.addEventListener('input', updateTestButtonState);
 document.getElementById('MEDIASERVER_TYPE').addEventListener('change', updateServerFields);
 document.getElementById('AUTH_ENABLED').addEventListener('change', updateAuthVisibility);
 loadSetupData();

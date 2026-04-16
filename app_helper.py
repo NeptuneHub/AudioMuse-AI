@@ -1293,3 +1293,48 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
         logger.error(f"Failed to insert REVOKED recap row for {job_id}: {e_save}")
 
     return cancelled_count
+
+
+# --- Centralized Setup & Auth Checks ---
+
+def check_setup_needed():
+    """Check if mandatory setup fields are present in the database.
+    Returns True if setup is still needed, False if setup is complete.
+    """
+    from tasks.setup_manager import SetupManager
+    import config as _cfg
+    _sm = SetupManager()
+    return not _sm.is_valid_env_config(_cfg)
+
+
+def check_auth_needed(jwt_secret):
+    """Check if the current request requires authentication.
+    Returns None if the request is authenticated or auth is disabled.
+    Returns a Response (redirect or JSON 401) if authentication is needed.
+    """
+    import jwt as pyjwt
+    from flask import request, jsonify, redirect, url_for
+    import config as _cfg
+
+    if not _cfg.AUTH_ENABLED:
+        return None
+
+    # Check valid JWT cookie
+    token = request.cookies.get('audiomuse_jwt')
+    if token:
+        try:
+            pyjwt.decode(token, jwt_secret, algorithms=['HS256'])
+            return None  # Valid session
+        except pyjwt.InvalidTokenError:
+            pass
+
+    # Check valid Bearer token (M2M callers)
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer ') and _cfg.API_TOKEN and auth_header[7:] == _cfg.API_TOKEN:
+        return None  # Valid M2M token
+
+    # Not authenticated
+    if request.path.startswith('/api/'):
+        return jsonify({"error": "Unauthorized"}), 401
+    else:
+        return redirect(url_for('login_page'))
