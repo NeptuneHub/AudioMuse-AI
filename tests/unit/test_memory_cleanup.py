@@ -11,6 +11,12 @@ from unittest.mock import Mock, MagicMock, patch, call
 if "jwt" not in sys.modules:
     sys.modules["jwt"] = MagicMock()
 
+# Mock psycopg2.connect so that app.py module-level DB calls (init_db,
+# bootstrap_env_config_if_empty, save_config_values for JWT_SECRET) don't
+# require a real PostgreSQL server in CI.
+_pg_connect_patcher = patch("psycopg2.connect", return_value=MagicMock())
+_pg_connect_patcher.start()
+
 import pytest
 import numpy as np
 
