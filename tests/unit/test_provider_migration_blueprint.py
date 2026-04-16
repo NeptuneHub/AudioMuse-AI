@@ -172,9 +172,10 @@ class TestSourcePathsRefreshRoute:
             {'id': 't3', 'path': None},  # dropped: no path
         ]
         with patch.object(bp_mod, 'provider_probe', MagicMock()) as p, \
+             patch.object(bp_mod, '_detect_path_format') as mock_detect, \
              patch.object(bp_mod, '_update_state') as mock_update:
             p.fetch_all_tracks.return_value = fake_tracks
-            p._detect_path_format.return_value = 'absolute'
+            mock_detect.return_value = 'absolute'
             resp = client.post('/api/migration/source-paths/refresh',
                                json={'session_id': 7})
 
@@ -198,9 +199,10 @@ class TestSourcePathsRefreshRoute:
         config.MEDIASERVER_TYPE = 'navidrome'
 
         with patch.object(bp_mod, 'provider_probe', MagicMock()) as p, \
+             patch.object(bp_mod, '_detect_path_format') as mock_detect, \
              patch.object(bp_mod, '_update_state'):
             p.fetch_all_tracks.return_value = [{'id': 't1', 'path': 'relative/path.mp3'}]
-            p._detect_path_format.return_value = 'relative'
+            mock_detect.return_value = 'relative'
             resp = client.post('/api/migration/source-paths/refresh',
                                json={'session_id': 1})
 

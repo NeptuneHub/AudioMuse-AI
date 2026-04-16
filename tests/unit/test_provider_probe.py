@@ -63,7 +63,7 @@ class TestJellyfinProbe:
                 },
             ]
         }
-        with patch.object(probe.requests, 'get', return_value=_mock_response(api_response)) as mock_get:
+        with patch.object(probe.mediaserver_jellyfin.requests, 'get', return_value=_mock_response(api_response)) as mock_get:
             tracks = probe.fetch_all_tracks('jellyfin', self.CREDS)
 
         assert len(tracks) == 2
@@ -104,7 +104,7 @@ class TestJellyfinProbe:
                 'Path': '/music/compilation/01.flac',
             }]
         }
-        with patch.object(probe.requests, 'get', return_value=_mock_response(api_response)):
+        with patch.object(probe.mediaserver_jellyfin.requests, 'get', return_value=_mock_response(api_response)):
             tracks = probe.fetch_all_tracks('jellyfin', self.CREDS)
         t = tracks[0]
         # Track-level = real performer; album-level preserved separately
@@ -120,7 +120,7 @@ class TestJellyfinProbe:
                 'Path': '/music/x.flac',
             }]
         }
-        with patch.object(probe.requests, 'get', return_value=_mock_response(api_response)):
+        with patch.object(probe.mediaserver_jellyfin.requests, 'get', return_value=_mock_response(api_response)):
             tracks = probe.fetch_all_tracks('jellyfin', self.CREDS)
         assert tracks[0]['artist'] == 'Real Performer'
         assert tracks[0]['album_artist'] == 'Various Artists'
@@ -133,7 +133,7 @@ class TestJellyfinProbe:
                 'Path': '/music/x.flac',
             }]
         }
-        with patch.object(probe.requests, 'get', return_value=_mock_response(api_response)):
+        with patch.object(probe.mediaserver_jellyfin.requests, 'get', return_value=_mock_response(api_response)):
             tracks = probe.fetch_all_tracks('jellyfin', self.CREDS)
         assert tracks[0]['artist'] == 'Album Only Artist'
         assert tracks[0]['album_artist'] == 'Album Only Artist'
@@ -142,7 +142,7 @@ class TestJellyfinProbe:
         api_response = {
             'Items': [{'Id': 'j1', 'Name': 'x', 'Album': 'y', 'Path': '/music/x.flac'}]
         }
-        with patch.object(probe.requests, 'get', return_value=_mock_response(api_response)):
+        with patch.object(probe.mediaserver_jellyfin.requests, 'get', return_value=_mock_response(api_response)):
             tracks = probe.fetch_all_tracks('jellyfin', self.CREDS)
         assert tracks[0]['artist'] == 'Unknown Artist'
         assert tracks[0]['album_artist'] is None
@@ -220,7 +220,7 @@ class TestNavidromeProbe:
         # Second call returns empty to end pagination
         empty_page = self._subsonic_wrap({'searchResult3': {}})
 
-        with patch.object(probe.requests, 'get', side_effect=[
+        with patch.object(probe.mediaserver_navidrome.requests, 'request', side_effect=[
             _mock_response(songs_page),
             _mock_response(empty_page),
         ]) as mock_get:
@@ -504,7 +504,7 @@ class TestLyrionProbe:
             for i in range(501, 701)
         ]})
         responses = [_mock_response(page1), _mock_response(page2)]
-        with patch.object(probe.requests, 'post', side_effect=responses) as mock_post:
+        with patch.object(probe.mediaserver_lyrion.requests, 'post', side_effect=responses) as mock_post:
             tracks = probe.fetch_all_tracks('lyrion', self.CREDS)
         assert len(tracks) == 700
         # Two POST calls (page 2 was a short page, so the loop terminated)
@@ -514,7 +514,7 @@ class TestLyrionProbe:
         assert body_p2['params'][1][1] == 500  # offset
 
     def test_fetch_all_tracks_empty(self, probe):
-        with patch.object(probe.requests, 'post', return_value=_mock_response(_lyrion_wrap({'titles_loop': []}))):
+        with patch.object(probe.mediaserver_lyrion.requests, 'post', return_value=_mock_response(_lyrion_wrap({'titles_loop': []}))):
             tracks = probe.fetch_all_tracks('lyrion', self.CREDS)
         assert tracks == []
 
@@ -524,7 +524,7 @@ class TestLyrionProbe:
             {'id': 2, 'title': 'Remote', 'artist': 'X', 'album': 'Y', 'url': 'spotify:track:xyz'},
             {'id': 3, 'title': 'AlsoSpotify', 'genre': 'Spotify', 'url': 'file:///b.flac'},
         ]})
-        with patch.object(probe.requests, 'post', return_value=_mock_response(page)):
+        with patch.object(probe.mediaserver_lyrion.requests, 'post', return_value=_mock_response(page)):
             tracks = probe.fetch_all_tracks('lyrion', self.CREDS)
         assert len(tracks) == 1
         assert tracks[0]['id'] == '1'
@@ -632,7 +632,7 @@ class TestDispatcher:
             ]
         }
         creds = {'url': 'http://emby.local:8096', 'user_id': 'u', 'token': 't'}
-        with patch.object(probe.requests, 'get', return_value=_mock_response(api_response)) as mock_get:
+        with patch.object(probe.mediaserver_emby.requests, 'get', return_value=_mock_response(api_response)) as mock_get:
             tracks = probe.fetch_all_tracks('emby', creds)
         assert len(tracks) == 1
         assert tracks[0]['id'] == 'e1'

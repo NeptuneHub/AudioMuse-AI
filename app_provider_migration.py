@@ -24,6 +24,7 @@ from flask import Blueprint, jsonify, render_template, request
 # the blueprint file self-contained — the rest of the app doesn't need to hand
 # anything in.
 from app_helper import get_db, redis_conn, rq_queue_high
+from tasks.mediaserver_helper import detect_path_format as _detect_path_format
 
 logger = logging.getLogger(__name__)
 
@@ -88,13 +89,12 @@ def _sample_score_file_paths(limit=_SOURCE_PATH_SAMPLE_SIZE):
 
 def _detect_source_path_format():
     """Classify ``score.file_path`` values by sampling and running
-    ``_detect_path_format`` from provider_probe. Returns one of
+    the shared path-format helper. Returns one of
     ``'absolute' | 'relative' | 'none' | 'mixed'``.
     """
     samples = _sample_score_file_paths()
-    # provider_probe._detect_path_format expects track dicts with a 'path' key
     tracks = [{'path': p} for p in samples]
-    return provider_probe._detect_path_format(tracks)
+    return _detect_path_format(tracks)
 
 
 def _current_provider_creds():
@@ -281,7 +281,7 @@ def source_paths_refresh():
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
-    path_format = provider_probe._detect_path_format(tracks)
+    path_format = _detect_path_format(tracks)
     overrides = {
         t['id']: t['path']
         for t in tracks
