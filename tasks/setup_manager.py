@@ -131,7 +131,12 @@ class SetupManager:
         return values
 
     def _is_valid_string(self, value):
-        return isinstance(value, str) and value.strip() and not self._looks_like_placeholder(value)
+        if not isinstance(value, str):
+            return False
+        stripped = value.strip()
+        if not stripped:
+            return False
+        return not self._looks_like_placeholder(value)
 
     SERVER_REQUIRED_FIELDS = config.MEDIASERVER_FIELDS_BY_TYPE
 
