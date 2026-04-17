@@ -1,21 +1,21 @@
 var serverFields = {
     jellyfin: [
-        {name: 'JELLYFIN_URL', label: 'Jellyfin URL', placeholder: 'http://your-jellyfin-server:8096'},
-        {name: 'JELLYFIN_USER_ID', label: 'Jellyfin user ID', placeholder: 'your-user-id'},
-        {name: 'JELLYFIN_TOKEN', label: 'Jellyfin API token', placeholder: 'your-api-token'}
+        {name: 'JELLYFIN_URL', label: 'Jellyfin URL', placeholder: 'http://your-jellyfin-server:8096', tooltip: 'Base URL of your Jellyfin server, including http:// or https:// and the port. Must be reachable from the AudioMuse-AI container.'},
+        {name: 'JELLYFIN_USER_ID', label: 'Jellyfin user ID', placeholder: 'your-user-id', tooltip: "The Jellyfin user whose library AudioMuse-AI will read. Find the ID in Jellyfin under Dashboard \u2192 Users \u2192 (your user) \u2192 the URL contains userId=..."},
+        {name: 'JELLYFIN_TOKEN', label: 'Jellyfin API token', placeholder: 'your-api-token', tooltip: 'API key for that Jellyfin user. Create one in Jellyfin under Dashboard \u2192 API Keys.'}
     ],
     navidrome: [
-        {name: 'NAVIDROME_URL', label: 'Navidrome URL', placeholder: 'http://your-navidrome-server:4533'},
-        {name: 'NAVIDROME_USER', label: 'Navidrome username', placeholder: 'your-username'},
-        {name: 'NAVIDROME_PASSWORD', label: 'Navidrome password', placeholder: 'your-password'}
+        {name: 'NAVIDROME_URL', label: 'Navidrome URL', placeholder: 'http://your-navidrome-server:4533', tooltip: 'Base URL of your Navidrome server, including http:// or https:// and the port.'},
+        {name: 'NAVIDROME_USER', label: 'Navidrome username', placeholder: 'your-username', tooltip: 'Username of a Navidrome account that can read the music library.'},
+        {name: 'NAVIDROME_PASSWORD', label: 'Navidrome password', placeholder: 'your-password', tooltip: 'Password for the Navidrome user above.'}
     ],
     lyrion: [
-        {name: 'LYRION_URL', label: 'Lyrion URL', placeholder: 'http://your-lyrion-server:9000'}
+        {name: 'LYRION_URL', label: 'Lyrion URL', placeholder: 'http://your-lyrion-server:9000', tooltip: 'Base URL of your Lyrion (Logitech Media Server) instance, including http:// and the port.'}
     ],
     emby: [
-        {name: 'EMBY_URL', label: 'Emby URL', placeholder: 'http://your-emby-server:8096'},
-        {name: 'EMBY_USER_ID', label: 'Emby user ID', placeholder: 'your-user-id'},
-        {name: 'EMBY_TOKEN', label: 'Emby API token', placeholder: 'your-api-token'}
+        {name: 'EMBY_URL', label: 'Emby URL', placeholder: 'http://your-emby-server:8096', tooltip: 'Base URL of your Emby server, including http:// or https:// and the port.'},
+        {name: 'EMBY_USER_ID', label: 'Emby user ID', placeholder: 'your-user-id', tooltip: 'The Emby user whose library AudioMuse-AI will read. Find the ID in Emby under Dashboard \u2192 Users \u2192 (your user).'},
+        {name: 'EMBY_TOKEN', label: 'Emby API token', placeholder: 'your-api-token', tooltip: 'API key for that Emby user. Create one in Emby under Dashboard \u2192 API Keys.'}
     ]
 };
 
@@ -64,10 +64,12 @@ function updateAuthVisibility() {
         apiTokenInput.required = false;
         var label = document.querySelector('label[for="API_TOKEN"]');
         if (label) {
-            if (authEnabled) {
-                label.textContent = 'API token (optional)';
+            // Update only the leading text node so the info-tooltip span is preserved.
+            var newText = authEnabled ? 'API token (optional) ' : 'API token ';
+            if (label.firstChild && label.firstChild.nodeType === Node.TEXT_NODE) {
+                label.firstChild.nodeValue = newText;
             } else {
-                label.textContent = 'API token';
+                label.insertBefore(document.createTextNode(newText), label.firstChild);
             }
         }
     }
@@ -78,7 +80,24 @@ function createInputField(field, value) {
     row.className = 'field-row';
     var label = document.createElement('label');
     label.setAttribute('for', field.name);
-    label.textContent = field.label;
+    if (field.tooltip) {
+        label.classList.add('label-with-tooltip');
+        label.appendChild(document.createTextNode(field.label));
+        var tt = document.createElement('span');
+        tt.className = 'info-tooltip';
+        tt.setAttribute('tabindex', '0');
+        var icon = document.createElement('span');
+        icon.className = 'info-icon';
+        var text = document.createElement('span');
+        text.className = 'tooltip-text';
+        text.textContent = field.tooltip;
+        tt.appendChild(icon);
+        tt.appendChild(text);
+        label.appendChild(document.createTextNode(' '));
+        label.appendChild(tt);
+    } else {
+        label.textContent = field.label;
+    }
     var input;
     if (field.type === 'textarea') {
         input = document.createElement('textarea');
@@ -182,6 +201,7 @@ function renderServerFields(serverType, values, hasValueMap) {
             required: true,
             secret: secret,
             has_value: hasValue,
+            tooltip: field.tooltip,
             originalValue: originalValues[field.name] !== undefined ? originalValues[field.name] : value
         };
         serverConfigFields.appendChild(createInputField(fieldCopy, value));
