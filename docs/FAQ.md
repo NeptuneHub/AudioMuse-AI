@@ -68,3 +68,7 @@ In contrast to cluster with few song, you can just raise the `Stratified Samplin
 ### Clustering takes a lot of time, how can I run it faster?
 
 Clusterign algorithm by default do 5000 run. This means that multiple run are executed and the best is kept. You can lower this number in the front-end in the `Clustering Runs:` to do less run. For example with 1000 run the result should still be good enough and take a reasonable amount of time.
+
+### How to reset the Admin password?
+
+From AudioMsue-AI v1.0.0 the Admin password is stored encrypted on the database. The only way to reset is access to the postgresql database and delete it. You can read more in the [AUTHENTICATION](docs/AUTH.md) docs.
