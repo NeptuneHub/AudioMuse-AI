@@ -18,6 +18,33 @@ curl -v \
   -d '{}'
 ```
 
+# Password reset
+
+The only way to reset the admin password is actually access to the database and delete it from the table.
+
+From an ububntu cli you can install the postgresql-client if you don't already have it:
+```
+sudo apt update && sudo apt install -y postgresql-client
+```
+
+Then replace this parameters
+- `PGPASSWORD=audiomusepassword`: database password
+- `-U audiomuse`: database user
+- `-d audiomusedb`: database name
+- `-h 192.168.3.213`: database ip
+- `-p 5432`: database port
+
+In the below command and execute:
+```
+PGPASSWORD=audiomusepassword psql -h 192.168.3.213 -p 5432 -U audiomuse -d audiomusedb   -c "DELETE FROM app_config WHERE key IN ('AUDIOMUSE_USER','AUDIOMUSE_PASSWORD');"
+```
+If everything is confiugred correctly you will look:
+```
+DELETE 2
+```
+
+At this point you have to restart your flaks and worker container and at the new access your will be able to set a new user and password.
+
 ## HTTPS
 
 To have a more secure Authentication running everything over HTTPS is needed to avoid that your password go in plain text. This part is something that relay from your infrastracture and not from AudioMuse-AI itself. For example if you're deploy everything on K3S thatr come with Traefik integrated, and you have certmanager with let's encrypt, you can add an IngressRoute like this:
