@@ -83,6 +83,15 @@ def close_db(e=None):
 def init_db():
     db = get_db()
     with db.cursor() as cur:
+        # Serialize concurrent init_db() runs across gunicorn workers/containers.
+        # Multiple workers racing on CREATE EXTENSION / CREATE OR REPLACE FUNCTION
+        # causes Postgres "tuple concurrently updated" errors on pg_proc/pg_extension.
+        # A session-level advisory lock forces other workers to wait here.
+        # The key is an arbitrary stable bigint specific to this app's init.
+        # Safety: session-level advisory locks are auto-released by Postgres
+        # when the connection ends (normal close, crash, kill, or network drop),
+        # so this lock can NEVER leak permanently even if init_db() raises.
+        cur.execute("SELECT pg_advisory_lock(726354821)")
         # Enable extensions to fix and assist in searches
         cur.execute('CREATE EXTENSION IF NOT EXISTS unaccent')
         cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
@@ -289,6 +298,8 @@ def init_db():
             logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
         
         db.commit()
+        # Release the advisory lock acquired at the top of init_db().
+        cur.execute("SELECT pg_advisory_unlock(726354821)")
 
 # --- Status Constants ---
 TASK_STATUS_PENDING = "PENDING"
