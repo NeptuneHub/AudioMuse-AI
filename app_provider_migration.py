@@ -567,7 +567,7 @@ def finalize_dry_run():
             "  state = jsonb_set(state, '{final_counts}', %s::jsonb, true), "
             "  status = 'dry_run_ready' "
             "WHERE id = %s",
-            (json.dumps(final_counts), session_id),
+            (json.dumps(_sanitize_json_value(final_counts), ensure_ascii=False), session_id),
         )
     db.commit()
     return jsonify(final_counts)
@@ -906,6 +906,14 @@ def _load_state(session_id):
     return state or {}
 
 
+def _sanitize_json_value(value):
+    """Wrapper kept for backward compatibility — delegates to the shared
+    sanitizer in :mod:`tasks.memory_utils`.
+    """
+    from tasks.memory_utils import sanitize_json_for_db
+    return sanitize_json_for_db(value)
+
+
 def _update_state(session_id, **patch):
     """Shallow merge the given keys into migration_session.state."""
     state = _load_state(session_id) or {}
@@ -914,12 +922,13 @@ def _update_state(session_id, **patch):
             del state[k]
         elif v is not None:
             state[k] = v
+    state = _sanitize_json_value(state)
     db = get_db()
     with db.cursor() as cur:
         cur.execute(
             "UPDATE migration_session SET state = %s::jsonb, status = 'in_progress' "
             "WHERE id = %s",
-            (json.dumps(state), session_id),
+            (json.dumps(state, ensure_ascii=False), session_id),
         )
     db.commit()
 
@@ -935,7 +944,7 @@ def _merge_manual_matches(session_id, new_matches):
     with db.cursor() as cur:
         cur.execute(
             "UPDATE migration_session SET state = %s::jsonb WHERE id = %s",
-            (json.dumps(state), session_id),
+            (json.dumps(_sanitize_json_value(state), ensure_ascii=False), session_id),
         )
     db.commit()
 
@@ -967,7 +976,7 @@ def _rematch_album_rows(session_id, newly_matched, newly_unmatched):
     with db.cursor() as cur:
         cur.execute(
             "UPDATE migration_session SET state = %s::jsonb WHERE id = %s",
-            (json.dumps(state), session_id),
+            (json.dumps(_sanitize_json_value(state), ensure_ascii=False), session_id),
         )
     db.commit()
 
@@ -983,7 +992,7 @@ def _mark_album_skipped(session_id, old_album_key):
     with db.cursor() as cur:
         cur.execute(
             "UPDATE migration_session SET state = %s::jsonb WHERE id = %s",
-            (json.dumps(state), session_id),
+            (json.dumps(_sanitize_json_value(state), ensure_ascii=False), session_id),
         )
     db.commit()
 

@@ -61,6 +61,25 @@ def sanitize_string_for_db(value: Optional[str]) -> Optional[str]:
     return value
 
 
+def sanitize_json_for_db(value):
+    """Recursively sanitize strings inside a JSON-serializable value.
+
+    Applies :func:`sanitize_string_for_db` to every string found inside
+    dicts, lists and tuples. Non-string scalars are returned as-is. Use this
+    before ``json.dumps(...)`` when the result is going into a Postgres
+    jsonb column.
+    """
+    if isinstance(value, str):
+        return sanitize_string_for_db(value)
+    if isinstance(value, dict):
+        return {k: sanitize_json_for_db(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [sanitize_json_for_db(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(sanitize_json_for_db(v) for v in value)
+    return value
+
+
 def cleanup_cuda_memory(force: bool = False) -> bool:
     """
     Force CUDA cache clearing and garbage collection to free GPU memory.

@@ -36,7 +36,10 @@ import json
 import logging
 import time
 
+from tasks.memory_utils import sanitize_string_for_db as _sanitize_text
+
 logger = logging.getLogger(__name__)
+
 
 # Advisory lock key — plain bigint, no collision with init_db / janitor
 # (verified via grep for pg_advisory in the codebase).
@@ -467,11 +470,11 @@ def _run_migration_transaction(cur, mapping, new_meta,
                 "(new_id, new_path, new_title, new_artist, new_album, new_year) "
                 "VALUES (%s, %s, %s, %s, %s, %s)",
                 (
-                    new_id,
-                    meta.get('path'),
-                    meta.get('title'),
-                    meta.get('artist'),
-                    meta.get('album'),
+                    _sanitize_text(new_id),
+                    _sanitize_text(meta.get('path')),
+                    _sanitize_text(meta.get('title')),
+                    _sanitize_text(meta.get('artist')),
+                    _sanitize_text(meta.get('album')),
                     meta.get('year'),
                 ),
             )
@@ -573,7 +576,7 @@ def _write_provider_to_app_config(cur, target_type, target_creds):
             "INSERT INTO app_config (key, value) VALUES (%s, %s) "
             "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
             "updated_at = CURRENT_TIMESTAMP",
-            (key, value),
+            (_sanitize_text(key), _sanitize_text(value)),
         )
 
     # Remove credentials for providers we're switching away from
