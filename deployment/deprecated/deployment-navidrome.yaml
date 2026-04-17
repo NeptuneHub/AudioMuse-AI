@@ -1,0 +1,401 @@
+# deployment-navidrome.yaml
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: playlist
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: navidrome-credentials
+  namespace: playlist
+type: Opaque
+stringData:
+  NAVIDROME_USER: "YOUR-USER"
+  NAVIDROME_PASSWORD: "YOUR-PASSWORD"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: playlist
+type: Opaque
+stringData:
+  POSTGRES_USER: "audiomuse"
+  POSTGRES_PASSWORD: "audiomusepassword"
+  POSTGRES_DB: "audiomusedb"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gemini-api-credentials
+  namespace: playlist
+type: Opaque
+stringData:
+  GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE" # Replace with your actual Gemini API Key
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: audiomuse-ai-auth
+  namespace: playlist
+stringData:
+  AUDIOMUSE_USER: ""
+  AUDIOMUSE_PASSWORD: ""
+  API_TOKEN: ""
+  JWT_SECRET: ""
+---
+
+kind: ConfigMap
+metadata:
+  name: audiomuse-ai-config
+  namespace: playlist
+data:
+  MEDIASERVER_TYPE: "navidrome"
+  NAVIDROME_URL: "YOUR-NAVIDROME-URL" #for example http://192.168.3.13:4533/
+  POSTGRES_HOST: "postgres-service.playlist"
+  POSTGRES_PORT: "5432"
+  REDIS_URL: "redis://redis-service.playlist:6379/0"
+  CLAP_ENABLED: "true" # Enable CLAP text search (set to "false" for slower systems)
+  AUTH_ENABLED: "true"
+  TEMP_DIR: "/app/temp_audio"
+  # Timezone for containers; default UTC
+  TZ: "UTC"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-master
+  namespace: playlist
+  labels:
+    app: redis
+    tier: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+      tier: backend
+  template:
+    metadata:
+      labels:
+        app: redis
+        tier: backend
+    spec:
+      containers:
+      - name: master
+        image: redis:7-alpine
+        resources:
+          limits:
+            cpu: 2000m
+            memory: 8000Mi
+          requests:
+            cpu: 2000m
+            memory: 8000Mi
+        ports:
+        - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: playlist
+  labels:
+    app: redis
+    tier: backend
+spec:
+  ports:
+  - port: 6379
+    targetPort: 6379
+  selector:
+    app: redis
+    tier: backend
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: playlist
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-deployment
+  namespace: playlist
+  labels:
+    app: postgres
+    tier: database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+      tier: database
+  template:
+    metadata:
+      labels:
+        app: postgres
+        tier: database
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        imagePullPolicy: "IfNotPresent"
+        ports:
+        - containerPort: 5432
+        envFrom:
+        - secretRef:
+            name: postgres-credentials
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        resources:
+          limits:
+            cpu: "1"
+            memory: "8Gi"
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: playlist
+spec:
+  selector:
+    app: postgres
+  ports:
+  - protocol: TCP
+    port: 5432
+    targetPort: 5432
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audiomuse-ai-flask
+  namespace: playlist
+  labels:
+    app: audiomuse-ai
+    component: flask
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: audiomuse-ai
+      component: flask
+  template:
+    metadata:
+      labels:
+        app: audiomuse-ai
+        component: flask
+    spec:
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        fsGroup: 0
+      containers:
+      - name: flask-app
+        image: ghcr.io/neptunehub/audiomuse-ai:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        env:
+        - name: SERVICE_TYPE
+          value: "flask"
+        - name: TZ
+          valueFrom:
+            configMapKeyRef:
+              name: audiomuse-ai-config
+              key: TZ
+        # --- Load Navidrome Credentials from Secret ---
+        - name: NAVIDROME_USER
+          valueFrom:
+            secretKeyRef:
+              name: navidrome-credentials
+              key: NAVIDROME_USER
+        - name: NAVIDROME_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: navidrome-credentials
+              key: NAVIDROME_PASSWORD
+        # --- Load PostgreSQL Credentials from Secret ---
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: POSTGRES_DB
+        # --- Load non-sensitive DB parts and other config from ConfigMap ---
+        - name: POSTGRES_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: audiomuse-ai-config
+              key: POSTGRES_HOST
+        - name: POSTGRES_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: audiomuse-ai-config
+              key: POSTGRES_PORT
+        # --- Load Gemini API Key from Secret ---
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gemini-api-credentials
+              key: GEMINI_API_KEY
+        # --- Load all other environment variables from the ConfigMap ---
+        envFrom:
+        - configMapRef:
+            name: audiomuse-ai-config
+        - secretRef:
+            name: audiomuse-ai-auth
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: app-temp-audio
+          mountPath: /app/temp_audio
+      volumes:
+      - name: app-temp-audio
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: audiomuse-ai-flask-service
+  namespace: playlist
+  labels:
+    app: audiomuse-ai
+    component: flask
+spec:
+  selector:
+    app: audiomuse-ai
+    component: flask
+  ports:
+  - protocol: TCP
+    port: 8000
+    targetPort: 8000
+  type: LoadBalancer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audiomuse-ai-worker
+  namespace: playlist
+  labels:
+    app: audiomuse-ai
+    component: worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: audiomuse-ai
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: audiomuse-ai
+        component: worker
+    spec:
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        fsGroup: 0
+      containers:
+      - name: rq-worker
+        image: ghcr.io/neptunehub/audiomuse-ai:latest
+        imagePullPolicy: Always
+        env:
+        - name: SERVICE_TYPE
+          value: "worker"
+        - name: TZ
+          valueFrom:
+            configMapKeyRef:
+              name: audiomuse-ai-config
+              key: TZ
+        # --- Load Navidrome Credentials from Secret ---
+        - name: NAVIDROME_USER
+          valueFrom:
+            secretKeyRef:
+              name: navidrome-credentials
+              key: NAVIDROME_USER
+        - name: NAVIDROME_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: navidrome-credentials
+              key: NAVIDROME_PASSWORD
+        # --- Load PostgreSQL Credentials from Secret ---
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: POSTGRES_DB
+        # --- Load non-sensitive DB parts and other config from ConfigMap ---
+        - name: POSTGRES_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: audiomuse-ai-config
+              key: POSTGRES_HOST
+        - name: POSTGRES_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: audiomuse-ai-config
+              key: POSTGRES_PORT
+        # --- Load Gemini API Key from Secret ---
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gemini-api-credentials
+              key: GEMINI_API_KEY
+        # --- Load all other environment variables from the ConfigMap ---
+        envFrom:
+        - configMapRef:
+            name: audiomuse-ai-config
+        - secretRef:
+            name: audiomuse-ai-auth
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: app-temp-audio
+          mountPath: /app/temp_audio
+      volumes:
+      - name: app-temp-audio
+        emptyDir: {}

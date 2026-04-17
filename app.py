@@ -1,15 +1,22 @@
 import os
 import psycopg2
 from psycopg2.extras import DictCursor
-from flask import Flask, jsonify, request, render_template, g
+from flask import Flask, jsonify, request, render_template, g, make_response, redirect, url_for
+from argon2 import PasswordHasher
+from argon2 import exceptions as argon2_exceptions
 import json
 import logging
 import threading
 import time
+import datetime
+import secrets
+import jwt as pyjwt
+import config
 
 # RQ imports
 from rq.job import Job, JobStatus
 from rq.exceptions import NoSuchJobError
+from tasks.setup_manager import SetupManager
 
 # Redis client
 from redis import Redis
@@ -30,7 +37,8 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
   AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, OPENAI_SERVER_URL, OPENAI_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME, MISTRAL_MODEL_NAME, \
   TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, ALCHEMY_SUBTRACT_DISTANCE, \
   ENABLE_PROXY_FIX, \
-  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN  # --- NEW: Import path distance metric and alchemy defaults ---
+  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN, \
+  AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, API_TOKEN, JWT_SECRET, AUTH_ENABLED
 
 if ENABLE_PROXY_FIX:
   # Werkzeug import for reverse proxy support
@@ -38,6 +46,7 @@ if ENABLE_PROXY_FIX:
 
 # --- Flask App Setup ---
 app = Flask(__name__)
+setup_manager = SetupManager()
 
 # Import helper functions
 from app_helper import (
@@ -47,9 +56,12 @@ from app_helper import (
     save_task_status,
     get_task_info_from_db,
     cancel_job_and_children_recursive,
+    check_setup_needed, check_auth_needed,
     TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
 )
+
+from app_provider_migration import migration_bp
 
 # NOTE: Annoy Manager import is moved to be local where used to prevent circular imports.
 
@@ -68,7 +80,40 @@ if ENABLE_PROXY_FIX:
 # Log the application version on startup
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
 
-# --- Context Processor to Inject Version and Feature Flags ---
+# --- Authentication Setup ---
+effective_audiomuse_user = AUDIOMUSE_USER
+effective_audiomuse_password = AUDIOMUSE_PASSWORD
+
+# JWT_SECRET is resolved after DB init (see below) so all gunicorn workers share
+# the same secret.  Placeholder here; real value assigned inside app_context block.
+_jwt_secret = JWT_SECRET
+
+auth_configured = bool(effective_audiomuse_user and effective_audiomuse_password)
+
+
+_password_hasher = PasswordHasher()
+
+
+def _is_argon2_password_hash(value):
+    return isinstance(value, str) and value.startswith('$argon2')
+
+
+def _verify_audiomuse_password(stored_password, provided_password):
+    if not isinstance(stored_password, str) or not isinstance(provided_password, str):
+        return False
+    if _is_argon2_password_hash(stored_password):
+        try:
+            return _password_hasher.verify(stored_password, provided_password)
+        except argon2_exceptions.VerifyMismatchError:
+            return False
+        except argon2_exceptions.VerificationError as exc:
+            app.logger.error(f"Argon2 verification failed for stored password hash: {exc}", exc_info=True)
+            return False
+        except Exception as exc:
+            app.logger.error(f"Unexpected Argon2 verification error: {exc}", exc_info=True)
+            return False
+    return stored_password == provided_password
+
 @app.context_processor
 def inject_globals():
     """Injects global variables into all templates."""
@@ -76,8 +121,46 @@ def inject_globals():
     return dict(
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
-        mulan_enabled=MULAN_ENABLED
+        mulan_enabled=MULAN_ENABLED,
+        auth_enabled=config.AUTH_ENABLED,
+        setup_saved=not check_setup_needed(),
     )
+
+# --- Unified Auth + Setup Barrier ---
+@app.before_request
+def auth_setup_barrier():
+    """Single before_request that handles both setup-needed and auth-needed logic."""
+    # Always allow static assets and health check
+    if request.path.startswith('/static/') or request.path == '/api/health':
+        return
+
+    # 1) Setup needed → send to setup, no auth required
+    if check_setup_needed():
+        if request.path in ('/setup', '/api/setup'):
+            return
+        if request.path.startswith('/api/'):
+            return jsonify({"error": "Setup required"}), 403
+        return redirect(url_for('setup_page'))
+
+    # 2) Setup done, auth needed → send to login
+    if request.path in ('/login', '/auth', '/logout'):
+        return
+    auth_response = check_auth_needed(_jwt_secret)
+    if auth_response:
+        return auth_response
+
+    # 3) All clear → proceed to requested page
+
+@app.before_request
+def log_api_request():
+    if request.path.startswith('/api/') and not request.path.startswith('/static/'):
+        app.logger.info('API request: %s %s', request.method, request.path)
+
+@app.route('/api/health')
+def health_check():
+    return jsonify({
+        'status': 'ok',
+    })
 
 # --- Swagger Setup ---
 app.config['SWAGGER'] = {
@@ -95,9 +178,110 @@ def teardown_db(e=None):
 # This is safe because it doesn't import other application modules.
 with app.app_context():
     init_db()
+    setup_manager.bootstrap_env_config_if_empty(config)
 
+    # Finalize JWT_SECRET — must happen after DB init so the value can be
+    # persisted and shared across all gunicorn workers.
+    if not _jwt_secret and AUTH_ENABLED:
+        # Re-read from DB in case another worker already saved a secret
+        config.refresh_config()
+        _jwt_secret = config.JWT_SECRET
+        if not _jwt_secret:
+            _jwt_secret = secrets.token_hex(32)
+            setup_manager.save_config_values({'JWT_SECRET': _jwt_secret})
+            config.JWT_SECRET = _jwt_secret
+            app.logger.warning(
+                "JWT_SECRET was not set. A random secret has been generated and saved to the database. "
+                "Set JWT_SECRET in your .env for full control."
+            )
+
+import app_setup
 
 # --- API Endpoints ---
+
+# --- Auth Routes ---
+@app.route('/login')
+def login_page():
+    """Serve the login page. Redirects to / if already authenticated."""
+    if not config.AUTH_ENABLED:
+        return redirect(url_for('index'))
+    token = request.cookies.get('audiomuse_jwt')
+    if token:
+        try:
+            pyjwt.decode(token, _jwt_secret, algorithms=['HS256'])
+            return redirect(url_for('index'))
+        except pyjwt.InvalidTokenError:
+            pass
+
+    return render_template('login.html', title='Login — AudioMuse-AI')
+
+@app.route('/auth', methods=['POST'])
+def auth_endpoint():
+    """
+    Validate credentials and issue a JWT session cookie.
+    Body: { "user": "...", "password": "..." }
+    On success: sets HttpOnly JWT cookie, returns 200.
+    On failure: returns 401.
+    The API_TOKEN is NEVER returned in the response body.
+    """
+    if not config.AUTH_ENABLED:
+        return jsonify({"error": "Auth not configured"}), 404
+    if not auth_configured:
+        app.logger.warning(
+            "Auth is enabled but AUDIOMUSE_USER or AUDIOMUSE_PASSWORD is missing. API_TOKEN is optional for external/plugin calls."
+        )
+        return jsonify({"error": "Auth not configured"}), 404
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = request.form.to_dict()
+    if not isinstance(data, dict):
+        data = {}
+
+    user = data.get('user', '')
+    password = data.get('password', '')
+    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+
+    if user != effective_audiomuse_user or not _verify_audiomuse_password(effective_audiomuse_password, password):
+        app.logger.warning(f"Failed login attempt for user: {user!r}")
+        if is_ajax:
+            return jsonify({"error": "Invalid credentials"}), 401
+        return render_template('login.html', title='Login — AudioMuse-AI', login_error='Invalid username or password.')
+
+    # Issue JWT — new token at every login
+    now = datetime.datetime.now(datetime.timezone.utc)
+    payload = {
+        'sub': user,
+        'iat': now,
+        'exp': now + datetime.timedelta(hours=8),
+    }
+    token = pyjwt.encode(payload, _jwt_secret, algorithm='HS256')
+
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        resp = make_response(jsonify({"status": "ok"}), 200)
+    else:
+        resp = make_response(redirect(url_for('index')))
+    resp.set_cookie(
+        'audiomuse_jwt',
+        token,
+        path='/',
+        httponly=True,           # JS cannot read this cookie
+        samesite='Strict',       # CSRF protection
+        secure=False,            # Set to True when behind HTTPS (Caddy/Traefik handle TLS)
+        max_age=8 * 3600         # 8 hours, matches JWT expiry
+    )
+    return resp
+
+@app.route('/logout', methods=['POST'])
+def logout_endpoint():
+    """Clear the JWT session cookie and redirect to /login."""
+    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+    if is_ajax:
+        resp = make_response(jsonify({"status": "logged_out"}), 200)
+    else:
+        resp = make_response(redirect(url_for('login_page')))
+    resp.delete_cookie('audiomuse_jwt', path='/', samesite='Strict')
+    return resp
 
 @app.route('/')
 def index():
@@ -277,18 +461,9 @@ def cancel_task_endpoint(task_id):
       404:
         description: Task ID not found in the database.
     """
-    db_task_info = get_task_info_from_db(task_id)
-    if not db_task_info:
-        return jsonify({"message": f"Task {task_id} not found in database.", "task_id": task_id}), 404
-
-    if db_task_info.get('status') in [TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]:
-        return jsonify({"message": f"Task {task_id} is already in a terminal state ({db_task_info.get('status')}) and cannot be cancelled.", "task_id": task_id}), 400
-
+    # Always perform cancel when the endpoint is invoked. No early returns.
     cancelled_count = cancel_job_and_children_recursive(task_id, reason=f"Cancellation requested for task {task_id} via API.")
-
-    if cancelled_count > 0:
-        return jsonify({"message": f"Task {task_id} and its children cancellation initiated. {cancelled_count} total jobs affected.", "task_id": task_id, "cancelled_jobs_count": cancelled_count}), 200
-    return jsonify({"message": "Task could not be cancelled (e.g., already completed or not found in active state).", "task_id": task_id}), 400
+    return jsonify({"message": f"Task {task_id} cancellation requested. {cancelled_count} cancellation actions attempted.", "task_id": task_id, "cancelled_jobs_count": cancelled_count}), 200
 
 
 @app.route('/api/cancel_all/<task_type_prefix>', methods=['POST'])
@@ -512,7 +687,6 @@ def listen_for_index_reloads():
   """
   # Create a new Redis connection for this thread.
   # Sharing the main redis_conn object across threads is not recommended.
-  from redis import Redis
   thread_redis_conn = Redis.from_url(
     REDIS_URL,
     socket_connect_timeout=30,
@@ -598,6 +772,7 @@ from app_waveform import waveform_bp
 from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
 from app_mulan_search import mulan_search_bp
+from app_backup import backup_bp
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -614,10 +789,20 @@ app.register_blueprint(waveform_bp)
 app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
 app.register_blueprint(mulan_search_bp)
+app.register_blueprint(backup_bp)
+app.register_blueprint(migration_bp)
 
-if __name__ == '__main__':
+# --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
+# RQ workers import app.py but should NOT load indexes or start background threads.
+# The env var AUDIOMUSE_ROLE is set to 'worker' by rq_worker.py / rq_worker_high_priority.py.
+_is_worker = os.environ.get('AUDIOMUSE_ROLE') == 'worker'
+
+try:
   os.makedirs(TEMP_DIR, exist_ok=True)
+except OSError:
+  logger.debug(f"Could not create TEMP_DIR '{TEMP_DIR}' (may be running in test/CI environment)")
 
+if not _is_worker:
   with app.app_context():
     # --- Initial Voyager Index Load ---
     from tasks.voyager_manager import load_voyager_index_for_querying
@@ -652,13 +837,14 @@ if __name__ == '__main__':
         if load_clap_cache_from_db():
           logger.info("CLAP text search cache loaded at startup (embeddings only).")
           logger.info("CLAP model will lazy-load on first text search (~1-2s delay, saves 3GB RAM).")
-          
-          # Load top queries from database (default queries only, no computation)
-          has_existing = load_top_queries_from_db()
-          if has_existing:
-            logger.info("Loaded top queries from database (defaults).")
-          else:
-            logger.info("No queries found in database (should not happen - check DB)")
+        
+        # Load top queries from database (default queries only, no computation)
+        # This must run even if no CLAP embeddings exist yet (first startup)
+        has_existing = load_top_queries_from_db()
+        if has_existing:
+          logger.info("Loaded top queries from database (defaults).")
+        else:
+          logger.info("No queries found in database (should not happen - check DB)")
     except Exception as e:
       logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
     # Load MuLan embeddings cache (model will lazy-load on first use)
@@ -670,22 +856,21 @@ if __name__ == '__main__':
         if load_mulan_cache_from_db():
           logger.info("MuLan text search cache loaded at startup (embeddings only).")
           logger.info("MuLan models will lazy-load on first text search.")
-          
-          # Load top queries from database
-          has_existing = load_mulan_top_queries_from_db()
-          if has_existing:
-            logger.info("Loaded MuLan top queries from database (defaults).")
-          else:
-            logger.info("No MuLan queries found in database (defaults inserted)")
+        
+        # Load top queries from database
+        # This must run even if no MuLan embeddings exist yet (first startup)
+        has_existing = load_mulan_top_queries_from_db()
+        if has_existing:
+          logger.info("Loaded MuLan top queries from database (defaults).")
+        else:
+          logger.info("No MuLan queries found in database (defaults inserted)")
     except Exception as e:
       logger.debug(f"MuLan cache not loaded at startup (may be disabled or failed): {e}")
-    # Initialize map JSON cache once at startup (reads DB one time)
-    # Run this in a background daemon thread so the Flask process doesn't block on the heavy DB read.
+
     def _start_map_init_background():
       try:
         from app_map import init_map_cache
         logger.info('Starting background map JSON cache build.')
-        # Ensure we run the heavy cache build inside an application context
         with app.app_context():
           init_map_cache()
         logger.info('Background map JSON cache build finished.')
@@ -695,7 +880,8 @@ if __name__ == '__main__':
     t = threading.Thread(target=_start_map_init_background, daemon=True)
     t.start()
 
-  # --- Start Background Listener Thread ---
+# --- Start Background Listener Thread (Flask server only) ---
+if not _is_worker:
   listener_thread = threading.Thread(target=listen_for_index_reloads, daemon=True)
   listener_thread.start()
 
@@ -715,5 +901,8 @@ if __name__ == '__main__':
 
   cron_thread = threading.Thread(target=_cron_manager_loop, daemon=True)
   cron_thread.start()
+else:
+  logger.info('Running as RQ worker — skipping index loading, Redis listener, and cron thread.')
 
+if __name__ == '__main__':
   app.run(debug=False, host='0.0.0.0', port=8000)

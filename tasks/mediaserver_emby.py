@@ -5,6 +5,8 @@ import logging
 import os
 import config
 
+from tasks.mediaserver_helper import detect_path_format
+
 logger = logging.getLogger(__name__)
 
 REQUESTS_TIMEOUT = 300
@@ -76,6 +78,18 @@ def _get_target_library_ids():
     except Exception as e:
         logger.error(f"Failed to fetch or parse Emby virtual folders at '{url}': {e}", exc_info=True)
         return set()
+
+
+def _emby_base_url(user_creds=None):
+    return (user_creds.get('url') if user_creds and user_creds.get('url') else config.EMBY_URL).rstrip('/')
+
+
+def _emby_headers_from_creds(user_creds=None):
+    headers = dict(getattr(config, 'HEADERS', {}) or {})
+    token = user_creds.get('token') if user_creds else getattr(config, 'EMBY_TOKEN', None)
+    if token:
+        headers['X-Emby-Token'] = token
+    return headers
 
 
 def _emby_get_users(token):
@@ -260,6 +274,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
 
     # Apply artist field prioritization to standalone tracks
     for track in all_tracks:
+        track['OriginalAlbumArtist'] = track.get('AlbumArtist')
         title = track.get('Name', 'Unknown')
         artist_name, artist_id = _select_best_artist(track, title)
         track['AlbumArtist'] = artist_name
@@ -408,7 +423,7 @@ def get_recent_music_items(limit):
 def get_tracks_from_album(album_id, user_creds=None):
     # this is fully compatble with Emby. no need to change
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
-    """Fetches all audio tracks for a given album ID from Emby using admin credentials."""
+    """Fetches all audio tracks for a given album ID from Emby using admin or override credentials."""
     # Check if this is a pseudo-album for a standalone track
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     if str(album_id).startswith('standalone_'):
@@ -416,36 +431,49 @@ def get_tracks_from_album(album_id, user_creds=None):
         real_track_id = album_id.replace('standalone_', '')
         
         # Get the track directly by its ID
-        url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items/{real_track_id}"
+        url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items/{real_track_id}"
+        params = {"Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists"}
         try:
-            r = requests.get(url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
+            r = requests.get(url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
             r.raise_for_status()
             track_item = r.json()
-            
+
             # Apply artist field prioritization
+            track_item['OriginalAlbumArtist'] = track_item.get('AlbumArtist')
             title = track_item.get('Name', 'Unknown')
-            track_item['AlbumArtist'] = _select_best_artist(track_item, title)
-            
+            artist_name, artist_id = _select_best_artist(track_item, title)
+            track_item['AlbumArtist'] = artist_name
+            track_item['ArtistId'] = artist_id
+            track_item['Year'] = track_item.get('ProductionYear')
+            track_item['FilePath'] = track_item.get('Path')
+
             return [track_item]  # Return as single-item list to maintain compatibility
         except Exception as e:
             logger.error(f"Emby get_tracks_from_album failed for standalone track {real_track_id}: {e}", exc_info=True)
             return []
     
     # Normal album handling
-    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
-    params = {"ParentId": album_id, "IncludeItemTypes": "Audio"}
+    url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
+    params = {
+        "ParentId": album_id,
+        "IncludeItemTypes": "Audio",
+        "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
+    }
     try:
-        r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+        r = requests.get(url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         items = r.json().get("Items", [])
-        
+
         # Apply artist field prioritization to each track
         for item in items:
+            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
             title = item.get('Name', 'Unknown')
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
-        
+            item['Year'] = item.get('ProductionYear')
+            item['FilePath'] = item.get('Path')
+
         return items
     except Exception as e:
         logger.error(f"Emby get_tracks_from_album failed for album {album_id}: {e}", exc_info=True)
@@ -517,7 +545,7 @@ def get_all_songs(user_creds=None):
     # not sure if this approach would work.. It defnitly needs testing.
     """Fetches all songs from Emby using admin credentials."""
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
-    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+    url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
     all_items = []
     start_index = 0
     limit = 1000  # max items per request
@@ -528,19 +556,22 @@ def get_all_songs(user_creds=None):
             "Recursive": True,
             "StartIndex": start_index,
             "Limit": limit,
-            "Fields": "UserData,Path"
+            "Fields": "UserData,Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists"
         }
         try:
-            r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+            r = requests.get(url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
             r.raise_for_status()
             items = r.json().get("Items", [])
-            
+
             # Apply artist field prioritization
             for item in items:
+                item['OriginalAlbumArtist'] = item.get('AlbumArtist')
                 title = item.get('Name', 'Unknown')
                 artist_name, artist_id = _select_best_artist(item, title)
                 item['AlbumArtist'] = artist_name
                 item['ArtistId'] = artist_id
+                item['Year'] = item.get('ProductionYear')
+                item['FilePath'] = item.get('Path')
 
             all_items.extend(items)
 
@@ -554,6 +585,74 @@ def get_all_songs(user_creds=None):
             break
 
     return all_items
+
+
+def search_albums(query, user_creds=None):
+    """Search Emby albums using admin or override credentials."""
+    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
+    url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
+    params = {
+        "IncludeItemTypes": "MusicAlbum",
+        "Recursive": True,
+        "SearchTerm": query,
+        "Limit": 10,
+        "Fields": "ChildCount,ProductionYear,AlbumArtist",
+    }
+    try:
+        r = requests.get(url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        items = r.json().get("Items", []) or []
+        return [
+            {
+                'id':          item.get('Id'),
+                'name':        item.get('Name'),
+                'artist':      item.get('AlbumArtist'),
+                'year':        item.get('ProductionYear'),
+                'track_count': item.get('ChildCount'),
+            }
+            for item in items
+        ]
+    except Exception as e:
+        logger.error(f"Emby search_albums failed: {e}", exc_info=True)
+        return []
+
+
+def test_connection(user_creds=None):
+    """Test Emby connectivity using admin or override credentials."""
+    try:
+        user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
+        url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
+        params = {
+            "IncludeItemTypes": "Audio",
+            "Recursive": True,
+            "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
+            "StartIndex": 0,
+            "Limit": 100,
+        }
+        r = requests.get(url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        items = r.json().get('Items', []) or []
+        sample = []
+        for item in items:
+            track_artist, _ = _select_best_artist(item, item.get('Name', 'Unknown'))
+            sample.append({
+                'Id': item.get('Id'),
+                'Path': item.get('Path'),
+                'Name': item.get('Name'),
+                'AlbumArtist': track_artist,
+            })
+        path_format = detect_path_format(sample)
+        return {
+            'ok': True,
+            'error': None,
+            'sample_count': len(sample),
+            'path_format': path_format,
+            'warnings': [],
+        }
+    except Exception as e:
+        logger.warning(f"Emby test_connection failed: {e}")
+        return {'ok': False, 'error': str(e), 'sample_count': 0, 'path_format': 'none', 'warnings': []}
+
 
 def get_playlist_by_name(playlist_name, user_creds=None):
     """Finds a Emby playlist by its exact name using admin credentials."""
@@ -681,19 +780,22 @@ def get_top_played_songs(limit, user_creds=None):
     # this Endpoint is compatble with Emby. no need to change
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     headers = {"X-Emby-Token": token}
-    params = {"IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path"}
+    params = {"IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path,ProductionYear"}
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         items = r.json().get("Items", [])
-        
+
         # Apply artist field prioritization to each track
         for item in items:
+            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
             title = item.get('Name', 'Unknown')
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
-        
+            item['Year'] = item.get('ProductionYear')
+            item['FilePath'] = item.get('Path')
+
         return items
     except Exception as e:
         logger.error(f"Emby get_top_played_songs failed for user {user_id}: {e}", exc_info=True)

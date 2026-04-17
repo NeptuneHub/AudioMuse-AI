@@ -6,7 +6,7 @@ import numpy as np
 import logging
 
 # Import voyager_manager functions for track lookups
-from tasks.voyager_manager import search_tracks_by_title_and_artist
+from tasks.voyager_manager import search_tracks_unified
 # NOTE: The import of 'get_db' has been moved inside each function to prevent circular imports.
 
 logger = logging.getLogger(__name__)
@@ -121,20 +121,26 @@ def get_embedding_endpoint():
 @external_bp.route('/search', methods=['GET'])
 def search_tracks_endpoint():
     """
-    Provides autocomplete suggestions for tracks based on title and/or artist.
-    A query for either title or artist must be at least 3 characters long.
+    Provides autocomplete suggestions for tracks based on a unified search query
+    or legacy title/artist parameters.
+    A query must be at least 3 characters long.
     ---
     tags:
       - External
     parameters:
+      - name: search_query
+        in: query
+        description: Partial or full elements of songs' titles, artist or album names.
+        schema:
+          type: string
       - name: title
         in: query
-        description: Partial or full title of the track.
+        description: (Legacy) Partial or full title of the track. Used as fallback when search_query is absent.
         schema:
           type: string
       - name: artist
         in: query
-        description: Partial or full name of the artist.
+        description: (Legacy) Partial or full name of the artist. Used as fallback when search_query is absent.
         schema:
           type: string
     responses:
@@ -145,20 +151,25 @@ def search_tracks_endpoint():
       500:
         description: Internal server error.
     """
-    title_query = request.args.get('title', '', type=str)
-    artist_query = request.args.get('artist', '', type=str)
+    search_query = request.args.get('search_query', '', type=str)
 
-    # Return empty list if both queries are empty
-    if not title_query and not artist_query:
+    # Backward compatibility: support legacy 'title' and 'artist' params
+    # so external apps using the old API continue to work.
+    if not search_query:
+        legacy_title = request.args.get('title', '', type=str).strip()
+        legacy_artist = request.args.get('artist', '', type=str).strip()
+        search_query = f"{legacy_artist} {legacy_title}".strip()
+
+    # Return empty list if query is empty
+    if not search_query:
         return jsonify([])
 
     # Enforce minimum length constraint
-    if len(title_query) < 3 and len(artist_query) < 3:
-        return jsonify({"error": "Query for title or artist must be at least 3 characters long"}), 400
+    if len(search_query) < 3:
+        return jsonify({"error": "Query must be at least 3 characters long"}), 400
 
     try:
-        # Reuse the existing search logic
-        results = search_tracks_by_title_and_artist(title_query, artist_query)
+        results = search_tracks_unified(search_query)
         return jsonify(results)
     except Exception as e:
         logger.error(f"Error during external track search: {e}", exc_info=True)

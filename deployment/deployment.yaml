@@ -9,16 +9,6 @@ metadata:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: jellyfin-credentials
-  namespace: playlist
-type: Opaque
-stringData:
-  user_id: "YOUR-JF-USER-ID" # Your Jellyfin User ID for example 0e45c44b3e2e4da7a2be11a72a1c8575
-  api_token: "YOUR-JF-API-TOKEN" # Your Jellyfin API Token for example e0b8c325bc1b426c81922b90c0aa2ff1
----
-apiVersion: v1
-kind: Secret
-metadata:
   name: postgres-credentials
   namespace: playlist
 type: Opaque
@@ -28,27 +18,14 @@ stringData:
   POSTGRES_DB: "audiomusedb" # As used in app.py
 ---
 apiVersion: v1
-kind: Secret
-metadata:
-  name: gemini-api-credentials
-  namespace: playlist
-type: Opaque
-stringData:
-  GEMINI_API_KEY: "YOUR_GEMINI_API_KEY_HERE" # Replace with your actual Gemini API Key
----
-apiVersion: v1
 kind: ConfigMap
 metadata:
   name: audiomuse-ai-config
   namespace: playlist
 data:
-  MEDIASERVER_TYPE: "jellyfin"
-  JELLYFIN_URL: "YOUR-JF-URL" # For example http://jellyfin.192.168.3.131.nip.io:8087
   POSTGRES_HOST: "postgres-service.playlist" # Database host
   POSTGRES_PORT: "5432" # Database port
   REDIS_URL: "redis://redis-service.playlist:6379/0"
-  CLAP_ENABLED: "true" # Enable CLAP text search (set to "false" for slower systems)
-  TEMP_DIR: "/app/temp_audio" # Updated to match code changes
   # Timezone applied inside containers. Default is UTC but you may set this in the ConfigMap or via deployment overrides
   TZ: "UTC"
 ---
@@ -211,17 +188,6 @@ spec:
             configMapKeyRef:
               name: audiomuse-ai-config
               key: TZ
-        # --- Load Jellyfin Credentials from Secret ---
-        - name: JELLYFIN_USER_ID
-          valueFrom:
-            secretKeyRef:
-              name: jellyfin-credentials
-              key: user_id
-        - name: JELLYFIN_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: jellyfin-credentials
-              key: api_token
         # --- Load PostgreSQL Credentials from Secret ---
         - name: POSTGRES_USER
           valueFrom:
@@ -238,7 +204,7 @@ spec:
             secretKeyRef:
               name: postgres-credentials
               key: POSTGRES_DB
-        # --- Load non-sensitive DB parts and other config from ConfigMap ---
+        # --- Load non-sensitive DB parts from ConfigMap ---
         - name: POSTGRES_HOST
           valueFrom:
             configMapKeyRef:
@@ -249,13 +215,7 @@ spec:
             configMapKeyRef:
               name: audiomuse-ai-config
               key: POSTGRES_PORT
-        # --- Load Gemini API Key from Secret ---
-        - name: GEMINI_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: gemini-api-credentials
-              key: GEMINI_API_KEY
-        # --- Load all other environment variables from the ConfigMap ---
+        # --- Load minimal connection configuration from the ConfigMap ---
         envFrom:
         - configMapRef:
             name: audiomuse-ai-config
@@ -325,17 +285,6 @@ spec:
             configMapKeyRef:
               name: audiomuse-ai-config
               key: TZ
-        # --- Load Jellyfin Credentials from Secret ---
-        - name: JELLYFIN_USER_ID
-          valueFrom:
-            secretKeyRef:
-              name: jellyfin-credentials
-              key: user_id
-        - name: JELLYFIN_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: jellyfin-credentials
-              key: api_token
         # --- Load PostgreSQL Credentials from Secret ---
         - name: POSTGRES_USER
           valueFrom:
@@ -352,7 +301,7 @@ spec:
             secretKeyRef:
               name: postgres-credentials
               key: POSTGRES_DB
-        # --- Load non-sensitive DB parts and other config from ConfigMap ---
+        # --- Load non-sensitive DB parts from ConfigMap ---
         - name: POSTGRES_HOST
           valueFrom:
             configMapKeyRef:
@@ -363,13 +312,7 @@ spec:
             configMapKeyRef:
               name: audiomuse-ai-config
               key: POSTGRES_PORT
-        # --- Load Gemini API Key from Secret ---
-        - name: GEMINI_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: gemini-api-credentials
-              key: GEMINI_API_KEY
-        # --- Load all other environment variables from the ConfigMap ---
+        # --- Load minimal connection configuration from the ConfigMap ---
         envFrom:
         - configMapRef:
             name: audiomuse-ai-config

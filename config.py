@@ -7,40 +7,75 @@ MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Poss
 # --- Jellyfin and DB Constants (Read from Environment Variables first) ---
 
 # JELLYFIN_USER_ID and JELLYFIN_TOKEN come from a Kubernetes Secret
-JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "http://your_jellyfin_url:8096") # Replace with your default URL
-JELLYFIN_USER_ID = os.environ.get("JELLYFIN_USER_ID", "your_default_user_id")  # Replace with a suitable default or handle missing case
-JELLYFIN_TOKEN = os.environ.get("JELLYFIN_TOKEN", "your_default_token")  # Replace with a suitable default or handle missing case
+JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "") # Replace with your default URL
+JELLYFIN_USER_ID = os.environ.get("JELLYFIN_USER_ID", "")  # Replace with a suitable default or handle missing case
+JELLYFIN_TOKEN = os.environ.get("JELLYFIN_TOKEN", "")  # Replace with a suitable default or handle missing case
 
 # EMBY_USER_ID and JELLYFIN_TOKEN come from a Kubernetes Secret
-EMBY_URL = os.environ.get("EMBY_URL", "http://embymediaserver:8096") # Replace with your default URL
-EMBY_USER_ID = os.environ.get("EMBY_USER_ID", "your_default_user_id")  # Replace with a suitable default or handle missing case
-EMBY_TOKEN = os.environ.get("EMBY_TOKEN", "your_default_token")  # Replace with a suitable default or handle missing case
+EMBY_URL = os.environ.get("EMBY_URL", "") # Replace with your default URL
+EMBY_USER_ID = os.environ.get("EMBY_USER_ID", "")  # Replace with a suitable default or handle missing case
+EMBY_TOKEN = os.environ.get("EMBY_TOKEN", "")  # Replace with a suitable default or handle missing case
 
 
 # NEW: Allow specifying music libraries/folders for analysis across all media servers.
 # Comma-separated list of library/folder names or paths. If empty, all music libraries/folders are scanned.
-# For Lyrion: Use folder paths like "/music/myfolder"  
+# For Lyrion: Use folder paths like "/music/myfolder"
 # For Jellyfin/Navidrome: Use library/folder names
-MUSIC_LIBRARIES = os.environ.get("MUSIC_LIBRARIES", "") 
+MUSIC_LIBRARIES = os.environ.get("MUSIC_LIBRARIES", "")
+# Maximum number of items to fetch during the connection probe.
+# Set to 0 to scan all top-played items, or a small positive integer to keep the probe fast.
+PROBE_TOP_PLAYED_LIMIT = int(os.environ.get("PROBE_TOP_PLAYED_LIMIT", "1"))
 TEMP_DIR = "/app/temp_audio"  # Always use /app/temp_audio
-HEADERS = {"X-Emby-Token": JELLYFIN_TOKEN}
 
-if MEDIASERVER_TYPE == "jellyfin":
-    HEADERS = {"X-Emby-Token": JELLYFIN_TOKEN}
-elif MEDIASERVER_TYPE == "emby":
-    HEADERS = {"X-Emby-Token": EMBY_TOKEN}
-else:
-    HEADERS = {}
+
+def _compute_headers():
+    if MEDIASERVER_TYPE == "jellyfin":
+        return {"X-Emby-Token": JELLYFIN_TOKEN}
+    if MEDIASERVER_TYPE == "emby":
+        return {"X-Emby-Token": EMBY_TOKEN}
+    return {}
+
+HEADERS = _compute_headers()
 
 # --- Navidrome (Subsonic API) Constants ---
 # These are used only if MEDIASERVER_TYPE is "navidrome".
-NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "http://your_navidrome_url:4533")
-NAVIDROME_USER = os.environ.get("NAVIDROME_USER", "your_navidrome_user")
-NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "your_navidrome_password") # Use the password directly
+NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "")
+NAVIDROME_USER = os.environ.get("NAVIDROME_USER", "")
+NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "") # Use the password directly
 
 # --- Lyrion (LMS) Constants ---
 # These are used only if MEDIASERVER_TYPE is "lyrion".
-LYRION_URL = os.environ.get("LYRION_URL", "http://your_lyrion_url:9000")
+LYRION_URL = os.environ.get("LYRION_URL", "")
+
+MEDIASERVER_FIELDS_BY_TYPE = {
+    'jellyfin': ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN'],
+    'navidrome': ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD'],
+    'lyrion': ['LYRION_URL'],
+    'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
+}
+
+MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {
+    media_type: [
+        field
+        for other_type, fields in MEDIASERVER_FIELDS_BY_TYPE.items()
+        if other_type != media_type
+        for field in fields
+    ]
+    for media_type in MEDIASERVER_FIELDS_BY_TYPE
+}
+
+SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
+    'DATABASE_URL',
+    'POSTGRES_USER',
+    'POSTGRES_PASSWORD',
+    'POSTGRES_HOST',
+    'POSTGRES_PORT',
+    'POSTGRES_DB',
+    'REDIS_URL',
+    'MEDIASERVER_FIELDS_BY_TYPE',
+    'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
+    'APP_VERSION',
+}
 
 # --- MPD (Music Player Daemon) Constants ---
 # These are used only if MEDIASERVER_TYPE is "mpd".
@@ -51,7 +86,7 @@ MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music"
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v0.8.8"
+APP_VERSION = "v1.0.1"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -212,10 +247,10 @@ OPENAI_SERVER_URL = os.environ.get("OPENAI_SERVER_URL", os.environ.get("OLLAMA_S
 OPENAI_MODEL_NAME = os.environ.get("OPENAI_MODEL_NAME", os.environ.get("OLLAMA_MODEL_NAME", "llama3.1:8b"))
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "no-key-needed") # Set to "no-key-needed" for Ollama, or your actual API key for OpenAI/OpenRouter
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR-GEMINI-API-KEY-HERE") # Default API key
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "") # Default API key
 GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro") # Default Gemini model gemini-2.5-pro, alternative gemini-2.5-flash
 
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "YOUR-GEMINI-API-KEY-HERE")
+MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
 MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 
 # AI Request Timeout Configuration
@@ -260,28 +295,38 @@ MOOD_LABELS = [
 
 TOP_N_MOODS = int(os.environ.get("TOP_N_MOODS", "5"))  # Number of top moods to consider (configurable via env)
 TOP_N_OTHER_FEATURES = int(os.environ.get("TOP_N_OTHER_FEATURES", "2")) # Number of top "other features" to consider for clustering vector
-EMBEDDING_MODEL_PATH = "/app/model/msd-musicnn-1.onnx"
-PREDICTION_MODEL_PATH = "/app/model/msd-msd-musicnn-1.onnx"
+EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/app/model/musicnn_embedding.onnx")
+PREDICTION_MODEL_PATH = os.environ.get("PREDICTION_MODEL_PATH", "/app/model/musicnn_prediction.onnx")
 EMBEDDING_DIMENSION = 200
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # Split CLAP models: audio model for analysis, text model for search
-CLAP_AUDIO_MODEL_PATH = os.environ.get("CLAP_AUDIO_MODEL_PATH", "/app/model/clap_audio_model.onnx")
+# Default points to the distilled student model (EfficientAT, epoch 36).
+# The companion external-data file (model_epoch_36.onnx.data) must sit next to it.
+# To revert to the original teacher model set CLAP_AUDIO_MODEL_PATH=/app/model/clap_audio_model.onnx
+# and override the mel params (see CLAP_AUDIO_* variables below).
+CLAP_AUDIO_MODEL_PATH = os.environ.get("CLAP_AUDIO_MODEL_PATH", "/app/model/model_epoch_36.onnx")
+
+# Mel-spectrogram parameters for the CLAP audio model.
+# Defaults match the distilled student model (EfficientAT, model_epoch_36.onnx).
+# For the original teacher model (clap_audio_model.onnx) override to:
+#   CLAP_AUDIO_N_MELS=64  CLAP_AUDIO_N_FFT=1024  CLAP_AUDIO_HOP_LENGTH=480
+#   CLAP_AUDIO_FMIN=50    CLAP_AUDIO_MEL_TRANSPOSE=true
+CLAP_AUDIO_N_MELS = int(os.environ.get("CLAP_AUDIO_N_MELS", "128"))
+CLAP_AUDIO_N_FFT = int(os.environ.get("CLAP_AUDIO_N_FFT", "2048"))
+CLAP_AUDIO_HOP_LENGTH = int(os.environ.get("CLAP_AUDIO_HOP_LENGTH", "480"))
+CLAP_AUDIO_FMIN = int(os.environ.get("CLAP_AUDIO_FMIN", "0"))
+CLAP_AUDIO_FMAX = int(os.environ.get("CLAP_AUDIO_FMAX", "14000"))
+# Teacher model (HTSAT) transposes mel to (time, mels); student does not.
+CLAP_AUDIO_MEL_TRANSPOSE = os.environ.get("CLAP_AUDIO_MEL_TRANSPOSE", "false").lower() == "true"
+
 CLAP_TEXT_MODEL_PATH = os.environ.get("CLAP_TEXT_MODEL_PATH", "/app/model/clap_text_model.onnx")
-# Legacy path for backward compatibility (unused with split models)
-CLAP_MODEL_PATH = os.environ.get("CLAP_MODEL_PATH", "/app/model/clap_model.onnx")
 CLAP_EMBEDDING_DIMENSION = 512
 # CPU threading for CLAP analysis:
 # - False (default): Use ONNX internal threading (auto-detects all CPU cores, recommended)
 # - True: Use Python ThreadPoolExecutor with auto-calculated threads: (physical_cores - 1) + (logical_cores // 2)
 CLAP_PYTHON_MULTITHREADS = os.environ.get("CLAP_PYTHON_MULTITHREADS", "False").lower() == "true"
-# Mini-batch size for CLAP segment processing (reduces GPU memory usage)
-# - 4 (default): Safe for 4GB GPU, processes 4 segments at a time
-# - 8: Good for 6GB+ GPU, faster but uses more memory
-# - 1: Ultra-safe sequential processing (slowest, minimal memory)
-# Note: Set to 1 for deterministic embeddings (ONNX model has batch-sensitive operations)
-CLAP_MINI_BATCH_SIZE = int(os.environ.get("CLAP_MINI_BATCH_SIZE", "1"))
 
 # Model reloading strategy to prevent GPU VRAM accumulation
 # - true (default): Unload both MusiCNN and CLAP models after each song
@@ -346,6 +391,8 @@ VOYAGER_METRIC = os.environ.get("VOYAGER_METRIC", "angular") # Options: 'angular
 VOYAGER_EF_CONSTRUCTION = int(os.environ.get("VOYAGER_EF_CONSTRUCTION", "1024"))
 VOYAGER_M = int(os.environ.get("VOYAGER_M", "64"))
 VOYAGER_QUERY_EF = int(os.environ.get("VOYAGER_QUERY_EF", "1024"))
+VOYAGER_MAX_PART_SIZE_MB = int(os.environ.get("VOYAGER_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for voyager index storage
+ARTIST_INDEX_MAX_PART_SIZE_MB = int(os.environ.get("ARTIST_INDEX_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for artist index storage
 
 # --- Pathfinding Constants ---
 # The distance metric to use for pathfinding. Options: 'angular', 'euclidean'.
@@ -366,6 +413,8 @@ PATH_LCORE_MULTIPLIER = int(os.environ.get("PATH_LCORE_MULTIPLIER", "3"))
 # in potentially shorter paths). Can be overridden via env var PATH_FIX_SIZE.
 PATH_FIX_SIZE = os.environ.get("PATH_FIX_SIZE", "False").lower() == 'true'
 
+# Path to the JSON file containing mood centroids for the path-to-mood feature.
+MOOD_CENTROIDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mood_centroids_real_080_clap.json')
 
 # --- Song Alchemy Defaults ---
 # Number of similar songs to return when creating the Alchemy result (default 100, max 200)
@@ -380,14 +429,10 @@ ALCHEMY_SUBTRACT_DISTANCE_ANGULAR = float(os.environ.get("ALCHEMY_SUBTRACT_DISTA
 ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN = float(os.environ.get("ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN", "5.0"))
 
 
-# --- Other Essentia Model Paths ---
-# Paths for models used in predict_other_models (VGGish-based)
-DANCEABILITY_MODEL_PATH = os.environ.get("DANCEABILITY_MODEL_PATH", "/app/model/danceability-msd-musicnn-1.onnx") # Example, adjust if different
-AGGRESSIVE_MODEL_PATH = os.environ.get("AGGRESSIVE_MODEL_PATH", "/app/model/mood_aggressive-msd-musicnn-1.onnx")
-HAPPY_MODEL_PATH = os.environ.get("HAPPY_MODEL_PATH", "/app/model/mood_happy-msd-musicnn-1.onnx")
-PARTY_MODEL_PATH = os.environ.get("PARTY_MODEL_PATH", "/app/model/mood_party-msd-musicnn-1.onnx")
-RELAXED_MODEL_PATH = os.environ.get("RELAXED_MODEL_PATH", "/app/model/mood_relaxed-msd-musicnn-1.onnx")
-SAD_MODEL_PATH = os.environ.get("SAD_MODEL_PATH", "/app/model/mood_sad-msd-musicnn-1.onnx")
+# --- Other Feature Labels (computed via CLAP text-audio similarity) ---
+# These features are computed by comparing CLAP audio embeddings against
+# cached CLAP text embeddings for each label (no separate ONNX models needed).
+# Mood-specific models (danceability, mood_aggressive, etc.) have been removed.
 
 # --- Energy Normalization Range ---
 ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.01"))
@@ -397,6 +442,9 @@ ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.15"))
 TEMPO_MIN_BPM = float(os.getenv("TEMPO_MIN_BPM", "40.0"))
 TEMPO_MAX_BPM = float(os.getenv("TEMPO_MAX_BPM", "200.0"))
 OTHER_FEATURE_LABELS = ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']
+
+# Redis cache key for CLAP text embeddings of OTHER_FEATURE_LABELS
+CLAP_OTHER_FEATURES_REDIS_KEY = os.environ.get("CLAP_OTHER_FEATURES_REDIS_KEY", "audiomuse:clap_other_feature_text_embeddings")
 
 # --- Sonic Fingerprint Constants ---
 SONIC_FINGERPRINT_TOP_N_SONGS = int(os.environ.get("SONIC_FINGERPRINT_TOP_N_SONGS", "20"))
@@ -453,3 +501,51 @@ MOOD_SIMILARITY_ENABLE = os.environ.get("MOOD_SIMILARITY_ENABLE", "False").lower
 #   proxy_set_header X-Forwarded-Prefix /audiomuseai;
 # }
 ENABLE_PROXY_FIX = os.environ.get("ENABLE_PROXY_FIX", "False").lower() == "true"
+
+# --- Instant Playlist Optimization ---
+# Max songs from a single artist in the instant playlist (diversity enforcement)
+MAX_SONGS_PER_ARTIST_PLAYLIST = int(os.environ.get("MAX_SONGS_PER_ARTIST_PLAYLIST", "5"))
+# Enable energy-arc shaping for playlist ordering (gentle start -> peak -> cool down)
+PLAYLIST_ENERGY_ARC = os.environ.get("PLAYLIST_ENERGY_ARC", "False").lower() == "true"
+# --- Authentication ---
+# Set all three to enable authentication. Leave any blank to disable (legacy mode).
+AUDIOMUSE_USER = os.environ.get("AUDIOMUSE_USER", "")
+AUDIOMUSE_PASSWORD = os.environ.get("AUDIOMUSE_PASSWORD", "")
+API_TOKEN = os.environ.get("API_TOKEN", "")
+
+# JWT secret for signing session tokens. Auto-generated if not set (sessions lost on restart).
+# Note: the warning for missing JWT_SECRET is emitted in app.py after logging is configured
+JWT_SECRET = os.environ.get("JWT_SECRET", "")
+
+# Enable or disable authentication independently of whether credentials are set.
+# Default is True to preserve the current secure behavior.
+AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
+
+try:
+    from tasks.setup_manager import SetupManager
+    _setup_manager = SetupManager()
+    _setup_manager.ensure_table()
+    _overrides = _setup_manager.get_raw_overrides()
+    _excluded_override_keys = globals().get('SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
+    for _key, _value in _overrides.items():
+        # Skip any keys that are explicitly excluded from overrides (Redis and Postgres)
+        if _key in _excluded_override_keys:
+            continue
+        # Read the value from the db and override the variable
+        if _key in globals():
+            globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
+        else:
+            globals()[_key] = _value
+
+    HEADERS = _compute_headers()
+
+    def refresh_config():
+        """Reload the config module from the current database and environment."""
+        import importlib
+        import sys
+        importlib.reload(sys.modules[__name__])
+except Exception as _exc:
+    import logging
+    logging.getLogger(__name__).warning(f"Could not load config overrides from DB: {_exc}")
+    def refresh_config():
+        pass

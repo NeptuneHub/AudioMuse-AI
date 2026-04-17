@@ -1,7 +1,12 @@
 ![GitHub license](https://img.shields.io/github/license/neptunehub/AudioMuse-AI.svg)
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/AudioMuse-AI?label=latest-tag)
-![Media Server Support: Jellyfin 10.11.3, Navidrome 0.58.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.11.3%2C%20Navidrome%200.58.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80-blue?style=flat-square&logo=server&logoColor=white)
+![Media Server Support: Jellyfin 10.11.8, Navidrome 0.61.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.11.8%2C%20Navidrome%200.61.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80-blue?style=flat-square&logo=server&logoColor=white)
 
+<p align="center">
+  <a href="https://docs.google.com/forms/d/e/1FAIpQLSfl9Qd5UW-0sI-pcUkFtHWFwwphhErw_4Btao34CPL8TQ93rQ/viewform">
+    Please vote for the AudioMuse-AI best functionality
+  </a>
+</p>
 
 # **AudioMuse-AI - Where Music Takes Shape** 
 
@@ -24,7 +29,7 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 * **Song Alchemy**: Mix your ideal vibe, mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and a 2D preview. Export the final selection directly to your media server.
 * **Text Search**: search your song with simple text that can contains mood, instruments and genre like calm piano songs.
 
-More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [FAQ](docs/FAQ.md), [GPU DEPLOYMENT](docs/GPU.md), [HARDWARE REQUIREMENTS](docs/HARDWARE.md) and [CONFIGURATION PARAMETERS](docs/PARAMETERS.md) can be found in the [docs folder](docs).
+More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [FAQ](docs/FAQ.md), [GPU DEPLOYMENT](docs/GPU.md), [CONFIGURATION PARAMETERS](docs/PARAMETERS.md) [AUTHENTICATION](docs/AUTH.md) and can be found in the [docs folder](docs).
 
 **The full list or AudioMuse-AI related repository are:** 
   > * [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI): the core application, it run Flask and Worker containers to actually run all the feature;
@@ -34,7 +39,8 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * Version 0.8.0 finaly out of BETA and with new CLAP model that enable the search of song by text that contains genre, instruments and moods. 
+> * **Version 1.0.0** introduces the Setup Wizard for an easy configuration with the web UI
+> * **Version 0.9.6** authentication enabled by default. Read the [AUTHENTICATION](docs/AUTH.md) docs to know how to proceed.
 
 ## Disclaimer
 
@@ -47,19 +53,20 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 - [Quick Start Deployment](#quick-start-deployment)
 - [Hardware Requirements](#hardware-requirements)
 - [Docker Image Tagging Strategy](#docker-image-tagging-strategy)
-- [Key Technologies](#key-technologies)
 - [How To Contribute](#how-to-contribute)
 - [Star History](#star-history)
 
 ## Quick Start Deployment
 
-Get AudioMuse-AI running in minutes with Docker Compose. 
+Get AudioMuse-AI running in minutes with Docker Compose.
 
 If you need more deployment example take a look at [DEPLOYMENT](docs/DEPLOYMENT.md) page.
 
 For a full list of configuration parameter take a look at [PARAMETERS](docs/PARAMETERS.md) page.
 
 For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](docs/ARCHITECTURE.md) page.
+
+From `v1.0.0`, only PostgreSQL and Redis connection parameters must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
 
 **Prerequisites:**
 * Docker and Docker Compose installed
@@ -73,47 +80,21 @@ For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](d
    cp deployment/.env.example deployment/.env
    ```
 
-2. **Edit `.env` with your media server credentials:**
-   
-   **For Jellyfin:**
+   You can customize the setup by editing `deployment/.env` before startup. As a minimum, it is suggested to change the default database password, but you can also override other PostgreSQL and Redis connection parameters if you want to reuse already existent deployment:
+
    ```env
-   MEDIASERVER_TYPE=jellyfin
-   JELLYFIN_URL=http://your-jellyfin-server:8096
-   JELLYFIN_USER_ID=your-user-id
-   JELLYFIN_TOKEN=your-api-token
-   ```
-   
-   **For Navidrome:**
-   ```env
-   MEDIASERVER_TYPE=navidrome
-   NAVIDROME_URL=http://your-navidrome-server:4533
-   NAVIDROME_USER=your-username
-   NAVIDROME_PASSWORD=your-password
-   ```
-   
-   **For Lyrion:**
-   ```env
-   MEDIASERVER_TYPE=lyrion
-   LYRION_URL=http://your-lyrion-server:9000
+   POSTGRES_PASSWORD=your-secure-password
    ```
 
-   **For Emby:**
-   ```env
-   MEDIASERVER_TYPE=emby
-   EMBY_URL=http://your-emby-server:8096
-   EMBY_USER_ID=your-user-id
-   EMBY_TOKEN=your-api-token
-   ```
-
-3. **Start the services:**
+2. **Start the services:**
    ```bash
    docker compose -f deployment/docker-compose.yaml up -d
    ```
 
-4. **Access the application:**
+3. **Access the application:**
    Open your browser at `http://localhost:8000`
 
-5. **Run your first analysis:**
+4. **Run your first analysis:**
    - Navigate to "Analysis and Clustering" page
    - Click "Start Analysis" to scan your library
    - Wait for completion, then explore features like clustering and music map
@@ -129,12 +110,10 @@ AudioMuse-AI has been tested on:
 * **Intel**: HP Mini PC with Intel i5-6500, 16 GB RAM and NVMe SSD
 * **ARM**: Raspberry Pi 5, 8 GB RAM and NVMe SSD / Mac Mini M4 16GB / Amphere based VM with 4core 8GB ram
 
-Suggested requirements:
+**Minimum requirements:**
 * CPU: 4-core Intel with AVX2 support (usually produced in 2015 or later) or ARM
-* 8 GB RAM
-* NVME SSD storage
-
-You can check the [Tested Hardware and Configuration](docs/HARDWARE.md) notes to see which hardware has already been validated.
+* RAM: 8 GB RAM
+* DISK: NVME SSD storage
 
 For more information about the GPU deployment requirements have a look to the [GPU](docs/GPU.md) page.
 
@@ -150,7 +129,7 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
   Development build from the **devel** branch.
   May be unstable — **for testing and development only.**
 
-* **`:vX.Y.Z`** (e.g. `:v1.0.0`, `:v0.1.4-alpha`)
+* **`:X.Y.Z`** (e.g. `:1.0.0`, `:0.1.4-alpha`)
   Immutable images built from **Git release tags**.
   **Ideal for reproducible or pinned deployments.**
 
@@ -161,26 +140,6 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
 * **`-nvidia`** variants
   Images that support the use of GPU for both Analysis and Clustering.
   **Not recommended** for old GPU.
-
-
-## **Key Technologies**
-
-AudioMuse AI is built upon a robust stack of open-source technologies:
-
-* [**Flask:**](https://flask.palletsprojects.com/) Provides the lightweight web interface for user interaction and API endpoints.  
-* [**Redis Queue (RQ):**](https://redis.io/glossary/redis-queue/) A simple Python library for queueing jobs and processing them in the background with Redis.
-* [**Supervisord:**](https://supervisord.org/) Supervisor is a client/server system that allows its users to monitor and control a number of processes on UNIX-like operating systems.
-* [**Essentia-tensorflow**](https://essentia.upf.edu/) An open-source library for audio analysis, feature extraction, and music information retrieval. (used only until version v0.5.0-beta)
-* [**MusicNN Tensorflow Audio Models from Essentia**](https://essentia.upf.edu/models.html) Leverages pre-trained MusicNN models for feature extraction and prediction. More details and models.
-* [**Librosa**](https://github.com/librosa/librosa) Library for audio analysis, feature extraction, and music information retrieval. (used from version v0.6.0-beta)
-* [**CLAP (Contrastive Language-Audio Pretraining)**](https://github.com/LAION-AI/CLAP) Neural network for audio-text matching, enabling natural language music search and text-based playlist generation.
-* [**ONNX**](https://onnx.ai/) Open Neural Network Exchange format and [ONNX Runtime](https://onnxruntime.ai/) for fast, portable, cross-platform model inference. **(Used from v0.7.0-beta, replaces TensorFlow)**
-* [**Tensorflow**](https://www.tensorflow.org/) Platform developed by Google for building, training, and deploying machine learning and deep learning models. **(Used only in versions before v0.7.0-beta)**
-* [**scikit-learn**](https://scikit-learn.org/) Utilized for machine learning algorithms:
-* [**voyager**](https://github.com/spotify/voyager) Approximate Nearest Neighbors used for the /similarity interface. Used from v0.6.3-beta
-* [**PostgreSQL:**](https://www.postgresql.org/) A powerful, open-source relational database used for persisting:  
-* [**Ollama**](https://ollama.com/) Enables self-hosting of various open-source Large Language Models (LLMs) for tasks like intelligent playlist naming.
-* [**Docker / OCI-compatible Containers**](https://www.docker.com/) – The entire application is packaged as a container, ensuring consistent and portable deployment across environments.
 
 ## **How To Contribute**
 

@@ -275,14 +275,29 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         # Both embeddings are already normalized
         similarities = _CLAP_CACHE['embeddings'] @ text_embedding
         
-        # Get top results
-        top_indices = np.argsort(similarities)[::-1][:limit]
+        # Over-fetch candidates to allow per-artist filtering.
+        # Formula matches voyager: n + max(20, n * 4) + 1
+        from config import MAX_SONGS_PER_ARTIST
+        artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+        fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
+        top_indices = np.argsort(similarities)[::-1][:fetch_size]
         
         results = []
+        artist_counts: dict = {}
         for idx in top_indices:
+            if len(results) >= limit:
+                break
             idx = int(idx)
             similarity = float(similarities[idx])
             metadata = _CLAP_CACHE['metadata'][idx]
+            author = metadata.get('author', '')
+            
+            # Enforce per-artist cap when enabled
+            if artist_cap and author:
+                author_norm = author.strip().lower()
+                if artist_counts.get(author_norm, 0) >= artist_cap:
+                    continue
+                artist_counts[author_norm] = artist_counts.get(author_norm, 0) + 1
             
             results.append({
                 'item_id': metadata['item_id'],
@@ -291,7 +306,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
                 'similarity': similarity
             })
         
-        logger.info(f"Text search '{query_text}': found {len(results)} results")
+        logger.info(f"Text search '{query_text}': found {len(results)} results (artist cap: {artist_cap or 'disabled'})")
         return results
         
     except Exception as e:

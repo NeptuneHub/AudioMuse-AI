@@ -11,6 +11,8 @@ from tasks.mediaserver_jellyfin import (
     delete_playlist as jellyfin_delete_playlist,
     get_recent_albums as jellyfin_get_recent_albums,
     get_tracks_from_album as jellyfin_get_tracks_from_album,
+    search_albums as jellyfin_search_albums,
+    test_connection as jellyfin_test_connection,
     download_track as jellyfin_download_track,
     get_all_songs as jellyfin_get_all_songs,
     get_playlist_by_name as jellyfin_get_playlist_by_name,
@@ -24,6 +26,8 @@ from tasks.mediaserver_navidrome import (
     delete_playlist as navidrome_delete_playlist,
     get_recent_albums as navidrome_get_recent_albums,
     get_tracks_from_album as navidrome_get_tracks_from_album,
+    search_albums as navidrome_search_albums,
+    test_connection as navidrome_test_connection,
     download_track as navidrome_download_track,
     get_all_songs as navidrome_get_all_songs,
     get_playlist_by_name as navidrome_get_playlist_by_name,
@@ -37,6 +41,8 @@ from tasks.mediaserver_lyrion import (
     delete_playlist as lyrion_delete_playlist,
     get_recent_albums as lyrion_get_recent_albums,
     get_tracks_from_album as lyrion_get_tracks_from_album,
+    search_albums as lyrion_search_albums,
+    test_connection as lyrion_test_connection,
     download_track as lyrion_download_track,
     get_all_songs as lyrion_get_all_songs,
     get_playlist_by_name as lyrion_get_playlist_by_name,
@@ -65,6 +71,8 @@ from tasks.mediaserver_emby import (
     get_recent_albums as emby_get_recent_albums,
     get_recent_music_items as emby_get_recent_music_items,
     get_tracks_from_album as emby_get_tracks_from_album,
+    search_albums as emby_search_albums,
+    test_connection as emby_test_connection,
     download_track as emby_download_track,
     get_all_songs as emby_get_all_songs,
     get_playlist_by_name as emby_get_playlist_by_name,
@@ -149,13 +157,14 @@ def get_recent_music_items(limit):
         logger.info(f"get_recent_music_items not yet implemented for {config.MEDIASERVER_TYPE}, falling back to get_recent_albums")
         return get_recent_albums(limit)
 
-def get_tracks_from_album(album_id):
-    """Fetches tracks for an album using admin credentials."""
-    if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_get_tracks_from_album(album_id)
-    if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_tracks_from_album(album_id)
-    if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_tracks_from_album(album_id)
-    if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_tracks_from_album(album_id)
-    if config.MEDIASERVER_TYPE == 'emby': return emby_get_tracks_from_album(album_id)
+def get_tracks_from_album(album_id, user_creds=None, provider_type=None):
+    """Fetches tracks for an album, optionally using explicit creds."""
+    provider_type = provider_type or config.MEDIASERVER_TYPE
+    if provider_type == 'jellyfin': return jellyfin_get_tracks_from_album(album_id, user_creds=user_creds)
+    if provider_type == 'navidrome': return navidrome_get_tracks_from_album(album_id, user_creds=user_creds)
+    if provider_type == 'lyrion': return lyrion_get_tracks_from_album(album_id, user_creds=user_creds)
+    if provider_type == 'mpd': return mpd_get_tracks_from_album(album_id)
+    if provider_type == 'emby': return emby_get_tracks_from_album(album_id, user_creds=user_creds)
     return []
 
 def download_track(temp_dir, item):
@@ -237,14 +246,36 @@ def _detect_audio_format(filepath):
         logger.debug(f"Error detecting audio format: {e}")
         return '.tmp'
 
-def get_all_songs():
-    """Fetches all songs using admin credentials."""
-    if config.MEDIASERVER_TYPE == 'jellyfin': return jellyfin_get_all_songs()
-    if config.MEDIASERVER_TYPE == 'navidrome': return navidrome_get_all_songs()
-    if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_all_songs()
-    if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_all_songs()
-    if config.MEDIASERVER_TYPE == 'emby': return emby_get_all_songs()
+def get_all_songs(user_creds=None, provider_type=None):
+    """Fetches all songs using admin credentials or explicit creds."""
+    provider_type = provider_type or config.MEDIASERVER_TYPE
+    if provider_type == 'jellyfin': return jellyfin_get_all_songs(user_creds=user_creds)
+    if provider_type == 'navidrome': return navidrome_get_all_songs(user_creds=user_creds)
+    if provider_type == 'lyrion': return lyrion_get_all_songs(user_creds=user_creds)
+    if provider_type == 'mpd': return mpd_get_all_songs()
+    if provider_type == 'emby': return emby_get_all_songs(user_creds=user_creds)
     return []
+
+def search_albums(query, user_creds=None, provider_type=None):
+    """Searches for albums using admin credentials or explicit creds."""
+    provider_type = provider_type or config.MEDIASERVER_TYPE
+    if provider_type == 'jellyfin': return jellyfin_search_albums(query, user_creds=user_creds)
+    if provider_type == 'navidrome': return navidrome_search_albums(query, user_creds=user_creds)
+    if provider_type == 'lyrion': return lyrion_search_albums(query, user_creds=user_creds)
+    if provider_type == 'mpd': raise NotImplementedError('MPD album search is not supported')
+    if provider_type == 'emby': return emby_search_albums(query, user_creds=user_creds)
+    return []
+
+def test_connection(user_creds=None, provider_type=None):
+    """Tests provider connection using admin credentials or explicit creds."""
+    provider_type = provider_type or config.MEDIASERVER_TYPE
+    if provider_type == 'jellyfin': return jellyfin_test_connection(user_creds=user_creds)
+    if provider_type == 'navidrome': return navidrome_test_connection(user_creds=user_creds)
+    if provider_type == 'lyrion': return lyrion_test_connection(user_creds=user_creds)
+    if provider_type == 'mpd':
+        return {'ok': False, 'error': 'MPD migration probe is not supported', 'sample_count': 0, 'path_format': 'none', 'warnings': []}
+    if provider_type == 'emby': return emby_test_connection(user_creds=user_creds)
+    return {'ok': False, 'error': f"Provider '{provider_type}' not supported", 'sample_count': 0, 'path_format': 'none', 'warnings': []}
 
 def get_playlist_by_name(playlist_name):
     """Finds a playlist by name using admin credentials."""

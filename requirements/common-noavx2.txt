@@ -7,7 +7,7 @@ Flask-Cors
 redis
 requests
 scikit-learn==1.7.2
-rq
+rq==2.7.0
 pyyaml
 six
 rapidfuzz
@@ -16,11 +16,12 @@ ftfy
 flasgger
 sqlglot
 google-genai==1.57.0
-mistralai
+mistralai>=1.11.1,<2.0.0
 umap-learn
 pydub
 python-mpd2
 psutil
+argon2-cffi==25.1.0
 onnx==1.14.1
 resampy
 librosa==0.11.0
@@ -34,3 +35,5 @@ httpx
 voyager==2.1.0
 transformers==4.35.2
 sentencepiece
+gunicorn
+zstandard

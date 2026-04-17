@@ -25,7 +25,7 @@ import math # Import math for ceiling function
 
 from config import (
     EMBEDDING_DIMENSION, INDEX_NAME, VOYAGER_METRIC, VOYAGER_EF_CONSTRUCTION,
-    VOYAGER_M, VOYAGER_QUERY_EF, MAX_SONGS_PER_ARTIST,
+    VOYAGER_M, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB, MAX_SONGS_PER_ARTIST,
     DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
     DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD
     , SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT,
@@ -39,10 +39,20 @@ logger = logging.getLogger(__name__)
 # Optional instrumentation: enable with RADIUS_INSTRUMENTATION=True in env
 INSTRUMENT_BUCKET_SKIPS = os.environ.get("RADIUS_INSTRUMENTATION", "False").lower() == 'true'
 
+# When the serialized Voyager index exceeds this threshold the index
+# will be written into multiple rows as: <INDEX_NAME>_<part_no>_<total_parts>
+# Configurable via `VOYAGER_MAX_PART_SIZE_MB` in `config.py` (default 50 MB).
+VOYAGER_MAX_PART_SIZE = VOYAGER_MAX_PART_SIZE_MB * 1024 * 1024
+
 # --- Global cache for the loaded Voyager index ---
 voyager_index = None
 id_map = None # {voyager_int_id: item_id_str}
 reverse_id_map = None # {item_id_str: voyager_int_id}
+
+
+def _split_bytes(data: bytes, part_size: int) -> list:
+    """Split `data` into a list of byte chunks, each <= part_size."""
+    return [data[i:i + part_size] for i in range(0, len(data), part_size)]
 
 # --- Thread pool for parallel operations ---
 _thread_pool = None
@@ -152,33 +162,122 @@ def load_voyager_index_for_querying(force_reload=False):
     conn = get_db()
     cur = conn.cursor()
     try:
+        # 1) Try the classic single-row index first (backwards compatible)
         cur.execute("SELECT index_data, id_map_json, embedding_dimension FROM voyager_index_data WHERE index_name = %s", (INDEX_NAME,))
         record = cur.fetchone()
 
-        if not record:
-            logger.warning(f"Voyager index '{INDEX_NAME}' not found in the database. Cache will be empty.")
+        if record:
+            index_binary_data, id_map_json, db_embedding_dim = record
+
+            if not index_binary_data:
+                logger.error(f"Voyager index '{INDEX_NAME}' data in database is empty.")
+                voyager_index, id_map, reverse_id_map = None, None, None
+                return
+
+            if db_embedding_dim != EMBEDDING_DIMENSION:
+                logger.error(f"FATAL: Voyager index dimension mismatch! DB has {db_embedding_dim}, config expects {EMBEDDING_DIMENSION}.")
+                voyager_index, id_map, reverse_id_map = None, None, None
+                return
+
+            index_stream = io.BytesIO(index_binary_data)
+            loaded_index = voyager.Index.load(index_stream)
+            loaded_index.ef = VOYAGER_QUERY_EF
+            voyager_index = loaded_index
+            id_map = {int(k): v for k, v in json.loads(id_map_json).items()}
+            reverse_id_map = {v: k for k, v in id_map.items()}
+
+            logger.info(f"Voyager index with {len(id_map)} items loaded successfully into memory.")
+            return
+
+        # 2) If not found, look for segmented rows named INDEX_NAME_<part>_<total>
+        cur.execute("SELECT index_name, index_data, id_map_json, embedding_dimension FROM voyager_index_data WHERE index_name LIKE %s", (INDEX_NAME + "_%_%",))
+        candidates = cur.fetchall()
+
+        if not candidates:
+            logger.warning(f"Voyager index '{INDEX_NAME}' not found in the database (single or segmented). Cache will be empty.")
             voyager_index, id_map, reverse_id_map = None, None, None
             return
-        index_binary_data, id_map_json, db_embedding_dim = record
 
+        # Filter and parse segment suffixes (expect format: name_<part_no>_<total_parts>)
+        seg_pattern = re.compile(rf"^{re.escape(INDEX_NAME)}_(\d+)_(\d+)$")
+        parts = []
+        total_expected = None
+        id_map_json_candidate = None
+        for row in candidates:
+            name, part_data, part_id_map_json, part_dim = row
+            m = seg_pattern.match(name)
+            if not m:
+                continue
+            part_no = int(m.group(1))
+            total = int(m.group(2))
+            if total_expected is None:
+                total_expected = total
+            elif total_expected != total:
+                logger.error(f"Segment total mismatch for Voyager index parts (found totals {total_expected} and {total}). Aborting load.")
+                voyager_index, id_map, reverse_id_map = None, None, None
+                return
+            parts.append((part_no, part_data, part_id_map_json, part_dim))
+            if part_id_map_json and not id_map_json_candidate:
+                id_map_json_candidate = part_id_map_json
+
+        if not parts:
+            logger.error(f"No valid segmented Voyager index rows found for prefix '{INDEX_NAME}'.")
+            voyager_index, id_map, reverse_id_map = None, None, None
+            return
+
+        # Ensure we have all expected parts
+        if total_expected is None or len(parts) != total_expected:
+            logger.error(f"Incomplete Voyager index segments: expected {total_expected}, found {len(parts)}. Aborting load to avoid corruption.")
+            voyager_index, id_map, reverse_id_map = None, None, None
+            return
+
+        # Sort by part number and validate embedding_dimension consistency
+        parts.sort(key=lambda p: p[0])
+        for p in parts:
+            if p[3] != EMBEDDING_DIMENSION:
+                logger.error(f"Voyager index embedding_dimension mismatch in segment {p[0]}: {p[3]} != {EMBEDDING_DIMENSION}. Aborting load.")
+                voyager_index, id_map, reverse_id_map = None, None, None
+                return
+
+        # Reassemble binary and pick id_map_json from first non-empty segment (prefer part 1)
+        index_binary_data = b"".join([p[1] for p in parts])
         if not index_binary_data:
-            logger.error(f"Voyager index '{INDEX_NAME}' data in database is empty.")
+            logger.error(f"Reassembled Voyager index binary is empty. Aborting load.")
             voyager_index, id_map, reverse_id_map = None, None, None
             return
 
-        if db_embedding_dim != EMBEDDING_DIMENSION:
-            logger.error(f"FATAL: Voyager index dimension mismatch! DB has {db_embedding_dim}, config expects {EMBEDDING_DIMENSION}.")
+        if not id_map_json_candidate:
+            logger.error("No non-empty id_map_json found in segmented Voyager index rows. Aborting load.")
             voyager_index, id_map, reverse_id_map = None, None, None
             return
 
-        index_stream = io.BytesIO(index_binary_data)
-        loaded_index = voyager.Index.load(index_stream)
-        loaded_index.ef = VOYAGER_QUERY_EF
-        voyager_index = loaded_index
-        id_map = {int(k): v for k, v in json.loads(id_map_json).items()}
-        reverse_id_map = {v: k for k, v in id_map.items()}
+        # Final validation: try loading Voyager and ensure element count matches id_map length
+        try:
+            index_stream = io.BytesIO(index_binary_data)
+            loaded_index = voyager.Index.load(index_stream)
+            loaded_index.ef = VOYAGER_QUERY_EF
+            # Validate element counts if voyager exposes num_elements
+            try:
+                idx_count = getattr(loaded_index, 'num_elements', None)
+            except Exception:
+                idx_count = None
 
-        logger.info(f"Voyager index with {len(id_map)} items loaded successfully into memory.")
+            parsed_id_map = {int(k): v for k, v in json.loads(id_map_json_candidate).items()}
+            if idx_count is not None and idx_count != len(parsed_id_map):
+                logger.error(f"Voyager index element count mismatch after reassembly: index.num_elements={idx_count}, id_map={len(parsed_id_map)}. Aborting load.")
+                voyager_index, id_map, reverse_id_map = None, None, None
+                return
+
+            voyager_index = loaded_index
+            id_map = parsed_id_map
+            reverse_id_map = {v: k for k, v in id_map.items()}
+
+            logger.info(f"Voyager segmented index ({len(parts)} parts) with {len(id_map)} items loaded successfully into memory.")
+            return
+        except Exception as load_error:
+            logger.error(f"Failed to load reassembled Voyager index: {load_error}", exc_info=True)
+            voyager_index, id_map, reverse_id_map = None, None, None
+            return
 
     except Exception as e:
         logger.error("Failed to load Voyager index from database: %s", e, exc_info=True)
@@ -292,19 +391,51 @@ def build_and_store_voyager_index(db_conn=None):
         id_map_json = json.dumps(local_id_map)
 
         logger.info(f"Storing Voyager index '{INDEX_NAME}' in the database...")
-        upsert_query = """
-            INSERT INTO voyager_index_data (index_name, index_data, id_map_json, embedding_dimension, created_at)
-            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (index_name) DO UPDATE SET
-                index_data = EXCLUDED.index_data,
-                id_map_json = EXCLUDED.id_map_json,
-                embedding_dimension = EXCLUDED.embedding_dimension,
-                created_at = CURRENT_TIMESTAMP;
-        """
-        # Use psycopg2.Binary to ensure proper bytea handling
-        cur.execute(upsert_query, (INDEX_NAME, psycopg2.Binary(index_binary_data), id_map_json, EMBEDDING_DIMENSION))
-        db_conn.commit()
-        logger.info("Voyager index build and database storage complete.")
+
+        try:
+            # Delete any existing single or segmented rows for this logical index name
+            cur.execute("DELETE FROM voyager_index_data WHERE index_name = %s OR index_name LIKE %s", (INDEX_NAME, INDEX_NAME + "_%_%"))
+
+            # Small enough to store in a single row (backwards-compatible)
+            if len(index_binary_data) <= VOYAGER_MAX_PART_SIZE:
+                upsert_query = """
+                    INSERT INTO voyager_index_data (index_name, index_data, id_map_json, embedding_dimension, created_at)
+                    VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (index_name) DO UPDATE SET
+                        index_data = EXCLUDED.index_data,
+                        id_map_json = EXCLUDED.id_map_json,
+                        embedding_dimension = EXCLUDED.embedding_dimension,
+                        created_at = CURRENT_TIMESTAMP;
+                """
+                cur.execute(upsert_query, (INDEX_NAME, psycopg2.Binary(index_binary_data), id_map_json, EMBEDDING_DIMENSION))
+                logger.info("Stored Voyager index as a single row (no segmentation required).")
+
+            else:
+                # Split into multiple rows named INDEX_NAME_<part>_<total>
+                parts = _split_bytes(index_binary_data, VOYAGER_MAX_PART_SIZE)
+                num_parts = len(parts)
+                logger.info(f"Index size {len(index_binary_data)} exceeds {VOYAGER_MAX_PART_SIZE_MB}MB - storing as {num_parts} segmented rows.")
+
+                insert_q = "INSERT INTO voyager_index_data (index_name, index_data, id_map_json, embedding_dimension, created_at) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)"
+                for idx, part in enumerate(parts, start=1):
+                    part_name = f"{INDEX_NAME}_{idx}_{num_parts}"
+                    # store full id_map_json only in the first part to save space; other parts keep an empty string
+                    part_id_map_json = id_map_json if idx == 1 else ''
+                    cur.execute(insert_q, (part_name, psycopg2.Binary(part), part_id_map_json, EMBEDDING_DIMENSION))
+
+                logger.info(f"Stored Voyager index in {num_parts} parts (prefix='{INDEX_NAME}_<part>_<total>').")
+
+            # Commit the transaction atomically so readers never see partial state
+            db_conn.commit()
+            logger.info("Voyager index build and database storage complete.")
+
+        except Exception as e:
+            try:
+                db_conn.rollback()
+            except Exception:
+                pass
+            logger.error("Failed to store segmented Voyager index: %s", e, exc_info=True)
+            raise
 
     except Exception as e:
         logger.error("An error occurred during Voyager index build: %s", e, exc_info=True)
@@ -491,10 +622,10 @@ def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song
     def fetch_details_batch(id_batch):
         batch_details = {}
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT item_id, title, author, album FROM score WHERE item_id = ANY(%s)", (id_batch,))
+            cur.execute("SELECT item_id, title, author, album, album_artist FROM score WHERE item_id = ANY(%s)", (id_batch,))
             rows = cur.fetchall()
             for row in rows:
-                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
+                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album'), 'album_artist': row.get('album_artist')}
         return batch_details
     
     # Split item_ids into batches for parallel DB queries
@@ -770,7 +901,7 @@ def _radius_walk_get_candidates(
         # Fetch details in batch (uses app_helper get_score_data_by_ids)
         try:
             track_details_list = get_score_data_by_ids(item_ids_to_fetch)
-            details_map = {d['item_id']: {'title': d.get('title'), 'author': d.get('author'), 'album': d.get('album')} for d in track_details_list}
+            details_map = {d['item_id']: {'title': d.get('title'), 'author': d.get('author'), 'album': d.get('album'), 'album_artist': d.get('album_artist')} for d in track_details_list}
         except Exception:
             details_map = {}
 
@@ -1460,10 +1591,10 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
     def fetch_details_batch(id_batch):
         batch_details = {}
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT item_id, title, author, album FROM score WHERE item_id = ANY(%s)", (id_batch,))
+            cur.execute("SELECT item_id, title, author, album, album_artist FROM score WHERE item_id = ANY(%s)", (id_batch,))
             rows = cur.fetchall()
             for row in rows:
-                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album')}
+                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album'), 'album_artist': row.get('album_artist')}
         return batch_details
     
     # Split item_ids into batches for parallel DB queries
@@ -1598,54 +1729,79 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
     finally:
         cur.close()
 
-def search_tracks_by_title_and_artist(title_query: str, artist_query: str, limit: int = 15):
+def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0):
     """
-    Searches for tracks using partial title and artist names for autocomplete.
+    Deterministic substring search over title, author and album.
+
+    - Accent and case insensitive
+    - Each token must match title, author or album
+    - Ranking priority: title > author > album
     """
+
     from app_helper import get_db
+    from psycopg2.extras import DictCursor
+
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
     results = []
-    try:
-        query_parts = []
-        params = []
-        
-        if title_query and not artist_query:
-            query_parts.append("(title ILIKE %s OR author ILIKE %s)")
-            params.extend([f"%{title_query}%", f"%{title_query}%"])
-        else:
-            if artist_query:
-                query_parts.append("author ILIKE %s")
-                params.append(f"%{artist_query}%")
-                
-            if title_query:
-                query_parts.append("title ILIKE %s")
-                params.append(f"%{title_query}%")
 
-        if not query_parts:
+    try:
+        if not search_query:
             return []
 
-        where_clause = " AND ".join(query_parts)
-        
+        tokens = [t.lower() for t in search_query.strip().split() if t]
+        if not tokens:
+            return []
+
+        where_clauses = []
+        score_clauses = []
+        params = []
+
+        # Filtering
+        for token in tokens:
+            like_pattern = f"%{token}%"
+            where_clauses.append("search_u LIKE unaccent(%s)")
+            params.append(like_pattern)
+
+        # Weighted ordering
+        for token in tokens:
+            like_pattern = f"%{token}%"
+            score_clauses.append("""
+                (CASE WHEN lower(unaccent(title))  LIKE unaccent(%s) THEN 3 ELSE 0 END) +
+                (CASE WHEN lower(unaccent(author)) LIKE unaccent(%s) THEN 2 ELSE 0 END) +
+                (CASE WHEN lower(unaccent(album))  LIKE unaccent(%s) THEN 1 ELSE 0 END)
+            """)
+            params.extend([like_pattern, like_pattern, like_pattern])
+
+        where_sql = " AND ".join(where_clauses)
+        score_sql = " + ".join(score_clauses)
+
         query = f"""
-            SELECT item_id, title, author, album
-            FROM score 
-            WHERE {where_clause}
-            ORDER BY author, title 
-            LIMIT %s
+            SELECT item_id, title, author, album, album_artist
+            FROM score
+            WHERE {where_sql}
+            ORDER BY ({score_sql}) DESC,
+                     title,
+                     author,
+                     album
+            LIMIT %s OFFSET %s
         """
+
         params.append(limit)
-        
+        params.append(offset)
+
         cur.execute(query, tuple(params))
         results = [dict(row) for row in cur.fetchall()]
 
     except Exception as e:
-        logger.error(f"Error searching tracks with query '{title_query}', '{artist_query}': {e}", exc_info=True)
+        logger.error(
+            f"Error searching tracks with query '{search_query}': {e}",
+            exc_info=True
+        )
     finally:
         cur.close()
-    
-    return results
 
+    return results
 
 def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: dict = None):
     """

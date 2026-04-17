@@ -48,6 +48,15 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
+    // --- Submenu accordion toggle ---
+    document.querySelectorAll('.has-submenu > .submenu-toggle').forEach(link => {
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            link.closest('.has-submenu').classList.toggle('open');
+        });
+    });
+
     // Display App Version from meta tag
     const versionMeta = document.querySelector('meta[name="app-version"]');
     if (versionMeta && versionMeta.content) {
@@ -108,4 +117,5 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     }
+
 });

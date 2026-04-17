@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }}</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon-32x32.ico') }}" sizes="32x32">
+    <!-- Prevent Flash of Unstyled Content (FOUC) for dark mode -->
+    <script>
+        (function() {
+            var theme = localStorage.getItem('theme');
+            var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+            if (theme === 'dark' || (!theme && prefersDark)) {
+                document.documentElement.classList.add('dark-mode');
+            }
+        })();
+    </script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
+    <style>
+        /* Minimal login card — centered, consistent with app theme */
+        body, html {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            /* use theme variables so dark mode is respected */
+            background: var(--bg-body, #fff);
+            color: var(--text-main, #000);
+        }
+        .login-container {
+            background: var(--bg-card, #fff);
+            color: var(--text-main, #000);
+            border: 1px solid var(--border-color, #ddd);
+            border-radius: 8px;
+            padding: 2.5rem 2rem;
+            width: 100%;
+            max-width: 360px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .login-container h1 {
+            margin: 0;
+            font-size: 1.5rem;
+            text-align: center;
+            color: inherit;
+        }
+        .login-container p.subtitle {
+            margin: 0;
+            text-align: center;
+            color: var(--text-muted, #666);
+            font-size: 0.95rem;
+        }
+        .login-container form {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        .login-container input[type="text"],
+        .login-container input[type="password"] {
+            width: 100%;
+            padding: 0.6rem 0.75rem;
+            border: 1px solid var(--border-color, #ccc);
+            border-radius: 4px;
+            font-size: 1rem;
+            background: var(--bg-input, #fff);
+            color: var(--text-main, #222);
+            box-sizing: border-box;
+        }
+        .login-container button[type="submit"] {
+            padding: 0.65rem;
+            background: var(--accent-color, #4a7fcb);
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .login-container button[type="submit"]:hover {
+            opacity: 0.9;
+        }
+        #login-error {
+            margin: 0;
+            font-size: 0.9rem;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <h1>AudioMuse-AI</h1>
+        <p class="subtitle">Sign in to continue</p>
+        <form id="login-form" action="/auth" method="post">
+            <input type="text" id="login-user" name="user" placeholder="Username" autocomplete="username" required>
+            <input type="password" id="login-password" name="password" placeholder="Password" autocomplete="current-password" required>
+            <button type="submit">Sign In</button>
+            {% if login_error %}
+            <p id="login-error" style="display: block; color: var(--error-color, #c0392b);">{{ login_error }}</p>
+            {% else %}
+            <p id="login-error" style="display: none; color: var(--error-color, #c0392b);"></p>
+            {% endif %}
+        </form>
+    </div>
+</body>
+</html>

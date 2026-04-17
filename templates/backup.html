@@ -1,0 +1,215 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    .backup-card {
+        background-color: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+    }
+    .backup-card h2 {
+        margin-top: 0;
+        margin-bottom: 0.5rem;
+    }
+    .backup-card p {
+        margin-bottom: 1rem;
+        color: var(--text-sub);
+    }
+    .restore-confirm-area {
+        margin-top: 1rem;
+        padding: 1rem;
+        background-color: #fef2f2;
+        border: 1px solid var(--color-danger, #ef4444);
+        border-radius: 8px;
+        display: none;
+        color: #7f1d1d;
+    }
+    body.dark-mode .restore-confirm-area,
+    html.dark-mode .restore-confirm-area {
+        background-color: rgba(239, 68, 68, 0.12);
+        color: var(--text-main);
+    }
+    body.dark-mode .restore-confirm-area p,
+    html.dark-mode .restore-confirm-area p {
+        color: var(--text-main) !important;
+    }
+    .restore-confirm-area.visible {
+        display: block;
+    }
+    .restore-confirm-area label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 600;
+        color: var(--color-danger, #ef4444);
+    }
+    .restore-confirm-area input[type="text"] {
+        width: 100%;
+        padding: 0.5rem;
+        margin-bottom: 0.75rem;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        font-size: 0.95rem;
+    }
+    .danger-button {
+        background-color: var(--color-danger, #ef4444) !important;
+        border-color: var(--color-danger, #ef4444) !important;
+        color: white !important;
+    }
+    .danger-button:hover {
+        opacity: 0.9;
+    }
+    .danger-button:disabled {
+        background-color: var(--text-muted) !important;
+        border-color: var(--text-muted) !important;
+        cursor: not-allowed;
+        opacity: 0.6;
+    }
+    #backup-status {
+        margin-top: 0.75rem;
+        font-size: 0.95rem;
+    }
+    .size-col {
+        white-space: nowrap;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="main-content-inner">
+    <section>
+        <div class="page-header">
+            <h1>AudioMuse-AI - Backup &amp; Restore</h1>
+            <p class="subtitle">Create a full database backup or restore from a previous one.</p>
+        </div>
+
+        <!-- Create Backup -->
+        <div class="backup-card">
+            <h2>Create Backup</h2>
+            <p>Dump the entire audiomuse database. The backup file will be downloaded to your browser when ready.</p>
+            <button id="create-backup-btn" class="btn btn-primary">Create Backup</button>
+            <div id="backup-status"></div>
+        </div>
+
+        <!-- Restore Backup -->
+        <div class="backup-card">
+            <h2>Restore Backup</h2>
+            <p>Upload a backup file (.sql) from your machine and restore the database to that state. <strong>This will replace all current data.</strong><br>After the restore you need to restart flask and worker container.</p>
+
+            <div style="margin-bottom:1rem;">
+                <label style="display:block; margin-bottom:0.5rem; font-weight:600;">Select backup file:</label>
+                <input type="file" id="restore-file-input" accept=".sql" style="display:none;">
+                <button type="button" id="restore-file-btn" class="btn btn-primary">Choose File</button>
+                <span id="restore-file-name" style="margin-left:0.75rem; color:var(--text-sub);">No file selected</span>
+            </div>
+
+            <div class="restore-confirm-area" id="restore-confirm-area">
+                <label>To confirm, type the following phrase exactly:</label>
+                <p style="font-style:italic; margin-bottom:0.5rem; color:var(--text-main);">I want to restore the database from the backup. This action is not reversible</p>
+                <input type="text" id="restore-confirm-input" placeholder="Type the phrase above..." autocomplete="off">
+                <button id="restore-btn" class="btn danger-button" disabled>Restore</button>
+                <div id="restore-status" style="margin-top:0.75rem; font-size:0.95rem;"></div>
+            </div>
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block bodyAdditions %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const createBtn = document.getElementById('create-backup-btn');
+    const backupStatus = document.getElementById('backup-status');
+    const fileInput = document.getElementById('restore-file-input');
+    const fileBtn = document.getElementById('restore-file-btn');
+    const fileNameDisplay = document.getElementById('restore-file-name');
+    const confirmArea = document.getElementById('restore-confirm-area');
+    const confirmInput = document.getElementById('restore-confirm-input');
+    const restoreBtn = document.getElementById('restore-btn');
+    const restoreStatus = document.getElementById('restore-status');
+
+    const EXPECTED_PHRASE = "I want to restore the database from the backup. This action is not reversible";
+
+    // Open file picker via styled button
+    fileBtn.addEventListener('click', () => fileInput.click());
+
+    // Show confirmation area when a file is selected
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length > 0) {
+            fileNameDisplay.textContent = fileInput.files[0].name;
+            confirmArea.classList.add('visible');
+            confirmInput.value = '';
+            restoreBtn.disabled = true;
+            restoreStatus.textContent = '';
+        } else {
+            fileNameDisplay.textContent = 'No file selected';
+            confirmArea.classList.remove('visible');
+        }
+    });
+
+    confirmInput.addEventListener('input', () => {
+        restoreBtn.disabled = confirmInput.value !== EXPECTED_PHRASE;
+    });
+
+    // Create backup
+    createBtn.addEventListener('click', async () => {
+        createBtn.disabled = true;
+        backupStatus.textContent = 'Creating backup… this may take a while.';
+        backupStatus.style.color = 'var(--text-sub)';
+        try {
+            const res = await fetch("{{ url_for('backup_bp.create_backup') }}", { method: 'POST' });
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.error || 'Backup failed');
+            }
+            const blob = await res.blob();
+            const disposition = res.headers.get('Content-Disposition') || '';
+            const match = disposition.match(/filename="?([^"]+)"?/);
+            const name = match ? match[1] : 'backup.zip';
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = name;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(a.href);
+            backupStatus.textContent = 'Backup created and download started.';
+            backupStatus.style.color = 'var(--color-success, green)';
+        } catch (e) {
+            backupStatus.textContent = 'Error: ' + e.message;
+            backupStatus.style.color = 'var(--color-danger, red)';
+        } finally {
+            createBtn.disabled = false;
+        }
+    });
+
+    // Restore backup via file upload
+    restoreBtn.addEventListener('click', async () => {
+        if (!fileInput.files.length || confirmInput.value !== EXPECTED_PHRASE) return;
+        restoreBtn.disabled = true;
+        restoreStatus.textContent = 'Uploading and restoring database… please wait.';
+        restoreStatus.style.color = 'var(--text-sub)';
+        try {
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('confirmation', confirmInput.value);
+            const res = await fetch("{{ url_for('backup_bp.restore_backup') }}", {
+                method: 'POST',
+                body: formData
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Restore failed');
+            restoreStatus.textContent = 'Database restored successfully. You may want to reload the application.';
+            restoreStatus.style.color = 'var(--color-success, green)';
+        } catch (e) {
+            restoreStatus.textContent = 'Error: ' + e.message;
+            restoreStatus.style.color = 'var(--color-danger, red)';
+        } finally {
+            restoreBtn.disabled = confirmInput.value !== EXPECTED_PHRASE;
+        }
+    });
+});
+</script>
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}

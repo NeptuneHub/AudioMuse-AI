@@ -83,8 +83,20 @@ def close_db(e=None):
 def init_db():
     db = get_db()
     with db.cursor() as cur:
+        # Serialize concurrent init_db() runs across gunicorn workers/containers.
+        # Multiple workers racing on CREATE EXTENSION / CREATE OR REPLACE FUNCTION
+        # causes Postgres "tuple concurrently updated" errors on pg_proc/pg_extension.
+        # A session-level advisory lock forces other workers to wait here.
+        # The key is an arbitrary stable bigint specific to this app's init.
+        # Safety: session-level advisory locks are auto-released by Postgres
+        # when the connection ends (normal close, crash, kill, or network drop),
+        # so this lock can NEVER leak permanently even if init_db() raises.
+        cur.execute("SELECT pg_advisory_lock(726354821)")
+        # Enable extensions to fix and assist in searches
+        cur.execute('CREATE EXTENSION IF NOT EXISTS unaccent')
+        cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
         # Create 'score' table
-        cur.execute("CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)")
+        cur.execute("CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)")
         # Add 'energy' column if not exists
         cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'energy')")
         if not cur.fetchone()[0]:
@@ -100,6 +112,74 @@ def init_db():
         if not cur.fetchone()[0]:
             logger.info("Adding 'album' column to 'score' table.")
             cur.execute("ALTER TABLE score ADD COLUMN album TEXT")
+        # Add 'album_artist' column if not exists
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album_artist')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'album_artist' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN album_artist TEXT")
+        # Add 'year' column if not exists
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'year')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'year' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN year INTEGER")
+        # Add 'rating' column if not exists
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'rating')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'rating' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN rating INTEGER")
+        # Add 'file_path' column if not exists
+        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'file_path')")
+        if not cur.fetchone()[0]:
+            logger.info("Adding 'file_path' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
+        
+        # Ensure we have a searchable, accent-stripped `search_u` column.
+        # Postgres does not allow generated columns to call `unaccent()` (it's not marked immutable),
+        # so we store the value in a normal column and keep it in sync via trigger.
+        cur.execute("SELECT is_generated FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u'")
+        row = cur.fetchone()
+        search_u_generated = (row and row[0] == 'ALWAYS')
+
+        if search_u_generated:
+            logger.info("Dropping legacy generated 'search_u' column to replace it with a trigger-updated column.")
+            cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS search_u")
+            row = None
+
+        # Create plain `search_u` column if missing
+        if not row:
+            logger.info("Adding 'search_u' column to 'score' table.")
+            cur.execute("ALTER TABLE score ADD COLUMN search_u TEXT")
+
+        # Create helper function for accent stripping (safe to run multiple times)
+        cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
+
+        # Create/replace trigger function to keep search_u in sync
+        cur.execute("""
+            CREATE OR REPLACE FUNCTION score_search_u_sync() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                NEW.search_u := lower(immutable_unaccent(concat_ws(' ', NEW.title, NEW.author, NEW.album)));
+                RETURN NEW;
+            END;
+            $$;
+        """)
+
+        # Attach trigger to update search_u on insert/update
+        # Note: Postgres doesn't support CREATE TRIGGER IF NOT EXISTS, so we drop and recreate.
+        cur.execute("DROP TRIGGER IF EXISTS score_search_u_sync_trigger ON score")
+        cur.execute("""
+            CREATE TRIGGER score_search_u_sync_trigger
+            BEFORE INSERT OR UPDATE ON score
+            FOR EACH ROW
+            EXECUTE FUNCTION score_search_u_sync();
+        """)
+
+        # Backfill existing rows (ensures proper value for pre-existing data)
+        # This is safe to run repeatedly.
+        cur.execute("UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL")
+
+        # Create index on 'score' to assist in searches
+        cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
+
         # Create 'playlist' table
         cur.execute("CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))")
         # Create 'task_status' table
@@ -134,6 +214,23 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'artist_mapping' table to map artist names to media server artist IDs
         cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
+        # Create application configuration table to persist setup values.
+        cur.execute("CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        # Create 'alchemy_anchors' table to persist named user anchors for reuse
+        cur.execute("CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        # Provider migration tool: wizard session state (one row per migration attempt)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS migration_session (
+                id           SERIAL PRIMARY KEY,
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                status       TEXT NOT NULL DEFAULT 'in_progress',
+                source_type  TEXT NOT NULL,
+                target_type  TEXT NOT NULL,
+                target_creds TEXT NOT NULL,
+                state        JSONB NOT NULL DEFAULT '{}'
+            )
+        """)
         # Create 'text_search_queries' table for precomputed CLAP text search queries
         cur.execute("""
             CREATE TABLE IF NOT EXISTS text_search_queries (
@@ -211,9 +308,11 @@ def init_db():
                     VALUES (%s, %s, %s, NOW())
                 """, (query, 1.0, rank))
             
-            logger.info(f"Inserted {len(default_queries)} default CLAP search queries")
+            logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
         
         db.commit()
+        # Release the advisory lock acquired at the top of init_db().
+        cur.execute("SELECT pg_advisory_unlock(726354821)")
 
 # --- Status Constants ---
 TASK_STATUS_PENDING = "PENDING"
@@ -300,6 +399,38 @@ def clean_up_previous_main_tasks():
         logger.error(f"Error during the main task cleanup process: {e_main_clean}")
     finally:
         cur.close()
+
+
+def get_active_main_task(task_type=None):
+    """Return the currently active main task.
+
+    If task_type is provided, only return an active task of that type.
+    If task_type is None, return any active main task.
+    """
+    db = get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
+
+    if task_type:
+        cur.execute("""
+            SELECT task_id, task_type, status, details
+            FROM task_status
+            WHERE task_type = %s AND status IN %s AND parent_task_id IS NULL
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """, (task_type, non_terminal_statuses))
+    else:
+        cur.execute("""
+            SELECT task_id, task_type, status, details
+            FROM task_status
+            WHERE status IN %s AND parent_task_id IS NULL
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """, (non_terminal_statuses,))
+
+    active_task = cur.fetchone()
+    cur.close()
+    return dict(active_task) if active_task else None
 
 
 # --- DB Utility Functions (used by tasks.py and API) ---
@@ -427,7 +558,7 @@ def track_exists(item_id):
     cur.close()
     return row is not None
 
-def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None):
+def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, album_artist=None, year=None, rating=None, file_path=None):
     """Saves track analysis and embedding in a single transaction."""
     
     def _sanitize_string(s, max_length=1000, field_name="field"):
@@ -465,9 +596,73 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     title = _sanitize_string(title, max_length=500, field_name="title")
     author = _sanitize_string(author, max_length=200, field_name="author")
     album = _sanitize_string(album, max_length=200, field_name="album")
+    album_artist = _sanitize_string(album_artist, max_length=200, field_name="album_artist")
     key = _sanitize_string(key, max_length=10, field_name="key")
     scale = _sanitize_string(scale, max_length=10, field_name="scale")
     other_features = _sanitize_string(other_features, max_length=2000, field_name="other_features")
+
+    # year: parse from various date formats and validate
+    def _parse_year_from_date(year_value):
+        """
+        Parse year from various date formats.
+        Supports: YYYY, YYYY-MM-DD, MM-DD-YYYY, DD-MM-YYYY (with - or / separators)
+        """
+        if year_value is None:
+            return None
+
+        year_str = str(year_value).strip()
+        if not year_str:
+            return None
+
+        # Try parsing as pure integer first (YYYY)
+        try:
+            year = int(year_str)
+            if 1000 <= year <= 2100:
+                return year
+        except (ValueError, TypeError):
+            pass
+
+        # Normalize separators
+        normalized = year_str.replace('/', '-')
+        parts = normalized.split('-')
+
+        if len(parts) == 3:
+            try:
+                # YYYY-MM-DD format
+                if len(parts[0]) == 4:
+                    year = int(parts[0])
+                    if 1000 <= year <= 2100:
+                        return year
+
+                # MM-DD-YYYY or DD-MM-YYYY format
+                if len(parts[2]) == 4:
+                    year = int(parts[2])
+                    if 1000 <= year <= 2100:
+                        return year
+
+                # 2-digit year (MM-DD-YY)
+                if len(parts[2]) == 2:
+                    year = int(parts[2])
+                    year += 2000 if year < 30 else 1900
+                    if 1000 <= year <= 2100:
+                        return year
+            except (ValueError, TypeError, IndexError):
+                pass
+
+        return None
+
+    year = _parse_year_from_date(year)
+
+    # rating: validate as integer 0-5 (5-star rating system)
+    if rating is not None:
+        try:
+            rating = int(rating)
+            if rating < 0 or rating > 5:
+                rating = None
+        except (ValueError, TypeError):
+            rating = None
+
+    file_path = _sanitize_string(file_path, max_length=1000, field_name="file_path")
 
     mood_str = ','.join(f"{k}:{v:.3f}" for k, v in moods.items())
     
@@ -476,8 +671,8 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     try:
         # Save analysis to score table
         cur.execute("""
-            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 author = EXCLUDED.author,
@@ -487,8 +682,12 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
                 mood_vector = EXCLUDED.mood_vector,
                 energy = EXCLUDED.energy,
                 other_features = EXCLUDED.other_features,
-                album = EXCLUDED.album
-        """, (item_id, title, author, tempo, key, scale, mood_str, energy, other_features, album))
+                album = EXCLUDED.album,
+                album_artist = EXCLUDED.album_artist,
+                year = EXCLUDED.year,
+                rating = EXCLUDED.rating,
+                file_path = EXCLUDED.file_path
+        """, (item_id, title, author, tempo, key, scale, mood_str, energy, other_features, album, album_artist, year, rating, file_path))
 
         # Save embedding
         if isinstance(embedding_vector, np.ndarray) and embedding_vector.size > 0:
@@ -528,6 +727,27 @@ def save_clap_embedding(item_id, clap_embedding_vector):
         cur.close()
 
 
+def get_clap_embedding(item_id):
+    """Load CLAP embedding for a track from the database.
+    
+    Returns:
+        numpy array (512-dim float32) or None if not found
+    """
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT embedding FROM clap_embedding WHERE item_id = %s", (item_id,))
+        row = cur.fetchone()
+        if row and row[0]:
+            return np.frombuffer(row[0], dtype=np.float32)
+        return None
+    except Exception as e:
+        logger.error(f"Error loading CLAP embedding for {item_id}: {e}")
+        return None
+    finally:
+        cur.close()
+
+
 def save_mulan_embedding(item_id, mulan_embedding_vector):
     """Saves MuLan embedding for a track."""
     if mulan_embedding_vector is None or (isinstance(mulan_embedding_vector, np.ndarray) and mulan_embedding_vector.size == 0):
@@ -554,7 +774,7 @@ def get_all_tracks():
     conn = get_db() # This now calls the function within this file
     cur = conn.cursor(cursor_factory=DictCursor)
     cur.execute("""
-        SELECT s.item_id, s.title, s.author, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, e.embedding
+        SELECT s.item_id, s.title, s.author, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path, e.embedding
         FROM score s
         LEFT JOIN embedding e ON s.item_id = e.item_id
     """)
@@ -585,7 +805,7 @@ def get_tracks_by_ids(item_ids_list):
     item_ids_str = [str(item_id) for item_id in item_ids_list]
     
     query = """
-        SELECT s.item_id, s.title, s.author, s.album, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, e.embedding
+        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path, e.embedding
         FROM score s
         LEFT JOIN embedding e ON s.item_id = e.item_id
         WHERE s.item_id IN %s
@@ -613,7 +833,7 @@ def get_score_data_by_ids(item_ids_list):
     conn = get_db() # This now calls the function within this file
     cur = conn.cursor(cursor_factory=DictCursor)
     query = """
-        SELECT s.item_id, s.title, s.author, s.album, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features
+        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path
         FROM score s
         WHERE s.item_id IN %s
     """
@@ -626,6 +846,105 @@ def get_score_data_by_ids(item_ids_list):
     finally:
         cur.close()
     return [dict(row) for row in rows]
+
+
+def save_alchemy_anchor(name, centroid):
+    """Save a named anchor centroid into DB."""
+    if not name or not centroid or not isinstance(centroid, list):
+        raise ValueError('Anchor name and centroid list are required.')
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        centroid_json = json.dumps(centroid)
+        cur.execute(
+            "INSERT INTO alchemy_anchors (name, centroid) VALUES (%s, %s) "
+            "ON CONFLICT (name) DO UPDATE SET centroid = EXCLUDED.centroid, created_at = NOW() "
+            "RETURNING id, name, created_at",
+            (name, centroid_json)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to save alchemy anchor '{name}': {e}")
+        return None
+    finally:
+        cur.close()
+
+
+def get_alchemy_anchors():
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute("SELECT id, name, created_at FROM alchemy_anchors ORDER BY created_at DESC")
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to load alchemy anchors: {e}")
+        return []
+    finally:
+        cur.close()
+
+
+def delete_alchemy_anchor(anchor_id):
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM alchemy_anchors WHERE id = %s", (anchor_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to delete alchemy anchor id={anchor_id}: {e}")
+        return False
+    finally:
+        cur.close()
+
+
+def get_alchemy_anchor_by_id(anchor_id):
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute("SELECT id, name, centroid, created_at FROM alchemy_anchors WHERE id = %s", (anchor_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        anchor = dict(row)
+        if isinstance(anchor.get('centroid'), str):
+            try:
+                anchor['centroid'] = json.loads(anchor['centroid'])
+            except Exception:
+                anchor['centroid'] = None
+        return anchor
+    except Exception as e:
+        logger.error(f"Failed to fetch alchemy anchor id={anchor_id}: {e}")
+        return None
+    finally:
+        cur.close()
+
+
+def update_alchemy_anchor_name(anchor_id, name):
+    if not name or not isinstance(name, str):
+        return None
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(
+            "UPDATE alchemy_anchors SET name = %s WHERE id = %s RETURNING id, name",
+            (name.strip(), anchor_id)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        if not row:
+            return None
+        return dict(row)
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to rename alchemy anchor id={anchor_id}: {e}")
+        return None
+    finally:
+        cur.close()
 
 
 def save_map_projection(index_name, id_map, projection_array):
@@ -910,61 +1229,136 @@ def update_playlist_table(playlists): # Removed db_path
         cur.close()
 
 def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Task cancellation processed by API."):
-    """Helper to cancel a job and its children based on DB records."""
+    """Helper to cancel a job and its children based on DB records.
+
+    NOTE: Minimal global behavior — when invoked from the API cancel endpoint we clear RQ queues,
+    attempt to stop all jobs known to RQ, delete all rows in `task_status`, and insert a single
+    REVOKED row for the requested `job_id` (so UI sees one canonical cancelled task).
+    This keeps the function signature unchanged and is intentionally simple and destructive (as requested).
+    """
     cancelled_count = 0
 
-    # First, determine the task_type for the current job_id
-    db_task_info = get_task_info_from_db(job_id)
-    current_task_type = db_task_info.get('task_type') if db_task_info else task_type_from_db
-
-    if not current_task_type:
-        logger.warning(f"Could not determine task_type for job {job_id}. Cannot reliably mark as REVOKED in DB or cancel children.")
+    # --- Scan RQ for job ids to cancel ---
+    job_ids = set()
+    for q in (rq_queue_high, rq_queue_default):
         try:
-            Job.fetch(job_id, connection=redis_conn)
-            send_stop_job_command(redis_conn, job_id)
-            cancelled_count += 1
-            logger.info(f"Job {job_id} (task_type unknown) stop command sent to RQ.")
-        except NoSuchJobError:
-            pass
-        return cancelled_count
+            ids = getattr(q, 'job_ids', None)
+            if ids is None:
+                key = f"rq:queue:{getattr(q, 'name', '')}"
+                raw = redis_conn.lrange(key, 0, -1)
+                ids = [x.decode() if isinstance(x, (bytes, bytearray)) else str(x) for x in raw]
+            job_ids.update([str(i) for i in ids if i is not None])
+        except Exception as e_q:
+            logger.warning(f"Could not read queue {getattr(q, 'name', '<unknown>')}: {e_q}")
 
-    # Mark as REVOKED in DB for the current job. This is the primary action.
-    save_task_status(job_id, current_task_type, TASK_STATUS_REVOKED, progress=100, details={"message": reason})
-
-    # Attempt to stop the job in RQ. This is a secondary action to interrupt a running process.
-    action_taken_in_rq = False
+    # Include job ids from RQ job keys (covers started jobs)
     try:
-        job_rq = Job.fetch(job_id, connection=redis_conn)
-        current_rq_status = job_rq.get_status()
-        logger.info(f"Job {job_id} (type: {current_task_type}) found in RQ with status: {current_rq_status}")
+        raw_keys = redis_conn.keys('rq:job:*')
+        for k in raw_keys:
+            kstr = k.decode() if isinstance(k, (bytes, bytearray)) else str(k)
+            parts = kstr.split(':')
+            if len(parts) >= 3:
+                jid = ':'.join(parts[2:])
+                job_ids.add(jid)
+    except Exception as e_keys:
+        logger.warning(f"Could not list rq job keys: {e_keys}")
 
-        if not job_rq.is_finished and not job_rq.is_failed and not job_rq.is_canceled:
-            if job_rq.is_started:
-                send_stop_job_command(redis_conn, job_id)
-            else:
-                job_rq.cancel()
-            action_taken_in_rq = True
-            logger.info(f"  Sent stop/cancel command for job {job_id} in RQ.")
-        else:
-            logger.info(f"  Job {job_id} is already in a terminal RQ state: {current_rq_status}.")
+    # Attempt to cancel/stop all discovered jobs
+    for jid in job_ids:
+        try:
+            try:
+                j = Job.fetch(jid, connection=redis_conn)
+                if not j.is_finished and not j.is_failed and not j.is_canceled:
+                    if j.is_started:
+                        send_stop_job_command(redis_conn, jid)
+                    else:
+                        j.cancel()
+                    cancelled_count += 1
+                    logger.info(f"Sent stop/cancel for job {jid} during global cancel")
+            except NoSuchJobError:
+                logger.debug(f"Job {jid} not found in RQ during global cancel")
+        except Exception as e_j:
+            logger.error(f"Error cancelling job {jid} during global cancel: {e_j}")
 
-    except NoSuchJobError:
-        logger.warning(f"Job {job_id} (type: {current_task_type}) not found in RQ, but marked as REVOKED in DB.")
-    except Exception as e_rq_interaction:
-        logger.error(f"Error interacting with RQ for job {job_id}: {e_rq_interaction}")
+    # Try to clear the RQ queues using API (preferred) and fallback to key deletion if necessary
+    try:
+        for q in (rq_queue_high, rq_queue_default):
+            try:
+                if hasattr(q, 'empty'):
+                    q.empty()
+                    logger.info(f"Emptied queue {getattr(q, 'name', '<unknown>')} via Queue.empty() as part of global cancel")
+                else:
+                    key = f"rq:queue:{getattr(q, 'name', '')}"
+                    redis_conn.delete(key)
+                    logger.info(f"Deleted Redis key fallback for queue: {key} as part of global cancel")
+            except Exception as e_q:
+                logger.warning(f"Failed to empty queue {getattr(q, 'name', '<unknown>')} during global cancel: {e_q}")
+    except Exception as e_qdel:
+        logger.warning(f'Failed to clear queue lists during global cancel: {e_qdel}')
 
-    if action_taken_in_rq:
-        cancelled_count += 1
+    # Consolidate DB: delete all task_status rows and insert a single REVOKED row for job_id
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute("DELETE FROM task_status")
+        deleted = cur.rowcount
+        db.commit()
+        logger.info(f"Global cancel DB cleanup: deleted {deleted} task_status rows")
+    except Exception as e_dbdel:
+        db.rollback()
+        logger.error(f"Error deleting task_status rows during global cancel: {e_dbdel}")
+    finally:
+        cur.close()
 
-    # Recursively cancel children found in the database
-    children_tasks = get_child_tasks_from_db(job_id)
-    
-    for child_task in children_tasks:
-        child_job_id = child_task['task_id']
-        # We only need to proceed if the child is not already in a terminal state
-        child_db_info = get_task_info_from_db(child_job_id)
-        if child_db_info and child_db_info.get('status') not in [TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]:
-             logger.info(f"Recursively cancelling child job: {child_job_id}")
-             cancelled_count += cancel_job_and_children_recursive(child_job_id, reason="Cancelled due to parent task revocation.")
-        
+    try:
+        # Ensure a single REVOKED row exists for job_id
+        save_task_status(job_id, 'unknown', TASK_STATUS_REVOKED, progress=100, details={"message": reason, "origin": "global_cancel"})
+    except Exception as e_save:
+        logger.error(f"Failed to insert REVOKED recap row for {job_id}: {e_save}")
+
     return cancelled_count
+
+
+# --- Centralized Setup & Auth Checks ---
+
+def check_setup_needed():
+    """Check if mandatory setup fields are present in the database.
+    Returns True if setup is still needed, False if setup is complete.
+    """
+    from tasks.setup_manager import SetupManager
+    import config as _cfg
+    _sm = SetupManager()
+    return not _sm.is_valid_env_config(_cfg)
+
+
+def check_auth_needed(jwt_secret):
+    """Check if the current request requires authentication.
+    Returns None if the request is authenticated or auth is disabled.
+    Returns a Response (redirect or JSON 401) if authentication is needed.
+    """
+    import jwt as pyjwt
+    from flask import request, jsonify, redirect, url_for
+    import config as _cfg
+
+    if not _cfg.AUTH_ENABLED:
+        return None
+
+    # Check valid JWT cookie
+    token = request.cookies.get('audiomuse_jwt')
+    if token:
+        try:
+            pyjwt.decode(token, jwt_secret, algorithms=['HS256'])
+            return None  # Valid session
+        except pyjwt.InvalidTokenError:
+            pass
+
+    # Check valid Bearer token (M2M callers)
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer ') and _cfg.API_TOKEN and auth_header[7:] == _cfg.API_TOKEN:
+        return None  # Valid M2M token
+
+    # Not authenticated
+    if request.path.startswith('/api/'):
+        return jsonify({"error": "Unauthorized"}), 401
+    else:
+        return redirect(url_for('login_page'))

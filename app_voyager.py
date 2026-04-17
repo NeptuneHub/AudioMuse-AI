@@ -1,18 +1,51 @@
 # app_voyager.py
 from flask import Blueprint, jsonify, request, render_template
 import logging
+import json
+import numpy as np
 
 # Import the new config option
-from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT
+from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_CENTROIDS_FILE
 from tasks.voyager_manager import (
     find_nearest_neighbors_by_id, 
-  get_max_distance_for_id,
+    find_nearest_neighbors_by_vector,
+    get_max_distance_for_id,
     create_playlist_from_ids,
-    search_tracks_by_title_and_artist,
+    search_tracks_unified,
     get_item_id_by_title_and_artist
 )
 
 logger = logging.getLogger(__name__)
+
+# --- Load mood centroids at module level ---
+_MOOD_CENTROIDS_DATA = {}  # mood_name -> list of centroid dicts (with vectors)
+_MOOD_CENTROIDS_META = {}  # mood_name -> list of {cluster_id, top_tags (top 3)} for API
+
+def _load_mood_centroids_for_similarity():
+    global _MOOD_CENTROIDS_DATA, _MOOD_CENTROIDS_META
+    try:
+        with open(MOOD_CENTROIDS_FILE) as f:
+            data = json.load(f)
+        for mood, info in data.items():
+            centroids = info.get('centroids', [])
+            _MOOD_CENTROIDS_DATA[mood] = centroids
+            meta_list = []
+            for i, c in enumerate(centroids):
+                tags = c.get('top_tags', {})
+                top5 = sorted(tags.items(), key=lambda x: -x[1])[:5]
+                meta_list.append({
+                    'index': i,
+                    'top_tags': [t[0] for t in top5],
+                    'n_songs': c.get('n_songs', 0),
+                    'mood_score': c.get('mood_score', 0),
+                    'cluster_id': c.get('cluster_id', i),
+                })
+            _MOOD_CENTROIDS_META[mood] = meta_list
+        logger.info(f"Loaded mood centroids for similarity: {', '.join(f'{m}({len(cs)})' for m, cs in _MOOD_CENTROIDS_DATA.items())}")
+    except Exception as e:
+        logger.warning(f"Could not load mood centroids from {MOOD_CENTROIDS_FILE}: {e}")
+
+_load_mood_centroids_for_similarity()
 
 # Create a Blueprint for Voyager (similarity) related routes
 voyager_bp = Blueprint('voyager_bp', __name__, template_folder='../templates')
@@ -42,14 +75,19 @@ def search_tracks_endpoint():
     tags:
       - Similarity
     parameters:
+      - name: search_query
+        in: query
+        description: Partial or full elements of songs' titles, artist or album names.
+        schema:
+          type: string
       - name: title
         in: query
-        description: Partial or full title of the track.
+        description: (Legacy) Partial or full title of the track. Used as fallback when search_query is absent.
         schema:
           type: string
       - name: artist
         in: query
-        description: Partial or full name of the artist.
+        description: (Legacy) Partial or full name of the artist. Used as fallback when search_query is absent.
         schema:
           type: string
     responses:
@@ -72,17 +110,33 @@ def search_tracks_endpoint():
                     type: string
                     description: Album name or 'unknown' if missing
     """
-    title_query = request.args.get('title', '', type=str)
-    artist_query = request.args.get('artist', '', type=str)
+    search_query = request.args.get('search_query', '', type=str)
 
-    if not title_query and not artist_query:
+    # Backward compatibility: support legacy 'title' and 'artist' params
+    # so external apps using the old API continue to work.
+    if not search_query:
+        legacy_title = request.args.get('title', '', type=str).strip()
+        legacy_artist = request.args.get('artist', '', type=str).strip()
+        search_query = f"{legacy_artist} {legacy_title}".strip()
+
+    if not search_query:
         return jsonify([])
 
-    if len(title_query) < 3 and len(artist_query) < 3:
+    if len(search_query) < 3:
         return jsonify([])
+
+    # Pagination: start / end (0-based). Defaults to first 20 results.
+    start = request.args.get('start', 0, type=int)
+    end = request.args.get('end', None, type=int)
+    if start < 0:
+        start = 0
+    if end is not None and end <= start:
+        return jsonify([])
+    limit = (end - start) if end is not None else 20
+    offset = start
 
     try:
-        raw_results = search_tracks_by_title_and_artist(title_query, artist_query)
+        raw_results = search_tracks_unified(search_query, limit=limit, offset=offset)
         results = []
         for r in raw_results:
             # Be defensive in case the source returns non-dict entries
@@ -92,7 +146,8 @@ def search_tracks_endpoint():
                     'item_id': r.get('item_id'),
                     'title': r.get('title'),
                     'author': r.get('author'),
-                    'album': album
+                    'album': album,
+                    'album_artist': (r.get('album_artist') or '').strip() or 'unknown'
                 })
             else:
                 results.append({'item_id': None, 'title': None, 'author': None, 'album': 'unknown'})
@@ -100,6 +155,32 @@ def search_tracks_endpoint():
     except Exception as e:
         logger.error(f"Error during track search: {e}", exc_info=True)
         return jsonify({"error": "An error occurred during search."}), 500
+
+
+@voyager_bp.route('/api/mood_centroids', methods=['GET'])
+def get_mood_centroids_endpoint():
+    """
+    Returns available mood categories and their centroids (top 3 tags only, no vectors).
+    Optionally filter by mood name.
+    ---
+    tags:
+      - Similarity
+    parameters:
+      - name: mood
+        in: query
+        description: Optional mood name to filter centroids for a specific mood.
+        schema:
+          type: string
+    responses:
+      200:
+        description: Dictionary of mood names to lists of centroid metadata.
+    """
+    mood_filter = request.args.get('mood', '', type=str).strip().lower()
+    if mood_filter:
+        if mood_filter not in _MOOD_CENTROIDS_META:
+            return jsonify({"error": f"Unknown mood '{mood_filter}'. Available: {list(_MOOD_CENTROIDS_META.keys())}"}), 400
+        return jsonify({mood_filter: _MOOD_CENTROIDS_META[mood_filter]})
+    return jsonify(_MOOD_CENTROIDS_META)
 
 
 @voyager_bp.route('/api/similar_tracks', methods=['GET'])
@@ -175,6 +256,13 @@ def get_similar_tracks_endpoint():
     title = request.args.get('title')
     artist = request.args.get('artist')
     num_neighbors = request.args.get('n', 10, type=int)
+
+    # Optional mood centroid parameters
+    mood_param = request.args.get('mood', '', type=str).strip().lower()
+    centroid_index_param = request.args.get('centroid_index', None, type=int)
+
+    # Optional anchor parameter
+    anchor_id_param = request.args.get('anchor_id', None, type=int)
     
     eliminate_duplicates_str = request.args.get('eliminate_duplicates')
     if eliminate_duplicates_str is None:
@@ -195,6 +283,96 @@ def get_similar_tracks_endpoint():
     else:
         mood_similarity = mood_similarity_str.lower() == 'true'
 
+    # --- Mood centroid mode: use centroid vector instead of a song ---
+    if mood_param and centroid_index_param is not None:
+        if mood_param not in _MOOD_CENTROIDS_DATA:
+            return jsonify({"error": f"Unknown mood '{mood_param}'. Available: {list(_MOOD_CENTROIDS_DATA.keys())}"}), 400
+        centroids = _MOOD_CENTROIDS_DATA[mood_param]
+        if centroid_index_param < 0 or centroid_index_param >= len(centroids):
+            return jsonify({"error": f"Invalid centroid_index {centroid_index_param} for mood '{mood_param}' (0-{len(centroids)-1})."}), 400
+
+        centroid_vector = np.array(centroids[centroid_index_param]['centroid'], dtype=np.float32)
+        try:
+            neighbor_results = find_nearest_neighbors_by_vector(
+                centroid_vector,
+                n=num_neighbors,
+                eliminate_duplicates=eliminate_duplicates
+            )
+        except RuntimeError as e:
+            logger.error(f"Runtime error finding neighbors for mood centroid: {e}", exc_info=True)
+            return jsonify({"error": "The similarity search service is currently unavailable."}), 503
+        except Exception as e:
+            logger.error(f"Unexpected error finding neighbors for mood centroid: {e}", exc_info=True)
+            return jsonify({"error": "An unexpected error occurred."}), 500
+
+        if not neighbor_results:
+            return jsonify({"error": "No similar tracks found for this mood centroid."}), 404
+
+        from app import get_score_data_by_ids
+        neighbor_ids = [n_item['item_id'] for n_item in neighbor_results]
+        neighbor_details = get_score_data_by_ids(neighbor_ids)
+        details_map = {d['item_id']: d for d in neighbor_details}
+        distance_map = {n_item['item_id']: n_item['distance'] for n_item in neighbor_results}
+
+        final_results = []
+        for neighbor_id in neighbor_ids:
+            if neighbor_id in details_map:
+                track_info = details_map[neighbor_id]
+                final_results.append({
+                    "item_id": track_info['item_id'],
+                    "title": track_info['title'],
+                    "author": track_info['author'],
+                    "album": (track_info.get('album') or 'unknown'),
+                    "album_artist": (track_info.get('album_artist') or 'unknown'),
+                    "distance": distance_map[neighbor_id]
+                })
+        return jsonify(final_results)
+
+    # --- Anchor mode: use anchor's centroid vector ---
+    if anchor_id_param is not None:
+        from app_helper import get_alchemy_anchor_by_id
+        anchor = get_alchemy_anchor_by_id(anchor_id_param)
+        if not anchor or not anchor.get('centroid'):
+            return jsonify({"error": f"Anchor with id {anchor_id_param} not found or has no centroid."}), 404
+
+        anchor_vector = np.array(anchor['centroid'], dtype=np.float32)
+        try:
+            neighbor_results = find_nearest_neighbors_by_vector(
+                anchor_vector,
+                n=num_neighbors,
+                eliminate_duplicates=eliminate_duplicates
+            )
+        except RuntimeError as e:
+            logger.error(f"Runtime error finding neighbors for anchor {anchor_id_param}: {e}", exc_info=True)
+            return jsonify({"error": "The similarity search service is currently unavailable."}), 503
+        except Exception as e:
+            logger.error(f"Unexpected error finding neighbors for anchor {anchor_id_param}: {e}", exc_info=True)
+            return jsonify({"error": "An unexpected error occurred."}), 500
+
+        if not neighbor_results:
+            return jsonify({"error": "No similar tracks found for this anchor."}), 404
+
+        from app import get_score_data_by_ids
+        neighbor_ids = [n_item['item_id'] for n_item in neighbor_results]
+        neighbor_details = get_score_data_by_ids(neighbor_ids)
+        details_map = {d['item_id']: d for d in neighbor_details}
+        distance_map = {n_item['item_id']: n_item['distance'] for n_item in neighbor_results}
+
+        final_results = []
+        for neighbor_id in neighbor_ids:
+            if neighbor_id in details_map:
+                track_info = details_map[neighbor_id]
+                final_results.append({
+                    "item_id": track_info['item_id'],
+                    "title": track_info['title'],
+                    "author": track_info['author'],
+                    "album": (track_info.get('album') or 'unknown'),
+                    "album_artist": (track_info.get('album_artist') or 'unknown'),
+                    "distance": distance_map[neighbor_id]
+                })
+        return jsonify(final_results)
+
+    # --- Standard song-based mode ---
     target_item_id = None
 
     if item_id:
@@ -205,7 +383,7 @@ def get_similar_tracks_endpoint():
             return jsonify({"error": f"Track '{title}' by '{artist}' not found in the database."}), 404
         target_item_id = resolved_id
     else:
-        return jsonify({"error": "Request must include either 'item_id' or both 'title' and 'artist'."}), 400
+        return jsonify({"error": "Request must include either 'item_id' or both 'title' and 'artist', or 'mood' and 'centroid_index'."}), 400
 
     try:
         neighbor_results = find_nearest_neighbors_by_id(
@@ -235,6 +413,7 @@ def get_similar_tracks_endpoint():
                     "title": track_info['title'],
                     "author": track_info['author'],
                     "album": (track_info.get('album') or 'unknown'),
+                    "album_artist": (track_info.get('album_artist') or 'unknown'),
                     "distance": distance_map[neighbor_id]
                 })
 
@@ -293,7 +472,8 @@ def get_track_endpoint():
         "item_id": d.get('item_id'),
         "title": d.get('title'),
         "author": d.get('author'),
-        "album": (d.get('album') or 'unknown')
+        "album": (d.get('album') or 'unknown'),
+        "album_artist": (d.get('album_artist') or 'unknown')
     }), 200
   except Exception as e:
     logger.error(f"Unexpected error fetching track {item_id}: {e}", exc_info=True)

@@ -8,7 +8,7 @@ import unicodedata
 import google.genai as genai # Import Gemini library
 from mistralai import Mistral
 import os # Import os to potentially read GEMINI_API_CALL_DELAY_SECONDS
-from config import MAX_SONGS_IN_AI_PROMPT
+from config import MAX_SONGS_IN_AI_PROMPT, AI_MODEL_PROVIDER
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +65,8 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
     Returns:
         str: The extracted playlist name from the model's response, or an error message.
     """
-    # Detect which format to use based on API key and URL
-    is_openai_format = api_key != "no-key-needed" or "openai" in server_url.lower() or "openrouter" in server_url.lower()
+    # Detect which format to use: OpenAI chat-completions (messages array) vs Ollama generate (prompt string). fix 360
+    is_openai_format = AI_MODEL_PROVIDER == "OPENAI"
 
     headers = {
         "Content-Type": "application/json"
@@ -102,6 +102,9 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                 "temperature": 0.7
             }
         }
+        # Always disable thinking for reasoning models (Qwen 3.5, DeepSeek-R1, etc.)
+        # Thinking output breaks JSON parsing and disrupts playlist generation
+        payload["think"] = False
 
     max_retries = 3
     base_delay = 5

@@ -31,16 +31,12 @@ RUN set -ux; \
     rm -rf /var/lib/apt/lists/*
 
 # Download ONNX models with diagnostics and retry logic
+# v4.0.0-model: Open-source MusiCNN models exported directly from the musicnn project
+# Mood-specific models removed (other features now computed via CLAP text embeddings)
 RUN set -eux; \
     urls=( \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/danceability-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_aggressive-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_happy-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_party-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_relaxed-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/mood_sad-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/msd-msd-musicnn-1.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/msd-musicnn-1.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_embedding.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_prediction.onnx" \
     ); \
     mkdir -p /app/model; \
     for u in "${urls[@]}"; do \
@@ -94,7 +90,7 @@ RUN set -ux; \
             libsndfile1=1.2.2-1ubuntu5.24.04.1 libsndfile1-dev \
             libopenblas-dev \
             liblapack-dev=3.12.0-3build1.1 \
-            libpq-dev \
+            libpq-dev postgresql-client \
             ffmpeg wget curl \
             supervisor procps \
             gcc g++ \
@@ -143,7 +139,7 @@ RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
 # These are the text encoders needed by laion-clap library for text embeddings
 # and T5 for MuLan text encoding
 RUN set -eux; \
-    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
     hf_models="huggingface_models.tar.gz"; \
     cache_dir="/app/.cache/huggingface"; \
     echo "Downloading HuggingFace models (~985MB)..."; \
@@ -206,6 +202,8 @@ RUN set -eux; \
 
 # Copy Python packages from libraries stage
 COPY --from=libraries /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/
+# Copy console entrypoints (gunicorn, etc.) from libraries stage
+COPY --from=libraries /usr/local/bin/ /usr/local/bin/
 # Copy HuggingFace cache (RoBERTa model) from libraries stage
 COPY --from=libraries /app/.cache/huggingface/ /app/.cache/huggingface/
 
@@ -217,32 +215,48 @@ RUN ls -lah /app/.cache/huggingface/ && \
 # Copy ONNX models from models stage (small files, no issues)
 COPY --from=models /app/model/*.onnx /app/model/
 
-# Download CLAP split ONNX models directly in runner stage
-# Split models allow loading only what's needed:
-# - Audio model (~268MB): For music analysis in worker containers
-# - Text model (~478MB): For text search in Flask containers
-# - Combined: ~746MB (vs old combined model ~746MB)
+# Download CLAP ONNX models directly in runner stage
+# - DCLAP audio model (~20MB + external data): Distilled student for music analysis in worker containers
+# - Text model (~478MB): Original LAION CLAP text encoder for text search in Flask containers
 RUN set -eux; \
-    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
+    dclap_url="https://github.com/NeptuneHub/AudioMuse-AI-DCLAP/releases/download/v1"; \
+    text_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
     arch=$(uname -m); \
-    echo "Architecture detected: $arch - Downloading CLAP split ONNX models..."; \
+    echo "Architecture detected: $arch - Downloading CLAP ONNX models..."; \
     \
-    # Download audio model (~268MB) \
-    audio_model="clap_audio_model.onnx"; \
+    # Download DCLAP audio model (~1.2MB ONNX + ~20MB external data) \
     n=0; \
     until [ "$n" -ge 5 ]; do \
         if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
             --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "/app/model/$audio_model" "$base_url/$audio_model"; then \
-            echo "✓ CLAP audio model downloaded"; \
+            -O "/app/model/model_epoch_36.onnx" "$dclap_url/model_epoch_36.onnx"; then \
+            echo "✓ DCLAP audio model downloaded"; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "Download attempt $n for audio model failed — retrying in $((n*n))s"; \
+        echo "Download attempt $n for DCLAP audio model failed — retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
-        echo "ERROR: Failed to download CLAP audio model after 5 attempts"; \
+        echo "ERROR: Failed to download DCLAP audio model after 5 attempts"; \
+        exit 1; \
+    fi; \
+    \
+    # Download DCLAP audio model external data file \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/app/model/model_epoch_36.onnx.data" "$dclap_url/model_epoch_36.onnx.data"; then \
+            echo "✓ DCLAP audio model data downloaded"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "Download attempt $n for DCLAP audio data failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download DCLAP audio model data after 5 attempts"; \
         exit 1; \
     fi; \
     \
@@ -252,7 +266,7 @@ RUN set -eux; \
     until [ "$n" -ge 5 ]; do \
         if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
             --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "/app/model/$text_model" "$base_url/$text_model"; then \
+            -O "/app/model/$text_model" "$text_url/$text_model"; then \
             echo "✓ CLAP text model downloaded"; \
             break; \
         fi; \
@@ -265,14 +279,13 @@ RUN set -eux; \
         exit 1; \
     fi; \
     \
-    # Verify audio model \
-    if [ ! -f "/app/model/$audio_model" ]; then \
-        echo "ERROR: CLAP audio model file not created"; \
+    # Verify DCLAP audio model \
+    if [ ! -f "/app/model/model_epoch_36.onnx" ]; then \
+        echo "ERROR: DCLAP audio model file not created"; \
         exit 1; \
     fi; \
-    file_size=$(stat -c%s "/app/model/$audio_model" 2>/dev/null || stat -f%z "/app/model/$audio_model" 2>/dev/null || echo "0"); \
-    if [ "$file_size" -lt 250000000 ]; then \
-        echo "ERROR: CLAP audio model file is too small (expected ~268MB, got $file_size bytes)"; \
+    if [ ! -f "/app/model/model_epoch_36.onnx.data" ]; then \
+        echo "ERROR: DCLAP audio model data file not created"; \
         exit 1; \
     fi; \
     \
@@ -287,8 +300,8 @@ RUN set -eux; \
         exit 1; \
     fi; \
     \
-    echo "✓ CLAP split models downloaded successfully (arch: $arch)"; \
-    ls -lh "/app/model/$audio_model" "/app/model/$text_model"
+    echo "✓ CLAP models downloaded successfully (arch: $arch)"; \
+    ls -lh /app/model/model_epoch_36.onnx /app/model/model_epoch_36.onnx.data "/app/model/$text_model"
 
 # Download MuQ-MuLan ONNX models directly in runner stage (DISABLED: change 'false' to 'true' to enable)
 # MuLan models (~2.5GB total) - pre-converted ONNX (no PyTorch dependency)
@@ -349,7 +362,10 @@ RUN set -eux; \
 
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app
+COPY deployment/docker-entrypoint.sh /app/docker-entrypoint.sh
 COPY deployment/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+RUN chmod +x /app/docker-entrypoint.sh
+RUN ls -l /etc/supervisor/conf.d && test -f /etc/supervisor/conf.d/supervisord.conf
 
 # ============================================================================
 # CPU CONSISTENCY SETTINGS
@@ -388,4 +404,5 @@ ENV PYTHONPATH=/usr/local/lib/python3/dist-packages:/app
 EXPOSE 8000
 
 WORKDIR /workspace
-CMD ["bash", "-c", "if [ -n \"$TZ\" ] && [ -f \"/usr/share/zoneinfo/$TZ\" ]; then ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone; elif [ -n \"$TZ\" ]; then echo \"Warning: timezone '$TZ' not found in /usr/share/zoneinfo\" >&2; fi; if [ \"$SERVICE_TYPE\" = \"worker\" ]; then echo 'Starting worker processes via supervisord...' && /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf; else echo 'Starting web service...' && python3 /app/app.py; fi"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD []

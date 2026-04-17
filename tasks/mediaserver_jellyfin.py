@@ -5,6 +5,8 @@ import logging
 import os
 import config
 
+from tasks.mediaserver_helper import detect_path_format
+
 logger = logging.getLogger(__name__)
 
 REQUESTS_TIMEOUT = 300
@@ -69,6 +71,18 @@ def _get_target_library_ids():
     except Exception as e:
         logger.error(f"Failed to fetch or parse Jellyfin virtual folders at '{url}': {e}", exc_info=True)
         return set()
+
+
+def _jellyfin_base_url(user_creds=None):
+    return (user_creds.get('url') if user_creds and user_creds.get('url') else config.JELLYFIN_URL).rstrip('/')
+
+
+def _jellyfin_headers_from_creds(user_creds=None):
+    headers = dict(getattr(config, 'HEADERS', {}) or {})
+    token = user_creds.get('token') if user_creds else getattr(config, 'JELLYFIN_TOKEN', None)
+    if token:
+        headers['X-Emby-Token'] = token
+    return headers
 
 
 def _jellyfin_get_users(token):
@@ -186,22 +200,30 @@ def get_recent_albums(limit):
         
     return all_albums
 
-def get_tracks_from_album(album_id):
-    """Fetches all audio tracks for a given album ID from Jellyfin using admin credentials."""
-    url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
-    params = {"ParentId": album_id, "IncludeItemTypes": "Audio"}
+def get_tracks_from_album(album_id, user_creds=None):
+    """Fetches all audio tracks for a given album ID from Jellyfin using admin or override credentials."""
+    user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
+    url = f"{_jellyfin_base_url(user_creds)}/Users/{user_id}/Items"
+    params = {
+        "ParentId": album_id,
+        "IncludeItemTypes": "Audio",
+        "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
+    }
     try:
-        r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+        r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         items = r.json().get("Items", [])
-        
+
         # Apply artist field prioritization to each track
         for item in items:
+            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
             title = item.get('Name', 'Unknown')
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
-        
+            item['Year'] = item.get('ProductionYear')
+            item['FilePath'] = item.get('Path')
+
         return items
     except Exception as e:
         logger.error(f"Jellyfin get_tracks_from_album failed for album {album_id}: {e}", exc_info=True)
@@ -266,26 +288,102 @@ def _select_best_artist(item, title="Unknown"):
     
     return track_artist, artist_id
 
-def get_all_songs():
-    """Fetches all songs from Jellyfin using admin credentials."""
-    url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
-    params = {"IncludeItemTypes": "Audio", "Recursive": True}
+def get_all_songs(user_creds=None):
+    """Fetches all songs from Jellyfin using admin or override credentials."""
+    user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
+    url = f"{_jellyfin_base_url(user_creds)}/Users/{user_id}/Items"
+    params = {
+        "IncludeItemTypes": "Audio",
+        "Recursive": True,
+        "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
+    }
     try:
-        r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+        r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         items = r.json().get("Items", [])
-        
+
         # Apply artist field prioritization to each item
         for item in items:
+            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
             title = item.get('Name', 'Unknown')
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
-        
+            item['Year'] = item.get('ProductionYear')
+            item['FilePath'] = item.get('Path')
+
         return items
     except Exception as e:
         logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)
         return []
+
+
+def search_albums(query, user_creds=None):
+    """Search Jellyfin albums using admin or override credentials."""
+    user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
+    url = f"{_jellyfin_base_url(user_creds)}/Users/{user_id}/Items"
+    params = {
+        "IncludeItemTypes": "MusicAlbum",
+        "Recursive": True,
+        "SearchTerm": query,
+        "Limit": 10,
+        "Fields": "ChildCount,ProductionYear,AlbumArtist",
+    }
+    try:
+        r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        items = r.json().get("Items", []) or []
+        return [
+            {
+                'id':          item.get('Id'),
+                'name':        item.get('Name'),
+                'artist':      item.get('AlbumArtist'),
+                'year':        item.get('ProductionYear'),
+                'track_count': item.get('ChildCount'),
+            }
+            for item in items
+        ]
+    except Exception as e:
+        logger.error(f"Jellyfin search_albums failed: {e}", exc_info=True)
+        return []
+
+
+def test_connection(user_creds=None):
+    """Test Jellyfin connectivity using admin or override credentials."""
+    try:
+        user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
+        url = f"{_jellyfin_base_url(user_creds)}/Users/{user_id}/Items"
+        params = {
+            "IncludeItemTypes": "Audio",
+            "Recursive": True,
+            "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
+            "StartIndex": 0,
+            "Limit": 100,
+        }
+        r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        items = r.json().get('Items', []) or []
+        sample = []
+        for item in items:
+            track_artist, _ = _select_best_artist(item, item.get('Name', 'Unknown'))
+            sample.append({
+                'Id': item.get('Id'),
+                'Path': item.get('Path'),
+                'Name': item.get('Name'),
+                'AlbumArtist': track_artist,
+            })
+        path_format = detect_path_format(sample)
+        return {
+            'ok': True,
+            'error': None,
+            'sample_count': len(sample),
+            'path_format': path_format,
+            'warnings': [],
+        }
+    except Exception as e:
+        logger.warning(f"Jellyfin test_connection failed: {e}")
+        return {'ok': False, 'error': str(e), 'sample_count': 0, 'path_format': 'none', 'warnings': []}
+
 
 def get_playlist_by_name(playlist_name):
     """Finds a Jellyfin playlist by its exact name using admin credentials."""
@@ -342,19 +440,22 @@ def get_top_played_songs(limit, user_creds=None):
 
     url = f"{config.JELLYFIN_URL}/Users/{user_id}/Items"
     headers = {"X-Emby-Token": token}
-    params = {"IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path"}
+    params = {"IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path,ProductionYear"}
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         items = r.json().get("Items", [])
-        
+
         # Apply artist field prioritization to each item
         for item in items:
+            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
             title = item.get('Name', 'Unknown')
             artist_name, artist_id = _select_best_artist(item, title)
             item['AlbumArtist'] = artist_name
             item['ArtistId'] = artist_id
-        
+            item['Year'] = item.get('ProductionYear')
+            item['FilePath'] = item.get('Path')
+
         return items
     except Exception as e:
         logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)

@@ -9,6 +9,40 @@
             gap: 0.5rem; /* Space between checkbox and label */
             margin-top: 1rem; /* Align with other inputs */
         }
+        .mode-toggle-btn {
+            background: #3B82F6;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 4px 10px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 500;
+            line-height: 1.2;
+            text-align: center;
+            min-width: 55px;
+            margin-left: 0.5rem;
+            margin-top: 0;
+            width: auto;
+            flex-grow: 0;
+            vertical-align: middle;
+            transition: background-color 0.2s;
+        }
+        .mode-toggle-btn:hover {
+            background: #2563EB;
+        }
+        .mode-toggle-btn.mood-active {
+            background: #8B5CF6;
+        }
+        .mode-toggle-btn.mood-active:hover {
+            background: #7C3AED;
+        }
+        .mode-toggle-btn.anchor-active {
+            background: #F59E0B;
+        }
+        .mode-toggle-btn.anchor-active:hover {
+            background: #D97706;
+        }
 </style>
 {% endblock %}
 
@@ -16,35 +50,66 @@
 <section>
     <header class="page-header">
         <h1>AudioMuse-AI - Playlist from Similar Song</h1>
-        <p>Find tracks similar to a given song and create a playlist.</p>
+        <p>Find tracks similar to a given song, mood or anchor and create a playlist.</p>
     </header>
 
     <form id="similarity-form">
         <input type="hidden" id="selected_item_id" name="item_id">
+
         <div class="param-group">
-            <div class="autocomplete-container">
-                <label for="artist_search" class="label-with-tooltip">
-                    Artist:
-                    <span class="info-tooltip" tabindex="0">
-                        <span class="info-icon"></span>
-                        <span class="tooltip-text">Start typing an artist name to narrow down the song search. This helps find the exact track you're looking for.</span>
-                    </span>
-                </label>
-                <input type="text" id="artist_search" name="artist_search" placeholder="Start typing artist name..." autocomplete="off">
+
+            <div>
+                <button type="button" class="mode-toggle-btn" id="similarity-mode-toggle" title="Click to switch Song/Mood">🎵 Song</button>
             </div>
 
-            <div class="autocomplete-container">
-                <label for="title_search" class="label-with-tooltip">
-                    Track Title:
+            <!-- Song mode: autocomplete search -->
+            <div class="autocomplete-container" id="song-mode-container">
+                <label for="search_query" class="label-with-tooltip">
+                    Song, Artist or Album name:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Type the song name you want to find similar tracks to. As you type, suggestions will appear below.</span>
+                        <span class="tooltip-text">Type the song, artist or album you want to find similar tracks to. As you type, suggestions will appear below.</span>
                     </span>
                 </label>
-                <input type="text" id="title_search" name="title_search" placeholder="Start typing track title..." autocomplete="off">
+                <input type="text" id="search_query" name="search_query" placeholder="Start typing..." autocomplete="off">
+                <div id="selected_title_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                <input type="hidden" id="selected_item_title" name="title">
+                <div id="selected_artist_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                <input type="hidden" id="selected_item_artist" name="artist">
                 <div id="selected_album_display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
                 <input type="hidden" id="selected_item_album" name="album">
                 <div id="autocomplete-results" class="autocomplete-results hidden"></div>
+            </div>
+
+            <!-- Mood mode: sunburst chart (hidden by default) -->
+            <div id="mood-mode-container" class="hidden">
+                <style>
+                    #sunburst-wrapper { max-width: 480px; }
+                    @media (min-width: 768px) { #sunburst-wrapper { max-width: 360px; } }
+                </style>
+                <div id="sunburst-wrapper" style="position:relative;width:100%;margin:0 auto;">
+                    <canvas id="sunburst-canvas" class="sunburst-canvas" width="480" height="480" style="width:100%;cursor:pointer;"></canvas>
+                </div>
+                <div id="sunburst-selection" class="sunburst-selection" style="text-align:center;margin-top:0.5rem;font-size:0.95rem;font-weight:500;color:var(--text-title);min-height:1.4em;"></div>
+                <div id="sunburst-breadcrumb" class="sunburst-breadcrumb" style="text-align:center;margin-top:0.25rem;font-size:0.8rem;color:var(--text-muted);cursor:pointer;" title="Click to go back"></div>
+                <!-- Hidden inputs to keep form submission compatible -->
+                <select id="mood_select" style="display:none;"><option value="">--</option></select>
+                <select id="centroid_select" style="display:none;"><option value="">--</option></select>
+            </div>
+
+            <!-- Anchor mode: anchor selection (hidden by default) -->
+            <div id="anchor-mode-container" class="hidden">
+                <label for="anchor_select" class="label-with-tooltip">
+                    Anchor:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Select a pre-built anchor to find songs similar to its sound profile.</span>
+                    </span>
+                </label>
+                <select id="anchor_select">
+                    <option value="">-- Select an anchor --</option>
+                </select>
+                <div id="no-anchors-msg" class="hidden" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);">No anchors available. Create anchors from the Alchemy page first.</div>
             </div>
 
             <div>
@@ -117,16 +182,25 @@
 {% endblock %}
 
 {% block bodyAdditions %}
+    <script src="{{ url_for('static', filename='sunburst.js') }}"></script>
     <script>
+        let _currentMode = 'song';
+
         (() => {
             let currentTrackIds = [];
             let currentTracks = [];
             let searchTimeout;
+            const PAGE_SIZE = 20;
+            let autocompleteOffset = 0;
+            let autocompleteQuery = '';
+            let isLoadingMore = false;
+
+            // Mood centroid data cache
+            let moodCentroidsCache = null;
 
             const similarityForm = document.getElementById('similarity-form');
             const playlistForm = document.getElementById('playlist-form');
-            const artistInput = document.getElementById('artist_search');
-            const titleInput = document.getElementById('title_search');
+            const searchInput = document.getElementById('search_query');
             const selectedItemIdInput = document.getElementById('selected_item_id');
             const autocompleteResults = document.getElementById('autocomplete-results');
             const resultsContainer = document.getElementById('results-container');
@@ -135,23 +209,139 @@
             const resultsTableWrapper = document.getElementById('results-table-wrapper');
             const playlistStatusDiv = document.getElementById('playlist-status');
 
+            const moodSelect = document.getElementById('mood_select');
+            const centroidSelect = document.getElementById('centroid_select');
+            const modeToggleBtn = document.getElementById('similarity-mode-toggle');
+            const anchorSelect = document.getElementById('anchor_select');
+
+            // --- Mode toggle click handler (Song -> Mood -> Anchor -> Song) ---
+            const modes = ['song', 'mood', 'anchor'];
+            const modeLabels = {'song': '\ud83c\udfb5 Song', 'mood': '\ud83c\udfad Mood', 'anchor': '\u2693 Anchor'};
+            const modeClasses = {'song': '', 'mood': 'mood-active', 'anchor': 'anchor-active'};
+            const modeContainers = {'song': 'song-mode-container', 'mood': 'mood-mode-container', 'anchor': 'anchor-mode-container'};
+
+            modeToggleBtn.addEventListener('click', () => {
+                const curIdx = modes.indexOf(_currentMode);
+                const nextIdx = (curIdx + 1) % modes.length;
+                _currentMode = modes[nextIdx];
+                modeToggleBtn.textContent = modeLabels[_currentMode];
+                modeToggleBtn.className = 'mode-toggle-btn' + (modeClasses[_currentMode] ? ' ' + modeClasses[_currentMode] : '');
+                for (const m of modes) {
+                    document.getElementById(modeContainers[m]).classList.toggle('hidden', m !== _currentMode);
+                }
+            });
+
+            // --- Sunburst chart for mood centroid selection (external: sunburst.js) ---
+
+            let _sunburstState = null;
+            let selectedMoodLabel = '';
+            let selectedMoodLabelForPlaylist = '';
+
+            function capitalizeLabel(text) {
+                return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+            }
+
+            function findNodePath(current, target) {
+                if (current === target) return current.name === 'root' ? [] : [current.name];
+                if (!current.children) return null;
+                for (const child of current.children) {
+                    const path = findNodePath(child, target);
+                    if (path) return current.name === 'root' ? path : [current.name, ...path];
+                }
+                return null;
+            }
+
+            // --- Load mood centroids on page load ---
+            async function loadMoodCentroids() {
+                try {
+                    const resp = await fetch(`{{ url_for('voyager_bp.get_mood_centroids_endpoint') }}`);
+                    if (resp.ok) {
+                        moodCentroidsCache = await resp.json();
+                        // Populate hidden mood select for form compat
+                        for (const mood of Object.keys(moodCentroidsCache).sort()) {
+                            const opt = document.createElement('option');
+                            opt.value = mood;
+                            opt.textContent = mood;
+                            moodSelect.appendChild(opt);
+                        }
+                        const tree = SunburstChart.buildTree(moodCentroidsCache);
+                        _sunburstState = SunburstChart.init(
+                            document.getElementById('mood-mode-container'),
+                            tree,
+                            (node, best) => {
+                                moodSelect.value = node.mood;
+                                centroidSelect.innerHTML = '';
+                                const opt = document.createElement('option');
+                                opt.value = best.centroidIndex;
+                                opt.textContent = node.mood.charAt(0).toUpperCase() + node.mood.slice(1) + ' - ' + best.tags.slice(0, 3).join('/');
+                                centroidSelect.appendChild(opt);
+                                centroidSelect.value = best.centroidIndex;
+                                const path = findNodePath(tree, node);
+                                if (path) {
+                                    selectedMoodLabel = path.map(capitalizeLabel).join(' — ');
+                                    selectedMoodLabelForPlaylist = path.map(capitalizeLabel).join('/');
+                                } else {
+                                    selectedMoodLabel = capitalizeLabel(node.mood || '');
+                                    selectedMoodLabelForPlaylist = capitalizeLabel(node.mood || '');
+                                }
+                            },
+                            () => { moodSelect.value = ''; centroidSelect.value = ''; selectedMoodLabel = ''; }
+                        );
+                    }
+                } catch (e) {
+                    console.error('Failed to load mood centroids:', e);
+                }
+            }
+            loadMoodCentroids();
+
+            // --- Load anchors on page load ---
+            async function loadAnchors() {
+                try {
+                    const resp = await fetch('/api/anchors');
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        const anchors = data.anchors || [];
+                        const noMsg = document.getElementById('no-anchors-msg');
+                        if (anchors.length === 0) {
+                            noMsg.classList.remove('hidden');
+                        } else {
+                            noMsg.classList.add('hidden');
+                            anchors.forEach(a => {
+                                const opt = document.createElement('option');
+                                opt.value = a.id;
+                                opt.textContent = a.name;
+                                anchorSelect.appendChild(opt);
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.error('Failed to load anchors:', e);
+                }
+            }
+            loadAnchors();
+
+            // (Mood/centroid selection is now handled by the sunburst chart above)
+
             // --- Autocomplete Logic ---
             const handleSearchInput = () => {
                 clearTimeout(searchTimeout);
                 searchTimeout = setTimeout(async () => {
-                    const artistQuery = artistInput.value.trim();
-                    const titleQuery = titleInput.value.trim();
+                    const searchQuery = searchInput.value.trim();
 
-                    if (artistQuery.length < 3 && titleQuery.length < 3) {
+                    if (searchQuery.length < 3) {
                         hideAutocomplete();
                         return;
                     }
 
+                    autocompleteQuery = searchQuery;
+                    autocompleteOffset = 0;
+
                     try {
-                        const params = new URLSearchParams({ artist: artistQuery, title: titleQuery });
+                        const params = new URLSearchParams({ search_query: searchQuery, start: 0, end: PAGE_SIZE });
                         const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
                         const tracks = await response.json();
-                        showAutocomplete(tracks);
+                        autocompleteOffset = tracks.length;
+                        showAutocomplete(tracks, false);
                     } catch (error) {
                         console.error('Autocomplete search error:', error);
                         hideAutocomplete();
@@ -159,9 +349,31 @@
                 }, 300); // Debounce requests by 300ms
             };
 
-            const showAutocomplete = (tracks) => {
-                autocompleteResults.innerHTML = '';
-                if (tracks.length === 0) {
+            const loadMoreResults = async () => {
+                if (isLoadingMore) return;
+                isLoadingMore = true;
+                try {
+                    const params = new URLSearchParams({ search_query: autocompleteQuery, start: autocompleteOffset, end: autocompleteOffset + PAGE_SIZE });
+                    const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
+                    const tracks = await response.json();
+                    if (tracks.length > 0) {
+                        autocompleteOffset += tracks.length;
+                        showAutocomplete(tracks, true);
+                    }
+                } catch (error) {
+                    console.error('Load more error:', error);
+                } finally {
+                    isLoadingMore = false;
+                }
+            };
+
+            const showAutocomplete = (tracks, append) => {
+                if (!append) autocompleteResults.innerHTML = '';
+                // Remove existing sentinel if any
+                const existingSentinel = autocompleteResults.querySelector('.autocomplete-load-more');
+                if (existingSentinel) existingSentinel.remove();
+
+                if (tracks.length === 0 && !append) {
                     autocompleteResults.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
                 } else {
                     tracks.forEach(track => {
@@ -171,6 +383,20 @@
                         itemDiv.addEventListener('click', () => selectTrack(track));
                         autocompleteResults.appendChild(itemDiv);
                     });
+                    // Add infinite scroll sentinel if we got a full page
+                    if (tracks.length >= PAGE_SIZE) {
+                        const sentinel = document.createElement('div');
+                        sentinel.className = 'autocomplete-load-more autocomplete-item';
+                        sentinel.innerHTML = '<em>Loading more...</em>';
+                        autocompleteResults.appendChild(sentinel);
+                        const observer = new IntersectionObserver((entries) => {
+                            if (entries[0].isIntersecting) {
+                                observer.disconnect();
+                                loadMoreResults();
+                            }
+                        }, { root: autocompleteResults });
+                        observer.observe(sentinel);
+                    }
                 }
                 autocompleteResults.classList.remove('hidden');
             };
@@ -180,9 +406,22 @@
             };
 
             const selectTrack = (track) => {
-                artistInput.value = track.author;
-                titleInput.value = track.title;
                 selectedItemIdInput.value = track.item_id;
+
+                // Store track title (fallback to 'unknown' when missing) and show to user
+                const titleVal = (track.title || '').trim() || 'unknown';
+                const titleDisplay = (track.title || '').trim() || 'Unknown';
+                const titleInputEl = document.getElementById('selected_item_title');
+                if (titleInputEl) titleInputEl.value = titleVal;
+                const titleDisplayEl = document.getElementById('selected_title_display');
+                if (titleDisplayEl) titleDisplayEl.textContent = 'Title: ' + titleDisplay;
+                // Store artist (fallback to 'unknown' when missing) and show to user
+                const artistVal = (track.author || '').trim() || 'unknown';
+                const artistDisplay = (track.author || '').trim() || 'Unknown';
+                const artistInputEl = document.getElementById('selected_item_artist');
+                if (artistInputEl) artistInputEl.value = artistVal;
+                const artistDisplayEl = document.getElementById('selected_artist_display');
+                if (artistDisplayEl) artistDisplayEl.textContent = 'Artist: ' + artistDisplay;
                 // Store album (fallback to 'unknown' when missing) and show to user
                 const albumVal = (track.album || '').trim() || 'unknown';
                 const albumDisplay = (track.album || '').trim() || 'Unknown';
@@ -190,11 +429,11 @@
                 if (albumInputEl) albumInputEl.value = albumVal;
                 const albumDisplayEl = document.getElementById('selected_album_display');
                 if (albumDisplayEl) albumDisplayEl.textContent = 'Album: ' + albumDisplay;
+
                 hideAutocomplete();
             };
 
-            artistInput.addEventListener('input', handleSearchInput);
-            titleInput.addEventListener('input', handleSearchInput);
+            searchInput.addEventListener('input', handleSearchInput);
             document.addEventListener('click', (e) => {
                 if (!e.target.closest('.autocomplete-container')) {
                     hideAutocomplete();
@@ -207,35 +446,73 @@
             similarityForm.addEventListener('submit', async function (event) {
                 event.preventDefault();
 
-                const itemId = selectedItemIdInput.value;
                 const n = document.getElementById('n').value;
                 const eliminateDuplicates = document.getElementById('eliminate_duplicates').checked;
                 const radiusSimilarity = document.getElementById('radius_similarity').checked;
-                // Mood similarity removed from UI/API: do not read or send this value
-                // const moodSimilarity = document.getElementById('mood_similarity').checked;
 
                 resultsContainer.classList.remove('hidden');
                 playlistCreator.classList.add('hidden');
                 statusDiv.textContent = 'Searching...';
                 statusDiv.className = '';
                 resultsTableWrapper.innerHTML = '';
+                document.getElementById('max-distance').textContent = '';
 
-                if (!itemId) {
-                    statusDiv.textContent = 'Please select a track from the autocomplete suggestions.';
-                    statusDiv.className = 'status-error';
-                    return;
+                let params;
+                let isVectorMode = (_currentMode === 'mood' || _currentMode === 'anchor');
+                let playlistLabel;
+
+                if (_currentMode === 'mood') {
+                    // --- Mood centroid mode ---
+                    const mood = moodSelect.value;
+                    const centroidIdx = centroidSelect.value;
+                    if (!mood || centroidIdx === '') {
+                        statusDiv.textContent = 'Please select a mood and a centroid.';
+                        statusDiv.className = 'status-error';
+                        return;
+                    }
+                    params = new URLSearchParams({
+                        mood: mood,
+                        centroid_index: centroidIdx,
+                        n: n,
+                        eliminate_duplicates: eliminateDuplicates
+                    });
+                    const selectedOption = centroidSelect.options[centroidSelect.selectedIndex];
+                    playlistLabel = selectedMoodLabel || (selectedOption ? selectedOption.textContent : mood);
+                } else if (_currentMode === 'anchor') {
+                    // --- Anchor mode ---
+                    const anchorId = anchorSelect.value;
+                    if (!anchorId) {
+                        statusDiv.textContent = 'Please select an anchor.';
+                        statusDiv.className = 'status-error';
+                        return;
+                    }
+                    params = new URLSearchParams({
+                        anchor_id: anchorId,
+                        n: n,
+                        eliminate_duplicates: eliminateDuplicates
+                    });
+                    const selectedOption = anchorSelect.options[anchorSelect.selectedIndex];
+                    playlistLabel = selectedOption ? selectedOption.textContent : 'Anchor';
+                } else {
+                    // --- Song mode ---
+                    const itemId = selectedItemIdInput.value;
+                    if (!itemId) {
+                        statusDiv.textContent = 'Please select a track from the autocomplete suggestions.';
+                        statusDiv.className = 'status-error';
+                        return;
+                    }
+                    const albumValue = ((document.getElementById('selected_item_album') && document.getElementById('selected_item_album').value) || '').trim() || 'unknown';
+                    params = new URLSearchParams({
+                        item_id: itemId,
+                        n: n,
+                        eliminate_duplicates: eliminateDuplicates,
+                        radius_similarity: radiusSimilarity,
+                        album: albumValue
+                    });
+                    playlistLabel = (document.getElementById('selected_item_title') && document.getElementById('selected_item_title').value) ? document.getElementById('selected_item_title').value : 'Unknown';
                 }
 
                 try {
-                    const albumValue = ((document.getElementById('selected_item_album') && document.getElementById('selected_item_album').value) || '').trim() || 'unknown';
-                    const params = new URLSearchParams({
-                        item_id: itemId,
-                        n: n,
-                        eliminate_duplicates: eliminateDuplicates, // Always send true or false
-                        radius_similarity: radiusSimilarity,
-                        album: albumValue
-                        // mood_similarity intentionally omitted
-                    });
                     const response = await fetch(`{{ url_for('voyager_bp.get_similar_tracks_endpoint') }}?${params}`);
                     const data = await response.json();
 
@@ -246,63 +523,76 @@
                         return;
                     }
 
-                    // Fetch exact max distance for the selected song and display it.
-                    // Also fetch the farthest song's title/artist when the API returns a farthest_item_id.
-                    try {
-                        const mdResp = await fetch(`{{ url_for('voyager_bp.get_max_distance_endpoint') }}?item_id=` + encodeURIComponent(itemId));
-                        if (mdResp.ok) {
-                            const md = await mdResp.json();
-                            const maxDistDiv = document.getElementById('max-distance');
-                            if (md && typeof md.max_distance === 'number') {
-                                // Default text with just the distance
-                                let text = 'Max distance: ' + md.max_distance.toFixed(4);
-
-                                // If server returned the farthest item's id, try to fetch its title/artist
-                                const farId = md.farthest_item_id || md.farthest_id || md.item_id || md.max_item_id || md.farthestItemId;
-                                if (farId) {
-                                    try {
-                                        const tdResp = await fetch(`{{ url_for('voyager_bp.get_track_endpoint') }}?item_id=` + encodeURIComponent(farId));
-                                        if (tdResp.ok) {
-                                            const td = await tdResp.json();
-                                            if (td && (td.title || td.author)) {
-                                                const title = td.title || 'Unknown title';
-                                                const author = td.author || 'Unknown artist';
-                                                text += ' — Farthest track: "' + title + '" by ' + author;
+                    // Fetch max distance only in song mode
+                    if (!isVectorMode) {
+                        const itemId = selectedItemIdInput.value;
+                        try {
+                            const mdResp = await fetch(`{{ url_for('voyager_bp.get_max_distance_endpoint') }}?item_id=` + encodeURIComponent(itemId));
+                            if (mdResp.ok) {
+                                const md = await mdResp.json();
+                                const maxDistDiv = document.getElementById('max-distance');
+                                if (md && typeof md.max_distance === 'number') {
+                                    let text = 'Max distance: ' + md.max_distance.toFixed(4);
+                                    const farId = md.farthest_item_id || md.farthest_id || md.item_id || md.max_item_id || md.farthestItemId;
+                                    if (farId) {
+                                        try {
+                                            const tdResp = await fetch(`{{ url_for('voyager_bp.get_track_endpoint') }}?item_id=` + encodeURIComponent(farId));
+                                            if (tdResp.ok) {
+                                                const td = await tdResp.json();
+                                                if (td && (td.title || td.author)) {
+                                                    text += ' — Farthest track: "' + (td.title || 'Unknown title') + '" by ' + (td.author || 'Unknown artist');
+                                                } else {
+                                                    text += ' — Farthest track ID: ' + farId;
+                                                }
                                             } else {
-                                                // If the endpoint returned something unexpected, show the id
                                                 text += ' — Farthest track ID: ' + farId;
                                             }
-                                        } else {
-                                            // If the track endpoint failed, show the id only
+                                        } catch (errInner) {
+                                            console.error('Failed to fetch farthest track metadata:', errInner);
                                             text += ' — Farthest track ID: ' + farId;
                                         }
-                                    } catch (errInner) {
-                                        console.error('Failed to fetch farthest track metadata:', errInner);
-                                        text += ' — Farthest track ID: ' + farId;
                                     }
+                                    maxDistDiv.textContent = text;
+                                } else {
+                                    maxDistDiv.textContent = '';
                                 }
-
-                                maxDistDiv.textContent = text;
-                            } else {
-                                maxDistDiv.textContent = '';
                             }
+                        } catch (err) {
+                            console.error('Failed to fetch max distance:', err);
                         }
-                    } catch (err) {
-                        console.error('Failed to fetch max distance:', err);
                     }
 
-                    currentTrackIds = [itemId, ...data.map(track => track.item_id)];
-
-                    currentTracks = [{id: itemId, title: titleInput.value, author: artistInput.value, album: (document.getElementById('selected_item_album') && document.getElementById('selected_item_album').value) ? document.getElementById('selected_item_album').value : 'Unknown'}, ...data.map(track => ({id: track.item_id, title: track.title, author: track.author, album: track.album || 'Unknown'}))];
-
-                    // Graph visualization removed: skipping map fetch and chart rendering.
+                    if (!isVectorMode) {
+                        const itemId = selectedItemIdInput.value;
+                        currentTrackIds = [itemId, ...data.map(track => track.item_id)];
+                        currentTracks = [
+                            {
+                                id: itemId,
+                                title: playlistLabel,
+                                author: (document.getElementById('selected_item_artist') && document.getElementById('selected_item_artist').value) || 'Unknown',
+                                album: (document.getElementById('selected_item_album') && document.getElementById('selected_item_album').value) || 'Unknown'
+                            },
+                            ...data.map(track => ({id: track.item_id, title: track.title, author: track.author, album: track.album || 'Unknown'}))
+                        ];
+                    } else {
+                        currentTrackIds = data.map(track => track.item_id);
+                        currentTracks = data.map(track => ({id: track.item_id, title: track.title, author: track.author, album: track.album || 'Unknown'}));
+                    }
 
                     statusDiv.textContent = 'Found ' + data.length + ' similar tracks.';
                     const tableHTML = '<table><thead><tr><th>Title</th><th>Artist</th><th>Album</th><th>Distance</th></tr></thead><tbody>' + data.map(track => '<tr><td>' + (track.title || 'N/A') + '</td><td>' + (track.author || 'N/A') + '</td><td>' + (track.album || 'Unknown') + '</td><td>' + track.distance.toFixed(4) + '</td></tr>').join('') + '</tbody></table>';
                     resultsTableWrapper.innerHTML = tableHTML;
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
-                    document.getElementById('playlist_name').value = "Similar to " + titleInput.value;
+                    let defaultPlaylistName;
+                    if (_currentMode === 'mood') {
+                        defaultPlaylistName = 'Similar to Mood: ' + selectedMoodLabelForPlaylist;
+                    } else if (_currentMode === 'anchor') {
+                        defaultPlaylistName = 'Similar to Anchor: ' + playlistLabel;
+                    } else {
+                        defaultPlaylistName = 'Similar to ' + playlistLabel;
+                    }
+                    document.getElementById('playlist_name').value = defaultPlaylistName;
 
                 } catch (error) {
                     statusDiv.textContent = `Error: ${error.message}`;

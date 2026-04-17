@@ -34,7 +34,7 @@ def clustering_task_failure_handler(job, connection, type, value, tb):
     from app import app
     from app_helper import save_task_status, TASK_STATUS_FAILURE
     with app.app_context():
-        task_id = job.get_id()
+        task_id = getattr(job, 'id', None) or getattr(job, 'get_id', lambda: None)()
         
         # --- FIX: Handle different traceback types, especially from rq-janitor ---
         tb_formatted = ""
@@ -256,7 +256,7 @@ def start_clustering_endpoint():
                             type: string
     """
     # Local imports to prevent circular dependency at startup
-    from app_helper import rq_queue_high, get_db
+    from app_helper import rq_queue_high, get_active_main_task
     from app_helper import (
         clean_up_previous_main_tasks,
         save_task_status,
@@ -268,20 +268,11 @@ def start_clustering_endpoint():
         TASK_STATUS_REVOKED
     )
 
-    # Check for an existing active task to prevent parallel runs
-    db = get_db()
-    cur = db.cursor(cursor_factory=DictCursor)
-    non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
-    cur.execute("""
-        SELECT task_id, status FROM task_status 
-        WHERE task_type = 'main_clustering' AND status IN %s
-    """, (non_terminal_statuses,))
-    active_task = cur.fetchone()
-    cur.close()
-
+    # Check for any existing active main task to prevent parallel batch runs
+    active_task = get_active_main_task()
     if active_task:
         return jsonify({
-            "error": "An active clustering task is already in progress.",
+            "error": "An active batch task is already in progress.",
             "task_id": active_task['task_id'],
             "status": active_task['status']
         }), 409

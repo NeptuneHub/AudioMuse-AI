@@ -33,7 +33,7 @@ def batch_task_failure_handler(job, connection, type, value, tb):
     from app_helper import save_task_status, TASK_STATUS_FAILURE
     
     with app.app_context():
-        task_id = job.get_id()
+        task_id = getattr(job, 'id', None) or getattr(job, 'get_id', lambda: None)()
         # Safely get args
         parent_id = job.args[0] if job.args and len(job.args) > 0 else None
         

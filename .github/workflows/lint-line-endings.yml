@@ -1,0 +1,32 @@
+name: Line Ending Linter
+on:
+  push:
+    branches: ["**"]  # Runs on every push to every branch
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  check-crlf:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Scan for CRLF (\r)
+        run: |
+          # List files with \r, excluding the .git directory
+          BAD_FILES=$(grep -rIl $'\r' --exclude-dir=.git . || true)
+          
+          if [ -n "$BAD_FILES" ]; then
+            echo "❌ ERROR: CRLF (Windows) line endings detected!"
+            echo "The following files must be LF:"
+            echo "$BAD_FILES"
+            echo ""
+            echo "FIX: Run these commands on your machine:"
+            echo "  git add --renormalize ."
+            echo "  git commit -m 'fix: normalize line endings'"
+            echo "  git push"
+            exit 1
+          else
+            echo "✅ All files are clean (LF)."
+          fi

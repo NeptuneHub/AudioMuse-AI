@@ -58,7 +58,7 @@ def batch_task_failure_handler(job, connection, type, value, tb):
     from app import app
     from app_helper import save_task_status, TASK_STATUS_FAILURE
     with app.app_context():
-        task_id = job.get_id()
+        task_id = getattr(job, 'id', None) or getattr(job, 'get_id', lambda: None)()
         parent_id = job.kwargs.get('parent_task_id')
         batch_id_str = job.kwargs.get('batch_id_str')
         
@@ -410,12 +410,32 @@ def run_clustering_task(
                 initial_subset_data = _get_stratified_song_subset(genre_map, target_songs_per_genre)
                 _main_task_accumulated_details["last_subset_ids"] = [t['item_id'] for t in initial_subset_data]
 
+            # Staleness watchdog: if runs_completed hasn't changed for CLUSTERING_BATCH_TIMEOUT_MINUTES,
+            # force-complete the task with the best result found so far.
+            last_progress_time = time.time()
+            last_known_runs = _main_task_accumulated_details["runs_completed"]
+            progress = 5  # Initial progress value for watchdog logging before first loop iteration
+
             while _main_task_accumulated_details["runs_completed"] < num_clustering_runs:
                 if current_job and (current_job.is_stopped or get_task_info_from_db(current_task_id).get('status') == TASK_STATUS_REVOKED):
                     _log_and_update("Task revoked, stopping.", _main_task_accumulated_details['runs_completed'], task_state=TASK_STATUS_REVOKED)
                     return {"status": "REVOKED", "message": "Main clustering task revoked."}
 
                 _monitor_and_process_batches(_main_task_accumulated_details, current_task_id)
+
+                # Staleness watchdog: reset timer on progress, force-complete on stale
+                if _main_task_accumulated_details["runs_completed"] > last_known_runs:
+                    last_known_runs = _main_task_accumulated_details["runs_completed"]
+                    last_progress_time = time.time()
+                elif time.time() - last_progress_time > CLUSTERING_BATCH_TIMEOUT_MINUTES * 60:
+                    stale_minutes = (time.time() - last_progress_time) / 60
+                    _log_and_update(
+                        f"STALENESS WATCHDOG: No progress for {stale_minutes:.1f} min (limit: {CLUSTERING_BATCH_TIMEOUT_MINUTES} min). "
+                        f"Forcing completion at {last_known_runs}/{num_clustering_runs} runs.",
+                        progress
+                    )
+                    logger.warning(f"STALENESS WATCHDOG triggered. runs_completed stuck at {last_known_runs}/{num_clustering_runs} for {stale_minutes:.1f} min.")
+                    _main_task_accumulated_details["runs_completed"] = num_clustering_runs
 
                 # Check if we should stop launching new batches due to too many failures
                 failed_batch_count = len(_main_task_accumulated_details.get("failed_batches", set()))
@@ -637,7 +657,6 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
     CRITICAL: This prevents the main task from hanging at 4980/5000 runs
     by implementing timeouts and forced progress tracking.
     """
-    import time
     from app_helper import (redis_conn, get_child_tasks_from_db, get_task_info_from_db,
                     TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED, 
                     TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
@@ -656,6 +675,28 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                 timed_out_jobs.append(job_id)
                 state_dict.setdefault("timed_out_batches", set()).add(job_id)
                 state_dict.setdefault("failed_batches", set()).add(job_id)  # Timeouts count as failures
+    # Immediately account for runs and clear active_jobs for timed-out batches so the
+    # main task doesn't stay blocked waiting for them to finish or fail in the DB.
+    for job_id in timed_out_jobs:
+        # calculate run range from job_id if possible (fallback when DB info not available)
+        try:
+            batch_idx = None
+            if "_batch_" in job_id:
+                batch_idx = int(job_id.rsplit("_batch_", 1)[1])
+            if batch_idx is not None:
+                total_runs = state_dict.get("total_runs", 0)
+                start_run = batch_idx * ITERATIONS_PER_BATCH_JOB
+                num_iterations = min(ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
+                if num_iterations > 0 and state_dict["runs_completed"] < total_runs:
+                    runs_to_add = min(num_iterations, total_runs - state_dict["runs_completed"])
+                    state_dict["runs_completed"] += runs_to_add
+                    logger.warning(f"Job {job_id} timed out. Forced runs_completed count to increase by {runs_to_add} to prevent starvation.")
+        except Exception:
+            logger.error(f"Could not compute runs for timed out job {job_id}.")
+        # mark processed and ensure it's removed from active jobs
+        state_dict.setdefault("processed_job_ids", set()).add(job_id)
+        if job_id in state_dict.get("active_jobs", {}):
+            del state_dict["active_jobs"][job_id]
     
     # 2. Get all child tasks from database
     all_child_tasks = get_child_tasks_from_db(parent_task_id)
@@ -751,6 +792,20 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                              
                     except Exception:
                         logger.error(f"Could not calculate runs for failed/missing job {job_id} using sub_type_identifier.")
+            else:
+                # no DB entry or sub_type_identifier missing: try to infer from job_id pattern
+                try:
+                    if "_batch_" in job_id:
+                        batch_idx = int(job_id.rsplit("_batch_", 1)[1])
+                        total_runs = state_dict.get('total_runs', 0)
+                        start_run = batch_idx * ITERATIONS_PER_BATCH_JOB
+                        num_iterations = min(ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
+                        if num_iterations > 0 and state_dict["runs_completed"] < total_runs:
+                            runs_to_add = min(num_iterations, total_runs - state_dict["runs_completed"])
+                            state_dict["runs_completed"] += runs_to_add
+                            logger.warning(f"Job {job_id} failed/missing result (no DB info). Inferred batch index and adjusted runs_completed by {runs_to_add}.")
+                except Exception:
+                    logger.error(f"Could not infer runs for failed/missing job {job_id} from job_id.")
         
         # Mark as processed and remove from active jobs list
         state_dict.setdefault("processed_job_ids", set()).add(job_id)
@@ -837,7 +892,6 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
     state_dict["active_jobs"][new_job.id] = new_job
     
     # Record batch start time for timeout detection
-    import time
     state_dict.setdefault("batch_start_times", {})[new_job.id] = time.time()
     
     logger.info(f"Enqueued batch job {new_job.id} for runs {start_run}-{start_run + num_iterations - 1}.")
