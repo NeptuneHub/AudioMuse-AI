@@ -627,6 +627,13 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     track_ids_as_strings = [str(id) for id in track_ids]
                     cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL", (tuple(track_ids_as_strings),))
                     return {row[0] for row in cur.fetchall()}
+            
+            def get_unanalyzable_track_ids(track_ids):
+                if not track_ids: return set()
+                with get_db() as conn, conn.cursor() as cur:
+                    track_ids_as_strings = [str(id) for id in track_ids]
+                    cur.execute("SELECT item_id FROM score WHERE item_id IN %s AND analysis_status = 'unanalyzable'", (tuple(track_ids_as_strings),))
+                    return {row[0] for row in cur.fetchall()}
 
             def get_missing_clap_track_ids(track_ids):
                 if not track_ids: return set()
@@ -647,6 +654,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             existing_track_ids_set = get_existing_track_ids([str(t['Id']) for t in tracks])
             missing_clap_ids_set = get_missing_clap_track_ids([str(t['Id']) for t in tracks]) if is_clap_available() else set()
             missing_mulan_ids_set = get_missing_mulan_track_ids([str(t['Id']) for t in tracks]) if MULAN_ENABLED else set()
+            unanalyzable_track_ids_set = get_unanalyzable_track_ids([str(t['Id']) for t in tracks]) 
             total_tracks_in_album = len(tracks)
 
             for idx, item in enumerate(tracks, 1):
@@ -689,6 +697,11 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 #     logger.info(f"Updated album name for track '{track_name_full}' to '{album_name}'")
                 # except Exception as e:
                 #     logger.warning(f"Failed to update album name for '{track_name_full}': {e}")
+
+                if track_id_str in unanalyzable_track_ids_set:
+                    tracks_skipped_count += 1
+                    logger.info(f"Skipping '{track_name_full}' - previously marked as unanalyzable.")
+                    continue
 
                 if not needs_musicnn and not needs_clap and not needs_mulan:
                     tracks_skipped_count += 1
@@ -804,6 +817,14 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions)
                         if analysis is None:
                             logger.warning(f"Skipping track {track_name_full} as analysis returned None.")
+                            logger.info(f"Marking track {track_name_full} as 'unanalyzable'.")
+                            with get_db() as conn, conn.cursor() as cur:
+                                cur.execute("""
+                                            INSERT INTO score (item_id, title, analysis_status)
+                                            VALUES (%s, %s, 'unanalyzable')
+                                            ON CONFLICT (item_id) DO UPDATE SET analysis_status = 'unanalyzable'
+                                        """, (track_id_str, track_name_full))
+                                conn.commit() 
                             tracks_skipped_count += 1
                             continue
                         
