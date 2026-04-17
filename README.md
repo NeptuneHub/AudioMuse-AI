@@ -39,11 +39,8 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
+> * **Version 1.0.0** introduces the Setup Wizard for an easy configuration with the web UI
 > * **Version 0.9.6** authentication enabled by default. Read the [AUTHENTICATION](docs/AUTH.md) docs to know how to proceed.
-> * **Version 0.9.5** improve the use of moods for similar song and song path functionality. It also introduce the backup and restore of the database.
-> * **Version 0.9.4** introduce the possibility to create a Song Path with mood. Also Song Alchemy can save is output as an Anchor to be used for future alchemy or as an input of Song Path.
-> * **Version 0.9.0** introduce the new DCLAP model, for a faster analysis. **IMPORTANT**: it need to start from a clean db and a new analysis. Learn more on the release note.
-> * **Version 0.8.13** introduce the authentication layer. It start initially disabled by default. Learn more on the release note.
 
 ## Disclaimer
 
@@ -61,13 +58,15 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 
 ## Quick Start Deployment
 
-Get AudioMuse-AI running in minutes with Docker Compose. 
+Get AudioMuse-AI running in minutes with Docker Compose.
 
 If you need more deployment example take a look at [DEPLOYMENT](docs/DEPLOYMENT.md) page.
 
 For a full list of configuration parameter take a look at [PARAMETERS](docs/PARAMETERS.md) page.
 
 For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](docs/ARCHITECTURE.md) page.
+
+From `v1.0.0`, only PostgreSQL and Redis connection parameters must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
 
 **Prerequisites:**
 * Docker and Docker Compose installed
@@ -81,64 +80,21 @@ For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](d
    cp deployment/.env.example deployment/.env
    ```
 
-2. **Edit `.env` with your media server credentials:**
-   
-   **For Jellyfin:**
+   You can customize the setup by editing `deployment/.env` before startup. As a minimum, it is suggested to change the default database password, but you can also override other PostgreSQL and Redis connection parameters if you want to reuse already existent deployment:
+
    ```env
-   MEDIASERVER_TYPE=jellyfin
-   JELLYFIN_URL=http://your-jellyfin-server:8096
-   JELLYFIN_USER_ID=your-user-id
-   JELLYFIN_TOKEN=your-api-token
-   ```
-   
-   **For Navidrome:**
-   ```env
-   MEDIASERVER_TYPE=navidrome
-   NAVIDROME_URL=http://your-navidrome-server:4533
-   NAVIDROME_USER=your-username
-   NAVIDROME_PASSWORD=your-password
-   ```
-   
-   **For Lyrion:**
-   ```env
-   MEDIASERVER_TYPE=lyrion
-   LYRION_URL=http://your-lyrion-server:9000
+   POSTGRES_PASSWORD=your-secure-password
    ```
 
-   **For Emby:**
-   ```env
-   MEDIASERVER_TYPE=emby
-   EMBY_URL=http://your-emby-server:8096
-   EMBY_USER_ID=your-user-id
-   EMBY_TOKEN=your-api-token
-   ```
-3. **Edit `.env` to set your AudioMuse-AI user and password:**
-
-   In the env file you also need to put your AudioMuse-AI credentials as in the below example:
-   ```env
-   AUTH_ENABLED=true
-   AUDIOMUSE_USER=alice
-   AUDIOMUSE_PASSWORD=secret123
-   API_TOKEN=api-token
-   ```
-   Alternative you can disabled the authentication layer with `AUTH_ENABLED` set to false, but we suggest to keep it enabled.
-   
-   More details can be found in the [AUTHENTICATION](docs/AUTH.md) docs
-   
-4. **Start the services:**
+2. **Start the services:**
    ```bash
    docker compose -f deployment/docker-compose.yaml up -d
    ```
-> Remember to get the correct version for your Music Server.
 
-> docker-compose.yaml is for Jellyfin.
-> You also have docker-compose-navidrome.yaml, docker-compose-lyrion.yaml, dokcer-compose-emby.yaml
-
-> Other example are for advanced deployment.
-5. **Access the application:**
+3. **Access the application:**
    Open your browser at `http://localhost:8000`
 
-6. **Run your first analysis:**
+4. **Run your first analysis:**
    - Navigate to "Analysis and Clustering" page
    - Click "Start Analysis" to scan your library
    - Wait for completion, then explore features like clustering and music map
@@ -147,8 +103,6 @@ For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](d
 ```bash
 docker compose -f deployment/docker-compose.yaml down
 ```
-
-> NOTE: by default AudioMuse-AI is deployed WITHOUT authentication layer and its suited only for LOCAL deployment. If you want to configure it have a look to the  [AUTHENTICATION](docs/AUTH.md) docs. If you enable the Authentication Layer, you need to be sure that any plugin used support and use the AudioMuse-AI API TOKEN
 
 ## **Hardware Requirements**
 

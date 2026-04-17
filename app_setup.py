@@ -1,8 +1,9 @@
 import json
 import re
+import types
 from flask import request, jsonify, render_template, make_response, after_this_request
 import config
-from app import app, setup_manager, is_bootstrap_mode, refresh_auth_state
+from app import app, setup_manager
 import restart_manager
 import tasks.mediaserver as mediaserver
 
@@ -148,22 +149,36 @@ def _get_allowed_setup_keys():
 
 @app.route('/setup')
 def setup_page():
-    return render_template('setup.html', title='AudioMuse-AI Setup', active='setup')
+    return render_template('setup.html', title='AudioMuse-AI - Setup Wizard', active='setup')
 
 @app.route('/api/setup', methods=['GET', 'POST'])
 def setup_api():
     if request.method == 'GET':
         all_fields = setup_manager.get_all_fields(config)
+        # Determine which media server fields belong to non-active types
+        # so their values are hidden from the UI.
+        active_server_type = getattr(config, 'MEDIASERVER_TYPE', '').strip().lower()
+        inactive_server_fields = set()
+        for stype, sfields in config.MEDIASERVER_FIELDS_BY_TYPE.items():
+            if stype != active_server_type:
+                inactive_server_fields.update(sfields)
+
         basic_fields = []
         advanced_fields = []
         for f in all_fields:
             if f['name'] in SECRET_FIELDS or f['name'].endswith('_API_KEY'):
                 f['secret'] = True
-                f['has_value'] = bool(f.get('value'))
+                f['has_value'] = bool(f.get('value')) and f['name'] not in inactive_server_fields
                 f['value'] = ''
             else:
                 f['secret'] = False
                 f['has_value'] = bool(f.get('overridden', False))
+
+            # Blank out values for non-active server fields
+            if f['name'] in inactive_server_fields:
+                f['value'] = ''
+                f['has_value'] = False
+                f['overridden'] = False
 
             if f['name'] in BASIC_FIELDS:
                 basic_fields.append(f)
@@ -208,15 +223,40 @@ def setup_api():
                 'probe_limit_hit': result.get('probe_limit_hit', False),
             }), 200
 
-        was_bootstrap = is_bootstrap_mode()
         new_server_type = filtered_values.get('MEDIASERVER_TYPE', config.MEDIASERVER_TYPE)
-        if new_server_type != config.MEDIASERVER_TYPE:
-            obsolete_fields = config.MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE.get(new_server_type, [])
-            if obsolete_fields:
-                setup_manager.delete_config_values(obsolete_fields)
+        if isinstance(new_server_type, str):
+            new_server_type = new_server_type.strip().lower()
+        obsolete_fields = config.MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE.get(new_server_type, [])
+
+        auth_val = filtered_values.get('AUTH_ENABLED')
+        auth_being_disabled = (auth_val is False or
+            (isinstance(auth_val, str) and auth_val.strip().lower() in ('false', '0', 'no', 'off')))
+
+        # --- Pre-validate: simulate the post-save config state BEFORE touching the DB ---
+        simulated = types.SimpleNamespace()
+        for _name in vars(config):
+            if _name.isupper() and not _name.startswith('_'):
+                setattr(simulated, _name, getattr(config, _name))
+        for key in obsolete_fields:
+            setattr(simulated, key, '')
+        if auth_being_disabled:
+            for key in ['AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JWT_SECRET']:
+                setattr(simulated, key, '')
+        for key, value in filtered_values.items():
+            setattr(simulated, key, value)
+
+        if not setup_manager.is_valid_env_config(simulated):
+            return jsonify({'error': 'Cannot save: this would remove mandatory configuration fields (media server or auth credentials).'}), 400
+
+        # Validation passed — apply changes to the database
+        if obsolete_fields:
+            setup_manager.delete_config_values(obsolete_fields)
+        if auth_being_disabled:
+            setup_manager.delete_config_values(['AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JWT_SECRET'])
+
         setup_manager.save_config_values(filtered_values)
         config.refresh_config()
-        refresh_auth_state()
+
         restart_manager.publish_restart_request()
         restart_requested = True
     except Exception as exc:

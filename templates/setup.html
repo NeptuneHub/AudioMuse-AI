@@ -14,11 +14,7 @@
         box-shadow: 0 12px 40px rgba(0,0,0,0.06);
         padding: 1.75rem;
     }
-    .summary {
-        margin: 1.5rem 0 1rem;
-        font-size: 0.95rem;
-        color: var(--text-muted, #666);
-    }
+
     label {
         display: block;
         margin-bottom: 0.35rem;
@@ -50,7 +46,7 @@
         content: ' *';
         color: #c0392b;
     }
-    button {
+    #setup-form button {
         border: none;
         border-radius: 10px;
         padding: 0.95rem 1.25rem;
@@ -60,7 +56,7 @@
         font-weight: 700;
         font-size: 1rem;
     }
-    button:disabled {
+    #setup-form button:disabled {
         opacity: 0.6;
         cursor: not-allowed;
     }
@@ -122,7 +118,7 @@
         margin: 0;
     }
     @media (max-width: 640px) {
-        button {
+        #setup-form button {
             width: 100%;
         }
         .field-row {
@@ -153,19 +149,22 @@
 {% block content %}
 <div class="page-shell">
     <div class="card">
-        <h1>AudioMuse-AI Setup</h1>
-        <p class="summary">Complete the first-time configuration. Environment variables are used as defaults and saved to the database after you submit.</p>
-
-        <div class="notice">
-            This setup page is shown automatically on first login when no saved setup data exists.
-            Fields marked with * are mandatory.
+        <div class="page-header">
+            <h1>AudioMuse-AI - Setup Wizard</h1>
+            <p class="subtitle">Configure your media server, authentication and advanced settings.</p>
         </div>
 
         <form id="setup-form">
             <section class="section">
                 <h2>Media Server</h2>
                 <div class="field-row">
-                    <label for="MEDIASERVER_TYPE">Media server type</label>
+                    <label for="MEDIASERVER_TYPE" class="label-with-tooltip">
+                        Media server type
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Pick the music server AudioMuse-AI should connect to. Each option asks for slightly different credentials below: Jellyfin/Emby use URL + user ID + API token, Navidrome uses URL + username + password, Lyrion uses just a URL.</span>
+                        </span>
+                    </label>
                     <select id="MEDIASERVER_TYPE" name="MEDIASERVER_TYPE" required>
                         <option value="jellyfin">Jellyfin</option>
                         <option value="navidrome">Navidrome</option>
@@ -175,7 +174,7 @@
                 </div>
                 <div id="server-config-fields"></div>
                 <div class="field-row">
-                    <button id="test-button" type="button">Test connection</button>
+                    <button id="test-button" type="button" disabled>Test connection</button>
                 </div>
                 <div class="field-row">
                     <p id="test-feedback" class="inline-feedback" style="display:none; margin:0; width:100%;"></p>
@@ -185,7 +184,13 @@
             <section class="section">
                 <h2>Authentication</h2>
                 <div class="field-row">
-                    <label for="AUTH_ENABLED" class="required-label">Enable authentication</label>
+                    <label for="AUTH_ENABLED" class="required-label label-with-tooltip">
+                        Enable authentication
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">When True, the web UI and API require login. When False, AudioMuse-AI is fully open to anyone who can reach it.</span>
+                        </span>
+                    </label>
                     <select id="AUTH_ENABLED" name="AUTH_ENABLED" required>
                         <option value="true">True</option>
                         <option value="false">False</option>
@@ -193,30 +198,66 @@
                 </div>
                 <div id="auth-credentials" class="field-grid">
                     <div>
-                        <label for="AUDIOMUSE_USER">Username</label>
+                        <label for="AUDIOMUSE_USER" class="label-with-tooltip">
+                            Username
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">The username you'll use to log into the AudioMuse-AI web interface.</span>
+                            </span>
+                        </label>
                         <input id="AUDIOMUSE_USER" name="AUDIOMUSE_USER" type="text" placeholder="alice">
                     </div>
                     <div>
-                        <label for="AUDIOMUSE_PASSWORD">Password</label>
+                        <label for="AUDIOMUSE_PASSWORD" class="label-with-tooltip">
+                            Password
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">The password for the user above.</span>
+                            </span>
+                        </label>
                         <input id="AUDIOMUSE_PASSWORD" name="AUDIOMUSE_PASSWORD" type="password" placeholder="secret123">
                     </div>
                     <div>
-                        <label for="AUDIOMUSE_PASSWORD_CONFIRM">Confirm password</label>
+                        <label for="AUDIOMUSE_PASSWORD_CONFIRM" class="label-with-tooltip">
+                            Confirm password
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Re-enter the password above to confirm it. Both fields must match before saving.</span>
+                            </span>
+                        </label>
                         <input id="AUDIOMUSE_PASSWORD_CONFIRM" type="password" placeholder="secret123">
                     </div>
                     <div>
-                        <label for="JWT_SECRET">JWT Secret</label>
+                        <label for="JWT_SECRET" class="label-with-tooltip">
+                            JWT Secret
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Random secret used to sign login tokens. Leave blank to auto-generate a strong one. Changing it invalidates all existing sessions.</span>
+                            </span>
+                        </label>
                         <input id="JWT_SECRET" name="JWT_SECRET" type="password" placeholder="********">
                     </div>
                 </div>
                 <div id="api-token-row" class="field-row">
-                    <label for="API_TOKEN">API token</label>
+                    <label for="API_TOKEN" class="label-with-tooltip">
+                        API token
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Optional bearer token for programmatic API access, needed for AudioMuse-AI plugin.</span>
+                        </span>
+                    </label>
                     <input id="API_TOKEN" name="API_TOKEN" type="password" placeholder="api-token">
                 </div>
             </section>
 
             <details id="advanced-config">
                 <summary>Advanced configuration</summary>
+                <div class="notice" style="margin-top: 1rem;">
+                    <strong>⚠️ Read the documentation first.</strong>
+                    These settings tune analysis, clustering and internal behavior. Wrong values can break analysis runs or produce poor playlists. Please review the
+                    <a href="https://github.com/NeptuneHub/AudioMuse-AI/blob/main/docs/PARAMETERS.md" target="_blank" rel="noopener noreferrer">PARAMETERS documentation on GitHub</a>
+                    before changing anything here.
+                </div>
                 <div id="advanced-fields"></div>
             </details>
 
