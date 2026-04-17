@@ -13,16 +13,18 @@ If you want to use the -nvidia version we suggest a GPU with 8gb VRAM.
 
 ### How to deploy AudioMuse-AI?
 
-The [readme](../README.md) section has the explanation and multiple examples can be found in the [deployment folder](../deployment/). If you're not able to reach the front-end on **[http://YOUR-IP:8000](http://YOUR-IP:8000)** or the analysis seems to finish without analyzing anything, it usually means that some parameters are missing in your `.env`. Docker Compose now pulls shared values from there, so update the media server credentials once and both the Flask and Worker services will receive them automatically.
+The [readme](../README.md) section has the explanation and multiple examples can be found in the [deployment folder](../deployment/). If you're not able to reach the front-end on **[http://YOUR-IP:8000](http://YOUR-IP:8000)** or the analysis seems to finish without analyzing anything, it usually means that some parameters are missing in your `.env`.
+
+From v1.0.0, only PostgreSQL and Redis connection parameters must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
 
 ### Can AudioMuse-AI support multiple music libraries?
 Yes, it can support multiple music libraries within a single media server instance (e.g., two separate music folders in one Jellyfin server). However, a single AudioMuse-AI instance cannot connect to multiple different media servers (e.g., one Jellyfin and one Navidrome server) at the same time. 
 
-The ENV variable `MUSIC_LIBRARIES` can be used for match multiple music library on the same music server. Is a Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names.	"" (empty - scan all)
+The parameters `MUSIC_LIBRARIES` can be used for match multiple music library on the same music server. Is a Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names.	"" (empty - scan all)
 
 ### The analysis takes to long, can I speed up it?
 The time needed for the analysis really depends from your HW and how big is your music collection. For big collection (100k+ songs) or old HW 1week+ of analysis can be totally normal.
-If you want to have a faster analysis you can also disable the text search functionality by putting the env var `CLAP_ENABLED` to false. This will run the analysis only for the Musicnn model skipping the CLAP model.
+If you want to have a faster analysis you can also disable the text search functionality by putting parameters `CLAP_ENABLED` to false. This will run the analysis only for the Musicnn model skipping the CLAP model.
 Alternatives could also be run multiple worker container in parallel, learn more by taking a look to the [ARCHITECTURE](docs/ARCHITECTURE.md) page and to the different example of deployment in `deployment/` folder.
 GPU analysis is also supported but still experimental. Take a look to [GPU DEPLOYMENT](docs/GPU.md) page.
 
@@ -30,7 +32,7 @@ GPU analysis is also supported but still experimental. Take a look to [GPU DEPLO
 
 Learn how to use AudioMuse-AI effectively, from basic features to advanced functionality.
 
-* **NOTE**: Most front-end parameters can also be set as environment variables. See the parameter table in the [README.md](../README.md) for a complete list.
+* **NOTE**: Most front-end parameters default value can be configured in the Setup Wizard functionality. See the parameter table in the [README.md](../README.md) for a complete list.
 
 ### How do I start using AudioMuse-AI?
 
