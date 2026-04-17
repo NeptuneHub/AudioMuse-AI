@@ -61,6 +61,8 @@ from app_helper import (
     TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
 )
 
+from app_provider_migration import migration_bp
+
 # NOTE: Annoy Manager import is moved to be local where used to prevent circular imports.
 
 logger = logging.getLogger(__name__)
@@ -788,6 +790,7 @@ app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
 app.register_blueprint(mulan_search_bp)
 app.register_blueprint(backup_bp)
+app.register_blueprint(migration_bp)
 
 # --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
 # RQ workers import app.py but should NOT load indexes or start background threads.

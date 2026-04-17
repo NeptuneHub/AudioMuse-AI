@@ -11,12 +11,13 @@
 <li><a href="{{ url_for('sonic_fingerprint_bp.sonic_fingerprint_page') }}" {% if active == 'sonic_fingerprint' %}class="active"{% endif %}>Sonic Fingerprint</a></li>
 <li><a href="{{ url_for('waveform_bp.waveform_page') }}" {% if active == 'waveform' %}class="active"{% endif %}>Waveform</a></li>
 <!-- <li><a href="{{ url_for('collection_bp.collection_page') }}" {% if active == 'collection' %}class="active"{% endif %}">Collection Sync</a></li> -->
-<li class="has-submenu{% if active in ('cleaning', 'cron', 'backup', 'setup') %} open{% endif %}">
+<li class="has-submenu{% if active in ('cleaning', 'cron', 'backup', 'provider_migration', 'setup') %} open{% endif %}">
     <a href="#" class="submenu-toggle">Administration <span class="submenu-arrow">›</span></a>
     <ul class="submenu">
         <li><a href="{{ url_for('analysis_bp.cleaning_page') }}" {% if active == 'cleaning' %}class="active"{% endif %}>Cleaning</a></li>
         <li><a href="{{ url_for('cron_bp.cron_page') }}" {% if active == 'cron' %}class="active"{% endif %}>Scheduled Tasks</a></li>
         <li><a href="{{ url_for('backup_bp.backup_page') }}" {% if active == 'backup' %}class="active"{% endif %}>Backup and Restore</a></li>
+		    <li><a href="{{ url_for('migration_bp.provider_migration_page') }}" {% if active == 'provider_migration' %}class="active"{% endif %}>Provider Migration</a></li>
         <li><a href="{{ url_for('setup_page') }}" {% if active == 'setup' %}class="active"{% endif %}>Setup Wizard</a></li>
     </ul>
 </li>
