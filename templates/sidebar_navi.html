@@ -11,22 +11,20 @@
 <li><a href="{{ url_for('sonic_fingerprint_bp.sonic_fingerprint_page') }}" {% if active == 'sonic_fingerprint' %}class="active"{% endif %}>Sonic Fingerprint</a></li>
 <li><a href="{{ url_for('waveform_bp.waveform_page') }}" {% if active == 'waveform' %}class="active"{% endif %}>Waveform</a></li>
 <!-- <li><a href="{{ url_for('collection_bp.collection_page') }}" {% if active == 'collection' %}class="active"{% endif %}">Collection Sync</a></li> -->
-<li class="has-submenu{% if active in ('cleaning', 'cron', 'backup') %} open{% endif %}">
+<li class="has-submenu{% if active in ('cleaning', 'cron', 'backup', 'setup') %} open{% endif %}">
     <a href="#" class="submenu-toggle">Administration <span class="submenu-arrow">›</span></a>
     <ul class="submenu">
         <li><a href="{{ url_for('analysis_bp.cleaning_page') }}" {% if active == 'cleaning' %}class="active"{% endif %}>Cleaning</a></li>
         <li><a href="{{ url_for('cron_bp.cron_page') }}" {% if active == 'cron' %}class="active"{% endif %}>Scheduled Tasks</a></li>
         <li><a href="{{ url_for('backup_bp.backup_page') }}" {% if active == 'backup' %}class="active"{% endif %}>Backup and Restore</a></li>
-        {% if setup_saved %}
         <li><a href="{{ url_for('setup_page') }}" {% if active == 'setup' %}class="active"{% endif %}>Setup Wizard</a></li>
-        {% endif %}
     </ul>
 </li>
 {% else %}
 <li><a href="{{ url_for('setup_page') }}" class="active">Setup Wizard</a></li>
 {% endif %}
 <li><button type="button" id="dark-mode-toggle" aria-pressed="false" aria-label="Toggle dark mode">🌙 Dark Mode</button></li>
-{% if auth_enabled %}
+{% if auth_enabled and setup_saved %}
 <li>
     <form id="logout-form" action="{{ url_for('logout_endpoint') }}" method="post" style="display:inline; margin:0; padding:0;">
         <button id="logout-btn" type="submit" aria-label="Logout">🔓 Logout</button>

@@ -95,9 +95,6 @@
     <div class="login-container">
         <h1>AudioMuse-AI</h1>
         <p class="subtitle">Sign in to continue</p>
-        {% if auth_warning %}
-        <p id="login-warning" style="margin:0; font-size:0.9rem; color: var(--warning-color, #b45309);">{{ auth_warning }}</p>
-        {% endif %}
         <form id="login-form" action="/auth" method="post">
             <input type="text" id="login-user" name="user" placeholder="Username" autocomplete="username" required>
             <input type="password" id="login-password" name="password" placeholder="Password" autocomplete="current-password" required>

@@ -89,5 +89,9 @@ def schedule_flask_restart(delay_seconds=2.5):
 
 def restart_supervisor_workers():
     """Restart supervised worker programs inside the current worker container."""
+    if os.environ.get('SERVICE_TYPE', '').lower() != 'worker':
+        logger.info('SERVICE_TYPE is not worker; skipping supervised worker restart')
+        return True
+
     logger.info('Restarting supervised worker programs via supervisorctl')
     return _run_supervisorctl(['restart', 'rq-worker-default', 'rq-worker-high', 'rq-janitor'])

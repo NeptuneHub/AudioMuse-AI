@@ -131,7 +131,12 @@ class SetupManager:
         return values
 
     def _is_valid_string(self, value):
-        return isinstance(value, str) and value.strip() and not self._looks_like_placeholder(value)
+        if not isinstance(value, str):
+            return False
+        stripped = value.strip()
+        if not stripped:
+            return False
+        return not self._looks_like_placeholder(value)
 
     SERVER_REQUIRED_FIELDS = config.MEDIASERVER_FIELDS_BY_TYPE
 
@@ -244,10 +249,6 @@ class SetupManager:
         except Exception as exc:
             self.logger.warning(f"Unable to delete setup config values: {exc}")
             raise
-
-    def is_setup_saved(self):
-        overrides = self.get_raw_overrides()
-        return bool(overrides)
 
     def is_setup_complete(self, config_module):
         return self.is_valid_env_config(config_module)

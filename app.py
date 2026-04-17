@@ -56,6 +56,7 @@ from app_helper import (
     save_task_status,
     get_task_info_from_db,
     cancel_job_and_children_recursive,
+    check_setup_needed, check_auth_needed,
     TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
 )
@@ -78,62 +79,14 @@ if ENABLE_PROXY_FIX:
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
 
 # --- Authentication Setup ---
-# AUTH_ENABLED is the raw env toggle. If enabled, auth is enforced everywhere.
-# If auth is enabled and the user/pass env vars are missing, we provide defaults.
-
 effective_audiomuse_user = AUDIOMUSE_USER
 effective_audiomuse_password = AUDIOMUSE_PASSWORD
-user_defaulted = False
-new_password_generated = False
 
-if AUTH_ENABLED:
-    if not effective_audiomuse_user or not effective_audiomuse_user.strip():
-        effective_audiomuse_user = "admin"
-        user_defaulted = True
-    if not effective_audiomuse_password or not effective_audiomuse_password.strip():
-        alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-        effective_audiomuse_password = ''.join(secrets.choice(alphabet) for _ in range(16))
-        new_password_generated = True
-    if user_defaulted or new_password_generated:
-        print('\n*** AUTH_ENABLED=true: using default authentication values ***')
-        if user_defaulted:
-            print(f'AUDIOMUSE_USER defaulted to: {effective_audiomuse_user}')
-        if new_password_generated:
-            print(f'AUDIOMUSE_PASSWORD auto-generated to: {effective_audiomuse_password}')
-        print('*** Persist these values in your environment if you want stable credentials ***')
-        print('*** Set AUDIOMUSE_USER and AUDIOMUSE_PASSWORD in your env vars, and API_TOKEN too if you need external/token access ***\n')
-
-# Finalize JWT_SECRET — auto-generate if not configured
+# JWT_SECRET is resolved after DB init (see below) so all gunicorn workers share
+# the same secret.  Placeholder here; real value assigned inside app_context block.
 _jwt_secret = JWT_SECRET
-if not _jwt_secret and AUTH_ENABLED:
-    _jwt_secret = secrets.token_hex(32)
-    app.logger.warning(
-        "JWT_SECRET is not set. A random secret has been generated. "
-        "All browser sessions will be invalidated on container restart. "
-        "Set JWT_SECRET in your .env for persistent sessions."
-    )
 
-# Auth is considered configured whenever the app has effective credentials,
-# including runtime-generated temporary auth values.
 auth_configured = bool(effective_audiomuse_user and effective_audiomuse_password)
-bootstrap_auth_mode = AUTH_ENABLED and not (AUDIOMUSE_USER and AUDIOMUSE_PASSWORD)
-
-# If auth is enabled but no explicit credentials were provided, the app is
-# in bootstrap auth mode. Setup can be accessed via the temporary credentials.
-def is_bootstrap_mode():
-    return not config.AUTH_ENABLED or bootstrap_auth_mode
-
-
-def refresh_auth_state():
-    global AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, effective_audiomuse_user, effective_audiomuse_password, auth_configured, bootstrap_auth_mode
-    AUDIOMUSE_USER = config.AUDIOMUSE_USER
-    AUDIOMUSE_PASSWORD = config.AUDIOMUSE_PASSWORD
-    if AUDIOMUSE_USER and AUDIOMUSE_USER.strip():
-        effective_audiomuse_user = AUDIOMUSE_USER
-    if AUDIOMUSE_PASSWORD and AUDIOMUSE_PASSWORD.strip():
-        effective_audiomuse_password = AUDIOMUSE_PASSWORD
-    auth_configured = bool(AUDIOMUSE_USER and AUDIOMUSE_PASSWORD)
-    bootstrap_auth_mode = config.AUTH_ENABLED and not auth_configured
 
 
 _password_hasher = PasswordHasher()
@@ -168,91 +121,38 @@ def inject_globals():
         clap_enabled=CLAP_ENABLED,
         mulan_enabled=MULAN_ENABLED,
         auth_enabled=config.AUTH_ENABLED,
-        setup_saved=setup_manager.is_setup_complete(config),
+        setup_saved=not check_setup_needed(),
     )
 
-# --- Authentication Middleware ---
+# --- Unified Auth + Setup Barrier ---
 @app.before_request
-def check_auth():
-    """
-    Enforce authentication on all routes when auth is enabled.
-    Skipped entirely when AUTH_ENABLED is False (legacy mode).
-    Accepts:
-      - Valid JWT in HttpOnly cookie  (browser sessions)
-      - Valid API_TOKEN Bearer header (M2M / scripts)
-    Public routes: /login, /auth, /logout, /static/*
-    """
-    if not config.AUTH_ENABLED:
-        return  # Auth disabled — zero impact on existing deployments
-
-    # Always allow public routes
-    public = ('/login', '/auth', '/logout')
-    if request.path in public or request.path.startswith('/static/') or request.path.startswith('/api/health'):
+def auth_setup_barrier():
+    """Single before_request that handles both setup-needed and auth-needed logic."""
+    # Always allow static assets and health check
+    if request.path.startswith('/static/') or request.path == '/api/health':
         return
 
-    # Always allow bootstrap setup when auth is not configured or auth is disabled.
-    if is_bootstrap_mode() and (request.path == '/setup' or request.path.startswith('/api/setup')):
+    # 1) Setup needed → send to setup, no auth required
+    if check_setup_needed():
+        if request.path in ('/setup', '/api/setup'):
+            return
+        if request.path.startswith('/api/'):
+            return jsonify({"error": "Setup required"}), 403
+        return redirect(url_for('setup_page'))
+
+    # 2) Setup done, auth needed → send to login
+    if request.path in ('/login', '/auth', '/logout'):
         return
+    auth_response = check_auth_needed(_jwt_secret)
+    if auth_response:
+        return auth_response
 
-    # Check 1: valid JWT cookie (browser users)
-    token = request.cookies.get('audiomuse_jwt')
-    if token:
-        try:
-            pyjwt.decode(token, _jwt_secret, algorithms=['HS256'])
-            return  # Valid session
-        except pyjwt.ExpiredSignatureError:
-            pass  # Fall through to 401/redirect
-        except pyjwt.InvalidTokenError:
-            pass  # Fall through to 401/redirect
-
-    # Check 2: valid Bearer token (M2M callers)
-    auth_header = request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer ') and auth_header[7:] == config.API_TOKEN:
-        return  # Valid M2M token
-
-    # Not authenticated
-    if request.path.startswith('/api/'):
-        return jsonify({"error": "Unauthorized"}), 401
-    else:
-        return redirect(url_for('login_page'))
+    # 3) All clear → proceed to requested page
 
 @app.before_request
 def log_api_request():
     if request.path.startswith('/api/') and not request.path.startswith('/static/'):
         app.logger.info('API request: %s %s', request.method, request.path)
-
-
-@app.before_request
-def require_setup_completion():
-    if request.path.startswith('/static/') or request.path == '/api/health':
-        return
-    if setup_manager.is_setup_complete(config):
-        return
-
-    if not config.AUTH_ENABLED:
-        if request.path in ('/setup',) or request.path.startswith('/api/setup'):
-            return
-        if setup_manager.is_valid_env_config(config):
-            return
-        if request.path.startswith('/api/'):
-            return jsonify({"error": "Setup required"}), 403
-        return redirect(url_for('setup_page'))
-
-    if is_bootstrap_mode():
-        if request.path in ('/login', '/auth', '/logout', '/setup') or request.path.startswith('/api/setup'):
-            return
-        if request.path.startswith('/api/'):
-            return jsonify({"error": "Setup required"}), 403
-        return redirect(url_for('setup_page'))
-
-    # Auth is configured, but setup is still incomplete.
-    if request.path in ('/login', '/auth', '/logout'):
-        return
-    if request.path.startswith('/api/setup'):
-        return
-    if request.path.startswith('/api/'):
-        return jsonify({"error": "Setup required"}), 403
-    return redirect(url_for('setup_page'))
 
 @app.route('/api/health')
 def health_check():
@@ -278,6 +178,21 @@ with app.app_context():
     init_db()
     setup_manager.bootstrap_env_config_if_empty(config)
 
+    # Finalize JWT_SECRET — must happen after DB init so the value can be
+    # persisted and shared across all gunicorn workers.
+    if not _jwt_secret and AUTH_ENABLED:
+        # Re-read from DB in case another worker already saved a secret
+        config.refresh_config()
+        _jwt_secret = config.JWT_SECRET
+        if not _jwt_secret:
+            _jwt_secret = secrets.token_hex(32)
+            setup_manager.save_config_values({'JWT_SECRET': _jwt_secret})
+            config.JWT_SECRET = _jwt_secret
+            app.logger.warning(
+                "JWT_SECRET was not set. A random secret has been generated and saved to the database. "
+                "Set JWT_SECRET in your .env for full control."
+            )
+
 import app_setup
 
 # --- API Endpoints ---
@@ -288,8 +203,6 @@ def login_page():
     """Serve the login page. Redirects to / if already authenticated."""
     if not config.AUTH_ENABLED:
         return redirect(url_for('index'))
-    if bootstrap_auth_mode:
-        return redirect(url_for('setup_page'))
     token = request.cookies.get('audiomuse_jwt')
     if token:
         try:
@@ -298,15 +211,7 @@ def login_page():
         except pyjwt.InvalidTokenError:
             pass
 
-    auth_warning = None
-    if config.AUTH_ENABLED and (not AUDIOMUSE_USER or not AUDIOMUSE_PASSWORD):
-        auth_warning = (
-            'AUTH_ENABLED is true by default and one or more credentials were autogenerated and visible in FLASK log. '
-            'You should set the final values for AUDIOMUSE_USER and AUDIOMUSE_PASSWORD in your environment variables. '
-            'Optionally set API_TOKEN if you need external/plugin access.'
-        )
-
-    return render_template('login.html', title='Login — AudioMuse-AI', auth_warning=auth_warning)
+    return render_template('login.html', title='Login — AudioMuse-AI')
 
 @app.route('/auth', methods=['POST'])
 def auth_endpoint():
@@ -339,7 +244,7 @@ def auth_endpoint():
         app.logger.warning(f"Failed login attempt for user: {user!r}")
         if is_ajax:
             return jsonify({"error": "Invalid credentials"}), 401
-        return render_template('login.html', title='Login — AudioMuse-AI', auth_warning=None, login_error='Invalid username or password.')
+        return render_template('login.html', title='Login — AudioMuse-AI', login_error='Invalid username or password.')
 
     # Issue JWT — new token at every login
     now = datetime.datetime.now(datetime.timezone.utc)

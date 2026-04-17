@@ -1,6 +1,6 @@
 # Configuration Parameters
 
-These are the parameters accepted for this script. You can pass them as environment variables using, for example, /deployment/deployment.yaml in this repository.
+These are the parameters accepted for this script. From `v1.0.0`, only PostgreSQL and Redis connection parameters must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
 
 How to find jellyfin **userid**:
 * Log into Jellyfin from your browser as an admin
@@ -44,7 +44,7 @@ The **mandatory** parameter that you need to change from the example are this:
 | `API_TOKEN`     | API_TOLEN for plugin authentication | *(N/A - from Secret)* |
 | `JWT_SECRET`     | Used to inizializate the JWT session with a predefined value | *from Secret OR automatically created if blank* |
 
-The following additional environment variables control authentication.  Leave
+The following additional parameter control authentication.  Leave
 all four empty to disable auth (default).
 
 | Parameter            | Description                                          | Default |

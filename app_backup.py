@@ -33,7 +33,7 @@ def _pg_cmd(tool, *extra_args):
 
 @backup_bp.route('/backup')
 def backup_page():
-    return render_template('backup.html', title='Backup & Restore', active='backup')
+    return render_template('backup.html', title='AudioMuse-AI - Backup & Restore', active='backup')
 
 
 @backup_bp.route('/api/backup/create', methods=['POST'])

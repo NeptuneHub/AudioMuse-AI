@@ -38,6 +38,10 @@ def main():
                 payload = message.get('data')
                 logger.info('Restart listener received payload: %s', payload)
                 if payload == 'restart':
+                    service_type = os.environ.get('SERVICE_TYPE', '').lower()
+                    if service_type != 'worker':
+                        logger.info('Restart signal received, but SERVICE_TYPE is not worker; skipping worker restart')
+                        continue
                     logger.info('Restart signal received, restarting worker processes...')
                     if restart_supervisor_workers():
                         logger.info('Worker restart completed successfully')
