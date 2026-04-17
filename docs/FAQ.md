@@ -71,4 +71,4 @@ Clusterign algorithm by default do 5000 run. This means that multiple run are ex
 
 ### How to reset the Admin password?
 
-From AudioMsue-AI v1.0.0 the Admin password is stored encrypted on the database. The only way to reset is access to the postgresql database and delete it. You can read more in the [AUTHENTICATION](docs/AUTH.md) docs.
+From AudioMsue-AI v1.0.0 the Admin password is stored encrypted on the database. The only way to reset is access to the postgresql database and delete it. You can read more in the [AUTHENTICATION](./AUTH.md) docs.
