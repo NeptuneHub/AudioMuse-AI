@@ -219,11 +219,26 @@
     }
     .mig-checkbox-row {
         display: flex;
-        align-items: center;
-        gap: 0.5rem;
+        align-items: flex-start;
+        gap: 0.6rem;
         margin-top: 0.75rem;
     }
-    .mig-checkbox-row input[type="checkbox"] { width: auto; }
+    .mig-checkbox-row input[type="checkbox"] {
+        width: 1.35rem;
+        height: 1.35rem;
+        min-width: 1.35rem;
+        flex: 0 0 auto;
+        margin-top: 0.15rem;
+        transform: scale(1.1);
+        accent-color: var(--color-primary, #3b82f6);
+        cursor: pointer;
+    }
+    .mig-checkbox-row label {
+        font-size: 0.98rem;
+        line-height: 1.4;
+        flex: 1 1 auto;
+        cursor: pointer;
+    }
     .mig-confirm-phrase {
         font-family: monospace;
         font-size: 0.92rem;
@@ -257,7 +272,67 @@
         white-space: pre-wrap;
     }
     .mig-cred-field { display: none; }
-    .mig-cred-field.active { display: flex; }
+    .mig-cred-field.active { display: block; }
+
+    /* Provider credentials: one field per line, labels above inputs on narrow screens */
+    .mig-cred-field .mig-row {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.3rem;
+        margin-top: 0.6rem;
+    }
+    .mig-cred-field .mig-row label {
+        min-width: 0;
+        font-weight: 600;
+    }
+    .mig-cred-field .mig-row input[type="text"],
+    .mig-cred-field .mig-row input[type="password"],
+    .mig-cred-field .mig-row input[type="number"] {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+    }
+
+    /* Mobile-friendly tweaks: avoid overflow, stack rows, enlarge inputs */
+    @media (max-width: 640px) {
+        .mig-card { padding: 1rem; }
+        .mig-row {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 0.35rem;
+        }
+        .mig-row label { min-width: 0; }
+        .mig-row input[type="text"],
+        .mig-row input[type="password"],
+        .mig-row input[type="number"],
+        .mig-row select {
+            width: 100%;
+            min-width: 0;
+            box-sizing: border-box;
+        }
+        .mig-row .btn,
+        .mig-row button {
+            width: 100%;
+        }
+        .mig-checkbox-row input[type="checkbox"] {
+            width: 1.6rem;
+            height: 1.6rem;
+            min-width: 1.6rem;
+            transform: scale(1.15);
+        }
+        .mig-checkbox-row label { font-size: 1rem; }
+        #main-content-inner,
+        .mig-card,
+        .mig-card * {
+            max-width: 100%;
+            box-sizing: border-box;
+        }
+        .mig-confirm-phrase {
+            word-break: break-word;
+            white-space: normal;
+        }
+    }
 </style>
 {% endblock %}
 
