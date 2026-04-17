@@ -1191,7 +1191,7 @@
                 if (s === 'finished') {
                     showSuccess(statusEl,
                         '<strong>Migration complete.</strong> ' +
-                        'Your active provider is now <code>' + targetType + '</code>. ' +
+                        'Your active provider is now <code>' + esc(targetType) + '</code>. ' +
                         'The new settings have been saved to the database and all processes ' +
                         'are being reloaded automatically.' +
                         '<p style="margin:0.5rem 0 0;"><strong>Next step:</strong> ' +
@@ -1202,6 +1202,27 @@
                         '<small><strong>Plays and listening history:</strong> never stored locally. ' +
                         'They come from your media server and now reflect the new provider automatically.</small>'
                     );
+                    // Render the restart countdown OUTSIDE the success card so it is
+                    // visible as a plain, bold notice below all the explanation text.
+                    const countdownHost = document.createElement('p');
+                    countdownHost.id = 'mig-restart-countdown';
+                    countdownHost.style.cssText = 'margin:1rem 0 0; font-size:1.1rem; font-weight:700; color:#b45309; text-align:center;';
+                    countdownHost.textContent = 'Restarting services — redirecting to login in 20 seconds...';
+                    statusEl.parentNode.insertBefore(countdownHost, statusEl.nextSibling);
+                    // Flask is restarting to pick up the new provider config cleanly
+                    // (same pattern as the setup wizard). Count down and redirect to
+                    // /login so the user reconnects to a fresh process.
+                    let countdown = 20;
+                    const cdInterval = setInterval(function() {
+                        countdown -= 1;
+                        if (countdown > 0) {
+                            countdownHost.textContent = 'Restarting services — redirecting to login in ' + countdown + ' second' + (countdown === 1 ? '' : 's') + '...';
+                        } else {
+                            countdownHost.textContent = 'Redirecting...';
+                            clearInterval(cdInterval);
+                            window.location.href = '/login';
+                        }
+                    }, 1000);
                     return;
                 }
                 if (s === 'failed') {

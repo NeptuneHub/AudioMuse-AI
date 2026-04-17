@@ -620,27 +620,46 @@ def execute():
     return jsonify({'task_id': job.id})
 
 
+# Track which finished migration jobs have already triggered a Flask restart,
+# so repeated status polls don't schedule the restart multiple times.
+_restart_scheduled_for_tasks = set()
+
+
 @migration_bp.route('/api/migration/status/<task_id>', methods=['GET'])
 def job_status(task_id):
     try:
         from rq.job import Job
         job = Job.fetch(task_id, connection=redis_conn)
         status = job.get_status()
+        restart_scheduled = False
         # The execute worker reloads its own config and publishes a restart
         # request for other workers, but Flask (this process) isn't on that
         # pub/sub path. Reload here when the job finishes so subsequent
-        # requests see the new provider.
+        # requests see the new provider, then schedule a Flask restart so
+        # any stale module-level `from config import X` bindings across
+        # blueprints are rebuilt cleanly (mirrors the setup wizard).
         if status == 'finished':
             try:
                 import config as _cfg
                 _cfg.refresh_config()
             except Exception as _e:
                 logger.warning("post-migration config reload failed: %s", _e)
+            if task_id not in _restart_scheduled_for_tasks:
+                try:
+                    import restart_manager
+                    if restart_manager.schedule_flask_restart():
+                        restart_scheduled = True
+                        _restart_scheduled_for_tasks.add(task_id)
+                except Exception as _e:
+                    logger.warning("post-migration Flask restart scheduling failed: %s", _e)
+            else:
+                restart_scheduled = True
         return jsonify({
             'id': job.id,
             'status': status,
             'result': job.result if job.is_finished else None,
             'error': str(job.exc_info) if job.is_failed else None,
+            'restart_scheduled': restart_scheduled,
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 404
