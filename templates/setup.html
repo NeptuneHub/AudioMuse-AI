@@ -2,19 +2,6 @@
 
 {% block headAdditions %}
 <style>
-    .page-shell {
-        max-width: 1024px;
-        margin: 0 auto;
-        padding: 0;
-    }
-    .card {
-        background: var(--bg-card, #ffffff);
-        border: 1px solid var(--border-color, #d6d8dc);
-        border-radius: 16px;
-        box-shadow: 0 12px 40px rgba(0,0,0,0.06);
-        padding: 1.75rem;
-    }
-
     label {
         display: block;
         margin-bottom: 0.35rem;
@@ -147,15 +134,16 @@
 {% endblock %}
 
 {% block content %}
-<div class="page-shell">
-    <div class="card">
+<div id="main-content-inner">
+    <section>
         <div class="page-header">
             <h1>AudioMuse-AI - Setup Wizard</h1>
             <p class="subtitle">Configure your media server, authentication and advanced settings.</p>
         </div>
+    </section>
 
-        <form id="setup-form">
-            <section class="section">
+    <form id="setup-form">
+        <section class="section">
                 <h2>Media Server</h2>
                 <div class="field-row">
                     <label for="MEDIASERVER_TYPE" class="label-with-tooltip">
@@ -268,7 +256,6 @@
                 <p id="save-feedback" class="inline-feedback" style="display:none; margin:0; width:100%;"></p>
             </div>
         </form>
-    </div>
 </div>
 {% endblock %}
 
