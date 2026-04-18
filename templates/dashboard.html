@@ -203,31 +203,9 @@
                     <th class="col-narrow">Status</th>
                     <th class="col-medium">Duration</th>
                     <th>When</th>
+                    <th>Note</th>
                 </tr></thead>
-                <tbody><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
-            </table>
-        </div>
-    </section>
-
-    <!-- Performance / Quality -->
-    <section>
-        <h2>Performance &amp; Quality</h2>
-        <div style="margin-top:1rem;">
-            <h3 style="margin-top:0;font-size:0.95rem;">Status Distribution (30d)</h3>
-            <div class="chart-wrap" style="max-width:520px;margin:0 auto;">
-                <canvas id="chart-status"></canvas>
-            </div>
-        </div>
-
-        <h3 style="font-size:0.95rem;margin-top:1.25rem;">Average Duration by Task Type (30d)</h3>
-        <div class="dash-table-wrap">
-            <table class="dash-table" id="duration-table">
-                <thead><tr>
-                    <th>Task Type</th>
-                    <th class="col-narrow">Runs</th>
-                    <th class="col-medium">Avg duration</th>
-                </tr></thead>
-                <tbody><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
+                <tbody><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
             </table>
         </div>
     </section>
@@ -404,7 +382,7 @@
         const tbody = document.querySelector('#recent-tasks-table tbody');
         tbody.innerHTML = '';
         if (!tasks || tasks.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="muted">No tasks yet.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="muted">No tasks yet.</td></tr>';
             return;
         }
         tasks.forEach(t => {
@@ -413,7 +391,8 @@
                 <td>${t.task_type || '–'}</td>
                 <td><span class="badge ${statusBadgeClass(t.status)}">${t.status || '?'}</span></td>
                 <td>${fmtDuration(t.duration_seconds)}</td>
-                <td>${fmtTime(t.timestamp)}</td>`;
+                <td>${fmtTime(t.timestamp)}</td>
+                <td>${t.note || ''}</td>`;
             tbody.appendChild(tr);
         });
     }
@@ -493,8 +472,6 @@
             renderKeyNumbers(d);
             renderWorkers(d.workers);
             renderRecentTasks(d.recent_tasks);
-            renderStatusDist(d.task_status_distribution_30d);
-            renderDurations(d.avg_duration_30d);
             renderMoods((d.content || {}).top_moods);
             renderCoverage(d.content || {});
             renderCron(d.cron);
