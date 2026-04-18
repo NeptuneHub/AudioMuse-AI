@@ -34,13 +34,8 @@ run_supervisorctl_checked() {
 
 log "SERVICE_TYPE=${SERVICE_TYPE}"
 
-if [ -n "${TZ:-}" ]; then
-  if [ -f "/usr/share/zoneinfo/$TZ" ]; then
-    ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime
-    echo "$TZ" > /etc/timezone
-  else
-    echo "Warning: timezone '$TZ' not found in /usr/share/zoneinfo" >&2
-  fi
+if [ -n "${TZ:-}" ] && [ ! -f "/usr/share/zoneinfo/$TZ" ]; then
+  echo "Warning: timezone '$TZ' not found in /usr/share/zoneinfo" >&2
 fi
 
 if [ ! -f "$SUPERVISOR_CONF" ]; then
