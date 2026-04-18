@@ -262,7 +262,7 @@ def setup_api():
     except Exception as exc:
         app.logger.error('Setup save failed: %s', exc, exc_info=True)
         if is_test_connection:
-            return jsonify({'error': 'Unable to get top player song. Check the server log for details.'}), 500
+            return jsonify({'error': str(exc) or 'Unable to get top played song. Check the server log for details.'}), 500
         return jsonify({'error': 'Unable to save configuration. Check the server log for details.'}), 500
 
     response = make_response(jsonify({
