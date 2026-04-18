@@ -43,6 +43,8 @@ The **mandatory** parameter that you need to change from the example are this:
 | `AUDIOMUSE_PASSWORD`     | Password to login on the AudioMuse-AI integrated frontned   | *(N/A - from Secret)* |
 | `API_TOKEN`     | API_TOLEN for plugin authentication | *(N/A - from Secret)* |
 | `JWT_SECRET`     | Used to inizializate the JWT session with a predefined value | *from Secret OR automatically created if blank* |
+| **Flask**            |                                                              |                |
+| `FLASK_BIND_ADDRESS` | Used to bind flask web server to specified address and port  | `0.0.0.0:8000` |
 
 The following additional parameter control authentication.  Leave
 all four empty to disable auth (default).
