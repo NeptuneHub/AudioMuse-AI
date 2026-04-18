@@ -227,7 +227,7 @@ html.dark-mode .sidebar.open + .main-content .menu-toggle {
     color: #d1d5db;
     text-decoration: none;
     padding: 0.55rem 0.5rem 0.55rem 1rem;
-    font-size: 0.88rem;
+    font-size: 1rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
