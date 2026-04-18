@@ -48,6 +48,15 @@ _ADVISORY_LOCK_KEY = 7421536190082003
 # How long to wait for in-flight RQ jobs to drain before forcing migration.
 _DRAIN_TIMEOUT_SECONDS = 60
 
+# Intermediate prefix used during the two-pass item_id rewrite. Postgres
+# enforces PRIMARY KEY / UNIQUE row-by-row during UPDATE, so a single-pass
+# UPDATE blows up if any mapping new_id happens to already exist in the table
+# as another row's old_id (common when both providers use small integer IDs,
+# e.g., Emby ↔ Emby). Pass 1 stages every row at <prefix>||new_id (unique per
+# new_id) and Pass 2 strips the prefix to land the final new_id. The prefix is
+# deliberately long and unusual so it can never collide with a real item_id.
+_MIG_TMP_PREFIX = '__audiomuse_mig_tmp__'
+
 
 # ---------------------------------------------------------------------------
 # Pure-Python helpers (tested in isolation)
@@ -412,27 +421,49 @@ def _run_migration_transaction(cur, mapping, new_meta,
     if mulan_exists and fk_mulan_embedding:
         cur.execute(f"ALTER TABLE mulan_embedding DROP CONSTRAINT {fk_mulan_embedding}")
 
-    # 5. Rewrite item_id on every item-id-keyed table — UPDATE ... FROM is O(N)
-    cur.execute(
-        "UPDATE score s SET item_id = m.new_id "
-        "FROM item_id_migration_map m WHERE s.item_id = m.old_id"
-    )
-    cur.execute(
-        "UPDATE playlist p SET item_id = m.new_id "
-        "FROM item_id_migration_map m WHERE p.item_id = m.old_id"
-    )
-    cur.execute(
-        "UPDATE embedding e SET item_id = m.new_id "
-        "FROM item_id_migration_map m WHERE e.item_id = m.old_id"
-    )
-    cur.execute(
-        "UPDATE clap_embedding e SET item_id = m.new_id "
-        "FROM item_id_migration_map m WHERE e.item_id = m.old_id"
-    )
+    # 5. Rewrite item_id on every item-id-keyed table.
+    #    We do this in TWO passes per table because Postgres enforces PRIMARY
+    #    KEY / UNIQUE constraints row-by-row during UPDATE (they are not
+    #    deferrable by default). A single-pass UPDATE would fail with
+    #    "duplicate key" whenever a mapping's new_id equals another row's
+    #    current item_id — very common when both providers issue small
+    #    integer IDs that happen to overlap (e.g., migrating Emby→Emby or
+    #    Jellyfin→Emby where both servers use "25" for different tracks).
+    #
+    #    Pass 1 stages every row at (_MIG_TMP_PREFIX || new_id), which is
+    #    guaranteed unique (new_id is UNIQUE in the map) and cannot collide
+    #    with any real existing item_id because no real id starts with the
+    #    prefix. Pass 2 strips the prefix to land the final new_id — safe
+    #    because the final new_ids are unique across all surviving rows.
+    prefix = _MIG_TMP_PREFIX
+    for table, alias in (
+        ("score", "s"),
+        ("playlist", "p"),
+        ("embedding", "e"),
+        ("clap_embedding", "e"),
+    ):
+        cur.execute(
+            f"UPDATE {table} {alias} SET item_id = %s || m.new_id "
+            f"FROM item_id_migration_map m WHERE {alias}.item_id = m.old_id",
+            (prefix,),
+        )
+        cur.execute(
+            f"UPDATE {table} {alias} SET item_id = m.new_id "
+            f"FROM item_id_migration_map m "
+            f"WHERE {alias}.item_id = %s || m.new_id",
+            (prefix,),
+        )
     if mulan_exists:
         cur.execute(
+            "UPDATE mulan_embedding e SET item_id = %s || m.new_id "
+            "FROM item_id_migration_map m WHERE e.item_id = m.old_id",
+            (prefix,),
+        )
+        cur.execute(
             "UPDATE mulan_embedding e SET item_id = m.new_id "
-            "FROM item_id_migration_map m WHERE e.item_id = m.old_id"
+            "FROM item_id_migration_map m "
+            "WHERE e.item_id = %s || m.new_id",
+            (prefix,),
         )
 
     # 6. Re-add the FKs with the original (reflected) names
