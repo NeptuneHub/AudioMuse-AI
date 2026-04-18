@@ -209,14 +209,19 @@ html.dark-mode .sidebar.open + .main-content .menu-toggle {
 .submenu {
     list-style: none;
     padding: 0;
-    margin: 0;
+    margin: 0 0 0 0.5rem;
     max-height: 0;
     overflow: hidden;
     transition: max-height 0.3s ease;
+    border-left: 2px solid rgba(209, 213, 219, 0.25);
 }
 
 .has-submenu.open > .submenu {
     max-height: 200px;
+}
+
+.submenu li {
+    padding-left: 0.5rem;
 }
 
 .submenu li a {
@@ -226,8 +231,9 @@ html.dark-mode .sidebar.open + .main-content .menu-toggle {
     max-width: 100%;
     color: #d1d5db;
     text-decoration: none;
-    padding: 0.55rem 0.5rem 0.55rem 1rem;
+    padding: 0.55rem 0.5rem 0.55rem 0.5rem;
     font-size: 1rem;
+    font-weight: 400;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
