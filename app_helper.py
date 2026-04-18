@@ -188,6 +188,20 @@ def init_db():
         for col_name in ['start_time', 'end_time']:
             cur.execute("SELECT data_type FROM information_schema.columns WHERE table_name = 'task_status' AND column_name = %s", (col_name,))
             if not cur.fetchone(): cur.execute(f"ALTER TABLE task_status ADD COLUMN {col_name} DOUBLE PRECISION")
+        # Create 'task_history' table — a small, persistent log of the last
+        # completed/cancelled MAIN tasks. Survives the global Cancel button
+        # which wipes `task_status`. Capped to the most recent 10 rows.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS task_history (
+                id SERIAL PRIMARY KEY,
+                recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                task_id TEXT,
+                task_type TEXT,
+                status TEXT,
+                duration_seconds DOUBLE PRECISION,
+                note TEXT
+            )
+        """)
         # Create 'embedding' table
         cur.execute("CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
         cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')")
@@ -338,7 +352,7 @@ def clean_up_previous_main_tasks():
     non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS)
     
     try:
-        cur.execute("SELECT task_id, status, details, task_type FROM task_status WHERE status IN %s AND parent_task_id IS NULL", (non_terminal_statuses,))
+        cur.execute("SELECT task_id, status, details, task_type, start_time, end_time FROM task_status WHERE status IN %s AND parent_task_id IS NULL", (non_terminal_statuses,))
         tasks_to_archive = cur.fetchall()
 
         archived_count = 0
@@ -351,12 +365,28 @@ def clean_up_previous_main_tasks():
             original_details_json = task_row['details']
             original_status_message = f"Task was in '{original_status}' state."
 
+            original_details_dict = None
             if original_details_json:
                 try:
                     original_details_dict = json.loads(original_details_json)
                     original_status_message = original_details_dict.get("status_message", original_status_message)
                 except (json.JSONDecodeError, TypeError):
                      logger.warning(f"Could not parse original details for task {task_id} during archival.")
+
+            # Record into persistent history BEFORE deleting children — the
+            # note builder needs to query subtasks (e.g. tracks_analyzed).
+            try:
+                duration_s = None
+                if task_row['start_time'] is not None:
+                    end = task_row['end_time'] if task_row['end_time'] is not None else time.time()
+                    duration_s = max(0.0, float(end) - float(task_row['start_time']))
+                final_status = TASK_STATUS_SUCCESS if original_status == TASK_STATUS_SUCCESS else TASK_STATUS_REVOKED
+                record_task_history(
+                    task_id, task_row['task_type'], final_status,
+                    duration_s, details=original_details_dict,
+                )
+            except Exception as e_hist:
+                logger.debug(f"history record skipped during archive of {task_id}: {e_hist}")
 
             if original_status == TASK_STATUS_SUCCESS:
                 archival_reason = "New main task started, old successful task archived."
@@ -399,6 +429,127 @@ def clean_up_previous_main_tasks():
         logger.error(f"Error during the main task cleanup process: {e_main_clean}")
     finally:
         cur.close()
+
+
+# ---------------------------------------------------------------------------
+# Task history (separate from task_status — survives the global Cancel button)
+# ---------------------------------------------------------------------------
+
+TASK_HISTORY_MAX_ROWS = 10
+
+
+def _build_task_note(task_type, details_obj, db):
+    """Build a short, human-readable note for a finished task.
+
+    Looks at the ``details`` JSON we stored on the main task and, when needed,
+    queries subtasks to compute a meaningful number (e.g. total songs analyzed
+    across all album_analysis subtasks)."""
+    if not isinstance(details_obj, dict):
+        details_obj = {}
+    t = (task_type or '').lower()
+
+    try:
+        if 'analysis' in t:
+            # Prefer summing tracks_analyzed from album_analysis subtasks.
+            try:
+                cur = db.cursor()
+                cur.execute(
+                    "SELECT details FROM task_status WHERE parent_task_id = %s AND status = 'SUCCESS'",
+                    (details_obj.get('_task_id') or '',),
+                )
+                # _task_id won't exist; the caller passes parent task id directly via details_obj.get('_task_id').
+                rows = cur.fetchall()
+                cur.close()
+            except Exception:
+                rows = []
+            songs = 0
+            for (d,) in rows or []:
+                if not d:
+                    continue
+                try:
+                    obj = json.loads(d)
+                    if isinstance(obj, dict):
+                        v = obj.get('tracks_analyzed')
+                        if isinstance(v, (int, float)):
+                            songs += int(v)
+                except Exception:
+                    continue
+            if songs > 0:
+                return f"Songs analyzed: {songs}"
+            # Fallback to album-level info from the main task details.
+            albums = details_obj.get('albums_completed') or details_obj.get('total_albums_processed')
+            if albums:
+                return f"Albums analyzed: {albums}"
+            return ''
+
+        if 'clean' in t:
+            for k in ('tracks_deleted', 'orphans_removed', 'songs_cleaned',
+                     'tracks_removed', 'deleted_count', 'cleaned_tracks'):
+                v = details_obj.get(k)
+                if isinstance(v, (int, float)):
+                    return f"Songs cleaned: {int(v)}"
+            return ''
+
+        if 'cluster' in t:
+            sampled = (details_obj.get('best_params') or {}).get('initial_subset_size') \
+                if isinstance(details_obj.get('best_params'), dict) else None
+            if sampled is None:
+                sampled = details_obj.get('sampled_songs') or details_obj.get('num_sampled_songs')
+            n_clusters = details_obj.get('num_playlists_created') or details_obj.get('num_clusters')
+            parts = []
+            if sampled:
+                parts.append(f"sampled: {int(sampled)}")
+            if n_clusters:
+                parts.append(f"clusters: {int(n_clusters)}")
+            return ' • '.join(parts)
+    except Exception as e:
+        logger.debug(f"task note builder failed for type={task_type}: {e}")
+    return ''
+
+
+def record_task_history(task_id, task_type, status, duration_seconds=None, note=None, details=None):
+    """Insert a row into ``task_history`` and trim the table to the most
+    recent ``TASK_HISTORY_MAX_ROWS`` entries.
+
+    Safe to call from anywhere; never raises. ``details`` (dict or None) is
+    used to build a default ``note`` when one is not provided explicitly."""
+    if not task_id:
+        return
+    try:
+        db = get_db()
+        # If no note was supplied, try to infer one from details.
+        if note is None:
+            details_obj = details if isinstance(details, dict) else {}
+            # Pass task_id through so the analysis branch can query subtasks.
+            details_obj = dict(details_obj)
+            details_obj['_task_id'] = task_id
+            note = _build_task_note(task_type, details_obj, db) or ''
+
+        with db.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO task_history (task_id, task_type, status, duration_seconds, note)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (task_id, task_type, status, duration_seconds, note),
+            )
+            # Trim — keep only the most recent rows.
+            cur.execute(
+                """
+                DELETE FROM task_history
+                WHERE id NOT IN (
+                    SELECT id FROM task_history ORDER BY recorded_at DESC, id DESC LIMIT %s
+                )
+                """,
+                (TASK_HISTORY_MAX_ROWS,),
+            )
+        db.commit()
+    except Exception as e:
+        logger.warning(f"record_task_history failed for {task_id}: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 def get_active_main_task(task_type=None):
@@ -488,6 +639,27 @@ def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task
             logger.error(f"DB Error during rollback for task status {task_id}: {rb_e}")
     finally:
         cur.close()
+
+    # Record persistent history for MAIN tasks that just reached a terminal state.
+    try:
+        if parent_task_id is None and status in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
+            duration_s = None
+            try:
+                hist_cur = db.cursor()
+                hist_cur.execute(
+                    "SELECT start_time, end_time FROM task_status WHERE task_id = %s",
+                    (task_id,),
+                )
+                row = hist_cur.fetchone()
+                hist_cur.close()
+                if row and row[0] is not None:
+                    end = row[1] if row[1] is not None else current_unix_time
+                    duration_s = max(0.0, float(end) - float(row[0]))
+            except Exception:
+                pass
+            record_task_history(task_id, task_type, status, duration_s, details=details)
+    except Exception as e_hist:
+        logger.debug(f"history record skipped for {task_id}: {e_hist}")
 
 
 def get_task_info_from_db(task_id):
@@ -1300,6 +1472,40 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
     db = get_db()
     cur = db.cursor()
     try:
+        # Snapshot the in-flight main tasks into the persistent task_history
+        # *before* we wipe task_status, so the dashboard's history table keeps
+        # showing what was running when the user pressed Cancel.
+        try:
+            snap_cur = db.cursor(cursor_factory=DictCursor)
+            snap_cur.execute(
+                "SELECT task_id, task_type, status, details, start_time, end_time "
+                "FROM task_status WHERE parent_task_id IS NULL"
+            )
+            now_ts = time.time()
+            for r in snap_cur.fetchall():
+                duration_s = None
+                if r['start_time'] is not None:
+                    end = r['end_time'] if r['end_time'] is not None else now_ts
+                    duration_s = max(0.0, float(end) - float(r['start_time']))
+                details_obj = None
+                if r['details']:
+                    try:
+                        details_obj = json.loads(r['details'])
+                    except Exception:
+                        details_obj = None
+                # If the task was already in a terminal status, keep that one;
+                # otherwise mark it REVOKED.
+                final_status = r['status'] if r['status'] in (
+                    TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
+                ) else TASK_STATUS_REVOKED
+                record_task_history(
+                    r['task_id'], r['task_type'], final_status,
+                    duration_s, details=details_obj,
+                )
+            snap_cur.close()
+        except Exception as e_snap:
+            logger.warning(f"Global cancel: failed snapshotting task_status into task_history: {e_snap}")
+
         cur.execute("DELETE FROM task_status")
         deleted = cur.rowcount
         db.commit()
