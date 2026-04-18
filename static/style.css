@@ -1,5 +1,10 @@
 /* --- Variables --- */
 :root {
+    /* Reserve scrollbar space so pages don't horizontally shift when content
+       is tall enough to trigger the vertical scrollbar. Keeps layout
+       identical between short pages (e.g. cleaning) and long pages
+       (e.g. setup wizard, provider migration). */
+    scrollbar-gutter: stable;
     /* Light Mode (Default) */
     --bg-body: #F9FAFB;
     --bg-card: #FFFFFF;
