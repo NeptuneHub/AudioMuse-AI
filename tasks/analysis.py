@@ -594,7 +594,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         session_recycler = SessionRecycler(recycle_interval=recycle_interval)
         logger.info(f"MusiCNN session recycling: every {recycle_interval} song(s) (PER_SONG_MODEL_RELOAD={PER_SONG_MODEL_RELOAD})")
 
-        def log_and_update_album_task(message, progress, **kwargs):
+        def log_and_update_album_task(message, progress, **kwargs,):
             nonlocal current_progress_val, current_task_logs
             current_progress_val = progress
             logger.info(f"[AlbumTask-{current_task_id}-{album_name}] {message}")
@@ -697,8 +697,10 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 #     logger.info(f"Updated album name for track '{track_name_full}' to '{album_name}'")
                 # except Exception as e:
                 #     logger.warning(f"Failed to update album name for '{track_name_full}': {e}")
-
+                
+                log_analysis_complete = 1
                 if track_id_str in unanalyzable_track_ids_set:
+                    log_analysis_complete = 0
                     tracks_skipped_count += 1
                     logger.info(f"Skipping '{track_name_full}' - previously marked as unanalyzable.")
                     continue
@@ -980,7 +982,12 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
 
             summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album}
-            log_and_update_album_task(f"Album '{album_name}' analysis complete.", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
+            if tracks_analyzed_count == 0 and tracks_skipped_count == total_tracks_in_album:
+                completion_message = f"Album '{album_name}' skipped - all tracks previously marked as unanalyzable."
+            else:
+                completion_message = f"Album '{album_name}' analysis complete."
+
+            log_and_update_album_task(completion_message, 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
             return {"status": "SUCCESS", **summary}
 
         except OperationalError as e:

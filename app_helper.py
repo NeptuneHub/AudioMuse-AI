@@ -667,7 +667,7 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
                 album_artist = EXCLUDED.album_artist,
                 year = EXCLUDED.year,
                 rating = EXCLUDED.rating,
-                file_path = EXCLUDED.file_path
+                file_path = EXCLUDED.file_path,
                 analysis_status = 'analyzed'
                 
         """, (item_id, title, author, tempo, key, scale, mood_str, energy, other_features, album, album_artist, year, rating, file_path))
