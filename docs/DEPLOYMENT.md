@@ -35,6 +35,7 @@ This section covers direct deployment with the `deployment/*.yaml` manifests.
   * Ensure cluster connection values are correct (mandatory; env-only):
     * `POSTGRES_HOST`, `POSTGRES_PORT`, `REDIS_URL`
   * Optional: set the timezone with `TZ`
+  * Optional: set the listen address with `FLASK_BIND_ADDRESS` (default `0.0.0.0:8000`)
 
 * **Deploy:**
   ```bash
