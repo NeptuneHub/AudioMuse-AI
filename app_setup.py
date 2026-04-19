@@ -253,6 +253,16 @@ def setup_api():
             setup_manager.delete_config_values(obsolete_fields)
         if auth_being_disabled:
             setup_manager.delete_config_values(['AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JWT_SECRET'])
+            # Wipe additional (non-admin) user accounts so disabling auth fully
+            # resets the user state. Re-enabling auth requires re-creating them.
+            try:
+                from app_helper import get_db
+                db = get_db()
+                with db.cursor() as cur:
+                    cur.execute("DELETE FROM audiomuse_users")
+                db.commit()
+            except Exception as exc:
+                app.logger.error('Failed to clear audiomuse_users on auth disable: %s', exc, exc_info=True)
 
         setup_manager.save_config_values(filtered_values)
         config.refresh_config()

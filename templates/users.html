@@ -1,0 +1,58 @@
+{% extends "includes/layout.html" %}
+
+{% block content %}
+<div id="main-content-inner">
+    <section class="section">
+        <div class="page-header">
+            <h1>AudioMuse-AI - Users configuration</h1>
+            <p class="subtitle">Manage additional (non-admin) user accounts.</p>
+        </div>
+
+        {% if not auth_enabled %}
+        <p class="notice">
+            Authentication is currently disabled. Enable it in the Setup Wizard to create additional users.
+        </p>
+        {% else %}
+        <p class="notice" style="margin-top:0.5rem;">
+            These are <strong>normal users</strong>, not administrators. They can sign in and use AudioMuse-AI, but they cannot see the Administration menu (Setup Wizard, Users, Cleaning, Scheduled Tasks, Backup, Provider Migration, Analysis and Clustering) or manage other users. Passwords are stored hashed with argon2 and are never shown again after creation.
+        </p>
+
+        <div class="field-grid">
+            <div class="field">
+                <label for="additional-user-name">Username</label>
+                <input id="additional-user-name" type="text" autocomplete="off" placeholder="username">
+            </div>
+            <div class="field">
+                <label for="additional-user-password">Password</label>
+                <input id="additional-user-password" type="password" autocomplete="new-password" placeholder="password">
+            </div>
+        </div>
+        <div class="field-row" style="margin-top:1.5rem;">
+            <button id="additional-user-add" type="button" class="btn btn-primary">Add user</button>
+        </div>
+        <div class="field-row">
+            <p id="additional-user-feedback" class="inline-feedback" style="display:none; margin:0; width:100%;"></p>
+        </div>
+        <div class="field-row" style="flex-direction:column; align-items:stretch; margin-top:1.5rem;">
+            <table id="additional-users-table" style="width:100%; border-collapse:collapse;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; padding:0.5rem; border-bottom:1px solid var(--border-color, #ccc);">Username</th>
+                        <th style="text-align:left; padding:0.5rem; border-bottom:1px solid var(--border-color, #ccc);">Created</th>
+                        <th style="text-align:right; padding:0.5rem; border-bottom:1px solid var(--border-color, #ccc);">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="additional-users-tbody"></tbody>
+            </table>
+        </div>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}
+
+{% block bodyAdditions %}
+{% if auth_enabled %}
+<script src="{{ url_for('static', filename='users.js') }}"></script>
+{% endif %}
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}

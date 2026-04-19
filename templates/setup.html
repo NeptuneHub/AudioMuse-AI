@@ -187,30 +187,30 @@
                 <div id="auth-credentials" class="field-grid">
                     <div>
                         <label for="AUDIOMUSE_USER" class="label-with-tooltip">
-                            Username
+                            Admin Username
                             <span class="info-tooltip" tabindex="0">
                                 <span class="info-icon"></span>
-                                <span class="tooltip-text">The username you'll use to log into the AudioMuse-AI web interface.</span>
+                                <span class="tooltip-text">The admin username you'll use to log into the AudioMuse-AI web interface. The admin has full access, including the Administration menu (Setup Wizard, Users, Cleaning, Scheduled Tasks, Backup, Provider Migration, Analysis and Clustering). Additional non-admin users can be created later from the Users page.</span>
                             </span>
                         </label>
                         <input id="AUDIOMUSE_USER" name="AUDIOMUSE_USER" type="text" placeholder="alice">
                     </div>
                     <div>
                         <label for="AUDIOMUSE_PASSWORD" class="label-with-tooltip">
-                            Password
+                            Admin Password
                             <span class="info-tooltip" tabindex="0">
                                 <span class="info-icon"></span>
-                                <span class="tooltip-text">The password for the user above.</span>
+                                <span class="tooltip-text">The password for the admin user above.</span>
                             </span>
                         </label>
                         <input id="AUDIOMUSE_PASSWORD" name="AUDIOMUSE_PASSWORD" type="password" placeholder="secret123">
                     </div>
                     <div>
                         <label for="AUDIOMUSE_PASSWORD_CONFIRM" class="label-with-tooltip">
-                            Confirm password
+                            Confirm Admin Password
                             <span class="info-tooltip" tabindex="0">
                                 <span class="info-icon"></span>
-                                <span class="tooltip-text">Re-enter the password above to confirm it. Both fields must match before saving.</span>
+                                <span class="tooltip-text">Re-enter the admin password above to confirm it. Both fields must match before saving.</span>
                             </span>
                         </label>
                         <input id="AUDIOMUSE_PASSWORD_CONFIRM" type="password" placeholder="secret123">
@@ -256,43 +256,6 @@
                 <p id="save-feedback" class="inline-feedback" style="display:none; margin:0; width:100%;"></p>
             </div>
         </form>
-
-        {% if auth_enabled and setup_saved %}
-        <section class="section" id="additional-users-section" style="margin-top:2rem;">
-            <h2>Additional users</h2>
-            <p class="notice" style="margin-top:0.5rem;">
-                These are <strong>normal users</strong>, not administrators. They can sign in and use AudioMuse-AI, but they cannot see the Administration menu (Setup Wizard, Cleaning, Scheduled Tasks, Backup, Provider Migration) or manage other users. Passwords are stored hashed with argon2 and are never shown again after creation.
-            </p>
-            <div class="field-grid">
-                <div class="field">
-                    <label for="additional-user-name">Username</label>
-                    <input id="additional-user-name" type="text" autocomplete="off" placeholder="username">
-                </div>
-                <div class="field">
-                    <label for="additional-user-password">Password</label>
-                    <input id="additional-user-password" type="password" autocomplete="new-password" placeholder="password">
-                </div>
-            </div>
-            <div class="field-row">
-                <button id="additional-user-add" type="button">Add user</button>
-            </div>
-            <div class="field-row">
-                <p id="additional-user-feedback" class="inline-feedback" style="display:none; margin:0; width:100%;"></p>
-            </div>
-            <div class="field-row" style="flex-direction:column; align-items:stretch;">
-                <table id="additional-users-table" style="width:100%; border-collapse:collapse;">
-                    <thead>
-                        <tr>
-                            <th style="text-align:left; padding:0.5rem; border-bottom:1px solid var(--border-color, #ccc);">Username</th>
-                            <th style="text-align:left; padding:0.5rem; border-bottom:1px solid var(--border-color, #ccc);">Created</th>
-                            <th style="text-align:right; padding:0.5rem; border-bottom:1px solid var(--border-color, #ccc);">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="additional-users-tbody"></tbody>
-                </table>
-            </div>
-        </section>
-        {% endif %}
 </div>
 {% endblock %}
 

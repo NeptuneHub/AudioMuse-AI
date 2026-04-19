@@ -1613,7 +1613,8 @@ _ADMIN_PATH_PREFIXES = (
     '/cron', '/api/cron',
     '/backup', '/api/backup',
     '/provider-migration', '/api/migration',
-    '/api/users',
+    '/analysis', '/api/analysis', '/api/clustering',
+    '/users', '/api/users',
 )
 
 
