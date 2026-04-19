@@ -8,6 +8,16 @@ from config import (
     ENERGY_MAX, ENERGY_MIN
 )
 
+
+class MediaServerConnectionError(Exception):
+    """Raised when the application cannot communicate with the configured
+    media server (e.g. Jellyfin, Emby, Navidrome).  Using a dedicated
+    exception type lets callers distinguish a connectivity failure from
+    other runtime errors and report a clear, actionable message in the
+    web interface instead of silently swallowing the error.
+    """
+
+
 def score_vector(row, mood_labels_list, other_feature_labels_list): # other_feature_labels_list is now passed
     """Converts a database row into a numerical feature vector for clustering."""
     # Extract features from the database row

@@ -6,6 +6,7 @@ import os
 import config
 
 from tasks.mediaserver_helper import detect_path_format
+from tasks.commons import MediaServerConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,10 @@ def _get_target_library_ids():
 
     except Exception as e:
         logger.error(f"Failed to fetch or parse Emby virtual folders at '{url}': {e}", exc_info=True)
-        return set()
+        raise MediaServerConnectionError(
+            f"Cannot reach Emby at '{url}'. Check your EMBY_URL and EMBY_TOKEN settings. "
+            f"Original error: {e}"
+        ) from e
 
 
 def _emby_base_url(user_creds=None):
@@ -331,7 +335,10 @@ def _get_recent_albums_only(limit, user_creds=None):
                     break
             except Exception as e:
                 logger.error(f"Emby _get_recent_albums_only failed during 'scan all': {e}", exc_info=True)
-                break
+                raise MediaServerConnectionError(
+                    f"Cannot reach Emby at '{config.EMBY_URL}'. Check your EMBY_URL and EMBY_TOKEN settings. "
+                    f"Original error: {e}"
+                ) from e
     
     # Case 3: Config is set and we have library IDs. Scan each of these libraries by using their ID as ParentId.
     else:
@@ -362,7 +369,10 @@ def _get_recent_albums_only(limit, user_creds=None):
                         break
                 except Exception as e:
                     logger.error(f"Emby _get_recent_albums_only failed for library ID {library_id}: {e}", exc_info=True)
-                    break
+                    raise MediaServerConnectionError(
+                        f"Cannot reach Emby at '{config.EMBY_URL}'. Check your EMBY_URL and EMBY_TOKEN settings. "
+                        f"Original error: {e}"
+                    ) from e
 
     # After fetching, a final sort and trim is needed only if we fetched from multiple libraries.
     if target_library_ids is not None and len(target_library_ids) > 1:
