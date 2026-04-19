@@ -464,14 +464,14 @@ def _build_task_note(task_type, details_obj, db):
         if 'analysis' in t:
             # Prefer summing tracks_analyzed from album_analysis subtasks.
             try:
-                cur = db.cursor()
-                cur.execute(
-                    "SELECT details FROM task_status WHERE parent_task_id = %s AND status = 'SUCCESS'",
-                    (details_obj.get('_task_id') or '',),
-                )
-                # _task_id won't exist; the caller passes parent task id directly via details_obj.get('_task_id').
-                rows = cur.fetchall()
-                cur.close()
+            try:
+                with db.cursor() as cur:
+                    cur.execute(
+                        "SELECT details FROM task_status WHERE parent_task_id = %s AND status = 'SUCCESS'",
+                        (details_obj.get('_task_id') or '',),
+                    )
+                    rows = cur.fetchall()
+            except Exception:
             except Exception:
                 rows = []
             songs = 0
