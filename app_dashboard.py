@@ -145,15 +145,19 @@ def _collect_task_metrics(cur):
     """Return recent main tasks, daily history, distributions, and average
     duration per task type using start_time/end_time columns."""
     recent = []
-    # Pull the persistent task_history table (it survives the global Cancel
-    # button which wipes task_status). Falls back to task_status if the table
-    # doesn't exist yet (older deployments).
-    used_history = False
+    # Recent activity comes exclusively from the persistent task_history table
+    # (populated when a main task ends — naturally, by failure, or via the
+    # global Cancel button). This avoids duplicating rows that would appear in
+    # both task_status and task_history, and prevents the synthetic
+    # placeholder rows (task_type='unknown') from showing up.
     if _table_exists(cur, 'task_history'):
         try:
             cur.execute("""
                 SELECT task_id, task_type, status, duration_seconds, note, recorded_at
                 FROM task_history
+                WHERE task_type IS NOT NULL
+                  AND task_type <> ''
+                  AND task_type <> 'unknown'
                 ORDER BY recorded_at DESC, id DESC
                 LIMIT 10
             """)
@@ -166,38 +170,8 @@ def _collect_task_metrics(cur):
                     'note': r['note'] or '',
                     'timestamp': r['recorded_at'].isoformat() if r['recorded_at'] else None,
                 })
-            used_history = True
         except Exception as e:
             logger.debug(f"dashboard: task_history query failed: {e}")
-            _safe_rollback(cur)
-
-    if not used_history:
-        try:
-            cur.execute("""
-                SELECT task_id, task_type, status, progress, timestamp,
-                       start_time, end_time
-                FROM task_status
-                WHERE parent_task_id IS NULL
-                  AND status IN ('SUCCESS', 'FAILURE', 'REVOKED')
-                ORDER BY timestamp DESC
-                LIMIT 10
-            """)
-            for r in cur.fetchall():
-                duration_s = None
-                if r['start_time']:
-                    end = r['end_time'] if r['end_time'] is not None else time.time()
-                    duration_s = max(0.0, float(end) - float(r['start_time']))
-                recent.append({
-                    'task_id': r['task_id'],
-                    'task_type': r['task_type'],
-                    'status': r['status'],
-                    'progress': r['progress'],
-                    'timestamp': r['timestamp'].isoformat() if r['timestamp'] else None,
-                    'duration_seconds': duration_s,
-                    'note': '',
-                })
-        except Exception as e:
-            logger.debug(f"dashboard: recent tasks query failed: {e}")
             _safe_rollback(cur)
 
     history = []

@@ -641,8 +641,15 @@ def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task
         cur.close()
 
     # Record persistent history for MAIN tasks that just reached a terminal state.
+    # Skip the synthetic 'unknown' placeholder inserted by the global cancel
+    # path (app_helper.cancel_all_jobs) — it has no real type and would show
+    # up as an 'unknown' row in the dashboard's recent activity table.
     try:
-        if parent_task_id is None and status in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
+        if (
+            parent_task_id is None
+            and status in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+            and task_type and task_type != 'unknown'
+        ):
             duration_s = None
             try:
                 hist_cur = db.cursor()
