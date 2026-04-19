@@ -1324,7 +1324,7 @@
     // Credentials are never sent back to the browser — they live in the DB
     // and the server uses them via session_id. We only re-show target_type
     // and jump the wizard to whichever step matches the persisted state.
-    const resumeSessionId = {{ (active_session_id or 0)|tojson }};
+    const resumeSessionId = JSON.parse('{{ (active_session_id or 0)|tojson }}');
     async function resumeSession(sid) {
         try {
             const s = await jsonFetch(
