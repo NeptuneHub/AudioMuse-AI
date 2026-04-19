@@ -210,7 +210,17 @@ def _collect_content_metrics(cur):
         {'label': k, 'score': round(v, 2)} for k, v in emotional
     ]
 
-    # Tempo profile: bucket songs into slow/medium/fast/very-fast
+    # Tempo profile: bucket songs into slow/medium/fast/very-fast. Always
+    # populate the key so the UI can render a real (possibly-zero) chart
+    # rather than the "still collecting" placeholder when no songs have
+    # a tempo yet.
+    metrics['tempo_profile'] = {
+        'slow': 0,
+        'medium': 0,
+        'fast': 0,
+        'very_fast': 0,
+        'avg_tempo': None,
+    }
     try:
         cur.execute(
             "SELECT "
@@ -231,7 +241,7 @@ def _collect_content_metrics(cur):
                 'avg_tempo': round(float(r[4]), 1) if r[4] is not None else None,
             }
     except Exception as e:
-        logger.debug(f"dashboard: tempo profile query failed: {e}")
+        logger.warning(f"dashboard: tempo profile query failed: {e}", exc_info=True)
         _safe_rollback(cur)
 
     return metrics
