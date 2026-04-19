@@ -154,8 +154,43 @@
         overflow: hidden;
     }
     .chart-wrap-tall { height: 520px; }
-    @media (max-width: 600px) { .chart-wrap { height: 220px; } .chart-wrap-tall { height: 600px; } }
+    /* Pie/doughnut charts: same size for visual consistency. */
+    .chart-wrap-pie { height: 420px; }
+    @media (max-width: 600px) {
+        .chart-wrap { height: 200px; }
+        .chart-wrap-tall { height: 420px; }
+        .chart-wrap-pie { height: 280px; }
+    }
     .chart-wrap canvas { max-width: 100% !important; }
+
+    /* Content/Library subtitles — same size as the section <h2>, with a
+       horizontal separator bar underneath. */
+    .dash-subhead {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text-title);
+        margin: 0 0 0.75rem 0;
+        padding-bottom: 0.4rem;
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        flex-wrap: wrap;
+    }
+    /* Content/Library subsection spacing — generous on desktop, tight
+       on phones so charts don't feel disconnected by blank areas. */
+    .dash-subsection { margin-top: 1.5rem; }
+    .dash-subsection:first-of-type { margin-top: 1rem; }
+    @media (max-width: 600px) {
+        .dash-subsection { margin-top: 0.6rem; }
+        .dash-subsection:first-of-type { margin-top: 0.4rem; }
+        .dash-subhead {
+            font-size: 1.05rem;
+            margin-bottom: 0.4rem;
+            padding-bottom: 0.25rem;
+        }
+        section { margin-bottom: 0.75rem; }
+    }
 
     .progress-bar {
         background: var(--border-color);
@@ -234,34 +269,34 @@
     <section>
         <h2>Content / Library</h2>
 
-        <div style="margin-top:1rem;">
-            <h3 style="margin-top:0;font-size:0.95rem;">Top Genre</h3>
-            <div class="chart-wrap"><canvas id="chart-top-genre"></canvas></div>
-            <p class="muted" style="margin-top:6px;">
-                Each analyzed song is counted once, under the mood that scored highest in its vector — the closest proxy for “genre” in this library.
-            </p>
+        <div class="dash-subsection">
+            <h3 class="dash-subhead">Genres
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon" aria-hidden="true"></span>
+                    <span class="tooltip-text">Every analyzed song is counted once, under the mood that scored highest in its vector — the closest proxy for “genre” in this library. All detected genres are shown.</span>
+                </span>
+            </h3>
+            <div class="chart-wrap" id="chart-top-genre-wrap"><canvas id="chart-top-genre"></canvas></div>
         </div>
 
-        <div style="margin-top:1.5rem;">
-            <h3 style="margin-top:0;font-size:0.95rem;">Library Coverage</h3>
-            <div>Analyzed songs <span id="coverage-pct" class="muted"></span></div>
-            <div class="progress-bar"><div id="coverage-fill" style="width:0%"></div></div>
-            <p class="muted" id="coverage-text" style="margin-top:8px;"></p>
-            <p class="muted" id="mood-stats-text" style="margin-top:8px;"></p>
+        <div class="dash-subsection">
+            <h3 class="dash-subhead">Moods Coverage
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon" aria-hidden="true"></span>
+                    <span class="tooltip-text">Emotional mood breakdown (<strong>danceable</strong>, <strong>aggressive</strong>, <strong>happy</strong>, <strong>party</strong>, <strong>relaxed</strong>, <strong>sad</strong>) summed across every song’s mood vector.</span>
+                </span>
+            </h3>
+            <div class="chart-wrap chart-wrap-pie"><canvas id="chart-moods-coverage"></canvas></div>
         </div>
 
-        <div style="margin-top:1.5rem;">
-            <h3 style="margin-top:0;font-size:0.95rem;">Moods Coverage</h3>
-            <div class="chart-wrap chart-wrap-tall"><canvas id="chart-moods-coverage"></canvas></div>
-            <p class="muted" style="margin-top:6px;">
-                Emotional mood breakdown (<em>danceable</em>, <em>aggressive</em>, <em>happy</em>, <em>party</em>, <em>relaxed</em>, <em>sad</em>) summed across every song’s mood vector.
-            </p>
-        </div>
-
-        <div style="margin-top:1.5rem;">
-            <h3 style="margin-top:0;font-size:0.95rem;">Tempo Profile</h3>
-            <div class="chart-wrap"><canvas id="chart-tempo"></canvas></div>
-            <p class="muted" id="tempo-text" style="margin-top:6px;"></p>
+        <div class="dash-subsection">
+            <h3 class="dash-subhead">Tempo Profile
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon" aria-hidden="true"></span>
+                    <span class="tooltip-text" id="tempo-tooltip">Distribution of songs across tempo buckets: Slow (&lt;85 BPM), Medium (85–110), Fast (110–140), Very Fast (≥140).</span>
+                </span>
+            </h3>
+            <div class="chart-wrap chart-wrap-pie"><canvas id="chart-tempo"></canvas></div>
         </div>
     </section>
 
@@ -318,16 +353,72 @@
     function fmtTime(iso) { return iso ? iso.replace('T', ' ').substring(0, 19) : '–'; }
     function setText(id, value) { const el = document.getElementById(id); if (el) el.textContent = value; }
 
+    // Custom plugin: draws the label name + percentage inside each slice
+    // of a pie/doughnut chart, so we can hide the side legend entirely.
+    const pieSliceLabelPlugin = {
+        id: 'pieSliceLabel',
+        afterDatasetsDraw(chart) {
+            if (chart.config.type !== 'doughnut' && chart.config.type !== 'pie') return;
+            const ctx = chart.ctx;
+            chart.data.datasets.forEach((ds, di) => {
+                const meta = chart.getDatasetMeta(di);
+                if (!meta || meta.hidden) return;
+                const total = ds.data.reduce((a, b) => a + (Number(b) || 0), 0);
+                if (!total) return;
+                meta.data.forEach((arc, i) => {
+                    const value = Number(ds.data[i]) || 0;
+                    if (!value) return;
+                    const pct = 100 * value / total;
+                    if (pct < 3) return; // skip tiny slices to avoid overlap
+                    const pos = arc.tooltipPosition();
+                    const label = chart.data.labels[i] || '';
+                    const pctStr = pct.toFixed(1) + '%';
+                    ctx.save();
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif';
+                    ctx.shadowColor = 'transparent';
+                    ctx.shadowBlur = 0;
+                    ctx.shadowOffsetX = 0;
+                    ctx.shadowOffsetY = 0;
+                    ctx.lineWidth = 2;
+                    ctx.lineJoin = 'round';
+                    ctx.miterLimit = 2;
+                    ctx.strokeStyle = '#000000';
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.strokeText(label, pos.x, pos.y - 7);
+                    ctx.fillText(label, pos.x, pos.y - 7);
+                    ctx.strokeText(pctStr, pos.x, pos.y + 7);
+                    ctx.fillText(pctStr, pos.x, pos.y + 7);
+                    ctx.restore();
+                });
+            });
+        }
+    };
+
     function renderChartDoughnut(canvasId, labels, data, palette) {
         const ctx = document.getElementById(canvasId).getContext('2d');
         if (charts[canvasId]) charts[canvasId].destroy();
         charts[canvasId] = new Chart(ctx, {
             type: 'doughnut',
-            data: { labels, datasets: [{ data, backgroundColor: palette }] },
+            data: { labels, datasets: [{ data, backgroundColor: palette, borderWidth: 1 }] },
             options: {
                 responsive: true, maintainAspectRatio: false,
-                plugins: { legend: { position: 'right', labels: { color: tickColor() } } }
-            }
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label(ctx) {
+                                const total = ctx.dataset.data.reduce((a, b) => a + (Number(b) || 0), 0);
+                                const v = Number(ctx.parsed) || 0;
+                                const pct = total ? (100 * v / total).toFixed(1) : '0.0';
+                                return ctx.label + ': ' + v.toLocaleString() + ' (' + pct + '%)';
+                            }
+                        }
+                    }
+                }
+            },
+            plugins: [pieSliceLabelPlugin]
         });
     }
     function renderChartHorizontalBar(canvasId, labels, data, color) {
@@ -467,6 +558,12 @@
 
     function renderTopGenre(rows) {
         if (!rows || rows.length === 0) return;
+        // Scale the chart container so every genre gets a readable row.
+        const wrap = document.getElementById('chart-top-genre-wrap');
+        if (wrap) {
+            const px = Math.max(300, rows.length * 22 + 40);
+            wrap.style.height = px + 'px';
+        }
         renderChartHorizontalBar('chart-top-genre',
             rows.map(r => r.label), rows.map(r => r.count), '#7C3AED');
     }
@@ -494,25 +591,12 @@
         renderChartDoughnut('chart-tempo', labels, data, palette);
         const total = data.reduce((a, b) => a + b, 0);
         const avg = profile.avg_tempo != null ? profile.avg_tempo.toFixed(1) + ' BPM' : '–';
-        setText('tempo-text', total.toLocaleString() + ' songs with tempo • avg ' + avg);
-    }
-
-    function renderCoverage(content) {
-        const total = content.total_songs || 0;
-        const analyzed = content.analyzed_songs || 0;
-        const pct = total > 0 ? Math.round(100 * analyzed / total) : 0;
-        document.getElementById('coverage-fill').style.width = pct + '%';
-        document.getElementById('coverage-pct').textContent = '(' + pct + '%)';
-        document.getElementById('coverage-text').textContent =
-            analyzed.toLocaleString() + ' of ' + total.toLocaleString() + ' songs have a mood vector.';
-        const ms = content.mood_stats || {};
-        if (ms.sampled_songs) {
-            setText('mood-stats-text',
-                ms.distinct_moods + ' distinct mood labels in the library • avg '
-                + ms.avg_moods_per_song + ' moods/song (sample of '
-                + ms.sampled_songs.toLocaleString() + ' analyzed songs).');
-        } else {
-            setText('mood-stats-text', '');
+        const tip = document.getElementById('tempo-tooltip');
+        if (tip) {
+            tip.innerHTML = 'Distribution of songs across tempo buckets: Slow (&lt;85 BPM), '
+                + 'Medium (85–110), Fast (110–140), Very Fast (≥140). '
+                + total.toLocaleString() + ' songs with tempo • average '
+                + avg + '.';
         }
     }
 
@@ -547,7 +631,6 @@
             renderWorkers(d.workers);
             renderRecentTasks(d.recent_tasks);
             renderTopGenre((d.content || {}).top_genre);
-            renderCoverage(d.content || {});
             renderMoodsCoverage((d.content || {}).moods_coverage);
             renderTempo((d.content || {}).tempo_profile);
             renderCron(d.cron);

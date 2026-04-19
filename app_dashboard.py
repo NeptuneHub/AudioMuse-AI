@@ -480,8 +480,8 @@ def _collect_content_metrics(cur):
         logger.debug(f"dashboard: mood aggregation failed: {e}")
         _safe_rollback(cur)
 
-    # Top Genre: dominant-mood counts from mood_vector (genre-like labels).
-    top_genre = sorted(mood_dominant_counts.items(), key=lambda kv: kv[1], reverse=True)[:15]
+    # Genre breakdown: dominant-mood counts from mood_vector (genre-like labels).
+    top_genre = sorted(mood_dominant_counts.items(), key=lambda kv: kv[1], reverse=True)
     metrics['top_genre'] = [{'label': k, 'count': int(v)} for k, v in top_genre]
     # Keep the score-based ranking for completeness.
     top_moods = sorted(mood_totals.items(), key=lambda kv: kv[1], reverse=True)[:10]
