@@ -162,6 +162,14 @@ def _collect_content_metrics(cur):
     #    Genres chart.
     #  - other_feature_totals: emotional mood scores summed across songs
     #    (from the `other_features` column), feeds the Moods Coverage pie.
+    #
+    # Both columns are stored as plain text in the `key:value,key:value`
+    # format produced by save_track_analysis_and_embedding() in
+    # app_helper.py, so we parse that directly. We intentionally do NOT
+    # call json.loads on every row: the column is never JSON, so the
+    # exception-handling overhead would dominate the loop for large
+    # libraries. We also iterate the cursor row-by-row instead of
+    # fetchall() to keep memory usage low.
     mood_dominant_counts = {}
     other_feature_totals = {}
     try:
@@ -169,27 +177,12 @@ def _collect_content_metrics(cur):
             "SELECT mood_vector, other_features FROM score "
             "WHERE mood_vector IS NOT NULL AND mood_vector <> ''"
         )
-        for row in cur.fetchall():
+        for row in cur:
             mv = row[0]
             of = row[1]
             if not mv:
                 continue
-            parsed = {}
-            try:
-                obj = json.loads(mv)
-                if isinstance(obj, dict):
-                    parsed = {str(k): float(v) for k, v in obj.items() if _is_number(v)}
-            except Exception:
-                parsed = {}
-            if not parsed:
-                for part in str(mv).split(','):
-                    if ':' in part:
-                        k, _, v = part.partition(':')
-                        k = k.strip()
-                        try:
-                            parsed[k] = float(v)
-                        except Exception:
-                            continue
+            parsed = _parse_keyval(mv)
             if not parsed:
                 continue
             dom = max(parsed.items(), key=lambda kv: kv[1])[0]
@@ -197,28 +190,12 @@ def _collect_content_metrics(cur):
 
             # --- emotional mood vector (other_features) ---
             if of:
-                of_parsed = {}
-                try:
-                    obj2 = json.loads(of)
-                    if isinstance(obj2, dict):
-                        of_parsed = {str(k): float(v) for k, v in obj2.items() if _is_number(v)}
-                except Exception:
-                    of_parsed = {}
-                if not of_parsed:
-                    for part in str(of).split(','):
-                        if ':' in part:
-                            k, _, v = part.partition(':')
-                            k = k.strip()
-                            try:
-                                of_parsed[k] = float(v)
-                            except Exception:
-                                continue
-                if of_parsed:
-                    for k, s in of_parsed.items():
-                        # Skip non-emotional scalar helpers
-                        if k in ('tempo_normalized', 'energy_normalized'):
-                            continue
-                        other_feature_totals[k] = other_feature_totals.get(k, 0.0) + s
+                of_parsed = _parse_keyval(of)
+                for k, s in of_parsed.items():
+                    # Skip non-emotional scalar helpers
+                    if k in ('tempo_normalized', 'energy_normalized'):
+                        continue
+                    other_feature_totals[k] = other_feature_totals.get(k, 0.0) + s
     except Exception as e:
         logger.debug(f"dashboard: mood aggregation failed: {e}")
         _safe_rollback(cur)
@@ -260,12 +237,31 @@ def _collect_content_metrics(cur):
     return metrics
 
 
-def _is_number(v):
-    try:
-        float(v)
-        return True
-    except Exception:
-        return False
+def _parse_keyval(s):
+    """Parse a ``key:value,key:value`` string (as stored in the ``score``
+    table's ``mood_vector`` / ``other_features`` columns) into a dict of
+    ``{label: float}``. Invalid pairs are silently skipped. Designed to
+    be fast on large libraries: no JSON parsing, no per-pair try/except
+    on the hot path for well-formed values.
+    """
+    out = {}
+    if not s:
+        return out
+    for part in s.split(','):
+        # Use partition (fast, no regex) and tolerate leading/trailing
+        # whitespace on the key only.
+        k, sep, v = part.partition(':')
+        if not sep:
+            continue
+        k = k.strip()
+        if not k:
+            continue
+        try:
+            out[k] = float(v)
+        except (ValueError, TypeError):
+            # Malformed numeric field — skip silently.
+            continue
+    return out
 
 
 def _collect_indexes(cur):
@@ -296,7 +292,12 @@ def _collect_indexes(cur):
 
     # Voyager song index count is surfaced inside the "Total Songs" card,
     # GMM/Map/Artist-Component are not shown as separate Key Numbers: we only
-    # list MuLan here (when the table actually exists in this deployment).
+    # list CLAP and MuLan here (when the tables actually exist in this
+    # deployment).
+    _add(_check_table(
+        'CLAP Index', 'clap_embedding',
+        count_sql="SELECT COUNT(*) FROM clap_embedding WHERE embedding IS NOT NULL",
+    ))
     _add(_check_table(
         'MuLan Index', 'mulan_embedding',
         count_sql="SELECT COUNT(*) FROM mulan_embedding WHERE embedding IS NOT NULL",

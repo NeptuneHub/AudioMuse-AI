@@ -2,16 +2,12 @@
 
 {% block headAdditions %}
 <style>
-    .dash-toolbar {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin-top: 0.5rem;
-        margin-bottom: 1rem;
+    /* Per-section "updated at" caption shown right under each section header. */
+    .dash-updated {
+        font-size: 0.8rem;
+        margin-top: 0.25rem;
+        margin-bottom: 0.75rem;
     }
-    .dash-toolbar .meta { font-size: 0.8rem; color: var(--text-muted); }
 
     .dash-grid {
         display: grid;
@@ -218,10 +214,7 @@
                 <p class="subtitle">Where Music Takes Shape</p>
             </div>
         </div>
-        <div class="dash-toolbar">
-            <span class="meta" id="dash-generated">Loading…</span>
-            <button id="dash-refresh-btn" type="button" class="btn btn-primary btn-sm">Refresh</button>
-        </div>
+        <p class="muted dash-updated" id="keynumbers-updated">Loading…</p>
         <div class="dash-grid" id="key-numbers"></div>
     </section>
 
@@ -233,6 +226,7 @@
                 <span class="tooltip-text">Each worker container spins up two RQ workers: one serving the <strong>high</strong> priority queue and one serving the <strong>default</strong> queue. So a single physical node usually shows up as two rows here.</span>
             </span>
         </h2>
+        <p class="muted dash-updated" id="workers-updated">Loading…</p>
         <div class="dash-table-wrap">
             <table class="dash-table workers-table" id="workers-table">
                 <thead><tr>
@@ -251,6 +245,7 @@
     <!-- Recent activity (table only) -->
     <section>
         <h2>Last 10 completed batch task</h2>
+        <p class="muted dash-updated" id="recent-updated">Loading…</p>
         <div class="dash-table-wrap" style="margin-top:1rem;">
             <table class="dash-table" id="recent-tasks-table">
                 <thead><tr>
@@ -268,7 +263,7 @@
     <!-- Content metrics -->
     <section>
         <h2>Content / Library</h2>
-        <p class="muted" id="dash-stats-updated" style="margin-top:-0.25rem;">Library stats: –</p>
+        <p class="muted dash-updated" id="content-updated">Loading…</p>
 
         <div class="dash-subsection">
             <h3 class="dash-subhead">Genres
@@ -304,6 +299,7 @@
     <!-- Scheduled Tasks -->
     <section>
         <h2>Scheduled Tasks</h2>
+        <p class="muted dash-updated" id="cron-updated">Loading…</p>
         <div class="dash-table-wrap" style="margin-top:1rem;">
             <table class="dash-table" id="cron-table">
                 <thead><tr>
@@ -454,8 +450,6 @@
                              <div class="dash-stat" style="font-size:1rem;">Still collecting data…</div>
                              <div class="dash-substat">First snapshot is computed within a minute of startup, then hourly.</div>`;
             host.appendChild(div);
-            setText('dash-generated', 'updated: ' + (d.generated_at || '–'));
-            setText('dash-stats-updated', 'Library stats: still collecting…');
             return;
         }
 
@@ -492,9 +486,6 @@
                              <div class="dash-substat">${c.sub || ''}</div>`;
             host.appendChild(div);
         });
-        setText('dash-generated', 'updated: ' + (d.generated_at || '–'));
-        setText('dash-stats-updated',
-            'Library stats as of: ' + d.stats_updated_at);
     }
 
     function renderWorkers(workers) {
@@ -687,13 +678,32 @@
             renderMoodsCoverage((d.content || {}).moods_coverage);
             renderTempo((d.content || {}).tempo_profile);
             renderCron(d.cron);
+
+            // Per-section "updated at" captions.
+            const liveStamp = d.generated_at || '';
+            const libStamp = d.stats_updated_at;
+            setText('keynumbers-updated',
+                libStamp
+                    ? 'Library stats as of: ' + libStamp + ' (refreshed hourly)'
+                    : 'Library stats: still collecting\u2026');
+            setText('content-updated',
+                libStamp
+                    ? 'Library stats as of: ' + libStamp + ' (refreshed hourly)'
+                    : 'Library stats: still collecting\u2026');
+            const liveSuffix = liveStamp
+                ? 'Last updated: ' + liveStamp + ' (auto-refresh every 30s)'
+                : '';
+            setText('workers-updated', liveSuffix);
+            setText('recent-updated', liveSuffix);
+            setText('cron-updated', liveSuffix);
         } catch (e) {
             console.error('Dashboard load failed', e);
-            setText('dash-generated', 'load failed');
+            ['keynumbers-updated', 'content-updated',
+             'workers-updated', 'recent-updated', 'cron-updated']
+                .forEach(id => setText(id, 'Load failed'));
         }
     }
 
-    document.getElementById('dash-refresh-btn').addEventListener('click', loadDashboard);
     loadDashboard();
     setInterval(loadDashboard, 30000);
 })();
