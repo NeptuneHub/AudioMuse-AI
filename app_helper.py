@@ -464,14 +464,12 @@ def _build_task_note(task_type, details_obj, db):
         if 'analysis' in t:
             # Prefer summing tracks_analyzed from album_analysis subtasks.
             try:
-            try:
                 with db.cursor() as cur:
                     cur.execute(
                         "SELECT details FROM task_status WHERE parent_task_id = %s AND status = 'SUCCESS'",
                         (details_obj.get('_task_id') or '',),
                     )
                     rows = cur.fetchall()
-            except Exception:
             except Exception:
                 rows = []
             songs = 0
@@ -1495,33 +1493,32 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
         # *before* we wipe task_status, so the dashboard's history table keeps
         # showing what was running when the user pressed Cancel.
         try:
-            snap_cur = db.cursor(cursor_factory=DictCursor)
-            snap_cur.execute(
-                "SELECT task_id, task_type, status, details, start_time, end_time "
-                "FROM task_status WHERE parent_task_id IS NULL"
-            )
-            now_ts = time.time()
-            for r in snap_cur.fetchall():
-                duration_s = None
-                if r['start_time'] is not None:
-                    end = r['end_time'] if r['end_time'] is not None else now_ts
-                    duration_s = max(0.0, float(end) - float(r['start_time']))
-                details_obj = None
-                if r['details']:
-                    try:
-                        details_obj = json.loads(r['details'])
-                    except Exception:
-                        details_obj = None
-                # If the task was already in a terminal status, keep that one;
-                # otherwise mark it REVOKED.
-                final_status = r['status'] if r['status'] in (
-                    TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
-                ) else TASK_STATUS_REVOKED
-                record_task_history(
-                    r['task_id'], r['task_type'], final_status,
-                    duration_s, details=details_obj,
+            with db.cursor(cursor_factory=DictCursor) as snap_cur:
+                snap_cur.execute(
+                    "SELECT task_id, task_type, status, details, start_time, end_time "
+                    "FROM task_status WHERE parent_task_id IS NULL"
                 )
-            snap_cur.close()
+                now_ts = time.time()
+                for r in snap_cur.fetchall():
+                    duration_s = None
+                    if r['start_time'] is not None:
+                        end = r['end_time'] if r['end_time'] is not None else now_ts
+                        duration_s = max(0.0, float(end) - float(r['start_time']))
+                    details_obj = None
+                    if r['details']:
+                        try:
+                            details_obj = json.loads(r['details'])
+                        except Exception:
+                            details_obj = None
+                    # If the task was already in a terminal status, keep that one;
+                    # otherwise mark it REVOKED.
+                    final_status = r['status'] if r['status'] in (
+                        TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
+                    ) else TASK_STATUS_REVOKED
+                    record_task_history(
+                        r['task_id'], r['task_type'], final_status,
+                        duration_s, details=details_obj,
+                    )
         except Exception as e_snap:
             logger.warning(f"Global cancel: failed snapshotting task_status into task_history: {e_snap}")
 
