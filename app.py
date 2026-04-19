@@ -204,12 +204,12 @@ import app_setup
 def login_page():
     """Serve the login page. Redirects to / if already authenticated."""
     if not config.AUTH_ENABLED:
-        return redirect(url_for('index'))
+        return redirect(url_for('dashboard_bp.dashboard_page'))
     token = request.cookies.get('audiomuse_jwt')
     if token:
         try:
             pyjwt.decode(token, _jwt_secret, algorithms=['HS256'])
-            return redirect(url_for('index'))
+            return redirect(url_for('dashboard_bp.dashboard_page'))
         except pyjwt.InvalidTokenError:
             pass
 
@@ -260,7 +260,7 @@ def auth_endpoint():
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
         resp = make_response(jsonify({"status": "ok"}), 200)
     else:
-        resp = make_response(redirect(url_for('index')))
+        resp = make_response(redirect(url_for('dashboard_bp.dashboard_page')))
     resp.set_cookie(
         'audiomuse_jwt',
         token,
@@ -283,10 +283,11 @@ def logout_endpoint():
     resp.delete_cookie('audiomuse_jwt', path='/', samesite='Strict')
     return resp
 
-@app.route('/')
+@app.route('/analysis')
 def index():
     """
-    Serve the main HTML page.
+    Serve the Analysis & Clustering page (legacy home).
+    The application landing page is now the dashboard ('/').
     ---
     tags:
       - UI
@@ -773,6 +774,7 @@ from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
 from app_mulan_search import mulan_search_bp
 from app_backup import backup_bp
+from app_dashboard import dashboard_bp
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -791,6 +793,7 @@ app.register_blueprint(clap_search_bp)
 app.register_blueprint(mulan_search_bp)
 app.register_blueprint(backup_bp)
 app.register_blueprint(migration_bp)
+app.register_blueprint(dashboard_bp)
 
 # --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
 # RQ workers import app.py but should NOT load indexes or start background threads.
@@ -901,8 +904,31 @@ if not _is_worker:
 
   cron_thread = threading.Thread(target=_cron_manager_loop, daemon=True)
   cron_thread.start()
+
+  # Dashboard stats refresher: runs once at startup, then hourly.
+  # Keeps heavy content/index aggregates off the request path.
+  def _dashboard_stats_refresher_loop():
+    try:
+      from time import sleep
+      from app_dashboard import refresh_dashboard_stats
+      # Wait a minute after startup so the initial DB/index warm-up and
+      # first incoming requests have time to settle before we kick off
+      # the heavy content/indexes scan.
+      sleep(60)
+      while True:
+        try:
+          refresh_dashboard_stats(app)
+        except Exception:
+          app.logger.exception('dashboard stats refresh failed')
+        sleep(3600)
+    except Exception:
+      app.logger.exception('dashboard stats refresher main loop error')
+
+  dashboard_stats_thread = threading.Thread(
+      target=_dashboard_stats_refresher_loop, daemon=True)
+  dashboard_stats_thread.start()
 else:
-  logger.info('Running as RQ worker — skipping index loading, Redis listener, and cron thread.')
+  logger.info('Running as RQ worker: skipping index loading, Redis listener, and cron thread.')
 
 if __name__ == '__main__':
   app.run(debug=False, host='0.0.0.0', port=8000)

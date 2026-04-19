@@ -1,4 +1,5 @@
 {% if setup_saved %}
+<li><a href="{{ url_for('dashboard_bp.dashboard_page') }}" {% if active == 'dashboard' %}class="active"{% endif %}>Dashboard</a></li>
 <li><a href="{{ url_for('index') }}" {% if active == 'index' %}class="active"{% endif %}>Analysis and Clustering</a></li>
 <li><a href="{{ url_for('chat_bp.chat_home') }}" {% if active == 'chat' %}class="active"{% endif %}>Instant Playlist</a></li>
 <li><a href="{{ url_for('voyager_bp.similarity_page') }}" {% if active == 'similarity' %}class="active"{% endif %}>Playlist from Similar Song</a></li>
