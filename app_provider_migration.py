@@ -164,7 +164,11 @@ def provider_migration_page():
             row = cur.fetchone()
         if row:
             active_session_id = row[0]
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "provider_migration_page: failed to look up active session: %s",
+            e, exc_info=True,
+        )
         active_session_id = None
 
     return render_template(
@@ -675,8 +679,18 @@ def execute():
                 (json.dumps(state, ensure_ascii=False), session_id),
             )
         db.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        # Non-fatal: the execute job is already enqueued. Losing exec_task_id
+        # only means the UI cannot auto-resume polling after a page refresh.
+        logger.warning(
+            "provider_migration execute: failed to persist exec_task_id "
+            "for session %s (job %s): %s",
+            session_id, job.id, e, exc_info=True,
+        )
+        try:
+            db.rollback()
+        except Exception:
+            pass
     return jsonify({'task_id': job.id})
 
 
