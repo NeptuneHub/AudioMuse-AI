@@ -7,7 +7,9 @@
     width: 250px;
     background-color: #111827;
     color: white;
-    padding: 1.5rem;
+    padding: 1.5rem 1.5rem 0 1.5rem; /* bottom padding is added via ::after so
+                                        it stays inside the scrollable area */
+    box-sizing: border-box;
     height: 100vh;
     overflow-y: auto;
     overflow-x: hidden;
@@ -19,6 +21,16 @@
     z-index: 1000;
     /* Start off-screen by default */
     transform: translateX(-100%);
+}
+
+/* Spacer inside the scrollable area so the version line (last child) is never
+   clipped by Chromium/WebKit's known ignored-bottom-padding behavior, and so
+   mobile browser UI (address bar / home indicator) doesn't cover it. */
+.sidebar::after {
+    content: '';
+    display: block;
+    height: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+    flex-shrink: 0;
 }
 
 /* When the .open class is added by JS, slide the menu in */

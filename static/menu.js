@@ -63,7 +63,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const appVersion = versionMeta.content;
         const versionElement = document.createElement('div');
         versionElement.className = 'app-version'; // For styling
-        versionElement.textContent = `AudioMuse-AI - Version ${appVersion}`;
+        versionElement.textContent = `AudioMuse-AI - ${appVersion}`;
         sidebar.appendChild(versionElement);
     }
 
