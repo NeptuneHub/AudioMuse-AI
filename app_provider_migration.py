@@ -150,10 +150,32 @@ def _apply_source_path_overrides(old_rows, overrides):
 
 @migration_bp.route('/provider-migration')
 def provider_migration_page():
+    # Look up an in-flight migration so a page refresh can resume the wizard
+    # at the right step instead of creating a brand new session.
+    active_session_id = None
+    try:
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM migration_session "
+                "WHERE status NOT IN ('completed', 'failed') "
+                "ORDER BY id DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+        if row:
+            active_session_id = row[0]
+    except Exception as e:
+        logger.warning(
+            "provider_migration_page: failed to look up active session: %s",
+            e, exc_info=True,
+        )
+        active_session_id = None
+
     return render_template(
         'provider_migration.html',
         title='Provider Migration',
         active='provider_migration',
+        active_session_id=active_session_id,
     )
 
 
@@ -175,6 +197,11 @@ def session_start():
 
     db = get_db()
     with db.cursor() as cur:
+        # Prune terminal rows so the table does not grow unboundedly.
+        # Safe: never touches in-flight sessions (in_progress / dry_run_ready).
+        cur.execute(
+            "DELETE FROM migration_session WHERE status IN ('completed', 'failed')"
+        )
         cur.execute(
             "INSERT INTO migration_session "
             "(source_type, target_type, target_creds, state, status) "
@@ -216,6 +243,29 @@ def session_get(session_id):
 # ---------------------------------------------------------------------------
 # Routes — probe (delegates to tasks.provider_probe, passes creds explicitly)
 # ---------------------------------------------------------------------------
+
+@migration_bp.route('/api/migration/session/<int:session_id>', methods=['DELETE'])
+def session_discard(session_id):
+    """Delete a migration_session row. Used by the wizard's Discard button
+    when the user wants to throw away a resumed session (e.g. creds went
+    stale) and start over from scratch. Refuses to touch sessions that are
+    already in a terminal state — those are pruned automatically on the
+    next session_start."""
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT status FROM migration_session WHERE id = %s",
+            (session_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return jsonify({'error': 'session not found'}), 404
+        if row[0] in ('completed', 'failed'):
+            return jsonify({'error': 'cannot discard a finished session'}), 400
+        cur.execute("DELETE FROM migration_session WHERE id = %s", (session_id,))
+    db.commit()
+    return jsonify({'ok': True})
+
 
 @migration_bp.route('/api/migration/probe/test', methods=['POST'])
 def probe_test():
@@ -617,6 +667,30 @@ def execute():
         session_id,
         job_timeout=3600,
     )
+    # Persist the RQ task id on the session so a page refresh can resume
+    # polling this job rather than losing track of it.
+    try:
+        state = _load_state(session_id) or {}
+        state['exec_task_id'] = job.id
+        state = _sanitize_json_value(state)
+        with db.cursor() as cur:
+            cur.execute(
+                "UPDATE migration_session SET state = %s::jsonb WHERE id = %s",
+                (json.dumps(state, ensure_ascii=False), session_id),
+            )
+        db.commit()
+    except Exception as e:
+        # Non-fatal: the execute job is already enqueued. Losing exec_task_id
+        # only means the UI cannot auto-resume polling after a page refresh.
+        logger.warning(
+            "provider_migration execute: failed to persist exec_task_id "
+            "for session %s (job %s): %s",
+            session_id, job.id, e, exc_info=True,
+        )
+        try:
+            db.rollback()
+        except Exception:
+            pass
     return jsonify({'task_id': job.id})
 
 

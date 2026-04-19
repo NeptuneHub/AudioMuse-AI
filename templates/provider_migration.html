@@ -1318,6 +1318,104 @@
             await new Promise(r => setTimeout(r, 2000));
         }
     }
+
+    // If the server found an in-flight migration session, resume it rather
+    // than making the user start over (which would create a brand new row).
+    // Credentials are never sent back to the browser — they live in the DB
+    // and the server uses them via session_id. We only re-show target_type
+    // and jump the wizard to whichever step matches the persisted state.
+    const resumeSessionId = {{ (active_session_id or 0)|tojson }};
+    async function resumeSession(sid) {
+        try {
+            const s = await jsonFetch(
+                "{{ url_for('migration_bp.session_get', session_id=0) }}".replace('/0', '/' + sid)
+            );
+            sessionId  = s.id;
+            targetType = s.target_type || '';
+            const state = s.state || {};
+
+            // Step 1: pre-check the backup box (user already ticked it last time).
+            $('mig-backup-confirmed').checked = true;
+            unlock(2);
+
+            // Step 2: show the target provider as locked with a "resumed" notice,
+            // hide the cred fields (secrets stay server-side), disable Test.
+            const tt = $('mig-target-type');
+            if (tt && targetType) {
+                tt.value = targetType;
+                tt.disabled = true;
+            }
+            document.querySelectorAll('.mig-cred-field').forEach(f => f.classList.remove('active'));
+            const btn = $('mig-test-connection');
+            if (btn) btn.disabled = true;
+            $('mig-probe-result').innerHTML =
+                '<div class="mig-success">Resumed previous session. ' +
+                'Credentials were saved on the server and will be reused automatically. ' +
+                '<button type="button" id="mig-discard-session" class="btn btn-secondary" ' +
+                'style="margin-left:0.75rem;">Discard and start over</button>' +
+                '</div>';
+            const discardBtn = $('mig-discard-session');
+            if (discardBtn) {
+                discardBtn.addEventListener('click', async () => {
+                    if (!confirm('Discard the saved migration session and start over? ' +
+                                 'Any manual matches from the previous run will be lost.')) return;
+                    discardBtn.disabled = true;
+                    try {
+                        await jsonFetch(
+                            "{{ url_for('migration_bp.session_discard', session_id=0) }}"
+                                .replace('/0', '/' + sessionId),
+                            { method: 'DELETE' }
+                        );
+                    } catch (e) {
+                        // If the row is gone already, still reload to reset UI.
+                        console.warn('discard failed (continuing):', e);
+                    }
+                    window.location.reload();
+                });
+            }
+            unlock(3);
+
+            // Terminal-state safety: if the row is somehow still readable,
+            // don't try to resume.
+            if (s.status === 'completed' || s.status === 'failed') {
+                return;
+            }
+
+            // Step 6: an execute job is already running — jump straight there.
+            if (state.exec_task_id) {
+                [4, 5, 6].forEach(unlock);
+                setActive(6);
+                pollJob(state.exec_task_id);
+                return;
+            }
+
+            // Steps 4 / 5: a dry run was already produced — re-render it so
+            // the user keeps manual matches made before the refresh.
+            if (state.dry_run) {
+                const albums = state.dry_run.unmatched_albums || [];
+                const unmatchedCount = albums.reduce((a, b) => a + (b.track_count || 0), 0);
+                await renderDryRunResult({
+                    tier_counts: state.dry_run.tier_counts || {},
+                    unmatched: unmatchedCount,
+                    unmatched_albums_count: albums.length,
+                });
+                if (s.status === 'dry_run_ready') {
+                    unlock(5);
+                    setActive(5);
+                }
+                return;
+            }
+
+            // Otherwise: session exists but no dry run yet — sit at step 3.
+            setActive(3);
+        } catch (e) {
+            // Resume failed — fall back to a normal fresh wizard.
+            console.warn('migration resume failed:', e);
+        }
+    }
+    if (resumeSessionId) {
+        resumeSession(resumeSessionId);
+    }
 })();
 </script>
 <script src="{{ url_for('static', filename='menu.js') }}"></script>
