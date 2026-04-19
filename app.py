@@ -928,7 +928,7 @@ if not _is_worker:
       target=_dashboard_stats_refresher_loop, daemon=True)
   dashboard_stats_thread.start()
 else:
-  logger.info('Running as RQ worker — skipping index loading, Redis listener, and cron thread.')
+  logger.info('Running as RQ worker: skipping index loading, Redis listener, and cron thread.')
 
 if __name__ == '__main__':
   app.run(debug=False, host='0.0.0.0', port=8000)
