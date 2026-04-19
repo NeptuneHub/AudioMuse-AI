@@ -395,39 +395,148 @@ def _collect_content_metrics(cur):
             logger.debug(f"dashboard: artist_map_json parse failed: {e}")
             _safe_rollback(cur)
 
+    # Parse mood vectors to collect multiple signals:
+    #  - mood_totals: sum of scores per mood label (overall prevalence)
+    #  - mood_dominant_counts: number of songs where this mood scored highest
+    #    (used internally for the "Top Genre" view)
+    #  - mood_presence_counts: number of songs in which this mood is present
+    #    at all (score > 0) — used for the "Moods Coverage" view
     mood_totals = {}
+    mood_dominant_counts = {}
+    mood_presence_counts = {}
+    sampled_songs = 0
+    moods_per_song_sum = 0
+    distinct_moods = set()
+    # `other_features` is the column that holds the *emotional* moods
+    # (danceable, aggressive, happy, party, relaxed, sad). `mood_vector`
+    # holds genre-like labels. We aggregate both in the same pass.
+    other_feature_totals = {}
+    other_feature_songs = 0
     try:
-        cur.execute("SELECT mood_vector FROM score WHERE mood_vector IS NOT NULL AND mood_vector <> '' LIMIT 5000")
-        for (mv,) in cur.fetchall():
+        cur.execute(
+            "SELECT mood_vector, other_features FROM score "
+            "WHERE mood_vector IS NOT NULL AND mood_vector <> '' LIMIT 10000"
+        )
+        for row in cur.fetchall():
+            mv = row[0]
+            of = row[1]
             if not mv:
                 continue
+            parsed = {}
             try:
                 obj = json.loads(mv)
                 if isinstance(obj, dict):
-                    for k, v in obj.items():
+                    parsed = {str(k): float(v) for k, v in obj.items() if _is_number(v)}
+            except Exception:
+                parsed = {}
+            if not parsed:
+                for part in str(mv).split(','):
+                    if ':' in part:
+                        k, _, v = part.partition(':')
+                        k = k.strip()
                         try:
-                            mood_totals[k] = mood_totals.get(k, 0.0) + float(v)
+                            parsed[k] = float(v)
                         except Exception:
                             continue
-                    continue
-            except Exception:
-                pass
-            for part in str(mv).split(','):
-                if ':' in part:
-                    k, _, v = part.partition(':')
-                    k = k.strip()
-                    try:
-                        mood_totals[k] = mood_totals.get(k, 0.0) + float(v)
-                    except Exception:
-                        continue
+            if not parsed:
+                continue
+            sampled_songs += 1
+            present = {k: s for k, s in parsed.items() if s > 0.0}
+            moods_per_song_sum += len(present)
+            distinct_moods.update(present.keys())
+            for k, s in parsed.items():
+                mood_totals[k] = mood_totals.get(k, 0.0) + s
+            for k in present.keys():
+                mood_presence_counts[k] = mood_presence_counts.get(k, 0) + 1
+            dom = max(parsed.items(), key=lambda kv: kv[1])[0]
+            mood_dominant_counts[dom] = mood_dominant_counts.get(dom, 0) + 1
+
+            # --- emotional mood vector (other_features) ---
+            if of:
+                of_parsed = {}
+                try:
+                    obj2 = json.loads(of)
+                    if isinstance(obj2, dict):
+                        of_parsed = {str(k): float(v) for k, v in obj2.items() if _is_number(v)}
+                except Exception:
+                    of_parsed = {}
+                if not of_parsed:
+                    for part in str(of).split(','):
+                        if ':' in part:
+                            k, _, v = part.partition(':')
+                            k = k.strip()
+                            try:
+                                of_parsed[k] = float(v)
+                            except Exception:
+                                continue
+                if of_parsed:
+                    other_feature_songs += 1
+                    for k, s in of_parsed.items():
+                        # Skip non-emotional scalar helpers
+                        if k in ('tempo_normalized', 'energy_normalized'):
+                            continue
+                        other_feature_totals[k] = other_feature_totals.get(k, 0.0) + s
     except Exception as e:
         logger.debug(f"dashboard: mood aggregation failed: {e}")
         _safe_rollback(cur)
 
+    # Top Genre: dominant-mood counts from mood_vector (genre-like labels).
+    top_genre = sorted(mood_dominant_counts.items(), key=lambda kv: kv[1], reverse=True)[:15]
+    metrics['top_genre'] = [{'label': k, 'count': int(v)} for k, v in top_genre]
+    # Keep the score-based ranking for completeness.
     top_moods = sorted(mood_totals.items(), key=lambda kv: kv[1], reverse=True)[:10]
     metrics['top_moods'] = [{'label': k, 'score': round(v, 2)} for k, v in top_moods]
+    # Moods Coverage now reads the emotional mood vector (other_features):
+    # danceable / aggressive / happy / party / relaxed / sad.
+    emotional = sorted(other_feature_totals.items(), key=lambda kv: kv[1], reverse=True)
+    metrics['moods_coverage'] = [
+        {'label': k, 'score': round(v, 2)} for k, v in emotional
+    ]
+    metrics['moods_coverage_sample'] = other_feature_songs
+    metrics['mood_stats'] = {
+        'sampled_songs': sampled_songs,
+        'distinct_moods': len(distinct_moods),
+        'avg_moods_per_song': round(moods_per_song_sum / sampled_songs, 2) if sampled_songs else 0,
+    }
+    metrics['mood_stats'] = {
+        'sampled_songs': sampled_songs,
+        'distinct_moods': len(distinct_moods),
+        'avg_moods_per_song': round(moods_per_song_sum / sampled_songs, 2) if sampled_songs else 0,
+    }
+
+    # Tempo profile: bucket songs into slow/medium/fast/very-fast
+    try:
+        cur.execute(
+            "SELECT "
+            "  COUNT(*) FILTER (WHERE tempo > 0 AND tempo < 85) AS slow, "
+            "  COUNT(*) FILTER (WHERE tempo >= 85 AND tempo < 110) AS medium, "
+            "  COUNT(*) FILTER (WHERE tempo >= 110 AND tempo < 140) AS fast, "
+            "  COUNT(*) FILTER (WHERE tempo >= 140) AS very_fast, "
+            "  AVG(tempo) FILTER (WHERE tempo > 0) AS avg_tempo "
+            "FROM score WHERE tempo IS NOT NULL"
+        )
+        r = cur.fetchone()
+        if r:
+            metrics['tempo_profile'] = {
+                'slow': int(r[0] or 0),
+                'medium': int(r[1] or 0),
+                'fast': int(r[2] or 0),
+                'very_fast': int(r[3] or 0),
+                'avg_tempo': round(float(r[4]), 1) if r[4] is not None else None,
+            }
+    except Exception as e:
+        logger.debug(f"dashboard: tempo profile query failed: {e}")
+        _safe_rollback(cur)
 
     return metrics
+
+
+def _is_number(v):
+    try:
+        float(v)
+        return True
+    except Exception:
+        return False
 
 
 def _collect_indexes(cur):

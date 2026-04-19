@@ -65,6 +65,20 @@
         width: 100%;
         max-width: 100%;
     }
+    /* Below this breakpoint tables stop shrinking and instead become
+       horizontally scrollable so content stays readable on phones. */
+    @media (max-width: 600px) {
+        .dash-table-wrap {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        .dash-table {
+            min-width: 560px;
+            table-layout: auto;
+        }
+        .dash-table td, .dash-table th { white-space: nowrap !important; }
+        .dash-table td code { white-space: nowrap !important; }
+    }
     .dash-table {
         width: 100%;
         border-collapse: collapse;
@@ -139,7 +153,8 @@
         min-width: 0;
         overflow: hidden;
     }
-    @media (max-width: 600px) { .chart-wrap { height: 220px; } }
+    .chart-wrap-tall { height: 520px; }
+    @media (max-width: 600px) { .chart-wrap { height: 220px; } .chart-wrap-tall { height: 600px; } }
     .chart-wrap canvas { max-width: 100% !important; }
 
     .progress-bar {
@@ -164,8 +179,8 @@
     <section>
         <div id="config-header">
             <div class="config-title-group">
-                <h1>Dashboard</h1>
-                <p class="subtitle">Overview of library content, processing performance and scheduled tasks.</p>
+                <h1>AudioMuse-AI</h1>
+                <p class="subtitle">Where Music Takes Shape</p>
             </div>
         </div>
         <div class="dash-toolbar">
@@ -177,7 +192,12 @@
 
     <!-- Workers -->
     <section>
-        <h2>Workers / Nodes</h2>
+        <h2>Queue Workers
+            <span class="info-tooltip" tabindex="0">
+                <span class="info-icon" aria-hidden="true"></span>
+                <span class="tooltip-text">Each worker container spins up two RQ workers: one serving the <strong>high</strong> priority queue and one serving the <strong>default</strong> queue. So a single physical node usually shows up as two rows here.</span>
+            </span>
+        </h2>
         <div class="dash-table-wrap">
             <table class="dash-table workers-table" id="workers-table">
                 <thead><tr>
@@ -195,7 +215,7 @@
 
     <!-- Recent activity (table only) -->
     <section>
-        <h2>Last 10 recent activity</h2>
+        <h2>Last 10 completed batch task</h2>
         <div class="dash-table-wrap" style="margin-top:1rem;">
             <table class="dash-table" id="recent-tasks-table">
                 <thead><tr>
@@ -213,17 +233,35 @@
     <!-- Content metrics -->
     <section>
         <h2>Content / Library</h2>
-        <div class="dash-section-grid" style="margin-top:1rem;">
-            <div>
-                <h3 style="margin-top:0;font-size:0.95rem;">Top Moods</h3>
-                <div class="chart-wrap"><canvas id="chart-moods"></canvas></div>
-            </div>
-            <div>
-                <h3 style="margin-top:0;font-size:0.95rem;">Library Coverage</h3>
-                <div>Analyzed songs <span id="coverage-pct" class="muted"></span></div>
-                <div class="progress-bar"><div id="coverage-fill" style="width:0%"></div></div>
-                <p class="muted" id="coverage-text" style="margin-top:8px;"></p>
-            </div>
+
+        <div style="margin-top:1rem;">
+            <h3 style="margin-top:0;font-size:0.95rem;">Top Genre</h3>
+            <div class="chart-wrap"><canvas id="chart-top-genre"></canvas></div>
+            <p class="muted" style="margin-top:6px;">
+                Each analyzed song is counted once, under the mood that scored highest in its vector — the closest proxy for “genre” in this library.
+            </p>
+        </div>
+
+        <div style="margin-top:1.5rem;">
+            <h3 style="margin-top:0;font-size:0.95rem;">Library Coverage</h3>
+            <div>Analyzed songs <span id="coverage-pct" class="muted"></span></div>
+            <div class="progress-bar"><div id="coverage-fill" style="width:0%"></div></div>
+            <p class="muted" id="coverage-text" style="margin-top:8px;"></p>
+            <p class="muted" id="mood-stats-text" style="margin-top:8px;"></p>
+        </div>
+
+        <div style="margin-top:1.5rem;">
+            <h3 style="margin-top:0;font-size:0.95rem;">Moods Coverage</h3>
+            <div class="chart-wrap chart-wrap-tall"><canvas id="chart-moods-coverage"></canvas></div>
+            <p class="muted" style="margin-top:6px;">
+                Emotional mood breakdown (<em>danceable</em>, <em>aggressive</em>, <em>happy</em>, <em>party</em>, <em>relaxed</em>, <em>sad</em>) summed across every song’s mood vector.
+            </p>
+        </div>
+
+        <div style="margin-top:1.5rem;">
+            <h3 style="margin-top:0;font-size:0.95rem;">Tempo Profile</h3>
+            <div class="chart-wrap"><canvas id="chart-tempo"></canvas></div>
+            <p class="muted" id="tempo-text" style="margin-top:6px;"></p>
         </div>
     </section>
 
@@ -427,9 +465,36 @@
         });
     }
 
-    function renderMoods(moods) {
-        if (!moods || moods.length === 0) return;
-        renderChartHorizontalBar('chart-moods', moods.map(m => m.label), moods.map(m => m.score), '#7C3AED');
+    function renderTopGenre(rows) {
+        if (!rows || rows.length === 0) return;
+        renderChartHorizontalBar('chart-top-genre',
+            rows.map(r => r.label), rows.map(r => r.count), '#7C3AED');
+    }
+
+    function renderMoodsCoverage(rows) {
+        if (!rows || rows.length === 0) return;
+        const palette = [
+            '#7C3AED', '#0EA5E9', '#F59E0B', '#EF4444', '#10B981',
+            '#F97316', '#EC4899', '#3B82F6', '#84CC16', '#8B5CF6',
+            '#14B8A6', '#F43F5E', '#A855F7', '#06B6D4', '#EAB308',
+            '#22C55E', '#DB2777', '#6366F1', '#D946EF', '#0891B2',
+            '#65A30D', '#DC2626'
+        ];
+        const labels = rows.map(r => r.label);
+        const data = rows.map(r => r.score);
+        const colors = labels.map((_, i) => palette[i % palette.length]);
+        renderChartDoughnut('chart-moods-coverage', labels, data, colors);
+    }
+
+    function renderTempo(profile) {
+        if (!profile) return;
+        const labels = ['Slow (<85)', 'Medium (85-110)', 'Fast (110-140)', 'Very Fast (≥140)'];
+        const data = [profile.slow || 0, profile.medium || 0, profile.fast || 0, profile.very_fast || 0];
+        const palette = ['#60A5FA', '#34D399', '#F59E0B', '#EF4444'];
+        renderChartDoughnut('chart-tempo', labels, data, palette);
+        const total = data.reduce((a, b) => a + b, 0);
+        const avg = profile.avg_tempo != null ? profile.avg_tempo.toFixed(1) + ' BPM' : '–';
+        setText('tempo-text', total.toLocaleString() + ' songs with tempo • avg ' + avg);
     }
 
     function renderCoverage(content) {
@@ -440,6 +505,15 @@
         document.getElementById('coverage-pct').textContent = '(' + pct + '%)';
         document.getElementById('coverage-text').textContent =
             analyzed.toLocaleString() + ' of ' + total.toLocaleString() + ' songs have a mood vector.';
+        const ms = content.mood_stats || {};
+        if (ms.sampled_songs) {
+            setText('mood-stats-text',
+                ms.distinct_moods + ' distinct mood labels in the library • avg '
+                + ms.avg_moods_per_song + ' moods/song (sample of '
+                + ms.sampled_songs.toLocaleString() + ' analyzed songs).');
+        } else {
+            setText('mood-stats-text', '');
+        }
     }
 
     function renderCron(rows) {
@@ -472,8 +546,10 @@
             renderKeyNumbers(d);
             renderWorkers(d.workers);
             renderRecentTasks(d.recent_tasks);
-            renderMoods((d.content || {}).top_moods);
+            renderTopGenre((d.content || {}).top_genre);
             renderCoverage(d.content || {});
+            renderMoodsCoverage((d.content || {}).moods_coverage);
+            renderTempo((d.content || {}).tempo_profile);
             renderCron(d.cron);
         } catch (e) {
             console.error('Dashboard load failed', e);
