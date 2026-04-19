@@ -904,6 +904,29 @@ if not _is_worker:
 
   cron_thread = threading.Thread(target=_cron_manager_loop, daemon=True)
   cron_thread.start()
+
+  # Dashboard stats refresher: runs once at startup, then hourly.
+  # Keeps heavy content/index aggregates off the request path.
+  def _dashboard_stats_refresher_loop():
+    try:
+      from time import sleep
+      from app_dashboard import refresh_dashboard_stats
+      # Wait a minute after startup so the initial DB/index warm-up and
+      # first incoming requests have time to settle before we kick off
+      # the heavy content/indexes scan.
+      sleep(60)
+      while True:
+        try:
+          refresh_dashboard_stats(app)
+        except Exception:
+          app.logger.exception('dashboard stats refresh failed')
+        sleep(3600)
+    except Exception:
+      app.logger.exception('dashboard stats refresher main loop error')
+
+  dashboard_stats_thread = threading.Thread(
+      target=_dashboard_stats_refresher_loop, daemon=True)
+  dashboard_stats_thread.start()
 else:
   logger.info('Running as RQ worker — skipping index loading, Redis listener, and cron thread.')
 

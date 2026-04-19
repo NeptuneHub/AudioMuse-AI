@@ -226,6 +226,18 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS artist_component_projection (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, artist_component_map_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'cron' table to hold scheduled jobs (very small and simple)
         cur.execute("CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        # Create 'dashboard_stats' singleton table (id fixed to 1) that holds
+        # precomputed content/library aggregates and index counts. Refreshed
+        # at app startup and hourly by a background job so the dashboard
+        # does not have to scan the whole `score` table on every poll.
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS dashboard_stats ("
+            "id INTEGER PRIMARY KEY, "
+            "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+            "content JSONB NOT NULL DEFAULT '{}'::jsonb, "
+            "indexes JSONB NOT NULL DEFAULT '[]'::jsonb, "
+            "CONSTRAINT dashboard_stats_singleton CHECK (id = 1))"
+        )
         # Create 'artist_mapping' table to map artist names to media server artist IDs
         cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
         # Create application configuration table to persist setup values.
