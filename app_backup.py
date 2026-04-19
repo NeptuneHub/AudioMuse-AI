@@ -3,8 +3,9 @@ import subprocess
 import logging
 import tempfile
 from datetime import datetime
-from flask import Blueprint, render_template, jsonify, request, send_file
+from flask import Blueprint, render_template, jsonify, request, send_file, after_this_request
 from config import POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB
+import restart_manager
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,31 @@ def restore_backup():
             return jsonify({'error': f'psql restore failed: {result.stderr}'}), 500
 
         logger.info("Database restored from uploaded file: %s", uploaded.filename)
-        return jsonify({'success': True, 'message': 'Database restored successfully.'})
+
+        # Trigger the same automatic restart flow used by the setup page so
+        # the user lands on a freshly-rebooted Flask (and workers) after the
+        # restore — the schema the code expects may have changed.
+        restart_requested = False
+        try:
+            restart_manager.publish_restart_request()
+            restart_requested = True
+        except Exception as e:
+            logger.warning("restore: publish_restart_request failed: %s", e)
+
+        @after_this_request
+        def _schedule_restart(response):
+            if restart_requested:
+                try:
+                    restart_manager.schedule_flask_restart()
+                except Exception as e:
+                    logger.warning("restore: schedule_flask_restart failed: %s", e)
+            return response
+
+        return jsonify({
+            'success': True,
+            'message': 'Database restored successfully.',
+            'restart_requested': restart_requested,
+        })
     except FileNotFoundError:
         logger.error("psql not found on system PATH")
         return jsonify({'error': 'psql is not installed or not on PATH'}), 500
