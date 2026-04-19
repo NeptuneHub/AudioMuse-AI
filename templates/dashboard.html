@@ -624,16 +624,18 @@
     }
 
     function renderTempo(profile) {
-        if (!profile) {
+        const data = profile
+            ? [profile.slow || 0, profile.medium || 0, profile.fast || 0, profile.very_fast || 0]
+            : [0, 0, 0, 0];
+        const total = data.reduce((a, b) => a + b, 0);
+        if (!profile || total === 0) {
             showChartPlaceholder('chart-tempo', 'Still collecting library data…');
             return;
         }
         clearChartPlaceholder('chart-tempo');
         const labels = ['Slow (<85)', 'Medium (85-110)', 'Fast (110-140)', 'Very Fast (≥140)'];
-        const data = [profile.slow || 0, profile.medium || 0, profile.fast || 0, profile.very_fast || 0];
         const palette = ['#60A5FA', '#34D399', '#F59E0B', '#EF4444'];
         renderChartDoughnut('chart-tempo', labels, data, palette);
-        const total = data.reduce((a, b) => a + b, 0);
         const avg = profile.avg_tempo != null ? profile.avg_tempo.toFixed(1) + ' BPM' : '–';
         const tip = document.getElementById('tempo-tooltip');
         if (tip) {
