@@ -56,7 +56,9 @@ from app_helper import (
     save_task_status,
     get_task_info_from_db,
     cancel_job_and_children_recursive,
-    check_setup_needed, check_auth_needed,
+    check_setup_needed, check_auth_needed, check_admin_needed,
+    list_additional_users, create_additional_user,
+    delete_additional_user, verify_additional_user,
     TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
 )
@@ -118,12 +120,17 @@ def _verify_audiomuse_password(stored_password, provided_password):
 def inject_globals():
     """Injects global variables into all templates."""
     from config import CLAP_ENABLED, MULAN_ENABLED
+    # auth_role defaults to 'admin' (set by check_auth_needed), so when
+    # AUTH_ENABLED is false or the barrier has not run yet (e.g. error
+    # pages), is_admin will be True and the full UI is shown.
+    auth_role = getattr(g, 'auth_role', 'admin')
     return dict(
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
         mulan_enabled=MULAN_ENABLED,
         auth_enabled=config.AUTH_ENABLED,
         setup_saved=not check_setup_needed(),
+        is_admin=(auth_role == 'admin'),
     )
 
 # --- Unified Auth + Setup Barrier ---
@@ -149,7 +156,12 @@ def auth_setup_barrier():
     if auth_response:
         return auth_response
 
-    # 3) All clear → proceed to requested page
+    # 3) Admin-only paths: block normal users
+    admin_response = check_admin_needed()
+    if admin_response:
+        return admin_response
+
+    # 4) All clear → proceed to requested page
 
 @app.before_request
 def log_api_request():
@@ -242,7 +254,13 @@ def auth_endpoint():
     password = data.get('password', '')
     is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
 
-    if user != effective_audiomuse_user or not _verify_audiomuse_password(effective_audiomuse_password, password):
+    role = None
+    if user == effective_audiomuse_user and _verify_audiomuse_password(effective_audiomuse_password, password):
+        role = 'admin'
+    elif user and user != effective_audiomuse_user and verify_additional_user(user, password):
+        role = 'user'
+
+    if role is None:
         app.logger.warning(f"Failed login attempt for user: {user!r}")
         if is_ajax:
             return jsonify({"error": "Invalid credentials"}), 401
@@ -252,6 +270,7 @@ def auth_endpoint():
     now = datetime.datetime.now(datetime.timezone.utc)
     payload = {
         'sub': user,
+        'role': role,
         'iat': now,
         'exp': now + datetime.timedelta(hours=8),
     }
@@ -282,6 +301,50 @@ def logout_endpoint():
         resp = make_response(redirect(url_for('login_page')))
     resp.delete_cookie('audiomuse_jwt', path='/', samesite='Strict')
     return resp
+
+
+# --- Additional users management (admin-only; guarded by /api/users prefix) ---
+
+@app.route('/api/users', methods=['GET'])
+def list_users_endpoint():
+    """List additional (non-admin) user accounts. Passwords are never returned."""
+    if not config.AUTH_ENABLED:
+        return jsonify({"error": "Auth not configured"}), 404
+    try:
+        users = list_additional_users()
+    except Exception as exc:
+        app.logger.error(f"Failed to list additional users: {exc}", exc_info=True)
+        return jsonify({"error": "Failed to list users"}), 500
+    return jsonify({"users": users})
+
+
+@app.route('/api/users', methods=['POST'])
+def create_user_endpoint():
+    """Create a new additional (non-admin) user account."""
+    if not config.AUTH_ENABLED:
+        return jsonify({"error": "Auth not configured"}), 404
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or ''
+    if not username or not password:
+        return jsonify({"error": "Username and password are required."}), 400
+    if effective_audiomuse_user and username == effective_audiomuse_user:
+        return jsonify({"error": "This username is reserved for the admin account."}), 400
+    ok, err = create_additional_user(username, password)
+    if not ok:
+        return jsonify({"error": err or "Failed to create user."}), 400
+    return jsonify({"status": "ok"}), 201
+
+
+@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+def delete_user_endpoint(user_id):
+    """Delete an additional user by id."""
+    if not config.AUTH_ENABLED:
+        return jsonify({"error": "Auth not configured"}), 404
+    deleted = delete_additional_user(user_id)
+    if not deleted:
+        return jsonify({"error": "User not found."}), 404
+    return jsonify({"status": "ok"})
 
 @app.route('/analysis')
 def index():
