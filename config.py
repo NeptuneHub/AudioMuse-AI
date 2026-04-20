@@ -528,8 +528,15 @@ AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
 try:
     from tasks.setup_manager import SetupManager
     _setup_manager = SetupManager()
-    _setup_manager.ensure_table()
-    _overrides = _setup_manager.get_raw_overrides()
+    worker_mode = os.environ.get('AUDIOMUSE_ROLE', '').lower() == 'worker'
+    if worker_mode:
+        if _setup_manager.config_table_exists():
+            _overrides = _setup_manager.get_raw_overrides(ensure_table=False)
+        else:
+            _overrides = {}
+    else:
+        _setup_manager.ensure_table()
+        _overrides = _setup_manager.get_raw_overrides()
     _excluded_override_keys = globals().get('SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
     for _key, _value in _overrides.items():
         # Skip any keys that are explicitly excluded from overrides (Redis and Postgres)

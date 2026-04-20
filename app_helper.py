@@ -92,262 +92,268 @@ def init_db():
         # when the connection ends (normal close, crash, kill, or network drop),
         # so this lock can NEVER leak permanently even if init_db() raises.
         cur.execute("SELECT pg_advisory_lock(726354821)")
-        # Enable extensions to fix and assist in searches
-        cur.execute('CREATE EXTENSION IF NOT EXISTS unaccent')
-        cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
-        # Create 'score' table
-        cur.execute("CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)")
-        # Add 'energy' column if not exists
-        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'energy')")
-        if not cur.fetchone()[0]:
-            logger.info("Adding 'energy' column to 'score' table.")
-            cur.execute("ALTER TABLE score ADD COLUMN energy REAL")
-        # Add 'other_features' column if not exists
-        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'other_features')")
-        if not cur.fetchone()[0]:
-            logger.info("Adding 'other_features' column to 'score' table.")
-            cur.execute("ALTER TABLE score ADD COLUMN other_features TEXT")
-        # Add 'album' column if not exists
-        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album')")
-        if not cur.fetchone()[0]:
-            logger.info("Adding 'album' column to 'score' table.")
-            cur.execute("ALTER TABLE score ADD COLUMN album TEXT")
-        # Add 'album_artist' column if not exists
-        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album_artist')")
-        if not cur.fetchone()[0]:
-            logger.info("Adding 'album_artist' column to 'score' table.")
-            cur.execute("ALTER TABLE score ADD COLUMN album_artist TEXT")
-        # Add 'year' column if not exists
-        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'year')")
-        if not cur.fetchone()[0]:
-            logger.info("Adding 'year' column to 'score' table.")
-            cur.execute("ALTER TABLE score ADD COLUMN year INTEGER")
-        # Add 'rating' column if not exists
-        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'rating')")
-        if not cur.fetchone()[0]:
-            logger.info("Adding 'rating' column to 'score' table.")
-            cur.execute("ALTER TABLE score ADD COLUMN rating INTEGER")
-        # Add 'file_path' column if not exists
-        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'file_path')")
-        if not cur.fetchone()[0]:
-            logger.info("Adding 'file_path' column to 'score' table.")
-            cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
+        try:
+            # Enable extensions to fix and assist in searches
+            cur.execute('CREATE EXTENSION IF NOT EXISTS unaccent')
+            cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
+            # Create 'score' table
+            cur.execute("CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)")
+            # Add 'energy' column if not exists
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'energy')")
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'energy' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN energy REAL")
+            # Add 'other_features' column if not exists
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'other_features')")
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'other_features' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN other_features TEXT")
+            # Add 'album' column if not exists
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album')")
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'album' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN album TEXT")
+            # Add 'album_artist' column if not exists
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album_artist')")
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'album_artist' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN album_artist TEXT")
+            # Add 'year' column if not exists
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'year')")
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'year' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN year INTEGER")
+            # Add 'rating' column if not exists
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'rating')")
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'rating' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN rating INTEGER")
+            # Add 'file_path' column if not exists
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'file_path')")
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'file_path' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
         
-        # Ensure we have a searchable, accent-stripped `search_u` column.
-        # Postgres does not allow generated columns to call `unaccent()` (it's not marked immutable),
-        # so we store the value in a normal column and keep it in sync via trigger.
-        cur.execute("SELECT is_generated FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u'")
-        row = cur.fetchone()
-        search_u_generated = (row and row[0] == 'ALWAYS')
+            # Ensure we have a searchable, accent-stripped `search_u` column.
+            # Postgres does not allow generated columns to call `unaccent()` (it's not marked immutable),
+            # so we store the value in a normal column and keep it in sync via trigger.
+            cur.execute("SELECT is_generated FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u'")
+            row = cur.fetchone()
+            search_u_generated = (row and row[0] == 'ALWAYS')
 
-        if search_u_generated:
-            logger.info("Dropping legacy generated 'search_u' column to replace it with a trigger-updated column.")
-            cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS search_u")
-            row = None
+            if search_u_generated:
+                logger.info("Dropping legacy generated 'search_u' column to replace it with a trigger-updated column.")
+                cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS search_u")
+                row = None
 
-        # Create plain `search_u` column if missing
-        if not row:
-            logger.info("Adding 'search_u' column to 'score' table.")
-            cur.execute("ALTER TABLE score ADD COLUMN search_u TEXT")
+            # Create plain `search_u` column if missing
+            if not row:
+                logger.info("Adding 'search_u' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN search_u TEXT")
 
-        # Create helper function for accent stripping (safe to run multiple times)
-        cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
+            # Create helper function for accent stripping (safe to run multiple times)
+            cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
 
-        # Create/replace trigger function to keep search_u in sync
-        cur.execute("""
-            CREATE OR REPLACE FUNCTION score_search_u_sync() RETURNS trigger LANGUAGE plpgsql AS $$
-            BEGIN
-                NEW.search_u := lower(immutable_unaccent(concat_ws(' ', NEW.title, NEW.author, NEW.album)));
-                RETURN NEW;
-            END;
-            $$;
-        """)
+            # Create/replace trigger function to keep search_u in sync
+            cur.execute("""
+                CREATE OR REPLACE FUNCTION score_search_u_sync() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    NEW.search_u := lower(immutable_unaccent(concat_ws(' ', NEW.title, NEW.author, NEW.album)));
+                    RETURN NEW;
+                END;
+                $$;
+            """)
 
-        # Attach trigger to update search_u on insert/update
-        # Note: Postgres doesn't support CREATE TRIGGER IF NOT EXISTS, so we drop and recreate.
-        cur.execute("DROP TRIGGER IF EXISTS score_search_u_sync_trigger ON score")
-        cur.execute("""
-            CREATE TRIGGER score_search_u_sync_trigger
-            BEFORE INSERT OR UPDATE ON score
-            FOR EACH ROW
-            EXECUTE FUNCTION score_search_u_sync();
-        """)
+            # Attach trigger to update search_u on insert/update
+            # Note: Postgres doesn't support CREATE TRIGGER IF NOT EXISTS, so we drop and recreate.
+            cur.execute("DROP TRIGGER IF EXISTS score_search_u_sync_trigger ON score")
+            cur.execute("""
+                CREATE TRIGGER score_search_u_sync_trigger
+                BEFORE INSERT OR UPDATE ON score
+                FOR EACH ROW
+                EXECUTE FUNCTION score_search_u_sync();
+            """)
 
-        # Backfill existing rows (ensures proper value for pre-existing data)
-        # This is safe to run repeatedly.
-        cur.execute("UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL")
+            # Backfill existing rows (ensures proper value for pre-existing data)
+            # This is safe to run repeatedly.
+            cur.execute("UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL")
 
-        # Create index on 'score' to assist in searches
-        cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
+            # Create index on 'score' to assist in searches
+            cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
 
-        # Create 'playlist' table
-        cur.execute("CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))")
-        # Create 'task_status' table
-        cur.execute("CREATE TABLE IF NOT EXISTS task_status (id SERIAL PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, parent_task_id TEXT, task_type TEXT NOT NULL, sub_type_identifier TEXT, status TEXT, progress INTEGER DEFAULT 0, details TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-        # Migrate 'start_time' and 'end_time' columns
-        for col_name in ['start_time', 'end_time']:
-            cur.execute("SELECT data_type FROM information_schema.columns WHERE table_name = 'task_status' AND column_name = %s", (col_name,))
-            if not cur.fetchone(): cur.execute(f"ALTER TABLE task_status ADD COLUMN {col_name} DOUBLE PRECISION")
-        # Create 'task_history' table — a small, persistent log of the last
-        # completed/cancelled MAIN tasks. Survives the global Cancel button
-        # which wipes `task_status`. Capped to the most recent 10 rows.
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS task_history (
-                id SERIAL PRIMARY KEY,
-                recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                task_id TEXT,
-                task_type TEXT,
-                status TEXT,
-                duration_seconds DOUBLE PRECISION,
-                note TEXT
+            # Create 'playlist' table
+            cur.execute("CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))")
+            # Create 'task_status' table
+            cur.execute("CREATE TABLE IF NOT EXISTS task_status (id SERIAL PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, parent_task_id TEXT, task_type TEXT NOT NULL, sub_type_identifier TEXT, status TEXT, progress INTEGER DEFAULT 0, details TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Migrate 'start_time' and 'end_time' columns
+            for col_name in ['start_time', 'end_time']:
+                cur.execute("SELECT data_type FROM information_schema.columns WHERE table_name = 'task_status' AND column_name = %s", (col_name,))
+                if not cur.fetchone(): cur.execute(f"ALTER TABLE task_status ADD COLUMN {col_name} DOUBLE PRECISION")
+            # Create 'task_history' table — a small, persistent log of the last
+            # completed/cancelled MAIN tasks. Survives the global Cancel button
+            # which wipes `task_status`. Capped to the most recent 10 rows.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS task_history (
+                    id SERIAL PRIMARY KEY,
+                    recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    task_id TEXT,
+                    task_type TEXT,
+                    status TEXT,
+                    duration_seconds DOUBLE PRECISION,
+                    note TEXT
+                )
+            """)
+            # Create 'embedding' table
+            cur.execute("CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')")
+            if not cur.fetchone()[0]: cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
+            # Create 'clap_embedding' table for CLAP text search embeddings
+            cur.execute("CREATE TABLE IF NOT EXISTS clap_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')")
+            if not cur.fetchone()[0]: cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
+            # Create 'mulan_embedding' table only if MuLan is enabled
+            from config import MULAN_ENABLED
+            if MULAN_ENABLED:
+                cur.execute("CREATE TABLE IF NOT EXISTS mulan_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
+                cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'mulan_embedding' AND column_name = 'embedding')")
+                if not cur.fetchone()[0]: cur.execute("ALTER TABLE mulan_embedding ADD COLUMN embedding BYTEA")
+            # Create 'voyager_index_data' table
+            cur.execute("CREATE TABLE IF NOT EXISTS voyager_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Create 'artist_index_data' table for artist GMM-based HNSW index
+            cur.execute("CREATE TABLE IF NOT EXISTS artist_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, artist_map_json TEXT NOT NULL, gmm_params_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Create 'map_projection_data' table for precomputed 2D map projections
+            cur.execute("CREATE TABLE IF NOT EXISTS map_projection_data (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Create 'artist_component_projection' table for precomputed 2D artist component projections
+            cur.execute("CREATE TABLE IF NOT EXISTS artist_component_projection (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, artist_component_map_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Create 'cron' table to hold scheduled jobs (very small and simple)
+            cur.execute("CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Create 'audiomuse_users' table. Every account (including the
+            # install-time admin) lives here. 'role' is 'admin' or 'user'.
+            cur.execute("CREATE TABLE IF NOT EXISTS audiomuse_users (id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Lightweight migration for installs that already have the table without a role column.
+            cur.execute("ALTER TABLE audiomuse_users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'")
+            # Create 'dashboard_stats' singleton table (id fixed to 1) that holds
+            # precomputed content/library aggregates and index counts. Refreshed
+            # at app startup and hourly by a background job so the dashboard
+            # does not have to scan the whole `score` table on every poll.
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS dashboard_stats ("
+                "id INTEGER PRIMARY KEY, "
+                "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+                "content JSONB NOT NULL DEFAULT '{}'::jsonb, "
+                "indexes JSONB NOT NULL DEFAULT '[]'::jsonb, "
+                "CONSTRAINT dashboard_stats_singleton CHECK (id = 1))"
             )
-        """)
-        # Create 'embedding' table
-        cur.execute("CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
-        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')")
-        if not cur.fetchone()[0]: cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
-        # Create 'clap_embedding' table for CLAP text search embeddings
-        cur.execute("CREATE TABLE IF NOT EXISTS clap_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
-        cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')")
-        if not cur.fetchone()[0]: cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
-        # Create 'mulan_embedding' table only if MuLan is enabled
-        from config import MULAN_ENABLED
-        if MULAN_ENABLED:
-            cur.execute("CREATE TABLE IF NOT EXISTS mulan_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'mulan_embedding' AND column_name = 'embedding')")
-            if not cur.fetchone()[0]: cur.execute("ALTER TABLE mulan_embedding ADD COLUMN embedding BYTEA")
-        # Create 'voyager_index_data' table
-        cur.execute("CREATE TABLE IF NOT EXISTS voyager_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-        # Create 'artist_index_data' table for artist GMM-based HNSW index
-        cur.execute("CREATE TABLE IF NOT EXISTS artist_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, artist_map_json TEXT NOT NULL, gmm_params_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-        # Create 'map_projection_data' table for precomputed 2D map projections
-        cur.execute("CREATE TABLE IF NOT EXISTS map_projection_data (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-        # Create 'artist_component_projection' table for precomputed 2D artist component projections
-        cur.execute("CREATE TABLE IF NOT EXISTS artist_component_projection (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, artist_component_map_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-        # Create 'cron' table to hold scheduled jobs (very small and simple)
-        cur.execute("CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-        # Create 'audiomuse_users' table. Every account (including the
-        # install-time admin) lives here. 'role' is 'admin' or 'user'.
-        cur.execute("CREATE TABLE IF NOT EXISTS audiomuse_users (id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-        # Lightweight migration for installs that already have the table without a role column.
-        cur.execute("ALTER TABLE audiomuse_users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'")
-        # Create 'dashboard_stats' singleton table (id fixed to 1) that holds
-        # precomputed content/library aggregates and index counts. Refreshed
-        # at app startup and hourly by a background job so the dashboard
-        # does not have to scan the whole `score` table on every poll.
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS dashboard_stats ("
-            "id INTEGER PRIMARY KEY, "
-            "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
-            "content JSONB NOT NULL DEFAULT '{}'::jsonb, "
-            "indexes JSONB NOT NULL DEFAULT '[]'::jsonb, "
-            "CONSTRAINT dashboard_stats_singleton CHECK (id = 1))"
-        )
-        # Create 'artist_mapping' table to map artist names to media server artist IDs
-        cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
-        # Create application configuration table to persist setup values.
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS app_config ("
-            "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
-            "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-        )
-        # Create 'alchemy_anchors' table to persist named user anchors for reuse
-        cur.execute("CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-        # Provider migration tool: wizard session state (one row per migration attempt)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS migration_session (
-                id           SERIAL PRIMARY KEY,
-                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                completed_at TIMESTAMP,
-                status       TEXT NOT NULL DEFAULT 'in_progress',
-                source_type  TEXT NOT NULL,
-                target_type  TEXT NOT NULL,
-                target_creds TEXT NOT NULL,
-                state        JSONB NOT NULL DEFAULT '{}'
+            # Create 'artist_mapping' table to map artist names to media server artist IDs
+            cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
+            # Create application configuration table to persist setup values.
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'app_config')"
             )
-        """)
-        # Create 'text_search_queries' table for precomputed CLAP text search queries
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS text_search_queries (
-                id SERIAL PRIMARY KEY,
-                query_text TEXT NOT NULL,
-                score REAL NOT NULL,
-                rank INTEGER NOT NULL,
-                created_at TIMESTAMP DEFAULT NOW(),
-                UNIQUE(rank)
-            )
-        """)
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank ON text_search_queries(rank)")
+            if not cur.fetchone()[0]:
+                cur.execute(
+                    "CREATE TABLE app_config ("
+                    "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
+                    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+                )
+            # Create 'alchemy_anchors' table to persist named user anchors for reuse
+            cur.execute("CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Provider migration tool: wizard session state (one row per migration attempt)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS migration_session (
+                    id           SERIAL PRIMARY KEY,
+                    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    status       TEXT NOT NULL DEFAULT 'in_progress',
+                    source_type  TEXT NOT NULL,
+                    target_type  TEXT NOT NULL,
+                    target_creds TEXT NOT NULL,
+                    state        JSONB NOT NULL DEFAULT '{}'
+                )
+            """)
+            # Create 'text_search_queries' table for precomputed CLAP text search queries
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS text_search_queries (
+                    id SERIAL PRIMARY KEY,
+                    query_text TEXT NOT NULL,
+                    score REAL NOT NULL,
+                    rank INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(rank)
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank ON text_search_queries(rank)")
         
-        # Insert default queries if table is empty
-        cur.execute("SELECT COUNT(*) FROM text_search_queries")
-        count = cur.fetchone()[0]
+            # Insert default queries if table is empty
+            cur.execute("SELECT COUNT(*) FROM text_search_queries")
+            count = cur.fetchone()[0]
         
-        if count == 0:
-            default_queries = [
-                "female vocal romantic trap",
-                "synth indie pop raspy",
-                "sad hard rock male vocal",
-                "funk falsetto energetic",
-                "groovy sax blues",
-                "classical relaxed piano",
-                "belting jazz happy",
-                "tabla afrobeat fast-paced",
-                "harmonized vocals slow-paced electronica",
-                "autotuned gospel excited",
-                "breathy aggressive house",
-                "smooth folk mid-tempo",
-                "deep voice r&b dark",
-                "punk guitar angry",
-                "metal choir dreamy",
-                "chant reggae trumpet",
-                "high-pitched brass hip-hop",
-                "disco whispered drum machine",
-                "happy whispered indie pop",
-                "synth energetic raspy",
-                "rock slow-paced cello",
-                "falsetto jazz excited",
-                "r&b male vocal romantic",
-                "harmonized vocals dark trap",
-                "smooth blues sax",
-                "high-pitched fast-paced soul",
-                "female vocal sad hip-hop",
-                "congas aggressive soul",
-                "mid-tempo afrobeat autotuned",
-                "belting funk groovy",
-                "angry alternative breathy",
-                "gospel choir steelpan",
-                "viola relaxed folk",
-                "dreamy rhodes metal",
-                "acoustic guitar country chant",
-                "deep voice orchestra reggae",
-                "fast-paced synth progressive rock",
-                "hard rock raspy romantic",
-                "fast-paced electric guitar progressive rock",
-                "hard rock aggressive breathy",
-                "rock high-pitched energetic",
-                "autotuned energetic hip-hop",
-                "raspy fast-paced blues",
-                "belting electronica energetic",
-                "whispered indie pop aggressive",
-                "harmonized vocals aggressive synth",
-                "orchestra whispered romantic",
-                "belting mid-tempo progressive rock",
-                "autotuned pop mid-tempo",
-                "pop energetic synthesizer"
-            ]
+            if count == 0:
+                default_queries = [
+                    "female vocal romantic trap",
+                    "synth indie pop raspy",
+                    "sad hard rock male vocal",
+                    "funk falsetto energetic",
+                    "groovy sax blues",
+                    "classical relaxed piano",
+                    "belting jazz happy",
+                    "tabla afrobeat fast-paced",
+                    "harmonized vocals slow-paced electronica",
+                    "autotuned gospel excited",
+                    "breathy aggressive house",
+                    "smooth folk mid-tempo",
+                    "deep voice r&b dark",
+                    "punk guitar angry",
+                    "metal choir dreamy",
+                    "chant reggae trumpet",
+                    "high-pitched brass hip-hop",
+                    "disco whispered drum machine",
+                    "happy whispered indie pop",
+                    "synth energetic raspy",
+                    "rock slow-paced cello",
+                    "falsetto jazz excited",
+                    "r&b male vocal romantic",
+                    "harmonized vocals dark trap",
+                    "smooth blues sax",
+                    "high-pitched fast-paced soul",
+                    "female vocal sad hip-hop",
+                    "congas aggressive soul",
+                    "mid-tempo afrobeat autotuned",
+                    "belting funk groovy",
+                    "angry alternative breathy",
+                    "gospel choir steelpan",
+                    "viola relaxed folk",
+                    "dreamy rhodes metal",
+                    "acoustic guitar country chant",
+                    "deep voice orchestra reggae",
+                    "fast-paced synth progressive rock",
+                    "hard rock raspy romantic",
+                    "fast-paced electric guitar progressive rock",
+                    "hard rock aggressive breathy",
+                    "rock high-pitched energetic",
+                    "autotuned energetic hip-hop",
+                    "raspy fast-paced blues",
+                    "belting electronica energetic",
+                    "whispered indie pop aggressive",
+                    "harmonized vocals aggressive synth",
+                    "orchestra whispered romantic",
+                    "belting mid-tempo progressive rock",
+                    "autotuned pop mid-tempo",
+                    "pop energetic synthesizer"
+                ]
             
-            for rank, query in enumerate(default_queries, start=1):
-                cur.execute("""
-                    INSERT INTO text_search_queries (query_text, score, rank, created_at)
-                    VALUES (%s, %s, %s, NOW())
-                """, (query, 1.0, rank))
+                for rank, query in enumerate(default_queries, start=1):
+                    cur.execute("""
+                        INSERT INTO text_search_queries (query_text, score, rank, created_at)
+                        VALUES (%s, %s, %s, NOW())
+                    """, (query, 1.0, rank))
             
-            logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
+                logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
         
-        db.commit()
-        # Release the advisory lock acquired at the top of init_db().
-        cur.execute("SELECT pg_advisory_unlock(726354821)")
+            db.commit()
+            # Release the advisory lock acquired at the top of init_db().
+        finally:
+            cur.execute("SELECT pg_advisory_unlock(726354821)")
 
 # --- Status Constants ---
 TASK_STATUS_PENDING = "PENDING"

@@ -58,20 +58,47 @@ class SetupManager:
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(f"""
-                        CREATE TABLE IF NOT EXISTS {DEFAULT_CONFIG_TABLE} (
-                            key TEXT PRIMARY KEY,
-                            value TEXT NOT NULL,
-                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    # Serialize concurrent app_config/table creation across
+                    # multiple processes (Flask workers, RQ workers, setup_manager).
+                    cur.execute("SELECT pg_advisory_lock(726354821)")
+                    try:
+                        cur.execute(
+                            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s)",
+                            (DEFAULT_CONFIG_TABLE,),
                         )
-                    """)
+                        if not cur.fetchone()[0]:
+                            cur.execute(f"""
+                                CREATE TABLE {DEFAULT_CONFIG_TABLE} (
+                                    key TEXT PRIMARY KEY,
+                                    value TEXT NOT NULL,
+                                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                                )
+                            """)
+                    finally:
+                        cur.execute("SELECT pg_advisory_unlock(726354821)")
                 conn.commit()
         except Exception as exc:
             self.logger.warning(f"Could not ensure setup config table: {exc}")
 
-    def get_raw_overrides(self):
+    def config_table_exists(self):
         try:
-            self.ensure_table()
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s)",
+                        (DEFAULT_CONFIG_TABLE,),
+                    )
+                    return bool(cur.fetchone()[0])
+        except Exception as exc:
+            self.logger.warning(f"Unable to determine app_config table existence: {exc}")
+            return False
+
+    def get_raw_overrides(self, ensure_table=True):
+        try:
+            if ensure_table:
+                self.ensure_table()
+            elif not self.config_table_exists():
+                return {}
             with self.get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(f"SELECT key, value FROM {DEFAULT_CONFIG_TABLE}")

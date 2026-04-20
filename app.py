@@ -137,25 +137,30 @@ def teardown_db(e=None):
 
 # Initialize the database schema when the application module is loaded.
 # This is safe because it doesn't import other application modules.
-with app.app_context():
-    init_db()
-    setup_manager.bootstrap_env_config_if_empty(config)
-    # Bootstrap / reconcile the first admin account:
-    #   - If audiomuse_users already has an admin, purge any legacy
-    #     AUDIOMUSE_USER / AUDIOMUSE_PASSWORD rows from app_config.
-    #   - Else if app_config contains legacy admin values, import them into
-    #     audiomuse_users and remove the legacy config.
-    #   - Else if env vars contain legacy admin values, import them into
-    #     audiomuse_users.
-    # See app_auth.seed_admin_from_env for full precedence.
-    try:
-        seed_admin_from_env()
-    except Exception as _seed_exc:
-        app.logger.warning("seed_admin_from_env failed at startup: %s", _seed_exc)
+# RQ workers import app.py too, but they should not perform schema bootstrapping.
+_is_worker = os.environ.get('AUDIOMUSE_ROLE') == 'worker'
+if not _is_worker:
+    with app.app_context():
+        init_db()
+        setup_manager.bootstrap_env_config_if_empty(config)
+        # Bootstrap / reconcile the first admin account:
+        #   - If audiomuse_users already has an admin, purge any legacy
+        #     AUDIOMUSE_USER / AUDIOMUSE_PASSWORD rows from app_config.
+        #   - Else if app_config contains legacy admin values, import them into
+        #     audiomuse_users and remove the legacy config.
+        #   - Else if env vars contain legacy admin values, import them into
+        #     audiomuse_users.
+        # See app_auth.seed_admin_from_env for full precedence.
+        try:
+            seed_admin_from_env()
+        except Exception as _seed_exc:
+            app.logger.warning("seed_admin_from_env failed at startup: %s", _seed_exc)
 
-    # Finalize JWT_SECRET - must happen after DB init so the value can be
-    # persisted and shared across all gunicorn workers.
-    _jwt_secret = resolve_jwt_secret(setup_manager)
+        # Finalize JWT_SECRET - must happen after DB init so the value can be
+        # persisted and shared across all gunicorn workers.
+        _jwt_secret = resolve_jwt_secret(setup_manager)
+else:
+    app.logger.info("RQ worker mode: skipping startup database schema bootstrap.")
 
 import app_setup
 
@@ -677,9 +682,6 @@ app.register_blueprint(users_bp)
 
 # --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
 # RQ workers import app.py but should NOT load indexes or start background threads.
-# The env var AUDIOMUSE_ROLE is set to 'worker' by rq_worker.py / rq_worker_high_priority.py.
-_is_worker = os.environ.get('AUDIOMUSE_ROLE') == 'worker'
-
 try:
   os.makedirs(TEMP_DIR, exist_ok=True)
 except OSError:

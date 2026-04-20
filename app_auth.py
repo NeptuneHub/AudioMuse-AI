@@ -293,14 +293,12 @@ def verify_additional_user(username, password):
     if not isinstance(stored, str) or not stored:
         return None
     try:
-    try:
+        import argon2
         _get_password_hasher().verify(stored, password)
     except (argon2.exceptions.VerifyMismatchError, argon2.exceptions.VerificationError):
         return None
     except Exception as exc:
-        logger.error(f"Unexpected error during password verification: {exc}")
-        return None
-    except Exception:
+        logger.error(f"Unexpected error during password verification: {exc}", exc_info=True)
         return None
     return _normalize_role(role) or USER_ROLE_USER
 
