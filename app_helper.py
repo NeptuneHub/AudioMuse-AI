@@ -247,17 +247,10 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
         # Create application configuration table to persist setup values.
         cur.execute(
-            "SELECT EXISTS ("
-            "SELECT 1 FROM information_schema.tables WHERE table_name = 'app_config'"
-            ")"
+            "CREATE TABLE IF NOT EXISTS app_config ("
+            "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
+            "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
         )
-        row = cur.fetchone()
-        if not (row and row[0]):
-            cur.execute(
-                "CREATE TABLE app_config ("
-                "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
-                "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-            )
         # Create 'alchemy_anchors' table to persist named user anchors for reuse
         cur.execute("CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Provider migration tool: wizard session state (one row per migration attempt)

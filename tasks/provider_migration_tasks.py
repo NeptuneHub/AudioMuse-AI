@@ -593,17 +593,10 @@ def _write_provider_to_app_config(cur, target_type, target_creds):
     cur.execute("SELECT pg_advisory_lock(726354821)")
     try:
         cur.execute(
-            "SELECT EXISTS ("
-            "SELECT 1 FROM information_schema.tables WHERE table_name = 'app_config'"
-            ")"
+            "CREATE TABLE IF NOT EXISTS app_config ("
+            "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
+            "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
         )
-        row = cur.fetchone()
-        if not (row and row[0]):
-            cur.execute(
-                "CREATE TABLE app_config ("
-                "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
-                "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-            )
     finally:
         cur.execute("SELECT pg_advisory_unlock(726354821)")
 
