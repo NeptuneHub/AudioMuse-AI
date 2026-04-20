@@ -1,16 +1,11 @@
 import os
 import psycopg2
 from psycopg2.extras import DictCursor
-from flask import Flask, jsonify, request, render_template, g, make_response, redirect, url_for
-from argon2 import PasswordHasher
-from argon2 import exceptions as argon2_exceptions
+from flask import Flask, jsonify, request, render_template, g
 import json
 import logging
 import threading
 import time
-import datetime
-import secrets
-import jwt as pyjwt
 import config
 
 # RQ imports
@@ -38,7 +33,7 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
   TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, ALCHEMY_SUBTRACT_DISTANCE, \
   ENABLE_PROXY_FIX, \
   ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN, \
-  AUDIOMUSE_USER, AUDIOMUSE_PASSWORD, API_TOKEN, JWT_SECRET, AUTH_ENABLED
+  API_TOKEN, JWT_SECRET, AUTH_ENABLED
 
 if ENABLE_PROXY_FIX:
   # Werkzeug import for reverse proxy support
@@ -56,11 +51,14 @@ from app_helper import (
     save_task_status,
     get_task_info_from_db,
     cancel_job_and_children_recursive,
-    check_setup_needed, check_auth_needed, check_admin_needed,
-    list_additional_users, create_additional_user,
-    delete_additional_user, verify_additional_user,
     TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
+)
+from app_auth import (
+    init_app as init_auth,
+    check_setup_needed,
+    seed_admin_from_env,
+    resolve_jwt_secret,
 )
 
 from app_provider_migration import migration_bp
@@ -83,38 +81,14 @@ if ENABLE_PROXY_FIX:
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
 
 # --- Authentication Setup ---
-effective_audiomuse_user = AUDIOMUSE_USER
-effective_audiomuse_password = AUDIOMUSE_PASSWORD
-
-# JWT_SECRET is resolved after DB init (see below) so all gunicorn workers share
-# the same secret.  Placeholder here; real value assigned inside app_context block.
+# All auth logic (user accounts, password hashing, JWT, /login /auth /logout
+# /api/users routes, and the setup/auth/admin barrier) lives in app_auth.
+# The JWT secret is resolved after DB init (see below) so every gunicorn
+# worker ends up sharing the same value.
 _jwt_secret = JWT_SECRET
 
-auth_configured = bool(effective_audiomuse_user and effective_audiomuse_password)
-
-
-_password_hasher = PasswordHasher()
-
-
-def _is_argon2_password_hash(value):
-    return isinstance(value, str) and value.startswith('$argon2')
-
-
-def _verify_audiomuse_password(stored_password, provided_password):
-    if not isinstance(stored_password, str) or not isinstance(provided_password, str):
-        return False
-    if _is_argon2_password_hash(stored_password):
-        try:
-            return _password_hasher.verify(stored_password, provided_password)
-        except argon2_exceptions.VerifyMismatchError:
-            return False
-        except argon2_exceptions.VerificationError as exc:
-            app.logger.error(f"Argon2 verification failed for stored password hash: {exc}", exc_info=True)
-            return False
-        except Exception as exc:
-            app.logger.error(f"Unexpected Argon2 verification error: {exc}", exc_info=True)
-            return False
-    return stored_password == provided_password
+def _get_jwt_secret():
+    return _jwt_secret
 
 @app.context_processor
 def inject_globals():
@@ -124,6 +98,7 @@ def inject_globals():
     # AUTH_ENABLED is false or the barrier has not run yet (e.g. error
     # pages), is_admin will be True and the full UI is shown.
     auth_role = getattr(g, 'auth_role', 'admin')
+    current_user = getattr(g, 'auth_user', None)
     return dict(
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
@@ -131,37 +106,11 @@ def inject_globals():
         auth_enabled=config.AUTH_ENABLED,
         setup_saved=not check_setup_needed(),
         is_admin=(auth_role == 'admin'),
+        current_user=current_user,
     )
 
-# --- Unified Auth + Setup Barrier ---
-@app.before_request
-def auth_setup_barrier():
-    """Single before_request that handles both setup-needed and auth-needed logic."""
-    # Always allow static assets and health check
-    if request.path.startswith('/static/') or request.path == '/api/health':
-        return
-
-    # 1) Setup needed → send to setup, no auth required
-    if check_setup_needed():
-        if request.path in ('/setup', '/api/setup'):
-            return
-        if request.path.startswith('/api/'):
-            return jsonify({"error": "Setup required"}), 403
-        return redirect(url_for('setup_page'))
-
-    # 2) Setup done, auth needed → send to login
-    if request.path in ('/login', '/auth', '/logout'):
-        return
-    auth_response = check_auth_needed(_jwt_secret)
-    if auth_response:
-        return auth_response
-
-    # 3) Admin-only paths: block normal users
-    admin_response = check_admin_needed()
-    if admin_response:
-        return admin_response
-
-    # 4) All clear → proceed to requested page
+# Register the auth barrier + auth routes (/login, /auth, /logout, /api/users).
+init_auth(app, setup_manager, _get_jwt_secret)
 
 @app.before_request
 def log_api_request():
@@ -191,160 +140,23 @@ def teardown_db(e=None):
 with app.app_context():
     init_db()
     setup_manager.bootstrap_env_config_if_empty(config)
+    # Bootstrap / reconcile the first admin account:
+    #   - If audiomuse_users already has an admin, purge any legacy
+    #     AUDIOMUSE_USER / AUDIOMUSE_PASSWORD rows from app_config.
+    #   - Else fall back to app_config legacy rows, then to real env vars.
+    # See app_auth.seed_admin_from_env for full precedence.
+    try:
+        seed_admin_from_env()
+    except Exception as _seed_exc:
+        app.logger.warning("seed_admin_from_env failed at startup: %s", _seed_exc)
 
-    # Finalize JWT_SECRET — must happen after DB init so the value can be
+    # Finalize JWT_SECRET - must happen after DB init so the value can be
     # persisted and shared across all gunicorn workers.
-    if not _jwt_secret and AUTH_ENABLED:
-        # Re-read from DB in case another worker already saved a secret
-        config.refresh_config()
-        _jwt_secret = config.JWT_SECRET
-        if not _jwt_secret:
-            _jwt_secret = secrets.token_hex(32)
-            setup_manager.save_config_values({'JWT_SECRET': _jwt_secret})
-            config.JWT_SECRET = _jwt_secret
-            app.logger.warning(
-                "JWT_SECRET was not set. A random secret has been generated and saved to the database. "
-                "Set JWT_SECRET in your .env for full control."
-            )
+    _jwt_secret = resolve_jwt_secret(setup_manager)
 
 import app_setup
 
 # --- API Endpoints ---
-
-# --- Auth Routes ---
-@app.route('/login')
-def login_page():
-    """Serve the login page. Redirects to / if already authenticated."""
-    if not config.AUTH_ENABLED:
-        return redirect(url_for('dashboard_bp.dashboard_page'))
-    token = request.cookies.get('audiomuse_jwt')
-    if token:
-        try:
-            pyjwt.decode(token, _jwt_secret, algorithms=['HS256'])
-            return redirect(url_for('dashboard_bp.dashboard_page'))
-        except pyjwt.InvalidTokenError:
-            pass
-
-    return render_template('login.html', title='Login — AudioMuse-AI')
-
-@app.route('/auth', methods=['POST'])
-def auth_endpoint():
-    """
-    Validate credentials and issue a JWT session cookie.
-    Body: { "user": "...", "password": "..." }
-    On success: sets HttpOnly JWT cookie, returns 200.
-    On failure: returns 401.
-    The API_TOKEN is NEVER returned in the response body.
-    """
-    if not config.AUTH_ENABLED:
-        return jsonify({"error": "Auth not configured"}), 404
-    if not auth_configured:
-        app.logger.warning(
-            "Auth is enabled but AUDIOMUSE_USER or AUDIOMUSE_PASSWORD is missing. API_TOKEN is optional for external/plugin calls."
-        )
-        return jsonify({"error": "Auth not configured"}), 404
-
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict):
-        data = request.form.to_dict()
-    if not isinstance(data, dict):
-        data = {}
-
-    user = data.get('user', '')
-    password = data.get('password', '')
-    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
-
-    role = None
-    if user == effective_audiomuse_user and _verify_audiomuse_password(effective_audiomuse_password, password):
-        role = 'admin'
-    elif user and user != effective_audiomuse_user and verify_additional_user(user, password):
-        role = 'user'
-
-    if role is None:
-        app.logger.warning(f"Failed login attempt for user: {user!r}")
-        if is_ajax:
-            return jsonify({"error": "Invalid credentials"}), 401
-        return render_template('login.html', title='Login — AudioMuse-AI', login_error='Invalid username or password.')
-
-    # Issue JWT — new token at every login
-    now = datetime.datetime.now(datetime.timezone.utc)
-    payload = {
-        'sub': user,
-        'role': role,
-        'iat': now,
-        'exp': now + datetime.timedelta(hours=8),
-    }
-    token = pyjwt.encode(payload, _jwt_secret, algorithm='HS256')
-
-    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
-        resp = make_response(jsonify({"status": "ok"}), 200)
-    else:
-        resp = make_response(redirect(url_for('dashboard_bp.dashboard_page')))
-    resp.set_cookie(
-        'audiomuse_jwt',
-        token,
-        path='/',
-        httponly=True,           # JS cannot read this cookie
-        samesite='Strict',       # CSRF protection
-        secure=False,            # Set to True when behind HTTPS (Caddy/Traefik handle TLS)
-        max_age=8 * 3600         # 8 hours, matches JWT expiry
-    )
-    return resp
-
-@app.route('/logout', methods=['POST'])
-def logout_endpoint():
-    """Clear the JWT session cookie and redirect to /login."""
-    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
-    if is_ajax:
-        resp = make_response(jsonify({"status": "logged_out"}), 200)
-    else:
-        resp = make_response(redirect(url_for('login_page')))
-    resp.delete_cookie('audiomuse_jwt', path='/', samesite='Strict')
-    return resp
-
-
-# --- Additional users management (admin-only; guarded by /api/users prefix) ---
-
-@app.route('/api/users', methods=['GET'])
-def list_users_endpoint():
-    """List additional (non-admin) user accounts. Passwords are never returned."""
-    if not config.AUTH_ENABLED:
-        return jsonify({"error": "Auth not configured"}), 404
-    try:
-        users = list_additional_users()
-    except Exception as exc:
-        app.logger.error(f"Failed to list additional users: {exc}", exc_info=True)
-        return jsonify({"error": "Failed to list users"}), 500
-    return jsonify({"users": users})
-
-
-@app.route('/api/users', methods=['POST'])
-def create_user_endpoint():
-    """Create a new additional (non-admin) user account."""
-    if not config.AUTH_ENABLED:
-        return jsonify({"error": "Auth not configured"}), 404
-    data = request.get_json(silent=True) or {}
-    username = (data.get('username') or '').strip()
-    password = data.get('password') or ''
-    if not username or not password:
-        return jsonify({"error": "Username and password are required."}), 400
-    if effective_audiomuse_user and username == effective_audiomuse_user:
-        return jsonify({"error": "This username is reserved for the admin account."}), 400
-    ok, err = create_additional_user(username, password)
-    if not ok:
-        return jsonify({"error": err or "Failed to create user."}), 400
-    return jsonify({"status": "ok"}), 201
-
-
-@app.route('/api/users/<int:user_id>', methods=['DELETE'])
-def delete_user_endpoint(user_id):
-    """Delete an additional user by id."""
-    if not config.AUTH_ENABLED:
-        return jsonify({"error": "Auth not configured"}), 404
-    deleted = delete_additional_user(user_id)
-    if not deleted:
-        return jsonify({"error": "User not found."}), 404
-    return jsonify({"status": "ok"})
 
 @app.route('/analysis')
 def index():

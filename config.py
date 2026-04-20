@@ -75,6 +75,10 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'MEDIASERVER_FIELDS_BY_TYPE',
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
     'APP_VERSION',
+    # Admin identity lives in audiomuse_users only. Never mirror it into
+    # app_config - stale rows there cause deleted admins to resurrect.
+    'AUDIOMUSE_USER',
+    'AUDIOMUSE_PASSWORD',
 }
 
 # --- MPD (Music Player Daemon) Constants ---

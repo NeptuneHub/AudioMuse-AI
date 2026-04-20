@@ -226,9 +226,11 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS artist_component_projection (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, artist_component_map_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         # Create 'cron' table to hold scheduled jobs (very small and simple)
         cur.execute("CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-        # Create 'audiomuse_users' table for additional (non-admin) user accounts.
-        # The primary admin remains stored in app_config via AUDIOMUSE_USER/AUDIOMUSE_PASSWORD.
-        cur.execute("CREATE TABLE IF NOT EXISTS audiomuse_users (id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        # Create 'audiomuse_users' table. Every account (including the
+        # install-time admin) lives here. 'role' is 'admin' or 'user'.
+        cur.execute("CREATE TABLE IF NOT EXISTS audiomuse_users (id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        # Lightweight migration for installs that already have the table without a role column.
+        cur.execute("ALTER TABLE audiomuse_users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'")
         # Create 'dashboard_stats' singleton table (id fixed to 1) that holds
         # precomputed content/library aggregates and index counts. Refreshed
         # at app startup and hourly by a background job so the dashboard
@@ -1544,200 +1546,23 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
     return cancelled_count
 
 
-# --- Centralized Setup & Auth Checks ---
-
-def check_setup_needed():
-    """Check if mandatory setup fields are present in the database.
-    Returns True if setup is still needed, False if setup is complete.
-    """
-    from tasks.setup_manager import SetupManager
-    import config as _cfg
-    _sm = SetupManager()
-    return not _sm.is_valid_env_config(_cfg)
-
-
-def check_auth_needed(jwt_secret):
-    """Check if the current request requires authentication.
-    Returns None if the request is authenticated or auth is disabled.
-    Returns a Response (redirect or JSON 401) if authentication is needed.
-
-    Also populates ``flask.g.auth_role`` ("admin" | "user") and
-    ``flask.g.auth_user`` (username or None) so downstream code (e.g. the
-    admin-path guard and templates) can make authorization decisions.
-    """
-    import jwt as pyjwt
-    from flask import request, jsonify, redirect, url_for, g
-    import config as _cfg
-
-    # Default: when auth is disabled every request behaves as an admin.
-    g.auth_role = 'admin'
-    g.auth_user = None
-
-    if not _cfg.AUTH_ENABLED:
-        return None
-
-    # Check valid JWT cookie
-    token = request.cookies.get('audiomuse_jwt')
-    if token:
-        try:
-            payload = pyjwt.decode(token, jwt_secret, algorithms=['HS256'])
-            # Backward-compat: tokens issued before the multi-user feature
-            # have no 'role' claim; treat them as admin.
-            g.auth_role = payload.get('role', 'admin')
-            g.auth_user = payload.get('sub')
-            return None  # Valid session
-        except pyjwt.InvalidTokenError:
-            pass
-
-    # Check valid Bearer token (M2M callers) - always admin-equivalent.
-    auth_header = request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer ') and _cfg.API_TOKEN and auth_header[7:] == _cfg.API_TOKEN:
-        g.auth_role = 'admin'
-        g.auth_user = None
-        return None  # Valid M2M token
-
-    # Not authenticated
-    if request.path.startswith('/api/'):
-        return jsonify({"error": "Unauthorized"}), 401
-    else:
-        return redirect(url_for('login_page'))
-
-
-# --- Admin route guard -------------------------------------------------------
-
-# URL prefixes that are reserved for admin users. Normal users get a 403
-# (for API calls) or a redirect to the dashboard (for page requests).
-_ADMIN_PATH_PREFIXES = (
-    '/setup', '/api/setup',
-    '/cleaning', '/api/cleaning',
-    '/cron', '/api/cron',
-    '/backup', '/api/backup',
-    '/provider-migration', '/api/migration',
-    '/analysis', '/api/analysis', '/api/clustering',
-    '/users', '/api/users',
+# --- Auth / user-management helpers ---
+# All auth logic (setup/auth/admin barriers, user CRUD, password hashing,
+# JWT handling, the Flask routes) lives in ``app_auth``. The re-exports
+# below keep the legacy ``from app_helper import ...`` paths working.
+from app_auth import (  # noqa: E402  (intentional late import to avoid cycles)
+    USER_ROLE_USER,
+    USER_ROLE_ADMIN,
+    check_setup_needed,
+    check_auth_needed,
+    check_admin_needed,
+    is_admin_path,
+    list_additional_users,
+    count_admin_users,
+    get_additional_user_by_id,
+    create_additional_user,
+    delete_additional_user,
+    verify_additional_user,
+    upsert_admin_user,
+    seed_admin_from_env,
 )
-
-
-def is_admin_path(path):
-    """Return True if *path* should only be accessible to admin users."""
-    if not path:
-        return False
-    for prefix in _ADMIN_PATH_PREFIXES:
-        if path == prefix or path.startswith(prefix + '/'):
-            return True
-    return False
-
-
-def check_admin_needed():
-    """If the current request targets an admin-only path and the caller is not
-    an admin, return an appropriate response (403 JSON or redirect). Otherwise
-    return None. Must be called *after* ``check_auth_needed``.
-    """
-    from flask import request, jsonify, redirect, url_for, g
-    import config as _cfg
-
-    if not _cfg.AUTH_ENABLED:
-        return None
-    if not is_admin_path(request.path):
-        return None
-    role = getattr(g, 'auth_role', 'admin')
-    if role == 'admin':
-        return None
-    if request.path.startswith('/api/'):
-        return jsonify({"error": "Forbidden"}), 403
-    return redirect(url_for('dashboard_bp.dashboard_page'))
-
-
-# --- Additional (non-admin) user management ---------------------------------
-
-def _get_password_hasher():
-    from argon2 import PasswordHasher
-    return PasswordHasher()
-
-
-def list_additional_users():
-    """Return a list of dicts ``{id, username, created_at}`` for all
-    additional (non-admin) users. Passwords/hashes are never returned.
-    """
-    db = get_db()
-    with db.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute("SELECT id, username, created_at FROM audiomuse_users ORDER BY username ASC")
-        rows = cur.fetchall()
-    out = []
-    for row in rows:
-        created = row['created_at']
-        out.append({
-            'id': row['id'],
-            'username': row['username'],
-            'created_at': created.isoformat() if created is not None else None,
-        })
-    return out
-
-
-def create_additional_user(username, password):
-    """Create a new additional user. Returns ``(ok, error_message)``.
-    The password is hashed with argon2 before being stored.
-    """
-    if not isinstance(username, str) or not username.strip():
-        return False, "Username is required."
-    if not isinstance(password, str) or not password:
-        return False, "Password is required."
-    username = username.strip()
-    if len(username) > 128:
-        return False, "Username is too long."
-
-    hasher = _get_password_hasher()
-    try:
-        password_hash = hasher.hash(password)
-    except Exception as exc:
-        logger.error(f"Failed to hash password for new user {username!r}: {exc}", exc_info=True)
-        return False, "Failed to hash password."
-
-    db = get_db()
-    with db.cursor() as cur:
-        cur.execute(
-            "INSERT INTO audiomuse_users (username, password_hash) VALUES (%s, %s) "
-            "ON CONFLICT (username) DO NOTHING RETURNING id",
-            (username, password_hash),
-        )
-        row = cur.fetchone()
-    db.commit()
-    if row is None:
-        return False, "A user with that username already exists."
-    return True, None
-
-
-def delete_additional_user(user_id):
-    """Delete an additional user by id. Returns True if a row was deleted."""
-    try:
-        user_id = int(user_id)
-    except (TypeError, ValueError):
-        return False
-    db = get_db()
-    with db.cursor() as cur:
-        cur.execute("DELETE FROM audiomuse_users WHERE id = %s", (user_id,))
-        deleted = cur.rowcount
-    db.commit()
-    return bool(deleted)
-
-
-def verify_additional_user(username, password):
-    """Verify a username/password pair against the ``audiomuse_users`` table.
-    Returns True on success, False otherwise.
-    """
-    if not isinstance(username, str) or not isinstance(password, str):
-        return False
-    db = get_db()
-    with db.cursor() as cur:
-        cur.execute("SELECT password_hash FROM audiomuse_users WHERE username = %s", (username,))
-        row = cur.fetchone()
-    if not row:
-        return False
-    stored = row[0]
-    if not isinstance(stored, str) or not stored:
-        return False
-    try:
-        hasher = _get_password_hasher()
-        return hasher.verify(stored, password)
-    except Exception:
-        return False

@@ -1,11 +1,18 @@
-// Additional (non-admin) users management for the Users admin page.
+// Users management for the Users admin page. Supports normal users and
+// additional admins. Rules enforced server-side, mirrored in the UI:
+// - an admin cannot delete their own account
+// - at least one admin must always remain (legacy admin counts)
 (function () {
     const nameInput = document.getElementById('additional-user-name');
     const passInput = document.getElementById('additional-user-password');
+    const roleInput = document.getElementById('additional-user-role');
     const addBtn = document.getElementById('additional-user-add');
     const feedback = document.getElementById('additional-user-feedback');
     const tbody = document.getElementById('additional-users-tbody');
+    const table = document.getElementById('additional-users-table');
     if (!addBtn || !tbody) return;
+
+    const currentUser = (table && table.getAttribute('data-current-user')) || '';
 
     function showFeedback(msg, kind) {
         if (!feedback) return;
@@ -26,15 +33,19 @@
         }
     }
 
+    function roleLabel(role) {
+        return role === 'admin' ? 'admin' : 'user';
+    }
+
     function renderUsers(users) {
         tbody.innerHTML = '';
         if (!users || users.length === 0) {
             const tr = document.createElement('tr');
             const td = document.createElement('td');
-            td.colSpan = 3;
+            td.colSpan = 4;
             td.style.padding = '0.75rem';
             td.style.opacity = '0.7';
-            td.textContent = 'No additional users configured.';
+            td.textContent = 'No users configured yet.';
             tr.appendChild(td);
             tbody.appendChild(tr);
             return;
@@ -44,19 +55,30 @@
             const tdName = document.createElement('td');
             tdName.style.padding = '0.5rem';
             tdName.textContent = u.username;
+            const tdRole = document.createElement('td');
+            tdRole.style.padding = '0.5rem';
+            tdRole.textContent = roleLabel(u.role);
             const tdCreated = document.createElement('td');
             tdCreated.style.padding = '0.5rem';
             tdCreated.textContent = formatDate(u.created_at);
             const tdAct = document.createElement('td');
             tdAct.style.padding = '0.5rem';
             tdAct.style.textAlign = 'right';
-            const del = document.createElement('button');
-            del.type = 'button';
-            del.className = 'btn btn-danger';
-            del.textContent = 'Delete';
-            del.addEventListener('click', function () { deleteUser(u.id, u.username); });
-            tdAct.appendChild(del);
+            if (currentUser && u.username === currentUser) {
+                const span = document.createElement('span');
+                span.style.opacity = '0.7';
+                span.textContent = '(current user)';
+                tdAct.appendChild(span);
+            } else {
+                const del = document.createElement('button');
+                del.type = 'button';
+                del.className = 'btn btn-danger';
+                del.textContent = 'Delete';
+                del.addEventListener('click', function () { deleteUser(u.id, u.username); });
+                tdAct.appendChild(del);
+            }
             tr.appendChild(tdName);
+            tr.appendChild(tdRole);
             tr.appendChild(tdCreated);
             tr.appendChild(tdAct);
             tbody.appendChild(tr);
@@ -76,6 +98,7 @@
     function addUser() {
         const username = (nameInput.value || '').trim();
         const password = passInput.value || '';
+        const role = (roleInput && roleInput.value) || 'user';
         if (!username || !password) {
             showFeedback('Username and password are required.', 'error');
             return;
@@ -86,7 +109,7 @@
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: username, password: password })
+            body: JSON.stringify({ username: username, password: password, role: role })
         })
             .then(function (r) {
                 return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
@@ -96,6 +119,7 @@
                 showFeedback('User "' + username + '" created.', 'success');
                 nameInput.value = '';
                 passInput.value = '';
+                if (roleInput) roleInput.value = 'user';
                 loadUsers();
             })
             .catch(function (err) { showFeedback(err.message || 'Failed to create user.', 'error'); })
