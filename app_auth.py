@@ -316,9 +316,10 @@ def seed_admin_from_env():
                 (user.strip(), password_hash, USER_ROLE_ADMIN),
             )
         db.commit()
+        safe_source = 'app_config' if source == 'app_config' else ('env' if source == 'env' else 'unknown')
         logger.info(
             "Seeded admin into audiomuse_users from %s.",
-            source,
+            safe_source,
         )
         # If we seeded from app_config, drop the legacy rows so subsequent
         # deletes of this admin from /users are not undone on next boot.
