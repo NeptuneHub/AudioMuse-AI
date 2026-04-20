@@ -484,7 +484,15 @@ def check_admin_needed():
     role = getattr(g, 'auth_role', 'admin')
     if role == 'admin':
         return None
+    current_app.logger.warning(
+        "Non-admin user denied access to admin path %s",
+        request.path,
+    )
     if request.path.startswith('/api/'):
+        if request.path == '/api/setup':
+            return jsonify({
+                "error": "Error saving configuration: Non-admin user denied access to admin path. Please refresh the page and try again."
+            }), 403
         return jsonify({"error": "Forbidden"}), 403
     return redirect(url_for('dashboard_bp.dashboard_page'))
 
@@ -498,6 +506,10 @@ def auth_setup_barrier():
         if request.path in ('/setup', '/api/setup'):
             return
         if request.path.startswith('/api/'):
+            current_app.logger.warning(
+                "API access blocked because setup is still required: %s",
+                request.path,
+            )
             return jsonify({"error": "Setup required"}), 403
         return redirect(url_for('setup_page'))
 
@@ -571,8 +583,13 @@ def auth_endpoint():
         return jsonify({"error": "Auth not configured"}), 404
     try:
         admin_count = count_admin_users()
-    except Exception:
-        admin_count = 0
+    except Exception as exc:
+        current_app.logger.error(
+            'Failed to count admin users during authentication: %s',
+            exc,
+            exc_info=True,
+        )
+        return jsonify({"error": "Database error while checking admin accounts."}), 500
     if admin_count <= 0:
         current_app.logger.warning(
             "Auth is enabled but no admin account is configured. "
@@ -703,8 +720,14 @@ def delete_user_endpoint(user_id):
     if target['role'] == USER_ROLE_ADMIN:
         try:
             db_admins = count_admin_users()
-        except Exception:
-            db_admins = 0
+        except Exception as exc:
+            current_app.logger.error(
+                'Failed to count admin users during delete for user %s: %s',
+                user_id,
+                exc,
+                exc_info=True,
+            )
+            return jsonify({"error": "Could not verify admin count; deletion aborted as a precaution."}), 500
         if db_admins - 1 <= 0:
             return jsonify({"error": "At least one admin account must remain."}), 400
     deleted = delete_additional_user(user_id)

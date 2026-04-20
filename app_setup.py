@@ -154,7 +154,12 @@ def _has_admin_user():
     try:
         from app_helper import count_admin_users
         return count_admin_users() > 0
-    except Exception:
+    except Exception as exc:
+        app.logger.error(
+            'Failed to determine whether an admin exists during setup page render: %s',
+            exc,
+            exc_info=True,
+        )
         return False
 
 @app.route('/setup')
@@ -286,8 +291,13 @@ def setup_api():
         if auth_will_be_enabled:
             try:
                 existing_admins = count_admin_users()
-            except Exception:
-                existing_admins = 0
+            except Exception as exc:
+                app.logger.error(
+                    'Failed to count admin users during setup save: %s',
+                    exc,
+                    exc_info=True,
+                )
+                return jsonify({'error': 'Database error while verifying admin count.'}), 500
             provided_admin = bool(new_admin_user and new_admin_password)
             if existing_admins <= 0 and not provided_admin:
                 return jsonify({'error': 'Cannot save: auth is enabled but no admin account was provided.'}), 400

@@ -541,7 +541,13 @@ setupForm.addEventListener('submit', function(event) {
     }).catch(function(err) {
         saveFeedback.className = 'status-failure inline-feedback';
         saveFeedback.style.display = 'block';
-        saveFeedback.textContent = err.message;
+        var message = err.message || 'Unable to save configuration.';
+        if (message === 'Forbidden' || message === 'Setup required' || message === 'Auth not configured') {
+            message = 'Error saving configuration. Please refresh the page and try again.';
+        } else if (!message.toLowerCase().includes('refresh')) {
+            message = message + ' Please refresh the page or check the server logs.';
+        }
+        saveFeedback.textContent = '✕ ' + message;
     }).finally(function() {
         saveButton.disabled = false;
     });
