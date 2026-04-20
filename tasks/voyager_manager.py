@@ -192,7 +192,7 @@ def load_voyager_index_for_querying(force_reload=False):
         # 2) If not found, look for segmented rows named INDEX_NAME_<part>_<total>
         cur.execute(
             "SELECT index_name, index_data, id_map_json, embedding_dimension FROM voyager_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-            (INDEX_NAME + r"\_%\_%",)
+            (INDEX_NAME.replace('_', r'\_') + r"\_%\_%",)
         )
         candidates = cur.fetchall()
 
@@ -399,7 +399,7 @@ def build_and_store_voyager_index(db_conn=None):
             # Delete any existing single or segmented rows for this logical index name
             cur.execute(
                 "DELETE FROM voyager_index_data WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
-                (INDEX_NAME, INDEX_NAME + r"\_%\_%")
+                (INDEX_NAME, INDEX_NAME.replace('_', r'\_') + r"\_%\_%")
             )
 
             # Small enough to store in a single row (backwards-compatible)

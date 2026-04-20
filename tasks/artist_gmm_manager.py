@@ -446,7 +446,7 @@ def build_and_store_artist_index(db_conn=None):
                 # Single-row not present or empty — look for segmented parts
                 cur.execute(
                     "SELECT index_name, artist_map_json, gmm_params_json FROM artist_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-                    (ARTIST_INDEX_NAME + r"\_%\_%",)
+                    (ARTIST_INDEX_NAME.replace('_', r'\_') + r"\_%\_%",)
                 )
                 candidates = cur.fetchall()
 
@@ -671,7 +671,7 @@ def build_and_store_artist_index(db_conn=None):
             # Delete any existing single or segmented rows for this logical index name
             cur.execute(
                 "DELETE FROM artist_index_data WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
-                (ARTIST_INDEX_NAME, ARTIST_INDEX_NAME + r"\_%\_%")
+                (ARTIST_INDEX_NAME, ARTIST_INDEX_NAME.replace('_', r'\_') + r"\_%\_%")
             )
 
             # Small enough to store in a single row (backwards-compatible)
@@ -790,7 +790,7 @@ def load_artist_index_for_querying(force_reload=False):
             # Not found as single row — try segmented parts named ARTIST_INDEX_NAME_<part>_<total>
             cur.execute(
                 "SELECT index_name, index_data, artist_map_json, gmm_params_json FROM artist_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-                (ARTIST_INDEX_NAME + r"\_%\_%",)
+                (ARTIST_INDEX_NAME.replace('_', r'\_') + r"\_%\_%",)
             )
             candidates = cur.fetchall()
 
