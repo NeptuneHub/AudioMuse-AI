@@ -294,6 +294,11 @@ def verify_additional_user(username, password):
         return None
     try:
         import argon2
+    except ImportError as exc:
+        logger.error(f"argon2 is not installed: {exc}", exc_info=True)
+        return None
+
+    try:
         _get_password_hasher().verify(stored, password)
     except (argon2.exceptions.VerifyMismatchError, argon2.exceptions.VerificationError):
         return None

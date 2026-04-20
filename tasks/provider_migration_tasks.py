@@ -597,7 +597,7 @@ def _write_provider_to_app_config(cur, target_type, target_creds):
         )
         if not cur.fetchone()[0]:
             cur.execute(
-                "CREATE TABLE app_config ("
+                "CREATE TABLE IF NOT EXISTS app_config ("
                 "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
                 "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
             )
