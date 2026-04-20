@@ -34,16 +34,18 @@
             <p id="additional-user-feedback" class="inline-feedback" style="display:none; margin:0; width:100%;"></p>
         </div>
         <div class="field-row" style="flex-direction:column; align-items:stretch; margin-top:1.5rem;">
-            <table id="additional-users-table" style="width:100%; border-collapse:collapse;">
-                <thead>
-                    <tr>
-                        <th style="text-align:left; padding:0.5rem; border-bottom:1px solid var(--border-color, #ccc);">Username</th>
-                        <th style="text-align:left; padding:0.5rem; border-bottom:1px solid var(--border-color, #ccc);">Created</th>
-                        <th style="text-align:right; padding:0.5rem; border-bottom:1px solid var(--border-color, #ccc);">Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="additional-users-tbody"></tbody>
-            </table>
+            <div class="responsive-table-wrapper">
+                <table id="additional-users-table" style="width:100%; border-collapse:collapse; min-width:420px;">
+                    <thead>
+                        <tr>
+                            <th style="text-align:left; padding:0.5rem; border-bottom:1px solid var(--border-color, #ccc);">Username</th>
+                            <th style="text-align:left; padding:0.5rem; border-bottom:1px solid var(--border-color, #ccc);">Created</th>
+                            <th style="text-align:right; padding:0.5rem; border-bottom:1px solid var(--border-color, #ccc);">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="additional-users-tbody"></tbody>
+                </table>
+            </div>
         </div>
         {% endif %}
     </section>
