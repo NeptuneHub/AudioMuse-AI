@@ -307,6 +307,16 @@ def setup_api():
             except Exception as exc:
                 app.logger.error('Failed to clear audiomuse_users on auth disable: %s', exc, exc_info=True)
         elif new_admin_user and new_admin_password:
+            try:
+                if count_admin_users() > 0:
+                    return jsonify({'error': 'Cannot save: an admin account already exists.'}), 400
+            except Exception as exc:
+                app.logger.error(
+                    'Unable to verify existing admin accounts before setup save: %s',
+                    exc,
+                    exc_info=True,
+                )
+                return jsonify({'error': 'Unable to verify existing admin accounts. Check the server log and try again later.'}), 500
             ok, err = upsert_admin_user(new_admin_user, new_admin_password)
             if not ok:
                 return jsonify({'error': err or 'Failed to save admin account.'}), 400
