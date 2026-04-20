@@ -317,8 +317,8 @@ def seed_admin_from_env():
             )
         db.commit()
         logger.info(
-            "Seeded admin '%s' into audiomuse_users from %s.",
-            user.strip(), source,
+            "Seeded admin into audiomuse_users from %s.",
+            source,
         )
         # If we seeded from app_config, drop the legacy rows so subsequent
         # deletes of this admin from /users are not undone on next boot.
