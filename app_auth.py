@@ -184,6 +184,63 @@ def delete_additional_user(user_id):
     return bool(deleted)
 
 
+def delete_additional_user_safe(user_id):
+    """Atomically delete a user, refusing to delete the last admin.
+
+    The row lookup, last-admin check, and delete all run in a single
+    transaction that locks the affected rows with ``SELECT ... FOR UPDATE``,
+    so concurrent admin deletions cannot race past the guard and end up
+    with zero admins.
+
+    Returns ``(status, error)`` where ``status`` is one of:
+    - ``"deleted"``: the row was deleted (error is None)
+    - ``"not_found"``: no user with that id
+    - ``"last_admin"``: refused because it would remove the last admin
+    - ``"invalid_id"``: the id was not an integer
+    - ``"error"``: a database error occurred (error carries the message)
+    """
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return "invalid_id", "Invalid user id."
+    db = _get_db()
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT role FROM audiomuse_users WHERE id = %s FOR UPDATE",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                db.rollback()
+                return "not_found", None
+            target_role = row[0]
+            if target_role == USER_ROLE_ADMIN:
+                # Lock all admin rows so a concurrent transaction cannot
+                # pass its own count check while we are mid-delete.
+                cur.execute(
+                    "SELECT COUNT(*) FROM audiomuse_users WHERE role = %s FOR UPDATE",
+                    (USER_ROLE_ADMIN,),
+                )
+                admin_count = cur.fetchone()[0]
+                if admin_count <= 1:
+                    db.rollback()
+                    return "last_admin", None
+            cur.execute("DELETE FROM audiomuse_users WHERE id = %s", (user_id,))
+            deleted = cur.rowcount
+        db.commit()
+        if not deleted:
+            return "not_found", None
+        return "deleted", None
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.error(f"Failed to atomically delete user {user_id}: {exc}", exc_info=True)
+        return "error", "Database error while deleting user."
+
+
 def update_additional_user_password(user_id, new_password):
     """Update a user's password. Returns ``(ok, error_message)``."""
     try:
@@ -717,23 +774,17 @@ def delete_user_endpoint(user_id):
     current_username = getattr(g, 'auth_user', None)
     if current_username and target['username'] == current_username:
         return jsonify({"error": "You cannot delete your own account."}), 400
-    if target['role'] == USER_ROLE_ADMIN:
-        try:
-            db_admins = count_admin_users()
-        except Exception as exc:
-            current_app.logger.error(
-                'Failed to count admin users during delete for user %s: %s',
-                user_id,
-                exc,
-                exc_info=True,
-            )
-            return jsonify({"error": "Could not verify admin count; deletion aborted as a precaution."}), 500
-        if db_admins - 1 <= 0:
-            return jsonify({"error": "At least one admin account must remain."}), 400
-    deleted = delete_additional_user(user_id)
-    if not deleted:
+    status, err = delete_additional_user_safe(user_id)
+    if status == "deleted":
+        return jsonify({"status": "ok"})
+    if status == "not_found":
         return jsonify({"error": "User not found."}), 404
-    return jsonify({"status": "ok"})
+    if status == "last_admin":
+        return jsonify({"error": "At least one admin account must remain."}), 400
+    if status == "invalid_id":
+        return jsonify({"error": err or "Invalid user id."}), 400
+    # status == "error"
+    return jsonify({"error": err or "Could not delete user; please try again."}), 500
 
 
 def update_user_password_endpoint(user_id):
