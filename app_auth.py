@@ -218,11 +218,13 @@ def delete_additional_user_safe(user_id):
             if target_role == USER_ROLE_ADMIN:
                 # Lock all admin rows so a concurrent transaction cannot
                 # pass its own count check while we are mid-delete.
+                # PostgreSQL does not allow FOR UPDATE on aggregate queries,
+                # so select the rows themselves and count client-side.
                 cur.execute(
-                    "SELECT COUNT(*) FROM audiomuse_users WHERE role = %s FOR UPDATE",
+                    "SELECT id FROM audiomuse_users WHERE role = %s FOR UPDATE",
                     (USER_ROLE_ADMIN,),
                 )
-                admin_count = cur.fetchone()[0]
+                admin_count = len(cur.fetchall())
                 if admin_count <= 1:
                     db.rollback()
                     return "last_admin", None
@@ -490,8 +492,9 @@ def check_auth_needed(jwt_secret):
             pass
 
     # Check valid Bearer token (M2M callers) - always admin-equivalent.
+    # Use secrets.compare_digest to avoid leaking token contents via timing.
     auth_header = request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer ') and _cfg.API_TOKEN and auth_header[7:] == _cfg.API_TOKEN:
+    if auth_header.startswith('Bearer ') and _cfg.API_TOKEN and secrets.compare_digest(auth_header[7:], _cfg.API_TOKEN):
         g.auth_role = 'admin'
         g.auth_user = None
         return None
@@ -694,7 +697,10 @@ def auth_endpoint():
         path='/',
         httponly=True,
         samesite='Strict',
-        secure=False,
+        # Mark the cookie Secure when the request came in over HTTPS so
+        # production deployments get the hardened flag while local HTTP
+        # development still works.
+        secure=request.is_secure,
         max_age=8 * 3600,
     )
     return resp
