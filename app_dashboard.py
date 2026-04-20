@@ -14,7 +14,6 @@ from flask import Blueprint, render_template, jsonify
 from psycopg2.extras import DictCursor
 
 from app_helper import get_db, redis_conn
-from config import INDEX_NAME
 
 logger = logging.getLogger(__name__)
 dashboard_bp = Blueprint('dashboard_bp', __name__)
