@@ -143,7 +143,10 @@ with app.app_context():
     # Bootstrap / reconcile the first admin account:
     #   - If audiomuse_users already has an admin, purge any legacy
     #     AUDIOMUSE_USER / AUDIOMUSE_PASSWORD rows from app_config.
-    #   - Else fall back to app_config legacy rows, then to real env vars.
+    #   - Else if app_config contains legacy admin values, import them into
+    #     audiomuse_users and remove the legacy config.
+    #   - Else if env vars contain legacy admin values, import them into
+    #     audiomuse_users.
     # See app_auth.seed_admin_from_env for full precedence.
     try:
         seed_admin_from_env()

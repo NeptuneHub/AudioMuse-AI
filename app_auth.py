@@ -265,15 +265,14 @@ def seed_admin_from_env():
     """One-time bridge for legacy installs.
 
     Bootstraps the first admin row in ``audiomuse_users`` when the table is
-    empty. Source precedence (first match wins):
+    empty and legacy admin credentials are present. Source precedence:
 
-    1. ``audiomuse_users`` already has an admin -> no-op. As a side effect
-       we purge any stale ``AUDIOMUSE_USER`` / ``AUDIOMUSE_PASSWORD`` rows
-       from ``app_config`` so they cannot resurrect deleted admins later.
-    2. ``app_config`` table holds legacy ``AUDIOMUSE_USER`` +
-       ``AUDIOMUSE_PASSWORD`` rows -> seed from there.
-    3. Process env vars ``AUDIOMUSE_USER`` / ``AUDIOMUSE_PASSWORD`` ->
-       seed from there.
+    1. ``audiomuse_users`` already has an admin -> no-op and purge stale
+       legacy config too.
+    2. Legacy ``AUDIOMUSE_USER`` / ``AUDIOMUSE_PASSWORD`` values in
+       ``app_config`` -> seed from app_config and delete those rows.
+    3. Legacy ``AUDIOMUSE_USER`` / ``AUDIOMUSE_PASSWORD`` environment vars ->
+       seed from env.
 
     Idempotent: safe to call on every startup.
     """
