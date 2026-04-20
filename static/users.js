@@ -1,18 +1,36 @@
-// Users management for the Users admin page. Supports normal users and
-// additional admins. Rules enforced server-side, mirrored in the UI:
-// - an admin cannot delete their own account
-// - at least one admin must always remain (legacy admin counts)
+// Users management for the Users page. Supports normal users and admins.
+// Server enforces:
+// - only admins can create/delete accounts or change another user's password
+// - non-admins only see themselves in /api/users and can only change their
+//   own password
+// Mirrored in the UI so admins see everyone plus create/delete controls,
+// and non-admins only see their own row with a "Change password" button.
 (function () {
     const nameInput = document.getElementById('additional-user-name');
     const passInput = document.getElementById('additional-user-password');
+    const passConfirmInput = document.getElementById('additional-user-password-confirm');
     const roleInput = document.getElementById('additional-user-role');
     const addBtn = document.getElementById('additional-user-add');
+    const addToggleBtn = document.getElementById('add-user-toggle');
+    const addCancelBtn = document.getElementById('add-user-cancel');
+    const addPanel = document.getElementById('add-user-panel');
     const feedback = document.getElementById('additional-user-feedback');
     const tbody = document.getElementById('additional-users-tbody');
     const table = document.getElementById('additional-users-table');
-    if (!addBtn || !tbody) return;
+    if (!tbody || !table) return;
 
-    const currentUser = (table && table.getAttribute('data-current-user')) || '';
+    const currentUser = table.getAttribute('data-current-user') || '';
+    const isAdmin = (table.getAttribute('data-is-admin') || 'false') === 'true';
+
+    const pwPanel = document.getElementById('change-password-panel');
+    const pwTarget = document.getElementById('change-password-target');
+    const pwNew = document.getElementById('change-password-new');
+    const pwConfirm = document.getElementById('change-password-confirm');
+    const pwSave = document.getElementById('change-password-save');
+    const pwCancel = document.getElementById('change-password-cancel');
+    const pwFeedback = document.getElementById('change-password-feedback');
+    let pwTargetId = null;
+    let pwTargetName = '';
 
     function showFeedback(msg, kind) {
         if (!feedback) return;
@@ -20,6 +38,14 @@
         feedback.className = 'inline-feedback';
         if (kind) feedback.classList.add('status-' + kind);
         feedback.style.display = msg ? '' : 'none';
+    }
+
+    function showPwFeedback(msg, kind) {
+        if (!pwFeedback) return;
+        pwFeedback.textContent = msg || '';
+        pwFeedback.className = 'inline-feedback';
+        if (kind) pwFeedback.classList.add('status-' + kind);
+        pwFeedback.style.display = msg ? '' : 'none';
     }
 
     function formatDate(iso) {
@@ -37,6 +63,53 @@
         return role === 'admin' ? 'admin' : 'user';
     }
 
+    function openPasswordPanel(id, username) {
+        closeAddPanel();
+        pwTargetId = id;
+        pwTargetName = username;
+        if (pwTarget) pwTarget.textContent = 'Target user: ' + username;
+        if (pwNew) pwNew.value = '';
+        if (pwConfirm) pwConfirm.value = '';
+        showPwFeedback('', null);
+        if (pwPanel) {
+            pwPanel.style.display = '';
+            pwPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+        if (pwNew) pwNew.focus();
+    }
+
+    function closePasswordPanel() {
+        pwTargetId = null;
+        pwTargetName = '';
+        if (pwPanel) pwPanel.style.display = 'none';
+        if (pwNew) pwNew.value = '';
+        if (pwConfirm) pwConfirm.value = '';
+        showPwFeedback('', null);
+    }
+
+    function openAddPanel() {
+        closePasswordPanel();
+        if (nameInput) nameInput.value = '';
+        if (passInput) passInput.value = '';
+        if (passConfirmInput) passConfirmInput.value = '';
+        if (roleInput) roleInput.value = 'user';
+        showFeedback('', null);
+        if (addPanel) {
+            addPanel.style.display = '';
+            addPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+        if (nameInput) nameInput.focus();
+    }
+
+    function closeAddPanel() {
+        if (addPanel) addPanel.style.display = 'none';
+        if (nameInput) nameInput.value = '';
+        if (passInput) passInput.value = '';
+        if (passConfirmInput) passConfirmInput.value = '';
+        if (roleInput) roleInput.value = 'user';
+        showFeedback('', null);
+    }
+
     function renderUsers(users) {
         tbody.innerHTML = '';
         if (!users || users.length === 0) {
@@ -45,7 +118,7 @@
             td.colSpan = 4;
             td.style.padding = '0.75rem';
             td.style.opacity = '0.7';
-            td.textContent = 'No users configured yet.';
+            td.textContent = 'No users to display.';
             tr.appendChild(td);
             tbody.appendChild(tr);
             return;
@@ -64,19 +137,41 @@
             const tdAct = document.createElement('td');
             tdAct.style.padding = '0.5rem';
             tdAct.style.textAlign = 'right';
-            if (currentUser && u.username === currentUser) {
+
+            const isSelf = currentUser && u.username === currentUser;
+
+            // Admin can change any password; non-admin can change their own.
+            if (isAdmin || isSelf) {
+                const pw = document.createElement('button');
+                pw.type = 'button';
+                pw.className = 'btn btn-primary';
+                pw.textContent = 'Change password';
+                pw.style.marginRight = '0.5rem';
+                pw.addEventListener('click', function () { openPasswordPanel(u.id, u.username); });
+                tdAct.appendChild(pw);
+            }
+
+            if (isAdmin) {
+                if (isSelf) {
+                    const span = document.createElement('span');
+                    span.style.opacity = '0.7';
+                    span.textContent = '(current user)';
+                    tdAct.appendChild(span);
+                } else {
+                    const del = document.createElement('button');
+                    del.type = 'button';
+                    del.className = 'btn btn-danger';
+                    del.textContent = 'Delete';
+                    del.addEventListener('click', function () { deleteUser(u.id, u.username); });
+                    tdAct.appendChild(del);
+                }
+            } else if (isSelf) {
                 const span = document.createElement('span');
                 span.style.opacity = '0.7';
                 span.textContent = '(current user)';
                 tdAct.appendChild(span);
-            } else {
-                const del = document.createElement('button');
-                del.type = 'button';
-                del.className = 'btn btn-danger';
-                del.textContent = 'Delete';
-                del.addEventListener('click', function () { deleteUser(u.id, u.username); });
-                tdAct.appendChild(del);
             }
+
             tr.appendChild(tdName);
             tr.appendChild(tdRole);
             tr.appendChild(tdCreated);
@@ -98,9 +193,14 @@
     function addUser() {
         const username = (nameInput.value || '').trim();
         const password = passInput.value || '';
+        const passwordConfirm = (passConfirmInput && passConfirmInput.value) || '';
         const role = (roleInput && roleInput.value) || 'user';
         if (!username || !password) {
             showFeedback('Username and password are required.', 'error');
+            return;
+        }
+        if (password !== passwordConfirm) {
+            showFeedback('Passwords do not match.', 'error');
             return;
         }
         addBtn.disabled = true;
@@ -117,10 +217,8 @@
             .then(function (res) {
                 if (!res.ok) throw new Error((res.data && res.data.error) || ('Failed to create user (' + res.status + ').'));
                 showFeedback('User "' + username + '" created.', 'success');
-                nameInput.value = '';
-                passInput.value = '';
-                if (roleInput) roleInput.value = 'user';
                 loadUsers();
+                closeAddPanel();
             })
             .catch(function (err) { showFeedback(err.message || 'Failed to create user.', 'error'); })
             .finally(function () { addBtn.disabled = false; });
@@ -143,6 +241,45 @@
             .catch(function (err) { showFeedback(err.message || 'Failed to delete user.', 'error'); });
     }
 
-    addBtn.addEventListener('click', addUser);
+    function savePassword() {
+        if (pwTargetId === null) return;
+        const newPw = (pwNew && pwNew.value) || '';
+        const confirmPw = (pwConfirm && pwConfirm.value) || '';
+        if (!newPw) {
+            showPwFeedback('New password cannot be empty.', 'error');
+            return;
+        }
+        if (newPw !== confirmPw) {
+            showPwFeedback('Passwords do not match.', 'error');
+            return;
+        }
+        pwSave.disabled = true;
+        showPwFeedback('Updating password...', 'info');
+        const targetName = pwTargetName;
+        fetch('/api/users/' + encodeURIComponent(pwTargetId) + '/password', {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: newPw })
+        })
+            .then(function (r) {
+                return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
+            })
+            .then(function (res) {
+                if (!res.ok) throw new Error((res.data && res.data.error) || ('Failed to update password (' + res.status + ').'));
+                showPwFeedback('Password for "' + targetName + '" updated.', 'success');
+                if (pwNew) pwNew.value = '';
+                if (pwConfirm) pwConfirm.value = '';
+                closePasswordPanel();
+            })
+            .catch(function (err) { showPwFeedback(err.message || 'Failed to update password.', 'error'); })
+            .finally(function () { pwSave.disabled = false; });
+    }
+
+    if (addBtn) addBtn.addEventListener('click', addUser);
+    if (addToggleBtn) addToggleBtn.addEventListener('click', openAddPanel);
+    if (addCancelBtn) addCancelBtn.addEventListener('click', closeAddPanel);
+    if (pwSave) pwSave.addEventListener('click', savePassword);
+    if (pwCancel) pwCancel.addEventListener('click', closePasswordPanel);
     loadUsers();
 })();

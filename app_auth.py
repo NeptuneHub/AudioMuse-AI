@@ -184,6 +184,32 @@ def delete_additional_user(user_id):
     return bool(deleted)
 
 
+def update_additional_user_password(user_id, new_password):
+    """Update a user's password. Returns ``(ok, error_message)``."""
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return False, "Invalid user id."
+    if not isinstance(new_password, str) or not new_password:
+        return False, "Password is required."
+    try:
+        password_hash = _get_password_hasher().hash(new_password)
+    except Exception as exc:
+        logger.error(f"Failed to hash new password for user {user_id}: {exc}", exc_info=True)
+        return False, "Failed to hash password."
+    db = _get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            "UPDATE audiomuse_users SET password_hash = %s WHERE id = %s",
+            (password_hash, user_id),
+        )
+        updated = cur.rowcount
+    db.commit()
+    if not updated:
+        return False, "User not found."
+    return True, None
+
+
 def verify_additional_user(username, password):
     """Verify credentials. Returns the role on success, otherwise None."""
     if not isinstance(username, str) or not isinstance(password, str):
@@ -421,6 +447,9 @@ def check_auth_needed(jwt_secret):
 
 # URL prefixes reserved for admin users. Normal users get a 403 (API) or a
 # redirect to the dashboard (page requests).
+# Note: /users and /api/users are intentionally NOT here. Any authenticated
+# user can reach them; the per-request handlers enforce that non-admins
+# only see and modify their own account.
 _ADMIN_PATH_PREFIXES = (
     '/setup', '/api/setup',
     '/cleaning', '/api/cleaning',
@@ -428,7 +457,6 @@ _ADMIN_PATH_PREFIXES = (
     '/backup', '/api/backup',
     '/provider-migration', '/api/migration',
     '/analysis', '/api/analysis', '/api/clustering',
-    '/users', '/api/users',
 )
 
 
@@ -609,29 +637,38 @@ def logout_endpoint():
     return resp
 
 
-# --- /api/users (admin-only; guarded by _ADMIN_PATH_PREFIXES) ---------------
+# --- /api/users -------------------------------------------------------------
+# Admins can list and manage every account. Non-admins can only see and
+# modify their own row; the handlers below enforce that explicitly.
 
 def list_users_endpoint():
-    """List user accounts from the audiomuse_users table."""
+    """List user accounts. Admins see everyone, non-admins see only themselves."""
     import config as _cfg
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
+    role = getattr(g, 'auth_role', 'admin')
+    current_username = getattr(g, 'auth_user', None)
     try:
         users = list_additional_users()
     except Exception as exc:
         current_app.logger.error(f"Failed to list users: {exc}", exc_info=True)
         return jsonify({"error": "Failed to list users"}), 500
+    if role != 'admin':
+        users = [u for u in users if u.get('username') == current_username]
     return jsonify({
         "users": users,
-        "current_user": getattr(g, 'auth_user', None),
+        "current_user": current_username,
+        "is_admin": role == 'admin',
     })
 
 
 def create_user_endpoint():
-    """Create a new user (role 'user' or 'admin')."""
+    """Create a new user (role 'user' or 'admin'). Admin-only."""
     import config as _cfg
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
+    if getattr(g, 'auth_role', 'admin') != 'admin':
+        return jsonify({"error": "Forbidden"}), 403
     data = request.get_json(silent=True) or {}
     username = (data.get('username') or '').strip()
     password = data.get('password') or ''
@@ -648,12 +685,15 @@ def create_user_endpoint():
 
 def delete_user_endpoint(user_id):
     """Delete a user by id, with safety checks:
+    - admin-only
     - an admin cannot delete themselves
     - deleting the last admin is refused
     """
     import config as _cfg
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
+    if getattr(g, 'auth_role', 'admin') != 'admin':
+        return jsonify({"error": "Forbidden"}), 403
     target = get_additional_user_by_id(user_id)
     if not target:
         return jsonify({"error": "User not found."}), 404
@@ -670,6 +710,31 @@ def delete_user_endpoint(user_id):
     deleted = delete_additional_user(user_id)
     if not deleted:
         return jsonify({"error": "User not found."}), 404
+    return jsonify({"status": "ok"})
+
+
+def update_user_password_endpoint(user_id):
+    """Change a user's password.
+    - admin can change anyone's password
+    - a non-admin can only change their own password
+    """
+    import config as _cfg
+    if not _cfg.AUTH_ENABLED:
+        return jsonify({"error": "Auth not configured"}), 404
+    target = get_additional_user_by_id(user_id)
+    if not target:
+        return jsonify({"error": "User not found."}), 404
+    role = getattr(g, 'auth_role', 'admin')
+    current_username = getattr(g, 'auth_user', None)
+    if role != 'admin' and target['username'] != current_username:
+        return jsonify({"error": "Forbidden"}), 403
+    data = request.get_json(silent=True) or {}
+    new_password = data.get('password') or ''
+    if not isinstance(new_password, str) or not new_password:
+        return jsonify({"error": "Password is required."}), 400
+    ok, err = update_additional_user_password(user_id, new_password)
+    if not ok:
+        return jsonify({"error": err or "Failed to update password."}), 400
     return jsonify({"status": "ok"})
 
 
@@ -694,3 +759,4 @@ def init_app(app, setup_manager, jwt_secret_getter):
     app.add_url_rule('/api/users', endpoint='list_users_endpoint', view_func=list_users_endpoint, methods=['GET'])
     app.add_url_rule('/api/users', endpoint='create_user_endpoint', view_func=create_user_endpoint, methods=['POST'])
     app.add_url_rule('/api/users/<int:user_id>', endpoint='delete_user_endpoint', view_func=delete_user_endpoint, methods=['DELETE'])
+    app.add_url_rule('/api/users/<int:user_id>/password', endpoint='update_user_password_endpoint', view_func=update_user_password_endpoint, methods=['PUT'])
