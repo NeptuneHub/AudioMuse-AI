@@ -1,7 +1,7 @@
 """Dashboard blueprint: landing page with recent activity, content metrics,
 index counts, workers and scheduled tasks.
 
-Heavy library aggregates (content metrics + index counts) are NOT recomputed
+Heavy library aggregates (content metrics) are NOT recomputed
 on each request. They are refreshed by ``refresh_dashboard_stats()`` at app
 startup and then once per hour, and persisted in the singleton
 ``dashboard_stats`` table. The summary endpoint only reads that row and
@@ -14,6 +14,7 @@ from flask import Blueprint, render_template, jsonify
 from psycopg2.extras import DictCursor
 
 from app_helper import get_db, redis_conn
+from config import INDEX_NAME
 
 logger = logging.getLogger(__name__)
 dashboard_bp = Blueprint('dashboard_bp', __name__)
@@ -57,17 +58,36 @@ def _table_exists(cur, name):
         return False
 
 
-def _column_exists(cur, table_name, column_name):
+def _count_voyager_index_rows(cur):
+    """Count the number of songs currently stored in the Voyager index."""
     try:
         cur.execute(
-            "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s)",
-            (table_name, column_name),
+            "SELECT id_map_json FROM voyager_index_data WHERE index_name = %s",
+            (INDEX_NAME,),
         )
         row = cur.fetchone()
-        return bool(row and row[0])
-    except Exception:
+        if row and row[0]:
+            try:
+                return len(json.loads(row[0]))
+            except Exception:
+                pass
+
+        cur.execute(
+            "SELECT id_map_json FROM voyager_index_data WHERE index_name LIKE %s ORDER BY index_name",
+            (INDEX_NAME + "_%_%",),
+        )
+        for (id_map_json,) in cur.fetchall():
+            if not id_map_json:
+                continue
+            try:
+                return len(json.loads(id_map_json))
+            except Exception:
+                continue
+        return 0
+    except Exception as e:
+        logger.debug(f"dashboard: voyager index count failed: {e}")
         _safe_rollback(cur)
-        return False
+        return 0
 
 
 def _collect_workers():
@@ -132,20 +152,13 @@ def _collect_task_metrics(cur):
 def _collect_content_metrics(cur):
     metrics = {
         'total_songs': _safe_count(cur, "SELECT COUNT(*) FROM score"),
-        'analyzed_songs': _safe_count(
-            cur, "SELECT COUNT(*) FROM score WHERE mood_vector IS NOT NULL AND mood_vector <> ''"
-        ),
         'distinct_artists': _safe_count(cur, "SELECT COUNT(DISTINCT author) FROM score WHERE author IS NOT NULL"),
         'distinct_albums': _safe_count(cur, "SELECT COUNT(DISTINCT album) FROM score WHERE album IS NOT NULL"),
-        'total_playlists': _safe_count(cur, "SELECT COUNT(DISTINCT playlist_name) FROM playlist"),
-        'total_playlist_items': _safe_count(cur, "SELECT COUNT(*) FROM playlist"),
         'indexed_songs': 0,
         'artists_with_gmm': 0,
     }
-    if _table_exists(cur, 'embedding'):
-        metrics['indexed_songs'] = _safe_count(
-            cur, "SELECT COUNT(*) FROM embedding WHERE embedding IS NOT NULL"
-        )
+    if _table_exists(cur, 'voyager_index_data'):
+        metrics['indexed_songs'] = _count_voyager_index_rows(cur)
     # artist_index_data stores one row per index segment, each with a JSON
     # artist_map. We parse it and union the artist keys across all rows so we
     # get the true number of artists actually covered by the GMM index.
@@ -287,48 +300,6 @@ def _parse_keyval(s):
     return out
 
 
-def _collect_indexes(cur):
-    """Return row counts for the various indexes / caches.
-
-    These counts are surfaced as Key Number cards on the dashboard so the
-    user can compare them against the total song count.
-    """
-    items = []
-
-    def _check_table(label, table, ts_col='created_at', count_sql=None):
-        if not _table_exists(cur, table):
-            return None
-        rows = _safe_count(cur, count_sql or f"SELECT COUNT(*) FROM {table}")
-        last = None
-        if _column_exists(cur, table, ts_col):
-            try:
-                cur.execute(f"SELECT MAX({ts_col}) FROM {table}")
-                r = cur.fetchone()
-                if r and r[0]:
-                    last = r[0].isoformat() if hasattr(r[0], 'isoformat') else str(r[0])
-            except Exception:
-                _safe_rollback(cur)
-        return {'name': label, 'rows': rows, 'updated_at': last}
-
-    def _add(item):
-        if item is not None:
-            items.append(item)
-
-    # Voyager song index count is surfaced inside the "Total Songs" card,
-    # GMM/Map/Artist-Component are not shown as separate Key Numbers: we only
-    # list CLAP and MuLan here (when the tables actually exist in this
-    # deployment).
-    _add(_check_table(
-        'CLAP Index', 'clap_embedding',
-        count_sql="SELECT COUNT(*) FROM clap_embedding WHERE embedding IS NOT NULL",
-    ))
-    _add(_check_table(
-        'MuLan Index', 'mulan_embedding',
-        count_sql="SELECT COUNT(*) FROM mulan_embedding WHERE embedding IS NOT NULL",
-    ))
-    return items
-
-
 def _collect_cron(cur):
     rows = []
     try:
@@ -362,10 +333,8 @@ def _collect_cron(cur):
 def dashboard_summary():
     """Return the payload rendered by templates/dashboard.html.
 
-    Heavy library aggregates (``content`` and ``indexes``) are read from
-    the precomputed ``dashboard_stats`` singleton row and NOT recomputed
-    on each request: refresh is done hourly by
-    ``refresh_dashboard_stats()``.
+    Heavy library aggregates (``content``) are read from the precomputed
+    ``dashboard_stats`` singleton row and NOT recomputed on each request.
     Everything else (workers, recent tasks, cron) is cheap and stays live.
     """
     db = get_db()
@@ -373,7 +342,7 @@ def dashboard_summary():
     try:
         recent = _collect_task_metrics(cur)
         cron_rows = _collect_cron(cur)
-        content, indexes, stats_updated_at = _load_dashboard_stats(cur)
+        content, stats_updated_at = _load_dashboard_stats(cur)
     finally:
         cur.close()
 
@@ -385,35 +354,33 @@ def dashboard_summary():
         'workers': workers,
         'recent_tasks': recent,
         'content': content,
-        'indexes': indexes,
         'cron': cron_rows,
     })
 
 
 def _load_dashboard_stats(cur):
-    """Read the singleton dashboard_stats row. Returns (content, indexes, updated_at_iso)."""
+    """Read the singleton dashboard_stats row. Returns (content, updated_at_iso)."""
     try:
-        cur.execute("SELECT updated_at, content, indexes FROM dashboard_stats WHERE id = 1")
+        cur.execute("SELECT updated_at, content FROM dashboard_stats WHERE id = 1")
         row = cur.fetchone()
         if not row:
-            return {}, [], None
+            return {}, None
         updated_at = row['updated_at']
         updated_iso = (
             updated_at.strftime('%Y-%m-%d %H:%M:%S')
             if hasattr(updated_at, 'strftime') else (str(updated_at) if updated_at else None)
         )
         content = row['content'] or {}
-        indexes = row['indexes'] or []
-        return content, indexes, updated_iso
+        return content, updated_iso
     except Exception as e:
         logger.debug(f"dashboard: load_dashboard_stats failed: {e}")
         _safe_rollback(cur)
-        return {}, [], None
+        return {}, None
 
 
 def refresh_dashboard_stats(app):
-    """Recompute content metrics + index counts and upsert them into
-    the ``dashboard_stats`` singleton row. Intended to be called from
+    """Recompute content metrics and upsert them into the
+    ``dashboard_stats`` singleton row. Intended to be called from
     a background thread at app startup and then once per hour.
 
     Runs inside an app context so ``get_db()`` works, and commits the
@@ -426,20 +393,18 @@ def refresh_dashboard_stats(app):
             cur = db.cursor(cursor_factory=DictCursor)
             try:
                 content = _collect_content_metrics(cur)
-                indexes = _collect_indexes(cur)
             finally:
                 cur.close()
 
             cur2 = db.cursor()
             try:
                 cur2.execute(
-                    "INSERT INTO dashboard_stats (id, updated_at, content, indexes) "
-                    "VALUES (1, NOW(), %s::jsonb, %s::jsonb) "
+                    "INSERT INTO dashboard_stats (id, updated_at, content) "
+                    "VALUES (1, NOW(), %s::jsonb) "
                     "ON CONFLICT (id) DO UPDATE SET "
                     "updated_at = EXCLUDED.updated_at, "
-                    "content = EXCLUDED.content, "
-                    "indexes = EXCLUDED.indexes",
-                    (json.dumps(content), json.dumps(indexes)),
+                    "content = EXCLUDED.content",
+                    (json.dumps(content),),
                 )
                 db.commit()
             finally:
