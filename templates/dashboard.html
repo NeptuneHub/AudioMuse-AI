@@ -454,17 +454,19 @@
         }
 
         const totalSongs = c.total_songs || 0;
-        const indexed = c.indexed_songs || 0;
-        const songIdxPct = totalSongs > 0 ? Math.round(100 * indexed / totalSongs) : 0;
+        const musicnnIndexed = c.musicnn_indexed || 0;
+        const clapIndexed = c.clap_indexed || 0;
+        const songIdxPct = totalSongs > 0 ? Math.round(100 * musicnnIndexed / totalSongs) : 0;
+        const clapPct = totalSongs > 0 ? Math.round(100 * clapIndexed / totalSongs) : 0;
         const totalArtists = c.distinct_artists || 0;
-        const gmmArtists = c.artists_with_gmm || 0;
-        const gmmPct = totalArtists > 0 ? Math.round(100 * gmmArtists / totalArtists) : 0;
+        const gmmIndexed = c.gmm_indexed || 0;
+        const gmmPct = totalArtists > 0 ? Math.round(100 * gmmIndexed / totalArtists) : 0;
 
         const cards = [
             { title: 'Total Songs', value: totalSongs.toLocaleString(),
-              sub: 'indexed: ' + indexed.toLocaleString() + ' (' + songIdxPct + '%)' },
+              sub: 'Musicnn Indexed: ' + musicnnIndexed.toLocaleString() + ' (' + songIdxPct + '%)<br>CLAP Indexed: ' + clapIndexed.toLocaleString() + ' (' + clapPct + '%)' },
             { title: 'Total Artists', value: totalArtists.toLocaleString(),
-              sub: 'indexed: ' + gmmArtists.toLocaleString() + ' (' + gmmPct + '%)' },
+              sub: 'GMM Indexed: ' + gmmIndexed.toLocaleString() + ' (' + gmmPct + '%)' },
             { title: 'Total Albums', value: (c.distinct_albums || 0).toLocaleString(),
               sub: 'distinct albums in library' },
         ];

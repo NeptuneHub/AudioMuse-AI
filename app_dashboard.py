@@ -58,36 +58,44 @@ def _table_exists(cur, name):
         return False
 
 
-def _count_voyager_index_rows(cur):
-    """Count the number of songs currently stored in the Voyager index."""
+def _get_musicnn_index_count():
     try:
-        cur.execute(
-            "SELECT id_map_json FROM voyager_index_data WHERE index_name = %s",
-            (INDEX_NAME,),
-        )
-        row = cur.fetchone()
-        if row and row[0]:
+        from tasks.voyager_manager import voyager_index, id_map
+        if voyager_index is not None:
             try:
-                return len(json.loads(row[0]))
+                return len(voyager_index)
             except Exception:
                 pass
+        if id_map is not None:
+            return len(id_map)
+    except Exception:
+        pass
+    return 0
 
-        cur.execute(
-            "SELECT id_map_json FROM voyager_index_data WHERE index_name LIKE %s ORDER BY index_name",
-            (INDEX_NAME + "_%_%",),
-        )
-        for (id_map_json,) in cur.fetchall():
-            if not id_map_json:
-                continue
+
+def _get_clap_index_count():
+    try:
+        from tasks.clap_text_search import is_clap_cache_loaded, get_clap_cache_size
+        if is_clap_cache_loaded():
+            return get_clap_cache_size()
+    except Exception:
+        pass
+    return 0
+
+
+def _get_gmm_index_count():
+    try:
+        from tasks.artist_gmm_manager import artist_map, artist_index
+        if artist_map is not None:
+            return len(artist_map)
+        if artist_index is not None:
             try:
-                return len(json.loads(id_map_json))
+                return getattr(artist_index, 'num_elements', len(artist_index))
             except Exception:
-                continue
-        return 0
-    except Exception as e:
-        logger.debug(f"dashboard: voyager index count failed: {e}")
-        _safe_rollback(cur)
-        return 0
+                pass
+    except Exception:
+        pass
+    return 0
 
 
 def _collect_workers():
@@ -154,33 +162,10 @@ def _collect_content_metrics(cur):
         'total_songs': _safe_count(cur, "SELECT COUNT(*) FROM score"),
         'distinct_artists': _safe_count(cur, "SELECT COUNT(DISTINCT author) FROM score WHERE author IS NOT NULL"),
         'distinct_albums': _safe_count(cur, "SELECT COUNT(DISTINCT album) FROM score WHERE album IS NOT NULL"),
-        'indexed_songs': 0,
-        'artists_with_gmm': 0,
+        'musicnn_indexed': _get_musicnn_index_count(),
+        'clap_indexed': _get_clap_index_count(),
+        'gmm_indexed': _get_gmm_index_count(),
     }
-    if _table_exists(cur, 'voyager_index_data'):
-        metrics['indexed_songs'] = _count_voyager_index_rows(cur)
-    # artist_index_data stores one row per index segment, each with a JSON
-    # artist_map. We parse it and union the artist keys across all rows so we
-    # get the true number of artists actually covered by the GMM index.
-    if _table_exists(cur, 'artist_index_data'):
-        try:
-            cur.execute("SELECT artist_map_json FROM artist_index_data")
-            artists = set()
-            for (mp,) in cur.fetchall():
-                if not mp:
-                    continue
-                try:
-                    obj = json.loads(mp)
-                except Exception:
-                    continue
-                if isinstance(obj, dict):
-                    artists.update(obj.keys())
-                elif isinstance(obj, list):
-                    artists.update(str(x) for x in obj)
-            metrics['artists_with_gmm'] = len(artists)
-        except Exception as e:
-            logger.debug(f"dashboard: artist_map_json parse failed: {e}")
-            _safe_rollback(cur)
 
     # Parse mood vectors to collect the two signals actually rendered by
     # the dashboard:
