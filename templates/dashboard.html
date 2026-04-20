@@ -468,15 +468,6 @@
             { title: 'Total Albums', value: (c.distinct_albums || 0).toLocaleString(),
               sub: 'distinct albums in library' },
         ];
-        (d.indexes || []).forEach(ix => {
-            const rows = ix.rows || 0;
-            let sub = ix.updated_at ? 'updated: ' + fmtTime(ix.updated_at) : '';
-            if (totalSongs > 0 && /(CLAP|MuLan|Map Projection)/i.test(ix.name)) {
-                const pct = Math.round(100 * rows / totalSongs);
-                sub = (sub ? sub + ' • ' : '') + pct + '% of songs';
-            }
-            cards.push({ title: ix.name, value: rows.toLocaleString(), sub });
-        });
 
         cards.forEach(c => {
             const div = document.createElement('div');
