@@ -207,7 +207,7 @@ def delete_additional_user_safe(user_id):
     try:
         with db.cursor() as cur:
             cur.execute(
-                "SELECT role FROM audiomuse_users WHERE id = %s FOR UPDATE",
+                "SELECT role FROM audiomuse_users WHERE id = %s",
                 (user_id,),
             )
             row = cur.fetchone()
@@ -216,12 +216,10 @@ def delete_additional_user_safe(user_id):
                 return "not_found", None
             target_role = row[0]
             if target_role == USER_ROLE_ADMIN:
-                # Lock all admin rows so a concurrent transaction cannot
-                # pass its own count check while we are mid-delete.
-                # PostgreSQL does not allow FOR UPDATE on aggregate queries,
-                # so select the rows themselves and count client-side.
+                # To avoid deadlocks when two admins delete each other at the
+                # same time, acquire the admin-group lock first in a stable order.
                 cur.execute(
-                    "SELECT id FROM audiomuse_users WHERE role = %s FOR UPDATE",
+                    "SELECT id FROM audiomuse_users WHERE role = %s ORDER BY id FOR UPDATE",
                     (USER_ROLE_ADMIN,),
                 )
                 admin_count = len(cur.fetchall())
