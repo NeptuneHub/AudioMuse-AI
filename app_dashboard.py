@@ -57,6 +57,19 @@ def _table_exists(cur, name):
         return False
 
 
+def _column_exists(cur, table_name, column_name):
+    try:
+        cur.execute(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s)",
+            (table_name, column_name),
+        )
+        row = cur.fetchone()
+        return bool(row and row[0])
+    except Exception:
+        _safe_rollback(cur)
+        return False
+
+
 def _collect_workers():
     """Return basic info about RQ workers. Only the columns rendered in
     the Workers table of the dashboard are populated."""
@@ -287,13 +300,14 @@ def _collect_indexes(cur):
             return None
         rows = _safe_count(cur, count_sql or f"SELECT COUNT(*) FROM {table}")
         last = None
-        try:
-            cur.execute(f"SELECT MAX({ts_col}) FROM {table}")
-            r = cur.fetchone()
-            if r and r[0]:
-                last = r[0].isoformat() if hasattr(r[0], 'isoformat') else str(r[0])
-        except Exception:
-            _safe_rollback(cur)
+        if _column_exists(cur, table, ts_col):
+            try:
+                cur.execute(f"SELECT MAX({ts_col}) FROM {table}")
+                r = cur.fetchone()
+                if r and r[0]:
+                    last = r[0].isoformat() if hasattr(r[0], 'isoformat') else str(r[0])
+            except Exception:
+                _safe_rollback(cur)
         return {'name': label, 'rows': rows, 'updated_at': last}
 
     def _add(item):
