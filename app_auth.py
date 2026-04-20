@@ -80,15 +80,24 @@ def _jwt_secret():
 
 # --- User CRUD --------------------------------------------------------------
 
-def list_additional_users():
-    """Return dicts ``{id, username, role, created_at}`` for every user row.
+def list_additional_users(username=None):
+    """Return dicts ``{id, username, role, created_at}`` for user rows.
+
+    When ``username`` is provided, the query is scoped to that single row
+    so non-admin callers never pull other accounts out of the database.
     Password hashes are never returned.
     """
     db = _get_db()
     with db.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute(
-            "SELECT id, username, role, created_at FROM audiomuse_users ORDER BY username ASC"
-        )
+        if username is None:
+            cur.execute(
+                "SELECT id, username, role, created_at FROM audiomuse_users ORDER BY username ASC"
+            )
+        else:
+            cur.execute(
+                "SELECT id, username, role, created_at FROM audiomuse_users WHERE username = %s",
+                (username,),
+            )
         rows = cur.fetchall()
     out = []
     for row in rows:
@@ -539,7 +548,7 @@ def check_admin_needed():
         return None
     if not is_admin_path(request.path):
         return None
-    role = getattr(g, 'auth_role', 'admin')
+    role = getattr(g, 'auth_role', None)
     if role == 'admin':
         return None
     current_app.logger.warning(
@@ -724,15 +733,18 @@ def list_users_endpoint():
     import config as _cfg
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
-    role = getattr(g, 'auth_role', 'admin')
+    role = getattr(g, 'auth_role', None)
     current_username = getattr(g, 'auth_user', None)
     try:
-        users = list_additional_users()
+        if role == 'admin':
+            users = list_additional_users()
+        else:
+            # Scope the query to the caller so non-admins never receive
+            # other users' rows from the database at all.
+            users = list_additional_users(username=current_username) if current_username else []
     except Exception as exc:
         current_app.logger.error(f"Failed to list users: {exc}", exc_info=True)
         return jsonify({"error": "Failed to list users"}), 500
-    if role != 'admin':
-        users = [u for u in users if u.get('username') == current_username]
     return jsonify({
         "users": users,
         "current_user": current_username,
@@ -745,7 +757,7 @@ def create_user_endpoint():
     import config as _cfg
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
-    if getattr(g, 'auth_role', 'admin') != 'admin':
+    if getattr(g, 'auth_role', None) != 'admin':
         return jsonify({"error": "Forbidden"}), 403
     data = request.get_json(silent=True) or {}
     username = (data.get('username') or '').strip()
@@ -770,7 +782,7 @@ def delete_user_endpoint(user_id):
     import config as _cfg
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
-    if getattr(g, 'auth_role', 'admin') != 'admin':
+    if getattr(g, 'auth_role', None) != 'admin':
         return jsonify({"error": "Forbidden"}), 403
     target = get_additional_user_by_id(user_id)
     if not target:
@@ -802,7 +814,7 @@ def update_user_password_endpoint(user_id):
     target = get_additional_user_by_id(user_id)
     if not target:
         return jsonify({"error": "User not found."}), 404
-    role = getattr(g, 'auth_role', 'admin')
+    role = getattr(g, 'auth_role', None)
     current_username = getattr(g, 'auth_user', None)
     if role != 'admin' and target['username'] != current_username:
         return jsonify({"error": "Forbidden"}), 403

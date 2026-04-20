@@ -1561,7 +1561,7 @@ from app_auth import (  # noqa: E402  (intentional late import to avoid cycles)
     count_admin_users,
     get_additional_user_by_id,
     create_additional_user,
-    delete_additional_user,
+    delete_additional_user_safe,
     verify_additional_user,
     upsert_admin_user,
     seed_admin_from_env,
