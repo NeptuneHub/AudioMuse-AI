@@ -851,6 +851,16 @@ body.dark-mode #cancel-sync-btn:disabled {
     border: 1px solid var(--border-color);
 }
 
+.responsive-table-wrapper {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.responsive-table-wrapper table {
+    min-width: 420px;
+}
+
 table {
     width: 100%;
     border-collapse: collapse;

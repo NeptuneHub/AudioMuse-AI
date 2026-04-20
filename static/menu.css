@@ -229,7 +229,7 @@ html.dark-mode .sidebar.open + .main-content .menu-toggle {
 }
 
 .has-submenu.open > .submenu {
-    max-height: 200px;
+    max-height: 400px;
 }
 
 .submenu li {

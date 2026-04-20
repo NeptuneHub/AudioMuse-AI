@@ -96,23 +96,11 @@ def restore_backup():
 
         env = _pg_env()
 
-        # First: drop ALL tables in the public schema so the restore starts clean
-        drop_sql = (
-            "DO $$ DECLARE r RECORD; BEGIN "
-            "FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP "
-            "EXECUTE 'DROP TABLE IF EXISTS public.' || quote_ident(r.tablename) || ' CASCADE'; "
-            "END LOOP; END $$;"
-        )
-        drop_cmd = _pg_cmd('psql', '-d', POSTGRES_DB, '-c', drop_sql)
-        drop_result = subprocess.run(drop_cmd, env=env, capture_output=True, text=True, timeout=60)
-        if drop_result.returncode != 0:
-            logger.error("Failed to drop tables before restore: %s", drop_result.stderr)
-            return jsonify({'error': f'Failed to clean database: {drop_result.stderr}'}), 500
-        logger.info("All existing tables dropped before restore.")
-
-        # Then: restore from the dump
-        restore_cmd = _pg_cmd('psql', '-d', POSTGRES_DB, '-f', tmp.name)
-        result = subprocess.run(restore_cmd, env=env, capture_output=True, text=True, timeout=600)
+        # Restore from the dump. The backup file is generated with --clean --if-exists,
+        # so it already contains the required DROP statements and does not require a
+        # separate pre-clean step.
+        restore_cmd = _pg_cmd('psql', '-d', POSTGRES_DB, '-v', 'ON_ERROR_STOP=1', '-f', tmp.name)
+        result = subprocess.run(restore_cmd, env=env, capture_output=True, text=True, timeout=1800)
         if result.returncode != 0:
             logger.error("psql restore failed: %s", result.stderr)
             return jsonify({'error': f'psql restore failed: {result.stderr}'}), 500
@@ -148,7 +136,7 @@ def restore_backup():
         return jsonify({'error': 'psql is not installed or not on PATH'}), 500
     except subprocess.TimeoutExpired:
         logger.error("psql restore timed out")
-        return jsonify({'error': 'psql restore timed out after 600 seconds'}), 500
+        return jsonify({'error': 'psql restore timed out after 1800 seconds'}), 500
     except Exception:
         logger.exception("Restore failed")
         return jsonify({'error': 'Restore failed. Check server logs.'}), 500

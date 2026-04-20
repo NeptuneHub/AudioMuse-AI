@@ -25,6 +25,7 @@ var saveButton = document.getElementById('save-button');
 var serverConfigFields = document.getElementById('server-config-fields');
 var advancedFields = document.getElementById('advanced-fields');
 var authCredentials = document.getElementById('auth-credentials');
+var authAdminExists = document.getElementById('auth-admin-exists');
 var apiTokenRow = document.getElementById('api-token-row');
 var authCredentialInputs = [
     document.getElementById('AUDIOMUSE_USER'),
@@ -36,21 +37,38 @@ var setupForm = document.getElementById('setup-form');
 var serverValues = {};
 var serverSecretHasValue = {};
 var originalValues = {};
+// Set from GET /api/setup: when true, an admin already exists in
+// audiomuse_users and the setup wizard must not allow editing admin
+// credentials here. User management happens in /users instead.
+var hasAdminUser = false;
 
 function updateAuthVisibility() {
     var authEnabled = document.getElementById('AUTH_ENABLED').value === 'true';
+    var showAdminCreds = authEnabled && !hasAdminUser;
     authCredentials.style.display = authEnabled ? 'grid' : 'none';
+    if (authAdminExists) {
+        authAdminExists.style.display = (authEnabled && hasAdminUser) ? 'block' : 'none';
+    }
+    // Hide the three admin-credential wrappers when an admin already exists.
+    var adminWrappers = document.querySelectorAll('.auth-admin-credential');
+    for (var i = 0; i < adminWrappers.length; i++) {
+        adminWrappers[i].style.display = showAdminCreds ? '' : 'none';
+    }
     apiTokenRow.style.display = authEnabled ? 'block' : 'none';
     authCredentialInputs.forEach(function(input) {
         if (!input) {
             return;
         }
-        input.disabled = !authEnabled;
+        // JWT_SECRET stays editable whenever auth is enabled, regardless of
+        // whether an admin already exists.
+        var isAdminCred = input.id !== 'JWT_SECRET';
+        var enabledForInput = isAdminCred ? showAdminCreds : authEnabled;
+        input.disabled = !enabledForInput;
         var label = document.querySelector('label[for="' + input.id + '"]');
-        if (input.id !== 'JWT_SECRET') {
-            input.required = authEnabled;
+        if (isAdminCred) {
+            input.required = enabledForInput;
             if (label) {
-                if (authEnabled) {
+                if (enabledForInput) {
                     label.classList.add('required-label');
                 } else {
                     label.classList.remove('required-label');
@@ -243,6 +261,7 @@ function loadSetupData() {
         }
         return response.json();
     }).then(function(data) {
+        hasAdminUser = !!data.has_admin_user;
         var basicData = {};
         var secretHasValue = {};
         data.basic_fields.forEach(function(item) {
@@ -522,7 +541,13 @@ setupForm.addEventListener('submit', function(event) {
     }).catch(function(err) {
         saveFeedback.className = 'status-failure inline-feedback';
         saveFeedback.style.display = 'block';
-        saveFeedback.textContent = err.message;
+        var message = err.message || 'Unable to save configuration.';
+        if (message === 'Forbidden' || message === 'Setup required' || message === 'Auth not configured') {
+            message = 'Error saving configuration. Please refresh the page and try again.';
+        } else if (!message.toLowerCase().includes('refresh')) {
+            message = message + ' Please refresh the page or check the server logs.';
+        }
+        saveFeedback.textContent = '✕ ' + message;
     }).finally(function() {
         saveButton.disabled = false;
     });

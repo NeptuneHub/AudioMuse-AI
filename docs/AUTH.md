@@ -20,30 +20,34 @@ curl -v \
 
 # Password reset
 
-The only way to reset the admin password is actually access to the database and delete it from the table.
+If you have lost access to all admin accounts, reset admin access by deleting both the legacy admin config entries and the admin rows in `audiomuse_users`.
 
-From an ububntu cli you can install the postgresql-client if you don't already have it:
+From an ubuntu cli you can install the postgresql client if you don't already have it:
 ```
 sudo apt update && sudo apt install -y postgresql-client
 ```
 
-Then replace this parameters
+Then replace these parameters:
 - `PGPASSWORD=audiomusepassword`: database password
 - `-U audiomuse`: database user
 - `-d audiomusedb`: database name
-- `-h 192.168.3.213`: database ip
+- `-h 192.168.3.213`: database host
 - `-p 5432`: database port
 
-In the below command and execute:
+Run:
 ```
-PGPASSWORD=audiomusepassword psql -h 192.168.3.213 -p 5432 -U audiomuse -d audiomusedb   -c "DELETE FROM app_config WHERE key IN ('AUDIOMUSE_USER','AUDIOMUSE_PASSWORD');"
+PGPASSWORD=audiomusepassword psql -h 192.168.3.213 -p 5432 -U audiomuse -d audiomusedb \
+  -c "DELETE FROM app_config WHERE key IN ('AUDIOMUSE_USER','AUDIOMUSE_PASSWORD'); DELETE FROM audiomuse_users WHERE role = 'admin';"
 ```
-If everything is confiugred correctly you will look:
+If everything is configured correctly you should see something like:
 ```
 DELETE 2
+DELETE 1
 ```
 
-At this point you have to restart your flaks and worker container and at the new access your will be able to set a new user and password.
+Then restart the Flask and worker containers. On next access you'll be able to set a new admin user and password.
+
+If another admin still has access, do not use this procedure; the other admin can delete and recreate the admin account from the web UI.
 
 ## HTTPS
 

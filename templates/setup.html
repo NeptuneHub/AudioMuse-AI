@@ -184,33 +184,40 @@
                         <option value="false">False</option>
                     </select>
                 </div>
+                <div id="auth-admin-exists" class="field-row" style="display:none;">
+                    <p style="margin:0; padding:0.75rem 1rem; border-radius:6px; background:var(--card-bg, #f5f5f5); border:1px solid var(--border-color, #ccc);">
+                        An admin account already exists. To add, remove, or change
+                        admin and normal user accounts, go to the
+                        <a href="/users">Users</a> page.
+                    </p>
+                </div>
                 <div id="auth-credentials" class="field-grid">
-                    <div>
+                    <div class="auth-admin-credential">
                         <label for="AUDIOMUSE_USER" class="label-with-tooltip">
-                            Username
+                            Admin Username
                             <span class="info-tooltip" tabindex="0">
                                 <span class="info-icon"></span>
-                                <span class="tooltip-text">The username you'll use to log into the AudioMuse-AI web interface.</span>
+                                <span class="tooltip-text">The admin username you'll use to log into the AudioMuse-AI web interface. The admin has full access, including the Administration menu (Setup Wizard, Users, Cleaning, Scheduled Tasks, Backup, Provider Migration, Analysis and Clustering). Additional non-admin users can be created later from the Users page.</span>
                             </span>
                         </label>
                         <input id="AUDIOMUSE_USER" name="AUDIOMUSE_USER" type="text" placeholder="alice">
                     </div>
-                    <div>
+                    <div class="auth-admin-credential">
                         <label for="AUDIOMUSE_PASSWORD" class="label-with-tooltip">
-                            Password
+                            Admin Password
                             <span class="info-tooltip" tabindex="0">
                                 <span class="info-icon"></span>
-                                <span class="tooltip-text">The password for the user above.</span>
+                                <span class="tooltip-text">The password for the admin user above.</span>
                             </span>
                         </label>
                         <input id="AUDIOMUSE_PASSWORD" name="AUDIOMUSE_PASSWORD" type="password" placeholder="secret123">
                     </div>
-                    <div>
+                    <div class="auth-admin-credential">
                         <label for="AUDIOMUSE_PASSWORD_CONFIRM" class="label-with-tooltip">
-                            Confirm password
+                            Confirm Admin Password
                             <span class="info-tooltip" tabindex="0">
                                 <span class="info-icon"></span>
-                                <span class="tooltip-text">Re-enter the password above to confirm it. Both fields must match before saving.</span>
+                                <span class="tooltip-text">Re-enter the admin password above to confirm it. Both fields must match before saving.</span>
                             </span>
                         </label>
                         <input id="AUDIOMUSE_PASSWORD_CONFIRM" type="password" placeholder="secret123">
