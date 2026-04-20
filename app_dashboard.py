@@ -60,13 +60,10 @@ def _table_exists(cur, name):
 def _get_musicnn_index_count():
     try:
         from tasks.voyager_manager import voyager_index, id_map
-        if voyager_index is not None:
-            try:
-                return len(voyager_index)
-            except Exception:
-                pass
         if id_map is not None:
             return len(id_map)
+        if voyager_index is not None:
+            return getattr(voyager_index, 'num_elements', 0)
     except Exception:
         pass
     return 0
@@ -88,10 +85,7 @@ def _get_gmm_index_count():
         if artist_map is not None:
             return len(artist_map)
         if artist_index is not None:
-            try:
-                return getattr(artist_index, 'num_elements', len(artist_index))
-            except Exception:
-                pass
+            return getattr(artist_index, 'num_elements', 0)
     except Exception:
         pass
     return 0
