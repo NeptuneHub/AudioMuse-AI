@@ -39,7 +39,8 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * **Version 1.0.0** introduces the Setup Wizard for an easy configuration with the web UI
+> * **Version 1.0.2** introduces providers migration, multiple users support and the dashboard.
+> * **Version 1.0.0** introduces the Setup Wizard for an easy configuration with the web UI.
 > * **Version 0.9.6** authentication enabled by default. Read the [AUTHENTICATION](docs/AUTH.md) docs to know how to proceed.
 
 ## Disclaimer
