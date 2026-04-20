@@ -698,9 +698,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 # except Exception as e:
                 #     logger.warning(f"Failed to update album name for '{track_name_full}': {e}")
                 
-                log_analysis_complete = 1
                 if track_id_str in unanalyzable_track_ids_set:
-                    log_analysis_complete = 0
                     tracks_skipped_count += 1
                     logger.info(f"Skipping '{track_name_full}' - previously marked as unanalyzable.")
                     continue
@@ -984,6 +982,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album}
             if tracks_analyzed_count == 0 and tracks_skipped_count == total_tracks_in_album:
                 completion_message = f"Album '{album_name}' skipped - all tracks previously marked as unanalyzable."
+
             else:
                 completion_message = f"Album '{album_name}' analysis complete."
 
@@ -1197,7 +1196,36 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 while len(active_jobs) >= MAX_QUEUED_ANALYSIS_JOBS:
                     monitor_and_clear_jobs()
                     time.sleep(5)
-                
+
+                # Unanalyzable tracks
+                tracks = get_tracks_from_album(album['Id'])
+                track_ids = [str(t['Id']) for t in tracks]
+
+                with get_db() as conn, conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT item_id, title FROM score 
+                        WHERE item_id IN %s 
+                        AND analysis_status = 'unanalyzable'
+                    """, (tuple(track_ids),))
+                    unanalyzable_tracks = cur.fetchall()
+
+                unanalyzable_count = len(unanalyzable_tracks)
+
+                if unanalyzable_count > 0:
+                    unanalyzable_names = [t[1] for t in unanalyzable_tracks]
+                    log_and_update_main(
+                        f"Album '{album.get('Name')}' has {unanalyzable_count} unanalyzable track(s): {', '.join(unanalyzable_names)}. Check logs for details.",
+                        current_progress
+                    )
+
+                if unanalyzable_count == len(track_ids):
+                    albums_skipped += 1
+                    checked_album_ids.add(album['Id'])
+                    log_and_update_main(
+                        f"Skipping album '{album.get('Name')}' - all {unanalyzable_count} tracks previously marked as unanalyzable.",
+                        current_progress
+                    )
+                    continue
                 # MODIFIED: Call to get_tracks_from_album no longer needs server parameters.
                 tracks = get_tracks_from_album(album['Id'])
                 # If no tracks returned, skip and log reason.
@@ -1206,7 +1234,6 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     checked_album_ids.add(album['Id'])
                     logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - no tracks returned by media server.")
                     continue
-
                 # Store artist ID mappings for all tracks in this album (even if already analyzed)
                 try:
                     from app_helper_artist import upsert_artist_mapping
