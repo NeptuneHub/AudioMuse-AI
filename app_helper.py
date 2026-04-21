@@ -537,7 +537,13 @@ def record_task_history(task_id, task_type, status, duration_seconds=None, note=
     recent ``TASK_HISTORY_MAX_ROWS`` entries.
 
     Safe to call from anywhere; never raises. ``details`` (dict or None) is
-    used to build a default ``note`` when one is not provided explicitly."""
+    used to build a default ``note`` when one is not provided explicitly.
+    If a short note cannot be inferred, fall back to the task's final
+    status_message or message text when available.
+
+    The history table is treated as immutable per task_id: once a task has
+    been recorded, we do not insert a second history row for the same task.
+    """
     if not task_id:
         return
     try:
@@ -549,8 +555,16 @@ def record_task_history(task_id, task_type, status, duration_seconds=None, note=
             details_obj = dict(details_obj)
             details_obj['_task_id'] = task_id
             note = _build_task_note(task_type, details_obj, db) or ''
+            if not note:
+                note = details_obj.get('status_message') or details_obj.get('message') or ''
 
         with db.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM task_history WHERE task_id = %s LIMIT 1",
+                (task_id,)
+            )
+            if cur.fetchone():
+                return
             cur.execute(
                 """
                 INSERT INTO task_history (task_id, task_type, status, duration_seconds, note)
