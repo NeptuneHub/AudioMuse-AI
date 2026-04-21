@@ -988,14 +988,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
 
             summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album, "unanalyzable_tracks": unanalyzable_tracks_skipped_count}
             log_and_update_album_task(f"Album '{album_name}' analysis complete.", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
-            if unanalyzable_tracks_skipped_count > 0:
-                completion_message = f"Album '{album_name}' analysis complete. Note: {unanalyzable_tracks_skipped_count} track(s) were marked as unanalyzable - check logs for details."
-                # Update parent main task log
-                save_task_status(parent_task_id, "main_analysis", TASK_STATUS_PROGRESS, 
-                                details={"status_message": completion_message})
-            else:
-                completion_message = f"Album '{album_name}' analysis complete."
-            log_and_update_album_task(completion_message, 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
             return {"status": "SUCCESS", **summary}
 
         except OperationalError as e:
@@ -1103,7 +1095,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             total_albums_to_check = len(all_albums)
             active_jobs, launched_jobs = {}, []
             launched_job_ids = set()  # Track job IDs launched in THIS run only
-            albums_skipped, albums_launched, albums_completed, last_rebuild_count = 0, 0, 0, 0
+            albums_skipped, albums_launched, albums_completed, last_rebuild_count, total_unanalyzable = 0, 0, 0, 0, 0
 
             def get_existing_track_ids(track_ids):
                 if not track_ids: return set()
@@ -1126,7 +1118,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 CRITICAL: Also removes jobs from active_jobs if they're not in launched_job_ids
                 (zombie jobs from previous failed runs) to prevent blocking forever.
                 """
-                nonlocal albums_completed, last_rebuild_count
+                nonlocal albums_completed, last_rebuild_count, total_unanalyzable
                 removed = 0
 
                 # First: try to detect terminal jobs via RQ
@@ -1140,6 +1132,13 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     try:
                         job = Job.fetch(job_id, connection=redis_conn)
                         if job.is_finished or job.is_failed or job.is_canceled:
+                            if job.is_finished:
+                                try:
+                                    result = job.result
+                                    if result and isinstance(result, dict):
+                                        total_unanalyzable += result.get("unanalyzable_tracks", 0)
+                                except Exception as e:
+                                    logger.warning(f"Could not read job result for {job_id}: {e}")
                             del active_jobs[job_id]
                             removed += 1
                     except NoSuchJobError:
@@ -1384,8 +1383,10 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
             # Top query computation disabled - using default queries from database only
             logger.info('Analysis complete. CLAP text search uses default queries (no auto-regeneration).')
-
-            final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
+            if total_unanalyzable > 0:
+                final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}. Note: {total_unanalyzable} track(s) marked as unanalyzable - check logs for details."
+            else:
+                final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
             log_and_update_main(final_message, 100, task_state=TASK_STATUS_SUCCESS)
             clean_temp(TEMP_DIR)
             return {"status": "SUCCESS", "message": final_message}
