@@ -128,7 +128,14 @@ def init_db():
         if not cur.fetchone()[0]:
             logger.info("Adding 'analysis_status' column to 'score' table.")
             cur.execute("ALTER table score ADD COLUMN analysis_status TEXT DEFAULT NULL")
-        
+            # Backfill existing analyzed tracks
+            logger.info("Backfilling analysis_status for existing analyzed tracks.")
+            cur.execute("""
+                UPDATE score SET analysis_status = 'analyzed' 
+                WHERE mood_vector IS NOT NULL 
+                AND mood_vector != ''
+                AND analysis_status IS NULL
+            """)
         # Ensure we have a searchable, accent-stripped `search_u` column.
         # Postgres does not allow generated columns to call `unaccent()` (it's not marked immutable),
         # so we store the value in a normal column and keep it in sync via trigger.

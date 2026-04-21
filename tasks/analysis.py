@@ -560,7 +560,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
     with app.app_context():
         initial_details = {"album_name": album_name, "log": [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Album analysis task started."]}
         save_task_status(current_task_id, "album_analysis", TASK_STATUS_STARTED, parent_task_id=parent_task_id, sub_type_identifier=album_id, progress=0, details=initial_details)
-        tracks_analyzed_count, tracks_skipped_count, current_progress_val = 0, 0, 0
+        tracks_analyzed_count, tracks_skipped_count, unanalyzable_tracks_skipped_count, current_progress_val = 0, 0, 0, 0
         current_task_logs = initial_details["log"]
         
         model_paths = {
@@ -628,13 +628,14 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL", (tuple(track_ids_as_strings),))
                     return {row[0] for row in cur.fetchall()}
             
-            def get_unanalyzable_track_ids(track_ids):
-                if not track_ids: return set()
-                with get_db() as conn, conn.cursor() as cur:
-                    track_ids_as_strings = [str(id) for id in track_ids]
-                    cur.execute("SELECT item_id FROM score WHERE item_id IN %s AND analysis_status = 'unanalyzable'", (tuple(track_ids_as_strings),))
-                    return {row[0] for row in cur.fetchall()}
-
+            # Unanalyzable track feature - uncomment if you don't want to skip the album with unanalyzable tracks
+            # def get_unanalyzable_track_ids(track_ids):
+            #     if not track_ids: return set()
+            #     with get_db() as conn, conn.cursor() as cur:
+            #         track_ids_as_strings = [str(id) for id in track_ids]
+            #         cur.execute("SELECT item_id, title FROM score WHERE item_id IN %s AND analysis_status = 'unanalyzable'", (tuple(track_ids_as_strings),))
+            #         return {(row[0], row[1]) for row in cur.fetchall()}
+            #unanalyzable_tracks_set = get_unanalyzable_track_ids([str(t['Id']) for t in tracks]) 
             def get_missing_clap_track_ids(track_ids):
                 if not track_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
@@ -654,7 +655,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             existing_track_ids_set = get_existing_track_ids([str(t['Id']) for t in tracks])
             missing_clap_ids_set = get_missing_clap_track_ids([str(t['Id']) for t in tracks]) if is_clap_available() else set()
             missing_mulan_ids_set = get_missing_mulan_track_ids([str(t['Id']) for t in tracks]) if MULAN_ENABLED else set()
-            unanalyzable_track_ids_set = get_unanalyzable_track_ids([str(t['Id']) for t in tracks]) 
+            
             total_tracks_in_album = len(tracks)
 
             for idx, item in enumerate(tracks, 1):
@@ -664,6 +665,16 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     if (task_info and task_info.get('status') == 'REVOKED') or (parent_info and parent_info.get('status') in ['REVOKED', 'FAILURE']):
                         log_and_update_album_task(f"Stopping album analysis for '{album_name}' due to parent/self revocation.", current_progress_val, task_state=TASK_STATUS_REVOKED)
                         return {"status": "REVOKED"}
+                
+                # Unanalyzable track check
+                # Uncomment if you don't want albums skipped because of unanalyzable tracks
+                # track_id_str_ = str(item['Id'])
+                # track_title = item['Name']
+                # unanalyzable_ids = [track[0] for track in unanalyzable_tracks_set]
+                # if track_id_str_ in unanalyzable_ids:
+                #     unanalyzable_tracks_skipped_count += 1
+                #     logger.info(f"Skipping '{track_title}' - previously marked as unanalyzable.")
+                #     continue
 
                 track_name_full = f"{item['Name']} by {item.get('AlbumArtist', 'Unknown')}"
                 progress = 10 + int(85 * (idx / float(total_tracks_in_album)))
@@ -698,10 +709,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 # except Exception as e:
                 #     logger.warning(f"Failed to update album name for '{track_name_full}': {e}")
                 
-                if track_id_str in unanalyzable_track_ids_set:
-                    tracks_skipped_count += 1
-                    logger.info(f"Skipping '{track_name_full}' - previously marked as unanalyzable.")
-                    continue
 
                 if not needs_musicnn and not needs_clap and not needs_mulan:
                     tracks_skipped_count += 1
@@ -825,7 +832,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                             ON CONFLICT (item_id) DO UPDATE SET analysis_status = 'unanalyzable'
                                         """, (track_id_str, track_name_full))
                                 conn.commit() 
-                            tracks_skipped_count += 1
+                            unanalyzable_tracks_skipped_count += 1
                             continue
                         
                         top_moods = dict(sorted(analysis['moods'].items(), key=lambda i: i[1], reverse=True)[:top_n_moods])
@@ -979,13 +986,15 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             logger.info("Performing final comprehensive cleanup after album analysis")
             comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
 
-            summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album}
-            if tracks_analyzed_count == 0 and tracks_skipped_count == total_tracks_in_album:
-                completion_message = f"Album '{album_name}' skipped - all tracks previously marked as unanalyzable."
-
+            summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album, "unanalyzable_tracks": unanalyzable_tracks_skipped_count}
+            log_and_update_album_task(f"Album '{album_name}' analysis complete.", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
+            if unanalyzable_tracks_skipped_count > 0:
+                completion_message = f"Album '{album_name}' analysis complete. Note: {unanalyzable_tracks_skipped_count} track(s) were marked as unanalyzable - check logs for details."
+                # Update parent main task log
+                save_task_status(parent_task_id, "main_analysis", TASK_STATUS_PROGRESS, 
+                                details={"status_message": completion_message})
             else:
                 completion_message = f"Album '{album_name}' analysis complete."
-
             log_and_update_album_task(completion_message, 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
             return {"status": "SUCCESS", **summary}
 
@@ -1210,15 +1219,17 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     unanalyzable_tracks = cur.fetchall()
 
                 unanalyzable_count = len(unanalyzable_tracks)
-
-                if unanalyzable_count > 0:
-                    unanalyzable_names = [t[1] for t in unanalyzable_tracks]
+                unanalyzable_names = [t[1] for t in unanalyzable_tracks]
+                if unanalyzable_count > 0 and unanalyzable_count != len(track_ids):
+                    albums_skipped += 1
                     log_and_update_main(
-                        f"Album '{album.get('Name')}' has {unanalyzable_count} unanalyzable track(s): {', '.join(unanalyzable_names)}. Check logs for details.",
+                        f"Skipping album '{album.get('Name')}' has {unanalyzable_count} unanalyzable track(s): {', '.join(unanalyzable_names)}. Delete track(s) from album.",
                         current_progress
                     )
+                    continue
 
                 if unanalyzable_count == len(track_ids):
+                    logger.info(f"album name: '{album.get('Name')}', unanalyzable tracks: {', '.join(unanalyzable_names)}. ")
                     albums_skipped += 1
                     checked_album_ids.add(album['Id'])
                     log_and_update_main(
@@ -1321,7 +1332,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 
             # If we never enqueued any album jobs for the batch, warn operator so they can investigate.
             if albums_launched == 0 and albums_skipped == total_albums_to_check:
-                logger.warning(f"No albums were enqueued: all {total_albums_to_check} albums were skipped (no tracks or already analyzed). If unexpected, try running with num_recent_albums=0 to fetch more or inspect the media server responses and Spotify filtering.")
+                logger.warning(f"No albums were enqueued: all {total_albums_to_check} albums were skipped (no tracks, already analyzed, or unanalyzable tracks). If unexpected, try running with num_recent_albums=0 to fetch more or inspect the media server responses and Spotify filtering.")
 
             while active_jobs:
                 monitor_and_clear_jobs()
