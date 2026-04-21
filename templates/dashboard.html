@@ -1,0 +1,706 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    /* Per-section "updated at" caption shown right under each section header. */
+    .dash-updated {
+        font-size: 0.8rem;
+        margin-top: 0.25rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .dash-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        gap: 12px;
+    }
+    .dash-stat-card {
+        background: var(--bg-body);
+        border: 1px solid var(--border-color);
+        border-radius: 0.6rem;
+        padding: 12px;
+        min-width: 0;
+    }
+    .dash-stat-card h3 {
+        margin: 0 0 6px 0;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        letter-spacing: 0.05em;
+        font-weight: 600;
+    }
+    .dash-stat {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: var(--text-title);
+        line-height: 1.1;
+        word-break: break-word;
+    }
+    .dash-substat {
+        font-size: 0.78rem;
+        color: var(--text-muted);
+        margin-top: 4px;
+        word-break: break-word;
+    }
+    .dash-section-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.25rem;
+        min-width: 0;
+    }
+    .dash-section-grid > * { min-width: 0; }
+    @media (max-width: 900px) {
+        .dash-section-grid { grid-template-columns: 1fr; }
+        .dash-stat { font-size: 1.3rem; }
+    }
+    @media (max-width: 480px) {
+        .dash-stat { font-size: 1.15rem; }
+    }
+
+    .dash-table-wrap {
+        width: 100%;
+        max-width: 100%;
+    }
+    /* Below this breakpoint tables stop shrinking and instead become
+       horizontally scrollable so content stays readable on phones. */
+    @media (max-width: 600px) {
+        .dash-table-wrap {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        .dash-table {
+            min-width: 560px;
+            table-layout: auto;
+        }
+        .dash-table td, .dash-table th { white-space: nowrap !important; }
+        .dash-table td code { white-space: nowrap !important; }
+    }
+    .dash-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+        table-layout: fixed;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+    }
+    /* Force every cell to wrap onto a new line instead of bleeding into
+       the next column (applies to every table on the dashboard). */
+    .dash-table td, .dash-table th {
+        white-space: normal !important;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+    }
+    .dash-table td code {
+        white-space: normal !important;
+        word-break: break-all;
+        overflow-wrap: anywhere;
+        display: inline-block;
+        max-width: 100%;
+    }
+    .dash-table th, .dash-table td {
+        text-align: left;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border-color);
+        vertical-align: top;
+        min-width: 0;
+    }
+    .dash-table th {
+        font-weight: 600;
+        color: var(--text-muted);
+        font-size: 0.72rem;
+        text-transform: uppercase;
+    }
+    .dash-table code {
+        word-break: break-all;
+        font-size: 0.8rem;
+        white-space: normal !important;
+    }
+    .dash-table .col-narrow { width: 70px; }
+    .dash-table .col-medium { width: 110px; }
+
+    /* Workers table: force hostname and current-job cells to wrap onto new
+       lines instead of bleeding into the next column. */
+    .workers-table td, .workers-table th { white-space: normal; }
+    .workers-table td:nth-child(1),
+    .workers-table td:nth-child(6) {
+        word-break: break-all;
+        overflow-wrap: anywhere;
+    }
+
+    .badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    .badge-success, .badge-ok { background: var(--status-success-bg); color: var(--status-success-text); }
+    .badge-failure, .badge-bad { background: var(--status-failure-bg); color: var(--status-failure-text); }
+    .badge-pending { background: var(--status-pending-bg); color: var(--status-pending-text); }
+    .badge-progress, .badge-started { background: #DBEAFE; color: #1E40AF; }
+    .badge-revoked, .badge-unknown { background: #E5E7EB; color: #374151; }
+
+    .chart-wrap {
+        position: relative;
+        width: 100%;
+        max-width: 100%;
+        height: 260px;
+        min-width: 0;
+        overflow: hidden;
+    }
+    .chart-wrap-tall { height: 520px; }
+    /* Pie/doughnut charts: same size for visual consistency. */
+    .chart-wrap-pie { height: 420px; }
+    @media (max-width: 600px) {
+        .chart-wrap { height: 200px; }
+        .chart-wrap-tall { height: 420px; }
+        .chart-wrap-pie { height: 280px; }
+    }
+    .chart-wrap canvas { max-width: 100% !important; }
+
+    /* Content/Library subtitles: same size as the section <h2>, with a
+       horizontal separator bar underneath. */
+    .dash-subhead {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text-title);
+        margin: 0 0 0.75rem 0;
+        padding-bottom: 0.4rem;
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        flex-wrap: wrap;
+    }
+    /* Content/Library subsection spacing: generous on desktop, tight
+       on phones so charts don't feel disconnected by blank areas. */
+    .dash-subsection { margin-top: 1.5rem; }
+    .dash-subsection:first-of-type { margin-top: 1rem; }
+    @media (max-width: 600px) {
+        .dash-subsection { margin-top: 0.6rem; }
+        .dash-subsection:first-of-type { margin-top: 0.4rem; }
+        .dash-subhead {
+            font-size: 1.05rem;
+            margin-bottom: 0.4rem;
+            padding-bottom: 0.25rem;
+        }
+        section { margin-bottom: 0.75rem; }
+    }
+
+    .progress-bar {
+        background: var(--border-color);
+        border-radius: 4px;
+        overflow: hidden;
+        height: 8px;
+        margin-top: 6px;
+    }
+    .progress-bar > div {
+        height: 100%;
+        background: var(--color-primary);
+    }
+    .muted { color: var(--text-muted); font-size: 0.85rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="main-content-inner">
+
+    <!-- Header + refresh (above) + key numbers -->
+    <section>
+        <div id="config-header">
+            <div class="config-title-group">
+                <h1>AudioMuse-AI</h1>
+                <p class="subtitle">Where Music Takes Shape</p>
+            </div>
+        </div>
+        <p class="muted dash-updated" id="keynumbers-updated">Loading…</p>
+        <div class="dash-grid" id="key-numbers"></div>
+    </section>
+
+    <!-- Workers -->
+    <section>
+        <h2>Queue Workers
+            <span class="info-tooltip" tabindex="0">
+                <span class="info-icon" aria-hidden="true"></span>
+                <span class="tooltip-text">Each worker container spins up two RQ workers: one serving the <strong>high</strong> priority queue and one serving the <strong>default</strong> queue. So a single physical node usually shows up as two rows here.</span>
+            </span>
+        </h2>
+        <p class="muted dash-updated" id="workers-updated">Loading…</p>
+        <div class="dash-table-wrap">
+            <table class="dash-table workers-table" id="workers-table">
+                <thead><tr>
+                    <th>Hostname</th>
+                    <th class="col-narrow">State</th>
+                    <th>Queues</th>
+                    <th class="col-narrow">OK</th>
+                    <th class="col-narrow">Fail</th>
+                    <th>Current Job</th>
+                </tr></thead>
+                <tbody><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Recent activity (table only) -->
+    <section>
+        <h2>Last 10 completed batch task</h2>
+        <p class="muted dash-updated" id="recent-updated">Loading…</p>
+        <div class="dash-table-wrap" style="margin-top:1rem;">
+            <table class="dash-table" id="recent-tasks-table">
+                <thead><tr>
+                    <th>Type</th>
+                    <th class="col-narrow">Status</th>
+                    <th class="col-medium">Duration</th>
+                    <th>When</th>
+                    <th>Note</th>
+                </tr></thead>
+                <tbody><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Content metrics -->
+    <section>
+        <h2>Content / Library</h2>
+        <p class="muted dash-updated" id="content-updated">Loading…</p>
+
+        <div class="dash-subsection">
+            <h3 class="dash-subhead">Genres
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon" aria-hidden="true"></span>
+                    <span class="tooltip-text">Every analyzed song is counted once, under the mood that scored highest in its vector (the closest proxy for "genre" in this library). All detected genres are shown.</span>
+                </span>
+            </h3>
+            <div class="chart-wrap" id="chart-top-genre-wrap"><canvas id="chart-top-genre"></canvas></div>
+        </div>
+
+        <div class="dash-subsection">
+            <h3 class="dash-subhead">Moods Coverage
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon" aria-hidden="true"></span>
+                    <span class="tooltip-text">Emotional mood breakdown (<strong>danceable</strong>, <strong>aggressive</strong>, <strong>happy</strong>, <strong>party</strong>, <strong>relaxed</strong>, <strong>sad</strong>) summed across every song’s mood vector.</span>
+                </span>
+            </h3>
+            <div class="chart-wrap chart-wrap-pie"><canvas id="chart-moods-coverage"></canvas></div>
+        </div>
+
+        <div class="dash-subsection">
+            <h3 class="dash-subhead">Tempo Profile
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon" aria-hidden="true"></span>
+                    <span class="tooltip-text" id="tempo-tooltip">Distribution of songs across tempo buckets: Slow (&lt;85 BPM), Medium (85–110), Fast (110–140), Very Fast (≥140).</span>
+                </span>
+            </h3>
+            <div class="chart-wrap chart-wrap-pie"><canvas id="chart-tempo"></canvas></div>
+        </div>
+    </section>
+
+    <!-- Scheduled Tasks -->
+    <section>
+        <h2>Scheduled Tasks</h2>
+        <p class="muted dash-updated" id="cron-updated">Loading…</p>
+        <div class="dash-table-wrap" style="margin-top:1rem;">
+            <table class="dash-table" id="cron-table">
+                <thead><tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Cron</th>
+                    <th class="col-narrow">Enabled</th>
+                    <th>Last Run</th>
+                </tr></thead>
+                <tbody><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+            </table>
+        </div>
+    </section>
+
+</div>
+{% endblock %}
+
+{% block postHTMLScripts %}
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+<script src="{{ url_for('static', filename='chart.js') }}"></script>
+<script>
+(function() {
+    const charts = {};
+    const isDark = () => document.body.classList.contains('dark-mode')
+        || document.documentElement.classList.contains('dark-mode');
+    const gridColor = () => isDark() ? 'rgba(200,200,200,0.1)' : 'rgba(0,0,0,0.1)';
+    const tickColor = () => isDark() ? '#D1D5DB' : '#374151';
+
+    function statusBadgeClass(status) {
+        if (!status) return 'badge-unknown';
+        const s = status.toUpperCase();
+        if (s === 'SUCCESS' || s === 'OK') return 'badge-success';
+        if (s === 'FAILURE' || s === 'DOWN') return 'badge-failure';
+        if (s === 'PENDING') return 'badge-pending';
+        if (s === 'STARTED') return 'badge-started';
+        if (s === 'PROGRESS') return 'badge-progress';
+        if (s === 'REVOKED') return 'badge-revoked';
+        return 'badge-unknown';
+    }
+
+    function fmtDuration(secs) {
+        if (secs == null) return '–';
+        if (secs < 1) return (secs * 1000).toFixed(0) + ' ms';
+        if (secs < 60) return secs.toFixed(1) + ' s';
+        if (secs < 3600) return (secs / 60).toFixed(1) + ' min';
+        return (secs / 3600).toFixed(2) + ' h';
+    }
+    function fmtTime(iso) { return iso ? iso.replace('T', ' ').substring(0, 19) : '–'; }
+    function setText(id, value) { const el = document.getElementById(id); if (el) el.textContent = value; }
+
+    // Custom plugin: draws the label name + percentage inside each slice
+    // of a pie/doughnut chart, so we can hide the side legend entirely.
+    const pieSliceLabelPlugin = {
+        id: 'pieSliceLabel',
+        afterDatasetsDraw(chart) {
+            if (chart.config.type !== 'doughnut' && chart.config.type !== 'pie') return;
+            const ctx = chart.ctx;
+            chart.data.datasets.forEach((ds, di) => {
+                const meta = chart.getDatasetMeta(di);
+                if (!meta || meta.hidden) return;
+                const total = ds.data.reduce((a, b) => a + (Number(b) || 0), 0);
+                if (!total) return;
+                meta.data.forEach((arc, i) => {
+                    const value = Number(ds.data[i]) || 0;
+                    if (!value) return;
+                    const pct = 100 * value / total;
+                    if (pct < 3) return; // skip tiny slices to avoid overlap
+                    const pos = arc.tooltipPosition();
+                    const label = chart.data.labels[i] || '';
+                    const pctStr = pct.toFixed(1) + '%';
+                    ctx.save();
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif';
+                    ctx.shadowColor = 'transparent';
+                    ctx.shadowBlur = 0;
+                    ctx.shadowOffsetX = 0;
+                    ctx.shadowOffsetY = 0;
+                    ctx.lineWidth = 2;
+                    ctx.lineJoin = 'round';
+                    ctx.miterLimit = 2;
+                    ctx.strokeStyle = '#000000';
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.strokeText(label, pos.x, pos.y - 7);
+                    ctx.fillText(label, pos.x, pos.y - 7);
+                    ctx.strokeText(pctStr, pos.x, pos.y + 7);
+                    ctx.fillText(pctStr, pos.x, pos.y + 7);
+                    ctx.restore();
+                });
+            });
+        }
+    };
+
+    function renderChartDoughnut(canvasId, labels, data, palette) {
+        const ctx = document.getElementById(canvasId).getContext('2d');
+        if (charts[canvasId]) charts[canvasId].destroy();
+        charts[canvasId] = new Chart(ctx, {
+            type: 'doughnut',
+            data: { labels, datasets: [{ data, backgroundColor: palette, borderWidth: 1 }] },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label(ctx) {
+                                const total = ctx.dataset.data.reduce((a, b) => a + (Number(b) || 0), 0);
+                                const v = Number(ctx.parsed) || 0;
+                                const pct = total ? (100 * v / total).toFixed(1) : '0.0';
+                                return ctx.label + ': ' + v.toLocaleString() + ' (' + pct + '%)';
+                            }
+                        }
+                    }
+                }
+            },
+            plugins: [pieSliceLabelPlugin]
+        });
+    }
+    function renderChartHorizontalBar(canvasId, labels, data, color) {
+        const ctx = document.getElementById(canvasId).getContext('2d');
+        if (charts[canvasId]) charts[canvasId].destroy();
+        charts[canvasId] = new Chart(ctx, {
+            type: 'bar',
+            data: { labels, datasets: [{ label: 'count', data, backgroundColor: color }] },
+            options: {
+                indexAxis: 'y',
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { beginAtZero: true, grid: { color: gridColor() }, ticks: { color: tickColor() } },
+                    y: { grid: { color: gridColor() }, ticks: { color: tickColor() } }
+                }
+            }
+        });
+    }
+
+    function renderKeyNumbers(d) {
+        const c = d.content || {};
+        const hasStats = !!d.stats_updated_at;
+        const host = document.getElementById('key-numbers');
+        host.innerHTML = '';
+
+        if (!hasStats) {
+            const div = document.createElement('div');
+            div.className = 'dash-stat-card';
+            div.style.gridColumn = '1 / -1';
+            div.innerHTML = `<h3>Library stats</h3>
+                             <div class="dash-stat" style="font-size:1rem;">Still collecting data…</div>
+                             <div class="dash-substat">First snapshot is computed within a minute of startup, then hourly.</div>`;
+            host.appendChild(div);
+            return;
+        }
+
+        const totalSongs = c.total_songs || 0;
+        const musicnnIndexed = c.musicnn_indexed || 0;
+        const clapIndexed = c.clap_indexed || 0;
+        const songIdxPct = totalSongs > 0 ? Math.round(100 * musicnnIndexed / totalSongs) : 0;
+        const clapPct = totalSongs > 0 ? Math.round(100 * clapIndexed / totalSongs) : 0;
+        const totalArtists = c.distinct_artists || 0;
+        const gmmIndexed = c.gmm_indexed || 0;
+        const gmmPct = totalArtists > 0 ? Math.round(100 * gmmIndexed / totalArtists) : 0;
+
+        const cards = [
+            { title: 'Total Songs', value: totalSongs.toLocaleString(),
+              sub: 'Musicnn Indexed: ' + musicnnIndexed.toLocaleString() + ' (' + songIdxPct + '%)<br>CLAP Indexed: ' + clapIndexed.toLocaleString() + ' (' + clapPct + '%)' },
+            { title: 'Total Artists', value: totalArtists.toLocaleString(),
+              sub: 'GMM Indexed: ' + gmmIndexed.toLocaleString() + ' (' + gmmPct + '%)' },
+            { title: 'Total Albums', value: (c.distinct_albums || 0).toLocaleString(),
+              sub: 'distinct albums in library' },
+        ];
+
+        cards.forEach(c => {
+            const div = document.createElement('div');
+            div.className = 'dash-stat-card';
+            div.innerHTML = `<h3>${c.title}</h3>
+                             <div class="dash-stat">${c.value}</div>
+                             <div class="dash-substat">${c.sub || ''}</div>`;
+            host.appendChild(div);
+        });
+    }
+
+    function renderWorkers(workers) {
+        const tbody = document.querySelector('#workers-table tbody');
+        tbody.innerHTML = '';
+        if (!workers || workers.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="muted">No active workers detected.</td></tr>';
+            return;
+        }
+        workers.forEach(w => {
+            const stateBadge = w.state === 'busy'
+                ? '<span class="badge badge-progress">busy</span>'
+                : w.state === 'idle'
+                    ? '<span class="badge badge-ok">idle</span>'
+                    : `<span class="badge badge-unknown">${w.state || 'unknown'}</span>`;
+            const queues = (w.queues || []).join(', ') || '–';
+            const job = w.current_job_id ? '<code>' + w.current_job_id + '</code>' : '–';
+
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${w.hostname || '–'}</td>
+                <td>${stateBadge}</td>
+                <td>${queues}</td>
+                <td>${w.successful_jobs ?? 0}</td>
+                <td>${w.failed_jobs ?? 0}</td>
+                <td>${job}</td>`;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function renderRecentTasks(tasks) {
+        const tbody = document.querySelector('#recent-tasks-table tbody');
+        tbody.innerHTML = '';
+        if (!tasks || tasks.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="muted">No tasks yet.</td></tr>';
+            return;
+        }
+        tasks.forEach(t => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${t.task_type || '–'}</td>
+                <td><span class="badge ${statusBadgeClass(t.status)}">${t.status || '?'}</span></td>
+                <td>${fmtDuration(t.duration_seconds)}</td>
+                <td>${fmtTime(t.timestamp)}</td>
+                <td>${t.note || ''}</td>`;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function renderStatusDist(dist) {
+        const labels = Object.keys(dist || {});
+        const data = labels.map(k => dist[k]);
+        const palette = labels.map(k => {
+            const u = (k || '').toUpperCase();
+            if (u === 'SUCCESS') return '#16A34A';
+            if (u === 'FAILURE') return '#DC2626';
+            if (u === 'PENDING') return '#F59E0B';
+            if (u === 'STARTED' || u === 'PROGRESS') return '#2563EB';
+            if (u === 'REVOKED') return '#6B7280';
+            return '#94A3B8';
+        });
+        if (labels.length === 0) return;
+        renderChartDoughnut('chart-status', labels, data, palette);
+    }
+
+    function renderDurations(rows) {
+        const tbody = document.querySelector('#duration-table tbody');
+        tbody.innerHTML = '';
+        if (!rows || rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" class="muted">Not enough completed tasks yet.</td></tr>';
+            return;
+        }
+        rows.forEach(r => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${r.task_type}</td><td>${r.runs}</td><td>${fmtDuration(r.avg_seconds)}</td>`;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function showChartPlaceholder(canvasId, message) {
+        if (charts[canvasId]) { charts[canvasId].destroy(); delete charts[canvasId]; }
+        const canvas = document.getElementById(canvasId);
+        if (!canvas || !canvas.parentElement) return;
+        const wrap = canvas.parentElement;
+        // Preserve the canvas in the DOM but overlay a centred message
+        let msg = wrap.querySelector('.chart-empty');
+        if (!msg) {
+            msg = document.createElement('div');
+            msg.className = 'chart-empty muted';
+            msg.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:1rem;';
+            wrap.style.position = wrap.style.position || 'relative';
+            wrap.appendChild(msg);
+        }
+        msg.textContent = message;
+    }
+    function clearChartPlaceholder(canvasId) {
+        const canvas = document.getElementById(canvasId);
+        if (!canvas || !canvas.parentElement) return;
+        const msg = canvas.parentElement.querySelector('.chart-empty');
+        if (msg) msg.remove();
+    }
+
+    function renderTopGenre(rows) {
+        if (!rows || rows.length === 0) {
+            showChartPlaceholder('chart-top-genre', 'Still collecting library data…');
+            return;
+        }
+        clearChartPlaceholder('chart-top-genre');
+        // Scale the chart container so every genre gets a readable row.
+        const wrap = document.getElementById('chart-top-genre-wrap');
+        if (wrap) {
+            const px = Math.max(300, rows.length * 22 + 40);
+            wrap.style.height = px + 'px';
+        }
+        renderChartHorizontalBar('chart-top-genre',
+            rows.map(r => r.label), rows.map(r => r.count), '#7C3AED');
+    }
+
+    function renderMoodsCoverage(rows) {
+        if (!rows || rows.length === 0) {
+            showChartPlaceholder('chart-moods-coverage', 'Still collecting library data…');
+            return;
+        }
+        clearChartPlaceholder('chart-moods-coverage');
+        const palette = [
+            '#7C3AED', '#0EA5E9', '#F59E0B', '#EF4444', '#10B981',
+            '#F97316', '#EC4899', '#3B82F6', '#84CC16', '#8B5CF6',
+            '#14B8A6', '#F43F5E', '#A855F7', '#06B6D4', '#EAB308',
+            '#22C55E', '#DB2777', '#6366F1', '#D946EF', '#0891B2',
+            '#65A30D', '#DC2626'
+        ];
+        const labels = rows.map(r => r.label);
+        const data = rows.map(r => r.score);
+        const colors = labels.map((_, i) => palette[i % palette.length]);
+        renderChartDoughnut('chart-moods-coverage', labels, data, colors);
+    }
+
+    function renderTempo(profile) {
+        const data = profile
+            ? [profile.slow || 0, profile.medium || 0, profile.fast || 0, profile.very_fast || 0]
+            : [0, 0, 0, 0];
+        const total = data.reduce((a, b) => a + b, 0);
+        if (!profile || total === 0) {
+            showChartPlaceholder('chart-tempo', 'Still collecting library data…');
+            return;
+        }
+        clearChartPlaceholder('chart-tempo');
+        const labels = ['Slow (<85)', 'Medium (85-110)', 'Fast (110-140)', 'Very Fast (≥140)'];
+        const palette = ['#60A5FA', '#34D399', '#F59E0B', '#EF4444'];
+        renderChartDoughnut('chart-tempo', labels, data, palette);
+        const avg = profile.avg_tempo != null ? profile.avg_tempo.toFixed(1) + ' BPM' : '–';
+        const tip = document.getElementById('tempo-tooltip');
+        if (tip) {
+            tip.innerHTML = 'Distribution of songs across tempo buckets: Slow (&lt;85 BPM), '
+                + 'Medium (85–110), Fast (110–140), Very Fast (≥140). '
+                + total.toLocaleString() + ' songs with tempo • average '
+                + avg + '.';
+        }
+    }
+
+    function renderCron(rows) {
+        const tbody = document.querySelector('#cron-table tbody');
+        tbody.innerHTML = '';
+        if (!rows || rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="muted">No scheduled tasks configured.</td></tr>';
+            return;
+        }
+        rows.forEach(c => {
+            const tr = document.createElement('tr');
+            const enabled = c.enabled
+                ? '<span class="badge badge-ok">enabled</span>'
+                : '<span class="badge badge-unknown">disabled</span>';
+            tr.innerHTML = `
+                <td>${c.name || '–'}</td>
+                <td>${c.task_type || '–'}</td>
+                <td><code>${c.cron_expr || '–'}</code></td>
+                <td>${enabled}</td>
+                <td>${c.last_run || '–'}</td>`;
+            tbody.appendChild(tr);
+        });
+    }
+
+    async function loadDashboard() {
+        try {
+            const res = await fetch('/api/dashboard/summary', { credentials: 'same-origin' });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const d = await res.json();
+            renderKeyNumbers(d);
+            renderWorkers(d.workers);
+            renderRecentTasks(d.recent_tasks);
+            renderTopGenre((d.content || {}).top_genre);
+            renderMoodsCoverage((d.content || {}).moods_coverage);
+            renderTempo((d.content || {}).tempo_profile);
+            renderCron(d.cron);
+
+            // Per-section "updated at" captions.
+            const liveStamp = d.generated_at || '';
+            const libStamp = d.stats_updated_at;
+            setText('keynumbers-updated',
+                libStamp
+                    ? 'Library stats as of: ' + libStamp + ' (refreshed hourly)'
+                    : 'Library stats: still collecting\u2026');
+            setText('content-updated',
+                libStamp
+                    ? 'Library stats as of: ' + libStamp + ' (refreshed hourly)'
+                    : 'Library stats: still collecting\u2026');
+            const liveSuffix = liveStamp
+                ? 'Last updated: ' + liveStamp + ' (auto-refresh every 30s)'
+                : '';
+            setText('workers-updated', liveSuffix);
+            setText('recent-updated', liveSuffix);
+            setText('cron-updated', liveSuffix);
+        } catch (e) {
+            console.error('Dashboard load failed', e);
+            ['keynumbers-updated', 'content-updated',
+             'workers-updated', 'recent-updated', 'cron-updated']
+                .forEach(id => setText(id, 'Load failed'));
+        }
+    }
+
+    loadDashboard();
+    setInterval(loadDashboard, 30000);
+})();
+</script>
+{% endblock %}

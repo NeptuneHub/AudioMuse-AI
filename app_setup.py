@@ -1,8 +1,10 @@
 import json
 import re
+import types
 from flask import request, jsonify, render_template, make_response, after_this_request
 import config
-from app import app, setup_manager, is_bootstrap_mode, refresh_auth_state
+from app import app, setup_manager
+from app_helper import check_setup_needed
 import restart_manager
 import tasks.mediaserver as mediaserver
 
@@ -146,24 +148,52 @@ def _get_allowed_setup_keys():
             allowed_keys.add(f['name'])
     return allowed_keys
 
+
+def _has_admin_user():
+    """Return True if at least one admin exists in audiomuse_users."""
+    try:
+        from app_helper import count_admin_users
+        return count_admin_users() > 0
+    except Exception as exc:
+        app.logger.error(
+            'Failed to determine whether an admin exists during setup page render: %s',
+            exc,
+            exc_info=True,
+        )
+        return False
+
 @app.route('/setup')
 def setup_page():
-    return render_template('setup.html', title='AudioMuse-AI Setup', active='setup')
+    return render_template('setup.html', title='AudioMuse-AI - Setup Wizard', active='setup')
 
 @app.route('/api/setup', methods=['GET', 'POST'])
 def setup_api():
     if request.method == 'GET':
         all_fields = setup_manager.get_all_fields(config)
+        # Determine which media server fields belong to non-active types
+        # so their values are hidden from the UI.
+        active_server_type = getattr(config, 'MEDIASERVER_TYPE', '').strip().lower()
+        inactive_server_fields = set()
+        for stype, sfields in config.MEDIASERVER_FIELDS_BY_TYPE.items():
+            if stype != active_server_type:
+                inactive_server_fields.update(sfields)
+
         basic_fields = []
         advanced_fields = []
         for f in all_fields:
             if f['name'] in SECRET_FIELDS or f['name'].endswith('_API_KEY'):
                 f['secret'] = True
-                f['has_value'] = bool(f.get('value'))
+                f['has_value'] = bool(f.get('value')) and f['name'] not in inactive_server_fields
                 f['value'] = ''
             else:
                 f['secret'] = False
                 f['has_value'] = bool(f.get('overridden', False))
+
+            # Blank out values for non-active server fields
+            if f['name'] in inactive_server_fields:
+                f['value'] = ''
+                f['has_value'] = False
+                f['overridden'] = False
 
             if f['name'] in BASIC_FIELDS:
                 basic_fields.append(f)
@@ -173,7 +203,8 @@ def setup_api():
         return jsonify({
             'basic_fields': basic_fields,
             'advanced_fields': advanced_fields,
-            'setup_saved': setup_manager.is_setup_complete(config),
+            'setup_saved': not check_setup_needed(),
+            'has_admin_user': _has_admin_user(),
         })
 
     data = request.get_json(silent=True) or {}
@@ -208,15 +239,101 @@ def setup_api():
                 'probe_limit_hit': result.get('probe_limit_hit', False),
             }), 200
 
-        was_bootstrap = is_bootstrap_mode()
         new_server_type = filtered_values.get('MEDIASERVER_TYPE', config.MEDIASERVER_TYPE)
-        if new_server_type != config.MEDIASERVER_TYPE:
-            obsolete_fields = config.MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE.get(new_server_type, [])
-            if obsolete_fields:
-                setup_manager.delete_config_values(obsolete_fields)
+        if isinstance(new_server_type, str):
+            new_server_type = new_server_type.strip().lower()
+        obsolete_fields = config.MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE.get(new_server_type, [])
+
+        auth_val = filtered_values.get('AUTH_ENABLED')
+        auth_being_disabled = (auth_val is False or
+            (isinstance(auth_val, str) and auth_val.strip().lower() in ('false', '0', 'no', 'off')))
+
+        # The setup form collects the install-time admin via AUDIOMUSE_USER /
+        # AUDIOMUSE_PASSWORD, but we store admins in audiomuse_users, not in
+        # app_config. Pop them so they are never written to app_config.
+        new_admin_user = filtered_values.pop('AUDIOMUSE_USER', None)
+        new_admin_password = filtered_values.pop('AUDIOMUSE_PASSWORD', None)
+        if isinstance(new_admin_user, str):
+            new_admin_user = new_admin_user.strip()
+        if new_admin_password == '********':
+            new_admin_password = None
+
+        # Once an admin exists in audiomuse_users, the setup wizard is no
+        # longer allowed to touch admin credentials - users must be managed
+        # from the Users page. Silently drop any admin fields the form
+        # submitted; they were hidden in the UI but defense-in-depth.
+        if _has_admin_user():
+            new_admin_user = None
+            new_admin_password = None
+
+        # --- Pre-validate: simulate the post-save config state BEFORE touching the DB ---
+        simulated = types.SimpleNamespace()
+        for _name in vars(config):
+            if _name.isupper() and not _name.startswith('_'):
+                setattr(simulated, _name, getattr(config, _name))
+        for key in obsolete_fields:
+            setattr(simulated, key, '')
+        for key, value in filtered_values.items():
+            setattr(simulated, key, value)
+
+        if not setup_manager._is_valid_server_config(simulated):
+            return jsonify({'error': 'Cannot save: media server configuration is incomplete.'}), 400
+
+        # If auth will remain enabled we need an admin after the save. That
+        # admin must either already exist in audiomuse_users or be provided
+        # via the form (new_admin_user + new_admin_password).
+        from app_helper import count_admin_users, upsert_admin_user, get_db
+        auth_will_be_enabled = not auth_being_disabled
+        if isinstance(simulated.AUTH_ENABLED, str):
+            auth_will_be_enabled = simulated.AUTH_ENABLED.strip().lower() == 'true'
+        else:
+            auth_will_be_enabled = bool(simulated.AUTH_ENABLED)
+        if auth_will_be_enabled:
+            try:
+                existing_admins = count_admin_users()
+            except Exception as exc:
+                app.logger.error(
+                    'Failed to count admin users during setup save: %s',
+                    exc,
+                    exc_info=True,
+                )
+                return jsonify({'error': 'Database error while verifying admin count.'}), 500
+            provided_admin = bool(new_admin_user and new_admin_password)
+            if existing_admins <= 0 and not provided_admin:
+                return jsonify({'error': 'Cannot save: auth is enabled but no admin account was provided.'}), 400
+
+        # Validation passed - apply changes to the database
+        if obsolete_fields:
+            setup_manager.delete_config_values(obsolete_fields)
+        if auth_being_disabled:
+            setup_manager.delete_config_values(['API_TOKEN', 'JWT_SECRET'])
+            # Wipe all user accounts so disabling auth fully resets user
+            # state. Re-enabling auth requires re-creating them.
+            try:
+                db = get_db()
+                with db.cursor() as cur:
+                    cur.execute("DELETE FROM audiomuse_users")
+                db.commit()
+            except Exception as exc:
+                app.logger.error('Failed to clear audiomuse_users on auth disable: %s', exc, exc_info=True)
+        elif new_admin_user and new_admin_password:
+            try:
+                if count_admin_users() > 0:
+                    return jsonify({'error': 'Cannot save: an admin account already exists.'}), 400
+            except Exception as exc:
+                app.logger.error(
+                    'Unable to verify existing admin accounts before setup save: %s',
+                    exc,
+                    exc_info=True,
+                )
+                return jsonify({'error': 'Unable to verify existing admin accounts. Check the server log and try again later.'}), 500
+            ok, err = upsert_admin_user(new_admin_user, new_admin_password)
+            if not ok:
+                return jsonify({'error': err or 'Failed to save admin account.'}), 400
+
         setup_manager.save_config_values(filtered_values)
         config.refresh_config()
-        refresh_auth_state()
+
         restart_manager.publish_restart_request()
         restart_requested = True
     except Exception as exc:

@@ -74,6 +74,11 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'REDIS_URL',
     'MEDIASERVER_FIELDS_BY_TYPE',
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
+    'APP_VERSION',
+    # Admin identity lives in audiomuse_users only. Never mirror it into
+    # app_config - stale rows there cause deleted admins to resurrect.
+    'AUDIOMUSE_USER',
+    'AUDIOMUSE_PASSWORD',
 }
 
 # --- MPD (Music Player Daemon) Constants ---
@@ -85,7 +90,7 @@ MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music"
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v0.9.7"
+APP_VERSION = "v1.0.3"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -523,8 +528,15 @@ AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
 try:
     from tasks.setup_manager import SetupManager
     _setup_manager = SetupManager()
-    _setup_manager.ensure_table()
-    _overrides = _setup_manager.get_raw_overrides()
+    worker_mode = os.environ.get('AUDIOMUSE_ROLE', '').lower() == 'worker'
+    if worker_mode:
+        if _setup_manager.config_table_exists():
+            _overrides = _setup_manager.get_raw_overrides(ensure_table=False)
+        else:
+            _overrides = {}
+    else:
+        _setup_manager.ensure_table()
+        _overrides = _setup_manager.get_raw_overrides()
     _excluded_override_keys = globals().get('SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
     for _key, _value in _overrides.items():
         # Skip any keys that are explicitly excluded from overrides (Redis and Postgres)

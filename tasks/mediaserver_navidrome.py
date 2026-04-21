@@ -6,6 +6,8 @@ import os
 import random
 import config
 
+from tasks.mediaserver_helper import detect_path_format
+
 logger = logging.getLogger(__name__)
 
 REQUESTS_TIMEOUT = 300
@@ -95,7 +97,8 @@ def _navidrome_request(endpoint, params=None, method='get', stream=False, user_c
         logger.error("Navidrome credentials not configured. Cannot make API call.")
         return None
 
-    url = f"{config.NAVIDROME_URL}/rest/{endpoint}.view"
+    base_url = (user_creds.get('url') if user_creds and user_creds.get('url') else config.NAVIDROME_URL).rstrip('/')
+    url = f"{base_url}/rest/{endpoint}.view"
     all_params = {**auth_params, **params}
 
     try:
@@ -249,9 +252,9 @@ def _select_best_artist(song_item, title="Unknown"):
     
     return track_artist, artist_id
 
-def get_all_songs():
+def get_all_songs(user_creds=None):
     """
-    Fetches all songs from Navidrome using admin credentials.
+    Fetches all songs from Navidrome using admin or override credentials.
     If MUSIC_LIBRARIES is set, it will only return songs from those folders.
     """
     target_folder_ids = _get_target_music_folder_ids()
@@ -270,7 +273,7 @@ def get_all_songs():
         limit = 500
         while True:
             params = {"query": '', "songCount": limit, "songOffset": offset}
-            response = _navidrome_request("search3", params)
+            response = _navidrome_request("search3", params, user_creds=user_creds)
             if response and "searchResult3" in response and "song" in response["searchResult3"]:
                 songs = response["searchResult3"]["song"]
                 if not songs: break
@@ -334,7 +337,7 @@ def get_all_songs():
             album_id = album.get('id')
             if not album_id: continue
             
-            album_songs = get_tracks_from_album(album_id)
+            album_songs = get_tracks_from_album(album_id, user_creds=user_creds)
             for song in album_songs:
                 # Convert to the expected format
                 all_songs.append({
@@ -351,6 +354,85 @@ def get_all_songs():
                 })
 
     return all_songs
+
+
+def search_albums(query, user_creds=None):
+    """Search Navidrome albums using admin or override credentials."""
+    body = _navidrome_request("search3", {
+        "query": query,
+        "albumCount": 10,
+        "songCount": 0,
+        "artistCount": 0,
+    }, user_creds=user_creds)
+    if not body:
+        return []
+    albums = ((body.get('searchResult3') or {}).get('album')) or []
+    return [
+        {
+            'id':          a.get('id'),
+            'name':        a.get('name') or a.get('title'),
+            'artist':      a.get('artist'),
+            'year':        a.get('year'),
+            'track_count': a.get('songCount'),
+        }
+        for a in albums
+    ]
+
+
+def test_connection(user_creds=None):
+    """Test Navidrome connectivity using admin or override credentials."""
+    warnings = []
+    body = _navidrome_request("search3", {
+        "query": '',
+        "songCount": 100,
+        "songOffset": 0,
+        "artistCount": 0,
+        "albumCount": 0,
+    }, user_creds=user_creds)
+    if not body:
+        return {'ok': False, 'error': 'Navidrome test_connection failed', 'sample_count': 0, 'path_format': 'none', 'warnings': []}
+    songs = (body.get('searchResult3') or {}).get('song')
+    if songs is None:
+        songs = []
+    elif isinstance(songs, dict):
+        songs = [songs]
+    elif isinstance(songs, tuple):
+        songs = list(songs)
+    elif not isinstance(songs, list):
+        songs = []
+
+    sample = []
+    for s in songs:
+        if not isinstance(s, dict):
+            continue
+        title = s.get('title', 'Unknown')
+        track_artist = s.get('artist') or s.get('albumArtist') or 'Unknown Artist'
+        sample.append({
+            'Id': s.get('id'),
+            'Path': s.get('path') or s.get('url'),
+            'Name': title,
+            'AlbumArtist': s.get('albumArtist') or s.get('artist'),
+            'artist': track_artist,
+            'url': s.get('url'),
+        })
+    path_format = detect_path_format(sample)
+    if path_format != 'absolute':
+        warnings.append(
+            'Navidrome is returning relative paths or no paths at all. '
+            'This happens when "Report Real Path" is disabled in Navidrome '
+            '(Settings > Players > AudioMuse-AI [python-requests]). '
+            'Automatic path-based matching will not work well. Enable Report '
+            'Real Path and re-test, or you will need to manually match most '
+            'albums in Step 4.'
+        )
+    return {
+        'ok': True,
+        'error': None,
+        'sample_count': len(sample),
+        'path_format': path_format,
+        'warnings': warnings,
+    }
+
 
 def _add_to_playlist(playlist_id, item_ids, user_creds=None):
     """

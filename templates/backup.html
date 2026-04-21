@@ -80,7 +80,7 @@
 <div id="main-content-inner">
     <section>
         <div class="page-header">
-            <h1>Backup &amp; Restore</h1>
+            <h1>AudioMuse-AI - Backup &amp; Restore</h1>
             <p class="subtitle">Create a full database backup or restore from a previous one.</p>
         </div>
 
@@ -95,7 +95,7 @@
         <!-- Restore Backup -->
         <div class="backup-card">
             <h2>Restore Backup</h2>
-            <p>Upload a backup file (.sql) from your machine and restore the database to that state. <strong>This will replace all current data.</strong><br>After the restore you need to restart flask and worker container.</p>
+            <p>Upload a backup file (.sql) from your machine and restore the database to that state. <strong>This will replace all current data.</strong><br>The Flask and worker containers will be restarted automatically and you will be redirected to the home page.</p>
 
             <div style="margin-bottom:1rem;">
                 <label style="display:block; margin-bottom:0.5rem; font-weight:600;">Select backup file:</label>
@@ -200,12 +200,30 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Restore failed');
-            restoreStatus.textContent = 'Database restored successfully. You may want to reload the application.';
             restoreStatus.style.color = 'var(--color-success, green)';
+            // Same UX as the setup save: 20s countdown, then redirect to /
+            // while Flask restarts in the background.
+            let countdown = 20;
+            restoreStatus.textContent =
+                'Database restored successfully. Restarting the application — '
+                + 'redirecting in ' + countdown + ' seconds…';
+            const countdownInterval = setInterval(() => {
+                countdown -= 1;
+                if (countdown > 0) {
+                    restoreStatus.textContent =
+                        'Database restored successfully. Restarting the application — '
+                        + 'redirecting in ' + countdown + ' seconds…';
+                } else {
+                    clearInterval(countdownInterval);
+                    window.location.href = '/';
+                }
+            }, 1000);
+            // Keep the restore button disabled during countdown so users
+            // can't kick off a second restore while Flask is coming back.
+            return;
         } catch (e) {
             restoreStatus.textContent = 'Error: ' + e.message;
             restoreStatus.style.color = 'var(--color-danger, red)';
-        } finally {
             restoreBtn.disabled = confirmInput.value !== EXPECTED_PHRASE;
         }
     });

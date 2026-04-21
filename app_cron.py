@@ -98,7 +98,19 @@ def cron_matches_now(expr, ts=None):
         return False
     # day of week: in cron 0=Sun..6=Sat, Python tm_wday 0=Mon..6=Sun -> convert
     py_dow = (t.tm_wday + 1) % 7
-    if not _field_matches(dow, py_dow):
+    # Per cron semantics, when both dom and dow are restricted (not '*'),
+    # the job runs if EITHER matches; otherwise both must match.
+    dom_restricted = dom.strip() != '*'
+    dow_restricted = dow.strip() != '*'
+    dom_ok = _field_matches(dom, t.tm_mday)
+    dow_ok = _field_matches(dow, py_dow)
+    if dom_restricted and dow_restricted:
+        if not (dom_ok or dow_ok):
+            return False
+    else:
+        if not dom_ok or not dow_ok:
+            return False
+    if not _field_matches(month, t.tm_mon):
         return False
     return True
 

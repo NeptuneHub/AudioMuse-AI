@@ -1,5 +1,10 @@
 /* --- Variables --- */
 :root {
+    /* Reserve scrollbar space so pages don't horizontally shift when content
+       is tall enough to trigger the vertical scrollbar. Keeps layout
+       identical between short pages (e.g. cleaning) and long pages
+       (e.g. setup wizard, provider migration). */
+    scrollbar-gutter: stable;
     /* Light Mode (Default) */
     --bg-body: #F9FAFB;
     --bg-card: #FFFFFF;
@@ -844,6 +849,16 @@ body.dark-mode #cancel-sync-btn:disabled {
     border-radius: 0.5rem;
     overflow-x: auto; /* For responsive tables */
     border: 1px solid var(--border-color);
+}
+
+.responsive-table-wrapper {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.responsive-table-wrapper table {
+    min-width: 420px;
 }
 
 table {

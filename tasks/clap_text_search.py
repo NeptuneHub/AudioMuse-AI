@@ -603,16 +603,22 @@ def ensure_text_search_queries_table():
     try:
         conn = get_db()
         with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS text_search_queries (
-                    id SERIAL PRIMARY KEY,
-                    query_text TEXT NOT NULL,
-                    score REAL NOT NULL,
-                    rank INTEGER NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    UNIQUE(rank)
-                )
-            """)
+            cur.execute("SELECT pg_advisory_lock(726354821)")
+            try:
+                cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s)", ('text_search_queries',))
+                if not cur.fetchone()[0]:
+                    cur.execute("""
+                        CREATE TABLE text_search_queries (
+                            id SERIAL PRIMARY KEY,
+                            query_text TEXT NOT NULL,
+                            score REAL NOT NULL,
+                            rank INTEGER NOT NULL,
+                            created_at TIMESTAMP DEFAULT NOW(),
+                            UNIQUE(rank)
+                        )
+                    """)
+            finally:
+                cur.execute("SELECT pg_advisory_unlock(726354821)")
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank 
                 ON text_search_queries(rank)
