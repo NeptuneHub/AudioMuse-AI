@@ -1211,7 +1211,6 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     checked_album_ids.add(album['Id'])
                     if unanalyzable_count == len(track_ids):
                         logger.info(f"album name: '{album.get('Name')}', unanalyzable tracks: {', '.join(unanalyzable_names)}. ")
-                        albums_skipped += 1
                         log_and_update_main(
                             f"Skipping album '{album.get('Name')}' - all {unanalyzable_count} tracks previously marked as unanalyzable.",
                             current_progress
