@@ -256,8 +256,11 @@ def get_all_songs(user_creds=None):
     """
     Fetches all songs from Navidrome using admin or override credentials.
     If MUSIC_LIBRARIES is set, it will only return songs from those folders.
+    When user_creds is supplied (migration-target probe), the MUSIC_LIBRARIES
+    filter is skipped: it reflects the *source* provider's folder selection and
+    has no meaning on a migration target whose folder names may differ.
     """
-    target_folder_ids = _get_target_music_folder_ids()
+    target_folder_ids = None if user_creds else _get_target_music_folder_ids()
     
     # Case 1: Config is set, but no matching folders were found. Return no songs.
     if isinstance(target_folder_ids, set) and not target_folder_ids:

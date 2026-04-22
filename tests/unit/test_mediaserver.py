@@ -1086,8 +1086,119 @@ class TestNavidromeGetRecentAlbums:
         mock_folders.return_value = set()  # Empty set = no matches
         
         albums = get_recent_albums(10)
-        
+
         assert albums == []
+        mock_request.assert_not_called()
+
+
+def _load_navidrome_module():
+    """Load tasks.mediaserver_navidrome directly, bypassing tasks/__init__.py.
+
+    tasks/__init__.py pulls in analysis.py -> librosa / onnx / sklearn etc.,
+    which aren't required for testing the Navidrome HTTP shim. We side-step the
+    package init the same way tests/unit/test_provider_probe.py does.
+    """
+    import importlib.util
+    import os
+    import sys
+    import types
+
+    repo_root = os.path.normpath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
+    )
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+
+    tasks_dir = os.path.join(repo_root, 'tasks')
+
+    existing_tasks = sys.modules.get('tasks')
+    if existing_tasks is None or not hasattr(existing_tasks, 'mediaserver_helper'):
+        stub = types.ModuleType('tasks')
+        stub.__path__ = [tasks_dir]
+        sys.modules['tasks'] = stub
+
+    if 'tasks.mediaserver_helper' not in sys.modules:
+        helper_path = os.path.join(tasks_dir, 'mediaserver_helper.py')
+        spec = importlib.util.spec_from_file_location(
+            'tasks.mediaserver_helper', helper_path
+        )
+        helper = importlib.util.module_from_spec(spec)
+        sys.modules['tasks.mediaserver_helper'] = helper
+        spec.loader.exec_module(helper)
+
+    mod_name = 'tasks.mediaserver_navidrome'
+    if mod_name in sys.modules:
+        del sys.modules[mod_name]
+    nav_path = os.path.join(tasks_dir, 'mediaserver_navidrome.py')
+    spec = importlib.util.spec_from_file_location(mod_name, nav_path)
+    nav = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = nav
+    spec.loader.exec_module(nav)
+    return nav
+
+
+class TestNavidromeGetAllSongsMigration:
+    """Regression test for the migration probe path.
+
+    Bug: commit 5ed012a rewired provider_probe to delegate to
+    ``mediaserver.get_all_songs(user_creds=...)`` but missed threading ``user_creds``
+    into ``_get_target_music_folder_ids``. That helper falls back to the global
+    ``config.NAVIDROME_*`` creds, which are empty when Navidrome is the *target*
+    of a migration (not the live provider). Symptom: dry-run returns 0 songs with
+    "Navidrome credentials not configured" in the log.
+
+    Fix decision: when ``user_creds`` is provided, skip the MUSIC_LIBRARIES filter
+    entirely. That filter is the *source* provider's folder selection and has no
+    meaning for a migration target.
+    """
+
+    def test_user_creds_skips_folder_filter_and_forwards_creds(self):
+        nav = _load_navidrome_module()
+
+        # Migration scenario: target creds live in the session; global config creds
+        # are empty because Navidrome is not the live provider.
+        with patch.object(nav, 'config') as mock_config, \
+             patch.object(nav, '_navidrome_request') as mock_request:
+            mock_config.NAVIDROME_URL = ''
+            mock_config.NAVIDROME_USER = ''
+            mock_config.NAVIDROME_PASSWORD = ''
+            mock_config.MUSIC_LIBRARIES = 'Music'
+
+            creds = {'url': 'http://target:4533', 'user': 'u', 'password': 'p'}
+            mock_request.return_value = {
+                'status': 'ok',
+                'searchResult3': {'song': []},
+            }
+
+            nav.get_all_songs(user_creds=creds)
+
+        endpoints = [call.args[0] for call in mock_request.call_args_list]
+        assert 'getMusicFolders' not in endpoints, (
+            f"getMusicFolders must not be called in migration mode "
+            f"(user_creds provided); saw calls: {endpoints}"
+        )
+        assert any(ep == 'search3' for ep in endpoints), (
+            f"Expected search3 to be called in migration mode; saw: {endpoints}"
+        )
+        for call in mock_request.call_args_list:
+            assert call.kwargs.get('user_creds') == creds, (
+                f"user_creds not forwarded on call to {call.args[0]}; "
+                f"kwargs={call.kwargs}"
+            )
+
+    def test_no_user_creds_still_applies_folder_filter(self):
+        """Without user_creds (live-provider path), MUSIC_LIBRARIES filtering must still run."""
+        nav = _load_navidrome_module()
+
+        with patch.object(nav, '_get_target_music_folder_ids') as mock_filter, \
+             patch.object(nav, '_navidrome_request') as mock_request:
+            mock_filter.return_value = set()  # filter active, no matches
+            mock_request.return_value = {'status': 'ok'}
+
+            songs = nav.get_all_songs(user_creds=None)
+
+        mock_filter.assert_called_once()
+        assert songs == []
         mock_request.assert_not_called()
 
 
