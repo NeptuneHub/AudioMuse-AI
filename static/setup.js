@@ -1,21 +1,21 @@
 var serverFields = {
     jellyfin: [
-        {name: 'JELLYFIN_URL', label: 'Jellyfin URL', placeholder: 'http://your-jellyfin-server:8096'},
-        {name: 'JELLYFIN_USER_ID', label: 'Jellyfin user ID', placeholder: 'your-user-id'},
-        {name: 'JELLYFIN_TOKEN', label: 'Jellyfin API token', placeholder: 'your-api-token'}
+        {name: 'JELLYFIN_URL', label: 'Jellyfin URL', placeholder: 'http://your-jellyfin-server:8096', tooltip: 'Base URL of your Jellyfin server, including http:// or https:// and the port. Must be reachable from the AudioMuse-AI container.'},
+        {name: 'JELLYFIN_USER_ID', label: 'Jellyfin user ID', placeholder: 'your-user-id', tooltip: "The Jellyfin user whose library AudioMuse-AI will read. Find the ID in Jellyfin under Dashboard \u2192 Users \u2192 (your user) \u2192 the URL contains userId=..."},
+        {name: 'JELLYFIN_TOKEN', label: 'Jellyfin API token', placeholder: 'your-api-token', tooltip: 'API key for that Jellyfin user. Create one in Jellyfin under Dashboard \u2192 API Keys.'}
     ],
     navidrome: [
-        {name: 'NAVIDROME_URL', label: 'Navidrome URL', placeholder: 'http://your-navidrome-server:4533'},
-        {name: 'NAVIDROME_USER', label: 'Navidrome username', placeholder: 'your-username'},
-        {name: 'NAVIDROME_PASSWORD', label: 'Navidrome password', placeholder: 'your-password'}
+        {name: 'NAVIDROME_URL', label: 'Navidrome URL', placeholder: 'http://your-navidrome-server:4533', tooltip: 'Base URL of your Navidrome server, including http:// or https:// and the port.'},
+        {name: 'NAVIDROME_USER', label: 'Navidrome username', placeholder: 'your-username', tooltip: 'Username of a Navidrome account that can read the music library.'},
+        {name: 'NAVIDROME_PASSWORD', label: 'Navidrome password', placeholder: 'your-password', tooltip: 'Password for the Navidrome user above.'}
     ],
     lyrion: [
-        {name: 'LYRION_URL', label: 'Lyrion URL', placeholder: 'http://your-lyrion-server:9000'}
+        {name: 'LYRION_URL', label: 'Lyrion URL', placeholder: 'http://your-lyrion-server:9000', tooltip: 'Base URL of your Lyrion (Logitech Media Server) instance, including http:// and the port.'}
     ],
     emby: [
-        {name: 'EMBY_URL', label: 'Emby URL', placeholder: 'http://your-emby-server:8096'},
-        {name: 'EMBY_USER_ID', label: 'Emby user ID', placeholder: 'your-user-id'},
-        {name: 'EMBY_TOKEN', label: 'Emby API token', placeholder: 'your-api-token'}
+        {name: 'EMBY_URL', label: 'Emby URL', placeholder: 'http://your-emby-server:8096', tooltip: 'Base URL of your Emby server, including http:// or https:// and the port.'},
+        {name: 'EMBY_USER_ID', label: 'Emby user ID', placeholder: 'your-user-id', tooltip: 'The Emby user whose library AudioMuse-AI will read. Find the ID in Emby under Dashboard \u2192 Users \u2192 (your user).'},
+        {name: 'EMBY_TOKEN', label: 'Emby API token', placeholder: 'your-api-token', tooltip: 'API key for that Emby user. Create one in Emby under Dashboard \u2192 API Keys.'}
     ]
 };
 
@@ -25,6 +25,7 @@ var saveButton = document.getElementById('save-button');
 var serverConfigFields = document.getElementById('server-config-fields');
 var advancedFields = document.getElementById('advanced-fields');
 var authCredentials = document.getElementById('auth-credentials');
+var authAdminExists = document.getElementById('auth-admin-exists');
 var apiTokenRow = document.getElementById('api-token-row');
 var authCredentialInputs = [
     document.getElementById('AUDIOMUSE_USER'),
@@ -34,22 +35,40 @@ var authCredentialInputs = [
 ];
 var setupForm = document.getElementById('setup-form');
 var serverValues = {};
+var serverSecretHasValue = {};
 var originalValues = {};
+// Set from GET /api/setup: when true, an admin already exists in
+// audiomuse_users and the setup wizard must not allow editing admin
+// credentials here. User management happens in /users instead.
+var hasAdminUser = false;
 
 function updateAuthVisibility() {
     var authEnabled = document.getElementById('AUTH_ENABLED').value === 'true';
+    var showAdminCreds = authEnabled && !hasAdminUser;
     authCredentials.style.display = authEnabled ? 'grid' : 'none';
+    if (authAdminExists) {
+        authAdminExists.style.display = (authEnabled && hasAdminUser) ? 'block' : 'none';
+    }
+    // Hide the three admin-credential wrappers when an admin already exists.
+    var adminWrappers = document.querySelectorAll('.auth-admin-credential');
+    for (var i = 0; i < adminWrappers.length; i++) {
+        adminWrappers[i].style.display = showAdminCreds ? '' : 'none';
+    }
     apiTokenRow.style.display = authEnabled ? 'block' : 'none';
     authCredentialInputs.forEach(function(input) {
         if (!input) {
             return;
         }
-        input.disabled = !authEnabled;
+        // JWT_SECRET stays editable whenever auth is enabled, regardless of
+        // whether an admin already exists.
+        var isAdminCred = input.id !== 'JWT_SECRET';
+        var enabledForInput = isAdminCred ? showAdminCreds : authEnabled;
+        input.disabled = !enabledForInput;
         var label = document.querySelector('label[for="' + input.id + '"]');
-        if (input.id !== 'JWT_SECRET') {
-            input.required = authEnabled;
+        if (isAdminCred) {
+            input.required = enabledForInput;
             if (label) {
-                if (authEnabled) {
+                if (enabledForInput) {
                     label.classList.add('required-label');
                 } else {
                     label.classList.remove('required-label');
@@ -63,10 +82,12 @@ function updateAuthVisibility() {
         apiTokenInput.required = false;
         var label = document.querySelector('label[for="API_TOKEN"]');
         if (label) {
-            if (authEnabled) {
-                label.textContent = 'API token (optional)';
+            // Update only the leading text node so the info-tooltip span is preserved.
+            var newText = authEnabled ? 'API token (optional) ' : 'API token ';
+            if (label.firstChild && label.firstChild.nodeType === Node.TEXT_NODE) {
+                label.firstChild.nodeValue = newText;
             } else {
-                label.textContent = 'API token';
+                label.insertBefore(document.createTextNode(newText), label.firstChild);
             }
         }
     }
@@ -77,7 +98,24 @@ function createInputField(field, value) {
     row.className = 'field-row';
     var label = document.createElement('label');
     label.setAttribute('for', field.name);
-    label.textContent = field.label;
+    if (field.tooltip) {
+        label.classList.add('label-with-tooltip');
+        label.appendChild(document.createTextNode(field.label));
+        var tt = document.createElement('span');
+        tt.className = 'info-tooltip';
+        tt.setAttribute('tabindex', '0');
+        var icon = document.createElement('span');
+        icon.className = 'info-icon';
+        var text = document.createElement('span');
+        text.className = 'tooltip-text';
+        text.textContent = field.tooltip;
+        tt.appendChild(icon);
+        tt.appendChild(text);
+        label.appendChild(document.createTextNode(' '));
+        label.appendChild(tt);
+    } else {
+        label.textContent = field.label;
+    }
     var input;
     if (field.type === 'textarea') {
         input = document.createElement('textarea');
@@ -145,8 +183,10 @@ function createInputField(field, value) {
 }
 
 function renderServerFields(serverType, values, hasValueMap) {
+    hasValueMap = hasValueMap || {};
     serverConfigFields.innerHTML = '';
     if (!serverFields[serverType]) {
+        updateTestButtonState();
         return;
     }
     var fields = serverFields[serverType];
@@ -179,10 +219,12 @@ function renderServerFields(serverType, values, hasValueMap) {
             required: true,
             secret: secret,
             has_value: hasValue,
+            tooltip: field.tooltip,
             originalValue: originalValues[field.name] !== undefined ? originalValues[field.name] : value
         };
         serverConfigFields.appendChild(createInputField(fieldCopy, value));
     });
+    updateTestButtonState();
 }
 
 function renderAdvancedFields(fields) {
@@ -219,6 +261,7 @@ function loadSetupData() {
         }
         return response.json();
     }).then(function(data) {
+        hasAdminUser = !!data.has_admin_user;
         var basicData = {};
         var secretHasValue = {};
         data.basic_fields.forEach(function(item) {
@@ -227,6 +270,7 @@ function loadSetupData() {
                 secretHasValue[item.name] = item.has_value;
             }
         });
+        serverSecretHasValue = secretHasValue;
         var advancedData = data.advanced_fields;
         var mediaServerSelect = document.getElementById('MEDIASERVER_TYPE');
         if (basicData.MEDIASERVER_TYPE) {
@@ -324,55 +368,28 @@ function saveCurrentServerValues() {
     });
 }
 
+function testConfigFieldsFilled() {
+    var requiredFields = serverConfigFields.querySelectorAll('input[required], textarea[required], select[required]');
+    if (!requiredFields.length) {
+        return false;
+    }
+    return Array.prototype.every.call(requiredFields, function(input) {
+        if (input.disabled) {
+            return true;
+        }
+        return input.value.trim() !== '';
+    });
+}
+
+function updateTestButtonState() {
+    var testButton = document.getElementById('test-button');
+    testButton.disabled = !testConfigFieldsFilled();
+}
+
 function updateServerFields() {
     saveCurrentServerValues();
     var serverType = document.getElementById('MEDIASERVER_TYPE').value;
-    renderServerFields(serverType, serverValues);
-}
-
-function waitForHealthAndRedirect(redirectUrl) {
-    var attempts = 0;
-    var maxAttempts = 80;
-    var consecutiveOk = 0;
-    saveFeedback.className = 'status-pending inline-feedback';
-    saveFeedback.style.display = 'block';
-    saveFeedback.textContent = 'Configuration saved. Restarting services — please wait...';
-    function checkHealth() {
-        attempts += 1;
-        fetch('/api/health', { cache: 'no-store' })
-            .then(function(resp) {
-                if (!resp.ok) {
-                    throw new Error('Service not ready');
-                }
-                return resp.json();
-            })
-            .then(function(data) {
-                if (data && data.status === 'ok') {
-                    consecutiveOk += 1;
-                    if (consecutiveOk >= 2) {
-                        window.location.href = redirectUrl;
-                        return;
-                    }
-                    setTimeout(checkHealth, 1500);
-                } else {
-                    consecutiveOk = 0;
-                    throw new Error('Service not ready');
-                }
-            })
-            .catch(function() {
-                consecutiveOk = 0;
-                if (attempts < maxAttempts) {
-                    setTimeout(checkHealth, 1500);
-                } else {
-                    saveFeedback.className = 'status-failure inline-feedback';
-                    saveFeedback.style.display = 'block';
-                    saveFeedback.textContent = 'Restart timeout. Please refresh the page in a moment.';
-                    saveButton.disabled = false;
-                }
-            });
-    }
-
-    setTimeout(checkHealth, 3000);
+    renderServerFields(serverType, serverValues, serverSecretHasValue);
 }
 
 function collectConfigFromForm(testMode) {
@@ -510,7 +527,7 @@ setupForm.addEventListener('submit', function(event) {
     }).then(function(data) {
         saveFeedback.className = 'status-success inline-feedback';
         saveFeedback.style.display = 'block';
-        var countdown = 5;
+        var countdown = 20;
         saveFeedback.textContent = 'Configuration saved. Redirecting in ' + countdown + ' seconds...';
         var countdownInterval = setInterval(function() {
             countdown -= 1;
@@ -524,13 +541,20 @@ setupForm.addEventListener('submit', function(event) {
     }).catch(function(err) {
         saveFeedback.className = 'status-failure inline-feedback';
         saveFeedback.style.display = 'block';
-        saveFeedback.textContent = err.message;
+        var message = err.message || 'Unable to save configuration.';
+        if (message === 'Forbidden' || message === 'Setup required' || message === 'Auth not configured') {
+            message = 'Error saving configuration. Please refresh the page and try again.';
+        } else if (!message.toLowerCase().includes('refresh')) {
+            message = message + ' Please refresh the page or check the server logs.';
+        }
+        saveFeedback.textContent = '✕ ' + message;
     }).finally(function() {
         saveButton.disabled = false;
     });
 });
 
 document.getElementById('test-button').addEventListener('click', testConnection);
+serverConfigFields.addEventListener('input', updateTestButtonState);
 document.getElementById('MEDIASERVER_TYPE').addEventListener('change', updateServerFields);
 document.getElementById('AUTH_ENABLED').addEventListener('change', updateAuthVisibility);
 loadSetupData();

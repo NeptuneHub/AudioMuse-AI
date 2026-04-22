@@ -1,0 +1,1422 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<title>AudioMuse-AI - Provider Migration</title>
+<style>
+    .mig-card {
+        background-color: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 1.25rem 1.5rem;
+        margin-bottom: 1rem;
+    }
+    .mig-card.locked {
+        opacity: 0.55;
+        pointer-events: none;
+    }
+    .mig-card h2 {
+        margin: 0 0 0.25rem;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-size: 1.15rem;
+    }
+    .mig-step-num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.6rem;
+        height: 1.6rem;
+        border-radius: 50%;
+        background-color: var(--border-color);
+        color: var(--text-sub);
+        font-size: 0.85rem;
+        font-weight: 700;
+    }
+    .mig-card.done .mig-step-num {
+        background-color: var(--color-success, #16a34a);
+        color: white;
+    }
+    .mig-card.active .mig-step-num {
+        background-color: var(--color-primary, #3b82f6);
+        color: white;
+    }
+    .mig-card p {
+        color: var(--text-sub);
+        margin: 0.25rem 0 0.75rem;
+    }
+    .mig-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+        margin-top: 0.5rem;
+    }
+    .mig-row label {
+        font-weight: 600;
+        min-width: 120px;
+    }
+    .mig-row input[type="text"],
+    .mig-row input[type="password"],
+    .mig-row input[type="number"] {
+        flex: 1;
+        min-width: 200px;
+        padding: 0.45rem 0.6rem;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        font-size: 0.95rem;
+        background: var(--bg-input, var(--bg-card));
+        color: var(--text-main);
+    }
+    .mig-status {
+        margin-top: 0.75rem;
+        font-size: 0.92rem;
+        color: var(--text-sub);
+    }
+    .mig-card a {
+        color: #60a5fa;
+        text-decoration: underline;
+    }
+    .mig-card a:hover {
+        color: #93c5fd;
+    }
+    .mig-warning {
+        background-color: #fff7ed;
+        border: 1px solid #f59e0b;
+        color: #92400e;
+        padding: 0.75rem 1rem;
+        border-radius: 6px;
+        margin-top: 0.75rem;
+        font-size: 0.92rem;
+    }
+    .mig-info-box {
+        background-color: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-left: 4px solid var(--color-primary, #3b82f6);
+        border-radius: 6px;
+        padding: 0.9rem 1.1rem;
+        margin: 0.5rem 0 1.25rem;
+        font-size: 0.92rem;
+        color: var(--text-main);
+        line-height: 1.45;
+    }
+    .mig-info-box em { font-style: italic; }
+    .mig-warning a { color: #1d4ed8; }
+    .mig-error {
+        background-color: #fef2f2;
+        border: 1px solid #ef4444;
+        color: #991b1b;
+        padding: 0.6rem 0.9rem;
+        border-radius: 6px;
+        margin-top: 0.5rem;
+        font-size: 0.9rem;
+    }
+    .mig-success {
+        background-color: #f0fdf4;
+        border: 1px solid #16a34a;
+        color: #166534;
+        padding: 0.6rem 0.9rem;
+        border-radius: 6px;
+        margin-top: 0.5rem;
+        font-size: 0.9rem;
+    }
+    /* Alert boxes keep their pastel backgrounds in both themes, so their text
+       must also stay dark. .mig-card p globally forces var(--text-sub) which
+       in dark mode is light grey — invisible on the pastel backgrounds.
+       Force descendants to inherit the alert's own dark color. */
+    .mig-success p, .mig-warning p, .mig-error p,
+    .mig-success small, .mig-warning small, .mig-error small,
+    .mig-success code, .mig-warning code, .mig-error code {
+        color: inherit;
+    }
+    /* Plain .btn has white text with no background — invisible on the pastel
+       alert backgrounds. Give secondary buttons inside alerts a mode-agnostic
+       dark-on-light style since the alert bg is itself mode-agnostic. */
+    .mig-warning .btn:not(.btn-primary):not(.btn-danger),
+    .mig-success .btn:not(.btn-primary):not(.btn-danger),
+    .mig-error   .btn:not(.btn-primary):not(.btn-danger) {
+        background-color: rgba(0, 0, 0, 0.08);
+        color: #374151;
+        border: 1px solid rgba(0, 0, 0, 0.18);
+    }
+    .mig-warning .btn:not(.btn-primary):not(.btn-danger):hover,
+    .mig-success .btn:not(.btn-primary):not(.btn-danger):hover,
+    .mig-error   .btn:not(.btn-primary):not(.btn-danger):hover {
+        background-color: rgba(0, 0, 0, 0.14);
+    }
+    .mig-tier-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 0.5rem;
+        margin-top: 0.75rem;
+    }
+    .mig-tier-cell {
+        padding: 0.5rem 0.75rem;
+        background: var(--bg-body, #f9fafb);
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        font-size: 0.9rem;
+    }
+    .mig-tier-cell.mig-tier-clickable {
+        cursor: pointer;
+        transition: border-color 0.15s, background 0.15s;
+    }
+    .mig-tier-cell.mig-tier-clickable:hover {
+        border-color: var(--color-primary, #3b82f6);
+    }
+    .mig-tier-cell.mig-tier-active {
+        border-color: var(--color-primary, #3b82f6);
+        box-shadow: 0 0 0 2px var(--color-primary, #3b82f6) inset;
+    }
+    .mig-tier-cell .mig-tier-num {
+        display: block;
+        font-size: 1.4rem;
+        font-weight: 700;
+        color: var(--text-main);
+    }
+    .mig-album-list {
+        max-height: 380px;
+        overflow-y: auto;
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        margin-top: 0.75rem;
+    }
+    .mig-album-item {
+        padding: 0.6rem 0.9rem;
+        border-bottom: 1px solid var(--border-color);
+        cursor: pointer;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.75rem;
+    }
+    .mig-album-item:last-child { border-bottom: none; }
+    .mig-album-item:hover { background: var(--bg-body, #f9fafb); }
+    .mig-album-item.matched { opacity: 0.5; text-decoration: line-through; }
+    .mig-album-item .mig-album-meta {
+        font-size: 0.85rem;
+        color: var(--text-sub);
+    }
+    .mig-match-pane {
+        margin-top: 0.75rem;
+        padding: 0.9rem;
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        background: var(--bg-body, #f9fafb);
+        display: none;
+    }
+    .mig-match-pane.visible { display: block; }
+    .mig-candidate {
+        padding: 0.45rem 0.6rem;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        margin-top: 0.4rem;
+        cursor: pointer;
+        background: var(--bg-card);
+    }
+    .mig-candidate:hover {
+        border-color: var(--color-primary, #3b82f6);
+    }
+    .mig-checkbox-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.6rem;
+        margin-top: 0.75rem;
+    }
+    .mig-checkbox-row input[type="checkbox"] {
+        width: 1.35rem;
+        height: 1.35rem;
+        min-width: 1.35rem;
+        flex: 0 0 auto;
+        margin-top: 0.15rem;
+        transform: scale(1.1);
+        accent-color: var(--color-primary, #3b82f6);
+        cursor: pointer;
+    }
+    .mig-checkbox-row label {
+        font-size: 0.98rem;
+        line-height: 1.4;
+        flex: 1 1 auto;
+        cursor: pointer;
+    }
+    .mig-confirm-phrase {
+        font-family: monospace;
+        font-size: 0.92rem;
+        padding: 0.4rem 0.55rem;
+        background: var(--bg-body, #f3f4f6);
+        border-radius: 4px;
+        display: inline-block;
+        user-select: all;
+    }
+    .mig-danger-btn {
+        background-color: var(--color-danger, #ef4444) !important;
+        color: white !important;
+        border-color: var(--color-danger, #ef4444) !important;
+    }
+    .mig-danger-btn:disabled {
+        background-color: var(--text-muted, #9ca3af) !important;
+        border-color: var(--text-muted, #9ca3af) !important;
+        cursor: not-allowed;
+        opacity: 0.6;
+    }
+    .mig-log {
+        font-family: monospace;
+        font-size: 0.85rem;
+        background: var(--bg-body, #111827);
+        color: var(--text-main, #e5e7eb);
+        padding: 0.75rem;
+        border-radius: 6px;
+        max-height: 260px;
+        overflow-y: auto;
+        margin-top: 0.75rem;
+        white-space: pre-wrap;
+    }
+    .mig-cred-field { display: none; }
+    .mig-cred-field.active { display: block; }
+
+    /* Provider credentials: one field per line, labels above inputs on narrow screens */
+    .mig-cred-field .mig-row {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.3rem;
+        margin-top: 0.6rem;
+    }
+    .mig-cred-field .mig-row label {
+        min-width: 0;
+        font-weight: 600;
+    }
+    .mig-cred-field .mig-row input[type="text"],
+    .mig-cred-field .mig-row input[type="password"],
+    .mig-cred-field .mig-row input[type="number"] {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+    }
+
+    /* Mobile-friendly tweaks: avoid overflow, stack rows, enlarge inputs */
+    @media (max-width: 640px) {
+        .mig-card { padding: 1rem; }
+        .mig-row {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 0.35rem;
+        }
+        .mig-row label { min-width: 0; }
+        .mig-row input[type="text"],
+        .mig-row input[type="password"],
+        .mig-row input[type="number"],
+        .mig-row select {
+            width: 100%;
+            min-width: 0;
+            box-sizing: border-box;
+        }
+        .mig-row .btn,
+        .mig-row button {
+            width: 100%;
+        }
+        .mig-checkbox-row input[type="checkbox"] {
+            width: 1.6rem;
+            height: 1.6rem;
+            min-width: 1.6rem;
+            transform: scale(1.15);
+        }
+        .mig-checkbox-row label { font-size: 1rem; }
+        #main-content-inner,
+        .mig-card,
+        .mig-card * {
+            max-width: 100%;
+            box-sizing: border-box;
+        }
+        .mig-confirm-phrase {
+            word-break: break-word;
+            white-space: normal;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="main-content-inner">
+    <section>
+        <div class="page-header">
+            <h1>AudioMuse-AI - Provider Migration</h1>
+            <p class="subtitle">
+                AudioMuse-AI rewrites every track&rsquo;s internal ID from your <strong>old media provider</strong> to
+                the matching ID on a <strong>new one</strong> (Jellyfin, Navidrome, Emby, Lyrion&hellip;)
+                so your analysis data, embeddings, and local playlists keep pointing at the right songs.
+            </p>
+            <div class="mig-info-box">
+                <p style="margin:0 0 0.5rem;">
+                    <strong>When to use this:</strong> you&rsquo;ve switched the media server in front of
+                    the <em>same music library</em> and need AudioMuse-AI to follow along. For example,
+                    you replaced Navidrome with Emby but both point at the same files on disk.
+                </p>
+                <p style="margin:0 0 0.5rem;">
+                    <strong>Best results:</strong> both providers expose the library from the
+                    <em>same mount path</em>. The matcher&rsquo;s most reliable tier is full file-path
+                    matching; metadata fallbacks work but are looser and can&rsquo;t always disambiguate
+                    multi-disc albums or tracks with identical titles.
+                </p>
+                <p style="margin:0;">
+                    <strong>Not designed for:</strong> merging two different libraries, or migrating
+                    between providers that expose <em>different</em> sets of files. Tracks that don&rsquo;t
+                    exist on the new provider will be deleted as orphans.
+                </p>
+            </div>
+        </div>
+    </section>
+
+        <!-- ======================== STEP 1: BACKUP ======================== -->
+        <div id="mig-step-1" class="mig-card active">
+            <h2><span class="mig-step-num">1</span> Back up your database</h2>
+            <p>
+                This tool rewrites every <code>item_id</code> in your database. Mistakes cannot be
+                undone without a backup. Download a full pg_dump from the
+                <a href="{{ url_for('backup_bp.backup_page') }}" target="_blank">Backup &amp; Restore</a>
+                page first.
+            </p>
+            <div class="mig-checkbox-row">
+                <input type="checkbox" id="mig-backup-confirmed">
+                <label for="mig-backup-confirmed">
+                    I have downloaded and safely stored a full database backup.
+                </label>
+            </div>
+        </div>
+
+        <!-- ================ STEP 2: TARGET PROVIDER + CREDS ================ -->
+        <div id="mig-step-2" class="mig-card locked">
+            <h2><span class="mig-step-num">2</span> Choose the new provider</h2>
+            <p>Select the media server you want to switch to and provide credentials.</p>
+
+            <div class="mig-row">
+                <label for="mig-target-type">Provider:</label>
+                <select id="mig-target-type">
+                    <option value="">— Select —</option>
+                    <option value="jellyfin">Jellyfin</option>
+                    <option value="navidrome">Navidrome</option>
+                    <option value="emby">Emby</option>
+                    <option value="lyrion">Lyrion (LMS)</option>
+                </select>
+            </div>
+
+            <!-- Jellyfin creds -->
+            <div class="mig-cred-field" data-for="jellyfin">
+                <div class="mig-row">
+                    <label>Server URL:</label>
+                    <input type="text" data-cred="url" placeholder="http://jellyfin.local:8096">
+                </div>
+                <div class="mig-row">
+                    <label>User ID:</label>
+                    <input type="text" data-cred="user_id" placeholder="0721e115a43d4898ae06676d86b9e4f2">
+                </div>
+                <div class="mig-row">
+                    <label>API Token:</label>
+                    <input type="password" data-cred="token" placeholder="35a447f357ff47939a953101bc3ace35">
+                </div>
+            </div>
+
+            <!-- Emby creds -->
+            <div class="mig-cred-field" data-for="emby">
+                <div class="mig-row">
+                    <label>Server URL:</label>
+                    <input type="text" data-cred="url" placeholder="http://emby.local:8096">
+                </div>
+                <div class="mig-row">
+                    <label>User ID:</label>
+                    <input type="text" data-cred="user_id" placeholder="0721e115a43d4898ae06676d86b9e4f2">
+                </div>
+                <div class="mig-row">
+                    <label>API Token:</label>
+                    <input type="password" data-cred="token" placeholder="35a447f357ff47939a953101bc3ace35">
+                </div>
+            </div>
+
+            <!-- Navidrome creds -->
+            <div class="mig-cred-field" data-for="navidrome">
+                <div class="mig-row">
+                    <label>Server URL:</label>
+                    <input type="text" data-cred="url" placeholder="http://navidrome.local:4533">
+                </div>
+                <div class="mig-row">
+                    <label>Username:</label>
+                    <input type="text" data-cred="user">
+                </div>
+                <div class="mig-row">
+                    <label>Password:</label>
+                    <input type="password" data-cred="password">
+                </div>
+            </div>
+
+            <div class="mig-cred-field" data-for="lyrion">
+                <div class="mig-row">
+                    <label>LMS URL:</label>
+                    <input type="text" data-cred="url" placeholder="http://lms.local:9000">
+                </div>
+                <div class="mig-row">
+                    <label>Username:</label>
+                    <input type="text" data-cred="user" placeholder="(leave blank if no auth)">
+                </div>
+                <div class="mig-row">
+                    <label>Password:</label>
+                    <input type="password" data-cred="password" placeholder="(leave blank if no auth)">
+                </div>
+            </div>
+
+            <div class="mig-row">
+                <button id="mig-test-connection" class="btn btn-primary">Test Connection</button>
+            </div>
+            <div id="mig-probe-result"></div>
+        </div>
+
+        <!-- ================ STEP 3: AUTOMATIC MATCHING ================ -->
+        <div id="mig-step-3" class="mig-card locked">
+            <h2><span class="mig-step-num">3</span> Automatic matching</h2>
+            <p>
+                Match every track in your AudioMuse database against the new provider. You can
+                re-run this as many times as you want (e.g. after fixing Navidrome's
+                &ldquo;Report Real Path&rdquo; setting).
+            </p>
+            <div class="mig-row" style="align-items:center;">
+                <label style="display:flex; align-items:center; gap:0.4rem; margin:0;">
+                    <input type="checkbox" id="mig-loose-match">
+                    <span id="mig-loose-match-label">Also match by title + artist (ignore album)</span>
+                </label>
+            </div>
+            <div id="mig-loose-match-disclaimer" class="mig-warning" style="display:none; margin-top:0.5rem;">
+                <strong>Looser fallback — review before executing.</strong>
+                When strict tiers (path + full metadata) can&rsquo;t match a track, the
+                matcher will try normalized (title, artist) alone. This can pair
+                tracks with different album versions &mdash; studio vs. compilation,
+                original vs. remaster/live &mdash; which you may not want. Review
+                auto-matched albums in step 4 before executing.
+                <div class="mig-row" style="margin-top:0.5rem;">
+                    <button id="mig-loose-accept" class="btn btn-primary" type="button">I understand &mdash; enable</button>
+                    <button id="mig-loose-cancel" class="btn" type="button">Cancel</button>
+                </div>
+            </div>
+            <div class="mig-row">
+                <button id="mig-run-dry" class="btn btn-primary">Run automatic matching</button>
+            </div>
+            <div id="mig-source-refresh" style="display:none;"></div>
+            <div id="mig-dry-result"></div>
+        </div>
+
+        <!-- ================ STEP 4: MANUAL ALBUM MATCHING ================ -->
+        <div id="mig-step-4" class="mig-card locked">
+            <h2><span class="mig-step-num">4</span> Manual album matching <span style="font-weight:normal; font-size:0.9em; opacity:0.7;">(optional)</span></h2>
+            <p>
+                This step is optional. Any albums you don&rsquo;t match here will be treated as
+                orphans and their tracks deleted when you execute. If that&rsquo;s fine for you,
+                skip straight to step 5. Otherwise, find the correct album on the new provider
+                (tracks auto-fill by title) for any you want to keep.
+            </p>
+            <div id="mig-album-list" class="mig-album-list"></div>
+
+            <div id="mig-matched-section" style="margin-top:1rem;">
+                <div id="mig-matched-toggle"
+                     style="cursor:pointer; user-select:none; display:flex; align-items:center; gap:0.5rem; padding:0.5rem 0; font-weight:600;">
+                    <span id="mig-matched-arrow">&#9654;</span>
+                    <span>Show auto-matched albums (<span id="mig-matched-count">0</span>)</span>
+                </div>
+                <div id="mig-matched-content" style="display:none; margin-top:0.5rem;">
+                    <p style="margin:0 0 0.5rem; font-size:0.9em;">
+                        Click any album to re-target it if the automatic match is wrong. Tracks that
+                        don&rsquo;t exist in the new target will become orphans and be deleted on execute.
+                    </p>
+                    <div id="mig-matched-list" class="mig-album-list"></div>
+                    <div class="mig-row" style="justify-content:center; margin-top:0.5rem;">
+                        <button id="mig-matched-prev" class="btn">&laquo; Prev</button>
+                        <span id="mig-matched-pageinfo" style="min-width:8rem; text-align:center;"></span>
+                        <button id="mig-matched-next" class="btn">Next &raquo;</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="mig-match-pane" class="mig-match-pane">
+                <div style="display:flex; align-items:center; gap:0.5rem;">
+                    <strong id="mig-match-album-title"></strong>
+                </div>
+                <div class="mig-row">
+                    <input type="text" id="mig-match-query" placeholder="Search target provider...">
+                    <button id="mig-match-search" class="btn btn-primary">Search</button>
+                    <button id="mig-match-skip" class="btn mig-danger-btn">Skip &amp; delete this album</button>
+                </div>
+                <div id="mig-match-candidates"></div>
+            </div>
+        </div>
+
+        <!-- ================ STEP 5: FINALIZE + EXECUTE GATE ================ -->
+        <div id="mig-step-5" class="mig-card locked">
+            <h2><span class="mig-step-num">5</span> Finalize &amp; execute</h2>
+            <p>Review the final counts and unlock the execute button.</p>
+            <div class="mig-row">
+                <button id="mig-finalize" class="btn btn-primary">Finalize Dry Run</button>
+                <a id="mig-dl-report" href="#" class="btn" target="_blank" style="display:none;">
+                    Download dry-run report
+                </a>
+            </div>
+            <div id="mig-final-counts"></div>
+
+            <div id="mig-execute-gate" style="display:none; margin-top:1rem;">
+                <div class="mig-checkbox-row">
+                    <input type="checkbox" id="mig-final-backup-ok">
+                    <label for="mig-final-backup-ok">
+                        I have created a backup and I understand that orphan tracks will be deleted.
+                    </label>
+                </div>
+                <div class="mig-row">
+                    <label style="min-width:auto;">Type exactly:</label>
+                    <span id="mig-expected-phrase" class="mig-confirm-phrase"></span>
+                </div>
+                <div class="mig-row">
+                    <input type="text" id="mig-confirm-phrase" placeholder="Type the phrase above...">
+                </div>
+                <div class="mig-row">
+                    <button id="mig-execute" class="btn mig-danger-btn" disabled>
+                        Execute Migration
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================== STEP 6: EXECUTION PROGRESS ================== -->
+        <div id="mig-step-6" class="mig-card locked">
+            <h2><span class="mig-step-num">6</span> Execution</h2>
+            <p>Watch the migration run and see the final state.</p>
+            <div id="mig-exec-status"></div>
+            <div id="mig-exec-log" class="mig-log" style="display:none;"></div>
+        </div>
+</div>
+{% endblock %}
+
+{% block bodyAdditions %}
+<script>
+(function() {
+    // ---------- State ----------
+    let sessionId   = null;
+    let targetType  = '';
+    let targetCreds = {};
+    let unmatchedAlbums = [];
+    let currentAlbumKey = null;
+    let dryRunCounts    = null;
+    let looseMatchEnabled = false;
+    let finalCounts     = null;
+    let matchedAlbums   = [];
+    let matchedPage     = 1;
+    let isRematch       = false;
+    let tierFilter      = null;  // null | 'path' | 'tail' | 'exact_meta' | 'norm_meta' | 'title_artist' | 'manual'
+    const MATCHED_PER_PAGE = 20;
+    const TIER_LABEL = {
+        path:         'via path',
+        tail:         'via path tail',
+        exact_meta:   'via exact metadata',
+        title_artist: 'via title + artist only',
+        norm_meta:  'via normalized metadata',
+        manual:     'manually re-targeted',
+        unknown:    '',
+    };
+
+    // ---------- DOM handles ----------
+    const $ = id => document.getElementById(id);
+    const steps = [1, 2, 3, 4, 5, 6].map(n => $('mig-step-' + n));
+
+    // ---------- Helpers ----------
+    function unlock(step) { steps[step - 1].classList.remove('locked'); }
+    function lock(step)   { steps[step - 1].classList.add('locked'); }
+    function setActive(step) {
+        steps.forEach((el, i) => {
+            el.classList.remove('active');
+            if (i + 1 < step) el.classList.add('done');
+            if (i + 1 === step) el.classList.add('active');
+        });
+    }
+    function resetFromStep(step) {
+        for (let i = step; i <= 6; i++) {
+            lock(i);
+            steps[i - 1].classList.remove('done');
+        }
+    }
+    const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    function showError(container, msg) {
+        container.innerHTML = '<div class="mig-error">' + esc(msg) + '</div>';
+    }
+    function showSuccess(container, html) {
+        container.innerHTML = '<div class="mig-success">' + html + '</div>';
+    }
+    function showWarn(container, msg) {
+        container.innerHTML = '<div class="mig-warning">' + esc(msg) + '</div>';
+    }
+    async function jsonFetch(url, opts) {
+        const res = await fetch(url, opts || {});
+        const text = await res.text();
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch {
+            // Server returned HTML (e.g. Flask's default 500 page). Don't
+            // inject that into the DOM — showError uses innerHTML and the
+            // raw HTML is unreadable in dark mode. Surface a short summary.
+            data = { error: 'Server error (HTTP ' + res.status + '). Check the server logs for details.' };
+        }
+        if (!res.ok) throw new Error(data.error || 'Request failed: ' + res.status);
+        return data;
+    }
+
+    // ---------- Step 1 ----------
+    $('mig-backup-confirmed').addEventListener('change', e => {
+        if (e.target.checked) {
+            unlock(2);
+            setActive(2);
+        } else {
+            resetFromStep(2);
+            setActive(1);
+        }
+    });
+
+    // ---------- Step 2 ----------
+    $('mig-target-type').addEventListener('change', e => {
+        targetType = e.target.value;
+        document.querySelectorAll('.mig-cred-field').forEach(f => {
+            const forList = (f.dataset.for || '').split(/\s+/);
+            f.classList.toggle('active', targetType && forList.includes(targetType));
+        });
+        $('mig-probe-result').innerHTML = '';
+        $('mig-test-connection').disabled = false;
+        resetFromStep(3);
+    });
+
+    function collectCreds() {
+        targetCreds = {};
+        const active = document.querySelector('.mig-cred-field.active');
+        if (!active) return;
+        active.querySelectorAll('[data-cred]').forEach(inp => {
+            const v = inp.value.trim();
+            if (v) targetCreds[inp.dataset.cred] = v;
+        });
+    }
+
+    $('mig-test-connection').addEventListener('click', async () => {
+        if (!targetType) return;
+        collectCreds();
+        $('mig-probe-result').innerHTML = '<div class="mig-status">Testing connection…</div>';
+        try {
+            const result = await jsonFetch("{{ url_for('migration_bp.probe_test') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: targetType, creds: targetCreds })
+            });
+            if (!result.ok) {
+                showError($('mig-probe-result'),
+                    'Connection failed: ' + (result.error || 'unknown'));
+                resetFromStep(3);
+                return;
+            }
+            let html = '<div class="mig-success">✓ Connected. Sampled ' +
+                esc(result.sample_count) + ' tracks. Path format: <strong>' +
+                esc(result.path_format) + '</strong>.</div>';
+            if (result.warnings && result.warnings.length) {
+                result.warnings.forEach(w => {
+                    html += '<div class="mig-warning">' + esc(w) + '</div>';
+                });
+            }
+            $('mig-probe-result').innerHTML = html;
+
+            // Create/reuse session
+            if (!sessionId) {
+                const s = await jsonFetch("{{ url_for('migration_bp.session_start') }}", {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ target_type: targetType, target_creds: targetCreds })
+                });
+                sessionId = s.session_id;
+            }
+            unlock(3);
+            setActive(3);
+        } catch (e) {
+            showError($('mig-probe-result'), e.message);
+        }
+    });
+
+    // ---------- Step 3 ----------
+    // Loose-match opt-in with disclaimer gate.
+    $('mig-loose-match').addEventListener('change', e => {
+        if (e.target.checked && !looseMatchEnabled) {
+            $('mig-loose-match-disclaimer').style.display = '';
+        } else if (!e.target.checked) {
+            // Disabling never needs confirmation.
+            looseMatchEnabled = false;
+            $('mig-loose-match-disclaimer').style.display = 'none';
+            $('mig-loose-match-label').textContent = 'Also match by title + artist (ignore album)';
+        }
+    });
+    $('mig-loose-accept').addEventListener('click', () => {
+        looseMatchEnabled = true;
+        $('mig-loose-match-disclaimer').style.display = 'none';
+        $('mig-loose-match-label').textContent = 'Also match by title + artist (ignore album) — enabled';
+    });
+    $('mig-loose-cancel').addEventListener('click', () => {
+        looseMatchEnabled = false;
+        $('mig-loose-match').checked = false;
+        $('mig-loose-match-disclaimer').style.display = 'none';
+    });
+
+    async function runDryRun(extraBody) {
+        const body = Object.assign({
+            session_id: sessionId,
+            allow_title_artist_only: looseMatchEnabled,
+        }, extraBody || {});
+        const res = await fetch("{{ url_for('migration_bp.dry_run') }}", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); }
+        catch { data = { error: 'Server error (HTTP ' + res.status + ')' }; }
+        // 409 = source paths need refreshing; show the refresh panel.
+        if (res.status === 409 && data.needs_source_refresh) {
+            renderSourceRefreshPanel(data);
+            throw new Error('__source_refresh__');  // caught below, message discarded
+        }
+        if (!res.ok) throw new Error(data.error || 'Request failed: ' + res.status);
+        return data;
+    }
+
+    function renderSourceRefreshPanel(info) {
+        const el = $('mig-source-refresh');
+        const src = info.current_source_type || 'current provider';
+        const fmt = info.path_format || 'unknown';
+        el.style.display = '';
+        el.innerHTML =
+            '<div class="mig-warning">' +
+            '<strong>Source file paths are unusable (' + esc(fmt) + ').</strong> ' +
+            'Your current ' + esc(src) + ' library was analyzed without real filesystem paths, ' +
+            'so automatic path-based matching can\u2019t run. ' +
+            (src === 'navidrome'
+                ? 'In Navidrome: <em>Settings &rarr; Players &rarr; AudioMuse-AI &rarr; enable Report Real Path</em>, then click Refresh below.'
+                : 'Enable the equivalent \u201Creport real path\u201D setting on your server, then click Refresh below.') +
+            '<div class="mig-row" style="margin-top:0.5rem;">' +
+            '<button id="mig-refresh-src" class="btn btn-primary">Refresh source paths</button> ' +
+            '<button id="mig-bypass-src" class="btn">Proceed with metadata-only matching</button>' +
+            '</div>' +
+            '<div id="mig-source-refresh-status" style="margin-top:0.5rem;"></div>' +
+            '</div>';
+        $('mig-refresh-src').addEventListener('click', refreshSourcePaths);
+        $('mig-bypass-src').addEventListener('click', () => {
+            $('mig-source-refresh').style.display = 'none';
+            $('mig-dry-result').innerHTML = '<div class="mig-status">Running automatic matching (metadata only) — this can take a few minutes…</div>';
+            runDryRun({ bypass_source_check: true })
+                .then(renderDryRunResult)
+                .catch(e => { if (e.message !== '__source_refresh__') showError($('mig-dry-result'), e.message); });
+        });
+    }
+
+    async function refreshSourcePaths() {
+        const statusEl = $('mig-source-refresh-status');
+        statusEl.innerHTML = '<div class="mig-status">Fetching fresh paths from current provider…</div>';
+        try {
+            const result = await jsonFetch("{{ url_for('migration_bp.source_paths_refresh') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId }),
+            });
+            if (result.path_format === 'absolute') {
+                statusEl.innerHTML = '<div class="mig-success">Loaded ' + result.overrides_count +
+                    ' real paths from ' + esc(result.source_type) + '. You can run automatic matching now.</div>';
+                $('mig-source-refresh').style.display = '';
+                // Keep panel visible so user can still bypass if they want to re-check;
+                // dry-run will now skip the gate because overrides are stored.
+            } else {
+                const warn = (result.warnings && result.warnings[0])
+                    || 'Paths are still not absolute — try enabling Report Real Path and refresh again.';
+                statusEl.innerHTML = '<div class="mig-warning">' + esc(warn) + '</div>';
+            }
+        } catch (e) {
+            statusEl.innerHTML = '<div class="mig-error">' + esc(e.message) + '</div>';
+        }
+    }
+
+    async function renderDryRunResult(result) {
+        dryRunCounts = result;
+        const tc = result.tier_counts || {};
+        let html = '<div class="mig-tier-grid">';
+        html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="path"><span class="mig-tier-num">' + (tc.path || 0) + '</span>matched by path</div>';
+        html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="tail"><span class="mig-tier-num">' + (tc.tail || 0) + '</span>matched by path tail</div>';
+        html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="exact_meta"><span class="mig-tier-num">' + (tc.exact_meta || 0) + '</span>matched by exact metadata</div>';
+        html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="norm_meta"><span class="mig-tier-num">' + (tc.norm_meta || 0) + '</span>matched by normalized metadata</div>';
+        if ('title_artist' in tc) {
+            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="title_artist"><span class="mig-tier-num">' + (tc.title_artist || 0) + '</span>matched by title + artist only</div>';
+        }
+        html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="unmatched"><span class="mig-tier-num">' + result.unmatched + '</span>unmatched tracks (' + result.unmatched_albums_count + ' albums)</div>';
+        html += '</div>';
+        $('mig-dry-result').innerHTML = html;
+        $('mig-dry-result').querySelectorAll('.mig-tier-cell[data-tier]').forEach(cell => {
+            cell.addEventListener('click', () => handleTierClick(cell.dataset.tier));
+        });
+        tierFilter = null;
+        await loadUnmatchedAlbums();
+        await loadMatchedAlbums();
+        unlock(4);
+        setActive(4);
+        resetFromStep(5);
+        // Step 4 is optional — unmatched albums get deleted on execute, so
+        // the user can always skip to step 5. If nothing is unmatched,
+        // auto-advance to step 5 for convenience.
+        unlock(5);
+        if (unmatchedAlbums.length === 0) {
+            setActive(5);
+        }
+    }
+
+    $('mig-run-dry').addEventListener('click', async () => {
+        if (!sessionId) return;
+        $('mig-source-refresh').style.display = 'none';
+        $('mig-dry-result').innerHTML = '<div class="mig-status">Running automatic matching — this can take a few minutes on large libraries…</div>';
+        try {
+            const result = await runDryRun();
+            await renderDryRunResult(result);
+        } catch (e) {
+            if (e.message !== '__source_refresh__') {
+                showError($('mig-dry-result'), e.message);
+            } else {
+                // Source refresh panel is now visible; clear the status line.
+                $('mig-dry-result').innerHTML = '';
+            }
+        }
+    });
+
+    // ---------- Step 4 ----------
+    async function loadUnmatchedAlbums() {
+        // Fetch the session state to get unmatched_albums
+        const s = await jsonFetch("{{ url_for('migration_bp.session_get', session_id=0) }}".replace('/0', '/' + sessionId));
+        unmatchedAlbums = ((s.state.dry_run || {}).unmatched_albums || []).slice();
+        const list = $('mig-album-list');
+        if (!unmatchedAlbums.length) {
+            list.innerHTML = '<div class="mig-status" style="padding:0.75rem;">All tracks matched automatically — nothing to do in this step. Proceed to step 5.</div>';
+            return;
+        }
+        list.innerHTML = '';
+        unmatchedAlbums.forEach((a, idx) => {
+            const div = document.createElement('div');
+            div.className = 'mig-album-item';
+            div.dataset.idx = idx;
+            div.innerHTML = '<div><strong>' + esc(a.album || '(no album)') + '</strong> — ' +
+                esc(a.album_artist || '(no artist)') +
+                '<div class="mig-album-meta">' + esc(a.track_count) + ' track(s)</div></div>' +
+                '<div>›</div>';
+            div.addEventListener('click', () => openAlbum(idx));
+            list.appendChild(div);
+        });
+    }
+
+    function openAlbum(idx) {
+        const a = unmatchedAlbums[idx];
+        isRematch = false;
+        currentAlbumKey = [a.album_artist, a.album];
+        $('mig-match-album-title').textContent =
+            (a.album_artist || '?') + ' — ' + (a.album || '?') + ' (' + a.track_count + ' tracks)';
+        $('mig-match-query').value = ((a.album_artist || '') + ' ' + (a.album || '')).trim();
+        $('mig-match-candidates').innerHTML = '';
+        $('mig-match-pane').classList.add('visible');
+        $('mig-match-pane').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        $('mig-match-query').focus();
+    }
+
+    async function loadMatchedAlbums() {
+        try {
+            const res = await jsonFetch("{{ url_for('migration_bp.matched_albums', session_id=0) }}".replace('/0', '/' + sessionId));
+            matchedAlbums = res.albums || [];
+        } catch (e) {
+            matchedAlbums = [];
+        }
+        $('mig-matched-count').textContent = matchedAlbums.length;
+        matchedPage = 1;
+        renderMatchedPage();
+    }
+
+    function filteredMatchedAlbums() {
+        if (!tierFilter || tierFilter === 'unmatched') return matchedAlbums;
+        return matchedAlbums.filter(a => a.tier === tierFilter);
+    }
+
+    function renderMatchedPage() {
+        const list = $('mig-matched-list');
+        const view = filteredMatchedAlbums();
+        const total = view.length;
+        const totalPages = Math.max(1, Math.ceil(total / MATCHED_PER_PAGE));
+        if (matchedPage > totalPages) matchedPage = totalPages;
+        const start = (matchedPage - 1) * MATCHED_PER_PAGE;
+        const slice = view.slice(start, start + MATCHED_PER_PAGE);
+        list.innerHTML = '';
+        if (!total) {
+            const msg = tierFilter
+                ? 'No matched albums in this category.'
+                : 'No matched albums yet.';
+            list.innerHTML = '<div class="mig-status" style="padding:0.75rem;">' + msg + '</div>';
+        } else {
+            slice.forEach(a => {
+                const div = document.createElement('div');
+                div.className = 'mig-album-item';
+                const oldLabel = esc(a.old_album_artist || '(no artist)') + ' — ' + esc(a.old_album || '(no album)');
+                const newLabel = esc(a.new_album_artist || '?')          + ' — ' + esc(a.new_album || '?');
+                const tierTag = TIER_LABEL[a.tier] || '';
+                div.innerHTML = '<div><strong>' + oldLabel + '</strong>' +
+                    '<div class="mig-album-meta">' + esc(a.track_count) + ' track(s) &rarr; ' + newLabel +
+                    (tierTag ? ' · <em>' + tierTag + '</em>' : '') + '</div></div>' +
+                    '<div>&#9998;</div>';
+                div.addEventListener('click', () => openAlbumRematch(a));
+                list.appendChild(div);
+            });
+        }
+        const filterSuffix = tierFilter && tierFilter !== 'unmatched'
+            ? ' · filter: ' + (TIER_LABEL[tierFilter] || tierFilter)
+            : '';
+        $('mig-matched-pageinfo').textContent = 'Page ' + matchedPage + ' of ' + totalPages + filterSuffix;
+        $('mig-matched-prev').disabled = matchedPage <= 1;
+        $('mig-matched-next').disabled = matchedPage >= totalPages;
+    }
+
+    function handleTierClick(tier) {
+        // The "unmatched tracks" cell scrolls to the unmatched list (which is
+        // already the primary step 4 view) rather than filtering the matched list.
+        if (tier === 'unmatched') {
+            updateTierCellActive(null);
+            tierFilter = null;
+            renderMatchedPage();
+            $('mig-step-4').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            return;
+        }
+        // Toggle: click the active filter again to clear it.
+        if (tierFilter === tier) {
+            tierFilter = null;
+            updateTierCellActive(null);
+            renderMatchedPage();
+            return;
+        }
+        tierFilter = tier;
+        updateTierCellActive(tier);
+        matchedPage = 1;
+        // Ensure the matched section is expanded so filtered results are visible.
+        const content = $('mig-matched-content');
+        const arrow   = $('mig-matched-arrow');
+        if (content.style.display === 'none') {
+            content.style.display = '';
+            arrow.innerHTML = '&#9660;';
+        }
+        renderMatchedPage();
+        $('mig-matched-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function updateTierCellActive(tier) {
+        document.querySelectorAll('#mig-dry-result .mig-tier-cell').forEach(cell => {
+            cell.classList.toggle('mig-tier-active', cell.dataset.tier === tier);
+        });
+    }
+
+    function openAlbumRematch(a) {
+        isRematch = true;
+        currentAlbumKey = [a.old_album_artist, a.old_album];
+        $('mig-match-album-title').textContent =
+            'Re-target: ' + (a.old_album_artist || '?') + ' — ' + (a.old_album || '?') +
+            ' (' + a.track_count + ' tracks, currently → ' +
+            (a.new_album_artist || '?') + ' — ' + (a.new_album || '?') + ')';
+        $('mig-match-query').value = ((a.old_album_artist || '') + ' ' + (a.old_album || '')).trim();
+        $('mig-match-candidates').innerHTML = '';
+        $('mig-match-pane').classList.add('visible');
+        $('mig-match-pane').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    $('mig-matched-toggle').addEventListener('click', () => {
+        const content = $('mig-matched-content');
+        const arrow   = $('mig-matched-arrow');
+        const open = content.style.display === 'none';
+        content.style.display = open ? '' : 'none';
+        arrow.innerHTML = open ? '&#9660;' : '&#9654;';
+    });
+    $('mig-matched-prev').addEventListener('click', () => {
+        if (matchedPage > 1) { matchedPage--; renderMatchedPage(); }
+    });
+    $('mig-matched-next').addEventListener('click', () => {
+        const totalPages = Math.max(1, Math.ceil(matchedAlbums.length / MATCHED_PER_PAGE));
+        if (matchedPage < totalPages) { matchedPage++; renderMatchedPage(); }
+    });
+
+    $('mig-match-search').addEventListener('click', async () => {
+        const query = $('mig-match-query').value.trim();
+        $('mig-match-candidates').innerHTML = '<div class="mig-status">Searching…</div>';
+        try {
+            const res = await jsonFetch("{{ url_for('migration_bp.search_albums') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, query: query })
+            });
+            const albums = res.albums || [];
+            if (!albums.length) {
+                $('mig-match-candidates').innerHTML = '<div class="mig-status">No results.</div>';
+                return;
+            }
+            $('mig-match-candidates').innerHTML = '';
+            albums.forEach(a => {
+                const row = document.createElement('div');
+                row.className = 'mig-candidate';
+                row.innerHTML = '<strong>' + esc(a.name || '?') + '</strong> — ' +
+                    esc(a.artist || '?') + (a.year ? ' · ' + esc(a.year) : '') +
+                    (a.track_count ? ' · ' + esc(a.track_count) + ' tracks' : '');
+                row.addEventListener('click', () => pickCandidate(a.id, row));
+                $('mig-match-candidates').appendChild(row);
+            });
+        } catch (e) {
+            showError($('mig-match-candidates'), e.message);
+        }
+    });
+
+    async function pickCandidate(newAlbumId, rowEl) {
+        if (!currentAlbumKey) return;
+        rowEl.style.opacity = 0.6;
+        const wasRematch = isRematch;
+        try {
+            const res = await jsonFetch("{{ url_for('migration_bp.match_album') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    old_album_key: currentAlbumKey,
+                    new_album_id: newAlbumId,
+                    rematch: wasRematch,
+                })
+            });
+            if (wasRematch) {
+                showSuccess($('mig-match-candidates'),
+                    'Re-targeted ' + res.matched + ' tracks. ' +
+                    res.unmatched + ' will be orphaned and deleted.');
+                await loadMatchedAlbums();
+            } else {
+                markAlbumResolved(currentAlbumKey);
+                showSuccess($('mig-match-candidates'),
+                    'Matched ' + res.matched + ' tracks. ' +
+                    res.unmatched + ' tracks in this album will be deleted.');
+            }
+        } catch (e) {
+            showError($('mig-match-candidates'), e.message);
+            rowEl.style.opacity = 1;
+        }
+    }
+
+    $('mig-match-skip').addEventListener('click', async () => {
+        if (!currentAlbumKey || !confirm('Delete all tracks from this album during migration?')) return;
+        const wasRematch = isRematch;
+        try {
+            await jsonFetch("{{ url_for('migration_bp.skip_album') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    old_album_key: currentAlbumKey,
+                    rematch: wasRematch,
+                })
+            });
+            if (wasRematch) {
+                await loadMatchedAlbums();
+            } else {
+                markAlbumResolved(currentAlbumKey);
+            }
+            $('mig-match-pane').classList.remove('visible');
+        } catch (e) {
+            showError($('mig-match-candidates'), e.message);
+        }
+    });
+
+    function markAlbumResolved(key) {
+        const list = $('mig-album-list');
+        list.querySelectorAll('.mig-album-item').forEach(el => {
+            const idx = parseInt(el.dataset.idx, 10);
+            const a = unmatchedAlbums[idx];
+            if (a.album_artist === key[0] && a.album === key[1]) {
+                el.classList.add('matched');
+            }
+        });
+        const unresolved = Array.from(list.querySelectorAll('.mig-album-item'))
+            .filter(e => !e.classList.contains('matched')).length;
+        if (unresolved === 0) {
+            unlock(5);
+            setActive(5);
+        }
+    }
+
+    // ---------- Step 5 ----------
+    $('mig-finalize').addEventListener('click', async () => {
+        try {
+            const result = await jsonFetch("{{ url_for('migration_bp.finalize_dry_run') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId })
+            });
+            finalCounts = result;
+            const collisions = result.collisions || 0;
+            let html = '<div class="mig-tier-grid">';
+            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + result.matched + '</span>tracks to be rewritten</div>';
+            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + result.orphans + '</span>tracks to be deleted (no match on new provider)</div>';
+            if (collisions > 0) {
+                html += '<div class="mig-tier-cell" style="background:#fff4e5; border:1px solid #e09f3e; color:#3a2a10;">';
+                html += '<span class="mig-tier-num" style="color:#a04000;">' + collisions + '</span>';
+                html += 'tracks to be deleted (duplicate target)</div>';
+            }
+            html += '</div>';
+            if (collisions > 0) {
+                html += '<div style="margin-top:0.75rem; padding:0.75rem 1rem; background:#fff4e5; border-left:4px solid #e09f3e; border-radius:4px; color:#3a2a10;">';
+                html += '<strong style="color:#a04000;">Heads up:</strong> ' + collisions + ' source track' + (collisions === 1 ? '' : 's') + ' ';
+                html += 'would have been rewritten to the same target as another track. ';
+                html += 'The database only allows one-to-one mappings, so these will be <strong>deleted</strong> on execute. ';
+                html += 'To fix: go back to <strong>Step 4</strong>, open <em>&ldquo;Show auto-matched albums&rdquo;</em>, ';
+                html += 'find each album listed below, and re-target it so each source row maps to a unique target. ';
+                html += 'Then click Finalize again.';
+                html += '</div>';
+
+                const details = result.collision_details || [];
+                if (details.length) {
+                    html += '<div style="margin-top:0.5rem; padding:0.75rem 1rem; background:#fff4e5; border-left:4px solid #e09f3e; border-radius:4px; color:#3a2a10;">';
+                    html += '<strong style="color:#a04000;">Duplicates:</strong>';
+                    html += '<div style="margin:0.25rem 0 0.5rem; font-size:0.85em;">';
+                    html += 'Each row shows two source tracks that match the same target on the new provider. ';
+                    html += 'The file path is the best way to tell them apart (e.g. multi-disc albums often have ';
+                    html += '<code>01-XX</code> vs <code>02-XX</code> prefixes).';
+                    html += '</div>';
+                    html += '<table style="width:100%; margin-top:0.5rem; border-collapse:collapse; font-size:0.85em; background:#fff4e5; color:#3a2a10;">';
+                    html += '<thead><tr style="background:#fbe8c9; color:#3a2a10; border-bottom:1px solid #e09f3e;">';
+                    html += '<th style="text-align:left; padding:0.35rem 0.5rem;">Will be deleted</th>';
+                    html += '<th style="text-align:left; padding:0.35rem 0.5rem;">Keeps the target</th>';
+                    html += '<th style="text-align:left; padding:0.35rem 0.5rem;">Target on new provider</th>';
+                    html += '</tr></thead><tbody>';
+                    // esc() is defined at top-level scope
+                    const cell = (t, a, al, p) => {
+                        let out = '<div><strong>' + esc(t || '(untitled)') + '</strong></div>';
+                        out += '<div style="opacity:0.85; font-size:0.9em;">' + esc(a) + ' &mdash; ' + esc(al) + '</div>';
+                        if (p) {
+                            out += '<div style="opacity:0.7; font-size:0.85em; font-family:monospace; word-break:break-all; margin-top:0.15rem;">' + esc(p) + '</div>';
+                        }
+                        return out;
+                    };
+                    details.forEach((d, i) => {
+                        const rowBg = i % 2 ? '#fff4e5' : '#fdecd0';
+                        html += '<tr style="background:' + rowBg + '; color:#3a2a10; border-bottom:1px solid #f0d8a8;">';
+                        html += '<td style="padding:0.5rem; vertical-align:top;">' + cell(d.loser_title,  d.loser_artist,  d.loser_album,  d.loser_path)  + '</td>';
+                        html += '<td style="padding:0.5rem; vertical-align:top;">' + cell(d.winner_title, d.winner_artist, d.winner_album, d.winner_path) + '</td>';
+                        html += '<td style="padding:0.5rem; vertical-align:top;">' + cell(d.target_title, d.target_artist, d.target_album, d.target_path) + '</td>';
+                        html += '</tr>';
+                    });
+                    html += '</tbody></table></div>';
+                }
+            }
+            $('mig-final-counts').innerHTML = html;
+            $('mig-dl-report').href = "{{ url_for('migration_bp.dry_run_report', session_id=0) }}".replace('/0', '/' + sessionId);
+            $('mig-dl-report').style.display = '';
+            $('mig-expected-phrase').textContent =
+                'I want to migrate to ' + targetType + ' and delete unmatched tracks';
+            $('mig-execute-gate').style.display = '';
+            updateExecuteBtnState();
+        } catch (e) {
+            showError($('mig-final-counts'), e.message);
+        }
+    });
+
+    function updateExecuteBtnState() {
+        const okBox = $('mig-final-backup-ok').checked;
+        const expected = $('mig-expected-phrase').textContent;
+        const typed = $('mig-confirm-phrase').value;
+        $('mig-execute').disabled = !(okBox && typed === expected);
+    }
+    $('mig-final-backup-ok').addEventListener('change', updateExecuteBtnState);
+    $('mig-confirm-phrase').addEventListener('input', updateExecuteBtnState);
+
+    $('mig-execute').addEventListener('click', async () => {
+        if (!confirm('This will rewrite your database. Are you absolutely sure?')) return;
+        $('mig-execute').disabled = true;
+        try {
+            const result = await jsonFetch("{{ url_for('migration_bp.execute') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    backup_confirmed: $('mig-final-backup-ok').checked,
+                    confirmation_text: $('mig-confirm-phrase').value,
+                })
+            });
+            unlock(6);
+            setActive(6);
+            pollJob(result.task_id);
+        } catch (e) {
+            $('mig-execute').disabled = false;
+            showError($('mig-final-counts'), e.message);
+        }
+    });
+
+    // ---------- Step 6 ----------
+    async function pollJob(taskId) {
+        const statusEl = $('mig-exec-status');
+        const logEl    = $('mig-exec-log');
+        statusEl.innerHTML = '<div class="mig-status">Running migration — do not close this tab.</div>';
+        const statusUrl = "{{ url_for('migration_bp.job_status', task_id='__TID__') }}".replace('__TID__', taskId);
+
+        while (true) {
+            try {
+                const res = await jsonFetch(statusUrl);
+                const s = res.status || 'unknown';
+                statusEl.innerHTML = '<div class="mig-status">Status: <strong>' + esc(s) + '</strong></div>';
+                if (s === 'finished') {
+                    showSuccess(statusEl,
+                        '<strong>Migration complete.</strong> ' +
+                        'Your active provider is now <code>' + esc(targetType) + '</code>. ' +
+                        'The new settings have been saved to the database and all processes ' +
+                        'are being reloaded automatically.' +
+                        '<p style="margin:0.5rem 0 0;"><strong>Next step:</strong> ' +
+                        'Run a <strong>full analysis</strong> from the Analysis page. ' +
+                        'This rebuilds the artist similarity index (which the migration had to ' +
+                        'truncate because artist mappings are provider-specific) and re-verifies ' +
+                        'every track against the new provider.</p>' +
+                        '<small><strong>Plays and listening history:</strong> never stored locally. ' +
+                        'They come from your media server and now reflect the new provider automatically.</small>'
+                    );
+                    // Render the restart countdown OUTSIDE the success card so it is
+                    // visible as a plain, bold notice below all the explanation text.
+                    const countdownHost = document.createElement('p');
+                    countdownHost.id = 'mig-restart-countdown';
+                    countdownHost.style.cssText = 'margin:1rem 0 0; font-size:1.1rem; font-weight:700; color:#b45309; text-align:center;';
+                    countdownHost.textContent = 'Restarting services — redirecting to login in 20 seconds...';
+                    statusEl.parentNode.insertBefore(countdownHost, statusEl.nextSibling);
+                    // Flask is restarting to pick up the new provider config cleanly
+                    // (same pattern as the setup wizard). Count down and redirect to
+                    // /login so the user reconnects to a fresh process.
+                    let countdown = 20;
+                    const cdInterval = setInterval(function() {
+                        countdown -= 1;
+                        if (countdown > 0) {
+                            countdownHost.textContent = 'Restarting services — redirecting to login in ' + countdown + ' second' + (countdown === 1 ? '' : 's') + '...';
+                        } else {
+                            countdownHost.textContent = 'Redirecting...';
+                            clearInterval(cdInterval);
+                            window.location.href = '/login';
+                        }
+                    }, 1000);
+                    return;
+                }
+                if (s === 'failed') {
+                    showError(statusEl,
+                        '<strong>Migration failed.</strong><br>' +
+                        (res.error || 'Unknown error') +
+                        '<br><br>Your database is unchanged (transaction rolled back). ' +
+                        'Fix the issue and re-run the wizard. If you see corruption, ' +
+                        'restore from the backup you made in step 1.'
+                    );
+                    return;
+                }
+            } catch (e) {
+                showError(statusEl, 'Status poll failed: ' + e.message);
+                return;
+            }
+            await new Promise(r => setTimeout(r, 2000));
+        }
+    }
+
+    // If the server found an in-flight migration session, resume it rather
+    // than making the user start over (which would create a brand new row).
+    // Credentials are never sent back to the browser — they live in the DB
+    // and the server uses them via session_id. We only re-show target_type
+    // and jump the wizard to whichever step matches the persisted state.
+    const resumeSessionId = {{ (active_session_id or 0)|tojson }};
+    async function resumeSession(sid) {
+        try {
+            const s = await jsonFetch(
+                "{{ url_for('migration_bp.session_get', session_id=0) }}".replace('/0', '/' + sid)
+            );
+            sessionId  = s.id;
+            targetType = s.target_type || '';
+            const state = s.state || {};
+
+            // Step 1: pre-check the backup box (user already ticked it last time).
+            $('mig-backup-confirmed').checked = true;
+            unlock(2);
+
+            // Step 2: show the target provider as locked with a "resumed" notice,
+            // hide the cred fields (secrets stay server-side), disable Test.
+            const tt = $('mig-target-type');
+            if (tt && targetType) {
+                tt.value = targetType;
+                tt.disabled = true;
+            }
+            document.querySelectorAll('.mig-cred-field').forEach(f => f.classList.remove('active'));
+            const btn = $('mig-test-connection');
+            if (btn) btn.disabled = true;
+            $('mig-probe-result').innerHTML =
+                '<div class="mig-success">Resumed previous session. ' +
+                'Credentials were saved on the server and will be reused automatically. ' +
+                '<button type="button" id="mig-discard-session" class="btn btn-secondary" ' +
+                'style="margin-left:0.75rem;">Discard and start over</button>' +
+                '</div>';
+            const discardBtn = $('mig-discard-session');
+            if (discardBtn) {
+                discardBtn.addEventListener('click', async () => {
+                    if (!confirm('Discard the saved migration session and start over? ' +
+                                 'Any manual matches from the previous run will be lost.')) return;
+                    discardBtn.disabled = true;
+                    try {
+                        await jsonFetch(
+                            "{{ url_for('migration_bp.session_discard', session_id=0) }}"
+                                .replace('/0', '/' + sessionId),
+                            { method: 'DELETE' }
+                        );
+                    } catch (e) {
+                        // If the row is gone already, still reload to reset UI.
+                        console.warn('discard failed (continuing):', e);
+                    }
+                    window.location.reload();
+                });
+            }
+            unlock(3);
+
+            // Terminal-state safety: if the row is somehow still readable,
+            // don't try to resume.
+            if (s.status === 'completed' || s.status === 'failed') {
+                return;
+            }
+
+            // Step 6: an execute job is already running — jump straight there.
+            if (state.exec_task_id) {
+                [4, 5, 6].forEach(unlock);
+                setActive(6);
+                pollJob(state.exec_task_id);
+                return;
+            }
+
+            // Steps 4 / 5: a dry run was already produced — re-render it so
+            // the user keeps manual matches made before the refresh.
+            if (state.dry_run) {
+                const albums = state.dry_run.unmatched_albums || [];
+                const unmatchedCount = albums.reduce((a, b) => a + (b.track_count || 0), 0);
+                await renderDryRunResult({
+                    tier_counts: state.dry_run.tier_counts || {},
+                    unmatched: unmatchedCount,
+                    unmatched_albums_count: albums.length,
+                });
+                if (s.status === 'dry_run_ready') {
+                    unlock(5);
+                    setActive(5);
+                }
+                return;
+            }
+
+            // Otherwise: session exists but no dry run yet — sit at step 3.
+            setActive(3);
+        } catch (e) {
+            // Resume failed — fall back to a normal fresh wizard.
+            console.warn('migration resume failed:', e);
+        }
+    }
+    if (resumeSessionId) {
+        resumeSession(resumeSessionId);
+    }
+})();
+</script>
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}

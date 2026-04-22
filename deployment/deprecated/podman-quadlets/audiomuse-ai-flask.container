@@ -1,0 +1,33 @@
+[Unit]
+Description=An open-source environment that brings smart playlist generation to Jellyfin and Navidrome
+Documentation=https://neptunehub.github.io/AudioMuse-AI/
+Requires=audiomuse-redis.service audiomuse-postgres.service
+After=audiomuse-redis.service audiomuse-postgres.service
+
+[Container]
+ContainerName=audiomuse-ai-flask
+Image=ghcr.io/neptunehub/audiomuse-ai:latest
+Pod=audiomuse.pod
+Tmpfs=/app/temp_audio
+AutoUpdate=registry
+
+#Env
+Environment=SERVICE_TYPE=flask MEDIASERVER_TYPE=navidrome 
+Environment=NAVIDROME_URL=YOUR-NAVIDROME-URL
+Environment=NAVIDROME_USER=YOUR-USER NAVIDROME_PASSWORD=YOUR-PASSWORD
+Environment=POSTGRES_USER=audiomuse POSTGRES_PASSWORD=audiomusepassword 
+Environment=POSTGRES_DB=audiomusedb POSTGRES_HOST=localhost POSTGRES_PORT=5432 
+Environment=REDIS_URL=redis://localhost:6379/0 
+Environment=GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE
+Environment=GEMINI_MODEL_NAME=gemini-2.5-flash
+Environment=TEMP_DIR=/app/temp_audio
+
+#HealthCheck
+HealthCmd=wget -q --spider --no-proxy localhost:8000 || exit 1
+HealthInterval=60s
+HealthTimeout=5s
+HealthStartPeriod=60s
+HealthOnFailure=kill
+
+[Service]
+Restart=always

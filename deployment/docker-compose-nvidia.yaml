@@ -33,10 +33,6 @@ services:
     environment:
       SERVICE_TYPE: "flask" # Tells the container to run the Flask app
       TZ: "${TZ:-UTC}"
-      MEDIASERVER_TYPE: "jellyfin" # Specify the media server type
-      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
-      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
-      JELLYFIN_URL: "${JELLYFIN_URL}"
       # DATABASE_URL is now constructed by config.py from the following:
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
@@ -44,14 +40,6 @@ services:
       POSTGRES_HOST: "postgres" # Service name of the postgres container
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
       REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
-      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER}"
-      OPENAI_API_KEY: "${OPENAI_API_KEY}"
-      OPENAI_SERVER_URL: "${OPENAI_SERVER_URL}"
-      OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
-      GEMINI_API_KEY: "${GEMINI_API_KEY}"
-      MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
-      CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
-      AUTH_ENABLED: "${AUTH_ENABLED:-true}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
@@ -74,10 +62,6 @@ services:
     environment:
       SERVICE_TYPE: "worker" # Tells the container to run the RQ worker
       TZ: "${TZ:-UTC}"
-      MEDIASERVER_TYPE: "jellyfin" # Specify the media server type
-      JELLYFIN_USER_ID: "${JELLYFIN_USER_ID}"
-      JELLYFIN_TOKEN: "${JELLYFIN_TOKEN}"
-      JELLYFIN_URL: "${JELLYFIN_URL}"
       # DATABASE_URL is now constructed by config.py from the following:
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
@@ -85,14 +69,6 @@ services:
       POSTGRES_HOST: "postgres" # Service name of the postgres container
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
       REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
-      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER}"
-      OPENAI_API_KEY: "${OPENAI_API_KEY}"
-      OPENAI_SERVER_URL: "${OPENAI_SERVER_URL}"
-      OPENAI_MODEL_NAME: "${OPENAI_MODEL_NAME}"
-      GEMINI_API_KEY: "${GEMINI_API_KEY}"
-      MISTRAL_API_KEY: "${MISTRAL_API_KEY}"
-      CLAP_ENABLED: "${CLAP_ENABLED:-true}" # Enable CLAP text search (set to false for slower systems)
-      AUTH_ENABLED: "${AUTH_ENABLED:-true}"
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
