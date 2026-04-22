@@ -901,7 +901,7 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     try:
         # Save analysis to score table
         cur.execute("""
-            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path)
+            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path, analysis_status)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'analyzed')
             ON CONFLICT (item_id) DO UPDATE SET
                 title = EXCLUDED.title,
