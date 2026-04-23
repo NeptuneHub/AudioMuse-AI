@@ -44,21 +44,12 @@ def _run_restore_runner(dump_file, log_file):
         log.write(f"Dump file: {dump_file}\n")
         log.flush()
 
-        try:
-            stop_requested = restart_manager.publish_stop_request()
-            log.write("Published worker stop request. Waiting for workers to stop before restore...\n")
-            log.flush()
-            if not stop_requested:
-                log.write("Worker stop request failed. Continuing restore anyway.\n")
-                log.flush()
-            time.sleep(10)
-            log.write("Wait complete. Proceeding with local Flask shutdown.\n")
-            log.flush()
-        except Exception as exc:
-            log.write(f"Failed to publish worker stop request: {exc}\n")
-            log.flush()
-            log.write("Continuing restore despite stop request failure.\n")
-            log.flush()
+        # Worker stop is published by the Flask restore endpoint before this
+        # detached runner starts. The runner only waits briefly to allow
+        # workers to settle before stopping the local Flask service.
+        time.sleep(5)
+        log.write("Wait complete. Proceeding with local Flask shutdown.\n")
+        log.flush()
 
         try:
             if not restart_manager.stop_local_flask_service():
@@ -86,7 +77,14 @@ def _run_restore_runner(dump_file, log_file):
             start_new_session=True,
             close_fds=True,
         )
-        ret = proc.wait()
+        try:
+            ret = proc.wait(timeout=3600)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            ret = -1
+            log.write("Restore command timed out after 3600 seconds and was killed.\n")
+            log.flush()
         log.write(f"Restore command finished with return code {ret}\n")
         log.flush()
 
@@ -185,6 +183,12 @@ def restore_backup():
         uploaded.save(tmp)
         tmp.close()
         restore_file = tmp.name
+
+        # Publish worker stop as soon as the upload has been persisted and before
+        # starting the detached restore runner. This reduces the window between
+        # upload completion and the stop request being sent.
+        stop_requested = restart_manager.publish_stop_request()
+        logger.info('Published worker stop request before restore runner start: %s', stop_requested)
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         restore_log = os.path.join(RESTORE_LOG_DIR, f"restore_{timestamp}.log")

@@ -11,6 +11,10 @@ SUPERVISORCTL_CMD = os.environ.get('SUPERVISORCTL_CMD', '/usr/bin/supervisorctl'
 SUPERVISOR_CONF = os.environ.get('SUPERVISOR_CONF', '/etc/supervisor/conf.d/supervisord.conf')
 logger = logging.getLogger(__name__)
 
+FLASK_SERVICE = ['flask']
+WORKER_SERVICES = ['rq-worker-default', 'rq-worker-high', 'rq-janitor']
+ALL_SUPERVISOR_SERVICES = FLASK_SERVICE + WORKER_SERVICES
+
 
 def publish_control_request(action):
     """Publish a control request to worker containers via Redis."""
@@ -62,40 +66,36 @@ def _run_supervisorctl(arguments):
 
 def stop_supervised_services():
     """Stop supervised Flask and worker processes for restore."""
-    services = ['flask', 'rq-worker-default', 'rq-worker-high', 'rq-janitor']
-    logger.info('Stopping supervised services: %s', services)
-    return _run_supervisorctl(['stop'] + services)
+    logger.info('Stopping supervised services: %s', ALL_SUPERVISOR_SERVICES)
+    return _run_supervisorctl(['stop'] + ALL_SUPERVISOR_SERVICES)
 
 def start_supervised_services():
     """Start supervised Flask and worker processes after restore."""
-    services = ['flask', 'rq-worker-default', 'rq-worker-high', 'rq-janitor']
-    logger.info('Starting supervised services: %s', services)
-    return _run_supervisorctl(['start'] + services)
+    logger.info('Starting supervised services: %s', ALL_SUPERVISOR_SERVICES)
+    return _run_supervisorctl(['start'] + ALL_SUPERVISOR_SERVICES)
 
 def stop_local_flask_service():
     """Stop the supervised Flask service locally."""
     logger.info('Stopping supervised Flask service')
-    return _run_supervisorctl(['stop', 'flask'])
+    return _run_supervisorctl(['stop'] + FLASK_SERVICE)
 
 
 def start_local_flask_service():
     """Start the supervised Flask service locally."""
     logger.info('Starting supervised Flask service')
-    return _run_supervisorctl(['start', 'flask'])
+    return _run_supervisorctl(['start'] + FLASK_SERVICE)
 
 
 def stop_supervisor_workers():
     """Stop supervised worker processes via supervisorctl."""
-    services = ['rq-worker-default', 'rq-worker-high', 'rq-janitor']
-    logger.info('Stopping supervised worker services: %s', services)
-    return _run_supervisorctl(['stop'] + services)
+    logger.info('Stopping supervised worker services: %s', WORKER_SERVICES)
+    return _run_supervisorctl(['stop'] + WORKER_SERVICES)
 
 
 def start_supervisor_workers():
     """Start supervised worker processes via supervisorctl."""
-    services = ['rq-worker-default', 'rq-worker-high', 'rq-janitor']
-    logger.info('Starting supervised worker services: %s', services)
-    return _run_supervisorctl(['start'] + services)
+    logger.info('Starting supervised worker services: %s', WORKER_SERVICES)
+    return _run_supervisorctl(['start'] + WORKER_SERVICES)
 
 
 def _spawn_supervisorctl(arguments):

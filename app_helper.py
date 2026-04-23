@@ -251,7 +251,8 @@ def init_db():
             )
             row = cur.fetchone()
             if row and row[0] == 0:
-                logger.info("Adding missing primary key constraint to dashboard_stats.id")
+                logger.info("Cleaning dashboard_stats and adding missing primary key constraint to dashboard_stats.id")
+                cur.execute("DELETE FROM dashboard_stats")
                 cur.execute("ALTER TABLE dashboard_stats ADD CONSTRAINT dashboard_stats_pkey PRIMARY KEY (id)")
             # Create 'artist_mapping' table to map artist names to media server artist IDs
             cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
