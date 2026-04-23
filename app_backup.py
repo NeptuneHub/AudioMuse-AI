@@ -68,23 +68,30 @@ def _run_restore_runner(dump_file, log_file):
         log.write(f"Running restore command: {' '.join(restore_cmd)}\n")
         log.flush()
 
-        proc = subprocess.Popen(
-            restore_cmd,
-            env=env,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-            start_new_session=True,
-            close_fds=True,
-        )
+        proc = None
+        ret = -1
         try:
+            proc = subprocess.Popen(
+                restore_cmd,
+                env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+                close_fds=True,
+            )
             ret = proc.wait(timeout=3600)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            if proc is not None:
+                proc.kill()
+                proc.wait()
             ret = -1
             log.write("Restore command timed out after 3600 seconds and was killed.\n")
             log.flush()
+        except Exception as exc:
+            log.write(f"Failed to execute restore command: {exc}\n")
+            log.flush()
+            ret = -1
         log.write(f"Restore command finished with return code {ret}\n")
         log.flush()
 
