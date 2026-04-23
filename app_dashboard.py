@@ -10,6 +10,7 @@ combines it with the cheap, always-live bits (workers, recent tasks, cron).
 import json
 import logging
 import time
+import psycopg2
 from flask import Blueprint, render_template, jsonify
 from psycopg2.extras import DictCursor
 
@@ -376,14 +377,27 @@ def refresh_dashboard_stats(app):
 
             cur2 = db.cursor()
             try:
-                cur2.execute(
-                    "INSERT INTO dashboard_stats (id, updated_at, content) "
-                    "VALUES (1, NOW(), %s::jsonb) "
-                    "ON CONFLICT (id) DO UPDATE SET "
-                    "updated_at = EXCLUDED.updated_at, "
-                    "content = EXCLUDED.content",
-                    (json.dumps(content),),
-                )
+                try:
+                    cur2.execute(
+                        "INSERT INTO dashboard_stats (id, updated_at, content) "
+                        "VALUES (1, NOW(), %s::jsonb) "
+                        "ON CONFLICT (id) DO UPDATE SET "
+                        "updated_at = EXCLUDED.updated_at, "
+                        "content = EXCLUDED.content",
+                        (json.dumps(content),),
+                    )
+                except psycopg2.Error as e:
+                    if getattr(e, 'pgcode', None) == '42P10' or 'ON CONFLICT' in str(e):
+                        logger.warning("dashboard_stats upsert fallback due missing unique constraint: %s", e)
+                        _safe_rollback(cur2)
+                        cur2.execute("DELETE FROM dashboard_stats WHERE id = 1")
+                        cur2.execute(
+                            "INSERT INTO dashboard_stats (id, updated_at, content) "
+                            "VALUES (1, NOW(), %s::jsonb)",
+                            (json.dumps(content),),
+                        )
+                    else:
+                        raise
                 db.commit()
             finally:
                 cur2.close()

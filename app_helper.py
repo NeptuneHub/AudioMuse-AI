@@ -244,6 +244,15 @@ def init_db():
                 "indexes JSONB NOT NULL DEFAULT '[]'::jsonb, "
                 "CONSTRAINT dashboard_stats_singleton CHECK (id = 1))"
             )
+            # Ensure older restored DBs still have the primary key constraint.
+            cur.execute(
+                "SELECT COUNT(*) FROM information_schema.table_constraints "
+                "WHERE table_name = 'dashboard_stats' AND constraint_type = 'PRIMARY KEY'"
+            )
+            row = cur.fetchone()
+            if row and row[0] == 0:
+                logger.info("Adding missing primary key constraint to dashboard_stats.id")
+                cur.execute("ALTER TABLE dashboard_stats ADD CONSTRAINT dashboard_stats_pkey PRIMARY KEY (id)")
             # Create 'artist_mapping' table to map artist names to media server artist IDs
             cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
             # Create application configuration table to persist setup values.
