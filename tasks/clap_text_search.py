@@ -3,13 +3,20 @@ CLAP Text Search Manager
 Provides in-memory caching and fast text-based music search using CLAP embeddings.
 """
 
+import io
+import json
 import logging
-import numpy as np
-from typing import List, Dict, Optional
-from psycopg2.extras import DictCursor
-import config
+import os
+import re
+import tempfile
 import threading
 import time
+
+import numpy as np
+import psycopg2
+from psycopg2.extras import DictCursor
+from typing import List, Dict, Optional
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +25,14 @@ _CLAP_CACHE = {
     'embeddings': None,  # NumPy array (N, 512)
     'metadata': None,    # List of dicts with item_id, title, author
     'item_ids': None,    # List of item_ids
+    'loaded': False
+}
+
+# Global in-memory CLAP index cache
+_CLAP_INDEX_CACHE = {
+    'index': None,
+    'id_map': None,
+    'reverse_id_map': None,
     'loaded': False
 }
 
@@ -40,9 +55,255 @@ _WARM_CACHE_TIMER = {
 def get_clap_cache_size() -> int:
     """Return the number of embeddings in the CLAP cache."""
     global _CLAP_CACHE
-    if _CLAP_CACHE['loaded'] and _CLAP_CACHE['embeddings'] is not None:
-        return len(_CLAP_CACHE['embeddings'])
+    if _CLAP_CACHE['loaded'] and _CLAP_CACHE['metadata'] is not None:
+        return len(_CLAP_CACHE['metadata'])
     return 0
+
+
+def _split_bytes(data: bytes, part_size: int) -> list:
+    """Split a bytes object into chunks no larger than part_size."""
+    return [data[i:i + part_size] for i in range(0, len(data), part_size)]
+
+
+def _load_clap_index_from_db() -> bool:
+    """Load a persisted CLAP voyager index from the database."""
+    global _CLAP_CACHE, _CLAP_INDEX_CACHE
+
+    from app_helper import get_db
+    from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        try:
+            cur.execute("SET LOCAL statement_timeout = 0")
+            cur.execute(
+                "SELECT index_data, id_map_json, embedding_dimension FROM clap_index_data WHERE index_name = %s",
+                ('clap_index',)
+            )
+            row = cur.fetchone()
+
+            if row:
+                index_binary_data, id_map_json, db_embedding_dim = row
+            else:
+                cur.execute(
+                    "SELECT index_name, index_data, id_map_json, embedding_dimension FROM clap_index_data WHERE index_name LIKE %s ESCAPE '\\'",
+                    (r'clap_index\_%\_%',)
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    return False
+
+                seg_pattern = re.compile(r'^clap_index_(\d+)_(\d+)$')
+                parts = []
+                total_expected = None
+                id_map_json_candidate = None
+                for name, part_data, part_id_map_json, part_dim in rows:
+                    m = seg_pattern.match(name)
+                    if not m:
+                        continue
+                    part_no = int(m.group(1))
+                    total = int(m.group(2))
+                    if total_expected is None:
+                        total_expected = total
+                    elif total_expected != total:
+                        logger.error(f"Segment total mismatch for CLAP index parts ({total_expected} vs {total}).")
+                        return False
+                    parts.append((part_no, part_data, part_id_map_json, part_dim))
+                    if part_id_map_json and not id_map_json_candidate:
+                        id_map_json_candidate = part_id_map_json
+
+                if total_expected is None or len(parts) != total_expected:
+                    logger.error(f"Incomplete CLAP index segments: expected {total_expected}, found {len(parts)}.")
+                    return False
+
+                parts.sort(key=lambda p: p[0])
+                for _, _, _, part_dim in parts:
+                    if part_dim != CLAP_EMBEDDING_DIMENSION:
+                        logger.error(f"CLAP index embedding_dimension mismatch in segmented parts: expected {CLAP_EMBEDDING_DIMENSION}, got {part_dim}.")
+                        return False
+
+                if id_map_json_candidate is None:
+                    logger.error("No id_map_json found in segmented CLAP index rows.")
+                    return False
+
+                db_embedding_dim = parts[0][3]
+                index_binary_data = b"".join(p[1] for p in parts)
+                id_map_json = id_map_json_candidate
+
+            if not index_binary_data:
+                logger.error("CLAP index binary data was empty.")
+                return False
+
+            if db_embedding_dim != CLAP_EMBEDDING_DIMENSION:
+                logger.error(f"CLAP index dimension mismatch: db={db_embedding_dim} expected={CLAP_EMBEDDING_DIMENSION}")
+                return False
+
+            try:
+                import voyager  # type: ignore
+            except ImportError:
+                logger.warning("Voyager library is unavailable; cannot load persisted CLAP index.")
+                return False
+
+            index_stream = io.BytesIO(index_binary_data)
+            loaded_index = voyager.Index.load(index_stream)
+            loaded_index.ef = VOYAGER_QUERY_EF
+
+            id_map = {int(k): v for k, v in json.loads(id_map_json).items()}
+            reverse_id_map = {v: k for k, v in id_map.items()}
+
+            if not id_map:
+                logger.error("CLAP index id_map is empty.")
+                return False
+
+            with conn.cursor(cursor_factory=DictCursor) as meta_cur:
+                meta_cur.execute(
+                    "SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)",
+                    (list(id_map.values()),)
+                )
+                score_rows = meta_cur.fetchall()
+
+            metadata_by_id = {row['item_id']: {'title': row['title'], 'author': row['author']} for row in score_rows}
+            metadata_list = []
+            item_ids_list = []
+            for voyager_id in sorted(id_map.keys()):
+                item_id = id_map[voyager_id]
+                meta = metadata_by_id.get(item_id, {'title': '', 'author': ''})
+                metadata_list.append({'item_id': item_id, 'title': meta['title'], 'author': meta['author']})
+                item_ids_list.append(item_id)
+
+            _CLAP_CACHE['embeddings'] = None
+            _CLAP_CACHE['metadata'] = metadata_list
+            _CLAP_CACHE['item_ids'] = item_ids_list
+            _CLAP_CACHE['loaded'] = True
+
+            _CLAP_INDEX_CACHE['index'] = loaded_index
+            _CLAP_INDEX_CACHE['id_map'] = id_map
+            _CLAP_INDEX_CACHE['reverse_id_map'] = reverse_id_map
+            _CLAP_INDEX_CACHE['loaded'] = True
+
+            logger.info(f"CLAP index loaded from database with {len(metadata_list)} items.")
+            return True
+
+        finally:
+            cur.close()
+    except Exception as e:
+        logger.error(f"Failed to load CLAP index from DB: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def _ensure_clap_index_table():
+    """Ensure the clap_index_data table exists before storing/loading an index."""
+    from app_helper import get_db
+    conn = get_db()
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE IF NOT EXISTS clap_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+    conn.commit()
+
+
+def build_and_store_clap_index(db_conn=None):
+    """Build a CLAP text search voyager index from stored CLAP embeddings and save it to the DB."""
+    from app_helper import get_db
+    from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_METRIC, VOYAGER_M, VOYAGER_EF_CONSTRUCTION, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB
+
+    try:
+        import voyager  # type: ignore
+    except ImportError:
+        logger.warning("Voyager library is unavailable; cannot build CLAP index.")
+        return False
+
+    if db_conn is None:
+        db_conn = get_db()
+
+    max_part_size = VOYAGER_MAX_PART_SIZE_MB * 1024 * 1024
+
+    try:
+        cur = db_conn.cursor()
+        cur.execute("SELECT item_id, embedding FROM clap_embedding")
+        all_embeddings = cur.fetchall()
+
+        if not all_embeddings:
+            logger.warning("No CLAP embeddings found in DB to build CLAP index.")
+            return False
+
+        space = voyager.Space.Cosine if VOYAGER_METRIC == 'angular' else {
+            'euclidean': voyager.Space.Euclidean,
+            'dot': voyager.Space.InnerProduct
+        }.get(VOYAGER_METRIC, voyager.Space.Cosine)
+
+        logger.info(f"Building CLAP voyager index for {len(all_embeddings)} items...")
+        index_builder = voyager.Index(space=space, num_dimensions=CLAP_EMBEDDING_DIMENSION, M=VOYAGER_M, ef_construction=VOYAGER_EF_CONSTRUCTION)
+
+        id_map = {}
+        vectors = []
+        for idx, (item_id, embedding_blob) in enumerate(all_embeddings):
+            if embedding_blob is None:
+                logger.warning(f"Skipping CLAP item {item_id} because embedding is NULL.")
+                continue
+            embedding_vector = np.frombuffer(embedding_blob, dtype=np.float32)
+            if embedding_vector.shape[0] != CLAP_EMBEDDING_DIMENSION:
+                logger.warning(f"Skipping CLAP item {item_id}: dimension {embedding_vector.shape[0]} != {CLAP_EMBEDDING_DIMENSION}")
+                continue
+            vectors.append(embedding_vector)
+            id_map[idx] = item_id
+
+        if not vectors:
+            logger.warning("No valid CLAP embedding vectors found for CLAP index build.")
+            return False
+
+        index_builder.add_items(np.vstack(vectors), ids=np.array(list(id_map.keys())))
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.voyager') as tmp:
+            temp_file_path = tmp.name
+        try:
+            index_builder.save(temp_file_path)
+            with open(temp_file_path, 'rb') as f:
+                index_binary_data = f.read()
+        finally:
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+
+        if not index_binary_data:
+            logger.error("Generated CLAP index binary is empty. Aborting storage.")
+            return False
+
+        id_map_json = json.dumps(id_map)
+        cur.execute(
+            "DELETE FROM clap_index_data WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
+            ('clap_index', r'clap_index\_%\_%')
+        )
+
+        if len(index_binary_data) <= max_part_size:
+            cur.execute(
+                "INSERT INTO clap_index_data (index_name, index_data, id_map_json, embedding_dimension, created_at) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP) ON CONFLICT (index_name) DO UPDATE SET index_data = EXCLUDED.index_data, id_map_json = EXCLUDED.id_map_json, embedding_dimension = EXCLUDED.embedding_dimension, created_at = EXCLUDED.created_at",
+                ('clap_index', psycopg2.Binary(index_binary_data), id_map_json, CLAP_EMBEDDING_DIMENSION)
+            )
+            logger.info("Stored CLAP index as single row in clap_index_data.")
+        else:
+            parts = _split_bytes(index_binary_data, max_part_size)
+            num_parts = len(parts)
+            insert_q = "INSERT INTO clap_index_data (index_name, index_data, id_map_json, embedding_dimension, created_at) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)"
+            for idx, part in enumerate(parts, start=1):
+                part_name = f"clap_index_{idx}_{num_parts}"
+                part_id_map_json = id_map_json if idx == 1 else ''
+                cur.execute(insert_q, (part_name, psycopg2.Binary(part), part_id_map_json, CLAP_EMBEDDING_DIMENSION))
+            logger.info(f"Stored CLAP index in {num_parts} segmented rows in clap_index_data.")
+
+        db_conn.commit()
+        logger.info("CLAP index build and storage complete.")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to build and store CLAP index: {e}", exc_info=True)
+        try:
+            db_conn.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        if 'cur' in locals():
+            cur.close()
 
 
 def _unload_timer_worker():
@@ -147,77 +408,21 @@ def load_clap_cache_from_db():
     if not CLAP_ENABLED:
         logger.info("CLAP is disabled, skipping cache load.")
         return False
-    
-    try:
-        conn = get_db()
-        cur = conn.cursor(cursor_factory=DictCursor)
-        
-        # Fetch all CLAP embeddings with metadata from score table
-        cur.execute("""
-            SELECT 
-                ce.item_id,
-                ce.embedding,
-                s.title,
-                s.author
-            FROM clap_embedding ce
-            JOIN score s ON ce.item_id = s.item_id
-            ORDER BY ce.item_id
-        """)
-        
-        rows = cur.fetchall()
-        cur.close()
-        
-        if not rows:
-            logger.warning("No CLAP embeddings found in database.")
-            _CLAP_CACHE['loaded'] = False
-            return False
-        
-        # Build cache structures
-        embeddings_list = []
-        metadata_list = []
-        item_ids_list = []
-        
-        for row in rows:
-            item_id = row['item_id']
-            embedding_blob = row['embedding']
-            title = row['title']
-            author = row['author']
-            
-            # Convert BYTEA to numpy array
-            embedding = np.frombuffer(embedding_blob, dtype=np.float32)
-            
-            if embedding.shape[0] != CLAP_EMBEDDING_DIMENSION:
-                logger.warning(f"Skipping {item_id}: wrong dimension {embedding.shape[0]} (expected {CLAP_EMBEDDING_DIMENSION})")
-                continue
-            
-            embeddings_list.append(embedding)
-            metadata_list.append({
-                'item_id': item_id,
-                'title': title,
-                'author': author
-            })
-            item_ids_list.append(item_id)
-        
-        if not embeddings_list:
-            logger.error("No valid CLAP embeddings loaded.")
-            _CLAP_CACHE['loaded'] = False
-            return False
-        
-        # Convert to NumPy matrix for vectorized operations
-        _CLAP_CACHE['embeddings'] = np.vstack(embeddings_list)
-        _CLAP_CACHE['metadata'] = metadata_list
-        _CLAP_CACHE['item_ids'] = item_ids_list
-        _CLAP_CACHE['loaded'] = True
-        
-        logger.info(f"CLAP cache loaded: {len(metadata_list)} songs with 512-dim embeddings in memory")
+
+    if _load_clap_index_from_db():
+        logger.info("CLAP text cache loaded from persisted index.")
         return True
-        
-    except Exception as e:
-        logger.error(f"Failed to load CLAP cache: {e}")
-        import traceback
-        traceback.print_exc()
-        _CLAP_CACHE['loaded'] = False
-        return False
+
+    logger.error("Failed to load persisted CLAP index. CLAP text search will be unavailable.")
+    _CLAP_CACHE['embeddings'] = None
+    _CLAP_CACHE['metadata'] = None
+    _CLAP_CACHE['item_ids'] = None
+    _CLAP_CACHE['loaded'] = False
+    _CLAP_INDEX_CACHE['index'] = None
+    _CLAP_INDEX_CACHE['id_map'] = None
+    _CLAP_INDEX_CACHE['reverse_id_map'] = None
+    _CLAP_INDEX_CACHE['loaded'] = False
+    return False
 
 
 def refresh_clap_cache():
@@ -256,9 +461,9 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
     if not CLAP_ENABLED:
         return []
     
-    # Cache must be loaded at startup - no lazy loading
-    if not _CLAP_CACHE['loaded']:
-        logger.error("Cannot search: CLAP cache not loaded. Ensure Flask started successfully.")
+    # CLAP search must use the persisted index only
+    if not _CLAP_INDEX_CACHE['loaded'] or _CLAP_INDEX_CACHE['index'] is None:
+        logger.error("Cannot search: persisted CLAP index not loaded. Ensure Flask startup loaded the CLAP index.")
         return []
     
     try:
@@ -270,44 +475,50 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         if text_embedding is None:
             logger.error(f"Failed to generate text embedding for: {query_text}")
             return []
-        
-        # Vectorized similarity computation (cosine similarity via dot product)
-        # Both embeddings are already normalized
-        similarities = _CLAP_CACHE['embeddings'] @ text_embedding
-        
-        # Over-fetch candidates to allow per-artist filtering.
-        # Formula matches voyager: n + max(20, n * 4) + 1
+
         from config import MAX_SONGS_PER_ARTIST
         artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
         fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
-        top_indices = np.argsort(similarities)[::-1][:fetch_size]
-        
-        results = []
-        artist_counts: dict = {}
-        for idx in top_indices:
-            if len(results) >= limit:
-                break
-            idx = int(idx)
-            similarity = float(similarities[idx])
-            metadata = _CLAP_CACHE['metadata'][idx]
-            author = metadata.get('author', '')
-            
-            # Enforce per-artist cap when enabled
-            if artist_cap and author:
-                author_norm = author.strip().lower()
-                if artist_counts.get(author_norm, 0) >= artist_cap:
+
+        if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['index'] is not None:
+            voyager_index = _CLAP_INDEX_CACHE['index']
+            id_map = _CLAP_INDEX_CACHE['id_map'] or {}
+            num_to_query = min(fetch_size, len(voyager_index))
+
+            if num_to_query <= 0:
+                logger.warning("CLAP index is loaded but contains no items.")
+                return []
+
+            neighbor_ids, distances = voyager_index.query(text_embedding, k=num_to_query)
+            metadata_by_item = {m['item_id']: m for m in (_CLAP_CACHE['metadata'] or [])}
+
+            results = []
+            artist_counts: dict = {}
+            for voyager_id, distance in zip(neighbor_ids, distances):
+                if len(results) >= limit:
+                    break
+                item_id = id_map.get(int(voyager_id))
+                if item_id is None:
                     continue
-                artist_counts[author_norm] = artist_counts.get(author_norm, 0) + 1
-            
-            results.append({
-                'item_id': metadata['item_id'],
-                'title': metadata['title'],
-                'author': metadata['author'],
-                'similarity': similarity
-            })
-        
-        logger.info(f"Text search '{query_text}': found {len(results)} results (artist cap: {artist_cap or 'disabled'})")
-        return results
+                metadata = metadata_by_item.get(item_id, {'item_id': item_id, 'title': '', 'author': ''})
+                author = metadata.get('author', '')
+
+                if artist_cap and author:
+                    author_norm = author.strip().lower()
+                    if artist_counts.get(author_norm, 0) >= artist_cap:
+                        continue
+                    artist_counts[author_norm] = artist_counts.get(author_norm, 0) + 1
+
+                similarity = 1.0 - float(distance)
+                results.append({
+                    'item_id': metadata['item_id'],
+                    'title': metadata['title'],
+                    'author': metadata['author'],
+                    'similarity': similarity
+                })
+
+            logger.info(f"Text search '{query_text}': found {len(results)} results via CLAP index (artist cap: {artist_cap or 'disabled'})")
+            return results
         
     except Exception as e:
         logger.error(f"Text search failed for '{query_text}': {e}")
@@ -333,7 +544,7 @@ def get_cache_stats() -> Dict:
     return {
         'loaded': True,
         'song_count': len(_CLAP_CACHE['metadata']) if _CLAP_CACHE['metadata'] else 0,
-        'embedding_dimension': _CLAP_CACHE['embeddings'].shape[1] if _CLAP_CACHE['embeddings'] is not None else 0,
+        'embedding_dimension': _CLAP_CACHE['embeddings'].shape[1] if _CLAP_CACHE['embeddings'] is not None else config.CLAP_EMBEDDING_DIMENSION,
         'memory_mb': round(total_size_mb, 2)
     }
 
