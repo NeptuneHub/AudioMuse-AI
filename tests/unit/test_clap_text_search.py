@@ -8,20 +8,49 @@ import numpy as np
 from unittest.mock import Mock, patch, MagicMock
 
 
+class DummyVoyagerIndex:
+    """Simple fake Voyager index for unit tests."""
+    def __init__(self, embeddings: np.ndarray):
+        self.embeddings = embeddings
+
+    def __len__(self):
+        return len(self.embeddings)
+
+    def query(self, query_vector: np.ndarray, k: int):
+        similarities = self.embeddings @ query_vector
+        order = np.argsort(similarities)[::-1]
+        top = order[:k]
+        distances = (1.0 - similarities[top]).astype(np.float32)
+        return list(top), distances
+
+
+def setup_dummy_clap_index_cache(_CLAP_INDEX_CACHE, embeddings, item_ids):
+    _CLAP_INDEX_CACHE['loaded'] = True
+    _CLAP_INDEX_CACHE['index'] = DummyVoyagerIndex(embeddings)
+    _CLAP_INDEX_CACHE['id_map'] = {i: item_ids[i] for i in range(len(item_ids))}
+    _CLAP_INDEX_CACHE['reverse_id_map'] = {item_ids[i]: i for i in range(len(item_ids))}
+
+
+def teardown_dummy_clap_index_cache(_CLAP_INDEX_CACHE):
+    _CLAP_INDEX_CACHE['loaded'] = False
+    _CLAP_INDEX_CACHE['index'] = None
+    _CLAP_INDEX_CACHE['id_map'] = None
+    _CLAP_INDEX_CACHE['reverse_id_map'] = None
+
+
 class TestCacheStatsCalculation:
     """Tests for CLAP cache statistics calculation"""
 
     def test_get_cache_stats_when_not_loaded(self):
         """Test cache stats return empty structure when cache not loaded"""
-        from tasks.clap_text_search import get_cache_stats, _CLAP_CACHE
-        
+        from tasks.clap_text_search import get_cache_stats, _CLAP_CACHE, _CLAP_INDEX_CACHE
+
         # Ensure cache is not loaded
         _CLAP_CACHE['loaded'] = False
-        _CLAP_CACHE['embeddings'] = None
-        _CLAP_CACHE['metadata'] = None
-        
+        teardown_dummy_clap_index_cache(_CLAP_INDEX_CACHE)
+
         stats = get_cache_stats()
-        
+
         assert stats['loaded'] is False
         assert stats['song_count'] == 0
         assert stats['embedding_dimension'] == 0
@@ -29,51 +58,43 @@ class TestCacheStatsCalculation:
 
     def test_get_cache_stats_with_loaded_cache(self):
         """Test cache stats calculation with loaded data"""
-        from tasks.clap_text_search import get_cache_stats, _CLAP_CACHE
-        
-        # Simulate loaded cache with 100 songs, 512-dim embeddings
+        from tasks.clap_text_search import get_cache_stats, _CLAP_CACHE, _CLAP_INDEX_CACHE
+
+        # Simulate loaded CLAP index with 100 songs
         _CLAP_CACHE['loaded'] = True
-        _CLAP_CACHE['embeddings'] = np.random.rand(100, 512).astype(np.float32)
-        _CLAP_CACHE['metadata'] = [
-            {'item_id': f'song{i}', 'title': f'Title {i}', 'author': f'Artist {i}'}
-            for i in range(100)
-        ]
-        _CLAP_CACHE['item_ids'] = [f'song{i}' for i in range(100)]
-        
+        embeddings = np.random.rand(100, 512).astype(np.float32)
+        item_ids = [f'song{i}' for i in range(100)]
+        setup_dummy_clap_index_cache(_CLAP_INDEX_CACHE, embeddings, item_ids)
+
         stats = get_cache_stats()
-        
+
         assert stats['loaded'] is True
         assert stats['song_count'] == 100
         assert stats['embedding_dimension'] == 512
         assert stats['memory_mb'] > 0  # Should calculate memory size
-        
+
         # Cleanup
         _CLAP_CACHE['loaded'] = False
-        _CLAP_CACHE['embeddings'] = None
-        _CLAP_CACHE['metadata'] = None
-        _CLAP_CACHE['item_ids'] = None
+        teardown_dummy_clap_index_cache(_CLAP_INDEX_CACHE)
 
     def test_get_cache_stats_memory_calculation_accuracy(self):
         """Test that memory calculation is reasonable"""
-        from tasks.clap_text_search import get_cache_stats, _CLAP_CACHE
-        
-        # 10 songs × 512 dimensions × 4 bytes (float32) = ~20KB
+        from tasks.clap_text_search import get_cache_stats, _CLAP_CACHE, _CLAP_INDEX_CACHE
+
+        # Simulate loaded CLAP index with 10 songs
         _CLAP_CACHE['loaded'] = True
-        _CLAP_CACHE['embeddings'] = np.random.rand(10, 512).astype(np.float32)
-        _CLAP_CACHE['metadata'] = [
-            {'item_id': f'song{i}', 'title': 'Title', 'author': 'Artist'}
-            for i in range(10)
-        ]
-        
+        embeddings = np.random.rand(10, 512).astype(np.float32)
+        item_ids = [f'song{i}' for i in range(10)]
+        setup_dummy_clap_index_cache(_CLAP_INDEX_CACHE, embeddings, item_ids)
+
         stats = get_cache_stats()
-        
-        # Should be around 0.02 MB for embeddings + small overhead for metadata
-        assert 0.01 < stats['memory_mb'] < 0.1
-        
+
+        # Should report a small non-zero memory size for the in-memory index
+        assert 0.0 < stats['memory_mb'] < 1.0
+
         # Cleanup
         _CLAP_CACHE['loaded'] = False
-        _CLAP_CACHE['embeddings'] = None
-        _CLAP_CACHE['metadata'] = None
+        teardown_dummy_clap_index_cache(_CLAP_INDEX_CACHE)
 
 
 class TestCacheStateChecking:
@@ -106,7 +127,7 @@ class TestSimilarityCalculationLogic:
     @patch('tasks.clap_analyzer.get_text_embedding')
     def test_search_similarity_ranking_order(self, mock_get_embedding):
         """Test that search results are ranked by similarity (highest first)"""
-        from tasks.clap_text_search import search_by_text, _CLAP_CACHE
+        from tasks.clap_text_search import search_by_text, _CLAP_CACHE, _CLAP_INDEX_CACHE
         
         # Setup cache with known embeddings
         _CLAP_CACHE['loaded'] = True
@@ -130,6 +151,7 @@ class TestSimilarityCalculationLogic:
             for i in range(5)
         ]
         _CLAP_CACHE['item_ids'] = [f'song{i}' for i in range(5)]
+        setup_dummy_clap_index_cache(_CLAP_INDEX_CACHE, _CLAP_CACHE['embeddings'], _CLAP_CACHE['item_ids'])
         
         # Query embedding similar to first embedding
         query_embedding = np.array([1.0, 0.0, 0.0], dtype=np.float32)
@@ -156,7 +178,7 @@ class TestSimilarityCalculationLogic:
     @patch('tasks.clap_analyzer.get_text_embedding')
     def test_search_respects_limit_parameter(self, mock_get_embedding):
         """Test that search returns at most 'limit' results"""
-        from tasks.clap_text_search import search_by_text, _CLAP_CACHE
+        from tasks.clap_text_search import search_by_text, _CLAP_CACHE, _CLAP_INDEX_CACHE
         
         # Setup cache with 20 songs
         _CLAP_CACHE['loaded'] = True
@@ -171,6 +193,7 @@ class TestSimilarityCalculationLogic:
             for i in range(20)
         ]
         _CLAP_CACHE['item_ids'] = [f'song{i}' for i in range(20)]
+        setup_dummy_clap_index_cache(_CLAP_INDEX_CACHE, _CLAP_CACHE['embeddings'], _CLAP_CACHE['item_ids'])
         
         query_embedding = np.random.rand(512).astype(np.float32)
         query_embedding /= np.linalg.norm(query_embedding)
@@ -187,6 +210,7 @@ class TestSimilarityCalculationLogic:
         assert len(results) == 15
         
         # Cleanup
+        teardown_dummy_clap_index_cache(_CLAP_INDEX_CACHE)
         _CLAP_CACHE['loaded'] = False
         _CLAP_CACHE['embeddings'] = None
         _CLAP_CACHE['metadata'] = None
@@ -196,7 +220,7 @@ class TestSimilarityCalculationLogic:
     @patch('tasks.clap_analyzer.get_text_embedding')
     def test_search_limit_larger_than_cache(self, mock_get_embedding):
         """Test search when limit exceeds available songs"""
-        from tasks.clap_text_search import search_by_text, _CLAP_CACHE
+        from tasks.clap_text_search import search_by_text, _CLAP_CACHE, _CLAP_INDEX_CACHE
         
         # Setup cache with only 5 songs
         _CLAP_CACHE['loaded'] = True
@@ -210,6 +234,7 @@ class TestSimilarityCalculationLogic:
             for i in range(5)
         ]
         _CLAP_CACHE['item_ids'] = [f'song{i}' for i in range(5)]
+        setup_dummy_clap_index_cache(_CLAP_INDEX_CACHE, _CLAP_CACHE['embeddings'], _CLAP_CACHE['item_ids'])
         
         query_embedding = np.random.rand(512).astype(np.float32)
         query_embedding /= np.linalg.norm(query_embedding)
@@ -222,6 +247,7 @@ class TestSimilarityCalculationLogic:
         assert len(results) == 5
         
         # Cleanup
+        teardown_dummy_clap_index_cache(_CLAP_INDEX_CACHE)
         _CLAP_CACHE['loaded'] = False
         _CLAP_CACHE['embeddings'] = None
         _CLAP_CACHE['metadata'] = None
@@ -235,7 +261,7 @@ class TestSearchResultStructure:
     @patch('tasks.clap_analyzer.get_text_embedding')
     def test_search_result_contains_required_fields(self, mock_get_embedding):
         """Test that each result contains all required fields"""
-        from tasks.clap_text_search import search_by_text, _CLAP_CACHE
+        from tasks.clap_text_search import search_by_text, _CLAP_CACHE, _CLAP_INDEX_CACHE
         
         _CLAP_CACHE['loaded'] = True
         _CLAP_CACHE['embeddings'] = np.random.rand(3, 512).astype(np.float32)
@@ -249,6 +275,7 @@ class TestSearchResultStructure:
             {'item_id': 'song3', 'title': 'Third Song', 'author': 'Third Artist'},
         ]
         _CLAP_CACHE['item_ids'] = ['song1', 'song2', 'song3']
+        setup_dummy_clap_index_cache(_CLAP_INDEX_CACHE, _CLAP_CACHE['embeddings'], _CLAP_CACHE['item_ids'])
         
         query_embedding = np.random.rand(512).astype(np.float32)
         query_embedding /= np.linalg.norm(query_embedding)
@@ -273,6 +300,7 @@ class TestSearchResultStructure:
             assert -1.0 <= result['similarity'] <= 1.0
         
         # Cleanup
+        teardown_dummy_clap_index_cache(_CLAP_INDEX_CACHE)
         _CLAP_CACHE['loaded'] = False
         _CLAP_CACHE['embeddings'] = None
         _CLAP_CACHE['metadata'] = None
@@ -282,7 +310,7 @@ class TestSearchResultStructure:
     @patch('tasks.clap_analyzer.get_text_embedding')
     def test_search_preserves_metadata_accurately(self, mock_get_embedding):
         """Test that search results preserve original metadata"""
-        from tasks.clap_text_search import search_by_text, _CLAP_CACHE
+        from tasks.clap_text_search import search_by_text, _CLAP_CACHE, _CLAP_INDEX_CACHE
         
         _CLAP_CACHE['loaded'] = True
         _CLAP_CACHE['embeddings'] = np.random.rand(2, 512).astype(np.float32)
@@ -296,13 +324,19 @@ class TestSearchResultStructure:
             {'item_id': 'xyz789', 'title': 'Stairway to Heaven', 'author': 'Led Zeppelin'},
         ]
         _CLAP_CACHE['item_ids'] = ['abc123', 'xyz789']
+        setup_dummy_clap_index_cache(_CLAP_INDEX_CACHE, _CLAP_CACHE['embeddings'], _CLAP_CACHE['item_ids'])
         
         query_embedding = np.random.rand(512).astype(np.float32)
         query_embedding /= np.linalg.norm(query_embedding)
         mock_get_embedding.return_value = query_embedding
-        
-        results = search_by_text("rock classics", limit=2)
-        
+
+        with patch('app_helper.get_score_data_by_ids') as mock_get_score_data:
+            mock_get_score_data.return_value = [
+                {'item_id': 'abc123', 'title': 'Bohemian Rhapsody', 'author': 'Queen'},
+                {'item_id': 'xyz789', 'title': 'Stairway to Heaven', 'author': 'Led Zeppelin'},
+            ]
+            results = search_by_text("rock classics", limit=2)
+
         # Find each song in results
         song1 = next((r for r in results if r['item_id'] == 'abc123'), None)
         song2 = next((r for r in results if r['item_id'] == 'xyz789'), None)
@@ -316,6 +350,7 @@ class TestSearchResultStructure:
         assert song2['author'] == 'Led Zeppelin'
         
         # Cleanup
+        teardown_dummy_clap_index_cache(_CLAP_INDEX_CACHE)
         _CLAP_CACHE['loaded'] = False
         _CLAP_CACHE['embeddings'] = None
         _CLAP_CACHE['metadata'] = None
@@ -349,14 +384,16 @@ class TestSearchEdgeCases:
     @patch('tasks.clap_analyzer.get_text_embedding')
     def test_search_handles_failed_text_embedding(self, mock_get_embedding):
         """Test that search handles text embedding failure gracefully"""
-        from tasks.clap_text_search import search_by_text, _CLAP_CACHE
+        from tasks.clap_text_search import search_by_text, _CLAP_CACHE, _CLAP_INDEX_CACHE
         
         _CLAP_CACHE['loaded'] = True
         _CLAP_CACHE['embeddings'] = np.random.rand(5, 512).astype(np.float32)
         _CLAP_CACHE['metadata'] = [{'item_id': f'song{i}', 'title': f'Song {i}', 'author': f'Artist {i}'} for i in range(5)]
+        _CLAP_CACHE['item_ids'] = [f'song{i}' for i in range(5)]
         
         # Simulate embedding failure
         mock_get_embedding.return_value = None
+        setup_dummy_clap_index_cache(_CLAP_INDEX_CACHE, _CLAP_CACHE['embeddings'], _CLAP_CACHE['item_ids'])
         
         results = search_by_text("test query", limit=10)
         
@@ -364,6 +401,7 @@ class TestSearchEdgeCases:
         assert results == []
         
         # Cleanup
+        teardown_dummy_clap_index_cache(_CLAP_INDEX_CACHE)
         _CLAP_CACHE['loaded'] = False
         _CLAP_CACHE['embeddings'] = None
         _CLAP_CACHE['metadata'] = None
@@ -372,7 +410,7 @@ class TestSearchEdgeCases:
     @patch('tasks.clap_analyzer.get_text_embedding')
     def test_search_with_zero_limit(self, mock_get_embedding):
         """Test search with limit of 0"""
-        from tasks.clap_text_search import search_by_text, _CLAP_CACHE
+        from tasks.clap_text_search import search_by_text, _CLAP_CACHE, _CLAP_INDEX_CACHE
         
         _CLAP_CACHE['loaded'] = True
         _CLAP_CACHE['embeddings'] = np.random.rand(10, 512).astype(np.float32)
@@ -382,6 +420,7 @@ class TestSearchEdgeCases:
         
         _CLAP_CACHE['metadata'] = [{'item_id': f'song{i}', 'title': f'Song {i}', 'author': f'Artist {i}'} for i in range(10)]
         _CLAP_CACHE['item_ids'] = [f'song{i}' for i in range(10)]
+        setup_dummy_clap_index_cache(_CLAP_INDEX_CACHE, _CLAP_CACHE['embeddings'], _CLAP_CACHE['item_ids'])
         
         query_embedding = np.random.rand(512).astype(np.float32)
         query_embedding /= np.linalg.norm(query_embedding)
@@ -393,6 +432,7 @@ class TestSearchEdgeCases:
         assert results == []
         
         # Cleanup
+        teardown_dummy_clap_index_cache(_CLAP_INDEX_CACHE)
         _CLAP_CACHE['loaded'] = False
         _CLAP_CACHE['embeddings'] = None
         _CLAP_CACHE['metadata'] = None
