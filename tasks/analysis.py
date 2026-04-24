@@ -48,7 +48,7 @@ from config import (
 
 # Import other project modules
 from ai import get_ai_playlist_name, creative_prompt_template
-from .commons import score_vector
+from .commons import score_vector, MediaServerConnectionError
 # MODIFIED: Import from voyager_manager instead of annoy_manager
 from .voyager_manager import build_and_store_voyager_index
 # Import CLAP index builder for persisted text search index storage
@@ -1067,7 +1067,17 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             log_and_update_main("🚀 Starting main analysis process...", 0)
             clean_temp(TEMP_DIR)
             # MODIFIED: Call to get_recent_albums no longer needs server parameters.
-            all_albums = get_recent_albums(num_recent_albums)
+            try:
+                all_albums = get_recent_albums(num_recent_albums)
+            except MediaServerConnectionError as conn_err:
+                error_msg = (
+                    f"❌ Cannot connect to the media server: {conn_err}. "
+                    "Please verify your server URL and API token in the Setup page, "
+                    "and ensure the media server is running and reachable from this container."
+                )
+                logger.error(error_msg)
+                log_and_update_main(error_msg, current_progress, task_state=TASK_STATUS_FAILURE, error_message=str(conn_err))
+                raise
             if not all_albums:
                 log_and_update_main("⚠️ No new albums to analyze.", 100, albums_found=0, task_state=TASK_STATUS_SUCCESS)
                 return {"status": "SUCCESS", "message": "No new albums to analyze."}

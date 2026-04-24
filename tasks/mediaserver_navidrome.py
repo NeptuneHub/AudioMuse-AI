@@ -7,6 +7,7 @@ import random
 import config
 
 from tasks.mediaserver_helper import detect_path_format
+from tasks.commons import MediaServerConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,12 @@ def get_recent_albums(limit):
 
                 if len(albums) < size_to_fetch: break
             else:
+                if offset == 0:
+                    # First page returned nothing useful — likely a connection/auth failure
+                    raise MediaServerConnectionError(
+                        "Cannot reach Navidrome or received an unexpected response. "
+                        "Check your NAVIDROME_URL, NAVIDROME_USER, and NAVIDROME_PASSWORD settings."
+                    )
                 logger.error("Failed to fetch recent albums page from Navidrome.")
                 break
 
@@ -213,6 +220,11 @@ def get_recent_albums(limit):
 
                     if len(albums) < size_to_fetch: break
                 else:
+                    if offset == 0:
+                        raise MediaServerConnectionError(
+                            f"Cannot reach Navidrome folder ID '{folder_id}' or received an unexpected response. "
+                            "Check your NAVIDROME_URL, NAVIDROME_USER, and NAVIDROME_PASSWORD settings."
+                        )
                     logger.error(f"Failed to fetch recent albums page from Navidrome folder ID {folder_id}.")
                     break
 
