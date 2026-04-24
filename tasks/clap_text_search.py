@@ -12,7 +12,6 @@ import sys
 import tempfile
 import threading
 import time
-from collections import OrderedDict
 
 import numpy as np
 import psycopg2
@@ -22,11 +21,8 @@ import config
 
 logger = logging.getLogger(__name__)
 
-# Global in-memory cache
+# Global in-memory cache state
 _CLAP_CACHE = {
-    'embeddings': None,  # NumPy array (N, 512)
-    'metadata': None,    # List of dicts with item_id, title, author
-    'item_ids': None,    # List of item_ids
     'loaded': False
 }
 
@@ -45,10 +41,6 @@ _TOP_QUERIES_CACHE = {
     'computing': False
 }
 
-# Lightweight in-memory metadata cache for CLAP search results
-_CLAP_METADATA_CACHE: OrderedDict[str, Dict[str, str]] = OrderedDict()
-_CLAP_METADATA_CACHE_MAX_SIZE = 2000
-
 # Warm cache timer for text search (keeps model loaded)
 _WARM_CACHE_TIMER = {
     'expiry_time': None,  # Unix timestamp when model should unload
@@ -59,43 +51,27 @@ _WARM_CACHE_TIMER = {
 
 
 def get_clap_cache_size() -> int:
-    """Return the number of embeddings in the CLAP cache."""
-    global _CLAP_CACHE, _CLAP_INDEX_CACHE
+    """Return the number of items in the loaded CLAP index."""
     if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['id_map'] is not None:
         return len(_CLAP_INDEX_CACHE['id_map'])
-    if _CLAP_CACHE['loaded'] and _CLAP_CACHE['metadata'] is not None:
-        return len(_CLAP_CACHE['metadata'])
     return 0
 
 
-def _get_cached_clap_metadata(item_ids: list) -> Dict[str, Dict[str, str]]:
-    """Fetch metadata for CLAP result item_ids, using an in-memory cache where possible."""
-    global _CLAP_METADATA_CACHE
-
+def _fetch_clap_metadata(item_ids: list) -> Dict[str, Dict[str, str]]:
+    """Fetch metadata for CLAP result item_ids from the database."""
     metadata_map: Dict[str, Dict[str, str]] = {}
-    ids_to_fetch = []
-
-    for item_id in item_ids:
-        if item_id in _CLAP_METADATA_CACHE:
-            metadata_map[item_id] = _CLAP_METADATA_CACHE[item_id]
-        else:
-            ids_to_fetch.append(item_id)
-
-    if not ids_to_fetch:
+    if not item_ids:
         return metadata_map
 
     from app_helper import get_score_data_by_ids
     try:
-        track_details_list = get_score_data_by_ids(ids_to_fetch)
+        track_details_list = get_score_data_by_ids(item_ids)
         for row in track_details_list:
             item_id = row['item_id']
-            metadata = {'title': row.get('title', ''), 'author': row.get('author', '')}
-            metadata_map[item_id] = metadata
-            _CLAP_METADATA_CACHE[item_id] = metadata
-            _CLAP_METADATA_CACHE.move_to_end(item_id)
-
-        while len(_CLAP_METADATA_CACHE) > _CLAP_METADATA_CACHE_MAX_SIZE:
-            _CLAP_METADATA_CACHE.popitem(last=False)
+            metadata_map[item_id] = {
+                'title': row.get('title', ''),
+                'author': row.get('author', '')
+            }
     except Exception:
         pass
 
@@ -132,32 +108,30 @@ def _load_clap_index_from_db() -> bool:
                     index_stream.write(index_binary_data)
                     index_stream.seek(0)
                 else:
-                    cur.execute(
-                        "SELECT index_name, index_data, id_map_json, embedding_dimension FROM clap_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-                        (r'clap_index\_%\_%',)
-                    )
-                    rows = cur.fetchall()
-                    if not rows:
-                        return False
-
                     seg_pattern = re.compile(r'^clap_index_(\d+)_(\d+)$')
                     parts = []
                     total_expected = None
                     id_map_json_candidate = None
-                    for name, part_data, part_id_map_json, part_dim in rows:
-                        m = seg_pattern.match(name)
-                        if not m:
-                            continue
-                        part_no = int(m.group(1))
-                        total = int(m.group(2))
-                        if total_expected is None:
-                            total_expected = total
-                        elif total_expected != total:
-                            logger.error(f"Segment total mismatch for CLAP index parts ({total_expected} vs {total}).")
-                            return False
-                        parts.append((part_no, part_data, part_id_map_json, part_dim))
-                        if part_id_map_json and not id_map_json_candidate:
-                            id_map_json_candidate = part_id_map_json
+                    with conn.cursor(name='clap_index_segments') as seg_cur:
+                        seg_cur.itersize = 50
+                        seg_cur.execute(
+                            "SELECT index_name, index_data, id_map_json, embedding_dimension FROM clap_index_data WHERE index_name LIKE %s ESCAPE '\\'",
+                            (r'clap_index\_%\_%',)
+                        )
+                        for name, part_data, part_id_map_json, part_dim in seg_cur:
+                            m = seg_pattern.match(name)
+                            if not m:
+                                continue
+                            part_no = int(m.group(1))
+                            total = int(m.group(2))
+                            if total_expected is None:
+                                total_expected = total
+                            elif total_expected != total:
+                                logger.error(f"Segment total mismatch for CLAP index parts ({total_expected} vs {total}).")
+                                return False
+                            parts.append((part_no, part_data, part_id_map_json, part_dim))
+                            if part_id_map_json and not id_map_json_candidate:
+                                id_map_json_candidate = part_id_map_json
 
                     if total_expected is None or len(parts) != total_expected:
                         logger.error(f"Incomplete CLAP index segments: expected {total_expected}, found {len(parts)}.")
@@ -219,9 +193,6 @@ def _load_clap_index_from_db() -> bool:
                 logger.error("CLAP index id_map is empty.")
                 return False
 
-            _CLAP_CACHE['embeddings'] = None
-            _CLAP_CACHE['metadata'] = None
-            _CLAP_CACHE['item_ids'] = None
             _CLAP_CACHE['loaded'] = True
 
             _CLAP_INDEX_CACHE['index'] = loaded_index
@@ -429,13 +400,14 @@ def get_warm_cache_status() -> Dict:
 
 def load_clap_cache_from_db():
     """
-    Load all CLAP embeddings and metadata into memory for fast searching.
+    Load the persisted CLAP Voyager index from the database.
+    If no persisted index exists but raw CLAP embeddings are present, build the persisted index.
     Returns True if successful, False otherwise.
     """
     global _CLAP_CACHE
     
     from app_helper import get_db
-    from config import CLAP_ENABLED, CLAP_EMBEDDING_DIMENSION
+    from config import CLAP_ENABLED
     
     if not CLAP_ENABLED:
         logger.info("CLAP is disabled, skipping cache load.")
@@ -446,9 +418,6 @@ def load_clap_cache_from_db():
         return True
 
     logger.error("Failed to load persisted CLAP index. CLAP text search will be unavailable.")
-    _CLAP_CACHE['embeddings'] = None
-    _CLAP_CACHE['metadata'] = None
-    _CLAP_CACHE['item_ids'] = None
     _CLAP_CACHE['loaded'] = False
     _CLAP_INDEX_CACHE['index'] = None
     _CLAP_INDEX_CACHE['id_map'] = None
@@ -525,12 +494,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
             candidate_item_ids = [id_map.get(int(voyager_id)) for voyager_id in neighbor_ids]
             candidate_item_ids = [item_id for item_id in candidate_item_ids if item_id is not None]
 
-            metadata_map = {}
-            if _CLAP_CACHE['metadata']:
-                metadata_map = {item['item_id']: {'title': item.get('title', ''), 'author': item.get('author', '')} for item in _CLAP_CACHE['metadata']}
-
-            if candidate_item_ids:
-                metadata_map.update(_get_cached_clap_metadata(candidate_item_ids))
+            metadata_map = _fetch_clap_metadata(candidate_item_ids)
 
             results = []
             artist_counts: dict = {}
@@ -570,7 +534,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
 
 def get_cache_stats() -> Dict:
     """Get statistics about the CLAP cache."""
-    if not _CLAP_CACHE['loaded']:
+    if not _CLAP_INDEX_CACHE['loaded'] or _CLAP_INDEX_CACHE['index'] is None:
         return {
             'loaded': False,
             'song_count': 0,
@@ -578,28 +542,16 @@ def get_cache_stats() -> Dict:
             'memory_mb': 0
         }
 
-    embeddings_size = _CLAP_CACHE['embeddings'].nbytes if _CLAP_CACHE['embeddings'] is not None else 0
-    metadata_size = 0
-    if _CLAP_CACHE['metadata'] is not None:
-        metadata_size = sum(len(str(m)) for m in _CLAP_CACHE['metadata'])
-    elif _CLAP_INDEX_CACHE['index'] is not None:
-        index_size = sys.getsizeof(_CLAP_INDEX_CACHE['index'])
-        id_map_size = sys.getsizeof(_CLAP_INDEX_CACHE['id_map']) if _CLAP_INDEX_CACHE['id_map'] is not None else 0
-        reverse_map_size = sys.getsizeof(_CLAP_INDEX_CACHE['reverse_id_map']) if _CLAP_INDEX_CACHE['reverse_id_map'] is not None else 0
-        metadata_cache_size = sum(sys.getsizeof(k) + sys.getsizeof(v) for k, v in _CLAP_METADATA_CACHE.items())
-        metadata_size = index_size + id_map_size + reverse_map_size + metadata_cache_size
-
-    total_size_mb = (embeddings_size + metadata_size) / (1024 * 1024)
-    song_count = 0
-    if _CLAP_CACHE['metadata'] is not None:
-        song_count = len(_CLAP_CACHE['metadata'])
-    elif _CLAP_INDEX_CACHE['id_map'] is not None:
-        song_count = len(_CLAP_INDEX_CACHE['id_map'])
+    index_size = sys.getsizeof(_CLAP_INDEX_CACHE['index'])
+    id_map_size = sys.getsizeof(_CLAP_INDEX_CACHE['id_map']) if _CLAP_INDEX_CACHE['id_map'] is not None else 0
+    reverse_map_size = sys.getsizeof(_CLAP_INDEX_CACHE['reverse_id_map']) if _CLAP_INDEX_CACHE['reverse_id_map'] is not None else 0
+    total_size_mb = (index_size + id_map_size + reverse_map_size) / (1024 * 1024)
+    song_count = len(_CLAP_INDEX_CACHE['id_map']) if _CLAP_INDEX_CACHE['id_map'] is not None else 0
 
     return {
         'loaded': True,
         'song_count': song_count,
-        'embedding_dimension': _CLAP_CACHE['embeddings'].shape[1] if _CLAP_CACHE['embeddings'] is not None else config.CLAP_EMBEDDING_DIMENSION,
+        'embedding_dimension': config.CLAP_EMBEDDING_DIMENSION,
         'memory_mb': round(total_size_mb, 2)
     }
 

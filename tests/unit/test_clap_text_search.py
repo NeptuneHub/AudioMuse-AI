@@ -43,15 +43,14 @@ class TestCacheStatsCalculation:
 
     def test_get_cache_stats_when_not_loaded(self):
         """Test cache stats return empty structure when cache not loaded"""
-        from tasks.clap_text_search import get_cache_stats, _CLAP_CACHE
-        
+        from tasks.clap_text_search import get_cache_stats, _CLAP_CACHE, _CLAP_INDEX_CACHE
+
         # Ensure cache is not loaded
         _CLAP_CACHE['loaded'] = False
-        _CLAP_CACHE['embeddings'] = None
-        _CLAP_CACHE['metadata'] = None
-        
+        teardown_dummy_clap_index_cache(_CLAP_INDEX_CACHE)
+
         stats = get_cache_stats()
-        
+
         assert stats['loaded'] is False
         assert stats['song_count'] == 0
         assert stats['embedding_dimension'] == 0
@@ -59,51 +58,43 @@ class TestCacheStatsCalculation:
 
     def test_get_cache_stats_with_loaded_cache(self):
         """Test cache stats calculation with loaded data"""
-        from tasks.clap_text_search import get_cache_stats, _CLAP_CACHE
-        
-        # Simulate loaded cache with 100 songs, 512-dim embeddings
+        from tasks.clap_text_search import get_cache_stats, _CLAP_CACHE, _CLAP_INDEX_CACHE
+
+        # Simulate loaded CLAP index with 100 songs
         _CLAP_CACHE['loaded'] = True
-        _CLAP_CACHE['embeddings'] = np.random.rand(100, 512).astype(np.float32)
-        _CLAP_CACHE['metadata'] = [
-            {'item_id': f'song{i}', 'title': f'Title {i}', 'author': f'Artist {i}'}
-            for i in range(100)
-        ]
-        _CLAP_CACHE['item_ids'] = [f'song{i}' for i in range(100)]
-        
+        embeddings = np.random.rand(100, 512).astype(np.float32)
+        item_ids = [f'song{i}' for i in range(100)]
+        setup_dummy_clap_index_cache(_CLAP_INDEX_CACHE, embeddings, item_ids)
+
         stats = get_cache_stats()
-        
+
         assert stats['loaded'] is True
         assert stats['song_count'] == 100
         assert stats['embedding_dimension'] == 512
         assert stats['memory_mb'] > 0  # Should calculate memory size
-        
+
         # Cleanup
         _CLAP_CACHE['loaded'] = False
-        _CLAP_CACHE['embeddings'] = None
-        _CLAP_CACHE['metadata'] = None
-        _CLAP_CACHE['item_ids'] = None
+        teardown_dummy_clap_index_cache(_CLAP_INDEX_CACHE)
 
     def test_get_cache_stats_memory_calculation_accuracy(self):
         """Test that memory calculation is reasonable"""
-        from tasks.clap_text_search import get_cache_stats, _CLAP_CACHE
-        
-        # 10 songs × 512 dimensions × 4 bytes (float32) = ~20KB
+        from tasks.clap_text_search import get_cache_stats, _CLAP_CACHE, _CLAP_INDEX_CACHE
+
+        # Simulate loaded CLAP index with 10 songs
         _CLAP_CACHE['loaded'] = True
-        _CLAP_CACHE['embeddings'] = np.random.rand(10, 512).astype(np.float32)
-        _CLAP_CACHE['metadata'] = [
-            {'item_id': f'song{i}', 'title': 'Title', 'author': 'Artist'}
-            for i in range(10)
-        ]
-        
+        embeddings = np.random.rand(10, 512).astype(np.float32)
+        item_ids = [f'song{i}' for i in range(10)]
+        setup_dummy_clap_index_cache(_CLAP_INDEX_CACHE, embeddings, item_ids)
+
         stats = get_cache_stats()
-        
-        # Should be around 0.02 MB for embeddings + small overhead for metadata
-        assert 0.01 < stats['memory_mb'] < 0.1
-        
+
+        # Should report a small non-zero memory size for the in-memory index
+        assert 0.0 < stats['memory_mb'] < 1.0
+
         # Cleanup
         _CLAP_CACHE['loaded'] = False
-        _CLAP_CACHE['embeddings'] = None
-        _CLAP_CACHE['metadata'] = None
+        teardown_dummy_clap_index_cache(_CLAP_INDEX_CACHE)
 
 
 class TestCacheStateChecking:
