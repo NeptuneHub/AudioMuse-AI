@@ -120,7 +120,7 @@ DBSCAN_MIN_SAMPLES_MAX = int(os.getenv("DBSCAN_MIN_SAMPLES_MAX", "20"))
 
 # --- KMEANS Only Constants (Ranges for Evolutionary Approach) ---
 # Default ranges for KMeans parameters
-NUM_CLUSTERS_MIN = int(os.getenv("NUM_CLUSTERS_MIN", "40"))
+NUM_CLUSTERS_MIN = int(os.getenv("NUM_CLUSTERS_MIN", "4"))
 NUM_CLUSTERS_MAX = int(os.getenv("NUM_CLUSTERS_MAX", "100"))
 # New for MiniBatchKMeans
 USE_MINIBATCH_KMEANS = os.environ.get("USE_MINIBATCH_KMEANS", "False").lower() == "true" # Enable MiniBatchKMeans
@@ -128,12 +128,12 @@ MINIBATCH_KMEANS_PROCESSING_BATCH_SIZE = int(os.getenv("MINIBATCH_KMEANS_PROCESS
 
 # --- GMM Only Constants (Ranges for Evolutionary Approach) ---
 # Default ranges for GMM parameters
-GMM_N_COMPONENTS_MIN = int(os.getenv("GMM_N_COMPONENTS_MIN", "40"))
+GMM_N_COMPONENTS_MIN = int(os.getenv("GMM_N_COMPONENTS_MIN", "4"))
 GMM_N_COMPONENTS_MAX = int(os.getenv("GMM_N_COMPONENTS_MAX", "100"))
 GMM_COVARIANCE_TYPE = os.environ.get("GMM_COVARIANCE_TYPE", "full") # 'full', 'tied', 'diag', 'spherical'
 
 # --- SpectralClustering Only Constants (Ranges for Evolutionary Approach) ---
-SPECTRAL_N_CLUSTERS_MIN = int(os.getenv("SPECTRAL_N_CLUSTERS_MIN", "40"))
+SPECTRAL_N_CLUSTERS_MIN = int(os.getenv("SPECTRAL_N_CLUSTERS_MIN", "4"))
 SPECTRAL_N_CLUSTERS_MAX = int(os.getenv("SPECTRAL_N_CLUSTERS_MAX", "100"))
 SPECTRAL_N_NEIGHBORS = int(os.getenv("SPECTRAL_N_NEIGHBORS", "20"))
 

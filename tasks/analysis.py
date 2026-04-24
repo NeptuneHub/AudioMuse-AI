@@ -568,7 +568,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
     with app.app_context():
         initial_details = {"album_name": album_name, "log": [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Album analysis task started."]}
         save_task_status(current_task_id, "album_analysis", TASK_STATUS_STARTED, parent_task_id=parent_task_id, sub_type_identifier=album_id, progress=0, details=initial_details)
-        tracks_analyzed_count, tracks_skipped_count, current_progress_val = 0, 0, 0
+        tracks_analyzed_count, tracks_skipped_count, unanalyzable_tracks_skipped_count, current_progress_val = 0, 0, 0, 0
         current_task_logs = initial_details["log"]
         
         model_paths = {
@@ -602,7 +602,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         session_recycler = SessionRecycler(recycle_interval=recycle_interval)
         logger.info(f"MusiCNN session recycling: every {recycle_interval} song(s) (PER_SONG_MODEL_RELOAD={PER_SONG_MODEL_RELOAD})")
 
-        def log_and_update_album_task(message, progress, **kwargs):
+        def log_and_update_album_task(message, progress, **kwargs,):
             nonlocal current_progress_val, current_task_logs
             current_progress_val = progress
             logger.info(f"[AlbumTask-{current_task_id}-{album_name}] {message}")
@@ -635,7 +635,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     track_ids_as_strings = [str(id) for id in track_ids]
                     cur.execute("SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id WHERE s.item_id IN %s AND s.other_features IS NOT NULL AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL", (tuple(track_ids_as_strings),))
                     return {row[0] for row in cur.fetchall()}
-
+            
             def get_missing_clap_track_ids(track_ids):
                 if not track_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
@@ -664,7 +664,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     if (task_info and task_info.get('status') == 'REVOKED') or (parent_info and parent_info.get('status') in ['REVOKED', 'FAILURE']):
                         log_and_update_album_task(f"Stopping album analysis for '{album_name}' due to parent/self revocation.", current_progress_val, task_state=TASK_STATUS_REVOKED)
                         return {"status": "REVOKED"}
-
+                
                 track_name_full = f"{item['Name']} by {item.get('AlbumArtist', 'Unknown')}"
                 progress = 10 + int(85 * (idx / float(total_tracks_in_album)))
                 log_and_update_album_task(f"Analyzing track: {track_name_full} ({idx}/{total_tracks_in_album})", progress, current_track_name=track_name_full)
@@ -697,6 +697,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 #     logger.info(f"Updated album name for track '{track_name_full}' to '{album_name}'")
                 # except Exception as e:
                 #     logger.warning(f"Failed to update album name for '{track_name_full}': {e}")
+                
 
                 if not needs_musicnn and not needs_clap and not needs_mulan:
                     tracks_skipped_count += 1
@@ -812,7 +813,15 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions)
                         if analysis is None:
                             logger.warning(f"Skipping track {track_name_full} as analysis returned None.")
-                            tracks_skipped_count += 1
+                            logger.info(f"Marking track {track_name_full} as 'unanalyzable'.")
+                            with get_db() as conn, conn.cursor() as cur:
+                                cur.execute("""
+                                            INSERT INTO score (item_id, title, analysis_status)
+                                            VALUES (%s, %s, 'unanalyzable')
+                                            ON CONFLICT (item_id) DO UPDATE SET analysis_status = 'unanalyzable'
+                                        """, (track_id_str, track_name_full))
+                                conn.commit() 
+                            unanalyzable_tracks_skipped_count += 1
                             continue
                         
                         top_moods = dict(sorted(analysis['moods'].items(), key=lambda i: i[1], reverse=True)[:top_n_moods])
@@ -966,7 +975,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             logger.info("Performing final comprehensive cleanup after album analysis")
             comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
 
-            summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album}
+            summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album, "unanalyzable_tracks": unanalyzable_tracks_skipped_count}
             log_and_update_album_task(f"Album '{album_name}' analysis complete.", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
             return {"status": "SUCCESS", **summary}
 
@@ -1075,7 +1084,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             total_albums_to_check = len(all_albums)
             active_jobs, launched_jobs = {}, []
             launched_job_ids = set()  # Track job IDs launched in THIS run only
-            albums_skipped, albums_launched, albums_completed, last_rebuild_count = 0, 0, 0, 0
+            albums_skipped, albums_launched, albums_completed, last_rebuild_count, total_unanalyzable = 0, 0, 0, 0, 0
 
             def get_existing_track_ids(track_ids):
                 if not track_ids: return set()
@@ -1098,7 +1107,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 CRITICAL: Also removes jobs from active_jobs if they're not in launched_job_ids
                 (zombie jobs from previous failed runs) to prevent blocking forever.
                 """
-                nonlocal albums_completed, last_rebuild_count
+                nonlocal albums_completed, last_rebuild_count, total_unanalyzable
                 removed = 0
 
                 # First: try to detect terminal jobs via RQ
@@ -1112,6 +1121,13 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     try:
                         job = Job.fetch(job_id, connection=redis_conn)
                         if job.is_finished or job.is_failed or job.is_canceled:
+                            if job.is_finished:
+                                try:
+                                    result = job.result
+                                    if result and isinstance(result, dict):
+                                        total_unanalyzable += result.get("unanalyzable_tracks", 0)
+                                except Exception as e:
+                                    logger.warning(f"Could not read job result for {job_id}: {e}")
                             del active_jobs[job_id]
                             removed += 1
                     except NoSuchJobError:
@@ -1177,7 +1193,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 while len(active_jobs) >= MAX_QUEUED_ANALYSIS_JOBS:
                     monitor_and_clear_jobs()
                     time.sleep(5)
-                
+
                 # MODIFIED: Call to get_tracks_from_album no longer needs server parameters.
                 tracks = get_tracks_from_album(album['Id'])
                 # If no tracks returned, skip and log reason.
@@ -1187,6 +1203,33 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - no tracks returned by media server.")
                     continue
 
+                # Unanalyzable tracks
+                track_ids = [str(t['Id']) for t in tracks]
+                with get_db() as conn, conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT item_id, title FROM score 
+                        WHERE item_id IN %s 
+                        AND analysis_status = 'unanalyzable'
+                    """, (tuple(track_ids),))
+                    unanalyzable_tracks = cur.fetchall()
+                if unanalyzable_tracks:
+                    unanalyzable_count = len(unanalyzable_tracks)
+                    unanalyzable_names = [t[1] for t in unanalyzable_tracks]
+                    albums_skipped += 1
+                    checked_album_ids.add(album['Id'])
+                    if unanalyzable_count == len(track_ids):
+                        logger.info(f"album name: '{album.get('Name')}', unanalyzable tracks: {', '.join(unanalyzable_names)}. ")
+                        log_and_update_main(
+                            f"Skipping album '{album.get('Name')}' - all {unanalyzable_count} tracks previously marked as unanalyzable.",
+                            current_progress
+                        )
+                    else:
+                        log_and_update_main(
+                            f"Skipping album '{album.get('Name')}' has {unanalyzable_count} unanalyzable track(s): {', '.join(unanalyzable_names)}. Delete track(s) from album.",
+                            current_progress
+                        )
+                    continue
+    
                 # Store artist ID mappings for all tracks in this album (even if already analyzed)
                 try:
                     from app_helper_artist import upsert_artist_mapping
@@ -1274,7 +1317,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 
             # If we never enqueued any album jobs for the batch, warn operator so they can investigate.
             if albums_launched == 0 and albums_skipped == total_albums_to_check:
-                logger.warning(f"No albums were enqueued: all {total_albums_to_check} albums were skipped (no tracks or already analyzed). If unexpected, try running with num_recent_albums=0 to fetch more or inspect the media server responses and Spotify filtering.")
+                logger.warning(f"No albums were enqueued: all {total_albums_to_check} albums were skipped (no tracks, already analyzed, or unanalyzable tracks). If unexpected, try running with num_recent_albums=0 to fetch more or inspect the media server responses and Spotify filtering.")
 
             while active_jobs:
                 monitor_and_clear_jobs()
@@ -1333,8 +1376,10 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
             # Top query computation disabled - using default queries from database only
             logger.info('Analysis complete. CLAP text search uses default queries (no auto-regeneration).')
-
-            final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
+            if total_unanalyzable > 0:
+                final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}. Note: {total_unanalyzable} track(s) marked as unanalyzable - check logs for details."
+            else:
+                final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
             log_and_update_main(final_message, 100, task_state=TASK_STATUS_SUCCESS)
             clean_temp(TEMP_DIR)
             return {"status": "SUCCESS", "message": final_message}

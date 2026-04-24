@@ -26,13 +26,19 @@ services:
 
   # AudioMuse-AI Flask application service
   audiomuse-ai-flask:
-    image: ghcr.io/neptunehub/audiomuse-ai:latest # Reflects deployment.yaml
+    build:
+      context: ..
+      dockerfile: Dockerfile
     container_name: audiomuse-ai-flask-app
     ports:
       - "${FRONTEND_PORT:-8000}:8000" # Map host port 8000 to container port 8000
     environment:
       SERVICE_TYPE: "flask" # Tells the container to run the Flask app
+      MEDIASERVER_TYPE: "navidrome" # Specify the media server type
       TZ: "${TZ:-UTC}"
+      NAVIDROME_URL: "http://navidrome:4533"
+      NAVIDROME_USER: "${NAVIDROME_USER}"
+      NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD}"
       # DATABASE_URL is now constructed by config.py from the following:
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
@@ -41,8 +47,13 @@ services:
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
       REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
       TEMP_DIR: "/app/temp_audio"
+      API_TOKEN: "${API_TOKEN:-}"
+      AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
+      AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
+      JWT_SECRET: "${JWT_SECRET:-}"
     volumes:
       - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
+      - "/Users/camillacasado/documents/music-navidrome:/music:ro"
     depends_on:
       - redis
       - postgres
@@ -50,11 +61,17 @@ services:
 
   # AudioMuse-AI RQ Worker service
   audiomuse-ai-worker:
-    image: ghcr.io/neptunehub/audiomuse-ai:latest # Reflects deployment.yaml
+    build:
+      context: ..
+      dockerfile: Dockerfile
     container_name: audiomuse-ai-worker-instance
     environment:
       SERVICE_TYPE: "worker" # Tells the container to run the RQ worker
+      MEDIASERVER_TYPE: "navidrome" # Specify the media server type
       TZ: "${TZ:-UTC}"
+      NAVIDROME_URL: "http://navidrome:4533"
+      NAVIDROME_USER: "${NAVIDROME_USER}"
+      NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD}"
       # DATABASE_URL is now constructed by config.py from the following:
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
@@ -63,12 +80,30 @@ services:
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
       REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
       TEMP_DIR: "/app/temp_audio"
+      API_TOKEN: "${API_TOKEN:-}"
+      AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
+      AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
+      JWT_SECRET: "${JWT_SECRET:-}"
     volumes:
       - temp-audio-worker:/app/temp_audio # Volume for temporary audio files
+      - "/Users/camillacasado/documents/music-navidrome:/music:ro"
     depends_on:
       - redis
       - postgres
     restart: unless-stopped
+  
+  # Navidrome stuff
+  navidrome:
+    image: deluan/navidrome:latest
+    ports:
+      - "4533:4533"
+    restart: unless-stopped
+    volumes:
+      - "/Users/camillacasado/documents/music-navidrome:/music:ro"
+      - "/Users/camillacasado/documents/navidrome/data:/data"
+    environment:
+      ND_SCANSCHEDULE: 1h
+      ND_LOGLEVEL: info
 
 # Define volumes for persistent data and temporary files
 volumes:
