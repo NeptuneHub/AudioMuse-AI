@@ -212,6 +212,7 @@ def build_and_store_clap_index(db_conn=None):
     from app_helper import get_db
     from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_METRIC, VOYAGER_M, VOYAGER_EF_CONSTRUCTION, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB
 
+    logger.info("Building CLAP text search index...")
     try:
         import voyager  # type: ignore
     except ImportError:
@@ -299,6 +300,7 @@ def build_and_store_clap_index(db_conn=None):
 
         db_conn.commit()
         logger.info("CLAP index build and storage complete.")
+        logger.info("CLAP text search index build successful.")
         return True
     except Exception as e:
         logger.error(f"Failed to build and store CLAP index: {e}", exc_info=True)
@@ -401,7 +403,6 @@ def get_warm_cache_status() -> Dict:
 def load_clap_cache_from_db():
     """
     Load the persisted CLAP Voyager index from the database.
-    If no persisted index exists but raw CLAP embeddings are present, build the persisted index.
     Returns True if successful, False otherwise.
     """
     global _CLAP_CACHE
@@ -542,7 +543,13 @@ def get_cache_stats() -> Dict:
             'memory_mb': 0
         }
 
-    index_size = sys.getsizeof(_CLAP_INDEX_CACHE['index'])
+    index_obj = _CLAP_INDEX_CACHE['index']
+    index_size = sys.getsizeof(index_obj)
+    if isinstance(index_obj, np.ndarray):
+        index_size = index_obj.nbytes
+    elif hasattr(index_obj, 'embeddings') and isinstance(index_obj.embeddings, np.ndarray):
+        index_size = index_obj.embeddings.nbytes
+
     id_map_size = sys.getsizeof(_CLAP_INDEX_CACHE['id_map']) if _CLAP_INDEX_CACHE['id_map'] is not None else 0
     reverse_map_size = sys.getsizeof(_CLAP_INDEX_CACHE['reverse_id_map']) if _CLAP_INDEX_CACHE['reverse_id_map'] is not None else 0
     total_size_mb = (index_size + id_map_size + reverse_map_size) / (1024 * 1024)

@@ -329,9 +329,14 @@ class TestSearchResultStructure:
         query_embedding = np.random.rand(512).astype(np.float32)
         query_embedding /= np.linalg.norm(query_embedding)
         mock_get_embedding.return_value = query_embedding
-        
-        results = search_by_text("rock classics", limit=2)
-        
+
+        with patch('app_helper.get_score_data_by_ids') as mock_get_score_data:
+            mock_get_score_data.return_value = [
+                {'item_id': 'abc123', 'title': 'Bohemian Rhapsody', 'author': 'Queen'},
+                {'item_id': 'xyz789', 'title': 'Stairway to Heaven', 'author': 'Led Zeppelin'},
+            ]
+            results = search_by_text("rock classics", limit=2)
+
         # Find each song in results
         song1 = next((r for r in results if r['item_id'] == 'abc123'), None)
         song2 = next((r for r in results if r['item_id'] == 'xyz789'), None)

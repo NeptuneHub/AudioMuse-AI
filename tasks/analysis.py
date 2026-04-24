@@ -267,6 +267,7 @@ def rebuild_all_indexes_task():
 
             # Build CLAP text search index
             try:
+                logger.info('Building CLAP text search index...')
                 build_and_store_clap_index(get_db())
                 logger.info('✓ CLAP text search index rebuilt')
             except Exception as e:
@@ -1290,6 +1291,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
             # Build CLAP search index and store it in the database
             log_and_update_main("Building CLAP text search index...", 96)
+            logger.info('Building CLAP text search index...')
             try:
                 build_and_store_clap_index(get_db())
                 logger.info('CLAP text search index built and stored.')
