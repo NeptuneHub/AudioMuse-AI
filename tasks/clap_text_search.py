@@ -54,7 +54,9 @@ _WARM_CACHE_TIMER = {
 
 def get_clap_cache_size() -> int:
     """Return the number of embeddings in the CLAP cache."""
-    global _CLAP_CACHE
+    global _CLAP_CACHE, _CLAP_INDEX_CACHE
+    if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['id_map'] is not None:
+        return len(_CLAP_INDEX_CACHE['id_map'])
     if _CLAP_CACHE['loaded'] and _CLAP_CACHE['metadata'] is not None:
         return len(_CLAP_CACHE['metadata'])
     return 0
@@ -70,7 +72,7 @@ def _load_clap_index_from_db() -> bool:
     global _CLAP_CACHE, _CLAP_INDEX_CACHE
 
     from app_helper import get_db
-    from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB
+    from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_QUERY_EF
 
     try:
         conn = get_db()
@@ -81,88 +83,94 @@ def _load_clap_index_from_db() -> bool:
                 ('clap_index',)
             )
             row = cur.fetchone()
+
             index_stream = None
-
-            if row:
-                index_binary_data, id_map_json, db_embedding_dim = row
-                index_stream = io.BytesIO(index_binary_data)
-            else:
-                cur.execute(
-                    "SELECT index_name, index_data, id_map_json, embedding_dimension FROM clap_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-                    (r'clap_index\_%\_%',)
-                )
-                rows = cur.fetchall()
-                if not rows:
-                    return False
-
-                seg_pattern = re.compile(r'^clap_index_(\d+)_(\d+)$')
-                parts = []
-                total_expected = None
-                id_map_json_candidate = None
-                for name, part_data, part_id_map_json, part_dim in rows:
-                    m = seg_pattern.match(name)
-                    if not m:
-                        continue
-                    part_no = int(m.group(1))
-                    total = int(m.group(2))
-                    if total_expected is None:
-                        total_expected = total
-                    elif total_expected != total:
-                        logger.error(f"Segment total mismatch for CLAP index parts ({total_expected} vs {total}).")
-                        return False
-                    parts.append((part_no, part_data, part_id_map_json, part_dim))
-                    if part_id_map_json and not id_map_json_candidate:
-                        id_map_json_candidate = part_id_map_json
-
-                if total_expected is None or len(parts) != total_expected:
-                    logger.error(f"Incomplete CLAP index segments: expected {total_expected}, found {len(parts)}.")
-                    return False
-
-                parts.sort(key=lambda p: p[0])
-                for _, _, _, part_dim in parts:
-                    if part_dim != CLAP_EMBEDDING_DIMENSION:
-                        logger.error(f"CLAP index embedding_dimension mismatch in segmented parts: expected {CLAP_EMBEDDING_DIMENSION}, got {part_dim}.")
-                        return False
-
-                if id_map_json_candidate is None:
-                    logger.error("No id_map_json found in segmented CLAP index rows.")
-                    return False
-
-                db_embedding_dim = parts[0][3]
-                index_stream = tempfile.TemporaryFile()
-                for _, part_data, _, _ in parts:
-                    index_stream.write(part_data)
-                index_stream.seek(0)
-                id_map_json = id_map_json_candidate
-
-            if index_stream is None:
-                logger.error("CLAP index binary data was empty.")
-                return False
-
-            if db_embedding_dim != CLAP_EMBEDDING_DIMENSION:
-                logger.error(f"CLAP index dimension mismatch: db={db_embedding_dim} expected={CLAP_EMBEDDING_DIMENSION}")
-                if hasattr(index_stream, 'close'):
-                    try:
-                        index_stream.close()
-                    except Exception as close_error:
-                        logger.warning("Failed to close CLAP index stream: %s", close_error, exc_info=True)
-                return False
-
             try:
-                try:
-                    import voyager  # type: ignore
-                except ImportError:
-                    logger.warning("Voyager library is unavailable; cannot load persisted CLAP index.")
+                if row:
+                    index_binary_data, id_map_json, db_embedding_dim = row
+                    index_stream = tempfile.TemporaryFile()
+                    index_stream.write(index_binary_data)
+                    index_stream.seek(0)
+                else:
+                    cur.execute(
+                        "SELECT index_name, index_data, id_map_json, embedding_dimension FROM clap_index_data WHERE index_name LIKE %s ESCAPE '\\'",
+                        (r'clap_index\_%\_%',)
+                    )
+                    rows = cur.fetchall()
+                    if not rows:
+                        return False
+
+                    seg_pattern = re.compile(r'^clap_index_(\d+)_(\d+)$')
+                    parts = []
+                    total_expected = None
+                    id_map_json_candidate = None
+                    for name, part_data, part_id_map_json, part_dim in rows:
+                        m = seg_pattern.match(name)
+                        if not m:
+                            continue
+                        part_no = int(m.group(1))
+                        total = int(m.group(2))
+                        if total_expected is None:
+                            total_expected = total
+                        elif total_expected != total:
+                            logger.error(f"Segment total mismatch for CLAP index parts ({total_expected} vs {total}).")
+                            return False
+                        parts.append((part_no, part_data, part_id_map_json, part_dim))
+                        if part_id_map_json and not id_map_json_candidate:
+                            id_map_json_candidate = part_id_map_json
+
+                    if total_expected is None or len(parts) != total_expected:
+                        logger.error(f"Incomplete CLAP index segments: expected {total_expected}, found {len(parts)}.")
+                        return False
+
+                    parts.sort(key=lambda p: p[0])
+                    for _, _, _, part_dim in parts:
+                        if part_dim != CLAP_EMBEDDING_DIMENSION:
+                            logger.error(f"CLAP index embedding_dimension mismatch in segmented parts: expected {CLAP_EMBEDDING_DIMENSION}, got {part_dim}.")
+                            return False
+
+                    if id_map_json_candidate is None:
+                        logger.error("No id_map_json found in segmented CLAP index rows.")
+                        return False
+
+                    db_embedding_dim = parts[0][3]
+                    index_stream = tempfile.TemporaryFile()
+                    for _, part_data, _, _ in parts:
+                        index_stream.write(part_data)
+                    index_stream.seek(0)
+                    id_map_json = id_map_json_candidate
+
+                if index_stream is None:
+                    logger.error("CLAP index binary data was empty.")
                     return False
 
-                loaded_index = voyager.Index.load(index_stream)
-                loaded_index.ef = VOYAGER_QUERY_EF
-            finally:
-                if hasattr(index_stream, 'close'):
+                if db_embedding_dim != CLAP_EMBEDDING_DIMENSION:
+                    logger.error(f"CLAP index dimension mismatch: db={db_embedding_dim} expected={CLAP_EMBEDDING_DIMENSION}")
+                    return False
+
+                try:
+                    try:
+                        import voyager  # type: ignore
+                    except ImportError:
+                        logger.warning("Voyager library is unavailable; cannot load persisted CLAP index.")
+                        return False
+
+                    loaded_index = voyager.Index.load(index_stream)
+                    loaded_index.ef = VOYAGER_QUERY_EF
+                finally:
+                    if index_stream is not None:
+                        try:
+                            index_stream.close()
+                        except Exception as close_error:
+                            logger.warning("Failed to close CLAP index stream: %s", close_error, exc_info=True)
+
+            except Exception:
+                if index_stream is not None:
                     try:
                         index_stream.close()
-                    except Exception as close_error:
-                        logger.warning("Failed to close CLAP index stream: %s", close_error, exc_info=True)
+                    except Exception:
+                        pass
+                raise
 
             id_map = {int(k): v for k, v in json.loads(id_map_json).items()}
             reverse_id_map = {v: k for k, v in id_map.items()}
@@ -171,30 +179,9 @@ def _load_clap_index_from_db() -> bool:
                 logger.error("CLAP index id_map is empty.")
                 return False
 
-            item_ids = list(id_map.values())
-            metadata_by_id = {}
-            batch_size = 1000
-            for i in range(0, len(item_ids), batch_size):
-                batch_ids = item_ids[i:i + batch_size]
-                with conn.cursor(cursor_factory=DictCursor) as meta_cur:
-                    meta_cur.execute(
-                        "SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)",
-                        (batch_ids,)
-                    )
-                    score_rows = meta_cur.fetchall()
-                for row in score_rows:
-                    metadata_by_id[row['item_id']] = {'title': row['title'], 'author': row['author']}
-            metadata_list = []
-            item_ids_list = []
-            for voyager_id in sorted(id_map.keys()):
-                item_id = id_map[voyager_id]
-                meta = metadata_by_id.get(item_id, {'title': '', 'author': ''})
-                metadata_list.append({'item_id': item_id, 'title': meta['title'], 'author': meta['author']})
-                item_ids_list.append(item_id)
-
             _CLAP_CACHE['embeddings'] = None
-            _CLAP_CACHE['metadata'] = metadata_list
-            _CLAP_CACHE['item_ids'] = item_ids_list
+            _CLAP_CACHE['metadata'] = None
+            _CLAP_CACHE['item_ids'] = None
             _CLAP_CACHE['loaded'] = True
 
             _CLAP_INDEX_CACHE['index'] = loaded_index
@@ -202,7 +189,7 @@ def _load_clap_index_from_db() -> bool:
             _CLAP_INDEX_CACHE['reverse_id_map'] = reverse_id_map
             _CLAP_INDEX_CACHE['loaded'] = True
 
-            logger.info(f"CLAP index loaded from database with {len(metadata_list)} items.")
+            logger.info(f"CLAP index loaded from database with {len(id_map)} items.")
             return True
     except Exception as e:
         logger.error(f"Failed to load CLAP index from DB: {e}", exc_info=True)
@@ -495,7 +482,17 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
                 return []
 
             neighbor_ids, distances = voyager_index.query(text_embedding, k=num_to_query)
-            metadata_list = _CLAP_CACHE['metadata'] or []
+            candidate_item_ids = [id_map.get(int(voyager_id)) for voyager_id in neighbor_ids]
+            candidate_item_ids = [item_id for item_id in candidate_item_ids if item_id is not None]
+
+            metadata_map = {}
+            if candidate_item_ids:
+                from app_helper import get_score_data_by_ids
+                try:
+                    track_details_list = get_score_data_by_ids(candidate_item_ids)
+                    metadata_map = {row['item_id']: {'title': row.get('title', ''), 'author': row.get('author', '')} for row in track_details_list}
+                except Exception:
+                    metadata_map = {}
 
             results = []
             artist_counts: dict = {}
@@ -505,8 +502,8 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
                 item_id = id_map.get(int(voyager_id))
                 if item_id is None:
                     continue
-                idx = int(voyager_id)
-                metadata = metadata_list[idx] if 0 <= idx < len(metadata_list) else {'item_id': item_id, 'title': '', 'author': ''}
+
+                metadata = metadata_map.get(item_id, {'title': '', 'author': ''})
                 author = metadata.get('author', '')
 
                 if artist_cap and author:
@@ -517,9 +514,9 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
 
                 similarity = 1.0 - float(distance)
                 results.append({
-                    'item_id': metadata['item_id'],
-                    'title': metadata['title'],
-                    'author': metadata['author'],
+                    'item_id': item_id,
+                    'title': metadata.get('title', ''),
+                    'author': metadata.get('author', ''),
                     'similarity': similarity
                 })
 
@@ -544,12 +541,17 @@ def get_cache_stats() -> Dict:
         }
     
     embeddings_size = _CLAP_CACHE['embeddings'].nbytes if _CLAP_CACHE['embeddings'] is not None else 0
-    metadata_size = sum(len(str(m)) for m in _CLAP_CACHE['metadata']) if _CLAP_CACHE['metadata'] else 0
+    metadata_size = 0
     total_size_mb = (embeddings_size + metadata_size) / (1024 * 1024)
-    
+    song_count = 0
+    if _CLAP_CACHE['metadata'] is not None:
+        song_count = len(_CLAP_CACHE['metadata'])
+    elif _CLAP_INDEX_CACHE['id_map'] is not None:
+        song_count = len(_CLAP_INDEX_CACHE['id_map'])
+
     return {
         'loaded': True,
-        'song_count': len(_CLAP_CACHE['metadata']) if _CLAP_CACHE['metadata'] else 0,
+        'song_count': song_count,
         'embedding_dimension': _CLAP_CACHE['embeddings'].shape[1] if _CLAP_CACHE['embeddings'] is not None else config.CLAP_EMBEDDING_DIMENSION,
         'memory_mb': round(total_size_mb, 2)
     }
