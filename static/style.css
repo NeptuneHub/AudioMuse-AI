@@ -1257,6 +1257,7 @@ tbody tr:hover {
     margin-left: -140px;
     font-size: 0.875rem;
     line-height: 1.4;
+    white-space: pre-line;
     box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.2), 0 2px 4px -2px rgb(0 0 0 / 0.2);
     transition: opacity 0.3s;
     pointer-events: none;
