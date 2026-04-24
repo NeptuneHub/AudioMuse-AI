@@ -8,9 +8,11 @@ import json
 import logging
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 
 import numpy as np
 import psycopg2
@@ -43,6 +45,10 @@ _TOP_QUERIES_CACHE = {
     'computing': False
 }
 
+# Lightweight in-memory metadata cache for CLAP search results
+_CLAP_METADATA_CACHE: OrderedDict[str, Dict[str, str]] = OrderedDict()
+_CLAP_METADATA_CACHE_MAX_SIZE = 2000
+
 # Warm cache timer for text search (keeps model loaded)
 _WARM_CACHE_TIMER = {
     'expiry_time': None,  # Unix timestamp when model should unload
@@ -60,6 +66,40 @@ def get_clap_cache_size() -> int:
     if _CLAP_CACHE['loaded'] and _CLAP_CACHE['metadata'] is not None:
         return len(_CLAP_CACHE['metadata'])
     return 0
+
+
+def _get_cached_clap_metadata(item_ids: list) -> Dict[str, Dict[str, str]]:
+    """Fetch metadata for CLAP result item_ids, using an in-memory cache where possible."""
+    global _CLAP_METADATA_CACHE
+
+    metadata_map: Dict[str, Dict[str, str]] = {}
+    ids_to_fetch = []
+
+    for item_id in item_ids:
+        if item_id in _CLAP_METADATA_CACHE:
+            metadata_map[item_id] = _CLAP_METADATA_CACHE[item_id]
+        else:
+            ids_to_fetch.append(item_id)
+
+    if not ids_to_fetch:
+        return metadata_map
+
+    from app_helper import get_score_data_by_ids
+    try:
+        track_details_list = get_score_data_by_ids(ids_to_fetch)
+        for row in track_details_list:
+            item_id = row['item_id']
+            metadata = {'title': row.get('title', ''), 'author': row.get('author', '')}
+            metadata_map[item_id] = metadata
+            _CLAP_METADATA_CACHE[item_id] = metadata
+            _CLAP_METADATA_CACHE.move_to_end(item_id)
+
+        while len(_CLAP_METADATA_CACHE) > _CLAP_METADATA_CACHE_MAX_SIZE:
+            _CLAP_METADATA_CACHE.popitem(last=False)
+    except Exception:
+        pass
+
+    return metadata_map
 
 
 def _split_bytes(data: bytes, part_size: int) -> list:
@@ -486,13 +526,11 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
             candidate_item_ids = [item_id for item_id in candidate_item_ids if item_id is not None]
 
             metadata_map = {}
+            if _CLAP_CACHE['metadata']:
+                metadata_map = {item['item_id']: {'title': item.get('title', ''), 'author': item.get('author', '')} for item in _CLAP_CACHE['metadata']}
+
             if candidate_item_ids:
-                from app_helper import get_score_data_by_ids
-                try:
-                    track_details_list = get_score_data_by_ids(candidate_item_ids)
-                    metadata_map = {row['item_id']: {'title': row.get('title', ''), 'author': row.get('author', '')} for row in track_details_list}
-                except Exception:
-                    metadata_map = {}
+                metadata_map.update(_get_cached_clap_metadata(candidate_item_ids))
 
             results = []
             artist_counts: dict = {}
@@ -539,9 +577,18 @@ def get_cache_stats() -> Dict:
             'embedding_dimension': 0,
             'memory_mb': 0
         }
-    
+
     embeddings_size = _CLAP_CACHE['embeddings'].nbytes if _CLAP_CACHE['embeddings'] is not None else 0
     metadata_size = 0
+    if _CLAP_CACHE['metadata'] is not None:
+        metadata_size = sum(len(str(m)) for m in _CLAP_CACHE['metadata'])
+    elif _CLAP_INDEX_CACHE['index'] is not None:
+        index_size = sys.getsizeof(_CLAP_INDEX_CACHE['index'])
+        id_map_size = sys.getsizeof(_CLAP_INDEX_CACHE['id_map']) if _CLAP_INDEX_CACHE['id_map'] is not None else 0
+        reverse_map_size = sys.getsizeof(_CLAP_INDEX_CACHE['reverse_id_map']) if _CLAP_INDEX_CACHE['reverse_id_map'] is not None else 0
+        metadata_cache_size = sum(sys.getsizeof(k) + sys.getsizeof(v) for k, v in _CLAP_METADATA_CACHE.items())
+        metadata_size = index_size + id_map_size + reverse_map_size + metadata_cache_size
+
     total_size_mb = (embeddings_size + metadata_size) / (1024 * 1024)
     song_count = 0
     if _CLAP_CACHE['metadata'] is not None:
