@@ -142,22 +142,23 @@ def _load_clap_index_from_db() -> bool:
 
             if db_embedding_dim != CLAP_EMBEDDING_DIMENSION:
                 logger.error(f"CLAP index dimension mismatch: db={db_embedding_dim} expected={CLAP_EMBEDDING_DIMENSION}")
-                if hasattr(index_stream, 'close'):
-                    index_stream.close()
                 return False
 
             try:
-                import voyager  # type: ignore
-            except ImportError:
-                logger.warning("Voyager library is unavailable; cannot load persisted CLAP index.")
-                if hasattr(index_stream, 'close'):
-                    index_stream.close()
-                return False
+                try:
+                    import voyager  # type: ignore
+                except ImportError:
+                    logger.warning("Voyager library is unavailable; cannot load persisted CLAP index.")
+                    return False
 
-            loaded_index = voyager.Index.load(index_stream)
-            if hasattr(index_stream, 'close'):
-                index_stream.close()
-            loaded_index.ef = VOYAGER_QUERY_EF
+                loaded_index = voyager.Index.load(index_stream)
+                loaded_index.ef = VOYAGER_QUERY_EF
+            finally:
+                if hasattr(index_stream, 'close'):
+                    try:
+                        index_stream.close()
+                    except Exception as close_error:
+                        logger.warning("Failed to close CLAP index stream: %s", close_error, exc_info=True)
 
             id_map = {int(k): v for k, v in json.loads(id_map_json).items()}
             reverse_id_map = {v: k for k, v in id_map.items()}
@@ -494,7 +495,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
                 return []
 
             neighbor_ids, distances = voyager_index.query(text_embedding, k=num_to_query)
-            metadata_by_item = {m['item_id']: m for m in (_CLAP_CACHE['metadata'] or [])}
+            metadata_list = _CLAP_CACHE['metadata'] or []
 
             results = []
             artist_counts: dict = {}
@@ -504,7 +505,8 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
                 item_id = id_map.get(int(voyager_id))
                 if item_id is None:
                     continue
-                metadata = metadata_by_item.get(item_id, {'item_id': item_id, 'title': '', 'author': ''})
+                idx = int(voyager_id)
+                metadata = metadata_list[idx] if 0 <= idx < len(metadata_list) else {'item_id': item_id, 'title': '', 'author': ''}
                 author = metadata.get('author', '')
 
                 if artist_cap and author:
@@ -552,260 +554,6 @@ def get_cache_stats() -> Dict:
         'memory_mb': round(total_size_mb, 2)
     }
 
-
-def generate_top_queries(num_queries=None, top_n=50, return_scores=False):
-    """
-    Generate top N diverse queries by sampling from query.json.
-    Uses probabilistic category selection to ensure balanced representation.
-    Each query has exactly 3 terms from different categories.
-    Avoids mixing Instrumentation and Voice_Type in same query.
-    
-    Args:
-        num_queries: Number of random queries to generate (defaults to config.CLAP_TOP_QUERIES_COUNT)
-        top_n: Number of top queries to return
-        return_scores: If True, return list of dicts with 'query' and 'score' keys
-    
-    Returns:
-        List of query strings (or dicts if return_scores=True) sorted by score and diversity.
-    """
-    import json
-    import os
-    import random
-    from concurrent.futures import ThreadPoolExecutor
-    from collections import defaultdict
-    import multiprocessing
-    
-    # Use config default if not specified
-    if num_queries is None:
-        num_queries = config.CLAP_TOP_QUERIES_COUNT
-    
-    if not is_clap_cache_loaded():
-        logger.error("CLAP cache not loaded, cannot generate top queries")
-        return []
-    
-    # Load query.json
-    query_file = os.path.join(os.path.dirname(__file__), 'query.json')
-    with open(query_file, 'r') as f:
-        query_data = json.load(f)
-    
-    # Get category weights from config (optimized for CLAP's strengths)
-    category_weights = config.CLAP_CATEGORY_WEIGHTS
-    
-    # Generate random queries with smart category selection
-    def generate_random_query():
-        """Generate a query with exactly 3 terms from different categories using weighted sampling."""
-        # Weighted random sampling of 3 different categories
-        categories = list(query_data.keys())
-        weights = [category_weights.get(cat, 1.0) for cat in categories]
-        
-        # Sample 3 unique categories
-        selected_categories = []
-        available_categories = list(categories)
-        available_weights = list(weights)
-        
-        for _ in range(3):
-            if not available_categories:
-                break
-                
-            # Normalize weights
-            total_weight = sum(available_weights)
-            normalized_weights = [w / total_weight for w in available_weights]
-            
-            # Choose category
-            chosen_idx = random.choices(range(len(available_categories)), weights=normalized_weights)[0]
-            selected_categories.append(available_categories[chosen_idx])
-            
-            # Remove selected category from pool
-            available_categories.pop(chosen_idx)
-            available_weights.pop(chosen_idx)
-        
-        # Sample one term from each selected category
-        terms = [random.choice(query_data[cat]) for cat in selected_categories]
-        # Shuffle terms so category order varies
-        random.shuffle(terms)
-        return ' '.join(terms).lower()
-    
-    # Generate unique queries
-    queries = list(set([generate_random_query() for _ in range(num_queries)]))
-    logger.info(f"Generated {len(queries)} unique queries")
-    
-    # Compute embeddings in parallel using multithreading
-    from .clap_analyzer import get_text_embedding
-    
-    try:
-        # Use single core to prevent OOM on memory-constrained systems
-        # CLAP model is memory-intensive (3GB+), not urgent to run fast
-        num_cores = 1
-        
-        logger.info(f"Computing text embeddings for {len(queries)} queries using {num_cores} thread...")
-        
-        with ThreadPoolExecutor(max_workers=num_cores) as executor:
-            query_embeddings = list(executor.map(get_text_embedding, queries))
-        
-        # Filter out any None results
-        valid_data = [(q, e) for q, e in zip(queries, query_embeddings) if e is not None]
-        if not valid_data:
-            logger.error("No valid embeddings generated")
-            return []
-        
-        queries = [q for q, _ in valid_data]
-        query_embeddings = np.vstack([e for _, e in valid_data])
-        
-        logger.info(f"Computed {len(query_embeddings)} text embeddings")
-        
-    except Exception as e:
-        logger.error(f"Failed to compute text embeddings: {e}")
-        import traceback
-        traceback.print_exc()
-        return []
-    
-    # Now score ALL queries at once using vectorized matrix multiplication
-    song_embeddings = _CLAP_CACHE['embeddings']  # Shape: (N_songs, 512)
-    
-    logger.info(f"Scoring {len(queries)} queries against {len(song_embeddings)} songs using vectorized operations...")
-    
-    # Compute similarity matrix: (num_queries, N_songs)
-    # This is a single matrix multiplication - FAST!
-    similarity_matrix = np.dot(query_embeddings, song_embeddings.T)  # Shape: (500, N_songs)
-    
-    # For each query, get top 50 scores and sum them
-    top_k = 50
-    top_indices = np.argsort(similarity_matrix, axis=1)[:, ::-1][:, :top_k]  # Top 50 per query
-    
-    # Get the actual scores for top 50
-    row_indices = np.arange(len(queries))[:, None]
-    top_scores = similarity_matrix[row_indices, top_indices]  # Shape: (num_queries, 50)
-    
-    # Sum top 50 scores for each query
-    total_scores = np.sum(top_scores, axis=1)  # Shape: (num_queries,)
-    
-    logger.info(f"Computed scores for all queries in vectorized pass")
-    
-    # Now process term tracking in parallel
-    def analyze_query_terms(idx):
-        """Track which terms are used in a query."""
-        query = queries[idx]
-        terms_used = defaultdict(set)
-        # Split query into words for exact matching
-        query_words = set(query.lower().split())
-        for category, terms_list in query_data.items():
-            for term in terms_list:
-                # Check if term appears as complete words in query
-                term_words = set(term.lower().split())
-                if term_words.issubset(query_words):
-                    terms_used[category].add(term)
-        return (query, float(total_scores[idx]), dict(terms_used))
-    
-    # Use physical CPU cores for term analysis
-    num_cores = multiprocessing.cpu_count() // 2  # Physical cores
-    num_cores = max(1, num_cores)
-    # Use single core to prevent OOM on memory-constrained systems
-    num_cores = 1
-    
-    logger.info(f"Analyzing term diversity using {num_cores} thread...")
-    
-    with ThreadPoolExecutor(max_workers=num_cores) as executor:
-        scored_queries = list(executor.map(analyze_query_terms, range(len(queries))))
-    
-    # Sort by score
-    scored_queries.sort(key=lambda x: x[1], reverse=True)
-    
-    # Multi-pass selection to guarantee exactly top_n results
-    selected = []
-    term_usage_count = defaultdict(int)
-    category_usage_count = defaultdict(int)
-    
-    # Pass 1: Strict diversity (aim for first 40%)
-    target_pass1 = int(top_n * 0.4)
-    for query, score, terms_used in scored_queries:
-        if len(selected) >= target_pass1:
-            break
-        
-        # Calculate diversity penalty
-        term_penalty = 0
-        category_penalty = 0
-        
-        for category, terms_set in terms_used.items():
-            category_penalty += category_usage_count.get(category, 0) * 2
-            for term in terms_set:
-                term_penalty += term_usage_count.get(term, 0) * 5
-        
-        total_penalty = term_penalty + category_penalty
-        
-        # Skip if exact term appears more than once in pass 1
-        has_overused_term = False
-        for category, terms_set in terms_used.items():
-            for term in terms_set:
-                if term_usage_count.get(term, 0) >= 1:
-                    has_overused_term = True
-                    break
-            if has_overused_term:
-                break
-        
-        if has_overused_term:
-            continue
-        
-        selected.append(query)
-        
-        # Update usage counts
-        for category, terms_set in terms_used.items():
-            category_usage_count[category] += 1
-            for term in terms_set:
-                term_usage_count[term] += 1
-    
-    # Pass 2: Relaxed diversity (next 40%, allow terms up to 2x)
-    target_pass2 = int(top_n * 0.8)
-    for query, score, terms_used in scored_queries:
-        if len(selected) >= target_pass2:
-            break
-        
-        if query in selected:
-            continue
-        
-        # Allow terms to appear up to 2 times
-        has_overused_term = False
-        for category, terms_set in terms_used.items():
-            for term in terms_set:
-                if term_usage_count.get(term, 0) >= 2:
-                    has_overused_term = True
-                    break
-            if has_overused_term:
-                break
-        
-        if has_overused_term:
-            continue
-        
-        selected.append(query)
-        
-        # Update usage counts
-        for category, terms_set in terms_used.items():
-            category_usage_count[category] += 1
-            for term in terms_set:
-                term_usage_count[term] += 1
-    
-    # Pass 3: Fill remaining slots with highest scores (no restrictions)
-    for query, score, terms_used in scored_queries:
-        if len(selected) >= top_n:
-            break
-        
-        if query in selected:
-            continue
-        
-        selected.append(query)
-    
-    logger.info(f"Selected {len(selected)} diverse queries from {len(scored_queries)} candidates")
-    
-    # Return with or without scores
-    if return_scores:
-        # Return list of dicts with query and score
-        result = []
-        for query in selected:
-            # Find the score for this query
-            score = next((s for q, s, _ in scored_queries if q == query), 0.0)
-            result.append({'query': query, 'score': score})
-        return result
-    else:
-        return selected
 
 
 def ensure_text_search_queries_table():
@@ -983,52 +731,6 @@ def save_top_queries_to_db(queries: List[str], scores: List[float]):
         if conn:
             conn.rollback()
         return False
-
-
-def precompute_top_queries_background():
-    """
-    Precompute top queries in background thread.
-    Saves to database and updates in-memory cache.
-    Users get old queries from DB until new ones are ready.
-    """
-    global _TOP_QUERIES_CACHE
-    
-    if _TOP_QUERIES_CACHE['computing']:
-        logger.info("Top queries already being computed")
-        return
-    
-    _TOP_QUERIES_CACHE['computing'] = True
-    logger.info("Starting background computation of top queries...")
-    
-    try:
-        # Generate queries with scores (uses config.CLAP_TOP_QUERIES_COUNT)
-        scored_queries = generate_top_queries(top_n=50, return_scores=True)
-        
-        # Safety check: don't save empty query lists
-        if not scored_queries:
-            logger.warning("Query generation returned empty list - skipping save")
-            return
-        
-        queries = [q['query'] for q in scored_queries]
-        scores = [q['score'] for q in scored_queries]
-        
-        # Save to database needs Flask app context
-        from app import app
-        with app.app_context():
-            # Save to database first (atomic replacement)
-            if save_top_queries_to_db(queries, scores):
-                # Update in-memory cache
-                _TOP_QUERIES_CACHE['queries'] = queries
-                _TOP_QUERIES_CACHE['ready'] = True
-                logger.info(f"Top queries precomputed successfully: {len(queries)} queries ready")
-            else:
-                logger.error("Failed to save queries to database")
-    except Exception as e:
-        logger.error(f"Failed to precompute top queries: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        _TOP_QUERIES_CACHE['computing'] = False
 
 
 def get_cached_top_queries() -> List[str]:
