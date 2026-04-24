@@ -160,6 +160,7 @@ def _load_clap_index_from_db() -> bool:
 
                 if db_embedding_dim != CLAP_EMBEDDING_DIMENSION:
                     logger.error(f"CLAP index dimension mismatch: db={db_embedding_dim} expected={CLAP_EMBEDDING_DIMENSION}")
+                    index_stream.close()
                     return False
 
                 try:
@@ -212,7 +213,6 @@ def build_and_store_clap_index(db_conn=None):
     from app_helper import get_db
     from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_METRIC, VOYAGER_M, VOYAGER_EF_CONSTRUCTION, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB
 
-    logger.info("Building CLAP text search index...")
     try:
         import voyager  # type: ignore
     except ImportError:
@@ -299,7 +299,6 @@ def build_and_store_clap_index(db_conn=None):
                 logger.info(f"Stored CLAP index in {num_parts} segmented rows in clap_index_data.")
 
         db_conn.commit()
-        logger.info("CLAP index build and storage complete.")
         logger.info("CLAP text search index build successful.")
         return True
     except Exception as e:
