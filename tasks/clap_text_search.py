@@ -82,9 +82,11 @@ def _load_clap_index_from_db() -> bool:
                 ('clap_index',)
             )
             row = cur.fetchone()
+            index_stream = None
 
             if row:
                 index_binary_data, id_map_json, db_embedding_dim = row
+                index_stream = io.BytesIO(index_binary_data)
             else:
                 cur.execute(
                     "SELECT index_name, index_data, id_map_json, embedding_dimension FROM clap_index_data WHERE index_name LIKE %s ESCAPE '\\'",
@@ -128,25 +130,33 @@ def _load_clap_index_from_db() -> bool:
                     return False
 
                 db_embedding_dim = parts[0][3]
-                index_binary_data = b"".join(p[1] for p in parts)
+                index_stream = tempfile.TemporaryFile()
+                for _, part_data, _, _ in parts:
+                    index_stream.write(part_data)
+                index_stream.seek(0)
                 id_map_json = id_map_json_candidate
 
-            if not index_binary_data:
+            if index_stream is None:
                 logger.error("CLAP index binary data was empty.")
                 return False
 
             if db_embedding_dim != CLAP_EMBEDDING_DIMENSION:
                 logger.error(f"CLAP index dimension mismatch: db={db_embedding_dim} expected={CLAP_EMBEDDING_DIMENSION}")
+                if hasattr(index_stream, 'close'):
+                    index_stream.close()
                 return False
 
             try:
                 import voyager  # type: ignore
             except ImportError:
                 logger.warning("Voyager library is unavailable; cannot load persisted CLAP index.")
+                if hasattr(index_stream, 'close'):
+                    index_stream.close()
                 return False
 
-            index_stream = io.BytesIO(index_binary_data)
             loaded_index = voyager.Index.load(index_stream)
+            if hasattr(index_stream, 'close'):
+                index_stream.close()
             loaded_index.ef = VOYAGER_QUERY_EF
 
             id_map = {int(k): v for k, v in json.loads(id_map_json).items()}
@@ -156,14 +166,19 @@ def _load_clap_index_from_db() -> bool:
                 logger.error("CLAP index id_map is empty.")
                 return False
 
-            with conn.cursor(cursor_factory=DictCursor) as meta_cur:
-                meta_cur.execute(
-                    "SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)",
-                    (list(id_map.values()),)
-                )
-                score_rows = meta_cur.fetchall()
-
-            metadata_by_id = {row['item_id']: {'title': row['title'], 'author': row['author']} for row in score_rows}
+            item_ids = list(id_map.values())
+            metadata_by_id = {}
+            batch_size = 1000
+            for i in range(0, len(item_ids), batch_size):
+                batch_ids = item_ids[i:i + batch_size]
+                with conn.cursor(cursor_factory=DictCursor) as meta_cur:
+                    meta_cur.execute(
+                        "SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)",
+                        (batch_ids,)
+                    )
+                    score_rows = meta_cur.fetchall()
+                for row in score_rows:
+                    metadata_by_id[row['item_id']] = {'title': row['title'], 'author': row['author']}
             metadata_list = []
             item_ids_list = []
             for voyager_id in sorted(id_map.keys()):
