@@ -10,8 +10,7 @@ Volume=audiomuse-postgres-data:/var/lib/postgresql/data:U
 AutoUpdate=registry
 
 #Env
-Environment=POSTGRES_USER=audiomuse POSTGRES_PASSWORD=audiomusepassword 
-Environment=POSTGRES_DB=audiomusedb
+EnvironmentFile=/etc/containers/systemd/AudioMuseAI/audiomuse.env
 
 #Healthcheck
 HealthCmd=nc -z localhost 5432 || exit 1

@@ -12,11 +12,8 @@ Tmpfs=/app/temp_audio
 AutoUpdate=registry
 
 #Env
-Environment=SERVICE_TYPE=worker MEDIASERVER_TYPE=navidrome 
-Environment=POSTGRES_USER=audiomuse POSTGRES_PASSWORD=audiomusepassword 
-Environment=POSTGRES_DB=audiomusedb POSTGRES_HOST=localhost POSTGRES_PORT=5432 
-Environment=REDIS_URL=redis://localhost:6379/0 
-Environment=TEMP_DIR=/app/temp_audio
+Environment=SERVICE_TYPE=worker
+EnvironmentFile=/etc/containers/systemd/AudioMuseAI/audiomuse.env
 
 [Service]
 Restart=always

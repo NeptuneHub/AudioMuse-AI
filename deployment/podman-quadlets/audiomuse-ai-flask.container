@@ -12,11 +12,8 @@ Tmpfs=/app/temp_audio
 AutoUpdate=registry
 
 #Env
-Environment=SERVICE_TYPE=flask MEDIASERVER_TYPE=navidrome 
-Environment=POSTGRES_USER=audiomuse POSTGRES_PASSWORD=audiomusepassword 
-Environment=POSTGRES_DB=audiomusedb POSTGRES_HOST=localhost POSTGRES_PORT=5432 
-Environment=REDIS_URL=redis://localhost:6379/0 
-Environment=TEMP_DIR=/app/temp_audio
+Environment=SERVICE_TYPE=flask
+EnvironmentFile=/etc/containers/systemd/AudioMuseAI/audiomuse.env
 
 #HealthCheck
 HealthCmd=wget -q --spider --no-proxy localhost:8000 || exit 1
