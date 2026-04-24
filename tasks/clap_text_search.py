@@ -142,6 +142,11 @@ def _load_clap_index_from_db() -> bool:
 
             if db_embedding_dim != CLAP_EMBEDDING_DIMENSION:
                 logger.error(f"CLAP index dimension mismatch: db={db_embedding_dim} expected={CLAP_EMBEDDING_DIMENSION}")
+                if hasattr(index_stream, 'close'):
+                    try:
+                        index_stream.close()
+                    except Exception as close_error:
+                        logger.warning("Failed to close CLAP index stream: %s", close_error, exc_info=True)
                 return False
 
             try:
@@ -243,7 +248,8 @@ def build_and_store_clap_index(db_conn=None):
 
         id_map = {}
         vectors = []
-        for idx, (item_id, embedding_blob) in enumerate(all_embeddings):
+        voyager_id = 0
+        for item_id, embedding_blob in all_embeddings:
             if embedding_blob is None:
                 logger.warning(f"Skipping CLAP item {item_id} because embedding is NULL.")
                 continue
@@ -252,7 +258,8 @@ def build_and_store_clap_index(db_conn=None):
                 logger.warning(f"Skipping CLAP item {item_id}: dimension {embedding_vector.shape[0]} != {CLAP_EMBEDDING_DIMENSION}")
                 continue
             vectors.append(embedding_vector)
-            id_map[idx] = item_id
+            id_map[voyager_id] = item_id
+            voyager_id += 1
 
         if not vectors:
             logger.warning("No valid CLAP embedding vectors found for CLAP index build.")
