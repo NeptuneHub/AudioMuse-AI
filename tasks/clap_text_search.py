@@ -188,19 +188,8 @@ def _load_clap_index_from_db() -> bool:
         finally:
             cur.close()
     except Exception as e:
-        logger.error(f"Failed to load CLAP index from DB: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Failed to load CLAP index from DB: {e}", exc_info=True)
         return False
-
-
-def _ensure_clap_index_table():
-    """Ensure the clap_index_data table exists before storing/loading an index."""
-    from app_helper import get_db
-    conn = get_db()
-    with conn.cursor() as cur:
-        cur.execute("CREATE TABLE IF NOT EXISTS clap_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-    conn.commit()
 
 
 def build_and_store_clap_index(db_conn=None):
