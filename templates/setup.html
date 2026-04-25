@@ -167,6 +167,18 @@
                 <div class="field-row">
                     <p id="test-feedback" class="inline-feedback" style="display:none; margin:0; width:100%;"></p>
                 </div>
+                <div id="music-libraries-section" class="field-row" style="display:none; flex-direction:column; align-items:flex-start;">
+                    <label class="label-with-tooltip" style="margin-bottom:0.5rem;">
+                        Music libraries to scan
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Uncheck a library to exclude it from analysis. All checked = scan everything. This list is fetched live from your media server after a successful connection test.</span>
+                        </span>
+                    </label>
+                    <div id="music-libraries-list" style="display:flex; flex-direction:column; gap:0.25rem; width:100%;"></div>
+                    <small style="margin-top:0.5rem; opacity:0.85;">Changes apply to new analyses only. Run a Cleaning task to remove already-analyzed tracks from libraries you uncheck.</small>
+                    <small id="music-libraries-hint" style="display:none; margin-top:0.5rem;">Select at least one library.</small>
+                </div>
             </section>
 
             <section class="section">

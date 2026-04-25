@@ -34,9 +34,14 @@ var authCredentialInputs = [
     document.getElementById('JWT_SECRET')
 ];
 var setupForm = document.getElementById('setup-form');
+var musicLibrariesSection = document.getElementById('music-libraries-section');
+var musicLibrariesList = document.getElementById('music-libraries-list');
+var musicLibrariesHint = document.getElementById('music-libraries-hint');
 var serverValues = {};
 var serverSecretHasValue = {};
 var originalValues = {};
+var currentSelectedLibraries = [];  // comma-split MUSIC_LIBRARIES from /api/setup
+var currentLibraryCheckboxes = [];  // array of HTMLInputElement (checkbox) rendered in the section
 // Set from GET /api/setup: when true, an admin already exists in
 // audiomuse_users and the setup wizard must not allow editing admin
 // credentials here. User management happens in /users instead.
@@ -332,7 +337,10 @@ function loadSetupData() {
                 jwtInput.dataset.originalValue = jwtInput.value;
             }
         }
-        var visibleAdvancedData = advancedData;
+        var visibleAdvancedData = Array.isArray(advancedData)
+            ? advancedData.filter(function(f) { return f && f.name !== 'MUSIC_LIBRARIES'; })
+            : advancedData;
+        currentSelectedLibraries = splitLibraryList(data.music_libraries);
         originalValues = {};
         data.basic_fields.forEach(function(item) {
             originalValues[item.name] = item.value || '';
@@ -350,6 +358,12 @@ function loadSetupData() {
         renderServerFields(mediaServerSelect.value, basicData, secretHasValue);
         renderAdvancedFields(visibleAdvancedData);
         updateAuthVisibility();
+        // If the provider is already configured (server returned `has_value`
+        // for the credential fields), auto-fetch the library list so the
+        // checkbox state matches the saved MUSIC_LIBRARIES value.
+        if (providerCredsHaveSavedValues(mediaServerSelect.value, secretHasValue, basicData)) {
+            fetchProviderLibraries(mediaServerSelect.value);
+        }
     }).catch(function(err) {
         saveFeedback.className = 'status-failure inline-feedback';
         saveFeedback.style.display = 'block';
@@ -390,6 +404,138 @@ function updateServerFields() {
     saveCurrentServerValues();
     var serverType = document.getElementById('MEDIASERVER_TYPE').value;
     renderServerFields(serverType, serverValues, serverSecretHasValue);
+    // Hide the checkbox list (it only matches the prior provider's library
+    // names) but keep ``currentSelectedLibraries`` intact: it reflects the
+    // *saved* MUSIC_LIBRARIES value, which is provider-agnostic in storage.
+    // If the user flips back to the original provider, the next render will
+    // re-check the matching names. The renderer's case-insensitive name
+    // match means stale names against a new provider's libraries simply
+    // miss and leave their boxes unchecked — no leakage into the save.
+    hideMusicLibrariesSection();
+}
+
+function splitLibraryList(value) {
+    if (!value) {
+        return [];
+    }
+    return String(value).split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+}
+
+function providerCredsHaveSavedValues(serverType, secretHasValue, basicData) {
+    var fields = serverFields[serverType];
+    if (!fields) return false;
+    for (var i = 0; i < fields.length; i++) {
+        var name = fields[i].name;
+        // For secret fields the server returns has_value=true when a value is
+        // stored; for non-secret it just returns the actual string.
+        if (secretHasValue && secretHasValue[name]) continue;
+        if (basicData && basicData[name]) continue;
+        return false;
+    }
+    return true;
+}
+
+function hideMusicLibrariesSection() {
+    if (!musicLibrariesSection) return;
+    musicLibrariesSection.style.display = 'none';
+    musicLibrariesList.innerHTML = '';
+    currentLibraryCheckboxes = [];
+    if (musicLibrariesHint) musicLibrariesHint.style.display = 'none';
+}
+
+function fetchProviderLibraries(serverType, configOverride) {
+    if (!musicLibrariesSection) return;
+    if (!serverFields[serverType]) {
+        hideMusicLibrariesSection();
+        return;
+    }
+    var configPayload = configOverride || collectConfigFromForm(true);
+    // MEDIASERVER_TYPE may be dropped by collectConfigFromForm if unchanged.
+    configPayload.MEDIASERVER_TYPE = serverType;
+    fetch('/api/setup/providers/libraries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: configPayload })
+    }).then(function(resp) {
+        return resp.json().then(function(data) {
+            if (!resp.ok) {
+                throw new Error(data.error || 'Unable to list libraries.');
+            }
+            return data;
+        });
+    }).then(function(data) {
+        if (data.unsupported || !Array.isArray(data.libraries) || data.libraries.length === 0) {
+            hideMusicLibrariesSection();
+            return;
+        }
+        renderLibraryCheckboxes(data.libraries, currentSelectedLibraries);
+    }).catch(function() {
+        // Don't block the user on list failures — the free-text value still
+        // works on save (empty string = scan everything).
+        hideMusicLibrariesSection();
+    });
+}
+
+function renderLibraryCheckboxes(libraries, selectedNames) {
+    if (!musicLibrariesList) return;
+    musicLibrariesList.innerHTML = '';
+    currentLibraryCheckboxes = [];
+    var selectedLower = {};
+    var hasSelection = Array.isArray(selectedNames) && selectedNames.length > 0;
+    if (hasSelection) {
+        for (var i = 0; i < selectedNames.length; i++) {
+            selectedLower[String(selectedNames[i]).toLowerCase()] = true;
+        }
+    }
+    libraries.forEach(function(lib) {
+        var name = lib && lib.name ? String(lib.name) : '';
+        if (!name) return;
+        var row = document.createElement('label');
+        row.style.display = 'flex';
+        row.style.alignItems = 'center';
+        row.style.gap = '0.5rem';
+        row.style.fontWeight = '400';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.dataset.libraryName = name;
+        cb.checked = !hasSelection || !!selectedLower[name.toLowerCase()];
+        cb.addEventListener('change', updateMusicLibrariesHint);
+        row.appendChild(cb);
+        row.appendChild(document.createTextNode(name));
+        musicLibrariesList.appendChild(row);
+        currentLibraryCheckboxes.push(cb);
+    });
+    musicLibrariesSection.style.display = 'flex';
+    updateMusicLibrariesHint();
+}
+
+function updateMusicLibrariesHint() {
+    if (!musicLibrariesHint) return;
+    var anyChecked = currentLibraryCheckboxes.some(function(cb) { return cb.checked; });
+    musicLibrariesHint.style.display = currentLibraryCheckboxes.length > 0 && !anyChecked ? 'block' : 'none';
+}
+
+function collectMusicLibrariesValue() {
+    // Returns the MUSIC_LIBRARIES value to store, or null to skip writing.
+    if (!currentLibraryCheckboxes.length) {
+        // Section isn't rendered (MPD or provider doesn't support it, or the
+        // fetch failed). Don't touch MUSIC_LIBRARIES.
+        return null;
+    }
+    var checked = currentLibraryCheckboxes.filter(function(cb) { return cb.checked; });
+    // All checked OR none checked → normalize to empty (= scan everything).
+    // "None checked" as "scan nothing" is a footgun; the hint tells the user.
+    if (checked.length === 0 || checked.length === currentLibraryCheckboxes.length) {
+        return '';
+    }
+    // MUSIC_LIBRARIES is stored as a comma-separated string, so a comma in a
+    // library name would corrupt the round-trip. Skip writing rather than
+    // sending a poisoned value; the hint makes the case visible to the user.
+    var names = checked.map(function(cb) { return cb.dataset.libraryName; });
+    if (names.some(function(n) { return n.indexOf(',') !== -1; })) {
+        return null;
+    }
+    return names.join(',');
 }
 
 function collectConfigFromForm(testMode) {
@@ -473,6 +619,10 @@ function testConnection() {
         } else {
             testFeedback.textContent = '✓ Connected to ' + serverName + '. ' + count + ' top-played items were returned.';
         }
+        // Populate the library checkbox list using the same config payload
+        // (so secret placeholders fall back to saved values server-side).
+        var serverType = document.getElementById('MEDIASERVER_TYPE').value;
+        fetchProviderLibraries(serverType, config);
     }).catch(function(err) {
         testFeedback.className = 'status-failure inline-feedback';
         testFeedback.style.display = 'block';
@@ -513,6 +663,10 @@ setupForm.addEventListener('submit', function(event) {
         }
     }
     var config = collectConfigFromForm();
+    var mlValue = collectMusicLibrariesValue();
+    if (mlValue !== null) {
+        config.MUSIC_LIBRARIES = mlValue;
+    }
     fetch('/api/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

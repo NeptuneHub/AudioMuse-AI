@@ -467,6 +467,13 @@
                 <button id="mig-test-connection" class="btn btn-primary">Test Connection</button>
             </div>
             <div id="mig-probe-result"></div>
+            <div id="mig-libraries-section" style="display:none; margin-top:1rem;">
+                <p style="margin:0 0 0.5rem 0;">
+                    <strong>Music libraries to scan:</strong>
+                    <small>Uncheck to exclude. All checked = scan everything. Stored as MUSIC_LIBRARIES after the migration commits.</small>
+                </p>
+                <div id="mig-libraries-list" style="display:flex; flex-direction:column; gap:0.25rem;"></div>
+            </div>
         </div>
 
         <!-- ================ STEP 3: AUTOMATIC MATCHING ================ -->
@@ -675,6 +682,112 @@
     });
 
     // ---------- Step 2 ----------
+    function hideMigLibrariesSection() {
+        const sec = $('mig-libraries-section');
+        if (sec) sec.style.display = 'none';
+        const list = $('mig-libraries-list');
+        if (list) list.innerHTML = '';
+    }
+
+    async function fetchMigLibraries() {
+        if (!sessionId) return;
+        let data;
+        try {
+            data = await jsonFetch("{{ url_for('migration_bp.libraries_list') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId })
+            });
+        } catch (e) {
+            // Don't block step 3 — library selection is optional.
+            hideMigLibrariesSection();
+            return;
+        }
+        if (data.unsupported || !Array.isArray(data.libraries) || data.libraries.length === 0) {
+            hideMigLibrariesSection();
+            // Nothing to filter on — clear any prior selection so the backend
+            // treats this as "scan everything" at commit time.
+            saveMigLibrariesSelection(null);
+            return;
+        }
+        renderMigLibraries(data.libraries, data.selected_libraries);
+    }
+
+    function renderMigLibraries(libraries, selectedNames) {
+        const list = $('mig-libraries-list');
+        list.innerHTML = '';
+        // If the session has a prior selection, pre-check only the matching
+        // names (case-insensitive); anything else stays unchecked. If the
+        // session has no prior selection (null/empty), default to all
+        // checked = "scan everything".
+        const selectedLower = (Array.isArray(selectedNames) && selectedNames.length > 0)
+            ? new Set(selectedNames.map(n => String(n).toLowerCase()))
+            : null;
+        libraries.forEach(lib => {
+            const name = (lib && lib.name) ? String(lib.name) : '';
+            if (!name) return;
+            const row = document.createElement('label');
+            row.style.display = 'flex';
+            row.style.alignItems = 'center';
+            row.style.gap = '0.5rem';
+            row.style.fontWeight = '400';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = selectedLower === null || selectedLower.has(name.toLowerCase());
+            cb.dataset.libraryName = name;
+            cb.addEventListener('change', onMigLibraryChange);
+            row.appendChild(cb);
+            row.appendChild(document.createTextNode(name));
+            list.appendChild(row);
+        });
+        $('mig-libraries-section').style.display = '';
+        // No initial save: a fresh session has no selection (= "scan
+        // everything"), and a resumed session's prior selection has already
+        // been used to pre-check the boxes above. The user's first checkbox
+        // toggle will write through the debounced path.
+    }
+
+    function onMigLibraryChange() {
+        const cbs = $('mig-libraries-list').querySelectorAll('input[type="checkbox"]');
+        const total = cbs.length;
+        let checked = [];
+        cbs.forEach(cb => { if (cb.checked) checked.push(cb.dataset.libraryName); });
+        // All checked or none checked → null (= scan everything; refuses
+        // accidental "scan nothing").
+        if (checked.length === 0 || checked.length === total) {
+            scheduleMigLibrariesSave(null);
+        } else {
+            scheduleMigLibrariesSave(checked);
+        }
+    }
+
+    // Debounce window prevents rapid clicks (e.g. uncheck-all) from firing
+    // racing POSTs against the same session row. _update_state is a
+    // read-modify-write on the JSONB state column, so out-of-order responses
+    // can otherwise stomp the user's latest click.
+    let migLibrariesSaveTimer = null;
+    function scheduleMigLibrariesSave(libraries) {
+        if (migLibrariesSaveTimer) clearTimeout(migLibrariesSaveTimer);
+        migLibrariesSaveTimer = setTimeout(function () {
+            migLibrariesSaveTimer = null;
+            saveMigLibrariesSelection(libraries);
+        }, 300);
+    }
+
+    async function saveMigLibrariesSelection(libraries) {
+        if (!sessionId) return;
+        try {
+            await jsonFetch("{{ url_for('migration_bp.libraries_select') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, libraries: libraries })
+            });
+        } catch (e) {
+            // Non-fatal — the user can retry by toggling again; selection
+            // also defaults to null on the backend if this write is missed.
+        }
+    }
+
     $('mig-target-type').addEventListener('change', e => {
         targetType = e.target.value;
         document.querySelectorAll('.mig-cred-field').forEach(f => {
@@ -683,6 +796,7 @@
         });
         $('mig-probe-result').innerHTML = '';
         $('mig-test-connection').disabled = false;
+        hideMigLibrariesSection();
         resetFromStep(3);
     });
 
@@ -731,6 +845,9 @@
                 });
                 sessionId = s.session_id;
             }
+            // Populate the library checkbox list once we have a session. Hidden
+            // for providers without a listable folder API (e.g. MPD).
+            fetchMigLibraries();
             unlock(3);
             setActive(3);
         } catch (e) {

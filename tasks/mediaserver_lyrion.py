@@ -308,6 +308,54 @@ def _get_target_music_folder_ids():
     logger.info(f"DEBUG: Returning folder IDs: {music_folder_ids}")
     return music_folder_ids
 
+def list_libraries(user_creds=None):
+    """List all music folders exposed by a Lyrion (LMS) server.
+
+    Unlike `_get_target_music_folder_ids()`, this does NOT read
+    `config.MUSIC_LIBRARIES` and does NOT filter. Uses the `musicfolders`
+    JSON-RPC command. `_jsonrpc_request` already forwards `user_creds`.
+
+    The returned ``name`` is the folder's filesystem **path** when the
+    server reports one, falling back to the folder name. This is because
+    Lyrion's scan-time filter (``_get_target_paths_for_filtering``) treats
+    ``MUSIC_LIBRARIES`` as paths and substring-matches them against album
+    file URLs — so the UI must persist the path that the filter expects.
+    """
+    response = _jsonrpc_request("musicfolders", [0, 999999], user_creds=user_creds)
+    if not response:
+        return []
+
+    all_folders = []
+    if isinstance(response, dict):
+        if "folder_loop" in response:
+            all_folders = response["folder_loop"]
+        elif "folders_loop" in response:
+            all_folders = response["folders_loop"]
+        else:
+            for v in response.values():
+                if isinstance(v, list):
+                    all_folders = v
+                    break
+    elif isinstance(response, list):
+        all_folders = response
+
+    libraries = []
+    for folder in all_folders or []:
+        if not isinstance(folder, dict):
+            continue
+        folder_id = folder.get('id') or folder.get('folder_id')
+        folder_name = folder.get('name') or folder.get('folder')
+        folder_path = folder.get('path') or folder.get('url')
+        if folder_id is None or not folder_name:
+            continue
+        # Display path when available (so the user sees what actually gets
+        # stored / matched); fall back to the folder name when Lyrion's
+        # response omits the path.
+        display_name = folder_path or folder_name
+        libraries.append({'id': str(folder_id), 'name': display_name})
+    return libraries
+
+
 def _get_first_player():
     """Gets the first available player from Lyrion for web interface operations."""
     try:

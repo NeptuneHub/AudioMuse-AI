@@ -1082,13 +1082,86 @@ class TestNavidromeGetRecentAlbums:
     def test_returns_empty_when_no_matching_folders(self, mock_request, mock_folders):
         """Returns empty list when folder filter matches nothing"""
         from tasks.mediaserver_navidrome import get_recent_albums
-        
+
         mock_folders.return_value = set()  # Empty set = no matches
-        
+
         albums = get_recent_albums(10)
-        
+
         assert albums == []
         mock_request.assert_not_called()
+
+
+class TestNavidromeGetAllSongsApplyFilter:
+    """Migration probe path: dry-run must NOT apply ``config.MUSIC_LIBRARIES``
+    to the target server.
+
+    Bug: ``config.MUSIC_LIBRARIES`` holds the *source* provider's folder
+    names; applying it to the *target* during a migration probe filters
+    target tracks against names that don't exist on the target, returning
+    an empty set and zeroing out the dry-run result.
+
+    Fix: an explicit ``apply_filter`` flag on ``get_all_songs``. The
+    migration probe (``provider_probe.fetch_all_tracks``) passes
+    ``apply_filter=False``; live-provider scans default to ``True`` so the
+    user's saved selection is still honored. The flag's intent is visible
+    in code rather than implied from the presence of ``user_creds``.
+    """
+
+    @patch('tasks.mediaserver_navidrome._get_target_music_folder_ids')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    def test_apply_filter_false_skips_folder_lookup(self, mock_request, mock_filter):
+        """apply_filter=False must NOT call _get_target_music_folder_ids."""
+        from tasks.mediaserver_navidrome import get_all_songs
+
+        mock_request.return_value = {
+            'status': 'ok',
+            'searchResult3': {'song': []},
+        }
+
+        creds = {'url': 'http://target:4533', 'user': 'u', 'password': 'p'}
+        get_all_songs(user_creds=creds, apply_filter=False)
+
+        mock_filter.assert_not_called()
+        endpoints = [c.args[0] for c in mock_request.call_args_list]
+        assert 'getMusicFolders' not in endpoints
+        assert any(ep == 'search3' for ep in endpoints)
+        for c in mock_request.call_args_list:
+            assert c.kwargs.get('user_creds') == creds
+
+    @patch('tasks.mediaserver_navidrome._get_target_music_folder_ids')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    def test_apply_filter_true_default_honors_filter(self, mock_request, mock_filter):
+        """apply_filter defaults to True, preserving live-provider semantics."""
+        from tasks.mediaserver_navidrome import get_all_songs
+
+        mock_filter.return_value = set()  # Filter active but no matches.
+        mock_request.return_value = {'status': 'ok'}
+
+        songs = get_all_songs(user_creds=None)
+
+        mock_filter.assert_called_once()
+        assert songs == []
+        mock_request.assert_not_called()
+
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    def test_get_target_music_folder_ids_forwards_user_creds(self, mock_request):
+        """The folder-lookup helper must thread user_creds through to the API
+        request so callers (e.g. live-provider code paths receiving session
+        creds) hit ``getMusicFolders`` with valid auth instead of falling back
+        to empty config globals."""
+        from tasks.mediaserver_navidrome import _get_target_music_folder_ids
+
+        with patch('tasks.mediaserver_navidrome.config') as mock_config:
+            mock_config.MUSIC_LIBRARIES = 'Music'
+            mock_request.return_value = {
+                'musicFolders': {'musicFolder': [{'id': 1, 'name': 'Music'}]}
+            }
+
+            creds = {'url': 'http://target:4533', 'user': 'u', 'password': 'p'}
+            _get_target_music_folder_ids(user_creds=creds)
+
+        assert mock_request.call_args.args[0] == 'getMusicFolders'
+        assert mock_request.call_args.kwargs.get('user_creds') == creds
 
 
 # =============================================================================
@@ -1835,7 +1908,242 @@ class TestEmbyCreatePlaylist:
         mock_post.return_value = mock_response
         
         create_playlist('Rock & Roll Mix', ['track1'])
-        
+
         call_url = mock_post.call_args[0][0]
         # & should be encoded
         assert 'Rock%20%26%20Roll' in call_url or 'Rock+%26+Roll' in call_url or 'Rock%20&%20Roll' not in call_url
+
+
+# =============================================================================
+# list_libraries — provider-specific helpers used by the setup wizard and
+# migration assistant to populate the "music libraries" checkbox list.
+# Each test pins that (a) the function returns every music library the server
+# reports, without applying the MUSIC_LIBRARIES filter, and (b) user_creds is
+# forwarded so the migration assistant can probe a target without mutating
+# `config` globals (same discipline that commit b426682 established for
+# Navidrome's `get_all_songs`).
+# =============================================================================
+
+class TestJellyfinListLibraries:
+    @patch('tasks.mediaserver_jellyfin.requests.get')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_returns_music_libraries_with_id_and_name(self, mock_config, mock_get):
+        from tasks.mediaserver_jellyfin import list_libraries
+
+        mock_config.JELLYFIN_URL = 'http://jelly:8096'
+        mock_config.JELLYFIN_TOKEN = 'admin-token'
+        mock_config.HEADERS = {}
+
+        resp = Mock()
+        resp.raise_for_status = Mock()
+        resp.json.return_value = [
+            {'Name': 'Music', 'ItemId': 'lib-1', 'CollectionType': 'music'},
+            {'Name': 'TV Shows', 'ItemId': 'lib-2', 'CollectionType': 'tvshows'},
+            {'Name': 'Podcasts', 'ItemId': 'lib-3', 'CollectionType': 'music'},
+        ]
+        mock_get.return_value = resp
+
+        result = list_libraries()
+
+        assert result == [
+            {'id': 'lib-1', 'name': 'Music'},
+            {'id': 'lib-3', 'name': 'Podcasts'},
+        ]
+
+    @patch('tasks.mediaserver_jellyfin.requests.get')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_forwards_user_creds_to_url_and_token(self, mock_config, mock_get):
+        """Migration target probe must use session creds, not config globals."""
+        from tasks.mediaserver_jellyfin import list_libraries
+
+        mock_config.JELLYFIN_URL = 'http://SHOULD-NOT-BE-USED:0000'
+        mock_config.JELLYFIN_TOKEN = 'SHOULD-NOT-BE-USED'
+        mock_config.HEADERS = {}
+
+        resp = Mock()
+        resp.raise_for_status = Mock()
+        resp.json.return_value = []
+        mock_get.return_value = resp
+
+        list_libraries(user_creds={
+            'url':   'http://target-jelly:8096',
+            'token': 'target-token',
+        })
+
+        called_url = mock_get.call_args[0][0]
+        assert called_url == 'http://target-jelly:8096/Library/VirtualFolders'
+        headers = mock_get.call_args[1]['headers']
+        assert headers.get('X-Emby-Token') == 'target-token'
+
+
+class TestEmbyListLibraries:
+    @patch('tasks.mediaserver_emby.requests.get')
+    @patch('tasks.mediaserver_emby.config')
+    def test_returns_music_libraries_only(self, mock_config, mock_get):
+        from tasks.mediaserver_emby import list_libraries
+
+        mock_config.EMBY_URL = 'http://emby:8096'
+        mock_config.EMBY_TOKEN = 'admin-token'
+        mock_config.HEADERS = {}
+
+        resp = Mock()
+        resp.raise_for_status = Mock()
+        resp.json.return_value = [
+            {'Name': 'Music', 'ItemId': 'e1', 'CollectionType': 'music'},
+            {'Name': 'Movies', 'ItemId': 'e2', 'CollectionType': 'movies'},
+        ]
+        mock_get.return_value = resp
+
+        result = list_libraries()
+
+        assert result == [{'id': 'e1', 'name': 'Music'}]
+
+    @patch('tasks.mediaserver_emby.requests.get')
+    @patch('tasks.mediaserver_emby.config')
+    def test_forwards_user_creds(self, mock_config, mock_get):
+        from tasks.mediaserver_emby import list_libraries
+
+        mock_config.EMBY_URL = 'http://SHOULD-NOT-BE-USED:0000'
+        mock_config.EMBY_TOKEN = 'SHOULD-NOT-BE-USED'
+        mock_config.HEADERS = {}
+
+        resp = Mock()
+        resp.raise_for_status = Mock()
+        resp.json.return_value = []
+        mock_get.return_value = resp
+
+        list_libraries(user_creds={
+            'url':   'http://target-emby:8096',
+            'token': 'target-token',
+        })
+
+        called_url = mock_get.call_args[0][0]
+        assert called_url == 'http://target-emby:8096/emby/Library/VirtualFolders'
+        headers = mock_get.call_args[1]['headers']
+        assert headers.get('X-Emby-Token') == 'target-token'
+
+
+class TestNavidromeListLibraries:
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    def test_returns_every_folder_without_reading_music_libraries(self, mock_req):
+        """
+        Does NOT call _get_target_music_folder_ids (which would read
+        config.MUSIC_LIBRARIES and break when the filter is set for the source
+        provider but doesn't apply to the target). Returns every folder.
+        """
+        from tasks.mediaserver_navidrome import list_libraries
+
+        mock_req.return_value = {
+            'musicFolders': {
+                'musicFolder': [
+                    {'id': 1, 'name': 'Main'},
+                    {'id': 2, 'name': 'Podcasts'},
+                ]
+            }
+        }
+
+        result = list_libraries()
+
+        assert result == [
+            {'id': '1', 'name': 'Main'},
+            {'id': '2', 'name': 'Podcasts'},
+        ]
+        # Verify the single getMusicFolders call — no _get_target_music_folder_ids path
+        mock_req.assert_called_once()
+        args, kwargs = mock_req.call_args
+        assert args[0] == 'getMusicFolders'
+        assert kwargs.get('user_creds') is None
+
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    def test_handles_single_dict_response(self, mock_req):
+        """Some Subsonic-compatible servers return a single dict (not a list)
+        when only one folder exists. The function must coerce to a list."""
+        from tasks.mediaserver_navidrome import list_libraries
+
+        mock_req.return_value = {
+            'musicFolders': {
+                'musicFolder': {'id': 1, 'name': 'OnlyFolder'}
+            }
+        }
+
+        result = list_libraries()
+
+        assert result == [{'id': '1', 'name': 'OnlyFolder'}]
+
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    def test_forwards_user_creds_to_getmusicfolders(self, mock_req):
+        """
+        Migration-target path: user_creds must reach _navidrome_request so the
+        request uses the session's URL/username/password rather than
+        config.NAVIDROME_* (which are empty for a target that isn't live yet).
+        """
+        from tasks.mediaserver_navidrome import list_libraries
+
+        mock_req.return_value = {'musicFolders': {'musicFolder': []}}
+
+        creds = {'url': 'http://target-nav:4533', 'user': 'u', 'password': 'p'}
+        list_libraries(user_creds=creds)
+
+        args, kwargs = mock_req.call_args
+        assert args[0] == 'getMusicFolders'
+        assert kwargs.get('user_creds') == creds
+
+
+class TestLyrionListLibraries:
+    @patch('tasks.mediaserver_lyrion._jsonrpc_request')
+    def test_returns_every_folder(self, mock_rpc):
+        from tasks.mediaserver_lyrion import list_libraries
+
+        mock_rpc.return_value = {
+            'folder_loop': [
+                {'id': 10, 'name': 'Music'},
+                {'id': 11, 'name': 'Audiobooks'},
+            ]
+        }
+
+        result = list_libraries()
+
+        assert result == [
+            {'id': '10', 'name': 'Music'},
+            {'id': '11', 'name': 'Audiobooks'},
+        ]
+        args, kwargs = mock_rpc.call_args
+        assert args[0] == 'musicfolders'
+        assert kwargs.get('user_creds') is None
+
+    @patch('tasks.mediaserver_lyrion._jsonrpc_request')
+    def test_prefers_path_over_name_when_available(self, mock_rpc):
+        """Lyrion's scan-time filter (_get_target_paths_for_filtering) does a
+        substring match against album file URLs, so the persisted
+        MUSIC_LIBRARIES value must be the path. list_libraries surfaces the
+        path as ``name`` so the saved value round-trips correctly."""
+        from tasks.mediaserver_lyrion import list_libraries
+
+        mock_rpc.return_value = {
+            'folder_loop': [
+                {'id': 10, 'name': 'Music', 'path': '/srv/music'},
+                {'id': 11, 'name': 'Spoken', 'url': '/srv/audiobooks'},
+                {'id': 12, 'name': 'NoPath'},
+            ]
+        }
+
+        result = list_libraries()
+
+        assert result == [
+            {'id': '10', 'name': '/srv/music'},
+            {'id': '11', 'name': '/srv/audiobooks'},
+            {'id': '12', 'name': 'NoPath'},  # falls back when path absent
+        ]
+
+    @patch('tasks.mediaserver_lyrion._jsonrpc_request')
+    def test_forwards_user_creds(self, mock_rpc):
+        from tasks.mediaserver_lyrion import list_libraries
+
+        mock_rpc.return_value = {'folder_loop': []}
+
+        creds = {'url': 'http://target-lms:9000', 'user': 'u', 'password': 'p'}
+        list_libraries(user_creds=creds)
+
+        args, kwargs = mock_rpc.call_args
+        assert args[0] == 'musicfolders'
+        assert kwargs.get('user_creds') == creds
