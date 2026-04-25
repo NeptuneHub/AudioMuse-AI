@@ -129,6 +129,22 @@ def _test_media_server_connection(filtered_values):
         _restore_config(original_config)
 
 
+def _list_provider_libraries(filtered_values):
+    """List the music libraries a provider exposes, given in-flight wizard values.
+
+    Merges form values with the currently stored config (same fallback logic as
+    the test-connection flow, so secret placeholders use the saved value), then
+    calls ``mediaserver.list_libraries()``. Returns ``{libraries, unsupported}``.
+    """
+    test_config = _merge_test_config(filtered_values)
+    original_config = _patch_config_for_test(test_config)
+    try:
+        media_type = (test_config.get('MEDIASERVER_TYPE') or '').strip().lower() or 'jellyfin'
+        return mediaserver.list_libraries(provider_type=media_type)
+    finally:
+        _restore_config(original_config)
+
+
 def should_show_advanced(name):
     if name in HIDDEN_ADVANCED_FIELDS:
         return False
@@ -197,12 +213,18 @@ def setup_api():
 
             if f['name'] in BASIC_FIELDS:
                 basic_fields.append(f)
+            elif f['name'] == 'MUSIC_LIBRARIES':
+                # Rendered as a checkbox list next to the provider section,
+                # not as a free-text advanced field.
+                continue
             elif should_show_advanced(f['name']):
                 advanced_fields.append(f)
 
+        music_libraries_value = getattr(config, 'MUSIC_LIBRARIES', '') or ''
         return jsonify({
             'basic_fields': basic_fields,
             'advanced_fields': advanced_fields,
+            'music_libraries': music_libraries_value,
             'setup_saved': not check_setup_needed(),
             'has_admin_user': _has_admin_user(),
         })
@@ -357,3 +379,36 @@ def setup_api():
     if config.AUTH_ENABLED:
         response.delete_cookie('audiomuse_jwt', samesite='Strict', path='/')
     return response
+
+
+@app.route('/api/setup/providers/libraries', methods=['POST'])
+def setup_provider_libraries_api():
+    """List the music libraries the configured provider exposes.
+
+    Uses the in-flight form values (same shape the test-connection endpoint
+    accepts) so the wizard can populate the checkbox list as soon as a user
+    has typed their credentials. Secret placeholders (``********``) fall back
+    to the currently stored value via ``_merge_test_config``.
+    """
+    data = request.get_json(silent=True) or {}
+    config_values = data.get('config') or {}
+    if not isinstance(config_values, dict):
+        return jsonify({'error': 'Missing config data'}), 400
+
+    allowed_setup_keys = _get_allowed_setup_keys()
+    filtered_values = {}
+    for key, value in config_values.items():
+        if not isinstance(key, str) or not key.isupper() or key not in allowed_setup_keys:
+            continue
+        filtered_values[key] = _normalize_config_value(key, value)
+
+    try:
+        result = _list_provider_libraries(filtered_values)
+    except Exception as exc:
+        app.logger.error('setup_provider_libraries_api failed: %s', exc, exc_info=True)
+        return jsonify({'error': 'Unable to list libraries. Check the server log for details.'}), 500
+
+    return jsonify({
+        'libraries': result.get('libraries', []),
+        'unsupported': bool(result.get('unsupported', False)),
+    }), 200

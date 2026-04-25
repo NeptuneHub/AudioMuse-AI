@@ -73,6 +73,31 @@ def _get_target_library_ids():
         return set()
 
 
+def list_libraries(user_creds=None):
+    """List all music libraries exposed by a Jellyfin server.
+
+    Unlike `_get_target_library_ids()`, this does NOT read `config.MUSIC_LIBRARIES`
+    and does NOT filter — it returns every music library the server reports, so the
+    UI can render a checkbox list. Accepts optional `user_creds` so the setup
+    wizard test flow and the migration assistant can probe a target without
+    mutating global config.
+    """
+    base_url = (user_creds.get('url') if user_creds and user_creds.get('url') else config.JELLYFIN_URL).rstrip('/')
+    url = f"{base_url}/Library/VirtualFolders"
+    try:
+        r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        all_libraries = r.json() or []
+        return [
+            {'id': lib.get('ItemId'), 'name': lib.get('Name')}
+            for lib in all_libraries
+            if isinstance(lib, dict) and lib.get('CollectionType') == 'music' and lib.get('ItemId') and lib.get('Name')
+        ]
+    except Exception as e:
+        logger.error(f"Jellyfin list_libraries failed at '{url}': {e}", exc_info=True)
+        return []
+
+
 def _jellyfin_base_url(user_creds=None):
     return (user_creds.get('url') if user_creds and user_creds.get('url') else config.JELLYFIN_URL).rstrip('/')
 

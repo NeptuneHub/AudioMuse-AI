@@ -80,6 +80,30 @@ def _get_target_library_ids():
         return set()
 
 
+def list_libraries(user_creds=None):
+    """List all music libraries exposed by an Emby server.
+
+    Mirrors `jellyfin_list_libraries` — returns every music library without
+    applying `config.MUSIC_LIBRARIES`, so the UI can render a checkbox list.
+    """
+    base_url = (user_creds.get('url') if user_creds and user_creds.get('url') else config.EMBY_URL).rstrip('/')
+    url = f"{base_url}/emby/Library/VirtualFolders"
+    try:
+        r = requests.get(url, headers=_emby_headers_from_creds(user_creds), timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        all_libraries = r.json() or []
+        if not isinstance(all_libraries, list):
+            return []
+        return [
+            {'id': lib.get('ItemId'), 'name': lib.get('Name')}
+            for lib in all_libraries
+            if isinstance(lib, dict) and lib.get('CollectionType') == 'music' and lib.get('ItemId') and lib.get('Name')
+        ]
+    except Exception as e:
+        logger.error(f"Emby list_libraries failed at '{url}': {e}", exc_info=True)
+        return []
+
+
 def _emby_base_url(user_creds=None):
     return (user_creds.get('url') if user_creds and user_creds.get('url') else config.EMBY_URL).rstrip('/')
 

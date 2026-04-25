@@ -308,6 +308,43 @@ def _get_target_music_folder_ids():
     logger.info(f"DEBUG: Returning folder IDs: {music_folder_ids}")
     return music_folder_ids
 
+def list_libraries(user_creds=None):
+    """List all music folders exposed by a Lyrion (LMS) server.
+
+    Unlike `_get_target_music_folder_ids()`, this does NOT read
+    `config.MUSIC_LIBRARIES` and does NOT filter. Uses the `musicfolders`
+    JSON-RPC command. `_jsonrpc_request` already forwards `user_creds`.
+    """
+    response = _jsonrpc_request("musicfolders", [0, 999999], user_creds=user_creds)
+    if not response:
+        return []
+
+    all_folders = []
+    if isinstance(response, dict):
+        if "folder_loop" in response:
+            all_folders = response["folder_loop"]
+        elif "folders_loop" in response:
+            all_folders = response["folders_loop"]
+        else:
+            for v in response.values():
+                if isinstance(v, list):
+                    all_folders = v
+                    break
+    elif isinstance(response, list):
+        all_folders = response
+
+    libraries = []
+    for folder in all_folders or []:
+        if not isinstance(folder, dict):
+            continue
+        folder_id = folder.get('id') or folder.get('folder_id')
+        folder_name = folder.get('name') or folder.get('folder')
+        if folder_id is None or not folder_name:
+            continue
+        libraries.append({'id': str(folder_id), 'name': folder_name})
+    return libraries
+
+
 def _get_first_player():
     """Gets the first available player from Lyrion for web interface operations."""
     try:

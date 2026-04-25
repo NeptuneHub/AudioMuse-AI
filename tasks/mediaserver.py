@@ -20,6 +20,7 @@ from tasks.mediaserver_jellyfin import (
     create_instant_playlist as jellyfin_create_instant_playlist,
     get_top_played_songs as jellyfin_get_top_played_songs,
     get_last_played_time as jellyfin_get_last_played_time,
+    list_libraries as _jellyfin_list_libraries,
 )
 from tasks.mediaserver_navidrome import (
     get_all_playlists as navidrome_get_all_playlists,
@@ -35,6 +36,7 @@ from tasks.mediaserver_navidrome import (
     create_instant_playlist as navidrome_create_instant_playlist,
     get_top_played_songs as navidrome_get_top_played_songs,
     get_last_played_time as navidrome_get_last_played_time,
+    list_libraries as _navidrome_list_libraries,
 )
 from tasks.mediaserver_lyrion import (
     get_all_playlists as lyrion_get_all_playlists,
@@ -50,6 +52,7 @@ from tasks.mediaserver_lyrion import (
     create_instant_playlist as lyrion_create_instant_playlist,
     get_top_played_songs as lyrion_get_top_played_songs,
     get_last_played_time as lyrion_get_last_played_time,
+    list_libraries as _lyrion_list_libraries,
 )
 from tasks.mediaserver_mpd import (
     get_all_playlists as mpd_get_all_playlists,
@@ -80,6 +83,7 @@ from tasks.mediaserver_emby import (
     create_instant_playlist as emby_create_instant_playlist,
     get_top_played_songs as emby_get_top_played_songs,
     get_last_played_time as emby_get_last_played_time,
+    list_libraries as _emby_list_libraries,
 )
 
 logger = logging.getLogger(__name__)
@@ -246,15 +250,36 @@ def _detect_audio_format(filepath):
         logger.debug(f"Error detecting audio format: {e}")
         return '.tmp'
 
-def get_all_songs(user_creds=None, provider_type=None):
-    """Fetches all songs using admin credentials or explicit creds."""
+def get_all_songs(user_creds=None, provider_type=None, apply_filter=True):
+    """Fetches all songs using admin credentials or explicit creds.
+
+    ``apply_filter`` is forwarded to providers that honor
+    ``config.MUSIC_LIBRARIES`` (currently Navidrome). Migration probes pass
+    ``apply_filter=False`` so the source provider's library filter does not
+    falsely exclude tracks from the target server during dry-run.
+    """
     provider_type = provider_type or config.MEDIASERVER_TYPE
     if provider_type == 'jellyfin': return jellyfin_get_all_songs(user_creds=user_creds)
-    if provider_type == 'navidrome': return navidrome_get_all_songs(user_creds=user_creds)
+    if provider_type == 'navidrome': return navidrome_get_all_songs(user_creds=user_creds, apply_filter=apply_filter)
     if provider_type == 'lyrion': return lyrion_get_all_songs(user_creds=user_creds)
     if provider_type == 'mpd': return mpd_get_all_songs()
     if provider_type == 'emby': return emby_get_all_songs(user_creds=user_creds)
     return []
+
+def list_libraries(user_creds=None, provider_type=None):
+    """List all music libraries/folders a provider exposes.
+
+    Returns {'libraries': [{'id': str, 'name': str}, ...], 'unsupported': bool}.
+    The setup wizard and migration assistant use this to render a checkbox list
+    after a successful test-connection. Uses admin credentials when
+    ``user_creds`` is None, or the supplied creds when probing a target.
+    """
+    provider_type = provider_type or config.MEDIASERVER_TYPE
+    if provider_type == 'jellyfin':  return {'libraries': _jellyfin_list_libraries(user_creds=user_creds), 'unsupported': False}
+    if provider_type == 'navidrome': return {'libraries': _navidrome_list_libraries(user_creds=user_creds), 'unsupported': False}
+    if provider_type == 'lyrion':    return {'libraries': _lyrion_list_libraries(user_creds=user_creds), 'unsupported': False}
+    if provider_type == 'emby':      return {'libraries': _emby_list_libraries(user_creds=user_creds), 'unsupported': False}
+    return {'libraries': [], 'unsupported': True}
 
 def search_albums(query, user_creds=None, provider_type=None):
     """Searches for albums using admin credentials or explicit creds."""

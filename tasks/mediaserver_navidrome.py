@@ -17,10 +17,15 @@ NAVIDROME_API_BATCH_SIZE = 40
 # NAVIDROME (SUBSONIC API) IMPLEMENTATION
 # ##############################################################################
 
-def _get_target_music_folder_ids():
+def _get_target_music_folder_ids(user_creds=None):
     """
     Parses config for music folder names and returns their IDs for filtering using a robust,
     case-insensitive matching against the server's actual folder configuration.
+
+    ``user_creds`` is forwarded to the underlying ``_navidrome_request`` call so
+    callers operating outside the live-provider context (e.g. migration probes
+    where Navidrome is the *target* and ``config.NAVIDROME_*`` globals are
+    empty) can still hit ``getMusicFolders`` with valid credentials.
     """
     folder_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
 
@@ -30,7 +35,7 @@ def _get_target_music_folder_ids():
     target_names_lower = {name.strip().lower() for name in folder_names_str.split(',') if name.strip()}
 
     # Use the getMusicFolders endpoint to get the available music folders.
-    response = _navidrome_request("getMusicFolders")
+    response = _navidrome_request("getMusicFolders", user_creds=user_creds)
     
     if not (response and "musicFolders" in response and "musicFolder" in response["musicFolders"]):
         logger.error("Failed to fetch music folders from Navidrome or response format unexpected.")
@@ -71,6 +76,26 @@ def _get_target_music_folder_ids():
 
     logger.info(f"Filtering analysis to {len(music_folder_ids)} Navidrome folders: {found_names_original_case}")
     return music_folder_ids
+
+def list_libraries(user_creds=None):
+    """List all music folders exposed by a Navidrome server.
+
+    Unlike `_get_target_music_folder_ids()`, this does NOT read
+    `config.MUSIC_LIBRARIES` and does NOT filter — it returns every folder the
+    server reports. `_navidrome_request` already forwards `user_creds`, so the
+    migration assistant can list folders for a target server without mutating
+    the global config (which would conflict with the b426682 fix).
+    """
+    response = _navidrome_request("getMusicFolders", user_creds=user_creds)
+    if not (response and "musicFolders" in response and "musicFolder" in response["musicFolders"]):
+        return []
+    all_folders = response["musicFolders"]["musicFolder"] or []
+    return [
+        {'id': str(f['id']), 'name': f['name']}
+        for f in all_folders
+        if isinstance(f, dict) and 'id' in f and 'name' in f
+    ]
+
 
 def get_navidrome_auth_params(username=None, password=None):
     """Generates Navidrome auth params, using provided creds or falling back to global config."""
@@ -252,12 +277,19 @@ def _select_best_artist(song_item, title="Unknown"):
     
     return track_artist, artist_id
 
-def get_all_songs(user_creds=None):
+def get_all_songs(user_creds=None, apply_filter=True):
     """
     Fetches all songs from Navidrome using admin or override credentials.
-    If MUSIC_LIBRARIES is set, it will only return songs from those folders.
+
+    ``apply_filter`` controls whether ``config.MUSIC_LIBRARIES`` is honored.
+    Live-provider scans default to ``True`` so the user's saved selection is
+    respected. Migration probes pass ``False`` because ``config.MUSIC_LIBRARIES``
+    holds the *source* provider's library names, which would falsely filter
+    out the *target* server's tracks during dry-run. Making this an explicit
+    parameter (instead of inferring intent from ``user_creds``) keeps the
+    contract clear for future callers.
     """
-    target_folder_ids = _get_target_music_folder_ids()
+    target_folder_ids = _get_target_music_folder_ids(user_creds=user_creds) if apply_filter else None
     
     # Case 1: Config is set, but no matching folders were found. Return no songs.
     if isinstance(target_folder_ids, set) and not target_folder_ids:

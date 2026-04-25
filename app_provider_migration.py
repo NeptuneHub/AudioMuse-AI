@@ -283,6 +283,67 @@ def probe_test():
     return jsonify(result)
 
 
+@migration_bp.route('/api/migration/libraries', methods=['POST'])
+def libraries_list():
+    """Return the target provider's music libraries for step 2's checkbox list.
+
+    Uses session-stored credentials (never ``config``), so the live provider
+    keeps working while the user is configuring a migration target.
+    """
+    payload = request.get_json(silent=True) or {}
+    session_id = payload.get('session_id')
+    if session_id is None:
+        return jsonify({'error': 'session_id is required'}), 400
+
+    session = _fetch_session_creds(session_id)
+    if session is None:
+        return jsonify({'error': 'session not found'}), 404
+    target_type, creds = session
+    try:
+        result = provider_probe.list_libraries(target_type, creds)
+    except Exception as e:
+        logger.warning("libraries_list failed for session %s: %s", session_id, e, exc_info=True)
+        return jsonify({'libraries': [], 'unsupported': False, 'error': str(e)}), 200
+    return jsonify({
+        'libraries': result.get('libraries', []),
+        'unsupported': bool(result.get('unsupported', False)),
+    }), 200
+
+
+@migration_bp.route('/api/migration/libraries/select', methods=['POST'])
+def libraries_select():
+    """Persist the user's library checkbox selection into the session state.
+
+    - ``null`` or missing ``libraries`` → no filter (scan everything post-migration)
+    - ``[]`` → normalized to ``null`` (refuses to save a "scan nothing" state)
+    - non-empty list → stored verbatim; ``_write_provider_to_app_config``
+      writes it into ``app_config.MUSIC_LIBRARIES`` when the migration
+      commits, overwriting the source provider's old filter.
+    """
+    payload = request.get_json(silent=True) or {}
+    session_id = payload.get('session_id')
+    if session_id is None:
+        return jsonify({'error': 'session_id is required'}), 400
+
+    libraries = payload.get('libraries')
+    if libraries is not None and not isinstance(libraries, list):
+        return jsonify({'error': 'libraries must be a list of names or null'}), 400
+
+    if isinstance(libraries, list):
+        cleaned = [str(name).strip() for name in libraries if str(name).strip()]
+        # MUSIC_LIBRARIES is stored as a comma-separated string and split on
+        # ',' at scan time, so a name containing a comma would silently
+        # corrupt the round-trip into multiple bogus fragments.
+        if any(',' in name for name in cleaned):
+            return jsonify({'error': 'Library names cannot contain commas.'}), 400
+        selected = cleaned or None
+    else:
+        selected = None
+
+    _update_state(session_id, selected_libraries=selected)
+    return jsonify({'ok': True, 'selected_libraries': selected}), 200
+
+
 @migration_bp.route('/api/migration/search-albums', methods=['POST'])
 def search_albums():
     payload = request.get_json(silent=True) or {}
