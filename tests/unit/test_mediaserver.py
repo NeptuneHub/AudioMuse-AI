@@ -2055,6 +2055,22 @@ class TestNavidromeListLibraries:
         assert kwargs.get('user_creds') is None
 
     @patch('tasks.mediaserver_navidrome._navidrome_request')
+    def test_handles_single_dict_response(self, mock_req):
+        """Some Subsonic-compatible servers return a single dict (not a list)
+        when only one folder exists. The function must coerce to a list."""
+        from tasks.mediaserver_navidrome import list_libraries
+
+        mock_req.return_value = {
+            'musicFolders': {
+                'musicFolder': {'id': 1, 'name': 'OnlyFolder'}
+            }
+        }
+
+        result = list_libraries()
+
+        assert result == [{'id': '1', 'name': 'OnlyFolder'}]
+
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
     def test_forwards_user_creds_to_getmusicfolders(self, mock_req):
         """
         Migration-target path: user_creds must reach _navidrome_request so the
