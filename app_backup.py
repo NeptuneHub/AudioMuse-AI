@@ -64,7 +64,14 @@ def _run_restore_runner(dump_file, log_file):
             log.write("Continuing restore despite local Flask stop failure.\n")
             log.flush()
 
-        restore_cmd = _pg_cmd('psql', '-d', POSTGRES_DB, '-v', 'ON_ERROR_STOP=1', '-f', dump_file)
+        restore_cmd = _pg_cmd(
+            'psql',
+            '-d', POSTGRES_DB,
+            '-v', 'ON_ERROR_STOP=1',
+            '--single-transaction',
+            '-c', 'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;',
+            '-f', dump_file
+        )
         log.write(f"Running restore command: {' '.join(restore_cmd)}\n")
         log.flush()
 
