@@ -314,6 +314,12 @@ def list_libraries(user_creds=None):
     Unlike `_get_target_music_folder_ids()`, this does NOT read
     `config.MUSIC_LIBRARIES` and does NOT filter. Uses the `musicfolders`
     JSON-RPC command. `_jsonrpc_request` already forwards `user_creds`.
+
+    The returned ``name`` is the folder's filesystem **path** when the
+    server reports one, falling back to the folder name. This is because
+    Lyrion's scan-time filter (``_get_target_paths_for_filtering``) treats
+    ``MUSIC_LIBRARIES`` as paths and substring-matches them against album
+    file URLs — so the UI must persist the path that the filter expects.
     """
     response = _jsonrpc_request("musicfolders", [0, 999999], user_creds=user_creds)
     if not response:
@@ -339,9 +345,14 @@ def list_libraries(user_creds=None):
             continue
         folder_id = folder.get('id') or folder.get('folder_id')
         folder_name = folder.get('name') or folder.get('folder')
+        folder_path = folder.get('path') or folder.get('url')
         if folder_id is None or not folder_name:
             continue
-        libraries.append({'id': str(folder_id), 'name': folder_name})
+        # Display path when available (so the user sees what actually gets
+        # stored / matched); fall back to the folder name when Lyrion's
+        # response omits the path.
+        display_name = folder_path or folder_name
+        libraries.append({'id': str(folder_id), 'name': display_name})
     return libraries
 
 

@@ -2112,6 +2112,30 @@ class TestLyrionListLibraries:
         assert kwargs.get('user_creds') is None
 
     @patch('tasks.mediaserver_lyrion._jsonrpc_request')
+    def test_prefers_path_over_name_when_available(self, mock_rpc):
+        """Lyrion's scan-time filter (_get_target_paths_for_filtering) does a
+        substring match against album file URLs, so the persisted
+        MUSIC_LIBRARIES value must be the path. list_libraries surfaces the
+        path as ``name`` so the saved value round-trips correctly."""
+        from tasks.mediaserver_lyrion import list_libraries
+
+        mock_rpc.return_value = {
+            'folder_loop': [
+                {'id': 10, 'name': 'Music', 'path': '/srv/music'},
+                {'id': 11, 'name': 'Spoken', 'url': '/srv/audiobooks'},
+                {'id': 12, 'name': 'NoPath'},
+            ]
+        }
+
+        result = list_libraries()
+
+        assert result == [
+            {'id': '10', 'name': '/srv/music'},
+            {'id': '11', 'name': '/srv/audiobooks'},
+            {'id': '12', 'name': 'NoPath'},  # falls back when path absent
+        ]
+
+    @patch('tasks.mediaserver_lyrion._jsonrpc_request')
     def test_forwards_user_creds(self, mock_rpc):
         from tasks.mediaserver_lyrion import list_libraries
 
