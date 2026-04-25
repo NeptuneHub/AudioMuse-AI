@@ -69,7 +69,7 @@ def _run_restore_runner(dump_file, log_file):
             '-d', POSTGRES_DB,
             '-v', 'ON_ERROR_STOP=1',
             '--single-transaction',
-            '-c', 'DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO public;',
+            '-c', 'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;',
             '-f', dump_file
         )
         log.write(f"Running restore command: {' '.join(restore_cmd)}\n")
