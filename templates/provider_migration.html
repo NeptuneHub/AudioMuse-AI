@@ -710,12 +710,19 @@
             saveMigLibrariesSelection(null);
             return;
         }
-        renderMigLibraries(data.libraries);
+        renderMigLibraries(data.libraries, data.selected_libraries);
     }
 
-    function renderMigLibraries(libraries) {
+    function renderMigLibraries(libraries, selectedNames) {
         const list = $('mig-libraries-list');
         list.innerHTML = '';
+        // If the session has a prior selection, pre-check only the matching
+        // names (case-insensitive); anything else stays unchecked. If the
+        // session has no prior selection (null/empty), default to all
+        // checked = "scan everything".
+        const selectedLower = (Array.isArray(selectedNames) && selectedNames.length > 0)
+            ? new Set(selectedNames.map(n => String(n).toLowerCase()))
+            : null;
         libraries.forEach(lib => {
             const name = (lib && lib.name) ? String(lib.name) : '';
             if (!name) return;
@@ -726,7 +733,7 @@
             row.style.fontWeight = '400';
             const cb = document.createElement('input');
             cb.type = 'checkbox';
-            cb.checked = true;
+            cb.checked = selectedLower === null || selectedLower.has(name.toLowerCase());
             cb.dataset.libraryName = name;
             cb.addEventListener('change', onMigLibraryChange);
             row.appendChild(cb);
@@ -734,10 +741,10 @@
             list.appendChild(row);
         });
         $('mig-libraries-section').style.display = '';
-        // No initial save: a fresh session already has no selection (=
-        // "scan everything"), and a resumed session's prior selection should
-        // not be wiped just because the user re-rendered the UI. The user's
-        // first checkbox toggle will write through the debounced path.
+        // No initial save: a fresh session has no selection (= "scan
+        // everything"), and a resumed session's prior selection has already
+        // been used to pre-check the boxes above. The user's first checkbox
+        // toggle will write through the debounced path.
     }
 
     function onMigLibraryChange() {

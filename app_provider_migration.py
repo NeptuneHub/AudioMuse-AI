@@ -288,7 +288,9 @@ def libraries_list():
     """Return the target provider's music libraries for step 2's checkbox list.
 
     Uses session-stored credentials (never ``config``), so the live provider
-    keeps working while the user is configuring a migration target.
+    keeps working while the user is configuring a migration target. Also
+    returns the user's prior selection (if any) from session state, so a
+    page reload can pre-check the same boxes the user picked before.
     """
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
@@ -299,14 +301,22 @@ def libraries_list():
     if session is None:
         return jsonify({'error': 'session not found'}), 404
     target_type, creds = session
+    state = _load_state(session_id) or {}
+    selected = state.get('selected_libraries')
     try:
         result = provider_probe.list_libraries(target_type, creds)
     except Exception as e:
         logger.warning("libraries_list failed for session %s: %s", session_id, e, exc_info=True)
-        return jsonify({'libraries': [], 'unsupported': False, 'error': str(e)}), 200
+        return jsonify({
+            'libraries': [],
+            'unsupported': False,
+            'selected_libraries': selected,
+            'error': str(e),
+        }), 200
     return jsonify({
         'libraries': result.get('libraries', []),
         'unsupported': bool(result.get('unsupported', False)),
+        'selected_libraries': selected,
     }), 200
 
 
