@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, request, render_template, Response, stream_with_context
+from flask import Blueprint, jsonify, request, render_template, Response, stream_with_context, redirect, url_for
 import logging
 import os
 import re
@@ -309,9 +309,24 @@ def _find_duplicate_groups(item_ids, threshold=0.015):
 
 @playlist_curator_bp.route('/playlist_curator', methods=['GET'])
 def playlist_curator_page():
-    return render_template('playlist_curator.html',
-                           title='AudioMuse-AI - Playlist Curator',
-                           active='playlist_curator')
+    """Backwards-compatible redirect: legacy /playlist_curator URL now lands on Smart Search."""
+    return redirect(url_for('playlist_curator_bp.smart_search_page'), code=302)
+
+
+@playlist_curator_bp.route('/playlist_curator/search', methods=['GET'])
+def smart_search_page():
+    return render_template('playlist_curator_search.html',
+                           title='AudioMuse-AI - Smart Search',
+                           active='smart_search',
+                           active_tool='search')
+
+
+@playlist_curator_bp.route('/playlist_curator/extender', methods=['GET'])
+def playlist_extender_page():
+    return render_template('playlist_curator_extender.html',
+                           title='AudioMuse-AI - Playlist Extender',
+                           active='playlist_extender',
+                           active_tool='extender')
 
 
 @playlist_curator_bp.route('/api/curator/filter_options', methods=['GET'])

@@ -1,0 +1,72 @@
+{% extends 'includes/layout.html' %}
+
+{% block headAdditions %}
+<link rel="stylesheet" href="{{ url_for('static', filename='playlist_curator/curator.css') }}">
+{% endblock %}
+
+{% block content %}
+{% include 'includes/_curator_topbar.html' with context %}
+
+<div class="curator-layout">
+    <main class="curator-main">
+        <div class="curator-main-inner">
+            <header class="curator-page-header">
+                <div class="curator-eyebrow">Tool 1 of 2</div>
+                <h1>Smart Search</h1>
+                <p>Find tracks by rules — genre, BPM, year, mood. Add the ones you want to your Workbench, or send them all to the Extender to grow them by audio similarity.</p>
+            </header>
+
+            <div class="curator-card">
+                <div class="curator-filter-header">
+                    <span>Match</span>
+                    <select id="curator-match-mode" class="curator-select">
+                        <option value="all">all</option>
+                        <option value="any">any</option>
+                    </select>
+                    <span>of these rules:</span>
+                </div>
+                <div id="curator-filter-rows" class="curator-filter-rows"></div>
+                <button type="button" id="curator-add-rule" class="curator-add-rule-btn">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                    Add rule
+                </button>
+                <div class="curator-card-footer">
+                    <button type="button" id="curator-search-run" class="curator-btn" data-kind="primary">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                        Run search
+                    </button>
+                    <button type="button" id="curator-search-clear" class="curator-btn" data-kind="secondary">Clear all</button>
+                    <button type="button" id="curator-search-send" class="curator-btn hidden" data-kind="purple"></button>
+                </div>
+                <div id="curator-search-status" class="curator-status" style="margin-top:10px;"></div>
+            </div>
+
+            <section id="curator-results-section" class="hidden">
+                <div class="curator-section-head">
+                    <div>
+                        <h2><span id="curator-results-count">0</span> matches<span id="curator-results-skipped" style="font-size:12px;color:var(--text-muted);font-weight:500;"></span></h2>
+                        <div class="sub">Click <strong>Add</strong> on a track to put it in your Workbench →</div>
+                    </div>
+                </div>
+                <div id="curator-results-table-wrap" class="curator-table-wrap"></div>
+                <div id="curator-results-cards" class="curator-card-list"></div>
+            </section>
+
+            {% include 'includes/_curator_dedup.html' %}
+        </div>
+    </main>
+
+    {% include 'includes/_curator_workbench.html' %}
+</div>
+
+{% include 'includes/_curator_player.html' %}
+{% endblock %}
+
+{% block bodyAdditions %}
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+<script>
+    document.body.dataset.curatorPage = 'search';
+</script>
+<script src="{{ url_for('static', filename='playlist_curator/curator-shared.js') }}"></script>
+<script src="{{ url_for('static', filename='playlist_curator/curator-search.js') }}"></script>
+{% endblock %}

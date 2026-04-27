@@ -1,0 +1,85 @@
+{# Workbench rail (desktop) + bottom-sheet (mobile).
+   Both are present in the DOM; CSS shows the right one based on viewport.
+   Populated by static/playlist_curator/curator-shared.js (renderWorkbench()). #}
+
+<aside class="curator-workbench-rail" id="curator-workbench-rail">
+    <div class="curator-wb-header">
+        <div class="icon-block">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+        </div>
+        <div class="curator-wb-header-text">
+            <div class="curator-wb-header-title">Workbench</div>
+            <div class="curator-wb-header-sub">Your playlist in progress</div>
+        </div>
+        <span class="curator-pill" data-tone="purple">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            shared
+        </span>
+    </div>
+
+    <div class="curator-card curator-wb-stats">
+        <div class="curator-wb-stats-row">
+            <span>From Smart Search</span>
+            <strong id="curator-wb-from-search">0</strong>
+        </div>
+        <div class="curator-wb-stats-row">
+            <span>From Extender</span>
+            <strong id="curator-wb-from-extend">0</strong>
+        </div>
+        <div class="curator-wb-stats-divider"></div>
+        <div class="curator-wb-stats-total">
+            <span class="label">Total tracks</span>
+            <span class="value" id="curator-wb-total">0</span>
+        </div>
+    </div>
+
+    <div class="curator-wb-list" id="curator-wb-list"></div>
+
+    <div class="curator-card curator-wb-save-card">
+        <div class="curator-wb-save-label">Save as playlist</div>
+        <input type="text" id="curator-wb-name" class="curator-input" placeholder="Playlist name" autocomplete="off">
+        <button type="button" id="curator-wb-save-btn" class="curator-btn" data-kind="success" data-full="true" disabled></button>
+    </div>
+
+    <div class="curator-wb-actions">
+        <button type="button" id="curator-wb-finddups-btn" class="curator-btn" data-kind="secondary" data-size="sm" disabled>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            Find duplicates
+        </button>
+        <button type="button" id="curator-wb-clear-btn" class="curator-btn" data-kind="ghost" data-size="sm" title="Clear workbench" disabled>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        </button>
+    </div>
+</aside>
+
+{# Mobile bottom-sheet — same data, restyled. CSS toggles visibility. #}
+<div class="curator-workbench-sheet" id="curator-workbench-sheet">
+    <button type="button" class="curator-sheet-handle" id="curator-sheet-handle">
+        <span class="bar"></span>
+        <div class="curator-sheet-handle-meta">
+            <div class="curator-sheet-handle-title" id="curator-sheet-title">Workbench · 0 tracks</div>
+            <div class="curator-sheet-handle-sub" id="curator-sheet-sub">0 from Search · 0 from Extender</div>
+        </div>
+        <span class="curator-sheet-caret">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>
+        </span>
+    </button>
+    <div class="curator-sheet-body">
+        <div class="curator-sheet-list" id="curator-sheet-list"></div>
+        <div class="curator-sheet-save">
+            <input type="text" id="curator-sheet-name" class="curator-input" placeholder="Playlist name" autocomplete="off">
+            <button type="button" id="curator-sheet-save-btn" class="curator-btn" data-kind="success" disabled></button>
+        </div>
+        <div class="curator-wb-actions">
+            <button type="button" id="curator-sheet-finddups-btn" class="curator-btn" data-kind="secondary" data-size="sm" disabled>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Find duplicates
+            </button>
+            <button type="button" id="curator-sheet-clear-btn" class="curator-btn" data-kind="ghost" data-size="sm" disabled>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                Clear
+            </button>
+        </div>
+    </div>
+</div>
+<div class="curator-sheet-backdrop" id="curator-sheet-backdrop"></div>

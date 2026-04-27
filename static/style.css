@@ -21,6 +21,12 @@
     --color-danger-hover: #B91C1C;
     --color-success: #16A34A;
     --color-success-hover: #15803D;
+    --color-success-50: #D1FAE5;
+    --color-primary-50: #DBEAFE;
+    --color-purple: #7C3AED;
+    --color-purple-50: #EDE9FE;
+    --color-warn-bg: #FEF3C7;
+    --color-warn-text: #92400E;
     --shadow-card: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
     --shadow-input: 0 1px 2px 0 rgb(0 0 0 / 0.05);
 
@@ -65,6 +71,12 @@ html.dark-mode body {
     --color-danger-hover: #DC2626; /* Red 600 */
     --color-success: #22C55E; /* Green 500 */
     --color-success-hover: #16A34A; /* Green 600 */
+    --color-success-50: #064E3B; /* Emerald 900 */
+    --color-primary-50: #1E3A8A; /* Blue 900 */
+    --color-purple: #A78BFA; /* Violet 400 */
+    --color-purple-50: #3B0764; /* Violet 950 */
+    --color-warn-bg: #78350F; /* Amber 900 */
+    --color-warn-text: #FDE68A; /* Amber 200 */
 
     --shadow-card: 0 4px 6px -1px rgb(0 0 0 / 0.3), 0 2px 4px -2px rgb(0 0 0 / 0.3);
     --shadow-input: none;
