@@ -529,9 +529,13 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
     processed_embeddings = np.mean(embeddings_per_patch, axis=0)
     
     # CRITICAL: Clean up large tensors before return
+    return_values = (analysis_result, processed_embeddings, audio, sr) if return_audio else (analysis_result, processed_embeddings)
     try:
-        # Clean up all large intermediate variables
-        del embeddings_per_patch, audio, mel_spec, log_mel_spec, spec_patches, transposed_patches, final_patches
+        # Clean up all large intermediate variables except returned audio when requested
+        if return_audio:
+            del embeddings_per_patch, mel_spec, log_mel_spec, spec_patches, transposed_patches, final_patches
+        else:
+            del embeddings_per_patch, audio, sr, mel_spec, log_mel_spec, spec_patches, transposed_patches, final_patches
         del embedding_feed_dict, prediction_feed_dict
         if 'mood_logits' in locals():
             del mood_logits
@@ -544,13 +548,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
     except Exception as cleanup_error:
         logger.warning(f"Error during final tensor cleanup: {cleanup_error}")
 
-    analysis_result = {
-        "tempo": float(tempo), "key": musical_key, "scale": scale,
-        "moods": moods, "energy": float(average_energy)
-    }
-    if return_audio:
-        return analysis_result, processed_embeddings, audio, sr
-    return analysis_result, processed_embeddings
+    return return_values
 
 
 # --- RQ Task Definitions ---
