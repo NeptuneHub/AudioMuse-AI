@@ -305,6 +305,25 @@ EMBEDDING_DIMENSION = 200
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
+# Lyrics analysis feature toggle. When false, the lyrics step is skipped entirely.
+LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
+LYRICS_WHISPER_MODEL = os.environ.get("LYRICS_WHISPER_MODEL", "small")
+LYRICS_LLM_MODEL_PATH = os.environ.get("LYRICS_LLM_MODEL_PATH", "/app/model/qwen2.5-1.5b-instruct-q4_k_m.gguf")
+LYRICS_SONGS_DIR = Path(os.environ.get("LYRICS_SONGS_DIR", "/app/songs"))
+LYRICS_MODEL_DIR = Path(os.environ.get("LYRICS_MODEL_DIR", "/app/lyrics/final/model"))
+LYRICS_LLM_MODEL_FILENAME = 'qwen2.5-1.5b-instruct-q4_k_m.gguf'
+LYRICS_LLM_MODEL_URL = 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf'
+LYRICS_MAX_SONGS_TO_ANALYZE = 1000
+LYRICS_SUPPORTED_AUDIO_EXTENSIONS = {
+    '.wav', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.aac', '.aiff', '.aif', '.mp4'
+}
+LYRICS_DEFAULT_SAMPLE_RATE = 16000
+LYRICS_DEFAULT_SEGMENT_DURATION = 60.0
+LYRICS_DEFAULT_ROBERTA_MIN_WORDS = 50
+LYRICS_DEFAULT_TOPIC_EMBEDDING_MODEL = 'intfloat/e5-base-v2'
+LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR = LYRICS_MODEL_DIR / 'e5-base-v2'
+LYRICS_DEFAULT_MARIAN_PREFIX = 'Helsinki-NLP/opus-mt-{}-en'
+
 # Split CLAP models: audio model for analysis, text model for search
 # Default points to the distilled student model (EfficientAT, epoch 36).
 # The companion external-data file (model_epoch_36.onnx.data) must sit next to it.

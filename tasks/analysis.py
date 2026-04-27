@@ -237,8 +237,6 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
         if audio is None or audio.size == 0 or not np.any(audio):
             logger.error(f"Fallback method also resulted in an empty or silent audio signal for {os.path.basename(file_path)}.")
             return None, None
-            
-        return audio, sr
 
     except Exception as e_fallback:
         logger.error(f"Fallback loading method also failed for {os.path.basename(file_path)}: {e_fallback}")
@@ -308,7 +306,7 @@ def rebuild_all_indexes_task():
             logger.error(f"❌ Index rebuild task failed: {e}", exc_info=True)
             return {"status": "FAILURE", "message": str(e)}
 
-def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
+def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, return_audio=False):
     """
     Analyzes a single track using ONNX Runtime for inference.
     
@@ -317,6 +315,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         mood_labels_list: List of mood labels
         model_paths: Dict of model paths
         onnx_sessions: Optional dict of pre-loaded ONNX sessions (for album-level reuse)
+        return_audio: If True, return the loaded audio array and sample rate as part of the result.
     """
     logger.info(f"Starting analysis for: {os.path.basename(file_path)}")
 
@@ -325,7 +324,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     
     if audio is None or not np.any(audio) or audio.size == 0:
         logger.warning(f"Could not load a valid audio signal for {os.path.basename(file_path)} after all attempts. Skipping track.")
-        return None, None
+        return (None, None, None, None) if return_audio else (None, None)
 
     tempo, _ = librosa.beat.beat_track(y=audio, sr=sr)
     average_energy = np.mean(librosa.feature.rms(y=audio))
@@ -363,7 +362,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
         spec_patches = [log_mel_spec[:, i:i+frame_size] for i in range(0, log_mel_spec.shape[1] - frame_size + 1, frame_size)]
         if not spec_patches:
             logger.warning(f"Track too short to create spectrogram patches: {os.path.basename(file_path)}")
-            return None, None
+            return (None, None, None, None) if return_audio else (None, None)
         
         transposed_patches = np.array(spec_patches).transpose(0, 2, 1)
 
@@ -379,7 +378,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
 
     except Exception as e:
         logger.error(f"Spectrogram creation failed for {os.path.basename(file_path)}: {e}", exc_info=True)
-        return None, None
+        return (None, None, None, None) if return_audio else (None, None)
 
 # --- 3. Run Main Models (Embedding and Prediction) ---
     # Initialize variables for cleanup in finally block - MUST be before try block
@@ -511,7 +510,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
 
     except Exception as e:
         logger.error(f"Main model inference failed for {os.path.basename(file_path)}: {e}", exc_info=True)
-        return None, None
+        return (None, None, None, None) if return_audio else (None, None)
     finally:
         # ✅ Always cleanup, even on error
         if should_cleanup_sessions:
@@ -545,10 +544,13 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None):
     except Exception as cleanup_error:
         logger.warning(f"Error during final tensor cleanup: {cleanup_error}")
 
-    return {
+    analysis_result = {
         "tempo": float(tempo), "key": musical_key, "scale": scale,
         "moods": moods, "energy": float(average_energy)
-    }, processed_embeddings
+    }
+    if return_audio:
+        return analysis_result, processed_embeddings, audio, sr
+    return analysis_result, processed_embeddings
 
 
 # --- RQ Task Definitions ---
@@ -557,10 +559,11 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
     from app import (app, JobStatus)
     from app_helper import (redis_conn, get_db, save_task_status, get_task_info_from_db,
                      save_track_analysis_and_embedding, save_clap_embedding, get_clap_embedding,
+                     save_lyrics_embedding, get_lyrics_embedding,
                      TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import analyze_audio_file as clap_analyze, is_clap_available, get_or_cache_other_feature_text_embeddings, compute_other_features_from_clap
     from .mulan_analyzer import analyze_audio_file as mulan_analyze
-    from config import MULAN_ENABLED
+    from config import MULAN_ENABLED, LYRICS_ENABLED, LYRICS_WHISPER_MODEL, LYRICS_LLM_MODEL_PATH
     
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -594,6 +597,14 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         # MusiCNN models will be lazy-loaded on first song that needs analysis
         onnx_sessions = None
         
+        # Lyrics analysis resources (lazy-loaded only if needed)
+        lyrics_whisper_model = None
+        lyrics_llama_model = None
+        lyrics_topic_tokenizer = None
+        lyrics_topic_model = None
+        lyrics_axis_label_map = None
+        lyrics_axis_embeddings = None
+
         # Initialize SessionRecycler to prevent cumulative memory leaks
         # Interval depends on PER_SONG_MODEL_RELOAD setting:
         # - true: Reload every 1 song (aggressive, prevents memory leaks)
@@ -644,6 +655,14 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     existing_clap_ids = {row[0] for row in cur.fetchall()}
                     return set(track_ids_as_strings) - existing_clap_ids
 
+            def get_missing_lyrics_track_ids(track_ids):
+                if not track_ids: return set()
+                with get_db() as conn, conn.cursor() as cur:
+                    track_ids_as_strings = [str(id) for id in track_ids]
+                    cur.execute("SELECT item_id FROM lyrics_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
+                    existing_lyrics_ids = {row[0] for row in cur.fetchall()}
+                    return set(track_ids_as_strings) - existing_lyrics_ids
+
             def get_missing_mulan_track_ids(track_ids):
                 if not track_ids: return set()
                 with get_db() as conn, conn.cursor() as cur:
@@ -655,6 +674,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             existing_track_ids_set = get_existing_track_ids([str(t['Id']) for t in tracks])
             missing_clap_ids_set = get_missing_clap_track_ids([str(t['Id']) for t in tracks]) if is_clap_available() else set()
             missing_mulan_ids_set = get_missing_mulan_track_ids([str(t['Id']) for t in tracks]) if MULAN_ENABLED else set()
+            missing_lyrics_ids_set = get_missing_lyrics_track_ids([str(t['Id']) for t in tracks]) if LYRICS_ENABLED else set()
             total_tracks_in_album = len(tracks)
 
             for idx, item in enumerate(tracks, 1):
@@ -688,6 +708,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 needs_musicnn = track_id_str not in existing_track_ids_set
                 needs_clap = track_id_str in missing_clap_ids_set
                 needs_mulan = track_id_str in missing_mulan_ids_set
+                needs_lyrics = LYRICS_ENABLED and track_id_str in missing_lyrics_ids_set
 
                 # Album name update now handled in main analysis task. If needed, uncomment below:
                 # try:
@@ -698,11 +719,13 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 # except Exception as e:
                 #     logger.warning(f"Failed to update album name for '{track_name_full}': {e}")
 
-                if not needs_musicnn and not needs_clap and not needs_mulan:
+                if not needs_musicnn and not needs_clap and not needs_mulan and not needs_lyrics:
                     tracks_skipped_count += 1
                     status_parts = ["MusiCNN: ✓"]
                     if is_clap_available():
                         status_parts.append("CLAP: ✓")
+                    if LYRICS_ENABLED:
+                        status_parts.append("Lyrics: ✓")
                     if MULAN_ENABLED:
                         status_parts.append("MuLan: ✓")
                     logger.info(f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)})")
@@ -809,7 +832,11 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             # Mark as recycled
                             session_recycler.mark_recycled()
                         
-                        analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions)
+                        if needs_lyrics and LYRICS_ENABLED:
+                            analysis, embedding, track_audio, track_sr = analyze_track(path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions, return_audio=True)
+                        else:
+                            analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions)
+                            track_audio, track_sr = None, None
                         if analysis is None:
                             logger.warning(f"Skipping track {track_name_full} as analysis returned None.")
                             tracks_skipped_count += 1
@@ -918,7 +945,74 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             logger.info(f"  - CLAP embedding saved (512-dim)")
                         except Exception as e:
                             logger.warning(f"  - Failed to save CLAP embedding: {e}")
-                    
+
+                    # Lyrics analysis (optional, included in the same task flow)
+                    if needs_lyrics and LYRICS_ENABLED:
+                        logger.info(f"  - Starting lyrics analysis for {track_name_full}...")
+                        try:
+                            from lyrics.lyrics_transcriber import (
+                                load_whisper_model as lyrics_load_whisper_model,
+                                load_llama_cpp_model as lyrics_load_llama_cpp_model,
+                                transcribe_file_segment as lyrics_transcribe_file_segment,
+                                load_topic_embedding_model as lyrics_load_topic_embedding_model,
+                                compute_axis_label_embeddings as lyrics_compute_axis_label_embeddings,
+                                score_text_against_axes as lyrics_score_text_against_axes,
+                                embed_text_with_roberta as lyrics_embed_text_with_roberta,
+                                MUSIC_ANALYSIS_AXES as LYRICS_MUSIC_ANALYSIS_AXES,
+                            )
+
+                            if lyrics_whisper_model is None:
+                                lyrics_whisper_model = lyrics_load_whisper_model(model_name=LYRICS_WHISPER_MODEL, device='cpu', num_threads=None)
+
+                            if lyrics_llama_model is None and os.path.exists(LYRICS_LLM_MODEL_PATH):
+                                try:
+                                    lyrics_llama_model = lyrics_load_llama_cpp_model(str(LYRICS_LLM_MODEL_PATH), num_threads=1)
+                                except Exception as exc:
+                                    logger.warning(f"  - Could not load lyrics LLM model: {exc}. Falling back to raw transcript.")
+                                    lyrics_llama_model = None
+
+                            if lyrics_topic_tokenizer is None or lyrics_topic_model is None:
+                                lyrics_topic_tokenizer, lyrics_topic_model = lyrics_load_topic_embedding_model()
+
+                            if lyrics_axis_label_map is None or lyrics_axis_embeddings is None:
+                                lyrics_axis_label_map, lyrics_axis_embeddings = lyrics_compute_axis_label_embeddings(LYRICS_MUSIC_ANALYSIS_AXES, lyrics_topic_tokenizer, lyrics_topic_model)
+
+                            lyrics_source = track_audio if track_audio is not None else str(path)
+                            lyrics_result = lyrics_transcribe_file_segment(
+                                lyrics_source,
+                                lyrics_whisper_model,
+                                sr=track_sr,
+                                model_name=LYRICS_WHISPER_MODEL,
+                                device='cpu',
+                                full_song=True,
+                                llama_model=lyrics_llama_model,
+                                source_path=str(path),
+                            )
+
+                            lyrics_text = lyrics_result.get('cleaned_text') or lyrics_result.get('text', '')
+                            if not lyrics_text or len(lyrics_text.split()) < 4:
+                                logger.warning(f"  - Lyrics analysis yielded too little text for {track_name_full}; skipping lyrics embedding.")
+                            else:
+                                lyrics_embedding = lyrics_embed_text_with_roberta(lyrics_text, lyrics_topic_tokenizer, lyrics_topic_model)
+                                if lyrics_embedding is not None and lyrics_embedding.size > 0:
+                                    lyrics_axis_scores = lyrics_score_text_against_axes(
+                                        lyrics_text,
+                                        lyrics_topic_tokenizer,
+                                        lyrics_topic_model,
+                                        lyrics_axis_label_map,
+                                        lyrics_axis_embeddings,
+                                        temperature=0.1,
+                                    )
+                                    save_lyrics_embedding(item['Id'], lyrics_embedding, lyrics_axis_scores)
+                                    logger.info(f"  - Lyrics embedding saved")
+                                    track_processed = True
+                                else:
+                                    logger.warning(f"  - Lyrics embedding failed to produce a vector for {track_name_full}")
+                        except Exception as e:
+                            logger.warning(f"  - Lyrics analysis failed: {e}")
+                    elif LYRICS_ENABLED:
+                        logger.info(f"  - Lyrics analysis already exists or disabled, skipping")
+
                     # MuLan analysis (only if enabled AND needed)
                     if needs_mulan and MULAN_ENABLED:
                         logger.info(f"  - Starting MuLan analysis for {track_name_full}...")

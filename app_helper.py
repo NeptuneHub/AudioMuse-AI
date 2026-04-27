@@ -207,6 +207,14 @@ def init_db():
             cur.execute("CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
             cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')")
             if not cur.fetchone()[0]: cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
+            # Create 'lyrics_embedding' table for lyrics similarity and axis scores
+            cur.execute("CREATE TABLE IF NOT EXISTS lyrics_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'embedding')")
+            if not cur.fetchone()[0]: cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN embedding BYTEA")
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'axis_scores')")
+            if not cur.fetchone()[0]: cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN axis_scores JSONB")
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'updated_at')")
+            if not cur.fetchone()[0]: cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
             # Create 'clap_embedding' table for CLAP text search embeddings
             cur.execute("CREATE TABLE IF NOT EXISTS clap_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
             cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')")
@@ -974,6 +982,54 @@ def get_clap_embedding(item_id):
     except Exception as e:
         logger.error(f"Error loading CLAP embedding for {item_id}: {e}")
         return None
+    finally:
+        cur.close()
+
+
+def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_scores=None):
+    """Saves lyrics embedding and axis scores for a track."""
+    if lyrics_embedding_vector is None or (isinstance(lyrics_embedding_vector, np.ndarray) and lyrics_embedding_vector.size == 0):
+        return
+
+    if axis_scores is None:
+        axis_scores = {}
+
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        embedding_blob = lyrics_embedding_vector.astype(np.float32).tobytes() if isinstance(lyrics_embedding_vector, np.ndarray) else np.asarray(lyrics_embedding_vector, dtype=np.float32).tobytes()
+        cur.execute("""
+            INSERT INTO lyrics_embedding (item_id, embedding, axis_scores) VALUES (%s, %s, %s)
+            ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding, axis_scores = EXCLUDED.axis_scores, updated_at = CURRENT_TIMESTAMP
+        """, (item_id, psycopg2.Binary(embedding_blob), json.dumps(axis_scores)))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error saving lyrics embedding for {item_id}: {e}")
+        raise
+    finally:
+        cur.close()
+
+
+def get_lyrics_embedding(item_id):
+    """Load lyrics embedding and axis scores for a track from the database.
+
+    Returns:
+        tuple(np.ndarray or None, dict or None)
+    """
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT embedding, axis_scores FROM lyrics_embedding WHERE item_id = %s", (item_id,))
+        row = cur.fetchone()
+        if not row:
+            return None, None
+        embedding_blob, axis_scores = row
+        embedding = np.frombuffer(embedding_blob, dtype=np.float32) if embedding_blob is not None else None
+        return embedding, axis_scores
+    except Exception as e:
+        logger.error(f"Error loading lyrics embedding for {item_id}: {e}")
+        return None, None
     finally:
         cur.close()
 
