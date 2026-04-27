@@ -259,7 +259,7 @@ def download_file(url: str, destination: Path) -> None:
 
 
 def ensure_llm_model_exists() -> None:
-    if LYRICS_LLM_MODEL_PATH.exists():
+    if os.path.exists(LYRICS_LLM_MODEL_PATH):
         return
     print(f'LLM cleanup model not found at {LYRICS_LLM_MODEL_PATH}. Downloading Qwen model to local model directory...')
     download_file(LYRICS_LLM_MODEL_URL, LYRICS_LLM_MODEL_PATH)
@@ -349,16 +349,16 @@ def get_marian_model_for_language(source_lang: str):
     return tokenizer, model
 
 
-def ensure_topic_embedding_model_cached(model_name: str = LYRICS_DEFAULT_TOPIC_EMBEDDING_MODEL) -> Path:
+def ensure_topic_embedding_model_cached(model_name: str = LYRICS_DEFAULT_TOPIC_EMBEDDING_MODEL) -> str:
     if AutoTokenizer is None or AutoModel is None:
         raise RuntimeError('transformers is required to cache the topic embedding model.')
     local_path = LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR
-    if local_path.exists():
+    if os.path.exists(local_path):
         return local_path
     print(f'Caching topic embedding model {model_name} to {local_path}')
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModel.from_pretrained(model_name)
-    local_path.mkdir(parents=True, exist_ok=True)
+    os.makedirs(local_path, exist_ok=True)
     tokenizer.save_pretrained(local_path)
     model.save_pretrained(local_path)
     return local_path
@@ -647,11 +647,11 @@ def transcribe_file(audio_path: Path, model) -> str:
 
 def main():
     start_time = time.perf_counter()
-    songs_dir = LYRICS_SONGS_DIR
+    songs_dir = Path(LYRICS_SONGS_DIR)
     if not songs_dir.exists():
         raise SystemExit(f'Songs directory not found: {songs_dir}')
 
-    cache_dir = LYRICS_MODEL_DIR
+    cache_dir = Path(LYRICS_MODEL_DIR)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     corpus_path = cache_dir / 'corpus.jsonl'
@@ -675,7 +675,7 @@ def main():
         audio_files = audio_files[:LYRICS_MAX_SONGS_TO_ANALYZE]
         print(f'Limiting analysis to first {LYRICS_MAX_SONGS_TO_ANALYZE} songs')
 
-    LYRICS_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    Path(LYRICS_MODEL_DIR).mkdir(parents=True, exist_ok=True)
     whisper_model = load_whisper_model(model_name=LYRICS_WHISPER_MODEL, device='cpu', num_threads=None)
     ensure_llm_model_exists()
     llama_model = load_llama_cpp_model(str(LYRICS_LLM_MODEL_PATH), num_threads=1)
