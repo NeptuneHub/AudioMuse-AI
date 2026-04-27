@@ -527,6 +527,13 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
     # Secondary mood models (danceable, aggressive, etc.) have been removed.
     # Other features are now computed via CLAP text-audio similarity in analyze_album_task.
     processed_embeddings = np.mean(embeddings_per_patch, axis=0)
+    analysis_result = {
+        "tempo": float(tempo),
+        "key": musical_key,
+        "scale": scale,
+        "moods": moods,
+        "energy": float(average_energy),
+    }
     
     # CRITICAL: Clean up large tensors before return
     return_values = (analysis_result, processed_embeddings, audio, sr) if return_audio else (analysis_result, processed_embeddings)
