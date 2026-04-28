@@ -68,7 +68,7 @@ stdenvNoCC.mkDerivation {
   meta = with lib; {
     description = "Pre-trained ML models for AudioMuse-AI";
     homepage = "https://github.com/NeptuneHub/AudioMuse-AI";
-    license = licenses.unfree;
+    license = licenses.free;
     platforms = platforms.all;
   };
 }
