@@ -260,23 +260,6 @@ in
       ];
     };
 
-    # Grant database ownership after PostgreSQL starts
-    systemd.services.audiomuse-ai-db-setup = mkIf cfg.postgresql.createLocally {
-      description = "AudioMuse-AI database ownership setup";
-      after = [ "postgresql.service" ];
-      requires = [ "postgresql.service" ];
-      wantedBy = [ "multi-user.target" ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        User = "postgres";
-        ExecStart = let
-          psql = config.services.postgresql.package + "/bin/psql";
-        in
-          "${psql} -c \"ALTER DATABASE \\\"${cfg.postgresql.database}\\\" OWNER TO \\\"${cfg.postgresql.user}\\\"\"";
-      };
-    };
-
     # --- Redis (local) ---
     services.redis.servers.audiomuse-ai = mkIf cfg.redis.createLocally {
       enable = true;
@@ -285,6 +268,23 @@ in
 
     # --- All systemd services ---
     systemd.services = {
+      # --- Database ownership setup ---
+      audiomuse-ai-db-setup = mkIf cfg.postgresql.createLocally {
+        description = "AudioMuse-AI database ownership setup";
+        after = [ "postgresql.service" ];
+        requires = [ "postgresql.service" ];
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          User = "postgres";
+          ExecStart = let
+            psql = config.services.postgresql.package + "/bin/psql";
+          in
+            "${psql} -c \"ALTER DATABASE \\\"${cfg.postgresql.database}\\\" OWNER TO \\\"${cfg.postgresql.user}\\\"\"";
+        };
+      };
+
       # --- Flask web server ---
       audiomuse-ai-flask = {
         description = "AudioMuse-AI Flask Web Server";
