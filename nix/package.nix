@@ -38,7 +38,6 @@ let
       flasgger
       sqlglot
       google-genai
-      mistralai
       pydub
       psutil
       onnx
@@ -78,6 +77,12 @@ let
     hash = "sha256-VFECT7lWOm94GUVkgVHSNChFwOBu+5MExKngiuVxEgk=";
   };
 
+  # nixpkgs mistralai is v2.x but project needs <2.0.0
+  mistralai-wheel = fetchurl {
+    url = "https://files.pythonhosted.org/packages/f9/26/71cca7ceb9d5956511a560c98ba48562bf45ab6dd4dc0a026d2298ee60cf/mistralai-1.11.1-py3-none-any.whl";
+    hash = "sha256-w2LM2IQESL89unyI69loPQdvAogpjdh6UeTL3ubq+sE=";
+  };
+
   # pozalabs-pydub is a fork of pydub fixing a Python 3.12 SyntaxWarning.
   # nixpkgs pydub (already in pythonEnv) works fine — the warning is cosmetic.
 
@@ -104,6 +109,7 @@ let
       cp ${python-mpd2-wheel} wheels/python_mpd2-3.1.1-py2.py3-none-any.whl
       cp ${voyager-wheel} wheels/voyager-2.1.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       cp ${laion-clap-wheel} wheels/laion_clap-1.1.7-py3-none-any.whl
+      cp ${mistralai-wheel} wheels/mistralai-1.11.1-py3-none-any.whl
 
       # Install from local wheel directory (no network needed)
       ${python}/bin/python -m pip install \
@@ -114,7 +120,8 @@ let
         --no-cache-dir \
         python-mpd2 \
         voyager==2.1.0 \
-        laion-clap
+        laion-clap \
+        mistralai==1.11.1
     '';
 
     installPhase = "true";
