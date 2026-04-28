@@ -58,6 +58,8 @@ let
       gunicorn
       zstandard
       umap-learn
+      opentelemetry-api
+      opentelemetry-sdk
     ]
   );
 
