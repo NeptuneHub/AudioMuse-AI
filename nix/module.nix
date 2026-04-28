@@ -61,7 +61,7 @@ let
 
   # Service dependencies
   serviceDeps =
-    optional cfg.postgresql.createLocally "postgresql.service"
+    optional cfg.postgresql.createLocally "audiomuse-ai-db-setup.service"
     ++ optional cfg.redis.createLocally "redis-audiomuse-ai.service";
 
 in
@@ -256,9 +256,25 @@ in
       ensureUsers = [
         {
           name = cfg.postgresql.user;
-          ensureDBOwnership = true;
         }
       ];
+    };
+
+    # Grant database ownership after PostgreSQL starts
+    systemd.services.audiomuse-ai-db-setup = mkIf cfg.postgresql.createLocally {
+      description = "AudioMuse-AI database ownership setup";
+      after = [ "postgresql.service" ];
+      requires = [ "postgresql.service" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        User = "postgres";
+        ExecStart = let
+          psql = config.services.postgresql.package + "/bin/psql";
+        in
+          "${psql} -c \"ALTER DATABASE \\\"${cfg.postgresql.database}\\\" OWNER TO \\\"${cfg.postgresql.user}\\\"\"";
+      };
     };
 
     # --- Redis (local) ---
