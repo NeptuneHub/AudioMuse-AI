@@ -480,13 +480,29 @@ function renderLibraryCheckboxes(libraries, selectedNames) {
     if (!musicLibrariesList) return;
     musicLibrariesList.innerHTML = '';
     currentLibraryCheckboxes = [];
+
+    // Map saved names to lowercase for case-insensitive lookup.
     var selectedLower = {};
-    var hasSelection = Array.isArray(selectedNames) && selectedNames.length > 0;
-    if (hasSelection) {
+    var rawHasSelection = Array.isArray(selectedNames) && selectedNames.length > 0;
+    if (rawHasSelection) {
         for (var i = 0; i < selectedNames.length; i++) {
             selectedLower[String(selectedNames[i]).toLowerCase()] = true;
         }
     }
+    // If the saved selection has no overlap with this provider's libraries
+    // (e.g. names were saved for a different provider, or the user
+    // restructured the server), the "selection" is stale — default to
+    // all-checked rather than rendering an entirely empty list which would
+    // look broken.
+    var anyMatch = false;
+    if (rawHasSelection) {
+        for (var j = 0; j < libraries.length; j++) {
+            var libName = libraries[j] && libraries[j].name ? String(libraries[j].name).toLowerCase() : '';
+            if (libName && selectedLower[libName]) { anyMatch = true; break; }
+        }
+    }
+    var applySelection = rawHasSelection && anyMatch;
+
     libraries.forEach(function(lib) {
         var name = lib && lib.name ? String(lib.name) : '';
         if (!name) return;
@@ -498,7 +514,13 @@ function renderLibraryCheckboxes(libraries, selectedNames) {
         var cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.dataset.libraryName = name;
-        cb.checked = !hasSelection || !!selectedLower[name.toLowerCase()];
+        cb.checked = !applySelection || !!selectedLower[name.toLowerCase()];
+        // Override `.field-row input { width: 100% }` from setup.html — that
+        // global rule would stretch each checkbox across the row and push
+        // the label text to the far right.
+        cb.style.width = 'auto';
+        cb.style.flex = '0 0 auto';
+        cb.style.margin = '0';
         cb.addEventListener('change', updateMusicLibrariesHint);
         row.appendChild(cb);
         row.appendChild(document.createTextNode(name));
