@@ -331,6 +331,12 @@ def get_all_songs(user_creds=None, apply_filter=True):
                     artist_name = s.get('artist', 'Unknown Artist')
                     # artistId in search3 response refers to the album artist
                     artist_id = s.get('artistId')
+                    # Navidrome reports the file path under ``path`` when
+                    # "Report Real Path" is enabled, otherwise it shows up
+                    # in ``url``. Fall back to ``url`` so downstream path
+                    # detection / matching gets the value either way (the
+                    # step-2 test_connection probe already does this).
+                    raw_path = s.get('path') or s.get('url')
                     all_songs.append({
                         'Id': s.get('id'),
                         'Name': title,
@@ -338,10 +344,10 @@ def get_all_songs(user_creds=None, apply_filter=True):
                         'ArtistId': artist_id,
                         'OriginalAlbumArtist': s.get('displayAlbumArtist') or s.get('albumArtist'),
                         'Album': s.get('album'),
-                        'Path': s.get('path'),
+                        'Path': raw_path,
                         'Year': s.get('year'),
                         'Rating': s.get('userRating') if s.get('userRating') else None,
-                        'FilePath': s.get('path'),
+                        'FilePath': raw_path,
                     })
                 
                 offset += len(songs)
@@ -599,6 +605,10 @@ def get_tracks_from_album(album_id, user_creds=None):
             title = s.get('title', 'Unknown')
             artist, artist_id = _select_best_artist(s, title)
             logger.debug(f"getAlbum track '{title}': artist='{artist}', artist_id='{artist_id}', raw_artistId='{s.get('artistId')}', raw_albumArtistId='{s.get('albumArtistId')}'")
+            # ``path`` is the canonical key when "Report Real Path" is on;
+            # ``url`` is the fallback Navidrome uses otherwise. Try both so
+            # path-based migration matching works in either configuration.
+            raw_path = s.get('path') or s.get('url')
             result.append({
                 **s,
                 'Id': s.get('id'),
@@ -607,10 +617,10 @@ def get_tracks_from_album(album_id, user_creds=None):
                 'ArtistId': artist_id,
                 'OriginalAlbumArtist': s.get('displayAlbumArtist') or s.get('albumArtist'),
                 'Album': s.get('album'),
-                'Path': s.get('path'),
+                'Path': raw_path,
                 'Year': s.get('year'),
                 'Rating': s.get('userRating') if s.get('userRating') else None,
-                'FilePath': s.get('path'),
+                'FilePath': raw_path,
             })
         return result
     return []
