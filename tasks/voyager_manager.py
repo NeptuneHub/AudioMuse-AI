@@ -462,6 +462,46 @@ def get_vector_by_id(item_id: str) -> np.ndarray | None:
     """
     return _get_cached_vector(item_id)
 
+
+def get_vectors_by_ids(item_ids) -> dict:
+    """
+    Batch-fetch embedding vectors for many item_ids in parallel.
+
+    Returns a dict mapping str(item_id) -> np.ndarray (or None if missing).
+    Repeat IDs collapse to a single fetch (LRU cache hit). The thread pool
+    is the existing module-level _get_thread_pool() used elsewhere.
+    """
+    if not item_ids:
+        return {}
+
+    unique = []
+    seen = set()
+    for raw in item_ids:
+        sid = str(raw)
+        if sid not in seen:
+            seen.add(sid)
+            unique.append(sid)
+
+    if voyager_index is None or reverse_id_map is None:
+        return {sid: None for sid in unique}
+
+    out = {}
+    if len(unique) <= 4:
+        for sid in unique:
+            out[sid] = _get_cached_vector(sid)
+        return out
+
+    executor = _get_thread_pool()
+    futures = {executor.submit(_get_cached_vector, sid): sid for sid in unique}
+    for fut in as_completed(futures):
+        sid = futures[fut]
+        try:
+            out[sid] = fut.result()
+        except Exception:
+            out[sid] = None
+    return out
+
+
 def _normalize_string(text: str) -> str:
     """Lowercase and strip whitespace."""
     if not text:

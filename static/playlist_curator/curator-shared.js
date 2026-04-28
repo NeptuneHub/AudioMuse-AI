@@ -75,6 +75,20 @@
         }
     }
 
+    // Trailing-debounced save: in-memory state mutates immediately, but the
+    // expensive JSON.stringify + localStorage.setItem is deferred. flushSync()
+    // runs the pending write right now (used before navigation to avoid races).
+    let saveTimer = null;
+    function scheduleSave() {
+        if (saveTimer !== null) return;
+        saveTimer = setTimeout(() => { saveTimer = null; saveWorkbench(); }, 250);
+    }
+    function flushSync() {
+        if (saveTimer !== null) { clearTimeout(saveTimer); saveTimer = null; }
+        saveWorkbench();
+    }
+    window.addEventListener('beforeunload', flushSync);
+
     function getWorkbench() { return workbench; }
 
     // Public mutators — page scripts call these
@@ -82,40 +96,42 @@
         if (!track || !track.item_id) return;
         if (workbench.tracks.some(t => t.item_id === track.item_id)) return;
         workbench.tracks.push(Object.assign({}, track, { source: source || 'search', influence: 0 }));
-        commit();
+        commit({ changedIds: [track.item_id] });
     }
 
     function workbenchAddBulk(tracks, source) {
         if (!Array.isArray(tracks) || tracks.length === 0) return 0;
         const existing = new Set(workbench.tracks.map(t => t.item_id));
         let added = 0;
+        const addedIds = [];
         tracks.forEach(t => {
             if (!t || !t.item_id || existing.has(t.item_id)) return;
             workbench.tracks.push(Object.assign({}, t, { source: source || 'search', influence: 0 }));
             existing.add(t.item_id);
+            addedIds.push(t.item_id);
             added++;
         });
-        if (added > 0) commit();
+        if (added > 0) commit({ changedIds: addedIds });
         return added;
     }
 
     function workbenchRemove(itemId) {
         const before = workbench.tracks.length;
         workbench.tracks = workbench.tracks.filter(t => t.item_id !== itemId);
-        if (workbench.tracks.length !== before) commit();
+        if (workbench.tracks.length !== before) commit({ changedIds: [itemId] });
     }
 
     function workbenchSetInfluence(itemId, level) {
         const track = workbench.tracks.find(t => t.item_id === itemId);
         if (!track) return;
         track.influence = ((level % 4) + 4) % 4;
-        commit();
+        commit({ changedIds: [itemId] });
     }
 
     function workbenchClear() {
         if (workbench.tracks.length === 0) return;
         workbench = { tracks: [] };
-        commit();
+        commit({ changedIds: null });
     }
 
     function workbenchHas(itemId) {
@@ -127,11 +143,14 @@
         return t ? (t.influence || 0) : 0;
     }
 
-    function commit() {
-        saveWorkbench();
+    function commit(detail) {
+        scheduleSave();
         renderWorkbench();
-        // Let pages react (e.g. re-paint result rows that should turn green)
-        document.dispatchEvent(new CustomEvent('curator:workbench:changed'));
+        // Let pages react (e.g. re-paint result rows that should turn green).
+        // detail.changedIds is null for "everything changed" (clear, cross-tab sync).
+        document.dispatchEvent(new CustomEvent('curator:workbench:changed', {
+            detail: detail || { changedIds: null }
+        }));
     }
 
     // Cross-tab sync
@@ -139,7 +158,9 @@
         if (e.key !== STORAGE_KEY) return;
         workbench = loadWorkbench();
         renderWorkbench();
-        document.dispatchEvent(new CustomEvent('curator:workbench:changed'));
+        document.dispatchEvent(new CustomEvent('curator:workbench:changed', {
+            detail: { changedIds: null }
+        }));
     });
 
     window.workbenchAdd = workbenchAdd;
@@ -149,6 +170,7 @@
     window.workbenchClear = workbenchClear;
     window.workbenchHas = workbenchHas;
     window.workbenchGetInfluence = workbenchGetInfluence;
+    window.workbenchFlushSync = flushSync;
     window.getWorkbench = getWorkbench;
 
     // ---------- Workbench rendering ----------

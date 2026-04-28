@@ -54,6 +54,37 @@
     let filterOptions = { keys: [], scales: [], moods: [], features: [], bpm_ranges: [], energy_ranges: [], rating_ranges: [], year_ranges: [] };
     let lastResults = [];
     let skippedIds = new Set();
+    let renderToken = 0;
+
+    // Pagination state — Smart Search returns pages of `per_page`. lastResults
+    // is the union of all pages currently loaded (single page after Run search;
+    // grows when "Load all" walks remaining pages).
+    let lastPayload = null;
+    let lastTotal = 0;
+    let lastPage = 1;
+    let lastPerPage = 500;
+    let loadAllAbort = null; // { aborted: bool }
+
+    // Render `rows` into `container` in chunks across animation frames so a
+    // 5 000-row paint doesn't block the main thread. The first chunk is large
+    // (so above-the-fold rows appear instantly); later chunks are smaller.
+    // Subsequent calls cancel any in-flight chunked render via renderToken.
+    function renderInChunks(container, rows, rowFn, opts) {
+        const opt = opts || {};
+        const firstChunk = opt.firstChunk || 500;
+        const chunkSize = opt.chunkSize || 200;
+        const myToken = ++renderToken;
+        let i = 0;
+        const renderSlice = (n) => {
+            if (myToken !== renderToken || !container.isConnected) return;
+            const slice = rows.slice(i, Math.min(i + n, rows.length));
+            if (slice.length === 0) return;
+            container.insertAdjacentHTML('beforeend', slice.map(rowFn).join(''));
+            i += slice.length;
+            if (i < rows.length) requestAnimationFrame(() => renderSlice(chunkSize));
+        };
+        renderSlice(firstChunk);
+    }
 
     // ---------- Filter builder ----------
     function addFilterRow(initial) {
@@ -225,7 +256,13 @@
             included_ids: [],
             excluded_ids: [],
             search_only: true,
+            page: 1,
+            per_page: 500,
         };
+
+        // Cancel any in-flight Load-all from a previous search
+        if (loadAllAbort) loadAllAbort.aborted = true;
+        loadAllAbort = null;
 
         try {
             const res = await fetch('/api/curator/search', {
@@ -236,14 +273,125 @@
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Search failed');
             lastResults = Array.isArray(data.results) ? data.results : [];
+            lastPayload = payload;
+            lastTotal = data.total != null ? data.total : lastResults.length;
+            lastPage = data.page || 1;
+            lastPerPage = data.per_page || 500;
             skippedIds = new Set();
             renderResults();
+            renderPagination();
             window.curatorSetStatus(statusId, '', '');
         } catch (e) {
             window.curatorSetStatus(statusId, e.message || 'Search failed', 'error');
         } finally {
             if (runBtn) runBtn.disabled = false;
             if (sendBtn) sendBtn.disabled = false;
+        }
+    }
+
+    // ---------- Pagination ----------
+    async function fetchPage(page) {
+        if (!lastPayload) return;
+        const statusId = 'curator-search-status';
+        const payload = Object.assign({}, lastPayload, { page });
+        window.curatorSetStatus(statusId, `Loading page ${page}…`, 'loading');
+        try {
+            const res = await fetch('/api/curator/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Page load failed');
+            lastResults = Array.isArray(data.results) ? data.results : [];
+            lastTotal = data.total != null ? data.total : lastResults.length;
+            lastPage = data.page || page;
+            lastPerPage = data.per_page || lastPerPage;
+            skippedIds = new Set();
+            renderResults();
+            renderPagination();
+            window.curatorSetStatus(statusId, '', '');
+        } catch (e) {
+            window.curatorSetStatus(statusId, e.message || 'Page load failed', 'error');
+        }
+    }
+
+    async function loadAllPages() {
+        if (!lastPayload || lastTotal <= lastResults.length) return;
+        const statusId = 'curator-loadall-status';
+        const totalPages = Math.ceil(lastTotal / lastPerPage);
+        // Discover starting point: lastPage already loaded, fetch remaining
+        const abort = { aborted: false };
+        loadAllAbort = abort;
+        const cancelBtn = document.getElementById('curator-page-loadall-cancel');
+        const loadBtn = document.getElementById('curator-page-loadall');
+        const prevBtn = document.getElementById('curator-page-prev');
+        const nextBtn = document.getElementById('curator-page-next');
+        if (cancelBtn) cancelBtn.classList.remove('hidden');
+        if (loadBtn) loadBtn.disabled = true;
+        if (prevBtn) prevBtn.disabled = true;
+        if (nextBtn) nextBtn.disabled = true;
+
+        try {
+            for (let p = lastPage + 1; p <= totalPages; p++) {
+                if (abort.aborted) break;
+                const statusEl = document.getElementById(statusId);
+                if (statusEl) statusEl.textContent = `Loading page ${p} of ${totalPages}…`;
+                const payload = Object.assign({}, lastPayload, { page: p });
+                const res = await fetch('/api/curator/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                if (abort.aborted) break;
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Load all failed');
+                if (Array.isArray(data.results) && data.results.length > 0) {
+                    lastResults = lastResults.concat(data.results);
+                    lastPage = data.page || p;
+                }
+            }
+            if (!abort.aborted) {
+                renderResults();
+                renderPagination();
+                const statusEl = document.getElementById(statusId);
+                if (statusEl) statusEl.textContent = `Loaded ${lastResults.length} of ${lastTotal}`;
+            }
+        } catch (e) {
+            const statusEl = document.getElementById(statusId);
+            if (statusEl) statusEl.textContent = e.message || 'Load all failed';
+        } finally {
+            if (cancelBtn) cancelBtn.classList.add('hidden');
+            if (loadBtn) loadBtn.disabled = false;
+            renderPagination();
+            if (loadAllAbort === abort) loadAllAbort = null;
+        }
+    }
+
+    function renderPagination() {
+        const wrap = document.getElementById('curator-pagination');
+        const indicator = document.getElementById('curator-page-indicator');
+        const prev = document.getElementById('curator-page-prev');
+        const next = document.getElementById('curator-page-next');
+        const loadAll = document.getElementById('curator-page-loadall');
+        const totalEl = document.getElementById('curator-results-total');
+
+        const totalPages = lastPerPage > 0 ? Math.ceil(lastTotal / lastPerPage) : 1;
+        const showPager = lastTotal > lastPerPage;
+
+        if (wrap) wrap.classList.toggle('hidden', !showPager);
+        if (indicator) indicator.textContent = `Page ${lastPage} / ${totalPages || 1}`;
+        if (prev) prev.disabled = lastPage <= 1;
+        if (next) next.disabled = lastPage >= totalPages;
+        if (loadAll) {
+            const remaining = lastTotal - lastResults.length;
+            loadAll.disabled = remaining <= 0;
+            loadAll.textContent = remaining > 0 ? `Load all (${lastTotal})` : 'All loaded';
+        }
+        if (totalEl) {
+            totalEl.textContent = lastTotal > lastResults.length
+                ? ` of ${lastTotal} on page ${lastPage}/${totalPages}`
+                : (lastTotal > 0 ? ` of ${lastTotal}` : '');
         }
     }
 
@@ -275,18 +423,26 @@
         const wrap = document.getElementById('curator-results-table-wrap');
         const cards = document.getElementById('curator-results-cards');
         if (visible.length === 0) {
+            // Cancel any in-flight chunked render before swapping in the empty state
+            renderToken++;
             const empty = `<div class="curator-empty-state">No tracks match these rules. Try loosening one.</div>`;
             if (wrap) wrap.innerHTML = empty;
             if (cards) cards.innerHTML = empty;
             return;
         }
 
-        if (wrap) wrap.innerHTML = renderTable(visible);
-        if (cards) cards.innerHTML = renderCards(visible);
+        if (wrap) {
+            wrap.innerHTML = renderTableShell();
+            const tbody = wrap.querySelector('tbody');
+            if (tbody) renderInChunks(tbody, visible, rowHtml);
+        }
+        if (cards) {
+            cards.innerHTML = '';
+            renderInChunks(cards, visible, cardHtml);
+        }
     }
 
-    function renderTable(rows) {
-        const trs = rows.map(t => rowHtml(t)).join('');
+    function renderTableShell() {
         return `<div class="curator-card flush">
             <table class="curator-table">
                 <thead><tr>
@@ -297,7 +453,7 @@
                     <th class="col-bpm">BPM</th>
                     <th class="col-actions">Action</th>
                 </tr></thead>
-                <tbody>${trs}</tbody>
+                <tbody></tbody>
             </table>
         </div>`;
     }
@@ -337,30 +493,57 @@
         </tr>`;
     }
 
-    function renderCards(rows) {
-        return rows.map(t => {
-            const inWb = window.workbenchHas(t.item_id);
-            const id = escHtml(t.item_id);
-            const artist = escHtml(t.song_artist || t.author || 'Unknown');
-            const title = escHtml(t.title || 'Unknown');
-            const yearText = t.year ? escHtml(t.year) : '';
-            const stream = '/api/curator/stream/' + encodeURIComponent(t.item_id);
+    function cardHtml(t) {
+        const inWb = window.workbenchHas(t.item_id);
+        const id = escHtml(t.item_id);
+        const artist = escHtml(t.song_artist || t.author || 'Unknown');
+        const title = escHtml(t.title || 'Unknown');
+        const yearText = t.year ? escHtml(t.year) : '';
+        const stream = '/api/curator/stream/' + encodeURIComponent(t.item_id);
 
-            const actions = inWb ? `
-                <button type="button" class="curator-added-text" data-wb-remove="${id}">${ICONS.check} Added</button>` : `
-                <div class="curator-track-card-actions">
-                    <button type="button" class="curator-btn" data-kind="success" data-size="sm" data-search-add="${id}">+ Add</button>
-                    <button type="button" class="curator-btn" data-kind="secondary" data-size="sm" data-search-skip="${id}">Skip</button>
-                </div>`;
-            return `<div class="curator-track-card ${inWb ? 'in-wb' : ''}" data-row-id="${id}">
-                <button type="button" class="curator-icon-btn" data-stream="${escHtml(stream)}" data-item-id="${id}" data-title="${title}" data-artist="${artist}">${ICONS.play}</button>
-                <div class="curator-track-card-meta">
-                    <div class="curator-track-card-title">${title}</div>
-                    <div class="curator-track-card-sub">${artist}${yearText ? ' · ' + yearText : ''}</div>
-                </div>
-                ${actions}
+        const actions = inWb ? `
+            <button type="button" class="curator-added-text" data-wb-remove="${id}">${ICONS.check} Added</button>` : `
+            <div class="curator-track-card-actions">
+                <button type="button" class="curator-btn" data-kind="success" data-size="sm" data-search-add="${id}">+ Add</button>
+                <button type="button" class="curator-btn" data-kind="secondary" data-size="sm" data-search-skip="${id}">Skip</button>
             </div>`;
-        }).join('');
+        return `<div class="curator-track-card ${inWb ? 'in-wb' : ''}" data-row-id="${id}">
+            <button type="button" class="curator-icon-btn" data-stream="${escHtml(stream)}" data-item-id="${id}" data-title="${title}" data-artist="${artist}">${ICONS.play}</button>
+            <div class="curator-track-card-meta">
+                <div class="curator-track-card-title">${title}</div>
+                <div class="curator-track-card-sub">${artist}${yearText ? ' · ' + yearText : ''}</div>
+            </div>
+            ${actions}
+        </div>`;
+    }
+
+    // Surgical per-row swap. Returns true when at least one row was updated;
+    // caller falls back to renderResults() when false (e.g. id not on this page).
+    function updateRowsForChanges(changedIds) {
+        if (!Array.isArray(changedIds) || changedIds.length === 0) return false;
+        if (lastResults.length === 0) return false;
+        const idSet = new Set(changedIds.map(String));
+        const tracks = lastResults.filter(r => idSet.has(String(r.item_id)));
+        if (tracks.length === 0) return false;
+        let updated = false;
+        tracks.forEach(t => {
+            const sel = `[data-row-id="${CSS.escape(String(t.item_id))}"]`;
+            const tr = document.querySelector('tr' + sel);
+            if (tr) {
+                const tmp = document.createElement('tbody');
+                tmp.innerHTML = rowHtml(t);
+                const next = tmp.firstElementChild;
+                if (next) { tr.replaceWith(next); updated = true; }
+            }
+            const card = document.querySelector('.curator-track-card' + sel);
+            if (card) {
+                const tmp = document.createElement('div');
+                tmp.innerHTML = cardHtml(t);
+                const next = tmp.firstElementChild;
+                if (next) { card.replaceWith(next); updated = true; }
+            }
+        });
+        return updated;
     }
 
     // ---------- Send to Extender ----------
@@ -368,6 +551,9 @@
         const visible = visibleResults();
         if (visible.length === 0) return;
         const added = window.workbenchAddBulk(visible, 'search');
+        // The save normally runs on a 250ms debounce. Force a synchronous flush
+        // so the localStorage write completes before navigation aborts the page.
+        if (typeof window.workbenchFlushSync === 'function') window.workbenchFlushSync();
         window.curatorToast(`Sent ${added > 0 ? added : visible.length} track${(added || visible.length) === 1 ? '' : 's'} to Extender.`, 'success');
         window.location.href = '/playlist_curator/extender';
     }
@@ -404,6 +590,10 @@
             addFilterRow();
             lastResults = [];
             skippedIds = new Set();
+            lastPayload = null;
+            lastTotal = 0;
+            lastPage = 1;
+            if (loadAllAbort) loadAllAbort.aborted = true;
             const section = document.getElementById('curator-results-section');
             if (section) section.classList.add('hidden');
             window.curatorSetStatus('curator-search-status', '', '');
@@ -412,6 +602,23 @@
         // Send to Extender
         const sendBtn = document.getElementById('curator-search-send');
         if (sendBtn) sendBtn.addEventListener('click', sendAllToExtender);
+
+        // Pagination
+        const prevBtn = document.getElementById('curator-page-prev');
+        if (prevBtn) prevBtn.addEventListener('click', () => {
+            if (lastPage > 1) fetchPage(lastPage - 1);
+        });
+        const nextBtn = document.getElementById('curator-page-next');
+        if (nextBtn) nextBtn.addEventListener('click', () => {
+            const totalPages = lastPerPage > 0 ? Math.ceil(lastTotal / lastPerPage) : 1;
+            if (lastPage < totalPages) fetchPage(lastPage + 1);
+        });
+        const loadAllBtn = document.getElementById('curator-page-loadall');
+        if (loadAllBtn) loadAllBtn.addEventListener('click', loadAllPages);
+        const cancelBtn = document.getElementById('curator-page-loadall-cancel');
+        if (cancelBtn) cancelBtn.addEventListener('click', () => {
+            if (loadAllAbort) loadAllAbort.aborted = true;
+        });
 
         // Add / Skip delegation
         document.addEventListener('click', (e) => {
@@ -433,8 +640,22 @@
         });
 
         // Re-paint results when workbench changes (other tab, sheet ×, etc.)
-        document.addEventListener('curator:workbench:changed', () => {
-            if (lastResults.length > 0) renderResults();
+        document.addEventListener('curator:workbench:changed', (e) => {
+            if (lastResults.length === 0) return;
+            const changedIds = e && e.detail ? e.detail.changedIds : null;
+            if (changedIds && updateRowsForChanges(changedIds)) {
+                // Surgical swap succeeded; "Send N to Extender" button label may need a refresh.
+                const sendBtn = document.getElementById('curator-search-send');
+                if (sendBtn && typeof visibleResults === 'function') {
+                    const visible = visibleResults();
+                    sendBtn.classList.toggle('hidden', visible.length === 0);
+                    if (visible.length > 0) {
+                        sendBtn.innerHTML = `Send ${visible.length} to Extender <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 5l7 7-7 7"/></svg>`;
+                    }
+                }
+                return;
+            }
+            renderResults();
         });
     }
 

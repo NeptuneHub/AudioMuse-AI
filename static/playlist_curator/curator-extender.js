@@ -23,6 +23,83 @@
     let yearMin = null;
     let yearMax = null;
     let serverPlaylistsLoaded = false;
+    let renderToken = 0;
+
+    function renderInChunks(container, rows, rowFn, opts) {
+        const opt = opts || {};
+        const firstChunk = opt.firstChunk || 500;
+        const chunkSize = opt.chunkSize || 200;
+        const myToken = ++renderToken;
+        let i = 0;
+        const renderSlice = (n) => {
+            if (myToken !== renderToken || !container.isConnected) return;
+            const slice = rows.slice(i, Math.min(i + n, rows.length));
+            if (slice.length === 0) return;
+            container.insertAdjacentHTML('beforeend', slice.map(rowFn).join(''));
+            i += slice.length;
+            if (i < rows.length) requestAnimationFrame(() => renderSlice(chunkSize));
+        };
+        renderSlice(firstChunk);
+    }
+
+    function debounce(fn, ms) {
+        let h = null;
+        return function () {
+            if (h !== null) clearTimeout(h);
+            const args = arguments;
+            h = setTimeout(() => { h = null; fn.apply(null, args); }, ms);
+        };
+    }
+
+    // Toggle dup-warn / hidden state on existing rows without rebuilding HTML.
+    // Only touches rows that have data-dup-distance (i.e. actual near-dup candidates).
+    function applyDupVisibility() {
+        const dupModeEl = document.getElementById('curator-dup-mode');
+        const dupSliderEl = document.getElementById('curator-dup-threshold');
+        if (!dupModeEl || !dupSliderEl) return;
+        const dupMode = dupModeEl.value;
+        const dupSlider = parseFloat(dupSliderEl.value);
+        const flagDups = dupMode !== 'off';
+        const hideDups = dupMode === 'hide';
+
+        const wrap = document.getElementById('curator-results-table-wrap');
+        const cards = document.getElementById('curator-results-cards');
+        const containers = [wrap, cards].filter(Boolean);
+        let visibleCount = 0;
+        // Count non-dup rows once (cheap: querySelectorAll on table only)
+        const tbody = wrap ? wrap.querySelector('tbody') : null;
+        const allRows = tbody ? tbody.querySelectorAll('tr[data-row-id]') : [];
+        allRows.forEach(tr => {
+            const hasDup = tr.hasAttribute('data-dup-distance');
+            if (!hasDup) { visibleCount++; return; }
+            const dist = parseFloat(tr.getAttribute('data-dup-distance'));
+            const isDup = flagDups && dist < dupSlider;
+            const isInWb = tr.classList.contains('in-wb');
+            if (!isInWb) tr.classList.toggle('dup-warn', isDup);
+            const hide = hideDups && isDup;
+            tr.style.display = hide ? 'none' : '';
+            if (!hide) visibleCount++;
+            const badge = tr.querySelector('.curator-dup-badge');
+            if (badge) badge.style.display = isDup ? '' : 'none';
+        });
+        // Mirror state to card list
+        if (cards) {
+            cards.querySelectorAll('.curator-track-card[data-row-id]').forEach(card => {
+                const hasDup = card.hasAttribute('data-dup-distance');
+                if (!hasDup) return;
+                const dist = parseFloat(card.getAttribute('data-dup-distance'));
+                const isDup = flagDups && dist < dupSlider;
+                const isInWb = card.classList.contains('in-wb');
+                if (!isInWb) card.classList.toggle('dup-warn', isDup);
+                card.style.display = (hideDups && isDup) ? 'none' : '';
+                const badge = card.querySelector('.curator-dup-badge');
+                if (badge) badge.style.display = isDup ? '' : 'none';
+            });
+        }
+        const headCount = document.getElementById('curator-results-count');
+        if (headCount) headCount.textContent = visibleCount;
+    }
+    const applyDupVisibilityDebounced = debounce(applyDupVisibility, 120);
 
     // ---------- Initial state from form controls ----------
     function readControl(id, fallback) {
@@ -262,29 +339,50 @@
         const dupMode = document.getElementById('curator-dup-mode').value;
         const dupSlider = parseFloat(document.getElementById('curator-dup-threshold').value);
         const flagDups = dupMode !== 'off';
-        const hideDups = dupMode === 'hide';
-
-        const visible = lastResults.filter(r => {
-            const isDup = flagDups && r.duplicate_of && r.duplicate_of.distance < dupSlider;
-            if (hideDups && isDup) return false;
-            return true;
-        });
-
-        const headCount = document.getElementById('curator-results-count');
-        if (headCount) headCount.textContent = visible.length;
 
         const wrap = document.getElementById('curator-results-table-wrap');
         const cards = document.getElementById('curator-results-cards');
 
-        if (visible.length === 0) {
+        if (lastResults.length === 0) {
+            renderToken++;
             const empty = `<div class="curator-empty-state">No similar tracks found. Try raising the threshold.</div>`;
             if (wrap) wrap.innerHTML = empty;
             if (cards) cards.innerHTML = empty;
+            const headCount = document.getElementById('curator-results-count');
+            if (headCount) headCount.textContent = 0;
             return;
         }
 
-        if (wrap) wrap.innerHTML = renderTable(visible, dupSlider, flagDups);
-        if (cards) cards.innerHTML = renderCards(visible, dupSlider, flagDups);
+        // Render all rows in chunks; applyDupVisibility hides flagged rows and
+        // updates the count header. Streaming via rAF keeps the main thread free.
+        const rowFn = t => rowHtml(t, dupSlider, flagDups);
+        const cardFn = t => cardHtml(t, dupSlider, flagDups);
+        if (wrap) {
+            wrap.innerHTML = renderTableShell();
+            const tbody = wrap.querySelector('tbody');
+            if (tbody) renderInChunks(tbody, lastResults, rowFn);
+        }
+        if (cards) {
+            cards.innerHTML = '';
+            renderInChunks(cards, lastResults, cardFn);
+        }
+        applyDupVisibility();
+    }
+
+    function renderTableShell() {
+        return `<div class="curator-card flush">
+            <table class="curator-table">
+                <thead><tr>
+                    <th class="col-play"></th>
+                    <th>Title / Artist</th>
+                    <th>Album</th>
+                    <th class="col-distance">Distance</th>
+                    <th class="col-influence">Influence</th>
+                    <th class="col-actions">Action</th>
+                </tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>`;
     }
 
     function rowMeta(t) {
@@ -297,89 +395,117 @@
         return { id, artist, title, album, stream, distance };
     }
 
-    function renderTable(rows, dupSlider, flagDups) {
-        const trs = rows.map(t => {
-            const inWb = window.workbenchHas(t.item_id);
-            const isDup = flagDups && t.duplicate_of && t.duplicate_of.distance < dupSlider;
-            const rowCls = inWb ? 'in-wb' : (isDup ? 'dup-warn' : '');
-            const m = rowMeta(t);
-            const inf = window.workbenchGetInfluence(t.item_id);
-            const infInfo = getInfluenceInfo(inf);
-            const dupBadge = isDup
-                ? `<div style="margin-top:4px;"><span class="curator-pill" data-tone="warn">${ICONS.warn} Near-duplicate (${t.duplicate_of.distance.toFixed(3)})</span></div>`
-                : '';
-            const influenceCell = inWb
-                ? `<button type="button" class="curator-influence-btn" data-level="${inf}" data-influence-id="${m.id}" title="${escHtml(infInfo.tip)}">${escHtml(infInfo.label)}</button>`
-                : `<span style="color:var(--text-muted);font-size:11px;">—</span>`;
-            const actionHtml = inWb ? `
-                <div class="curator-row-actions">
-                    <span class="curator-pill" data-tone="success">${ICONS.check} In Workbench</span>
-                    <button type="button" class="curator-remove-x" data-wb-remove="${m.id}" title="Remove from Workbench">${ICONS.x}</button>
-                </div>` : `
-                <div class="curator-row-actions">
-                    <button type="button" class="curator-btn" data-kind="success" data-size="sm" data-extend-add="${m.id}">${ICONS.plus} Add</button>
-                </div>`;
+    function rowHtml(t, dupSlider, flagDups) {
+        const inWb = window.workbenchHas(t.item_id);
+        const dupDist = (t.duplicate_of && typeof t.duplicate_of.distance === 'number') ? t.duplicate_of.distance : null;
+        const isDup = flagDups && dupDist !== null && dupDist < dupSlider;
+        const rowCls = inWb ? 'in-wb' : (isDup ? 'dup-warn' : '');
+        const m = rowMeta(t);
+        const inf = window.workbenchGetInfluence(t.item_id);
+        const infInfo = getInfluenceInfo(inf);
+        // Always emit the badge for rows with duplicate_of so the slider can
+        // toggle visibility without rebuilding the row HTML.
+        const dupBadge = dupDist !== null
+            ? `<div class="curator-dup-badge" style="margin-top:4px;${isDup ? '' : 'display:none;'}"><span class="curator-pill" data-tone="warn">${ICONS.warn} Near-duplicate (${dupDist.toFixed(3)})</span></div>`
+            : '';
+        const influenceCell = inWb
+            ? `<button type="button" class="curator-influence-btn" data-level="${inf}" data-influence-id="${m.id}" title="${escHtml(infInfo.tip)}">${escHtml(infInfo.label)}</button>`
+            : `<span style="color:var(--text-muted);font-size:11px;">—</span>`;
+        const actionHtml = inWb ? `
+            <div class="curator-row-actions">
+                <span class="curator-pill" data-tone="success">${ICONS.check} In Workbench</span>
+                <button type="button" class="curator-remove-x" data-wb-remove="${m.id}" title="Remove from Workbench">${ICONS.x}</button>
+            </div>` : `
+            <div class="curator-row-actions">
+                <button type="button" class="curator-btn" data-kind="success" data-size="sm" data-extend-add="${m.id}">${ICONS.plus} Add</button>
+            </div>`;
+        const dupAttr = dupDist !== null ? ` data-dup-distance="${dupDist}"` : '';
+        return `<tr class="${rowCls}" data-row-id="${m.id}"${dupAttr}>
+            <td class="col-play">
+                <button type="button" class="curator-icon-btn" data-stream="${escHtml(m.stream)}" data-item-id="${m.id}" data-title="${m.title}" data-artist="${m.artist}">${ICONS.play}</button>
+            </td>
+            <td>
+                <div class="curator-track-cell-title">${m.title}</div>
+                <div class="curator-track-cell-sub">${m.artist}</div>
+                ${dupBadge}
+            </td>
+            <td class="col-album">${m.album}</td>
+            <td class="col-distance">${m.distance}</td>
+            <td class="col-influence">${influenceCell}</td>
+            <td class="col-actions">${actionHtml}</td>
+        </tr>`;
+    }
 
-            return `<tr class="${rowCls}" data-row-id="${m.id}">
-                <td class="col-play">
-                    <button type="button" class="curator-icon-btn" data-stream="${escHtml(m.stream)}" data-item-id="${m.id}" data-title="${m.title}" data-artist="${m.artist}">${ICONS.play}</button>
-                </td>
-                <td>
-                    <div class="curator-track-cell-title">${m.title}</div>
-                    <div class="curator-track-cell-sub">${m.artist}</div>
-                    ${dupBadge}
-                </td>
-                <td class="col-album">${m.album}</td>
-                <td class="col-distance">${m.distance}</td>
-                <td class="col-influence">${influenceCell}</td>
-                <td class="col-actions">${actionHtml}</td>
-            </tr>`;
-        }).join('');
+    function cardHtml(t, dupSlider, flagDups) {
+        const inWb = window.workbenchHas(t.item_id);
+        const dupDist = (t.duplicate_of && typeof t.duplicate_of.distance === 'number') ? t.duplicate_of.distance : null;
+        const isDup = flagDups && dupDist !== null && dupDist < dupSlider;
+        const cardCls = inWb ? 'in-wb' : (isDup ? 'dup-warn' : '');
+        const m = rowMeta(t);
+        const inf = window.workbenchGetInfluence(t.item_id);
+        const infInfo = getInfluenceInfo(inf);
 
-        return `<div class="curator-card flush">
-            <table class="curator-table">
-                <thead><tr>
-                    <th class="col-play"></th>
-                    <th>Title / Artist</th>
-                    <th>Album</th>
-                    <th class="col-distance">Distance</th>
-                    <th class="col-influence">Influence</th>
-                    <th class="col-actions">Action</th>
-                </tr></thead>
-                <tbody>${trs}</tbody>
-            </table>
+        const action = inWb ? `
+            <button type="button" class="curator-added-text" data-wb-remove="${m.id}">${ICONS.check} Added</button>` : `
+            <button type="button" class="curator-btn" data-kind="success" data-size="sm" data-extend-add="${m.id}">+ Add</button>`;
+        const inflBtn = inWb
+            ? `<div style="margin-top:6px;"><button type="button" class="curator-influence-btn" data-level="${inf}" data-influence-id="${m.id}" title="${escHtml(infInfo.tip)}">${escHtml(infInfo.label)}</button></div>`
+            : '';
+        const dup = dupDist !== null
+            ? `<div class="curator-dup-badge" style="margin-top:6px;${isDup ? '' : 'display:none;'}"><span class="curator-pill" data-tone="warn">${ICONS.warn} Near-duplicate</span></div>`
+            : '';
+        const dupAttr = dupDist !== null ? ` data-dup-distance="${dupDist}"` : '';
+
+        return `<div class="curator-track-card ${cardCls}" data-row-id="${m.id}"${dupAttr}>
+            <div style="display:flex;align-items:center;gap:10px;width:100%;">
+                <button type="button" class="curator-icon-btn" data-stream="${escHtml(m.stream)}" data-item-id="${m.id}" data-title="${m.title}" data-artist="${m.artist}">${ICONS.play}</button>
+                <div class="curator-track-card-meta">
+                    <div class="curator-track-card-title">${m.title}</div>
+                    <div class="curator-track-card-sub">${m.artist} · dist ${m.distance}</div>
+                </div>
+                ${action}
+            </div>
+            ${inflBtn}${dup}
         </div>`;
     }
 
-    function renderCards(rows, dupSlider, flagDups) {
-        return rows.map(t => {
-            const inWb = window.workbenchHas(t.item_id);
-            const isDup = flagDups && t.duplicate_of && t.duplicate_of.distance < dupSlider;
-            const cardCls = inWb ? 'in-wb' : (isDup ? 'dup-warn' : '');
-            const m = rowMeta(t);
-            const inf = window.workbenchGetInfluence(t.item_id);
-            const infInfo = getInfluenceInfo(inf);
+    // Read current dup-mode state straight from the DOM so per-row swaps stay
+    // in sync with whatever the user has selected without re-running the full filter.
+    function currentDupState() {
+        const slider = document.getElementById('curator-dup-threshold');
+        const mode = document.getElementById('curator-dup-mode');
+        return {
+            dupSlider: slider ? parseFloat(slider.value) : 0.05,
+            flagDups: !!mode && mode.value !== 'off',
+        };
+    }
 
-            const action = inWb ? `
-                <button type="button" class="curator-added-text" data-wb-remove="${m.id}">${ICONS.check} Added</button>` : `
-                <button type="button" class="curator-btn" data-kind="success" data-size="sm" data-extend-add="${m.id}">+ Add</button>`;
-            const inflBtn = inWb
-                ? `<div style="margin-top:6px;"><button type="button" class="curator-influence-btn" data-level="${inf}" data-influence-id="${m.id}" title="${escHtml(infInfo.tip)}">${escHtml(infInfo.label)}</button></div>`
-                : '';
-            const dup = isDup ? `<div style="margin-top:6px;"><span class="curator-pill" data-tone="warn">${ICONS.warn} Near-duplicate</span></div>` : '';
-
-            return `<div class="curator-track-card ${cardCls}" data-row-id="${m.id}">
-                <div style="display:flex;align-items:center;gap:10px;width:100%;">
-                    <button type="button" class="curator-icon-btn" data-stream="${escHtml(m.stream)}" data-item-id="${m.id}" data-title="${m.title}" data-artist="${m.artist}">${ICONS.play}</button>
-                    <div class="curator-track-card-meta">
-                        <div class="curator-track-card-title">${m.title}</div>
-                        <div class="curator-track-card-sub">${m.artist} · dist ${m.distance}</div>
-                    </div>
-                    ${action}
-                </div>
-                ${inflBtn}${dup}
-            </div>`;
-        }).join('');
+    function updateRowsForChanges(changedIds) {
+        if (!Array.isArray(changedIds) || changedIds.length === 0) return false;
+        if (lastResults.length === 0) return false;
+        const idSet = new Set(changedIds.map(String));
+        const tracks = lastResults.filter(r => idSet.has(String(r.item_id)));
+        if (tracks.length === 0) return false;
+        const { dupSlider, flagDups } = currentDupState();
+        let updated = false;
+        tracks.forEach(t => {
+            const sel = `[data-row-id="${CSS.escape(String(t.item_id))}"]`;
+            const tr = document.querySelector('tr' + sel);
+            if (tr) {
+                const tmp = document.createElement('tbody');
+                tmp.innerHTML = rowHtml(t, dupSlider, flagDups);
+                const next = tmp.firstElementChild;
+                if (next) { tr.replaceWith(next); updated = true; }
+            }
+            const card = document.querySelector('.curator-track-card' + sel);
+            if (card) {
+                const tmp = document.createElement('div');
+                tmp.innerHTML = cardHtml(t, dupSlider, flagDups);
+                const next = tmp.firstElementChild;
+                if (next) { card.replaceWith(next); updated = true; }
+            }
+        });
+        return updated;
     }
 
     // ---------- Init ----------
@@ -437,8 +563,10 @@
         const dupVal = document.getElementById('curator-dup-threshold-value');
         if (dupSlider && dupVal) {
             dupSlider.addEventListener('input', () => {
+                // Slider label updates immediately for responsiveness; the row
+                // visibility pass is debounced so a drag doesn't fire 20×/sec.
                 dupVal.textContent = parseFloat(dupSlider.value).toFixed(3);
-                if (lastResults.length > 0) renderResults();
+                if (lastResults.length > 0) applyDupVisibilityDebounced();
             });
             dupVal.textContent = parseFloat(dupSlider.value).toFixed(3);
         }
@@ -446,7 +574,7 @@
         const dupSensWrap = document.getElementById('curator-dup-sens');
         function paintDupMode() {
             if (dupSensWrap) dupSensWrap.style.display = dupMode.value === 'off' ? 'none' : '';
-            if (lastResults.length > 0) renderResults();
+            if (lastResults.length > 0) applyDupVisibility();
         }
         if (dupMode) { dupMode.addEventListener('change', paintDupMode); paintDupMode(); }
 
@@ -488,10 +616,13 @@
             }
         });
 
-        // Re-render on workbench changes
-        document.addEventListener('curator:workbench:changed', () => {
+        // Re-render on workbench changes — surgical when possible.
+        document.addEventListener('curator:workbench:changed', (e) => {
             refreshWorkbenchOption();
-            if (lastResults.length > 0) renderResults();
+            if (lastResults.length === 0) return;
+            const changedIds = e && e.detail ? e.detail.changedIds : null;
+            if (changedIds && updateRowsForChanges(changedIds)) return;
+            renderResults();
         });
     }
 

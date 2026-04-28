@@ -44,12 +44,24 @@
             <section id="curator-results-section" class="hidden">
                 <div class="curator-section-head">
                     <div>
-                        <h2><span id="curator-results-count">0</span> matches<span id="curator-results-skipped" style="font-size:12px;color:var(--text-muted);font-weight:500;"></span></h2>
+                        <h2><span id="curator-results-count">0</span> matches<span id="curator-results-total" style="font-size:13px;color:var(--text-muted);font-weight:500;"></span><span id="curator-results-skipped" style="font-size:12px;color:var(--text-muted);font-weight:500;"></span></h2>
                         <div class="sub">Click <strong>Add</strong> on a track to put it in your Workbench →</div>
                     </div>
                 </div>
                 <div id="curator-results-table-wrap" class="curator-table-wrap"></div>
                 <div id="curator-results-cards" class="curator-card-list"></div>
+                <div id="curator-pagination" class="curator-pagination hidden" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;flex-wrap:wrap;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <button type="button" id="curator-page-prev" class="curator-btn" data-kind="secondary" data-size="sm" disabled>« Prev</button>
+                        <span id="curator-page-indicator" style="font-size:13px;color:var(--text-muted);">Page 1 / 1</span>
+                        <button type="button" id="curator-page-next" class="curator-btn" data-kind="secondary" data-size="sm" disabled>Next »</button>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <span id="curator-loadall-status" style="font-size:12px;color:var(--text-muted);"></span>
+                        <button type="button" id="curator-page-loadall" class="curator-btn" data-kind="secondary" data-size="sm">Load all</button>
+                        <button type="button" id="curator-page-loadall-cancel" class="curator-btn hidden" data-kind="secondary" data-size="sm">Cancel</button>
+                    </div>
+                </div>
             </section>
 
             {% include 'includes/_curator_dedup.html' %}

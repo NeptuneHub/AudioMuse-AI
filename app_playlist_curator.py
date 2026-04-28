@@ -6,8 +6,8 @@ import numpy as np
 import requests as http_requests
 from psycopg2.extras import DictCursor
 
-from tasks.voyager_manager import find_nearest_neighbors_by_vector, get_vector_by_id
-from app_helper import get_db, get_score_data_by_ids
+from tasks.voyager_manager import find_nearest_neighbors_by_vector, get_vectors_by_ids
+from app_helper import get_db, get_score_data_by_ids, get_score_data_lite_by_ids
 import config
 
 logger = logging.getLogger(__name__)
@@ -53,28 +53,33 @@ def _levels_to_weights(levels_dict, total_tracks):
     return weights
 
 
-def _compute_centroid_from_ids(ids, weights=None):
+def _compute_centroid_from_ids(ids, weights=None, vector_cache=None):
     """
     Fetch vectors by item_id and compute their weighted centroid.
 
     Args:
         ids: List of item_ids (strings)
         weights: Optional dict mapping str(item_id) -> weight (1-1024)
+        vector_cache: Optional dict mapping str(item_id) -> np.ndarray for
+            pre-fetched vectors. When provided, no Voyager calls are made.
 
     Returns:
         Weighted mean vector, or None if no valid vectors found.
     """
     if weights is None:
         weights = {}
+    if vector_cache is None:
+        vector_cache = get_vectors_by_ids([str(i) for i in ids])
 
     vectors = []
     weight_values = []
 
     for item_id in ids:
-        vec = get_vector_by_id(str(item_id))
+        sid = str(item_id)
+        vec = vector_cache.get(sid)
         if vec is not None:
             vectors.append(np.array(vec, dtype=float))
-            w = weights.get(str(item_id), 1)
+            w = weights.get(sid, 1)
             weight_values.append(max(1, w))
 
     if not vectors:
@@ -207,12 +212,14 @@ def _find_duplicate_groups(item_ids, threshold=0.015):
     """
     from collections import defaultdict
 
+    str_ids = [str(iid) for iid in item_ids]
+    vector_cache = get_vectors_by_ids(str_ids)
     valid_ids = []
     vectors = []
-    for iid in item_ids:
-        vec = get_vector_by_id(str(iid))
+    for sid in str_ids:
+        vec = vector_cache.get(sid)
         if vec is not None:
-            valid_ids.append(str(iid))
+            valid_ids.append(sid)
             vectors.append(np.array(vec, dtype=np.float32))
 
     if len(vectors) < 2:
@@ -433,9 +440,22 @@ def search_api():
     search_only = payload.get('search_only', False)
     source_ids = [str(s) for s in payload.get('source_ids', [])]
 
+    # Pagination (only consumed in search_only mode)
+    try:
+        page = max(1, int(payload.get('page', 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        per_page = min(max(1, int(payload.get('per_page', 500))), 2000)
+    except (TypeError, ValueError):
+        per_page = 500
+
     try:
         raw_dup_threshold = float(payload.get('duplicate_threshold', 0.01))
-        duplicate_threshold = max(0.005, min(raw_dup_threshold, 0.3)) if raw_dup_threshold > 0 else 0
+        if raw_dup_threshold <= 0 or raw_dup_threshold >= 1.0:
+            duplicate_threshold = 0
+        else:
+            duplicate_threshold = max(0.005, min(raw_dup_threshold, 0.3))
     except (TypeError, ValueError):
         duplicate_threshold = 0.01
 
@@ -474,12 +494,29 @@ def search_api():
 
         # -- SEARCH ONLY MODE --------------------------------------------------
         if search_only:
-            metadata_list = get_score_data_by_ids(playlist_ids)
-            for meta in metadata_list:
-                meta['distance'] = 0.0
+            total = len(playlist_ids)
+            offset = (page - 1) * per_page
+            page_ids = playlist_ids[offset:offset + per_page]
+
+            metadata_list = get_score_data_lite_by_ids(page_ids) if page_ids else []
+            # Preserve the order of page_ids in the response (lite query is unordered)
+            meta_by_id = {m['item_id']: m for m in metadata_list}
+            ordered = []
+            for pid in page_ids:
+                m = meta_by_id.get(pid)
+                if m is None:
+                    continue
+                m['distance'] = 0.0
+                ordered.append(m)
+
             return jsonify({
-                "results": metadata_list,
-                "playlist_song_count": len(metadata_list),
+                "results": ordered,
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+                "has_more": (offset + len(ordered)) < total,
+                # Backwards-compat fields used by older client code
+                "playlist_song_count": total,
                 "included_count": 0,
                 "excluded_count": 0
             })
@@ -498,14 +535,19 @@ def search_api():
             combined_levels[str(inc_id)] = included_levels.get(str(inc_id), 0)
         combined_weights = _levels_to_weights(combined_levels, total_tracks)
 
-        positive_centroid = _compute_centroid_from_ids(all_ids_for_centroid, combined_weights)
+        # Single batch fetch for every vector we'll need before Voyager search
+        # (sources + included + excluded). Candidate vectors are added later.
+        upfront_ids = [str(i) for i in all_ids_for_centroid] + [str(i) for i in excluded_ids]
+        vector_cache = get_vectors_by_ids(upfront_ids)
+
+        positive_centroid = _compute_centroid_from_ids(all_ids_for_centroid, combined_weights, vector_cache=vector_cache)
         if positive_centroid is None:
             return jsonify({"error": "Failed to compute playlist centroid - no valid embeddings found"}), 500
 
         # Excluded centroid (unweighted)
         excluded_centroid = None
         if excluded_ids:
-            excluded_centroid = _compute_centroid_from_ids(list(excluded_ids))
+            excluded_centroid = _compute_centroid_from_ids(list(excluded_ids), vector_cache=vector_cache)
 
         # Adjust query vector
         query_vector = positive_centroid
@@ -528,6 +570,13 @@ def search_api():
         candidate_ids = [r['item_id'] for r in neighbor_results]
         metadata_list = get_score_data_by_ids(candidate_ids) if candidate_ids else []
         metadata_map = {m['item_id']: m for m in metadata_list}
+
+        # Add candidate vectors to the cache only if any downstream block will need them.
+        # Excluded-centroid filter needs candidate vectors; dup-annotation needs them too.
+        if candidate_ids and (excluded_centroid is not None or duplicate_threshold > 0):
+            missing_candidates = [cid for cid in candidate_ids if str(cid) not in vector_cache]
+            if missing_candidates:
+                vector_cache.update(get_vectors_by_ids(missing_candidates))
 
         filtered_results = []
         for result in neighbor_results:
@@ -557,7 +606,7 @@ def search_api():
 
             # Excluded centroid proximity filter
             if excluded_centroid is not None:
-                vec = get_vector_by_id(item_id)
+                vec = vector_cache.get(str(item_id))
                 if vec is not None:
                     v_cand = np.array(vec, dtype=float)
                     if config.PATH_DISTANCE_METRIC == 'angular':
@@ -592,7 +641,7 @@ def search_api():
         source_vectors = {}
         if duplicate_threshold > 0:
             for sid in playlist_ids:
-                vec = get_vector_by_id(str(sid))
+                vec = vector_cache.get(str(sid))
                 if vec is not None:
                     v = np.array(vec, dtype=np.float32)
                     norm = np.linalg.norm(v)
@@ -601,7 +650,7 @@ def search_api():
         if source_vectors:
             source_meta_map = {m['item_id']: m for m in source_tracks_meta}
             for result in filtered_results:
-                cand_vec = get_vector_by_id(result['item_id'])
+                cand_vec = vector_cache.get(str(result['item_id']))
                 if cand_vec is None:
                     continue
                 v_cand = np.array(cand_vec, dtype=np.float32)
