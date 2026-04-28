@@ -1,6 +1,7 @@
 {
   lib,
   stdenvNoCC,
+  fetchurl,
   python312,
   python312Packages,
   makeWrapper,
@@ -61,7 +62,26 @@ let
     ]
   );
 
-  # Packages not in nixpkgs — installed via pip into a vendor directory
+  # Pre-fetched wheels for packages not in nixpkgs
+  python-mpd2-wheel = fetchurl {
+    url = "https://files.pythonhosted.org/packages/8e/6d/1b9e1c203057c9a7fa6971db3605188a8ef1120ca305e4878c960ab6e2d3/python_mpd2-3.1.1-py2.py3-none-any.whl";
+    hash = "sha256-hr8RAKCxNZWddKmnpYzwUVvzC7VOslrm+44XXlAwD8M=";
+  };
+
+  voyager-wheel = fetchurl {
+    url = "https://files.pythonhosted.org/packages/b7/13/a772a9a2d4cc427f6b4ae2aca65e50ec99f7bb6037c346cc22a07bc4a326/voyager-2.1.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl";
+    hash = "sha256-lBW5ySO6xJPVxo1VrlXEKJFTwj+fR4Qik03mGsuvTAE=";
+  };
+
+  laion-clap-wheel = fetchurl {
+    url = "https://files.pythonhosted.org/packages/ab/ea/6fb3d90bc1d85e6039506c248009e7f195456b81efa0a7aa413b3e13eb04/laion_clap-1.1.7-py3-none-any.whl";
+    hash = "sha256-VFECT7lWOm94GUVkgVHSNChFwOBu+5MExKngiuVxEgk=";
+  };
+
+  # pozalabs-pydub is a fork of pydub fixing a Python 3.12 SyntaxWarning.
+  # nixpkgs pydub (already in pythonEnv) works fine — the warning is cosmetic.
+
+  # Packages not in nixpkgs — installed from pre-fetched wheels
   pipVendor = stdenvNoCC.mkDerivation {
     pname = "audiomuse-ai-pip-vendor";
     version = "0.1.0";
@@ -77,14 +97,22 @@ let
 
     buildPhase = ''
       export HOME=$TMPDIR
+      mkdir -p $out/lib/${python.libPrefix}/site-packages
 
-      # Install packages not available in nixpkgs
+      # Create a directory with properly-named wheels (strip Nix store hash prefix)
+      mkdir -p wheels
+      cp ${python-mpd2-wheel} wheels/python_mpd2-3.1.1-py2.py3-none-any.whl
+      cp ${voyager-wheel} wheels/voyager-2.1.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      cp ${laion-clap-wheel} wheels/laion_clap-1.1.7-py3-none-any.whl
+
+      # Install from local wheel directory (no network needed)
       ${python}/bin/python -m pip install \
         --no-deps \
+        --no-index \
+        --find-links wheels/ \
         --target $out/lib/${python.libPrefix}/site-packages \
         --no-cache-dir \
         python-mpd2 \
-        pozalabs-pydub==0.37.0 \
         voyager==2.1.0 \
         laion-clap
     '';
