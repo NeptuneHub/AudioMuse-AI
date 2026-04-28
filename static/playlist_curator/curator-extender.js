@@ -25,6 +25,10 @@
     let serverPlaylistsLoaded = false;
     let renderToken = 0;
 
+    // Cache cluster-playlist tracks fetched on init so we can populate the
+    // Workbench when the user picks one as a seed (avoids a second round trip).
+    const clusterPlaylistsCache = {};
+
     function renderInChunks(container, rows, rowFn, opts) {
         const opt = opts || {};
         const firstChunk = opt.firstChunk || 500;
@@ -140,6 +144,7 @@
             group.label = 'AudioMuse Playlists';
             group.dataset.kind = 'cluster';
             for (const [name, tracks] of Object.entries(playlists || {})) {
+                clusterPlaylistsCache[name] = tracks;
                 const opt = document.createElement('option');
                 opt.value = name;
                 opt.textContent = `${name} (${tracks.length} songs)`;
@@ -201,6 +206,43 @@
             window.curatorSetStatus('curator-seed-status', e.message, 'error');
             return null;
         }
+    }
+
+    // ---------- Auto-load seed playlist into Workbench ----------
+    // When the user picks a server or cluster playlist as the seed, copy its
+    // tracks into the Workbench (skipping duplicates) and switch the seed to
+    // Workbench so per-track influence controls become available in the rail.
+    async function loadSeedIntoWorkbench(seedValue) {
+        if (!seedValue || seedValue === SEED_WORKBENCH) return;
+        const statusId = 'curator-extender-status';
+
+        let tracks = null;
+        if (seedValue.startsWith('__server__')) {
+            window.curatorSetStatus(statusId, 'Loading playlist tracks…', 'loading');
+            const data = await fetchServerPlaylistTracks(seedValue);
+            if (!data) return;
+            tracks = data.tracks || [];
+        } else if (clusterPlaylistsCache[seedValue]) {
+            tracks = clusterPlaylistsCache[seedValue];
+        }
+
+        if (!tracks || tracks.length === 0) {
+            window.curatorSetStatus(statusId, 'Playlist is empty.', 'error');
+            return;
+        }
+
+        const added = window.workbenchAddBulk(tracks, 'extend');
+        const select = document.getElementById('curator-seed-select');
+        if (select) {
+            refreshWorkbenchOption();
+            select.value = SEED_WORKBENCH;
+        }
+        const skipped = tracks.length - added;
+        const msg = added > 0
+            ? `Loaded ${added} track${added === 1 ? '' : 's'} into Workbench${skipped > 0 ? ` (${skipped} already there)` : ''}. Tune influence on the right →`
+            : 'All tracks were already in the Workbench.';
+        window.curatorSetStatus(statusId, msg, 'success');
+        setTimeout(() => window.curatorSetStatus(statusId, '', ''), 4000);
     }
 
     // ---------- Seed dropdown management ----------
@@ -395,6 +437,17 @@
         return { id, artist, title, album, stream, distance };
     }
 
+    // Build a plain-text tooltip describing which source track a result duplicates.
+    // Used as the title="" attr on the warn pill so hovering reveals the source.
+    function buildDupTooltip(dupOf) {
+        if (!dupOf) return '';
+        const title = dupOf.title || 'Unknown';
+        const author = dupOf.author || 'Unknown';
+        const album = dupOf.album ? ` · ${dupOf.album}` : '';
+        const dist = (typeof dupOf.distance === 'number') ? ` (distance ${dupOf.distance.toFixed(3)})` : '';
+        return `Duplicate of "${title}" by ${author}${album}${dist}`;
+    }
+
     function rowHtml(t, dupSlider, flagDups) {
         const inWb = window.workbenchHas(t.item_id);
         const dupDist = (t.duplicate_of && typeof t.duplicate_of.distance === 'number') ? t.duplicate_of.distance : null;
@@ -405,15 +458,16 @@
         const infInfo = getInfluenceInfo(inf);
         // Always emit the badge for rows with duplicate_of so the slider can
         // toggle visibility without rebuilding the row HTML.
+        const dupTooltip = dupDist !== null ? buildDupTooltip(t.duplicate_of) : '';
         const dupBadge = dupDist !== null
-            ? `<div class="curator-dup-badge" style="margin-top:4px;${isDup ? '' : 'display:none;'}"><span class="curator-pill" data-tone="warn">${ICONS.warn} Near-duplicate (${dupDist.toFixed(3)})</span></div>`
+            ? `<div class="curator-dup-badge" style="margin-top:4px;${isDup ? '' : 'display:none;'}"><span class="curator-pill" data-tone="warn" title="${escHtml(dupTooltip)}">${ICONS.warn} Near-duplicate (${dupDist.toFixed(3)})</span></div>`
             : '';
         const influenceCell = inWb
             ? `<button type="button" class="curator-influence-btn" data-level="${inf}" data-influence-id="${m.id}" title="${escHtml(infInfo.tip)}">${escHtml(infInfo.label)}</button>`
             : `<span style="color:var(--text-muted);font-size:11px;">—</span>`;
         const actionHtml = inWb ? `
             <div class="curator-row-actions">
-                <span class="curator-pill" data-tone="success">${ICONS.check} In Workbench</span>
+                <span class="curator-pill" data-tone="success" title="In Workbench">${ICONS.check} Added</span>
                 <button type="button" class="curator-remove-x" data-wb-remove="${m.id}" title="Remove from Workbench">${ICONS.x}</button>
             </div>` : `
             <div class="curator-row-actions">
@@ -451,8 +505,9 @@
         const inflBtn = inWb
             ? `<div style="margin-top:6px;"><button type="button" class="curator-influence-btn" data-level="${inf}" data-influence-id="${m.id}" title="${escHtml(infInfo.tip)}">${escHtml(infInfo.label)}</button></div>`
             : '';
+        const dupTooltipCard = dupDist !== null ? buildDupTooltip(t.duplicate_of) : '';
         const dup = dupDist !== null
-            ? `<div class="curator-dup-badge" style="margin-top:6px;${isDup ? '' : 'display:none;'}"><span class="curator-pill" data-tone="warn">${ICONS.warn} Near-duplicate</span></div>`
+            ? `<div class="curator-dup-badge" style="margin-top:6px;${isDup ? '' : 'display:none;'}"><span class="curator-pill" data-tone="warn" title="${escHtml(dupTooltipCard)}">${ICONS.warn} Near-duplicate</span></div>`
             : '';
         const dupAttr = dupDist !== null ? ` data-dup-distance="${dupDist}"` : '';
 
@@ -516,13 +571,16 @@
         // Re-apply default selection if Workbench just became available after loading other playlists
         refreshWorkbenchOption();
 
-        // Seed select change clears stale results
+        // Seed select change clears stale results AND auto-loads non-Workbench
+        // playlists into the Workbench so the user can tune per-track influence.
         const seedSelect = document.getElementById('curator-seed-select');
         if (seedSelect) seedSelect.addEventListener('change', () => {
             lastResults = [];
             const section = document.getElementById('curator-results-section');
             if (section) section.classList.add('hidden');
             window.curatorSetStatus('curator-extender-status', '', '');
+            const v = seedSelect.value;
+            if (v && v !== SEED_WORKBENCH) loadSeedIntoWorkbench(v);
         });
 
         // Tune toggle
@@ -596,7 +654,9 @@
         const runBtn = document.getElementById('curator-extender-run');
         if (runBtn) runBtn.addEventListener('click', runExtend);
 
-        // Result row delegation: Add, Influence cycling
+        // Result row delegation: Add only. The [data-influence-id] click
+        // handler lives in curator-shared.js so both pages share it (and to
+        // avoid double-cycling when the same listener fires twice).
         document.addEventListener('click', (e) => {
             const addBtn = e.target.closest('[data-extend-add]');
             if (addBtn) {
@@ -604,14 +664,6 @@
                 const id = addBtn.dataset.extendAdd;
                 const track = lastResults.find(r => r.item_id === id);
                 if (track) window.workbenchAdd(track, 'extend');
-                return;
-            }
-            const inflBtn = e.target.closest('[data-influence-id]');
-            if (inflBtn) {
-                e.preventDefault();
-                const id = inflBtn.dataset.influenceId;
-                const cur = window.workbenchGetInfluence(id);
-                window.workbenchSetInfluence(id, (cur + 1) % 4);
                 return;
             }
         });

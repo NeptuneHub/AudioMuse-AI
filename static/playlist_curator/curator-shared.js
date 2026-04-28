@@ -209,16 +209,16 @@
             list.innerHTML = workbench.tracks.map(t => {
                 const tone = t.source === 'search' ? 'primary' : 'success';
                 const lbl = t.source === 'search' ? 'SRCH' : 'EXT';
-                const dot = t.influence > 0
-                    ? `<span class="curator-wb-influence-dot" data-level="${t.influence}" title="Influence: ${escHtml(getInfluenceInfo(t.influence).label)}"></span>`
-                    : '';
+                const inf = t.influence || 0;
+                const infInfo = getInfluenceInfo(inf);
+                const inflBtn = `<button type="button" class="curator-influence-btn" data-size="xs" data-level="${inf}" data-influence-id="${escHtml(t.item_id)}" title="${escHtml(infInfo.tip)} (click to cycle)">${escHtml(infInfo.label)}</button>`;
                 return `<div class="curator-wb-item">
                     <span class="curator-pill" data-tone="${tone}" style="font-size:9px;flex-shrink:0;">${lbl}</span>
                     <div class="curator-wb-item-meta">
                         <div class="curator-wb-item-title">${escHtml(t.title)}</div>
                         <div class="curator-wb-item-sub">${escHtml(t.author || '')}</div>
                     </div>
-                    ${dot}
+                    ${inflBtn}
                     <button type="button" class="curator-remove-x" data-wb-remove="${escHtml(t.item_id)}" title="Remove">${ICONS.x}</button>
                 </div>`;
             }).join('');
@@ -261,12 +261,16 @@
                 list.innerHTML = workbench.tracks.map(t => {
                     const tone = t.source === 'search' ? 'primary' : 'success';
                     const lbl = t.source === 'search' ? 'SRCH' : 'EXT';
+                    const inf = t.influence || 0;
+                    const infInfo = getInfluenceInfo(inf);
+                    const inflBtn = `<button type="button" class="curator-influence-btn" data-size="xs" data-level="${inf}" data-influence-id="${escHtml(t.item_id)}" title="${escHtml(infInfo.tip)} (click to cycle)">${escHtml(infInfo.label)}</button>`;
                     return `<div class="curator-wb-item">
                         <span class="curator-pill" data-tone="${tone}" style="font-size:9px;flex-shrink:0;">${lbl}</span>
                         <div class="curator-wb-item-meta">
                             <div class="curator-wb-item-title">${escHtml(t.title)}</div>
                             <div class="curator-wb-item-sub">${escHtml(t.author || '')}</div>
                         </div>
+                        ${inflBtn}
                         <button type="button" class="curator-remove-x" data-wb-remove="${escHtml(t.item_id)}" title="Remove">${ICONS.x}</button>
                     </div>`;
                 }).join('');
@@ -286,6 +290,18 @@
         renderSheet();
     }
     window.renderWorkbench = renderWorkbench;
+
+    // Delegated influence-cycle handler. Catches clicks on any [data-influence-id]
+    // button anywhere on the page (Workbench rail, Workbench sheet, Extender
+    // results table). Centralised here so both pages get it for free.
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-influence-id]');
+        if (!btn) return;
+        e.preventDefault();
+        const id = btn.dataset.influenceId;
+        const cur = workbenchGetInfluence(id);
+        workbenchSetInfluence(id, (cur + 1) % 4);
+    });
 
     // ---------- Sticky web player ----------
     let player = {

@@ -6,7 +6,7 @@ import numpy as np
 import requests as http_requests
 from psycopg2.extras import DictCursor
 
-from tasks.voyager_manager import find_nearest_neighbors_by_vector, get_vectors_by_ids
+from tasks.voyager_manager import find_nearest_neighbors_by_vector, get_vector_by_id, get_vectors_by_ids
 from app_helper import get_db, get_score_data_by_ids, get_score_data_lite_by_ids
 import config
 
@@ -554,9 +554,17 @@ def search_api():
         if excluded_centroid is not None:
             query_vector = positive_centroid - (excluded_centroid * 0.5)
 
-        # Find similar songs - request more candidates to account for source track filtering
+        # Find similar songs. The previous formula `source_count * 3` asked
+        # Voyager for 4 000+ candidates on big seeds, which (with the library's
+        # internal 5× expansion for eliminate_duplicates) forced HNSW into a
+        # linear scan and burned ~30 s of wallclock. We only ever keep
+        # max_songs (default 50) results, so this needs a fraction of that:
+        #   - max_songs * 10 covers rating/year/dup attrition
+        #   - source_count // 5 buffers the "candidate is also a source" case
+        #     (probability ≈ source/library_size, usually < 15 %)
+        #   - hard cap at 1 500 to keep HNSW well under the library size
         source_count = len(playlist_ids) + len(included_ids)
-        n_candidates = max(max_songs * 5, source_count * 3, 500)
+        n_candidates = min(max(max_songs * 10, 500) + source_count // 5, 1500)
         neighbor_results = find_nearest_neighbors_by_vector(query_vector, n=n_candidates, eliminate_duplicates=True)
         logger.info(f"Extend: requested {n_candidates} candidates, got {len(neighbor_results)}, source_count={source_count}")
 
@@ -571,12 +579,10 @@ def search_api():
         metadata_list = get_score_data_by_ids(candidate_ids) if candidate_ids else []
         metadata_map = {m['item_id']: m for m in metadata_list}
 
-        # Add candidate vectors to the cache only if any downstream block will need them.
-        # Excluded-centroid filter needs candidate vectors; dup-annotation needs them too.
-        if candidate_ids and (excluded_centroid is not None or duplicate_threshold > 0):
-            missing_candidates = [cid for cid in candidate_ids if str(cid) not in vector_cache]
-            if missing_candidates:
-                vector_cache.update(get_vectors_by_ids(missing_candidates))
+        # NOTE: don't pre-fetch candidate vectors here. The filter loop below
+        # breaks at max_songs (default 50, max 500) and the dup-annotation
+        # block only needs vectors for the ~max_songs filtered_results — not all
+        # n_candidates (which can be 4000+ for large source playlists).
 
         filtered_results = []
         for result in neighbor_results:
@@ -606,7 +612,9 @@ def search_api():
 
             # Excluded centroid proximity filter
             if excluded_centroid is not None:
-                vec = vector_cache.get(str(item_id))
+                # Bounded by the max_songs break below; per-id lookup keeps the
+                # LRU cache warm without batching the full candidate universe.
+                vec = get_vector_by_id(str(item_id))
                 if vec is not None:
                     v_cand = np.array(vec, dtype=float)
                     if config.PATH_DISTANCE_METRIC == 'angular':
@@ -648,9 +656,13 @@ def search_api():
                     source_vectors[sid] = v / norm if norm > 0 else v
 
         if source_vectors:
+            # Now (and only now) batch-fetch the small surviving filtered_results
+            # set — bounded by max_songs, not by n_candidates.
+            result_ids_for_dup = [str(r['item_id']) for r in filtered_results]
+            result_vectors = get_vectors_by_ids(result_ids_for_dup) if result_ids_for_dup else {}
             source_meta_map = {m['item_id']: m for m in source_tracks_meta}
             for result in filtered_results:
-                cand_vec = vector_cache.get(str(result['item_id']))
+                cand_vec = result_vectors.get(str(result['item_id']))
                 if cand_vec is None:
                     continue
                 v_cand = np.array(cand_vec, dtype=np.float32)

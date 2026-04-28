@@ -470,7 +470,7 @@
 
         const actionHtml = inWb ? `
             <div class="curator-row-actions">
-                <span class="curator-pill" data-tone="success">${ICONS.check} In Workbench</span>
+                <span class="curator-pill" data-tone="success" title="In Workbench">${ICONS.check} Added</span>
                 <button type="button" class="curator-remove-x" data-wb-remove="${id}" title="Remove from Workbench">${ICONS.x}</button>
             </div>` : `
             <div class="curator-row-actions">

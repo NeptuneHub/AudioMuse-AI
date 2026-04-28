@@ -18,12 +18,8 @@
     padding: 0;
 }
 
-/* Pull topbar content right of the fixed hamburger menu toggle (which lives
-   at top:1.5rem; left:1.5rem with z-index:1001 — see static/menu.css). */
-.curator-topbar { padding-left: 5rem; }
-@media (max-width: 768px) {
-    .curator-topbar { padding-left: 4rem; }
-}
+/* Topbar padding-left is handled in the .curator-topbar block below
+   (must be there, not here, so the `padding:` shorthand doesn't clobber it). */
 
 /* The two-column layout: main content + sticky workbench rail.
    Mobile collapses to a single stacked column; the rail becomes a sheet. */
@@ -48,10 +44,20 @@
 }
 
 /* ---------------- Topbar ---------------- */
+/* Centralised height so the sticky workbench rail can offset itself by the
+   same amount (otherwise its bottom save card slides below the viewport). */
+:root { --curator-topbar-h: 4.5rem; }
+
 .curator-topbar {
     background: var(--bg-card);
     border-bottom: 1px solid var(--border-color);
-    padding: 0.75rem 1.5rem;
+    /* padding-left clears the fixed hamburger menu toggle at left:1.5rem
+       (see static/menu.css). The hamburger icon is 1.5rem tall and sits at
+       top:1.5rem, so we need >=1.25rem top padding to vertically center the
+       bar's content with the icon. Longhand keeps this from being clobbered. */
+    padding: 1.25rem 1.5rem 1.25rem 5rem;
+    min-height: var(--curator-topbar-h);
+    box-sizing: border-box;
     display: flex;
     align-items: center;
     gap: 1rem;
@@ -455,9 +461,19 @@ html.dark-mode .curator-select {
 }
 
 /* ---------------- Results table ---------------- */
+.curator-table-wrap {
+    /* Safety net: scrollbar appears if a row's content is wider than the
+       container (long album names, narrow viewports). */
+    overflow-x: auto;
+}
 .curator-table {
     width: 100%;
     border-collapse: collapse;
+    /* Fixed layout means column widths come from the col-* rules below
+       instead of being recomputed against each row's content — so adding a
+       track (which swaps the action cell to a wider pill) no longer pushes
+       the actions column off-screen. */
+    table-layout: fixed;
 }
 .curator-table thead th {
     padding: 10px 12px;
@@ -495,11 +511,17 @@ html.dark-mode .curator-table tr.dup-warn { background: #422006; }
     font-size: 12px;
 }
 
-.curator-table .col-actions { text-align: right; width: 220px; }
+.curator-table .col-actions { text-align: right; width: 160px; }
 .curator-table .col-influence { width: 96px; }
-.curator-table .col-distance { width: 96px; text-align: right; }
+.curator-table .col-distance { width: 88px; text-align: right; }
 .curator-table .col-year, .curator-table .col-bpm { width: 64px; text-align: right; }
-.curator-table .col-album { color: var(--text-muted); font-size: 12px; }
+.curator-table .col-album {
+    color: var(--text-muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .curator-table .col-play { width: 44px; }
 
 /* Inline icon-button (play/preview) */
@@ -534,6 +556,13 @@ html.dark-mode .curator-table tr.dup-warn { background: #422006; }
     cursor: pointer;
     font-family: inherit;
     line-height: 1;
+}
+/* Compact form for the Workbench rail/sheet items */
+.curator-influence-btn[data-size="xs"] {
+    width: 52px;
+    height: 22px;
+    font-size: 10px;
+    flex-shrink: 0;
 }
 .curator-influence-btn[data-level="0"] {
     background: var(--bg-input);
@@ -733,9 +762,11 @@ html.dark-mode .curator-track-card.dup-warn { background: #422006; }
     flex-direction: column;
     gap: 12px;
     position: sticky;
-    top: 0;
-    height: 100vh;
-    max-height: 100vh;
+    /* Offset by the topbar height so the rail's bottom (save button) stays
+       visible inside the viewport instead of being pushed off-screen. */
+    top: var(--curator-topbar-h);
+    height: calc(100vh - var(--curator-topbar-h));
+    max-height: calc(100vh - var(--curator-topbar-h));
     overflow: hidden;
     width: 340px;
     flex-shrink: 0;
@@ -1211,7 +1242,7 @@ html.dark-mode .curator-track-card.dup-warn { background: #422006; }
     }
     .curator-card { padding: 14px; }
     .curator-page-header h1 { font-size: 20px; }
-    .curator-topbar { padding: 10px 14px; gap: 8px; }
+    .curator-topbar { padding: 18px 14px 18px 4rem; gap: 8px; min-height: 3rem; }
     .curator-topbar-title { font-size: 13px; margin-right: 0; }
     .curator-nav-tabs { flex: 1; }
     .curator-nav-tab { flex: 1; justify-content: center; }
