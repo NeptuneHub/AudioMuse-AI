@@ -42,7 +42,7 @@ stdenvNoCC.mkDerivation {
 
   huggingfaceModels = fetchurl {
     url = "${baseUrl}/huggingface_models.tar.gz";
-    hash = lib.fakeHash;
+    hash = "sha256-AqeNbkI0BMcnEWj3QPF+Q9vBCUf3Rt/EIFZwinRsyz0=";
     name = "huggingface_models.tar.gz";
   };
 
