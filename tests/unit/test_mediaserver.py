@@ -2108,15 +2108,39 @@ class TestLyrionListLibraries:
             {'id': '11', 'name': 'Audiobooks'},
         ]
         args, kwargs = mock_rpc.call_args
-        assert args[0] == 'musicfolders'
+        # The CLI command is the singular ``musicfolder``. The plural
+        # ``musicfolders`` variant drops the connection on Lyrion 9.0.x.
+        assert args[0] == 'musicfolder'
         assert kwargs.get('user_creds') is None
+
+    @patch('tasks.mediaserver_lyrion._jsonrpc_request')
+    def test_handles_lyrion_9_x_filename_field(self, mock_rpc):
+        """Lyrion 9.0.x returns folder entries with ``filename`` (not ``name``).
+        Older versions used ``name`` / ``folder``. Accept all three."""
+        from tasks.mediaserver_lyrion import list_libraries
+
+        mock_rpc.return_value = {
+            'folder_loop': [
+                {'id': 685, 'filename': 'Library_A', 'type': 'folder'},
+                {'id': 686, 'filename': 'Library_B', 'type': 'folder'},
+            ],
+            'count': 2,
+        }
+
+        result = list_libraries()
+
+        assert result == [
+            {'id': '685', 'name': 'Library_A'},
+            {'id': '686', 'name': 'Library_B'},
+        ]
 
     @patch('tasks.mediaserver_lyrion._jsonrpc_request')
     def test_prefers_path_over_name_when_available(self, mock_rpc):
         """Lyrion's scan-time filter (_get_target_paths_for_filtering) does a
-        substring match against album file URLs, so the persisted
-        MUSIC_LIBRARIES value must be the path. list_libraries surfaces the
-        path as ``name`` so the saved value round-trips correctly."""
+        substring match against album file URLs, so when the server reports
+        a real path we persist it (more deterministic match). Otherwise we
+        fall back to the folder display name (which Lyrion treats as a path
+        substring at scan time on standard layouts)."""
         from tasks.mediaserver_lyrion import list_libraries
 
         mock_rpc.return_value = {
@@ -2145,5 +2169,5 @@ class TestLyrionListLibraries:
         list_libraries(user_creds=creds)
 
         args, kwargs = mock_rpc.call_args
-        assert args[0] == 'musicfolders'
+        assert args[0] == 'musicfolder'
         assert kwargs.get('user_creds') == creds

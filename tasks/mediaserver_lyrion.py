@@ -312,16 +312,25 @@ def list_libraries(user_creds=None):
     """List all music folders exposed by a Lyrion (LMS) server.
 
     Unlike `_get_target_music_folder_ids()`, this does NOT read
-    `config.MUSIC_LIBRARIES` and does NOT filter. Uses the `musicfolders`
-    JSON-RPC command. `_jsonrpc_request` already forwards `user_creds`.
+    `config.MUSIC_LIBRARIES` and does NOT filter. Uses the ``musicfolder``
+    JSON-RPC command. ``_jsonrpc_request`` already forwards ``user_creds``.
 
-    The returned ``name`` is the folder's filesystem **path** when the
-    server reports one, falling back to the folder name. This is because
-    Lyrion's scan-time filter (``_get_target_paths_for_filtering``) treats
+    The persisted ``name`` is the folder's filesystem **path** when the
+    server reports one, otherwise the folder's display name. Lyrion's
+    scan-time filter (``_get_target_paths_for_filtering``) treats
     ``MUSIC_LIBRARIES`` as paths and substring-matches them against album
-    file URLs — so the UI must persist the path that the filter expects.
+    file URLs — so the UI must persist a value the filter can match
+    against. A bare folder name like ``Library_A`` works when the file
+    paths under that folder contain it (the typical Lyrion setup).
+
+    Notes on the Lyrion CLI:
+      * The command is ``musicfolder`` (singular). Some legacy docs and
+        wrappers use ``musicfolders`` (plural); on Lyrion 9.0.x that
+        variant drops the connection without responding.
+      * Folder entries report the display name under ``filename`` on
+        9.0.x (not ``name``/``folder``), so we accept all three.
     """
-    response = _jsonrpc_request("musicfolders", [0, 999999], user_creds=user_creds)
+    response = _jsonrpc_request("musicfolder", [0, 999999], user_creds=user_creds)
     if not response:
         return []
 
@@ -344,13 +353,10 @@ def list_libraries(user_creds=None):
         if not isinstance(folder, dict):
             continue
         folder_id = folder.get('id') or folder.get('folder_id')
-        folder_name = folder.get('name') or folder.get('folder')
+        folder_name = folder.get('filename') or folder.get('name') or folder.get('folder')
         folder_path = folder.get('path') or folder.get('url')
         if folder_id is None or not folder_name:
             continue
-        # Display path when available (so the user sees what actually gets
-        # stored / matched); fall back to the folder name when Lyrion's
-        # response omits the path.
         display_name = folder_path or folder_name
         libraries.append({'id': str(folder_id), 'name': display_name})
     return libraries
