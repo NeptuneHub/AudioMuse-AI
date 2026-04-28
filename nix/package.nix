@@ -69,10 +69,21 @@ let
     hash = "sha256-hr8RAKCxNZWddKmnpYzwUVvzC7VOslrm+44XXlAwD8M=";
   };
 
-  voyager-wheel = fetchurl {
-    url = "https://files.pythonhosted.org/packages/b7/13/a772a9a2d4cc427f6b4ae2aca65e50ec99f7bb6037c346cc22a07bc4a326/voyager-2.1.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl";
-    hash = "sha256-lBW5ySO6xJPVxo1VrlXEKJFTwj+fR4Qik03mGsuvTAE=";
-  };
+  voyager-wheel =
+    let
+      wheels = {
+        "x86_64-linux" = {
+          url = "https://files.pythonhosted.org/packages/b7/13/a772a9a2d4cc427f6b4ae2aca65e50ec99f7bb6037c346cc22a07bc4a326/voyager-2.1.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl";
+          hash = "sha256-lBW5ySO6xJPVxo1VrlXEKJFTwj+fR4Qik03mGsuvTAE=";
+        };
+        "aarch64-linux" = {
+          url = "https://files.pythonhosted.org/packages/91/87/f3ed4ebeeff371b0b759c277025379dbcb5dbf00083df6c03f5c9727b6cd/voyager-2.1.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl";
+          hash = "sha256-zd9TWdioi9X8EvxxwOf9My5NodltrIrkRbATiHHNKLI=";
+        };
+      };
+      system = stdenvNoCC.hostPlatform.system;
+    in
+    fetchurl (wheels.${system} or (throw "Unsupported system for voyager wheel: ${system}"));
 
   laion-clap-wheel = fetchurl {
     url = "https://files.pythonhosted.org/packages/ab/ea/6fb3d90bc1d85e6039506c248009e7f195456b81efa0a7aa413b3e13eb04/laion_clap-1.1.7-py3-none-any.whl";
@@ -208,11 +219,11 @@ stdenvNoCC.mkDerivation {
       --set TRANSFORMERS_OFFLINE "1"
     )
 
-    # Flask web server (port passed at runtime via --bind)
+    # Flask web server (all gunicorn args passed at runtime by NixOS module)
     makeWrapper ${pythonEnv}/bin/gunicorn $out/bin/audiomuse-ai-flask \
       "''${commonArgs[@]}" \
       --chdir "$out/lib/audiomuse-ai" \
-      --add-flags "--workers 1 --threads 4 --worker-class gthread --keep-alive 5 --timeout 300 app:app"
+      --add-flags "app:app"
 
     # Default queue worker
     makeWrapper ${pythonEnv}/bin/python $out/bin/audiomuse-ai-worker-default \

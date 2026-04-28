@@ -211,6 +211,33 @@ in
       };
     };
 
+    # --- Gunicorn ---
+    gunicorn = {
+      workers = mkOption {
+        type = types.ints.positive;
+        default = 1;
+        description = "Number of gunicorn worker processes.";
+      };
+
+      threads = mkOption {
+        type = types.ints.positive;
+        default = 4;
+        description = "Number of threads per gunicorn worker.";
+      };
+
+      timeout = mkOption {
+        type = types.ints.positive;
+        default = 300;
+        description = "Gunicorn worker timeout in seconds.";
+      };
+
+      extraArgs = mkOption {
+        type = types.str;
+        default = "";
+        description = "Extra command-line arguments for gunicorn.";
+      };
+    };
+
     # --- Temp directory ---
     tempDir = mkOption {
       type = types.str;
@@ -297,7 +324,16 @@ in
         };
 
         serviceConfig = commonServiceConfig // {
-          ExecStart = "${cfg.package}/bin/audiomuse-ai-flask --bind 0.0.0.0:${toString cfg.port}";
+          ExecStart = builtins.concatStringsSep " " [
+            "${cfg.package}/bin/audiomuse-ai-flask"
+            "--bind 0.0.0.0:${toString cfg.port}"
+            "--workers ${toString cfg.gunicorn.workers}"
+            "--threads ${toString cfg.gunicorn.threads}"
+            "--worker-class gthread"
+            "--keep-alive 5"
+            "--timeout ${toString cfg.gunicorn.timeout}"
+            cfg.gunicorn.extraArgs
+          ];
         };
       };
 
