@@ -36,6 +36,8 @@ def test_config_reads_secret_values_from_file(monkeypatch, tmp_path):
     jwt_secret_file.write_text("jwt-from-file\n", encoding="utf-8")
     pg_password_file = tmp_path / "postgres_password"
     pg_password_file.write_text("postgres-from-file\n", encoding="utf-8")
+    pg_db_file = tmp_path / "postgres_db"
+    pg_db_file.write_text("postgres-db-from-file\n", encoding="utf-8")
     pg_user_file = tmp_path / "postgres_user"
     pg_user_file.write_text("postgres-user-from-file\n", encoding="utf-8")
     jellyfin_user_id_file = tmp_path / "jellyfin_user_id"
@@ -44,11 +46,13 @@ def test_config_reads_secret_values_from_file(monkeypatch, tmp_path):
     audiomuse_user_file.write_text("admin-from-file\n", encoding="utf-8")
 
     monkeypatch.setenv("JWT_SECRET_FILE", str(jwt_secret_file))
+    monkeypatch.setenv("POSTGRES_DB_FILE", str(pg_db_file))
     monkeypatch.setenv("POSTGRES_USER_FILE", str(pg_user_file))
     monkeypatch.setenv("POSTGRES_PASSWORD_FILE", str(pg_password_file))
     monkeypatch.setenv("JELLYFIN_USER_ID_FILE", str(jellyfin_user_id_file))
     monkeypatch.setenv("AUDIOMUSE_USER_FILE", str(audiomuse_user_file))
     monkeypatch.delenv("JWT_SECRET", raising=False)
+    monkeypatch.delenv("POSTGRES_DB", raising=False)
     monkeypatch.delenv("POSTGRES_USER", raising=False)
     monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
     monkeypatch.delenv("JELLYFIN_USER_ID", raising=False)
@@ -79,6 +83,7 @@ def test_config_reads_secret_values_from_file(monkeypatch, tmp_path):
         config = importlib.import_module("config")
 
         assert config.JWT_SECRET == "jwt-from-file"
+        assert config.POSTGRES_DB == "postgres-db-from-file"
         assert config.POSTGRES_USER == "postgres-user-from-file"
         assert config.POSTGRES_PASSWORD == "postgres-from-file"
         assert config.JELLYFIN_USER_ID == "jellyfin-user-from-file"

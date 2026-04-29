@@ -271,7 +271,7 @@ POSTGRES_USER = get_env("POSTGRES_USER", "audiomuse")
 POSTGRES_PASSWORD = get_env("POSTGRES_PASSWORD", "audiomusepassword")
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "postgres-service.playlist") # Default for K8s
 POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
-POSTGRES_DB = os.environ.get("POSTGRES_DB", "audiomusedb")
+POSTGRES_DB = get_env("POSTGRES_DB", "audiomusedb")
 
 # Allow an explicit DATABASE_URL to override construction (useful for docker-compose or direct env override)
 from urllib.parse import quote

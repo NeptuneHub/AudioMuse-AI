@@ -45,7 +45,7 @@ class SetupManager:
         password = get_env("POSTGRES_PASSWORD", "audiomusepassword")
         host = os.environ.get("POSTGRES_HOST", "postgres-service.playlist")
         port = os.environ.get("POSTGRES_PORT", "5432")
-        db = os.environ.get("POSTGRES_DB", "audiomusedb")
+        db = get_env("POSTGRES_DB", "audiomusedb")
         user_escaped = quote(user, safe='')
         password_escaped = quote(password, safe='')
         return f"postgresql://{user_escaped}:{password_escaped}@{host}:{port}/{db}"
