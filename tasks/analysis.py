@@ -1097,6 +1097,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
     import config  # Import config to access MULAN_ENABLED
 
     MULAN_ENABLED = getattr(config, 'MULAN_ENABLED', False)  # Get MULAN_ENABLED from config
+    LYRICS_ENABLED = getattr(config, 'LYRICS_ENABLED', False)
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())    
@@ -1297,6 +1298,15 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                             cur.execute("SELECT item_id FROM mulan_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
                             existing_mulan_ids = {row[0] for row in cur.fetchall()}
                             needs_mulan_analysis = len(existing_mulan_ids) < len(tracks)
+
+                    # Check Lyrics only if enabled
+                    needs_lyrics_analysis = False
+                    if LYRICS_ENABLED:
+                        with get_db() as conn, conn.cursor() as cur:
+                            track_ids_as_strings = [str(id) for id in track_ids]
+                            cur.execute("SELECT item_id FROM lyrics_embedding WHERE item_id IN %s", (tuple(track_ids_as_strings),))
+                            existing_lyrics_ids = {row[0] for row in cur.fetchall()}
+                            needs_lyrics_analysis = len(existing_lyrics_ids) < len(tracks)
                     
                 except Exception as e:
                     # Defensive: if DB check fails, log and continue to next album to avoid blocking the main loop.
@@ -1305,16 +1315,51 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     albums_skipped += 1
                     continue
 
-                # Skip ONLY if all tracks have MusiCNN AND CLAP (if enabled) AND MuLan (if enabled)
-                if existing_count >= len(tracks) and not needs_clap_analysis and not needs_mulan_analysis:
-                    # Always update album name for all tracks, even if already analyzed
+                # Skip ONLY if all tracks have MusiCNN AND CLAP (if enabled) AND MuLan (if enabled) AND Lyrics (if enabled)
+                if existing_count >= len(tracks) and not needs_clap_analysis and not needs_mulan_analysis and not needs_lyrics_analysis:
+                    # Refresh per-track metadata for already-analyzed albums, but
+                    # NEVER overwrite an existing non-null value with NULL — the
+                    # media server may not return every field on every request,
+                    # and we don't want to wipe restored data (e.g. file_path).
                     for item in tracks:
                         track_id_str = str(item['Id'])
+                        new_album = album.get('Name')
+                        new_album_artist = item.get('OriginalAlbumArtist')
+                        new_year = item.get('Year')
+                        new_rating = item.get('Rating')
+                        new_file_path = item.get('FilePath')
+                        if not any(v is not None for v in (new_album, new_album_artist, new_year, new_rating, new_file_path)):
+                            continue
                         try:
                             with get_db() as conn, conn.cursor() as cur:
-                                cur.execute("UPDATE score SET album = %s, album_artist = %s, year = %s, rating = %s, file_path = %s WHERE item_id = %s", (album.get('Name'), item.get('OriginalAlbumArtist'), item.get('Year'), item.get('Rating'), item.get('FilePath'), track_id_str))
+                                cur.execute(
+                                    "UPDATE score SET "
+                                    "album = COALESCE(%s, album), "
+                                    "album_artist = COALESCE(%s, album_artist), "
+                                    "year = COALESCE(%s, year), "
+                                    "rating = COALESCE(%s, rating), "
+                                    "file_path = COALESCE(%s, file_path) "
+                                    "WHERE item_id = %s AND ("
+                                    "  (%s IS NOT NULL AND album IS DISTINCT FROM %s) OR "
+                                    "  (%s IS NOT NULL AND album_artist IS DISTINCT FROM %s) OR "
+                                    "  (%s IS NOT NULL AND year IS DISTINCT FROM %s) OR "
+                                    "  (%s IS NOT NULL AND rating IS DISTINCT FROM %s) OR "
+                                    "  (%s IS NOT NULL AND file_path IS DISTINCT FROM %s)"
+                                    ")",
+                                    (
+                                        new_album, new_album_artist, new_year, new_rating, new_file_path,
+                                        track_id_str,
+                                        new_album, new_album,
+                                        new_album_artist, new_album_artist,
+                                        new_year, new_year,
+                                        new_rating, new_rating,
+                                        new_file_path, new_file_path,
+                                    ),
+                                )
+                                changed = cur.rowcount
                                 conn.commit()
-                            logger.info(f"[MainAnalysisTask] Updated album/album_artist/year/rating/file_path for track '{item['Name']}' to '{album.get('Name')}' (main task)")
+                            if changed:
+                                logger.info(f"[MainAnalysisTask] Refreshed metadata for track '{item['Name']}' (album '{new_album}')")
                         except Exception as e:
                             logger.warning(f"[MainAnalysisTask] Failed to update album name for '{item['Name']}': {e}")
                     albums_skipped += 1
@@ -1325,6 +1370,8 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                         status_parts.append("CLAP")
                     if MULAN_ENABLED:
                         status_parts.append("MuLan")
+                    if LYRICS_ENABLED:
+                        status_parts.append("Lyrics")
                     logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {existing_count}/{len(tracks)} tracks already analyzed ({' + '.join(status_parts)}).")
                     continue
                 
