@@ -39,6 +39,7 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
+> * **Version 1.0.3** introduces the use of index also for text search for a faster search. **Important:** after the update run the analysis of 1 album to create the index.
 > * **Version 1.0.2** introduces providers migration, multiple users support and the dashboard.
 > * **Version 1.0.0** introduces the Setup Wizard for an easy configuration with the web UI.
 > * **Version 0.9.6** authentication enabled by default. Read the [AUTHENTICATION](docs/AUTH.md) docs to know how to proceed.
@@ -67,7 +68,7 @@ For a full list of configuration parameter take a look at [PARAMETERS](docs/PARA
 
 For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](docs/ARCHITECTURE.md) page.
 
-From `v1.0.0`, only PostgreSQL and Redis connection parameters must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
+From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
 
 **Prerequisites:**
 * Docker and Docker Compose installed
