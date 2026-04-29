@@ -60,8 +60,14 @@ except ImportError:  # pragma: no cover
 
 try:
     import torch
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover - CUDA-build torch can raise OSError on dlopen
     torch = None
+
+try:
+    from silero_vad import load_silero_vad, get_speech_timestamps
+except Exception:  # pragma: no cover - silero pulls torchaudio which can fail to dlopen libcudart
+    load_silero_vad = None
+    get_speech_timestamps = None
 
 if DetectorFactory is not None:
     DetectorFactory.seed = 0
@@ -77,7 +83,7 @@ DEFAULT_SAMPLE_RATE = 16000
 MAX_AUDIO_SECONDS = 240.0          # never feed whisper more than 4 minutes
 MAX_WORDS_PER_CHUNK = 50           # llm cleanup chunk size
 MIN_WORDS_FOR_CLEANUP = 50         # below this, skip cleanup (matches stand-alone behavior)
-MIN_WORDS_FOR_EMBEDDING = 4
+MIN_WORDS_FOR_EMBEDDING = 50       # below this, treat song as having no usable lyrics
 
 MUSIC_ANALYSIS_AXES = {
     "AXIS_1_SETTING": {
@@ -358,6 +364,41 @@ def _split_into_word_chunks(text: str, max_words: int = MAX_WORDS_PER_CHUNK) -> 
 
 
 # ---------------------------------------------------------------------------
+# Voice activity detection (silero) — keep only voiced regions before whisper
+# ---------------------------------------------------------------------------
+
+_vad_model = None
+
+
+def _get_vad_model():
+    global _vad_model
+    if _vad_model is None and load_silero_vad is not None:
+        _vad_model = load_silero_vad()
+    return _vad_model
+
+
+def _apply_vad(audio: np.ndarray, sr: int) -> np.ndarray:
+    """Return a concatenation of voiced regions; fall back to ``audio`` on any issue."""
+    if sr != 16000 or torch is None or get_speech_timestamps is None:
+        return audio
+    model = _get_vad_model()
+    if model is None:
+        return audio
+    try:
+        tensor = torch.from_numpy(audio.astype(np.float32))
+        ts = get_speech_timestamps(tensor, model, sampling_rate=sr)
+    except Exception as exc:
+        logger.warning('VAD failed: %s; using raw audio', exc)
+        return audio
+    if not ts:
+        return audio
+    voiced = np.concatenate([audio[t['start']:t['end']] for t in ts])
+    if len(voiced) < sr * 5:  # less than 5s of voice -> trust the original
+        return audio
+    return voiced
+
+
+# ---------------------------------------------------------------------------
 # Transcription
 # ---------------------------------------------------------------------------
 
@@ -447,6 +488,36 @@ def _translate_to_english(text: str, source_lang: str) -> str:
 # Cleanup with Qwen
 # ---------------------------------------------------------------------------
 
+def _llama_clean_chunk(model, chunk: str, max_tokens: int, temperature: float) -> str:
+    prompt = (
+        "You are a song transcription cleanup assistant.\n"
+        "This text is a Whisper transcription output.\n"
+        "Your job is to fix only obvious transcription mistakes and minor formatting issues.\n"
+        "Do not invent new lyrics, do not add new content, and do not change the meaning.\n"
+        "Preserve the original phrasing and sentence structure unless an obvious error must be fixed.\n"
+        "Output only the cleaned lyrics text with no extra labels.\n\n"
+        "Raw transcription:\n"
+        f"{chunk}\n\n"
+        "Cleaned lyrics text:\n"
+    )
+    response = model.create_completion(
+        prompt,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=0.75,
+        presence_penalty=0.5,
+        repeat_penalty=1.15,
+        echo=False,
+        stop=["\n\n", "\nOutput only", "\nDo not include any metadata"],
+    )
+    text_out = ''
+    if isinstance(response, dict):
+        choices = response.get('choices') or []
+        if choices:
+            text_out = choices[0].get('text', '')
+    return text_out or chunk
+
+
 def _clean_with_llama(text: str, model, max_tokens: int = 256,
                       temperature: float = 0.2) -> str:
     if not text or not text.strip():
@@ -454,41 +525,20 @@ def _clean_with_llama(text: str, model, max_tokens: int = 256,
     chunks = _split_into_word_chunks(text)
     cleaned: List[str] = []
     for index, chunk in enumerate(chunks, start=1):
-        prompt = (
-            "You are a song transcription cleanup assistant.\n"
-            "This text is a Whisper transcription output.\n"
-            "Your job is to fix only obvious transcription mistakes and minor formatting issues.\n"
-            "Do not invent new lyrics, do not add new content, and do not change the meaning.\n"
-            "Preserve the original phrasing and sentence structure unless an obvious error must be fixed.\n"
-            "Output only the cleaned lyrics text with no extra labels.\n\n"
-            "Raw transcription:\n"
-            f"{chunk}\n\n"
-            "Cleaned lyrics text:\n"
-        )
         try:
-            response = model.create_completion(
-                prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=0.75,
-                presence_penalty=0.5,
-                repeat_penalty=1.15,
-                echo=False,
-                stop=["\n\n", "\nOutput only", "\nDo not include any metadata"],
-            )
-        except Exception as exc:
-            logger.warning('LLaMA cleanup chunk %s/%s failed: %s; using raw chunk',
-                           index, len(chunks), exc)
-            cleaned.append(_normalize_text(chunk))
+            text_out = _llama_clean_chunk(model, chunk, max_tokens, temperature)
+            cleaned.append(_normalize_text(text_out))
             continue
-        text_out = ''
-        if isinstance(response, dict):
-            choices = response.get('choices') or []
-            if choices:
-                text_out = choices[0].get('text', '')
-        if not text_out:
-            text_out = chunk
-        cleaned.append(_normalize_text(text_out))
+        except Exception as exc:
+            logger.warning('LLaMA cleanup chunk %s/%s failed: %s; retrying with smaller chunks',
+                           index, len(chunks), exc)
+        # Retry: split the failing chunk into 30-word sub-chunks with a tighter token cap.
+        for sub in _split_into_word_chunks(chunk, 30):
+            try:
+                cleaned.append(_normalize_text(_llama_clean_chunk(model, sub, 128, temperature)))
+            except Exception as exc2:
+                logger.warning('LLaMA cleanup retry failed: %s; using raw sub-chunk', exc2)
+                cleaned.append(_normalize_text(sub))
     return '\n\n'.join(cleaned).strip()
 
 
@@ -594,6 +644,13 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     logger.info('STEP 1 end: audio ready, used=%.2fs samples=%s sr=%s',
                 used_seconds, len(audio_clip), sr)
 
+    # ---- STEP 1b: VAD pre-filter (keep only voiced regions) ----
+    pre_vad_samples = len(audio_clip)
+    audio_clip = _apply_vad(audio_clip, sr)
+    if len(audio_clip) != pre_vad_samples:
+        logger.info('VAD: %.2fs -> %.2fs voiced',
+                    pre_vad_samples / sr, len(audio_clip) / sr)
+
     # ---- STEP 2: whisper transcription ----
     logger.info('STEP 2 start: whisper transcription (threads=%s)', threads)
     whisper_model = load_whisper_model(num_threads=threads)
@@ -601,6 +658,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     raw_text = (transcription.get('text') or '').strip()
     logger.info('STEP 2 end: transcript length=%s chars / %s words',
                 len(raw_text), len(raw_text.split()))
+    logger.info('STEP 2 raw whisper output: %s', raw_text or '<empty>')
 
     # ---- STEP 3: language detection ----
     logger.info('STEP 3 start: language detection')
@@ -651,6 +709,13 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         embedding = _embed_text(final_text, tokenizer, model)
         if embedding is not None:
             axis_vector = _score_axes(embedding)
+    else:
+        # Below threshold: treat the track as having no usable lyrics. The text
+        # fields are blanked so callers never persist or display partial garbage.
+        raw_text = ''
+        text_for_cleanup = ''
+        cleaned_text = ''
+        final_text = ''
     logger.info('STEP 6 end: embedding=%s axis_vector_dim=%s',
                 None if embedding is None else embedding.shape,
                 int(axis_vector.shape[0]) if axis_vector is not None else 0)

@@ -75,6 +75,8 @@ def lyrics_search_axes_api():
         limit = min(max(1, limit), 500)
 
         results = search_by_axes(targets, limit=limit)
+        if not results:
+            return jsonify({'error': 'No lyrics found.', 'results': []}), 404
         return jsonify({'results': results, 'count': len(results)})
     except Exception:
         logger.exception("Lyrics axis search failed")
@@ -112,6 +114,8 @@ def lyrics_search_text_api():
         limit = min(max(1, limit), 500)
 
         results = search_by_text(query, limit=limit)
+        if not results:
+            return jsonify({'error': 'No lyrics found.', 'query': query, 'results': []}), 404
         return jsonify({'query': query, 'results': results, 'count': len(results)})
     except Exception:
         logger.exception("Lyrics text search failed")
