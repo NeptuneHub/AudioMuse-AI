@@ -51,6 +51,8 @@ from ai import get_ai_playlist_name, creative_prompt_template
 from .commons import score_vector
 # MODIFIED: Import from voyager_manager instead of annoy_manager
 from .voyager_manager import build_and_store_voyager_index
+# Import CLAP index builder for persisted text search index storage
+from .clap_text_search import build_and_store_clap_index
 # Import artist GMM manager for artist similarity index
 from .artist_gmm_manager import build_and_store_artist_index
 # MODIFIED: The functions from mediaserver no longer need server-specific parameters.
@@ -262,6 +264,12 @@ def rebuild_all_indexes_task():
             # Build Voyager index
             build_and_store_voyager_index(get_db())
             logger.info('✓ Voyager index rebuilt')
+
+            # Build CLAP text search index
+            try:
+                build_and_store_clap_index(get_db())
+            except Exception as e:
+                logger.warning(f"Failed to build/store CLAP text search index: {e}")
             
             # Build artist similarity index
             try:
@@ -1278,9 +1286,16 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             log_and_update_main("Performing final index rebuild...", 95)
             # Build Voyager index (song embeddings)
             build_and_store_voyager_index(get_db())
+
+            # Build CLAP search index and store it in the database
+            log_and_update_main("Building CLAP text search index...", 96)
+            try:
+                build_and_store_clap_index(get_db())
+            except Exception as e:
+                logger.warning(f"Failed to build/store CLAP text search index: {e}")
             
             # Build artist similarity index
-            log_and_update_main("Building artist similarity index...", 96)
+            log_and_update_main("Building artist similarity index...", 97)
             try:
                 build_and_store_artist_index(get_db())
                 logger.info('Artist similarity index built and stored.')

@@ -68,7 +68,7 @@ def get_db():
                 keepalives_idle=600,       # Start keepalives after 10 min idle
                 keepalives_interval=30,    # Send keepalive every 30 sec
                 keepalives_count=3,        # 3 failed keepalives = dead connection
-                options='-c statement_timeout=300000'  # 5 min query timeout (300 seconds)
+                options='-c statement_timeout=600000'  # 10 min query timeout (600 seconds)
             )
         except psycopg2.OperationalError as e:
             logger.error(f"Failed to connect to database: {e}")
@@ -219,6 +219,8 @@ def init_db():
                 if not cur.fetchone()[0]: cur.execute("ALTER TABLE mulan_embedding ADD COLUMN embedding BYTEA")
             # Create 'voyager_index_data' table
             cur.execute("CREATE TABLE IF NOT EXISTS voyager_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Create 'clap_index_data' table for stored CLAP text search indexes
+            cur.execute("CREATE TABLE IF NOT EXISTS clap_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'artist_index_data' table for artist GMM-based HNSW index
             cur.execute("CREATE TABLE IF NOT EXISTS artist_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, artist_map_json TEXT NOT NULL, gmm_params_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'map_projection_data' table for precomputed 2D map projections
@@ -244,6 +246,16 @@ def init_db():
                 "indexes JSONB NOT NULL DEFAULT '[]'::jsonb, "
                 "CONSTRAINT dashboard_stats_singleton CHECK (id = 1))"
             )
+            # Ensure older restored DBs still have the primary key constraint.
+            cur.execute(
+                "SELECT COUNT(*) FROM information_schema.table_constraints "
+                "WHERE table_name = 'dashboard_stats' AND constraint_type = 'PRIMARY KEY'"
+            )
+            row = cur.fetchone()
+            if row and row[0] == 0:
+                logger.info("Cleaning dashboard_stats and adding missing primary key constraint to dashboard_stats.id")
+                cur.execute("DELETE FROM dashboard_stats")
+                cur.execute("ALTER TABLE dashboard_stats ADD CONSTRAINT dashboard_stats_pkey PRIMARY KEY (id)")
             # Create 'artist_mapping' table to map artist names to media server artist IDs
             cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
             # Create application configuration table to persist setup values.

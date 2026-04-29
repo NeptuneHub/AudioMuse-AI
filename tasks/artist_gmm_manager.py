@@ -849,26 +849,21 @@ def load_artist_index_for_querying(force_reload=False):
 
             parts.sort(key=lambda p: p[0])
 
-            # Reassemble binary and pick metadata from first non-empty segment
-            index_bytes = b"".join([p[1] for p in parts])
-            if not index_bytes:
-                logger.error("Reassembled Artist index binary is empty. Aborting load.")
-                artist_index = None
-                artist_map = None
-                reverse_artist_map = None
-                artist_gmm_params = None
-                return
-
-            if not artist_map_json_candidate or not gmm_params_json_candidate:
-                logger.error("No non-empty artist_map_json/gmm_params_json found in segmented Artist index rows. Aborting load.")
-                artist_index = None
-                artist_map = None
-                reverse_artist_map = None
-                artist_gmm_params = None
-                return
-
+            # Reassemble segments into a temporary file and load from that stream
+            index_stream = tempfile.TemporaryFile()
             try:
-                index_stream = io.BytesIO(index_bytes)
+                for _, part_data, _, _ in parts:
+                    index_stream.write(part_data)
+                index_stream.seek(0)
+
+                if not artist_map_json_candidate or not gmm_params_json_candidate:
+                    logger.error("No non-empty artist_map_json/gmm_params_json found in segmented Artist index rows. Aborting load.")
+                    artist_index = None
+                    artist_map = None
+                    reverse_artist_map = None
+                    artist_gmm_params = None
+                    return
+
                 index = voyager.Index.load(index_stream)
 
                 parsed_artist_map = {int(k): v for k, v in json.loads(artist_map_json_candidate).items()}
@@ -900,6 +895,11 @@ def load_artist_index_for_querying(force_reload=False):
                 reverse_artist_map = None
                 artist_gmm_params = None
                 return
+            finally:
+                try:
+                    index_stream.close()
+                except Exception as close_error:
+                    logger.warning("Failed to close Artist index stream: %s", close_error, exc_info=True)
             
         except Exception as e:
             logger.error(f"Failed to load artist index: {e}", exc_info=True)

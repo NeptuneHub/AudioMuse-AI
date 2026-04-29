@@ -1,5 +1,5 @@
 --extra-index-url https://pypi.nvidia.com
-cupy-cuda12x
+cupy-cuda12x==13.6.0
 onnxruntime-gpu==1.19.2
-cuml-cu12==24.12.*
+cuml-cu12==24.12.0
 torch==2.5.1

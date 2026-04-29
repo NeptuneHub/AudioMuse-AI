@@ -243,20 +243,19 @@ def load_voyager_index_for_querying(force_reload=False):
                 return
 
         # Reassemble binary and pick id_map_json from first non-empty segment (prefer part 1)
-        index_binary_data = b"".join([p[1] for p in parts])
-        if not index_binary_data:
-            logger.error(f"Reassembled Voyager index binary is empty. Aborting load.")
-            voyager_index, id_map, reverse_id_map = None, None, None
-            return
+        index_stream = tempfile.TemporaryFile()
+        for _, part_data, _, _ in parts:
+            index_stream.write(part_data)
+        index_stream.seek(0)
 
         if not id_map_json_candidate:
             logger.error("No non-empty id_map_json found in segmented Voyager index rows. Aborting load.")
             voyager_index, id_map, reverse_id_map = None, None, None
+            index_stream.close()
             return
 
         # Final validation: try loading Voyager and ensure element count matches id_map length
         try:
-            index_stream = io.BytesIO(index_binary_data)
             loaded_index = voyager.Index.load(index_stream)
             loaded_index.ef = VOYAGER_QUERY_EF
             # Validate element counts if voyager exposes num_elements
@@ -281,6 +280,11 @@ def load_voyager_index_for_querying(force_reload=False):
             logger.error(f"Failed to load reassembled Voyager index: {load_error}", exc_info=True)
             voyager_index, id_map, reverse_id_map = None, None, None
             return
+        finally:
+            try:
+                index_stream.close()
+            except Exception as close_error:
+                logger.warning("Failed to close Voyager index stream: %s", close_error, exc_info=True)
 
     except Exception as e:
         logger.error("Failed to load Voyager index from database: %s", e, exc_info=True)

@@ -201,9 +201,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Restore failed');
             restoreStatus.style.color = 'var(--color-success, green)';
-            // Same UX as the setup save: 20s countdown, then redirect to /
+            // Same UX as the setup save: 30s countdown, then redirect to /
             // while Flask restarts in the background.
-            let countdown = 20;
+            let countdown = 30;
             restoreStatus.textContent =
                 'Database restored successfully. Restarting the application — '
                 + 'redirecting in ' + countdown + ' seconds…';

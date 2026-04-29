@@ -5,7 +5,7 @@ import traceback
 
 from redis import Redis
 import config
-from restart_manager import RESTART_CHANNEL, restart_supervisor_workers
+from restart_manager import RESTART_CHANNEL, restart_supervisor_workers, stop_supervisor_workers, start_supervisor_workers
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(asctime)s %(message)s')
@@ -37,16 +37,28 @@ def main():
                     continue
                 payload = message.get('data')
                 logger.info('Restart listener received payload: %s', payload)
+                service_type = os.environ.get('SERVICE_TYPE', '').lower()
+                if service_type != 'worker':
+                    logger.info('Control signal received, but SERVICE_TYPE is not worker; skipping')
+                    continue
                 if payload == 'restart':
-                    service_type = os.environ.get('SERVICE_TYPE', '').lower()
-                    if service_type != 'worker':
-                        logger.info('Restart signal received, but SERVICE_TYPE is not worker; skipping worker restart')
-                        continue
                     logger.info('Restart signal received, restarting worker processes...')
                     if restart_supervisor_workers():
                         logger.info('Worker restart completed successfully')
                     else:
                         logger.warning('Worker restart failed; will continue listening')
+                elif payload == 'stop':
+                    logger.info('Stop signal received, stopping worker processes...')
+                    if stop_supervisor_workers():
+                        logger.info('Worker stop completed successfully')
+                    else:
+                        logger.warning('Worker stop failed; will continue listening')
+                elif payload == 'start':
+                    logger.info('Start signal received, starting worker processes...')
+                    if start_supervisor_workers():
+                        logger.info('Worker start completed successfully')
+                    else:
+                        logger.warning('Worker start failed; will continue listening')
         except Exception:
             logger.error('Restart listener connection error, retrying in 5 seconds')
             traceback.print_exc()
