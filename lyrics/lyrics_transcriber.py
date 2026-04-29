@@ -179,9 +179,37 @@ _embedding_model_name: Optional[str] = None
 _axis_label_map: Optional[Dict] = None
 _axis_embeddings: Optional[Dict] = None
 _marian_cache: Dict[str, Tuple[object, object]] = {}
+_lyrics_device_cache: Optional[str] = None
 
 
-def load_whisper_model(model_name: str = 'small', device: str = 'cpu',
+def _resolve_lyrics_device() -> str:
+    """Return 'cuda' or 'cpu' based on LYRICS_USE_GPU and torch availability."""
+    global _lyrics_device_cache
+    if _lyrics_device_cache is not None:
+        return _lyrics_device_cache
+    try:
+        from config import LYRICS_USE_GPU
+        pref = str(LYRICS_USE_GPU).lower()
+    except Exception:
+        pref = 'auto'
+    if pref == 'false' or torch is None:
+        _lyrics_device_cache = 'cpu'
+        return _lyrics_device_cache
+    try:
+        cuda_ok = bool(torch.cuda.is_available())
+    except Exception:
+        cuda_ok = False
+    if pref == 'true':
+        _lyrics_device_cache = 'cuda' if cuda_ok else 'cpu'
+        if not cuda_ok:
+            logger.warning('LYRICS_USE_GPU=true but CUDA is not available; using CPU.')
+    else:  # auto
+        _lyrics_device_cache = 'cuda' if cuda_ok else 'cpu'
+    logger.info('Lyrics compute device resolved: %s', _lyrics_device_cache)
+    return _lyrics_device_cache
+
+
+def load_whisper_model(model_name: str = 'small', device: Optional[str] = None,
                       num_threads: Optional[int] = None):
     global _whisper_model, _whisper_model_name
     if whisper is None:
@@ -190,7 +218,11 @@ def load_whisper_model(model_name: str = 'small', device: str = 'cpu',
     threads = num_threads or get_lyrics_threads()
     _apply_thread_env(threads)
 
-    if _whisper_model is not None and _whisper_model_name == model_name:
+    resolved_device = device or _resolve_lyrics_device()
+
+    if (_whisper_model is not None
+            and _whisper_model_name == model_name
+            and getattr(_whisper_model, '_lyrics_device', None) == resolved_device):
         return _whisper_model
 
     try:
@@ -200,10 +232,15 @@ def load_whisper_model(model_name: str = 'small', device: str = 'cpu',
 
     local_pt = os.path.join(LYRICS_MODEL_DIR, f'{model_name}.pt')
     target = local_pt if os.path.isfile(local_pt) else model_name
-    logger.info('Loading Whisper model %r (threads=%s) from %s', model_name, threads, target)
-    _whisper_model = whisper.load_model(target, device=device, download_root=LYRICS_MODEL_DIR)
+    logger.info('Loading Whisper model %r (device=%s, threads=%s) from %s',
+                model_name, resolved_device, threads, target)
+    _whisper_model = whisper.load_model(target, device=resolved_device, download_root=LYRICS_MODEL_DIR)
+    try:
+        setattr(_whisper_model, '_lyrics_device', resolved_device)
+    except Exception:
+        pass
     _whisper_model_name = model_name
-    logger.info('Whisper model %r ready', model_name)
+    logger.info('Whisper model %r ready on %s', model_name, resolved_device)
     return _whisper_model
 
 
@@ -229,7 +266,10 @@ def load_llama_model(model_path: Optional[str] = None,
     if _llama_model is not None and _llama_model_path == model_path:
         return _llama_model
 
-    logger.info('Loading LLaMA model %s (threads=%s)', model_path, threads)
+    # Qwen / llama-cpp is intentionally pinned to CPU to avoid regressions on
+    # images that ship the default CPU-only llama-cpp-python wheel.
+    logger.info('Loading LLaMA model %s (threads=%s, n_gpu_layers=0)',
+                model_path, threads)
     _llama_model = Llama(model_path=model_path, n_threads=threads,
                          n_gpu_layers=0, verbose=False)
     _llama_model_path = model_path

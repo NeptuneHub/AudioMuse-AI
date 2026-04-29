@@ -310,6 +310,10 @@ LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
 LYRICS_LLM_ENABLED = os.environ.get("LYRICS_LLM_ENABLED", "false").lower() == "true"
 # When true, look up lyrics from external APIs (LRCLIB, Vagalume) before falling back to Whisper.
 LYRICS_API_ENABLE = os.environ.get("LYRICS_API_ENABLE", "true").lower() == "true"
+# Run Whisper + Qwen on CUDA when available. "auto" probes torch.cuda.is_available()
+# at load time; "true" forces GPU; "false" forces CPU. Note: GPU Qwen also requires
+# a CUDA-enabled llama-cpp-python wheel (default PyPI wheel is CPU only).
+LYRICS_USE_GPU = os.environ.get("LYRICS_USE_GPU", "auto").lower()
 LYRICS_WHISPER_MODEL = os.environ.get("LYRICS_WHISPER_MODEL", "small")
 LYRICS_LLM_MODEL_PATH = os.environ.get("LYRICS_LLM_MODEL_PATH", "/app/model/qwen2.5-1.5b-instruct-q4_k_m.gguf")
 LYRICS_SONGS_DIR = os.environ.get("LYRICS_SONGS_DIR", "/app/songs")
