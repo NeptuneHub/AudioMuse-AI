@@ -17,6 +17,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_PASSWORD_FILE: ${POSTGRES_PASSWORD_FILE:-}
       POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
     ports:
       - "${POSTGRES_PORT:-5432}:5432" # Expose PostgreSQL port to the host
@@ -36,10 +37,14 @@ services:
       # DATABASE_URL is now constructed by config.py from the following:
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_PASSWORD_FILE: ${POSTGRES_PASSWORD_FILE:-}
       POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
       POSTGRES_HOST: "postgres" # Service name of the postgres container
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
       REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
+      REDIS_URL_FILE: "${REDIS_URL_FILE:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      DATABASE_URL_FILE: "${DATABASE_URL_FILE:-}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
@@ -65,10 +70,14 @@ services:
       # DATABASE_URL is now constructed by config.py from the following:
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_PASSWORD_FILE: ${POSTGRES_PASSWORD_FILE:-}
       POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
       POSTGRES_HOST: "postgres" # Service name of the postgres container
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
       REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}" # Connects to the 'redis' service
+      REDIS_URL_FILE: "${REDIS_URL_FILE:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      DATABASE_URL_FILE: "${DATABASE_URL_FILE:-}"
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"

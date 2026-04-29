@@ -1,5 +1,6 @@
 #AudioMuse-AI/config.py
 import os
+from env_utils import get_env
 
 # --- Media Server Type ---
 MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, mpd, emby
@@ -8,13 +9,13 @@ MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Poss
 
 # JELLYFIN_USER_ID and JELLYFIN_TOKEN come from a Kubernetes Secret
 JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "") # Replace with your default URL
-JELLYFIN_USER_ID = os.environ.get("JELLYFIN_USER_ID", "")  # Replace with a suitable default or handle missing case
-JELLYFIN_TOKEN = os.environ.get("JELLYFIN_TOKEN", "")  # Replace with a suitable default or handle missing case
+JELLYFIN_USER_ID = get_env("JELLYFIN_USER_ID", "")  # Replace with a suitable default or handle missing case
+JELLYFIN_TOKEN = get_env("JELLYFIN_TOKEN", "")  # Replace with a suitable default or handle missing case
 
 # EMBY_USER_ID and JELLYFIN_TOKEN come from a Kubernetes Secret
 EMBY_URL = os.environ.get("EMBY_URL", "") # Replace with your default URL
-EMBY_USER_ID = os.environ.get("EMBY_USER_ID", "")  # Replace with a suitable default or handle missing case
-EMBY_TOKEN = os.environ.get("EMBY_TOKEN", "")  # Replace with a suitable default or handle missing case
+EMBY_USER_ID = get_env("EMBY_USER_ID", "")  # Replace with a suitable default or handle missing case
+EMBY_TOKEN = get_env("EMBY_TOKEN", "")  # Replace with a suitable default or handle missing case
 
 
 # NEW: Allow specifying music libraries/folders for analysis across all media servers.
@@ -40,8 +41,8 @@ HEADERS = _compute_headers()
 # --- Navidrome (Subsonic API) Constants ---
 # These are used only if MEDIASERVER_TYPE is "navidrome".
 NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "")
-NAVIDROME_USER = os.environ.get("NAVIDROME_USER", "")
-NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "") # Use the password directly
+NAVIDROME_USER = get_env("NAVIDROME_USER", "")
+NAVIDROME_PASSWORD = get_env("NAVIDROME_PASSWORD", "") # Use the password directly
 
 # --- Lyrion (LMS) Constants ---
 # These are used only if MEDIASERVER_TYPE is "lyrion".
@@ -85,7 +86,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 # These are used only if MEDIASERVER_TYPE is "mpd".
 MPD_HOST = os.environ.get("MPD_HOST", "localhost")
 MPD_PORT = int(os.environ.get("MPD_PORT", "6600"))
-MPD_PASSWORD = os.environ.get("MPD_PASSWORD", "")  # Optional password, leave empty if none
+MPD_PASSWORD = get_env("MPD_PASSWORD", "")  # Optional password, leave empty if none
 MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music")  # Path to MPD's music directory for file access
 
 
@@ -249,12 +250,12 @@ MAX_SONGS_IN_AI_PROMPT = int(os.environ.get("MAX_SONGS_IN_AI_PROMPT", "25"))
 # OpenAI API (also used for OpenRouter) - uses same API standard as Ollama
 OPENAI_SERVER_URL = os.environ.get("OPENAI_SERVER_URL", os.environ.get("OLLAMA_SERVER_URL", "http://192.168.3.211:11434/api/generate"))
 OPENAI_MODEL_NAME = os.environ.get("OPENAI_MODEL_NAME", os.environ.get("OLLAMA_MODEL_NAME", "llama3.1:8b"))
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "no-key-needed") # Set to "no-key-needed" for Ollama, or your actual API key for OpenAI/OpenRouter
+OPENAI_API_KEY = get_env("OPENAI_API_KEY", "no-key-needed") # Set to "no-key-needed" for Ollama, or your actual API key for OpenAI/OpenRouter
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "") # Default API key
+GEMINI_API_KEY = get_env("GEMINI_API_KEY", "") # Default API key
 GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro") # Default Gemini model gemini-2.5-pro, alternative gemini-2.5-flash
 
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
+MISTRAL_API_KEY = get_env("MISTRAL_API_KEY", "")
 MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 
 # AI Request Timeout Configuration
@@ -263,10 +264,11 @@ MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 # Default: 120 seconds for Ollama (tool calling/instant playlist), 60 seconds for OpenAI/Mistral
 AI_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "300"))
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+REDIS_URL = get_env('REDIS_URL', REDIS_URL)
 
 # Construct DATABASE_URL from individual components for better security in K8s
-POSTGRES_USER = os.environ.get("POSTGRES_USER", "audiomuse")
-POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "audiomusepassword")
+POSTGRES_USER = get_env("POSTGRES_USER", "audiomuse")
+POSTGRES_PASSWORD = get_env("POSTGRES_PASSWORD", "audiomusepassword")
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "postgres-service.playlist") # Default for K8s
 POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "audiomusedb")
@@ -279,14 +281,14 @@ _pg_user_esc = quote(POSTGRES_USER, safe='')
 _pg_pass_esc = quote(POSTGRES_PASSWORD, safe='')
 
 # If DATABASE_URL is set in the environment, prefer it; otherwise build one using the escaped credentials
-DATABASE_URL = os.environ.get(
+DATABASE_URL = get_env(
     "DATABASE_URL",
     f"postgresql://{_pg_user_esc}:{_pg_pass_esc}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 )
 
 # --- AI User for Chat SQL Execution ---
 AI_CHAT_DB_USER_NAME = os.environ.get("AI_CHAT_DB_USER_NAME", "ai_user")
-AI_CHAT_DB_USER_PASSWORD = os.environ.get("AI_CHAT_DB_USER_PASSWORD", "ChangeThisSecurePassword123!") # IMPORTANT: Change this default and use environment variables
+AI_CHAT_DB_USER_PASSWORD = get_env("AI_CHAT_DB_USER_PASSWORD", "ChangeThisSecurePassword123!") # IMPORTANT: Change this default and use environment variables
 
 # --- Classifier Constant ---
 MOOD_LABELS = [
@@ -513,13 +515,13 @@ MAX_SONGS_PER_ARTIST_PLAYLIST = int(os.environ.get("MAX_SONGS_PER_ARTIST_PLAYLIS
 PLAYLIST_ENERGY_ARC = os.environ.get("PLAYLIST_ENERGY_ARC", "False").lower() == "true"
 # --- Authentication ---
 # Set all three to enable authentication. Leave any blank to disable (legacy mode).
-AUDIOMUSE_USER = os.environ.get("AUDIOMUSE_USER", "")
-AUDIOMUSE_PASSWORD = os.environ.get("AUDIOMUSE_PASSWORD", "")
-API_TOKEN = os.environ.get("API_TOKEN", "")
+AUDIOMUSE_USER = get_env("AUDIOMUSE_USER", "")
+AUDIOMUSE_PASSWORD = get_env("AUDIOMUSE_PASSWORD", "")
+API_TOKEN = get_env("API_TOKEN", "")
 
 # JWT secret for signing session tokens. Auto-generated if not set (sessions lost on restart).
 # Note: the warning for missing JWT_SECRET is emitted in app.py after logging is configured
-JWT_SECRET = os.environ.get("JWT_SECRET", "")
+JWT_SECRET = get_env("JWT_SECRET", "")
 
 # Enable or disable authentication independently of whether credentials are set.
 # Default is True to preserve the current secure behavior.

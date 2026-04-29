@@ -2,6 +2,8 @@
 
 These are the parameters accepted for this script. From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
 
+Sensitive values also support the standard Docker secrets convention: set `YOUR_KEY_FILE=/run/secrets/your_key` instead of `YOUR_KEY`. When both are present, `*_FILE` takes precedence.
+
 How to find jellyfin **userid**:
 * Log into Jellyfin from your browser as an admin
 * Go to Dashboard > “admin panel” > Users.
