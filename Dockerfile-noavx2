@@ -393,6 +393,11 @@ ENV MKL_ENABLE_INSTRUCTIONS=AVX2 \
 # Prevent aggressive memory pre-allocation on newer CPUs
 ENV ORT_DISABLE_MEMORY_PATTERN_OPTIMIZATION=1
 
+# Lyrics analysis requires whisper / silero-vad / llama-cpp / torch which either
+# need AVX2 prebuilt wheels or are intentionally not shipped in the no-AVX2
+# image. Force-disable the feature here so the rest of the app starts cleanly.
+ENV LYRICS_ENABLED=false
+
 ENV PYTHONPATH=/usr/local/lib/python3/dist-packages:/app
 
 EXPOSE 8000
