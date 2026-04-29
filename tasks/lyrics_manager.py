@@ -7,8 +7,8 @@ Mirrors the architecture of tasks/clap_text_search.py:
   768-dim) into the chunked ``lyrics_index_data`` table.
 - Loads the index back at Flask startup and keeps it as a module-level
   singleton.
-- Caches per-song axis_scores (fetched once from ``lyrics_embedding`` and
-  ``score`` joins) for fast slider-based axis search.
+- Caches per-song axis_vector (BYTEA float32, fixed order over MUSIC_ANALYSIS_AXES)
+  loaded as a separate voyager HNSW index for fast slider/radio search.
 - Exposes two search entry points:
     * search_by_axes(targets, limit) for the basic axis-slider tab
     * search_by_text(query, limit) for the open free-form text tab
@@ -76,47 +76,12 @@ def _fetch_lyrics_metadata(item_ids: List[str]) -> Dict[str, Dict[str, str]]:
 
 def _axis_columns_from_axes() -> List[tuple]:
     """Return a stable ordered list of (axis_name, label) covering every axis label."""
-    from lyrics.lyrics_transcriber import MUSIC_ANALYSIS_AXES
-    columns: List[tuple] = []
-    for axis_name, meta in MUSIC_ANALYSIS_AXES.items():
-        for label in meta.get('labels', {}).keys():
-            columns.append((axis_name, label))
-    return columns
+    from lyrics.lyrics_transcriber import axis_columns
+    return list(axis_columns())
 
 
 def _axis_dimension() -> int:
     return len(_axis_columns_from_axes())
-
-
-def _axis_scores_to_vector(axis_scores: Optional[Dict],
-                           col_index: Dict[tuple, int],
-                           dim: int) -> Optional[np.ndarray]:
-    """Flatten the per-song axis_scores JSON dict into a fixed-order float32 vector.
-
-    Returns None if axis_scores is empty/unparseable.
-    """
-    if not axis_scores:
-        return None
-    if not isinstance(axis_scores, dict):
-        try:
-            axis_scores = json.loads(axis_scores)
-        except Exception:
-            return None
-    vec = np.zeros(dim, dtype=np.float32)
-    saw_any = False
-    for axis_name, labels in axis_scores.items():
-        if not isinstance(labels, dict):
-            continue
-        for label, score in labels.items():
-            j = col_index.get((axis_name, label))
-            if j is None:
-                continue
-            try:
-                vec[j] = float(score)
-                saw_any = True
-            except (TypeError, ValueError):
-                continue
-    return vec if saw_any else None
 
 
 # ---------------------------------------------------------------------------
@@ -283,17 +248,16 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
     if not columns:
         logger.warning("No axis columns defined; skipping lyrics axes index build.")
         return False
-    col_index = {col: idx for idx, col in enumerate(columns)}
     dim = len(columns)
     max_part_size = VOYAGER_MAX_PART_SIZE_MB * 1024 * 1024
 
     try:
         with db_conn.cursor() as cur:
-            cur.execute("SELECT item_id, axis_scores FROM lyrics_embedding WHERE axis_scores IS NOT NULL")
+            cur.execute("SELECT item_id, axis_vector FROM lyrics_embedding WHERE axis_vector IS NOT NULL")
             rows = cur.fetchall()
 
             if not rows:
-                logger.warning("No lyrics axis_scores rows; skipping axes index build.")
+                logger.warning("No lyrics axis_vector rows; skipping axes index build.")
                 return False
 
             logger.info(f"Building lyrics axes voyager index for {len(rows)} candidate items (dim={dim})...")
@@ -307,16 +271,21 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
             id_map: Dict[int, str] = {}
             vectors: List[np.ndarray] = []
             voyager_id = 0
-            for item_id, axis_scores_raw in rows:
-                vec = _axis_scores_to_vector(axis_scores_raw, col_index, dim)
-                if vec is None:
+            for item_id, axis_blob in rows:
+                if not axis_blob:
+                    continue
+                vec = np.frombuffer(axis_blob, dtype=np.float32)
+                if vec.shape[0] != dim:
+                    logger.warning(
+                        f"Skipping lyrics axes item {item_id}: dim={vec.shape[0]} != {dim}"
+                    )
                     continue
                 vectors.append(vec)
                 id_map[voyager_id] = item_id
                 voyager_id += 1
 
             if not vectors:
-                logger.warning("No usable axis_scores vectors; aborting axes index build.")
+                logger.warning("No usable axis_vector rows; aborting axes index build.")
                 return False
 
             builder.add_items(np.vstack(vectors), ids=np.array(list(id_map.keys())))

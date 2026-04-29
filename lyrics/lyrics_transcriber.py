@@ -528,24 +528,40 @@ def _softmax(values: np.ndarray, temperature: float) -> np.ndarray:
     return exp / total if total > 0 else np.zeros_like(values)
 
 
-def _score_axes(embedding: np.ndarray,
-                temperature: float = 0.1) -> Dict[str, List[Dict[str, object]]]:
+def axis_columns() -> List[Tuple[str, str]]:
+    """Canonical fixed order of (axis_name, label) pairs over MUSIC_ANALYSIS_AXES.
+
+    The ``axis_vector`` stored in BYTEA is a float32 array in this exact order.
+    """
+    columns: List[Tuple[str, str]] = []
+    for axis_name, axis_meta in MUSIC_ANALYSIS_AXES.items():
+        for label in axis_meta.get('labels', {}).keys():
+            columns.append((axis_name, label))
+    return columns
+
+
+def _score_axes(embedding: np.ndarray, temperature: float = 0.1) -> np.ndarray:
+    """Score the embedding against every axis label and return a single fixed-order
+    float32 vector (concatenated softmax probabilities per axis, in the order
+    defined by ``axis_columns()``)."""
     label_map, axis_embeddings = _get_axis_embeddings()
-    out: Dict[str, List[Dict[str, object]]] = {}
+    parts: List[np.ndarray] = []
     for axis_name, labels in label_map.items():
         matrix = axis_embeddings.get(axis_name)
         if matrix is None or matrix.size == 0:
-            out[axis_name] = []
+            parts.append(np.zeros(len(labels), dtype=np.float32))
             continue
         sims = matrix.dot(embedding)
-        probs = _softmax(sims, temperature)
-        scored = [
-            {'label': label, 'description': description, 'score': float(probs[idx])}
-            for idx, (label, description) in enumerate(labels)
-        ]
-        scored.sort(key=lambda item: item['score'], reverse=True)
-        out[axis_name] = scored
-    return out
+        probs = _softmax(sims, temperature).astype(np.float32, copy=False)
+        # Pad/truncate to match the labels list length (defensive).
+        if probs.shape[0] != len(labels):
+            fixed = np.zeros(len(labels), dtype=np.float32)
+            fixed[:min(probs.shape[0], len(labels))] = probs[:min(probs.shape[0], len(labels))]
+            probs = fixed
+        parts.append(probs)
+    if not parts:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(parts).astype(np.float32, copy=False)
 
 
 # ---------------------------------------------------------------------------
@@ -560,7 +576,8 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
 
     Either ``audio`` (mono float32 + ``sr``) or ``source_path`` must be supplied.
     Returns a dict with ``text``, ``cleaned_text``, ``language``, ``embedding``
-    and ``axis_scores``. Raises if a required model/source is missing.
+    and ``axis_vector`` (float32 numpy array in canonical axis_columns() order).
+    Raises if a required model/source is missing.
     """
     threads = get_lyrics_threads()
     _apply_thread_env(threads)
@@ -628,15 +645,15 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     # ---- STEP 6: embedding + axes ----
     logger.info('STEP 6 start: embedding + axis scoring')
     embedding = None
-    axis_scores: Dict[str, List[Dict[str, object]]] = {}
+    axis_vector: np.ndarray = np.zeros(0, dtype=np.float32)
     if len(final_text.split()) >= MIN_WORDS_FOR_EMBEDDING:
         tokenizer, model = load_topic_embedding_model()
         embedding = _embed_text(final_text, tokenizer, model)
         if embedding is not None:
-            axis_scores = _score_axes(embedding)
-    logger.info('STEP 6 end: embedding=%s axis_axes=%s',
+            axis_vector = _score_axes(embedding)
+    logger.info('STEP 6 end: embedding=%s axis_vector_dim=%s',
                 None if embedding is None else embedding.shape,
-                len(axis_scores))
+                int(axis_vector.shape[0]) if axis_vector is not None else 0)
 
     return {
         'text': raw_text,
@@ -646,5 +663,5 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         'language': detected_lang,
         'used_seconds': used_seconds,
         'embedding': embedding,
-        'axis_scores': axis_scores,
+        'axis_vector': axis_vector,
     }

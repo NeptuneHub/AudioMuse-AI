@@ -981,9 +981,9 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             )
 
                             lyrics_embedding = lyrics_result.get('embedding')
-                            lyrics_axis_scores = lyrics_result.get('axis_scores') or {}
+                            lyrics_axis_vector = lyrics_result.get('axis_vector')
                             if lyrics_embedding is not None and getattr(lyrics_embedding, 'size', 0) > 0:
-                                save_lyrics_embedding(item['Id'], lyrics_embedding, lyrics_axis_scores)
+                                save_lyrics_embedding(item['Id'], lyrics_embedding, lyrics_axis_vector)
                                 logger.info('  - Lyrics embedding saved')
                                 track_processed = True
                             else:
