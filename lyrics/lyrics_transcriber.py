@@ -140,7 +140,10 @@ MUSIC_ANALYSIS_AXES = {
 # ---------------------------------------------------------------------------
 
 def get_lyrics_threads() -> int:
-    """Return ``max(2, cpu_cores // 2)`` so heavy lyrics work never saturates the host."""
+    """Number of CPU threads for Whisper / MarianMT / Qwen inside this process.
+
+    Uses ``os.cpu_count() // 2`` with a floor of two.
+    """
     cpus = os.cpu_count() or 2
     return max(2, cpus // 2)
 
@@ -282,6 +285,21 @@ def _get_axis_embeddings():
     _axis_label_map = label_map
     _axis_embeddings = embeddings
     return _axis_label_map, _axis_embeddings
+
+
+def embed_query_text(text: str) -> Optional[np.ndarray]:
+    """Embed a free-form user query with the same e5-base-v2 model used at analysis time.
+
+    Returns a normalized float32 vector of shape (LYRICS_EMBEDDING_DIMENSION,)
+    suitable for nearest-neighbor search against the lyrics voyager index.
+    """
+    if not text or not text.strip():
+        return None
+    tokenizer, model = load_topic_embedding_model()
+    vec = _embed_text(text.strip(), tokenizer, model)
+    if vec is None:
+        return None
+    return vec.astype(np.float32, copy=False)
 
 
 # ---------------------------------------------------------------------------

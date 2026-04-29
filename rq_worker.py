@@ -12,13 +12,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__))) # Adds the current d
 # Signal to app.py that we are an RQ worker, so it should skip index loading and background threads
 os.environ['AUDIOMUSE_ROLE'] = 'worker'
 
-# Limit CPU threads for worker-local model inference to half the available cores.
-# This caps Whisper / LLaMA / transformer / BLAS thread usage and avoids runaway CPU saturation.
-_cpu_count = os.cpu_count() or 1
-_max_lyrics_threads = max(1, _cpu_count // 2)
+# Cap thread pools used by ML libraries (whisper / torch / marian / numpy / blas) BEFORE
+# any of them are imported, so libgomp/MKL/OpenBLAS pick up the limit at first init.
+_cpu_count = os.cpu_count() or 2
+_max_lyrics_threads = max(2, _cpu_count // 2)
 for _env_key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS'):
     os.environ[_env_key] = str(_max_lyrics_threads)
-print(f"Worker CPU thread cap set to {_max_lyrics_threads} threads for CPU-bound libraries")
+print(f"Default worker CPU thread cap = {_max_lyrics_threads} (cpu_count // 2, min 2)")
 
 # Import Worker from rq
 from rq import Worker

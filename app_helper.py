@@ -229,6 +229,10 @@ def init_db():
             cur.execute("CREATE TABLE IF NOT EXISTS voyager_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'clap_index_data' table for stored CLAP text search indexes
             cur.execute("CREATE TABLE IF NOT EXISTS clap_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Create 'lyrics_index_data' table for stored Lyrics voyager indexes (mirrors clap_index_data; supports chunked storage).
+            cur.execute("CREATE TABLE IF NOT EXISTS lyrics_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Create 'lyrics_axes_index_data' table for the axis-vector voyager index (one binary-friendly vector per song over MUSIC_ANALYSIS_AXES labels).
+            cur.execute("CREATE TABLE IF NOT EXISTS lyrics_axes_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'artist_index_data' table for artist GMM-based HNSW index
             cur.execute("CREATE TABLE IF NOT EXISTS artist_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, artist_map_json TEXT NOT NULL, gmm_params_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'map_projection_data' table for precomputed 2D map projections

@@ -53,6 +53,7 @@ from .commons import score_vector
 from .voyager_manager import build_and_store_voyager_index
 # Import CLAP index builder for persisted text search index storage
 from .clap_text_search import build_and_store_clap_index
+from .lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
 # Import artist GMM manager for artist similarity index
 from .artist_gmm_manager import build_and_store_artist_index
 # MODIFIED: The functions from mediaserver no longer need server-specific parameters.
@@ -270,6 +271,18 @@ def rebuild_all_indexes_task():
                 build_and_store_clap_index(get_db())
             except Exception as e:
                 logger.warning(f"Failed to build/store CLAP text search index: {e}")
+
+            # Build Lyrics search index (mirrors CLAP; only if any lyrics_embedding rows exist)
+            try:
+                build_and_store_lyrics_index(get_db())
+            except Exception as e:
+                logger.warning(f"Failed to build/store Lyrics search index: {e}")
+
+            # Build Lyrics axes voyager index (binary one-per-axis search)
+            try:
+                build_and_store_lyrics_axes_index(get_db())
+            except Exception as e:
+                logger.warning(f"Failed to build/store Lyrics axes index: {e}")
             
             # Build artist similarity index
             try:
@@ -1354,7 +1367,19 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 build_and_store_clap_index(get_db())
             except Exception as e:
                 logger.warning(f"Failed to build/store CLAP text search index: {e}")
-            
+
+            # Build Lyrics search index (only meaningful if lyrics analysis ran)
+            try:
+                build_and_store_lyrics_index(get_db())
+            except Exception as e:
+                logger.warning(f"Failed to build/store Lyrics search index: {e}")
+
+            # Build Lyrics axes voyager index (binary one-per-axis search)
+            try:
+                build_and_store_lyrics_axes_index(get_db())
+            except Exception as e:
+                logger.warning(f"Failed to build/store Lyrics axes index: {e}")
+
             # Build artist similarity index
             log_and_update_main("Building artist similarity index...", 97)
             try:

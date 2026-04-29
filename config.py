@@ -324,6 +324,9 @@ LYRICS_DEFAULT_ROBERTA_MIN_WORDS = 50
 LYRICS_DEFAULT_TOPIC_EMBEDDING_MODEL = 'intfloat/e5-base-v2'
 LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR = os.path.join(LYRICS_MODEL_DIR, 'e5-base-v2')
 LYRICS_DEFAULT_MARIAN_PREFIX = 'Helsinki-NLP/opus-mt-{}-en'
+# Dimension of the e5-base-v2 sentence embedding stored in lyrics_embedding.embedding
+# and used to build the lyrics voyager index.
+LYRICS_EMBEDDING_DIMENSION = int(os.environ.get("LYRICS_EMBEDDING_DIMENSION", "768"))
 
 # Split CLAP models: audio model for analysis, text model for search
 # Default points to the distilled student model (EfficientAT, epoch 36).
