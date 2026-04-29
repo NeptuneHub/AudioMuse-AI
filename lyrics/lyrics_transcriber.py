@@ -364,6 +364,179 @@ def _split_into_word_chunks(text: str, max_words: int = MAX_WORDS_PER_CHUNK) -> 
 
 
 # ---------------------------------------------------------------------------
+# External lyrics APIs (LRCLIB, Vagalume)
+# ---------------------------------------------------------------------------
+
+_LRC_METADATA_RE = re.compile(r'^\s*\[(?:ar|ti|al|au|by|la|length|offset|re|ve):[^\]]*\]\s*$', re.IGNORECASE)
+# Section markers like (Chorus), [Verse 2], {Bridge}, "Pre-Chorus:", "Outro -", etc.
+_SECTION_HEADER_RE = re.compile(
+    r'^\s*[\(\[\{]?\s*'
+    r'(?:pre[\s-]?chorus|chorus|verse|bridge|intro|outro|hook|refrain|interlude|'
+    r'breakdown|drop|coda|prelude|reprise|post[\s-]?chorus|solo|instrumental)'
+    r'(?:\s*[\divxlcIVXLC0-9]+)?'
+    r'\s*[\)\]\}]?\s*[:\-]?\s*$',
+    re.IGNORECASE,
+)
+_CONTROL_CHAR_RE = re.compile(r'[\x00-\x08\x0b-\x1f\x7f]')
+# Emoji, pictographs, symbols, dingbats, arrows, box drawing, regional indicators, etc.
+_NON_TEXT_UNICODE_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"  # misc symbols & pictographs, emoticons, transport, supplemental
+    "\U0001F600-\U0001F64F"  # emoticons (subset of above, kept for clarity)
+    "\U0001F680-\U0001F6FF"  # transport & map
+    "\U0001F700-\U0001F77F"  # alchemical
+    "\U0001F780-\U0001F7FF"  # geometric extended
+    "\U0001F800-\U0001F8FF"  # supplemental arrows-C
+    "\U0001F900-\U0001F9FF"  # supplemental symbols & pictographs
+    "\U0001FA00-\U0001FA6F"  # chess symbols
+    "\U0001FA70-\U0001FAFF"  # symbols & pictographs extended-A
+    "\U0001E000-\U0001E02F"  # glagolitic supplement
+    "\U0001F000-\U0001F02F"  # mahjong
+    "\U0001F0A0-\U0001F0FF"  # playing cards
+    "\u2600-\u26FF"          # misc symbols (☀ sun, ☕ coffee, etc.)
+    "\u2700-\u27BF"          # dingbats
+    "\u2300-\u23FF"          # technical (⏰ alarm, ⏳ hourglass)
+    "\u2190-\u21FF"          # arrows
+    "\u2500-\u257F"          # box drawing
+    "\u2580-\u259F"          # block elements
+    "\u25A0-\u25FF"          # geometric shapes
+    "\U0001F1E6-\U0001F1FF"  # regional indicator (flags)
+    "\u200D\uFE0F\uFE0E"     # ZWJ + variation selectors
+    "]",
+    flags=re.UNICODE,
+)
+
+
+def _sanitize_lyrics_text(text: str, max_words: int = 300) -> str:
+    """Defensive cleanup for lyrics text from any source (API or whisper).
+
+    - Strips control characters, BOMs, zero-width chars.
+    - Drops emoji, dingbats, geometric/box symbols, regional indicators, ZWJ.
+    - Removes obvious HTML/script tags and LRC ID3 metadata lines.
+    - Collapses runs of blank lines.
+    - Truncates the whole text to ``max_words`` words (default 300).
+    The output is plain text only; no HTML/markup or pictographic characters.
+    """
+    if not text:
+        return ''
+    text = text.replace('\ufeff', '').replace('\u200b', '').replace('\u200c', '')
+    text = _CONTROL_CHAR_RE.sub('', text)
+    text = _NON_TEXT_UNICODE_RE.sub('', text)
+    # If a provider accidentally returned HTML, strip tags conservatively.
+    text = re.sub(r'<\s*(script|style)[^>]*>.*?<\s*/\s*\1\s*>', '', text,
+                  flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r'<[^<>]{1,200}>', '', text)
+    out_lines: List[str] = []
+    blank_run = 0
+    for line in text.splitlines():
+        line = line.rstrip()
+        if _LRC_METADATA_RE.match(line):
+            continue
+        if _SECTION_HEADER_RE.match(line):
+            continue
+        if not line.strip():
+            blank_run += 1
+            if blank_run <= 1:
+                out_lines.append('')
+            continue
+        blank_run = 0
+        out_lines.append(line)
+    cleaned = '\n'.join(out_lines).strip()
+    words = cleaned.split()
+    if len(words) > max_words:
+        cleaned = ' '.join(words[:max_words])
+    return cleaned
+
+
+# Backwards-compatible alias used by the API helpers.
+_sanitize_api_lyrics = _sanitize_lyrics_text
+
+
+_LRC_TIMESTAMP_RE = re.compile(r'\[\d+:\d+(?:[.,:]\d+)?\]')
+
+
+def _strip_lrc_timestamps(text: str) -> str:
+    """Strip leading ``[mm:ss.xx]`` timestamps from synced LRC lyrics."""
+    lines = []
+    for line in text.splitlines():
+        cleaned = _LRC_TIMESTAMP_RE.sub('', line).strip()
+        if cleaned:
+            lines.append(cleaned)
+    return '\n'.join(lines)
+
+
+def _fetch_from_lrclib(artist: str, track: str, timeout: float) -> Optional[str]:
+    import requests
+    r = requests.get(
+        'https://lrclib.net/api/get',
+        params={'artist_name': artist, 'track_name': track},
+        timeout=timeout,
+        headers={'User-Agent': 'AudioMuse-AI/1.0'},
+    )
+    if not r.ok:
+        return None
+    data = r.json() or {}
+    plain = (data.get('plainLyrics') or '').strip()
+    if plain:
+        return plain
+    synced = (data.get('syncedLyrics') or '').strip()
+    if synced:
+        return _strip_lrc_timestamps(synced) or None
+    return None
+
+
+def _fetch_from_lyrics_ovh(artist: str, track: str, timeout: float) -> Optional[str]:
+    import requests
+    from urllib.parse import quote
+    url = f'https://api.lyrics.ovh/v1/{quote(artist)}/{quote(track)}'
+    r = requests.get(url, timeout=timeout, headers={'User-Agent': 'AudioMuse-AI/1.0'})
+    if not r.ok:
+        return None
+    data = r.json() or {}
+    text = (data.get('lyrics') or '').strip()
+    return text or None
+
+
+def fetch_remote_lyrics(artist: Optional[str], track: Optional[str],
+                        total_budget: float = 10.0) -> Optional[str]:
+    """Try LRCLIB then lyrics.ovh. Return plain-text lyrics or ``None``.
+
+    The combined wait across both providers is capped at ``total_budget`` seconds
+    (default 10s). If we can't get lyrics in that window, fall back to whisper.
+    """
+    import time
+    artist = (artist or '').strip()
+    track = (track or '').strip()
+    if not artist or not track:
+        return None
+    deadline = time.monotonic() + total_budget
+    providers = (('LRCLIB', _fetch_from_lrclib),
+                 ('lyrics.ovh', _fetch_from_lyrics_ovh))
+    for provider_name, provider in providers:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.5:
+            logger.info('Lyrics API budget exhausted before %s', provider_name)
+            break
+        per_provider_timeout = min(5.0, remaining)
+        try:
+            text = provider(artist, track, per_provider_timeout)
+        except Exception as exc:
+            logger.warning('%s lookup failed for %r/%r: %s',
+                           provider_name, artist, track, exc)
+            continue
+        if text:
+            sanitized = _sanitize_api_lyrics(text)
+            if not sanitized:
+                logger.warning('%s returned content but sanitizer dropped everything for %r/%r',
+                               provider_name, artist, track)
+                continue
+            logger.info('%s returned lyrics for %r/%r (%s words)',
+                        provider_name, artist, track, len(sanitized.split()))
+            return sanitized
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Voice activity detection (silero) — keep only voiced regions before whisper
 # ---------------------------------------------------------------------------
 
@@ -621,10 +794,15 @@ def _score_axes(embedding: np.ndarray, temperature: float = 0.1) -> np.ndarray:
 def analyze_lyrics(audio: Optional[np.ndarray] = None,
                    sr: Optional[int] = None,
                    source_path: Optional[Union[str, Path]] = None,
-                   use_llm_cleanup: bool = True) -> Dict[str, object]:
+                   use_llm_cleanup: bool = True,
+                   artist: Optional[str] = None,
+                   track: Optional[str] = None) -> Dict[str, object]:
     """Run the full lyrics pipeline.
 
     Either ``audio`` (mono float32 + ``sr``) or ``source_path`` must be supplied.
+    When ``LYRICS_API_ENABLE`` is true and ``artist``+``track`` are provided,
+    LRCLIB and lyrics.ovh are queried first; on a hit, STEPS 1, 1b and 2 are
+    skipped and the API text is fed straight into translation/cleanup/embedding.
     Returns a dict with ``text``, ``cleaned_text``, ``language``, ``embedding``
     and ``axis_vector`` (float32 numpy array in canonical axis_columns() order).
     Raises if a required model/source is missing.
@@ -632,37 +810,61 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     threads = get_lyrics_threads()
     _apply_thread_env(threads)
 
-    # ---- STEP 1: audio ----
-    logger.info('STEP 1 start: prepare audio (max %.1fs)', MAX_AUDIO_SECONDS)
-    if audio is None or sr is None:
-        if not source_path:
-            raise ValueError('analyze_lyrics requires either audio+sr or source_path')
-        if not os.path.exists(str(source_path)):
-            raise FileNotFoundError(f'Audio source not found: {source_path}')
-        audio, sr = _load_audio_from_path(str(source_path), sr=DEFAULT_SAMPLE_RATE)
-    audio_clip, used_seconds = _clip_audio(audio, sr)
-    logger.info('STEP 1 end: audio ready, used=%.2fs samples=%s sr=%s',
-                used_seconds, len(audio_clip), sr)
+    used_seconds = 0.0
+    raw_text = ''
+    detected_lang = 'en'
 
-    # ---- STEP 1b: VAD pre-filter (keep only voiced regions) ----
-    pre_vad_samples = len(audio_clip)
-    audio_clip = _apply_vad(audio_clip, sr)
-    if len(audio_clip) != pre_vad_samples:
-        logger.info('VAD: %.2fs -> %.2fs voiced',
-                    pre_vad_samples / sr, len(audio_clip) / sr)
+    # ---- STEP 0 (API): try external lyrics services first ----
+    try:
+        from config import LYRICS_API_ENABLE
+    except Exception:
+        LYRICS_API_ENABLE = True
+    logger.info('STEP 0 start: external lyrics API (enabled=%s, artist=%r, track=%r)',
+                LYRICS_API_ENABLE, artist, track)
+    if LYRICS_API_ENABLE and artist and track:
+        api_text = fetch_remote_lyrics(artist, track)
+        if api_text:
+            raw_text = api_text
+            logger.info('STEP 0 end: API HIT (%s chars / %s words) - skipping STEPS 1, 1b, 2',
+                        len(raw_text), len(raw_text.split()))
+            logger.info('STEP 0 raw API output: %s', raw_text)
+        else:
+            logger.info('STEP 0 end: API MISS - falling back to whisper')
+    else:
+        logger.info('STEP 0 end: API skipped (disabled or missing artist/track)')
 
-    # ---- STEP 2: whisper transcription ----
-    logger.info('STEP 2 start: whisper transcription (threads=%s)', threads)
-    whisper_model = load_whisper_model(num_threads=threads)
-    transcription = _transcribe(audio_clip, sr, whisper_model)
-    raw_text = (transcription.get('text') or '').strip()
-    logger.info('STEP 2 end: transcript length=%s chars / %s words',
-                len(raw_text), len(raw_text.split()))
-    logger.info('STEP 2 raw whisper output: %s', raw_text or '<empty>')
+    if not raw_text:
+        # ---- STEP 1: audio ----
+        logger.info('STEP 1 start: prepare audio (max %.1fs)', MAX_AUDIO_SECONDS)
+        if audio is None or sr is None:
+            if not source_path:
+                raise ValueError('analyze_lyrics requires audio+sr, source_path, or artist+track for API lookup')
+            if not os.path.exists(str(source_path)):
+                raise FileNotFoundError(f'Audio source not found: {source_path}')
+            audio, sr = _load_audio_from_path(str(source_path), sr=DEFAULT_SAMPLE_RATE)
+        audio_clip, used_seconds = _clip_audio(audio, sr)
+        logger.info('STEP 1 end: audio ready, used=%.2fs samples=%s sr=%s',
+                    used_seconds, len(audio_clip), sr)
+
+        # ---- STEP 1b: VAD pre-filter (keep only voiced regions) ----
+        pre_vad_samples = len(audio_clip)
+        audio_clip = _apply_vad(audio_clip, sr)
+        if len(audio_clip) != pre_vad_samples:
+            logger.info('VAD: %.2fs -> %.2fs voiced',
+                        pre_vad_samples / sr, len(audio_clip) / sr)
+
+        # ---- STEP 2: whisper transcription ----
+        logger.info('STEP 2 start: whisper transcription (threads=%s)', threads)
+        whisper_model = load_whisper_model(num_threads=threads)
+        transcription = _transcribe(audio_clip, sr, whisper_model)
+        raw_text = _sanitize_lyrics_text((transcription.get('text') or '').strip())
+        detected_lang = transcription.get('language') or 'en'
+        logger.info('STEP 2 end: transcript length=%s chars / %s words',
+                    len(raw_text), len(raw_text.split()))
+        logger.info('STEP 2 raw whisper output: %s', raw_text or '<empty>')
 
     # ---- STEP 3: language detection ----
     logger.info('STEP 3 start: language detection')
-    detected_lang = transcription.get('language') or 'en'
     if raw_text:
         guess_lang, confidence = _detect_language(raw_text)
         if confidence >= 0.7:

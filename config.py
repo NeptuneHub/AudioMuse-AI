@@ -308,6 +308,8 @@ CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # Lyrics analysis feature toggle. When false, the lyrics step is skipped entirely.
 LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
 LYRICS_LLM_ENABLED = os.environ.get("LYRICS_LLM_ENABLED", "false").lower() == "true"
+# When true, look up lyrics from external APIs (LRCLIB, Vagalume) before falling back to Whisper.
+LYRICS_API_ENABLE = os.environ.get("LYRICS_API_ENABLE", "true").lower() == "true"
 LYRICS_WHISPER_MODEL = os.environ.get("LYRICS_WHISPER_MODEL", "small")
 LYRICS_LLM_MODEL_PATH = os.environ.get("LYRICS_LLM_MODEL_PATH", "/app/model/qwen2.5-1.5b-instruct-q4_k_m.gguf")
 LYRICS_SONGS_DIR = os.environ.get("LYRICS_SONGS_DIR", "/app/songs")

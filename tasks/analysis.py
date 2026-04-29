@@ -978,6 +978,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                 audio=lyrics_audio,
                                 sr=lyrics_sr,
                                 source_path=str(path),
+                                artist=item.get('AlbumArtist') or item.get('Artist'),
+                                track=item.get('Name'),
                             )
 
                             lyrics_embedding = lyrics_result.get('embedding')
