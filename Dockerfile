@@ -30,10 +30,40 @@ RUN set -ux; \
     done; \
     rm -rf /var/lib/apt/lists/*
 
-# Download ONNX models with diagnostics and retry logic
-# v4.0.0-model: Open-source MusiCNN models exported directly from the musicnn project
-# Mood-specific models removed (other features now computed via CLAP text embeddings)
+# Download the unified lyrics model bundle, then download ONNX models with diagnostics and retry logic.
 RUN set -eux; \
+    mkdir -p /app/model; \
+    lyrics_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model.tar.gz"; \
+    lyrics_dest="/tmp/lyrics_model.tar.gz"; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$lyrics_dest" "$lyrics_url"; then \
+            echo "Downloaded lyrics model bundle -> $lyrics_dest"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for $lyrics_url failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download lyrics model bundle after 5 attempts"; \
+        ls -lah /app/model || true; \
+        exit 1; \
+    fi; \
+    echo "Extracting lyrics model bundle to /app/model..."; \
+    rm -rf /tmp/lyrics_unpack; \
+    mkdir -p /tmp/lyrics_unpack; \
+    tar -xzf "$lyrics_dest" -C /tmp/lyrics_unpack; \
+    if [ -d "/tmp/lyrics_unpack/lyrics_model" ]; then \
+        mv /tmp/lyrics_unpack/lyrics_model/* /app/model/; \
+        rm -rf /tmp/lyrics_unpack/lyrics_model; \
+    else \
+        mv /tmp/lyrics_unpack/* /app/model/; \
+    fi; \
+    rm -rf /tmp/lyrics_unpack; \
+    rm -f "$lyrics_dest"; \
     urls=( \
         "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_embedding.onnx" \
         "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_prediction.onnx" \
@@ -212,8 +242,8 @@ RUN ls -lah /app/.cache/huggingface/ && \
     echo "HuggingFace cache contents:" && \
     du -sh /app/.cache/huggingface/* || echo "Cache directory empty!"
 
-# Copy ONNX models from models stage (small files, no issues)
-COPY --from=models /app/model/*.onnx /app/model/
+# Copy all downloaded/extracted models from models stage
+COPY --from=models /app/model/ /app/model/
 
 # Download CLAP ONNX models directly in runner stage
 # - DCLAP audio model (~20MB + external data): Distilled student for music analysis in worker containers

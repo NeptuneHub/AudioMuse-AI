@@ -238,6 +238,8 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
             logger.error(f"Fallback method also resulted in an empty or silent audio signal for {os.path.basename(file_path)}.")
             return None, None
 
+        return audio, sr
+
     except Exception as e_fallback:
         logger.error(f"Fallback loading method also failed for {os.path.basename(file_path)}: {e_fallback}")
         return None, None
@@ -568,7 +570,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                      TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
     from .clap_analyzer import analyze_audio_file as clap_analyze, is_clap_available, get_or_cache_other_feature_text_embeddings, compute_other_features_from_clap
     from .mulan_analyzer import analyze_audio_file as mulan_analyze
-    from config import MULAN_ENABLED, LYRICS_ENABLED, LYRICS_WHISPER_MODEL, LYRICS_LLM_MODEL_PATH
+    from config import MULAN_ENABLED, LYRICS_ENABLED
     
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -601,14 +603,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         
         # MusiCNN models will be lazy-loaded on first song that needs analysis
         onnx_sessions = None
-        
-        # Lyrics analysis resources (lazy-loaded only if needed)
-        lyrics_whisper_model = None
-        lyrics_llama_model = None
-        lyrics_topic_tokenizer = None
-        lyrics_topic_model = None
-        lyrics_axis_label_map = None
-        lyrics_axis_embeddings = None
 
         # Initialize SessionRecycler to prevent cumulative memory leaks
         # Interval depends on PER_SONG_MODEL_RELOAD setting:
@@ -714,6 +708,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 needs_clap = track_id_str in missing_clap_ids_set
                 needs_mulan = track_id_str in missing_mulan_ids_set
                 needs_lyrics = LYRICS_ENABLED and track_id_str in missing_lyrics_ids_set
+                track_audio = None
+                track_sr = None
 
                 # Album name update now handled in main analysis task. If needed, uncomment below:
                 # try:
@@ -955,68 +951,34 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     if needs_lyrics and LYRICS_ENABLED:
                         logger.info(f"  - Starting lyrics analysis for {track_name_full}...")
                         try:
-                            from lyrics.lyrics_transcriber import (
-                                load_whisper_model as lyrics_load_whisper_model,
-                                load_llama_cpp_model as lyrics_load_llama_cpp_model,
-                                transcribe_file_segment as lyrics_transcribe_file_segment,
-                                load_topic_embedding_model as lyrics_load_topic_embedding_model,
-                                compute_axis_label_embeddings as lyrics_compute_axis_label_embeddings,
-                                score_text_against_axes as lyrics_score_text_against_axes,
-                                embed_text_with_roberta as lyrics_embed_text_with_roberta,
-                                MUSIC_ANALYSIS_AXES as LYRICS_MUSIC_ANALYSIS_AXES,
-                            )
+                            from lyrics.lyrics_transcriber import analyze_lyrics
 
-                            if lyrics_whisper_model is None:
-                                lyrics_whisper_model = lyrics_load_whisper_model(model_name=LYRICS_WHISPER_MODEL, device='cpu', num_threads=None)
+                            lyrics_audio = track_audio
+                            lyrics_sr = track_sr
+                            if lyrics_audio is None or lyrics_sr is None:
+                                logger.info('  - Loading audio from file for lyrics analysis')
+                                lyrics_audio, lyrics_sr = robust_load_audio_with_fallback(str(path), target_sr=16000)
+                                if lyrics_audio is None or lyrics_audio.size == 0 or lyrics_sr is None:
+                                    raise RuntimeError('Failed to load audio for lyrics analysis')
 
-                            if lyrics_llama_model is None and os.path.exists(LYRICS_LLM_MODEL_PATH):
-                                try:
-                                    lyrics_llama_model = lyrics_load_llama_cpp_model(str(LYRICS_LLM_MODEL_PATH), num_threads=1)
-                                except Exception as exc:
-                                    logger.warning(f"  - Could not load lyrics LLM model: {exc}. Falling back to raw transcript.")
-                                    lyrics_llama_model = None
-
-                            if lyrics_topic_tokenizer is None or lyrics_topic_model is None:
-                                lyrics_topic_tokenizer, lyrics_topic_model = lyrics_load_topic_embedding_model()
-
-                            if lyrics_axis_label_map is None or lyrics_axis_embeddings is None:
-                                lyrics_axis_label_map, lyrics_axis_embeddings = lyrics_compute_axis_label_embeddings(LYRICS_MUSIC_ANALYSIS_AXES, lyrics_topic_tokenizer, lyrics_topic_model)
-
-                            lyrics_source = track_audio if track_audio is not None else str(path)
-                            lyrics_result = lyrics_transcribe_file_segment(
-                                lyrics_source,
-                                lyrics_whisper_model,
-                                sr=track_sr,
-                                model_name=LYRICS_WHISPER_MODEL,
-                                device='cpu',
-                                full_song=True,
-                                llama_model=lyrics_llama_model,
+                            lyrics_result = analyze_lyrics(
+                                audio=lyrics_audio,
+                                sr=lyrics_sr,
                                 source_path=str(path),
                             )
 
-                            lyrics_text = lyrics_result.get('cleaned_text') or lyrics_result.get('text', '')
-                            if not lyrics_text or len(lyrics_text.split()) < 4:
-                                logger.warning(f"  - Lyrics analysis yielded too little text for {track_name_full}; skipping lyrics embedding.")
+                            lyrics_embedding = lyrics_result.get('embedding')
+                            lyrics_axis_scores = lyrics_result.get('axis_scores') or {}
+                            if lyrics_embedding is not None and getattr(lyrics_embedding, 'size', 0) > 0:
+                                save_lyrics_embedding(item['Id'], lyrics_embedding, lyrics_axis_scores)
+                                logger.info('  - Lyrics embedding saved')
+                                track_processed = True
                             else:
-                                lyrics_embedding = lyrics_embed_text_with_roberta(lyrics_text, lyrics_topic_tokenizer, lyrics_topic_model)
-                                if lyrics_embedding is not None and lyrics_embedding.size > 0:
-                                    lyrics_axis_scores = lyrics_score_text_against_axes(
-                                        lyrics_text,
-                                        lyrics_topic_tokenizer,
-                                        lyrics_topic_model,
-                                        lyrics_axis_label_map,
-                                        lyrics_axis_embeddings,
-                                        temperature=0.1,
-                                    )
-                                    save_lyrics_embedding(item['Id'], lyrics_embedding, lyrics_axis_scores)
-                                    logger.info(f"  - Lyrics embedding saved")
-                                    track_processed = True
-                                else:
-                                    logger.warning(f"  - Lyrics embedding failed to produce a vector for {track_name_full}")
+                                logger.warning(f"  - Lyrics analysis produced no embedding for {track_name_full}")
                         except Exception as e:
-                            logger.warning(f"  - Lyrics analysis failed: {e}")
+                            logger.warning(f"  - Lyrics analysis failed: {e}", exc_info=True)
                     elif LYRICS_ENABLED:
-                        logger.info(f"  - Lyrics analysis already exists or disabled, skipping")
+                        logger.info(f"  - Lyrics analysis already exists or skipped")
 
                     # MuLan analysis (only if enabled AND needed)
                     if needs_mulan and MULAN_ENABLED:

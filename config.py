@@ -307,10 +307,11 @@ EMBEDDING_DIMENSION = 200
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # Lyrics analysis feature toggle. When false, the lyrics step is skipped entirely.
 LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
+LYRICS_LLM_ENABLED = os.environ.get("LYRICS_LLM_ENABLED", "true").lower() == "true"
 LYRICS_WHISPER_MODEL = os.environ.get("LYRICS_WHISPER_MODEL", "small")
 LYRICS_LLM_MODEL_PATH = os.environ.get("LYRICS_LLM_MODEL_PATH", "/app/model/qwen2.5-1.5b-instruct-q4_k_m.gguf")
 LYRICS_SONGS_DIR = os.environ.get("LYRICS_SONGS_DIR", "/app/songs")
-LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/lyrics/final/model")
+LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
 LYRICS_LLM_MODEL_FILENAME = 'qwen2.5-1.5b-instruct-q4_k_m.gguf'
 LYRICS_LLM_MODEL_URL = 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf'
 LYRICS_MAX_SONGS_TO_ANALYZE = 1000
