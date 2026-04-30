@@ -46,6 +46,29 @@ jobs:
         echo "Models downloaded successfully"
         ls -lh test/models/
 
+    - name: Download HuggingFace tokenizer cache (release v4.0.0-model)
+      run: |
+        # The CLAP analyzer loads roberta-base via AutoTokenizer.from_pretrained(..., local_files_only=True).
+        # Reuse the same huggingface_models.tar.gz bundled in the GitHub release that the
+        # Dockerfile uses, and extract it into an HF cache directory under test/.
+        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"
+        hf_cache_dir="${GITHUB_WORKSPACE}/test/.hf_cache"
+        mkdir -p "$hf_cache_dir"
+        echo "Downloading huggingface_models.tar.gz..."
+        curl -L "${base_url}/huggingface_models.tar.gz" -o /tmp/huggingface_models.tar.gz
+        echo "Extracting into ${hf_cache_dir}..."
+        tar -xzf /tmp/huggingface_models.tar.gz -C "$hf_cache_dir"
+        rm -f /tmp/huggingface_models.tar.gz
+        if [ ! -d "$hf_cache_dir/hub" ]; then
+          echo "ERROR: extraction did not produce a hub/ directory" >&2
+          ls -lah "$hf_cache_dir"
+          exit 1
+        fi
+        echo "HF cache ready:"
+        du -sh "$hf_cache_dir"
+        # Expose HF_HOME to subsequent steps so transformers resolves the cache offline.
+        echo "HF_HOME=$hf_cache_dir" >> "$GITHUB_ENV"
+
     - name: Verify test files exist
       run: |
         echo "Checking for config.py..."
