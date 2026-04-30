@@ -1,5 +1,6 @@
 #AudioMuse-AI/config.py
 import os
+import tempfile
 
 # --- Media Server Type ---
 MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, mpd, emby
@@ -318,6 +319,14 @@ LYRICS_WHISPER_MODEL = os.environ.get("LYRICS_WHISPER_MODEL", "small")
 LYRICS_LLM_MODEL_PATH = os.environ.get("LYRICS_LLM_MODEL_PATH", "/app/model/qwen2.5-1.5b-instruct-q4_k_m.gguf")
 LYRICS_SONGS_DIR = os.environ.get("LYRICS_SONGS_DIR", "/app/songs")
 LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
+# Writable directory for on-demand Marian translator downloads. Kept separate
+# from the bundled HF cache so stale locks / restrictive perms there cannot
+# block the translator. Default lives under /tmp; mount a persistent volume
+# here in production to avoid re-downloading language packs on each restart.
+LYRICS_MARIAN_CACHE_DIR = os.environ.get(
+    "LYRICS_MARIAN_CACHE_DIR",
+    os.path.join(tempfile.gettempdir(), "audiomuse-marian-cache"),
+)
 LYRICS_LLM_MODEL_FILENAME = 'qwen2.5-1.5b-instruct-q4_k_m.gguf'
 LYRICS_LLM_MODEL_URL = 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf'
 LYRICS_MAX_SONGS_TO_ANALYZE = 1000

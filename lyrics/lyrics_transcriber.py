@@ -302,9 +302,11 @@ def load_topic_embedding_model(model_name: Optional[str] = None):
         cache_dir = '/app/model/e5-base-v2'
 
     target = cache_dir if os.path.isdir(cache_dir) else model_name
-    logger.info('Loading embedding model %s', target)
-    _embedding_tokenizer = AutoTokenizer.from_pretrained(str(target))
-    _embedding_model = AutoModel.from_pretrained(str(target))
+    logger.info('Loading embedding model %s (offline)', target)
+    # e5 is bundled inside /app/model/e5-base-v2; force offline so a
+    # misconfigured network can never trigger a download for this required model.
+    _embedding_tokenizer = AutoTokenizer.from_pretrained(str(target), local_files_only=True)
+    _embedding_model = AutoModel.from_pretrained(str(target), local_files_only=True)
     _embedding_model_name = model_name
     logger.info('Embedding model ready')
     return _embedding_tokenizer, _embedding_model
@@ -655,6 +657,45 @@ def _detect_language(text: str) -> Tuple[str, float]:
     return best.lang, float(best.prob)
 
 
+_MARIAN_CACHE_DIR: Optional[str] = None
+
+
+def _get_marian_cache_dir() -> str:
+    """Return a process-private writable directory for Marian downloads.
+
+    We deliberately do NOT use the shared ``HF_HOME`` cache (where the bundled
+    e5 / RoBERTa / MuLan / BERT / BART models live read-only) so a stale lock
+    file or restrictive perms there cannot block the translator. The path is
+    configured via ``LYRICS_MARIAN_CACHE_DIR`` (config.py / env var).
+    """
+    global _MARIAN_CACHE_DIR
+    if _MARIAN_CACHE_DIR is not None:
+        return _MARIAN_CACHE_DIR
+    try:
+        from config import LYRICS_MARIAN_CACHE_DIR
+        base = LYRICS_MARIAN_CACHE_DIR
+    except Exception:
+        base = os.environ.get('LYRICS_MARIAN_CACHE_DIR') \
+            or os.path.join(tempfile.gettempdir(), 'audiomuse-marian-cache')
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception as exc:
+        logger.warning('Could not create Marian cache dir %s: %s', base, exc)
+        base = tempfile.mkdtemp(prefix='audiomuse-marian-')
+    _MARIAN_CACHE_DIR = base
+    # Redirect HF Xet client logs to a writable subdir of the same cache.
+    # Default ($HF_HOME/xet/logs == /app/.cache/huggingface/xet/logs) is
+    # read-only in our container and triggers "Permission denied" errors.
+    xet_log_dir = os.path.join(_MARIAN_CACHE_DIR, 'xet-logs')
+    try:
+        os.makedirs(xet_log_dir, exist_ok=True)
+        os.environ.setdefault('HF_XET_LOG_DIR', xet_log_dir)
+    except Exception as exc:
+        logger.warning('Could not create xet log dir %s: %s', xet_log_dir, exc)
+    logger.info('Marian translator cache dir: %s', _MARIAN_CACHE_DIR)
+    return _MARIAN_CACHE_DIR
+
+
 def _get_marian(source_lang: str):
     source_lang = source_lang.lower()
     if source_lang == 'en':
@@ -671,9 +712,16 @@ def _get_marian(source_lang: str):
         LYRICS_DEFAULT_MARIAN_PREFIX = 'Helsinki-NLP/opus-mt-{}-en'
 
     model_name = LYRICS_DEFAULT_MARIAN_PREFIX.format(source_lang)
+
+    # Marian language pairs are downloaded on demand the first time a new source
+    # language is seen. They land in a process-private temp dir so they cannot
+    # collide with the read-only bundled HF cache. The bundled models (e5,
+    # RoBERTa, MuLan, ...) use explicit local_files_only=True elsewhere so they
+    # cannot accidentally hit the network.
+    cache_dir = _get_marian_cache_dir()
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name, cache_dir=cache_dir)
     except Exception as exc:
         logger.warning('Could not load Marian model %s: %s', model_name, exc)
         return None, None

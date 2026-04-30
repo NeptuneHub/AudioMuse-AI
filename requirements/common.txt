@@ -38,8 +38,8 @@ sentencepiece==0.2.1
 openai-whisper==20250625
 silero-vad==5.1.2
 llama-cpp-python==0.3.21
-torch==2.5.1
-torchaudio==2.5.1
+torch==2.6.0
+torchaudio==2.6.0
 qwen-asr==0.0.6
 langdetect==1.0.9
 stopwords==1.0.2

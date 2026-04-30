@@ -220,9 +220,11 @@ ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     TZ=UTC \
-    HF_HOME=/app/.cache/huggingface \
-    HF_HUB_OFFLINE=1 \
-    TRANSFORMERS_OFFLINE=1
+    HF_HOME=/app/.cache/huggingface
+
+# Note: bundled HuggingFace models (e5, RoBERTa, MuLan, ...) load with
+# local_files_only=True per call. Marian translation models download on demand
+# at first use of a new source language; HF_HUB_OFFLINE is intentionally NOT set.
 
 WORKDIR /app
 

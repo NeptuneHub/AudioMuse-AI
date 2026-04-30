@@ -187,9 +187,11 @@ FROM base AS runner
 ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
-    HF_HOME=/app/.cache/huggingface \
-    HF_HUB_OFFLINE=1 \
-    TRANSFORMERS_OFFLINE=1
+    HF_HOME=/app/.cache/huggingface
+
+# Note: bundled HuggingFace models (RoBERTa, MuLan, ...) load with
+# local_files_only=True per call. Lyrics is force-disabled on this image
+# (see ENV LYRICS_ENABLED=false below), so Marian translator is never invoked.
 
 WORKDIR /app
 
