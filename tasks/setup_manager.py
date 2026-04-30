@@ -5,6 +5,7 @@ import psycopg2
 from argon2 import PasswordHasher
 from argon2 import exceptions as argon2_exceptions
 import config
+from env_utils import get_env
 from psycopg2.extras import RealDictCursor
 from urllib.parse import quote
 
@@ -36,15 +37,15 @@ class SetupManager:
         self._password_hasher = PasswordHasher()
 
     def _get_database_url(self):
-        env_url = os.environ.get("DATABASE_URL")
+        env_url = get_env("DATABASE_URL")
         if env_url:
             return env_url
 
-        user = os.environ.get("POSTGRES_USER", "audiomuse")
-        password = os.environ.get("POSTGRES_PASSWORD", "audiomusepassword")
+        user = get_env("POSTGRES_USER", "audiomuse")
+        password = get_env("POSTGRES_PASSWORD", "audiomusepassword")
         host = os.environ.get("POSTGRES_HOST", "postgres-service.playlist")
         port = os.environ.get("POSTGRES_PORT", "5432")
-        db = os.environ.get("POSTGRES_DB", "audiomusedb")
+        db = get_env("POSTGRES_DB", "audiomusedb")
         user_escaped = quote(user, safe='')
         password_escaped = quote(password, safe='')
         return f"postgresql://{user_escaped}:{password_escaped}@{host}:{port}/{db}"

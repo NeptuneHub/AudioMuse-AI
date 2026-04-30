@@ -18,6 +18,7 @@ all other schema objects) so a cold start only calls one init routine.
 import datetime
 import logging
 import os
+from env_utils import get_env
 import secrets
 
 from flask import (
@@ -365,8 +366,8 @@ def seed_admin_from_env():
 
     # 3. Fall back to real process environment variables.
     if not (user and password):
-        user = os.environ.get('AUDIOMUSE_USER', '') or ''
-        password = os.environ.get('AUDIOMUSE_PASSWORD', '') or ''
+        user = get_env('AUDIOMUSE_USER', '') or ''
+        password = get_env('AUDIOMUSE_PASSWORD', '') or ''
         source = 'env'
 
     if not (isinstance(user, str) and user.strip() and isinstance(password, str) and password):
