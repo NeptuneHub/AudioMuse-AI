@@ -343,6 +343,28 @@ LYRICS_DEFAULT_MARIAN_PREFIX = 'Helsinki-NLP/opus-mt-{}-en'
 # and used to build the lyrics voyager index.
 LYRICS_EMBEDDING_DIMENSION = int(os.environ.get("LYRICS_EMBEDDING_DIMENSION", "768"))
 
+# --- Sentinel vectors for tracks with no detectable lyrics ("instrumental") ---
+# These give us three things at once:
+#   1. analyze_lyrics() can still write a row, so future runs skip the track
+#      instead of re-attempting transcription every time.
+#   2. The vectors are non-zero so cosine similarity is always well-defined.
+#   3. Querying the index with the same sentinel lists every instrumental at
+#      the top, while real songs cannot match them: the e5 sentinel sits on
+#      a single basis axis (cosine to typical e5 embeddings is ~0), and the
+#      axis sentinel is uniformly negative, which a softmax-derived axis_vector
+#      can never produce.
+import numpy as _np
+
+LYRICS_INSTRUMENTAL_EMBEDDING = _np.zeros(LYRICS_EMBEDDING_DIMENSION, dtype=_np.float32)
+LYRICS_INSTRUMENTAL_EMBEDDING[0] = 1.0
+LYRICS_INSTRUMENTAL_EMBEDDING.flags.writeable = False
+
+# Fill value used for every entry of the instrumental axis_vector. Any negative
+# constant works because real axis_vectors come from softmax (always >= 0), so
+# they cannot occupy the negative orthant. Hardcoded so we never compute
+# sqrt() at runtime.
+LYRICS_INSTRUMENTAL_AXIS_FILL = -0.19245009  # = -1 / sqrt(27), precomputed
+
 # Split CLAP models: audio model for analysis, text model for search
 # Default points to the distilled student model (EfficientAT, epoch 36).
 # The companion external-data file (model_epoch_36.onnx.data) must sit next to it.

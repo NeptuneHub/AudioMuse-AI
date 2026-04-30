@@ -1006,6 +1006,30 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         text_for_cleanup = ''
         cleaned_text = ''
         final_text = ''
+
+    # ---- STEP 6b: instrumental fallback ----
+    # If no usable embedding was produced (no lyrics in the audio AND no API
+    # hit, or fewer than MIN_WORDS_FOR_EMBEDDING words after cleanup), fall
+    # back to deterministic sentinel vectors. This lets us:
+    #   * persist a row so future analysis runs skip the track,
+    #   * cluster all instrumental tracks together in vector search,
+    #   * keep them safely far from real lyrical embeddings (the axis sentinel
+    #     is uniformly negative, which a softmax axis_vector can never be).
+    if embedding is None or getattr(embedding, 'size', 0) == 0:
+        try:
+            from config import (
+                LYRICS_INSTRUMENTAL_EMBEDDING,
+                LYRICS_INSTRUMENTAL_AXIS_FILL,
+            )
+            embedding = np.array(LYRICS_INSTRUMENTAL_EMBEDDING, dtype=np.float32, copy=True)
+            axis_dim = len(axis_columns())
+            axis_vector = np.full(axis_dim, LYRICS_INSTRUMENTAL_AXIS_FILL, dtype=np.float32)
+            logger.info('STEP 6b: applied instrumental sentinel '
+                        '(embedding_dim=%s, axis_dim=%s)',
+                        embedding.shape[0], axis_vector.shape[0])
+        except Exception as exc:
+            logger.warning('Could not apply instrumental sentinel: %s', exc)
+
     logger.info('STEP 6 end: embedding=%s axis_vector_dim=%s',
                 None if embedding is None else embedding.shape,
                 int(axis_vector.shape[0]) if axis_vector is not None else 0)
