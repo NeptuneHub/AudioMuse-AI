@@ -21,6 +21,7 @@ from config import (
 from .mediaserver import get_recent_albums, get_tracks_from_album
 from .voyager_manager import build_and_store_voyager_index
 from .artist_gmm_manager import build_and_store_artist_index
+from .lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
 
 from psycopg2 import OperationalError
 from redis.exceptions import TimeoutError as RedisTimeoutError
@@ -81,6 +82,14 @@ def identify_and_clean_orphaned_albums_task():
                 try:
                     build_and_store_voyager_index(get_db())
                     build_and_store_artist_index(get_db())
+                    try:
+                        build_and_store_lyrics_index(get_db())
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store Lyrics search index after cleaning: {e}")
+                    try:
+                        build_and_store_lyrics_axes_index(get_db())
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store Lyrics axes index after cleaning: {e}")
                     from app_helper import build_and_store_map_projection, build_and_store_artist_projection
                     build_and_store_map_projection('main_map')
                     build_and_store_artist_projection('artist_map')
@@ -188,6 +197,14 @@ def identify_and_clean_orphaned_albums_task():
                 try:
                     build_and_store_voyager_index(get_db())
                     build_and_store_artist_index(get_db())
+                    try:
+                        build_and_store_lyrics_index(get_db())
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store Lyrics search index after cleaning: {e}")
+                    try:
+                        build_and_store_lyrics_axes_index(get_db())
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store Lyrics axes index after cleaning: {e}")
                     from app_helper import build_and_store_map_projection, build_and_store_artist_projection
                     build_and_store_map_projection('main_map')
                     build_and_store_artist_projection('artist_map')
@@ -241,6 +258,14 @@ def identify_and_clean_orphaned_albums_task():
                 try:
                     build_and_store_voyager_index(get_db())
                     build_and_store_artist_index(get_db())
+                    try:
+                        build_and_store_lyrics_index(get_db())
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store Lyrics search index after cleaning: {e}")
+                    try:
+                        build_and_store_lyrics_axes_index(get_db())
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store Lyrics axes index after cleaning: {e}")
                     from app_helper import build_and_store_map_projection, build_and_store_artist_projection
                     build_and_store_map_projection('main_map')
                     build_and_store_artist_projection('artist_map')
@@ -314,16 +339,46 @@ def delete_orphaned_albums_sync(orphaned_track_ids):
         
         with get_db() as conn:
             with conn.cursor() as cur:
-                # Delete from embedding table first (foreign key constraint)
-                logger.info(f"Deleting {len(orphaned_track_ids)} tracks from embedding table...")
-                for track_id in orphaned_track_ids:
+                def _table_exists(table_name):
+                    """Return True if a regular table with this (unqualified) name exists
+                    in the current search_path. Uses ``to_regclass`` so it never raises
+                    even if the table is missing."""
                     try:
-                        cur.execute("DELETE FROM embedding WHERE item_id = %s", (track_id,))
-                        logger.debug(f"Deleted embedding for track ID: {track_id}")
+                        cur.execute("SELECT to_regclass(%s)", (table_name,))
+                        row = cur.fetchone()
+                        return bool(row and row[0] is not None)
                     except Exception as e:
-                        logger.warning(f"Failed to delete embedding for track {track_id}: {e}")
-                        failed_deletions.append({"track_id": track_id, "table": "embedding", "error": str(e)})
-                
+                        logger.warning(f"Could not check existence of table {table_name}: {e}")
+                        return False
+
+                def _delete_from_child_table(table_name):
+                    """Delete the orphaned track rows from a child table of `score`.
+                    Skips silently if the table doesn't exist (older deployments)."""
+                    if not _table_exists(table_name):
+                        logger.info(f"Skipping {table_name}: table does not exist.")
+                        return
+                    logger.info(f"Deleting {len(orphaned_track_ids)} tracks from {table_name} table...")
+                    for track_id in orphaned_track_ids:
+                        try:
+                            cur.execute(
+                                f"DELETE FROM {table_name} WHERE item_id = %s",
+                                (track_id,),
+                            )
+                            logger.debug(f"Deleted {table_name} for track ID: {track_id}")
+                        except Exception as e:
+                            logger.warning(f"Failed to delete {table_name} for track {track_id}: {e}")
+                            failed_deletions.append({"track_id": track_id, "table": table_name, "error": str(e)})
+
+                # Delete from child tables first (foreign key constraint).
+                # All four are declared with ON DELETE CASCADE on score(item_id), so this
+                # is technically redundant — but explicit cleanup gives us per-row error
+                # tracking via failed_deletions. Tables that don't exist on this
+                # deployment are skipped silently.
+                _delete_from_child_table("embedding")
+                _delete_from_child_table("lyrics_embedding")
+                _delete_from_child_table("clap_embedding")
+                _delete_from_child_table("mulan_embedding")
+
                 # Delete from score table
                 logger.info(f"Deleting {len(orphaned_track_ids)} tracks from score table...")
                 for track_id in orphaned_track_ids:
