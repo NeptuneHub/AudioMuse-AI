@@ -692,6 +692,13 @@ def _get_marian_cache_dir() -> str:
         os.environ.setdefault('HF_XET_LOG_DIR', xet_log_dir)
     except Exception as exc:
         logger.warning('Could not create xet log dir %s: %s', xet_log_dir, exc)
+    # The Hugging Face Hub xet client (Rust) has been observed to fail with
+    # `HTTP 416 Range Not Satisfiable` against cas-server.xethub.hf.co when
+    # downloading Marian translation models, and to crash with `Permission
+    # denied` while writing logs to a read-only $HF_HOME/xet/logs. Disable the
+    # xet transport so transformers falls back to plain HTTPS downloads.
+    os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
+    os.environ.setdefault('HF_XET_DISABLE', '1')
     logger.info('Marian translator cache dir: %s', _MARIAN_CACHE_DIR)
     return _MARIAN_CACHE_DIR
 
@@ -730,18 +737,43 @@ def _get_marian(source_lang: str):
 
 
 def _translate_to_english(text: str, source_lang: str) -> str:
+    """Translate ``text`` to English. Return ``''`` on any failure.
+
+    We never fall back to the original (non-English) text: downstream we
+    embed with an English-tuned model and score English axis descriptions,
+    so leaking a foreign-language transcription would poison the vector
+    space. An empty string makes the caller treat the track as having no
+    usable lyrics, which then triggers the instrumental sentinel fallback.
+    """
     if not text or source_lang.lower() == 'en':
         return text
-    tokenizer, model = _get_marian(source_lang)
+    try:
+        tokenizer, model = _get_marian(source_lang)
+    except Exception as exc:
+        logger.warning('Marian load failed for %s: %s; dropping lyrics',
+                       source_lang, exc)
+        return ''
     if tokenizer is None or model is None:
-        return text
+        logger.warning('No Marian model available for %s; dropping lyrics',
+                       source_lang)
+        return ''
     pieces: List[str] = []
     for chunk in _split_into_word_chunks(text):
-        inputs = tokenizer(chunk, truncation=True, padding=True,
-                           return_tensors='pt', max_length=512)
-        outputs = model.generate(**inputs, max_length=512)
-        translated = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-        pieces.append(translated[0].strip() if translated else chunk)
+        try:
+            inputs = tokenizer(chunk, truncation=True, padding=True,
+                               return_tensors='pt', max_length=512)
+            outputs = model.generate(**inputs, max_length=512)
+            translated = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+            piece = translated[0].strip() if translated else ''
+            if not piece:
+                logger.warning('Marian returned empty translation for chunk; '
+                               'dropping lyrics')
+                return ''
+            pieces.append(piece)
+        except Exception as exc:
+            logger.warning('Marian translation chunk failed (%s); dropping lyrics',
+                           exc)
+            return ''
     return ' '.join(pieces)
 
 
@@ -964,7 +996,15 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     # ---- STEP 4: translation ----
     logger.info('STEP 4 start: translation (source=%s)', detected_lang)
     if raw_text and detected_lang != 'en':
-        text_for_cleanup = _translate_to_english(raw_text, detected_lang)
+        try:
+            text_for_cleanup = _translate_to_english(raw_text, detected_lang)
+        except Exception as exc:
+            # Translation must never crash the worker. If the Marian model
+            # download or generation blows up (HF Hub 416/xet failures, OOM,
+            # ...), drop the text so we don't embed a foreign-language
+            # transcription with the English embedding model.
+            logger.warning('Translation failed (%s); dropping lyrics', exc)
+            text_for_cleanup = ''
     else:
         text_for_cleanup = raw_text
     logger.info('STEP 4 end: translated length=%s words', len(text_for_cleanup.split()))
