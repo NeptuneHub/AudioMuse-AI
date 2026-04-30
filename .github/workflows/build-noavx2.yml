@@ -16,6 +16,11 @@ on:
       - devel
     tags:
       - 'v*.*.*'
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
   workflow_dispatch:
     inputs:
       version:
@@ -25,6 +30,7 @@ on:
 
 jobs:
   build-and-push-noavx2:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -89,6 +95,8 @@ jobs:
             type=semver,pattern={{version}}-noavx2
             # Devel branch: devel-noavx2
             type=raw,value=devel-noavx2,enable=${{ github.ref == 'refs/heads/devel' }}
+            # Pull request: pr-<number>-noavx2
+            type=raw,value=pr-${{ github.event.pull_request.number }}-noavx2,enable=${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
             # Manual run: <input>-noavx2 + latest-noavx2
             type=raw,value=${{ inputs.version }}-noavx2,enable=${{ inputs.version != '' }}
             type=raw,value=latest-noavx2,enable=${{ inputs.version != '' }}
