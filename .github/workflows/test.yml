@@ -18,10 +18,15 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        # Need a real (non-detached) checkout so we can push back to main
-        # when the lyrics expected vectors are recorded for the first time.
+        # Need a real (non-detached) checkout so we can push back the
+        # auto-recorded test/lyrics_expected.json. On pull_request events
+        # we explicitly check out the PR head branch (not the merge ref)
+        # so `git push` lands on the PR branch and the change becomes
+        # visible in the PR before merge.
         token: ${{ secrets.GITHUB_TOKEN }}
         fetch-depth: 0
+        ref: ${{ github.event.pull_request.head.ref || github.ref }}
+        repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -135,7 +140,14 @@ jobs:
         pytest test/test_lyrics_analysis_integration.py -s -v --tb=short
 
     - name: Commit recorded lyrics expected vectors
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      # Push back the auto-recorded vectors on:
+      #   * push to main
+      #   * pull_request originating from the SAME repository (forks can't
+      #     get write permission via GITHUB_TOKEN, so we skip them).
+      if: |
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name == github.repository)
       run: |
         if [ ! -f test/lyrics_expected.json ]; then
           echo "No test/lyrics_expected.json produced - nothing to commit."
@@ -150,8 +162,14 @@ jobs:
         git config user.name  "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git add test/lyrics_expected.json
-        git commit -m "test(lyrics): record expected vectors for integration test [skip ci]"
-        git push origin HEAD:main
+        git commit -m "test(lyrics): record expected vectors for integration test"
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          target_branch="${{ github.event.pull_request.head.ref }}"
+        else
+          target_branch="main"
+        fi
+        echo "Pushing to branch: $target_branch"
+        git push origin "HEAD:${target_branch}"
 
     - name: Upload test results
       if: always()
