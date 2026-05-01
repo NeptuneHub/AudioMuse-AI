@@ -283,6 +283,77 @@ def probe_test():
     return jsonify(result)
 
 
+@migration_bp.route('/api/migration/libraries', methods=['POST'])
+def libraries_list():
+    """Return the target provider's music libraries for step 2's checkbox list.
+
+    Uses session-stored credentials (never ``config``), so the live provider
+    keeps working while the user is configuring a migration target. Also
+    returns the user's prior selection (if any) from session state, so a
+    page reload can pre-check the same boxes the user picked before.
+    """
+    payload = request.get_json(silent=True) or {}
+    session_id = payload.get('session_id')
+    if session_id is None:
+        return jsonify({'error': 'session_id is required'}), 400
+
+    session = _fetch_session_creds(session_id)
+    if session is None:
+        return jsonify({'error': 'session not found'}), 404
+    target_type, creds = session
+    state = _load_state(session_id) or {}
+    selected = state.get('selected_libraries')
+    try:
+        result = provider_probe.list_libraries(target_type, creds)
+    except Exception as e:
+        logger.warning("libraries_list failed for session %s: %s", session_id, e, exc_info=True)
+        return jsonify({
+            'libraries': [],
+            'unsupported': False,
+            'selected_libraries': selected,
+            'error': str(e),
+        }), 200
+    return jsonify({
+        'libraries': result.get('libraries', []),
+        'unsupported': bool(result.get('unsupported', False)),
+        'selected_libraries': selected,
+    }), 200
+
+
+@migration_bp.route('/api/migration/libraries/select', methods=['POST'])
+def libraries_select():
+    """Persist the user's library checkbox selection into the session state.
+
+    - ``null`` or missing ``libraries`` → no filter (scan everything post-migration)
+    - ``[]`` → normalized to ``null`` (refuses to save a "scan nothing" state)
+    - non-empty list → stored verbatim; ``_write_provider_to_app_config``
+      writes it into ``app_config.MUSIC_LIBRARIES`` when the migration
+      commits, overwriting the source provider's old filter.
+    """
+    payload = request.get_json(silent=True) or {}
+    session_id = payload.get('session_id')
+    if session_id is None:
+        return jsonify({'error': 'session_id is required'}), 400
+
+    libraries = payload.get('libraries')
+    if libraries is not None and not isinstance(libraries, list):
+        return jsonify({'error': 'libraries must be a list of names or null'}), 400
+
+    if isinstance(libraries, list):
+        cleaned = [str(name).strip() for name in libraries if str(name).strip()]
+        # MUSIC_LIBRARIES is stored as a comma-separated string and split on
+        # ',' at scan time, so a name containing a comma would silently
+        # corrupt the round-trip into multiple bogus fragments.
+        if any(',' in name for name in cleaned):
+            return jsonify({'error': 'Library names cannot contain commas.'}), 400
+        selected = cleaned or None
+    else:
+        selected = None
+
+    _update_state(session_id, selected_libraries=selected)
+    return jsonify({'ok': True, 'selected_libraries': selected}), 200
+
+
 @migration_bp.route('/api/migration/search-albums', methods=['POST'])
 def search_albums():
     payload = request.get_json(silent=True) or {}
@@ -422,6 +493,9 @@ def dry_run():
         'match_tiers':       result['match_tiers'],
         'tier_counts':       result['tier_counts'],
         'unmatched_albums':  _albums_payload(result['unmatched_by_album']),
+        # Persist the full count so the wizard can warn the user when the
+        # rendered list is only a truncated sample.
+        'unmatched_albums_total': len(result['unmatched_by_album']),
     }
     # Also snapshot new track metadata keyed by new_id for the post-execute
     # score refresh (file_path, title, artist, album, year).
@@ -847,15 +921,17 @@ def matched_albums(session_id):
         new_id = merged.get(old_id)
         if new_id is None:
             continue
+        # Skip auto-matched rows entirely: the step-4 review list is meant
+        # for albums the user manually re-targeted. With huge libraries the
+        # auto-match list dominates and makes the UI unusable, but it has
+        # nothing to review.
+        if old_id not in manual_matches:
+            continue
         key = (r.get('album_artist') or r.get('author') or '', r.get('album') or '')
         g = groups.setdefault(key, {'count': 0, 'new_ids': [], 'tiers': []})
         g['count'] += 1
         g['new_ids'].append(new_id)
-        # Manual rematch wins over the original auto tier if the user changed it.
-        if old_id in manual_matches:
-            g['tiers'].append('manual')
-        else:
-            g['tiers'].append(match_tiers.get(old_id) or 'unknown')
+        g['tiers'].append('manual')
 
     albums = []
     for (old_artist, old_album), g in groups.items():
@@ -965,11 +1041,26 @@ def _load_rows_for_album(album_key):
     return out
 
 
+# Hard cap on the number of unmatched albums returned to the wizard. The
+# value is read from ``config.MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT`` so
+# operators can tune it via env var or the setup wizard's DB-backed
+# overrides without touching this module. Callers that need the true
+# count should use ``len(unmatched_by_album)`` separately.
+
+
 def _albums_payload(unmatched_by_album):
     """Serialize ``{(album_artist, album): [rows]}`` into a JSON-safe list
-    suitable for the wizard UI."""
+    suitable for the wizard UI.
+
+    Truncated to ``config.MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT`` entries
+    to keep the persisted state and the step-4 review page bounded.
+    """
+    import config
+    limit = int(getattr(config, 'MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT', 200) or 200)
     out = []
     for key, rows in unmatched_by_album.items():
+        if len(out) >= limit:
+            break
         album_artist, album = key[0], key[1] if len(key) > 1 else None
         out.append({
             'album_artist': album_artist,

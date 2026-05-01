@@ -26,6 +26,12 @@ MUSIC_LIBRARIES = os.environ.get("MUSIC_LIBRARIES", "")
 # Maximum number of items to fetch during the connection probe.
 # Set to 0 to scan all top-played items, or a small positive integer to keep the probe fast.
 PROBE_TOP_PLAYED_LIMIT = int(os.environ.get("PROBE_TOP_PLAYED_LIMIT", "1"))
+# Hard cap on the number of unmatched albums returned to the migration
+# wizard's step-4 review list. Real libraries can produce thousands of
+# unmatched groups (e.g. wrong path format) and the page becomes unusable
+# beyond a couple hundred entries. The full count is still surfaced as a
+# warning so the user knows the list is truncated.
+MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT = int(os.environ.get("MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT", "200"))
 TEMP_DIR = "/app/temp_audio"  # Always use /app/temp_audio
 
 

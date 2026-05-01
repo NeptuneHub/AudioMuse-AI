@@ -34,9 +34,15 @@ var authCredentialInputs = [
     document.getElementById('JWT_SECRET')
 ];
 var setupForm = document.getElementById('setup-form');
+var musicLibrariesSection = document.getElementById('music-libraries-section');
+var musicLibrariesList = document.getElementById('music-libraries-list');
+var musicLibrariesHint = document.getElementById('music-libraries-hint');
 var serverValues = {};
 var serverSecretHasValue = {};
 var originalValues = {};
+var currentSelectedLibraries = [];  // comma-split MUSIC_LIBRARIES from /api/setup
+var currentLibraryCheckboxes = [];  // array of HTMLInputElement (checkbox) rendered in the section
+var currentNoRestrictionCheckbox = null;  // pseudo-entry: when checked, MUSIC_LIBRARIES = '' (scan all, auto-grow)
 // Set from GET /api/setup: when true, an admin already exists in
 // audiomuse_users and the setup wizard must not allow editing admin
 // credentials here. User management happens in /users instead.
@@ -332,7 +338,10 @@ function loadSetupData() {
                 jwtInput.dataset.originalValue = jwtInput.value;
             }
         }
-        var visibleAdvancedData = advancedData;
+        var visibleAdvancedData = Array.isArray(advancedData)
+            ? advancedData.filter(function(f) { return f && f.name !== 'MUSIC_LIBRARIES'; })
+            : advancedData;
+        currentSelectedLibraries = splitLibraryList(data.music_libraries);
         originalValues = {};
         data.basic_fields.forEach(function(item) {
             originalValues[item.name] = item.value || '';
@@ -350,6 +359,12 @@ function loadSetupData() {
         renderServerFields(mediaServerSelect.value, basicData, secretHasValue);
         renderAdvancedFields(visibleAdvancedData);
         updateAuthVisibility();
+        // If the provider is already configured (server returned `has_value`
+        // for the credential fields), auto-fetch the library list so the
+        // checkbox state matches the saved MUSIC_LIBRARIES value.
+        if (providerCredsHaveSavedValues(mediaServerSelect.value, secretHasValue, basicData)) {
+            fetchProviderLibraries(mediaServerSelect.value);
+        }
     }).catch(function(err) {
         saveFeedback.className = 'status-failure inline-feedback';
         saveFeedback.style.display = 'block';
@@ -390,6 +405,253 @@ function updateServerFields() {
     saveCurrentServerValues();
     var serverType = document.getElementById('MEDIASERVER_TYPE').value;
     renderServerFields(serverType, serverValues, serverSecretHasValue);
+    // Hide the checkbox list (it only matches the prior provider's library
+    // names) but keep ``currentSelectedLibraries`` intact: it reflects the
+    // *saved* MUSIC_LIBRARIES value, which is provider-agnostic in storage.
+    // If the user flips back to the original provider, the next render will
+    // re-check the matching names. The renderer's case-insensitive name
+    // match means stale names against a new provider's libraries simply
+    // miss and leave their boxes unchecked — no leakage into the save.
+    hideMusicLibrariesSection();
+}
+
+function splitLibraryList(value) {
+    if (!value) {
+        return [];
+    }
+    return String(value).split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+}
+
+function providerCredsHaveSavedValues(serverType, secretHasValue, basicData) {
+    var fields = serverFields[serverType];
+    if (!fields) return false;
+    for (var i = 0; i < fields.length; i++) {
+        var name = fields[i].name;
+        // For secret fields the server returns has_value=true when a value is
+        // stored; for non-secret it just returns the actual string.
+        if (secretHasValue && secretHasValue[name]) continue;
+        if (basicData && basicData[name]) continue;
+        return false;
+    }
+    return true;
+}
+
+function hideMusicLibrariesSection() {
+    if (!musicLibrariesSection) return;
+    musicLibrariesSection.style.display = 'none';
+    musicLibrariesList.innerHTML = '';
+    currentLibraryCheckboxes = [];
+    currentNoRestrictionCheckbox = null;
+    if (musicLibrariesHint) musicLibrariesHint.style.display = 'none';
+}
+
+function fetchProviderLibraries(serverType, configOverride) {
+    if (!musicLibrariesSection) return;
+    if (!serverFields[serverType]) {
+        hideMusicLibrariesSection();
+        return;
+    }
+    var configPayload = configOverride || collectConfigFromForm(true);
+    // MEDIASERVER_TYPE may be dropped by collectConfigFromForm if unchanged.
+    configPayload.MEDIASERVER_TYPE = serverType;
+    fetch('/api/setup/providers/libraries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: configPayload })
+    }).then(function(resp) {
+        return resp.json().then(function(data) {
+            if (!resp.ok) {
+                throw new Error(data.error || 'Unable to list libraries.');
+            }
+            return data;
+        });
+    }).then(function(data) {
+        if (data.unsupported || !Array.isArray(data.libraries) || data.libraries.length === 0) {
+            hideMusicLibrariesSection();
+            return;
+        }
+        // Preserve the user's in-flight checkbox toggles across re-renders
+        // (e.g. after clicking Test Connection again). Otherwise we would
+        // reset to currentSelectedLibraries, which only reflects the value
+        // last loaded from /api/setup.
+        var selectedForRender = currentSelectedLibraries;
+        var forceNoRestriction = false;
+        // Track whether this is a re-render (state from a previous render
+        // exists) vs the first render after page load. The "honor live UI
+        // state" fallback below must only run on re-renders, otherwise an
+        // empty DB selection would be treated as "user just unchecked
+        // everything" and we'd uncheck the default No-restriction box.
+        var isRerender = (currentLibraryCheckboxes.length > 0 || !!currentNoRestrictionCheckbox);
+        if (isRerender) {
+            // "No restriction" wins: render as the unrestricted state (empty list).
+            if (currentNoRestrictionCheckbox && currentNoRestrictionCheckbox.checked) {
+                selectedForRender = [];
+                forceNoRestriction = true;
+            } else {
+                var checkedNames = [];
+                for (var k = 0; k < currentLibraryCheckboxes.length; k++) {
+                    if (currentLibraryCheckboxes[k].checked) {
+                        checkedNames.push(currentLibraryCheckboxes[k].dataset.libraryName);
+                    }
+                }
+                selectedForRender = checkedNames;
+            }
+        }
+        renderLibraryCheckboxes(data.libraries, selectedForRender);
+        // Re-render only: if the user explicitly turned No-restriction off
+        // and unchecked all rows, renderLibraryCheckboxes would have
+        // defaulted back to "no restriction" (stale-selection fallback).
+        // Honor the live UI state instead. On the first render we want the
+        // default behavior (empty saved selection → No-restriction checked).
+        if (isRerender && currentNoRestrictionCheckbox && !forceNoRestriction
+                && Array.isArray(selectedForRender) && selectedForRender.length === 0) {
+            currentNoRestrictionCheckbox.checked = false;
+            applyNoRestrictionState();
+            updateMusicLibrariesHint();
+        }
+    }).catch(function() {
+        // Don't block the user on list failures — the free-text value still
+        // works on save (empty string = scan everything).
+        hideMusicLibrariesSection();
+    });
+}
+
+function renderLibraryCheckboxes(libraries, selectedNames) {
+    if (!musicLibrariesList) return;
+    musicLibrariesList.innerHTML = '';
+    currentLibraryCheckboxes = [];
+    currentNoRestrictionCheckbox = null;
+
+    // Map saved names to lowercase for case-insensitive lookup.
+    var selectedLower = {};
+    var rawHasSelection = Array.isArray(selectedNames) && selectedNames.length > 0;
+    if (rawHasSelection) {
+        for (var i = 0; i < selectedNames.length; i++) {
+            selectedLower[String(selectedNames[i]).toLowerCase()] = true;
+        }
+    }
+    // "No restriction" = empty saved selection. Backend reads MUSIC_LIBRARIES=''
+    // as "scan everything" across every media-server adapter, and new libraries
+    // added later are picked up automatically.
+    var noRestriction = !rawHasSelection;
+    // If a saved selection exists but has no overlap with this provider's
+    // libraries (e.g. names were saved for a different provider), treat it as
+    // stale and fall back to "no restriction" rather than rendering all
+    // unchecked which would look broken.
+    if (rawHasSelection) {
+        var anyMatch = false;
+        for (var j = 0; j < libraries.length; j++) {
+            var libName = libraries[j] && libraries[j].name ? String(libraries[j].name).toLowerCase() : '';
+            if (libName && selectedLower[libName]) { anyMatch = true; break; }
+        }
+        if (!anyMatch) noRestriction = true;
+    }
+
+    // --- "No restriction" pseudo-row at the top ---
+    var noRow = document.createElement('label');
+    noRow.style.display = 'flex';
+    noRow.style.alignItems = 'center';
+    noRow.style.gap = '0.5rem';
+    noRow.style.fontWeight = '500';
+    var noCb = document.createElement('input');
+    noCb.type = 'checkbox';
+    noCb.checked = noRestriction;
+    noCb.style.width = 'auto';
+    noCb.style.flex = '0 0 auto';
+    noCb.style.margin = '0';
+    noCb.addEventListener('change', function() {
+        applyNoRestrictionState();
+        updateMusicLibrariesHint();
+    });
+    noRow.appendChild(noCb);
+    noRow.appendChild(document.createTextNode('No restriction (scan all libraries, including ones added later)'));
+    musicLibrariesList.appendChild(noRow);
+    currentNoRestrictionCheckbox = noCb;
+
+    libraries.forEach(function(lib) {
+        var name = lib && lib.name ? String(lib.name) : '';
+        if (!name) return;
+        var row = document.createElement('label');
+        row.style.display = 'flex';
+        row.style.alignItems = 'center';
+        row.style.gap = '0.5rem';
+        row.style.fontWeight = '400';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.dataset.libraryName = name;
+        // When "No restriction" is on, individual rows are visually checked
+        // but disabled (the user shouldn't be picking from a list that is
+        // already overridden). When off, honor the saved selection.
+        cb.checked = noRestriction ? false : !!selectedLower[name.toLowerCase()];
+        // Override `.field-row input { width: 100% }` from setup.html — that
+        // global rule would stretch each checkbox across the row and push
+        // the label text to the far right.
+        cb.style.width = 'auto';
+        cb.style.flex = '0 0 auto';
+        cb.style.margin = '0';
+        cb.addEventListener('change', updateMusicLibrariesHint);
+        row.appendChild(cb);
+        row.appendChild(document.createTextNode(name));
+        row.dataset.libraryRow = '1';
+        musicLibrariesList.appendChild(row);
+        currentLibraryCheckboxes.push(cb);
+    });
+    applyNoRestrictionState();
+    musicLibrariesSection.style.display = 'flex';
+    updateMusicLibrariesHint();
+}
+
+function applyNoRestrictionState() {
+    // Disable per-library checkboxes (and dim their rows) whenever the
+    // "No restriction" pseudo-entry is checked, so the UI matches the
+    // semantics: empty MUSIC_LIBRARIES means "scan everything".
+    if (!currentNoRestrictionCheckbox) return;
+    var disabled = !!currentNoRestrictionCheckbox.checked;
+    for (var i = 0; i < currentLibraryCheckboxes.length; i++) {
+        var cb = currentLibraryCheckboxes[i];
+        cb.disabled = disabled;
+        if (disabled) cb.checked = false;
+        if (cb.parentElement) cb.parentElement.style.opacity = disabled ? '0.5' : '1';
+    }
+}
+
+function updateMusicLibrariesHint() {
+    if (!musicLibrariesHint) return;
+    // Hint = "you'll scan nothing": only relevant when No-restriction is OFF
+    // and the user has unchecked every library row.
+    var noRestriction = currentNoRestrictionCheckbox && currentNoRestrictionCheckbox.checked;
+    var anyChecked = currentLibraryCheckboxes.some(function(cb) { return cb.checked; });
+    musicLibrariesHint.style.display = (!noRestriction && currentLibraryCheckboxes.length > 0 && !anyChecked)
+        ? 'block' : 'none';
+}
+
+function collectMusicLibrariesValue() {
+    // Returns the MUSIC_LIBRARIES value to store, or null to skip writing.
+    if (!currentLibraryCheckboxes.length && !currentNoRestrictionCheckbox) {
+        // Section isn't rendered (MPD or provider doesn't support it, or the
+        // fetch failed). Don't touch MUSIC_LIBRARIES.
+        return null;
+    }
+    // "No restriction" → empty (= scan everything, every adapter treats this
+    // as "no filter" and will include libraries added in the future).
+    if (currentNoRestrictionCheckbox && currentNoRestrictionCheckbox.checked) {
+        return '';
+    }
+    var checked = currentLibraryCheckboxes.filter(function(cb) { return cb.checked; });
+    // None checked while No-restriction is OFF → still empty (scan all).
+    // "Scan nothing" is a footgun and the hint already warns the user; we
+    // refuse to persist that state.
+    if (checked.length === 0) {
+        return '';
+    }
+    // MUSIC_LIBRARIES is stored as a comma-separated string, so a comma in a
+    // library name would corrupt the round-trip. Skip writing rather than
+    // sending a poisoned value; the hint makes the case visible to the user.
+    var names = checked.map(function(cb) { return cb.dataset.libraryName; });
+    if (names.some(function(n) { return n.indexOf(',') !== -1; })) {
+        return null;
+    }
+    return names.join(',');
 }
 
 function collectConfigFromForm(testMode) {
@@ -473,6 +735,10 @@ function testConnection() {
         } else {
             testFeedback.textContent = '✓ Connected to ' + serverName + '. ' + count + ' top-played items were returned.';
         }
+        // Populate the library checkbox list using the same config payload
+        // (so secret placeholders fall back to saved values server-side).
+        var serverType = document.getElementById('MEDIASERVER_TYPE').value;
+        fetchProviderLibraries(serverType, config);
     }).catch(function(err) {
         testFeedback.className = 'status-failure inline-feedback';
         testFeedback.style.display = 'block';
@@ -513,6 +779,10 @@ setupForm.addEventListener('submit', function(event) {
         }
     }
     var config = collectConfigFromForm();
+    var mlValue = collectMusicLibrariesValue();
+    if (mlValue !== null) {
+        config.MUSIC_LIBRARIES = mlValue;
+    }
     fetch('/api/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
