@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import signal
 import tempfile
 import threading
 from pathlib import Path
@@ -996,9 +997,30 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                         pre_vad_samples / sr, len(audio_clip) / sr)
 
         # ---- STEP 2: whisper transcription ----
-        logger.info('STEP 2 start: whisper transcription (threads=%s)', threads)
+        _WHISPER_TIMEOUT_S = 300  # 5 minutes
+        logger.info('STEP 2 start: whisper transcription (threads=%s, timeout=%ss)', threads, _WHISPER_TIMEOUT_S)
         whisper_model = load_whisper_model(num_threads=threads)
-        transcription = _transcribe(audio_clip, sr, whisper_model)
+
+        class _WhisperTimeout(Exception):
+            pass
+
+        def _alarm_handler(signum, frame):
+            raise _WhisperTimeout()
+
+        _old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+        signal.alarm(_WHISPER_TIMEOUT_S)
+        try:
+            transcription = _transcribe(audio_clip, sr, whisper_model)
+        except _WhisperTimeout:
+            logger.warning(
+                'STEP 2 timeout: Whisper exceeded %ss — returning empty transcript',
+                _WHISPER_TIMEOUT_S,
+            )
+            transcription = {'text': '', 'language': 'en', 'duration': len(audio_clip) / sr}
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, _old_handler)
+
         raw_text = _sanitize_lyrics_text((transcription.get('text') or '').strip())
         detected_lang = transcription.get('language') or 'en'
         logger.info('STEP 2 end: transcript length=%s chars / %s words',

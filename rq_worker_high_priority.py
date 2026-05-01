@@ -17,6 +17,10 @@ _cpu_count = os.cpu_count() or 1
 _max_threads = max(1, _cpu_count // 3)
 for _env_key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS'):
     os.environ[_env_key] = str(_max_threads)
+# Prevent libgomp/OpenBLAS idle threads from spinning in busy-wait loops between
+# inference calls. Without this, threads spin at 100% CPU even when doing nothing.
+os.environ.setdefault('GOMP_SPINCOUNT', '0')
+os.environ.setdefault('OMP_WAIT_POLICY', 'passive')
 print(f"High-priority worker CPU thread cap = {_max_threads} (cpu_count // 3, min 1)")
 
 from rq import Worker
