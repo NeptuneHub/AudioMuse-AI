@@ -23,7 +23,13 @@ on:
 
 jobs:
   build-and-push:
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    # Run on non-PR events; for PR events skip drafts and fork PRs (the
+    # latter only get a read-only GITHUB_TOKEN and cannot push to ghcr.io).
+    # Maintainers can build a fork PR manually via workflow_dispatch.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
 
     permissions:
