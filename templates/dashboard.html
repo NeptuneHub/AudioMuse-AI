@@ -460,7 +460,7 @@
         const clapPct = totalSongs > 0 ? (100 * clapIndexed / totalSongs).toFixed(1) : '0.0';
         const totalArtists = c.distinct_artists || 0;
         const gmmIndexed = c.gmm_indexed || 0;
-        const gmmPct = totalArtists > 0 ? Math.round(100 * gmmIndexed / totalArtists) : 0;
+        const gmmPct = totalArtists > 0 ? (100 * gmmIndexed / totalArtists).toFixed(1) : '0.0';
 
         const cards = [
             { title: 'Total Songs', value: totalSongs.toLocaleString(),
