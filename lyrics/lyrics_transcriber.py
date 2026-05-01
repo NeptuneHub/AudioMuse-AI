@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import signal
 import tempfile
 import threading
@@ -606,12 +607,39 @@ def fetch_remote_lyrics(artist: Optional[str], track: Optional[str],
 # ---------------------------------------------------------------------------
 
 _vad_model = None
+_VAD_CACHE_DIR = os.path.join(tempfile.gettempdir(), 'audiomuse-vad-cache')
 
 
 def _get_vad_model():
     global _vad_model
     if _vad_model is None and load_silero_vad is not None:
-        _vad_model = load_silero_vad()
+        # Ensure our private /tmp cache dir exists
+        try:
+            os.makedirs(_VAD_CACHE_DIR, exist_ok=True)
+        except Exception as exc:
+            logger.warning('VAD: could not create cache dir %s: %s', _VAD_CACHE_DIR, exc)
+        # Disable XetHub CDN (same fix as Marian translator) before any download
+        os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
+        os.environ.setdefault('HF_XET_DISABLE', '1')
+        # Point torch.hub to our writable /tmp dir
+        _prev_hub_dir = torch.hub.get_dir() if torch is not None else None
+        if torch is not None:
+            torch.hub.set_dir(_VAD_CACHE_DIR)
+        logger.info('VAD: loading silero from %s', _VAD_CACHE_DIR)
+        try:
+            _vad_model = load_silero_vad()
+        except Exception as exc:
+            logger.warning('VAD model load failed (%s); cleaning up %s', exc, _VAD_CACHE_DIR)
+            try:
+                shutil.rmtree(_VAD_CACHE_DIR, ignore_errors=True)  # shutil imported at module level
+                logger.info('VAD: deleted stale cache dir %s', _VAD_CACHE_DIR)
+            except Exception as cleanup_exc:
+                logger.warning('VAD cache cleanup failed: %s', cleanup_exc)
+            logger.warning('VAD disabled for this process — cache cleaned, will retry on next worker start')
+        finally:
+            # Restore the original torch.hub dir
+            if torch is not None and _prev_hub_dir is not None:
+                torch.hub.set_dir(_prev_hub_dir)
     return _vad_model
 
 
@@ -753,7 +781,12 @@ def _get_marian(source_lang: str):
         tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name, cache_dir=cache_dir)
     except Exception as exc:
-        logger.warning('Could not load Marian model %s: %s', model_name, exc)
+        logger.warning('Could not load Marian model %s: %s; cleaning up cache dir %s', model_name, exc, cache_dir)
+        try:
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            logger.info('Marian: deleted stale cache dir %s', cache_dir)
+        except Exception as cleanup_exc:
+            logger.warning('Marian cache cleanup failed: %s', cleanup_exc)
         return None, None
     _marian_cache[source_lang] = (tokenizer, model)
     return tokenizer, model
