@@ -470,7 +470,7 @@
             <div id="mig-libraries-section" style="display:none; margin-top:1rem;">
                 <p style="margin:0 0 0.5rem 0;">
                     <strong>Music libraries to scan:</strong>
-                    <small>Uncheck to exclude. All checked = scan everything. Stored as MUSIC_LIBRARIES after the migration commits.</small>
+                    <small>Check "No restriction" to scan every library on the target server (including any added later) — this disables the per-library checkboxes. Otherwise check only the specific libraries you want. Stored as MUSIC_LIBRARIES after the migration commits.</small>
                 </p>
                 <div id="mig-libraries-list" style="display:flex; flex-direction:column; gap:0.25rem;"></div>
             </div>
@@ -496,7 +496,7 @@
                 matcher will try normalized (title, artist) alone. This can pair
                 tracks with different album versions &mdash; studio vs. compilation,
                 original vs. remaster/live &mdash; which you may not want. Review
-                auto-matched albums in step 4 before executing.
+                manually matched albums in step 4 before executing.
                 <div class="mig-row" style="margin-top:0.5rem;">
                     <button id="mig-loose-accept" class="btn btn-primary" type="button">I understand &mdash; enable</button>
                     <button id="mig-loose-cancel" class="btn" type="button">Cancel</button>
@@ -524,7 +524,7 @@
                 <div id="mig-matched-toggle"
                      style="cursor:pointer; user-select:none; display:flex; align-items:center; gap:0.5rem; padding:0.5rem 0; font-weight:600;">
                     <span id="mig-matched-arrow">&#9654;</span>
-                    <span>Show auto-matched albums (<span id="mig-matched-count">0</span>)</span>
+                    <span>Show manually matched albums (<span id="mig-matched-count">0</span>)</span>
                 </div>
                 <div id="mig-matched-content" style="display:none; margin-top:0.5rem;">
                     <p style="margin:0 0 0.5rem; font-size:0.9em;">
@@ -533,9 +533,9 @@
                     </p>
                     <div id="mig-matched-list" class="mig-album-list"></div>
                     <div class="mig-row" style="justify-content:center; margin-top:0.5rem;">
-                        <button id="mig-matched-prev" class="btn">&laquo; Prev</button>
+                        <button id="mig-matched-prev" class="btn btn-primary">&laquo; Prev</button>
                         <span id="mig-matched-pageinfo" style="min-width:8rem; text-align:center;"></span>
-                        <button id="mig-matched-next" class="btn">Next &raquo;</button>
+                        <button id="mig-matched-next" class="btn btn-primary">Next &raquo;</button>
                     </div>
                 </div>
             </div>
@@ -710,19 +710,66 @@
             saveMigLibrariesSelection(null);
             return;
         }
-        renderMigLibraries(data.libraries, data.selected_libraries);
+        // Preserve the user's in-flight checkbox toggles across re-renders
+        // (e.g. after clicking Test Connection again before the debounced
+        // save has propagated to the backend). Fall back to the backend's
+        // saved selection only when no checkboxes are currently rendered.
+        let selectedForRender = data.selected_libraries;
+        const existingNoR = $('mig-no-restriction');
+        const existingCbs = $('mig-libraries-list').querySelectorAll('input[type="checkbox"][data-library-name]');
+        if (existingCbs.length > 0 || existingNoR) {
+            if (existingNoR && existingNoR.checked) {
+                // No restriction → empty selection (scan everything).
+                selectedForRender = null;
+            } else {
+                const checkedNames = [];
+                existingCbs.forEach(cb => { if (cb.checked) checkedNames.push(cb.dataset.libraryName); });
+                selectedForRender = checkedNames;
+            }
+        }
+        renderMigLibraries(data.libraries, selectedForRender);
     }
 
     function renderMigLibraries(libraries, selectedNames) {
         const list = $('mig-libraries-list');
         list.innerHTML = '';
-        // If the session has a prior selection, pre-check only the matching
-        // names (case-insensitive); anything else stays unchecked. If the
-        // session has no prior selection (null/empty), default to all
-        // checked = "scan everything".
-        const selectedLower = (Array.isArray(selectedNames) && selectedNames.length > 0)
+        // "No restriction" = no saved selection. Backend treats empty
+        // selected_libraries as "scan everything", and any libraries the
+        // user adds to the target server later will automatically be
+        // included on the next migration pass.
+        const hasSelection = Array.isArray(selectedNames) && selectedNames.length > 0;
+        const selectedLower = hasSelection
             ? new Set(selectedNames.map(n => String(n).toLowerCase()))
             : null;
+        // Stale-selection fallback: if a saved selection has no overlap
+        // with this provider's library list, drop back to "no restriction"
+        // rather than rendering an entirely unchecked list.
+        let noRestriction = !hasSelection;
+        if (hasSelection) {
+            let anyMatch = false;
+            for (const lib of libraries) {
+                const n = (lib && lib.name) ? String(lib.name).toLowerCase() : '';
+                if (n && selectedLower.has(n)) { anyMatch = true; break; }
+            }
+            if (!anyMatch) noRestriction = true;
+        }
+
+        // --- "No restriction" pseudo-row ---
+        const noRow = document.createElement('label');
+        noRow.style.display = 'flex';
+        noRow.style.alignItems = 'center';
+        noRow.style.gap = '0.5rem';
+        noRow.style.fontWeight = '500';
+        const noCb = document.createElement('input');
+        noCb.type = 'checkbox';
+        noCb.id = 'mig-no-restriction';
+        noCb.checked = noRestriction;
+        noCb.addEventListener('change', onMigNoRestrictionChange);
+        noRow.appendChild(noCb);
+        noRow.appendChild(document.createTextNode(
+            'No restriction (scan all libraries, including ones added later)'));
+        list.appendChild(noRow);
+
         libraries.forEach(lib => {
             const name = (lib && lib.name) ? String(lib.name) : '';
             if (!name) return;
@@ -733,13 +780,14 @@
             row.style.fontWeight = '400';
             const cb = document.createElement('input');
             cb.type = 'checkbox';
-            cb.checked = selectedLower === null || selectedLower.has(name.toLowerCase());
+            cb.checked = noRestriction ? false : selectedLower.has(name.toLowerCase());
             cb.dataset.libraryName = name;
             cb.addEventListener('change', onMigLibraryChange);
             row.appendChild(cb);
             row.appendChild(document.createTextNode(name));
             list.appendChild(row);
         });
+        applyMigNoRestrictionState();
         $('mig-libraries-section').style.display = '';
         // No initial save: a fresh session has no selection (= "scan
         // everything"), and a resumed session's prior selection has already
@@ -747,14 +795,49 @@
         // toggle will write through the debounced path.
     }
 
+    function applyMigNoRestrictionState() {
+        // Disable per-library checkboxes whenever "No restriction" is on,
+        // mirroring the persisted semantic: empty selection = scan all.
+        const noCb = $('mig-no-restriction');
+        if (!noCb) return;
+        const disabled = !!noCb.checked;
+        const cbs = $('mig-libraries-list').querySelectorAll('input[type="checkbox"][data-library-name]');
+        cbs.forEach(cb => {
+            cb.disabled = disabled;
+            if (disabled) cb.checked = false;
+            if (cb.parentElement) cb.parentElement.style.opacity = disabled ? '0.5' : '1';
+        });
+    }
+
+    function onMigNoRestrictionChange() {
+        applyMigNoRestrictionState();
+        // No restriction ON → save empty selection (scan everything).
+        // No restriction OFF → save current per-library state (which is
+        // "all unchecked" right after the toggle); the user can then
+        // pick the libraries they want.
+        const noCb = $('mig-no-restriction');
+        if (noCb && noCb.checked) {
+            scheduleMigLibrariesSave(null);
+        } else {
+            // Defer save to the per-row handler logic to keep the empty/
+            // explicit decision in one place.
+            onMigLibraryChange();
+        }
+    }
+
     function onMigLibraryChange() {
-        const cbs = $('mig-libraries-list').querySelectorAll('input[type="checkbox"]');
-        const total = cbs.length;
+        const noCb = $('mig-no-restriction');
+        if (noCb && noCb.checked) {
+            // No restriction overrides any per-row state.
+            scheduleMigLibrariesSave(null);
+            return;
+        }
+        const cbs = $('mig-libraries-list').querySelectorAll('input[type="checkbox"][data-library-name]');
         let checked = [];
         cbs.forEach(cb => { if (cb.checked) checked.push(cb.dataset.libraryName); });
-        // All checked or none checked → null (= scan everything; refuses
-        // accidental "scan nothing").
-        if (checked.length === 0 || checked.length === total) {
+        // None checked while No-restriction is OFF → still null (= scan all).
+        // "Scan nothing" is a footgun; we refuse to persist that state.
+        if (checked.length === 0) {
             scheduleMigLibrariesSave(null);
         } else {
             scheduleMigLibrariesSave(checked);
@@ -1008,13 +1091,25 @@
     async function loadUnmatchedAlbums() {
         // Fetch the session state to get unmatched_albums
         const s = await jsonFetch("{{ url_for('migration_bp.session_get', session_id=0) }}".replace('/0', '/' + sessionId));
-        unmatchedAlbums = ((s.state.dry_run || {}).unmatched_albums || []).slice();
+        const dry = s.state.dry_run || {};
+        unmatchedAlbums = (dry.unmatched_albums || []).slice();
+        const totalUnmatchedAlbums = (typeof dry.unmatched_albums_total === 'number')
+            ? dry.unmatched_albums_total
+            : unmatchedAlbums.length;
         const list = $('mig-album-list');
         if (!unmatchedAlbums.length) {
             list.innerHTML = '<div class="mig-status" style="padding:0.75rem;">All tracks matched automatically — nothing to do in this step. Proceed to step 5.</div>';
             return;
         }
         list.innerHTML = '';
+        if (totalUnmatchedAlbums > unmatchedAlbums.length) {
+            const note = document.createElement('div');
+            note.className = 'mig-warning';
+            note.style.marginBottom = '0.5rem';
+            note.textContent = 'Too many unmatched albums (' + totalUnmatchedAlbums +
+                '), showing only first ' + unmatchedAlbums.length + ' as sample.';
+            list.appendChild(note);
+        }
         unmatchedAlbums.forEach((a, idx) => {
             const div = document.createElement('div');
             div.className = 'mig-album-item';
@@ -1069,8 +1164,8 @@
         list.innerHTML = '';
         if (!total) {
             const msg = tierFilter
-                ? 'No matched albums in this category.'
-                : 'No matched albums yet.';
+                ? 'No manually matched albums in this category.'
+                : 'No manually matched albums yet.';
             list.innerHTML = '<div class="mig-status" style="padding:0.75rem;">' + msg + '</div>';
         } else {
             slice.forEach(a => {
@@ -1208,13 +1303,13 @@
                 showSuccess($('mig-match-candidates'),
                     'Re-targeted ' + res.matched + ' tracks. ' +
                     res.unmatched + ' will be orphaned and deleted.');
-                await loadMatchedAlbums();
             } else {
                 markAlbumResolved(currentAlbumKey);
                 showSuccess($('mig-match-candidates'),
                     'Matched ' + res.matched + ' tracks. ' +
                     res.unmatched + ' tracks in this album will be deleted.');
             }
+            await loadMatchedAlbums();
         } catch (e) {
             showError($('mig-match-candidates'), e.message);
             rowEl.style.opacity = 1;
@@ -1286,7 +1381,7 @@
                 html += '<strong style="color:#a04000;">Heads up:</strong> ' + collisions + ' source track' + (collisions === 1 ? '' : 's') + ' ';
                 html += 'would have been rewritten to the same target as another track. ';
                 html += 'The database only allows one-to-one mappings, so these will be <strong>deleted</strong> on execute. ';
-                html += 'To fix: go back to <strong>Step 4</strong>, open <em>&ldquo;Show auto-matched albums&rdquo;</em>, ';
+                html += 'To fix: go back to <strong>Step 4</strong>, open <em>&ldquo;Show manually matched albums&rdquo;</em>, ';
                 html += 'find each album listed below, and re-target it so each source row maps to a unique target. ';
                 html += 'Then click Finalize again.';
                 html += '</div>';

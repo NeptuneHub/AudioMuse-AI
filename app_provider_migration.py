@@ -493,6 +493,9 @@ def dry_run():
         'match_tiers':       result['match_tiers'],
         'tier_counts':       result['tier_counts'],
         'unmatched_albums':  _albums_payload(result['unmatched_by_album']),
+        # Persist the full count so the wizard can warn the user when the
+        # rendered list is only a truncated sample.
+        'unmatched_albums_total': len(result['unmatched_by_album']),
     }
     # Also snapshot new track metadata keyed by new_id for the post-execute
     # score refresh (file_path, title, artist, album, year).
@@ -918,15 +921,17 @@ def matched_albums(session_id):
         new_id = merged.get(old_id)
         if new_id is None:
             continue
+        # Skip auto-matched rows entirely: the step-4 review list is meant
+        # for albums the user manually re-targeted. With huge libraries the
+        # auto-match list dominates and makes the UI unusable, but it has
+        # nothing to review.
+        if old_id not in manual_matches:
+            continue
         key = (r.get('album_artist') or r.get('author') or '', r.get('album') or '')
         g = groups.setdefault(key, {'count': 0, 'new_ids': [], 'tiers': []})
         g['count'] += 1
         g['new_ids'].append(new_id)
-        # Manual rematch wins over the original auto tier if the user changed it.
-        if old_id in manual_matches:
-            g['tiers'].append('manual')
-        else:
-            g['tiers'].append(match_tiers.get(old_id) or 'unknown')
+        g['tiers'].append('manual')
 
     albums = []
     for (old_artist, old_album), g in groups.items():
@@ -1036,11 +1041,26 @@ def _load_rows_for_album(album_key):
     return out
 
 
+# Hard cap on the number of unmatched albums returned to the wizard. The
+# value is read from ``config.MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT`` so
+# operators can tune it via env var or the setup wizard's DB-backed
+# overrides without touching this module. Callers that need the true
+# count should use ``len(unmatched_by_album)`` separately.
+
+
 def _albums_payload(unmatched_by_album):
     """Serialize ``{(album_artist, album): [rows]}`` into a JSON-safe list
-    suitable for the wizard UI."""
+    suitable for the wizard UI.
+
+    Truncated to ``config.MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT`` entries
+    to keep the persisted state and the step-4 review page bounded.
+    """
+    import config
+    limit = int(getattr(config, 'MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT', 200) or 200)
     out = []
     for key, rows in unmatched_by_album.items():
+        if len(out) >= limit:
+            break
         album_artist, album = key[0], key[1] if len(key) > 1 else None
         out.append({
             'album_artist': album_artist,
