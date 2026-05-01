@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -180,6 +181,14 @@ _axis_label_map: Optional[Dict] = None
 _axis_embeddings: Optional[Dict] = None
 _marian_cache: Dict[str, Tuple[object, object]] = {}
 _lyrics_device_cache: Optional[str] = None
+# Serialize model loads so concurrent callers (e.g. axis warm-up + a user
+# search request hitting the API at the same time) cannot observe a
+# half-initialized BERT model whose parameters are still on the ``meta``
+# device. ``transformers`` with ``accelerate`` installed initializes weights
+# lazily on ``meta`` and only materializes them at the end of
+# ``from_pretrained``; without a lock another thread can grab the partially
+# constructed module from the global cache.
+_embedding_load_lock = threading.Lock()
 
 
 def _resolve_lyrics_device() -> str:
@@ -290,26 +299,51 @@ def load_topic_embedding_model(model_name: Optional[str] = None):
         except Exception:
             model_name = 'intfloat/e5-base-v2'
 
+    # Fast path: already loaded.
     if (_embedding_tokenizer is not None
             and _embedding_model is not None
             and _embedding_model_name == model_name):
         return _embedding_tokenizer, _embedding_model
 
-    try:
-        from config import LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR
-        cache_dir = LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR
-    except Exception:
-        cache_dir = '/app/model/e5-base-v2'
+    with _embedding_load_lock:
+        # Re-check after acquiring the lock: another thread may have finished
+        # the load while we were waiting.
+        if (_embedding_tokenizer is not None
+                and _embedding_model is not None
+                and _embedding_model_name == model_name):
+            return _embedding_tokenizer, _embedding_model
 
-    target = cache_dir if os.path.isdir(cache_dir) else model_name
-    logger.info('Loading embedding model %s (offline)', target)
-    # e5 is bundled inside /app/model/e5-base-v2; force offline so a
-    # misconfigured network can never trigger a download for this required model.
-    _embedding_tokenizer = AutoTokenizer.from_pretrained(str(target), local_files_only=True)
-    _embedding_model = AutoModel.from_pretrained(str(target), local_files_only=True)
-    _embedding_model_name = model_name
-    logger.info('Embedding model ready')
-    return _embedding_tokenizer, _embedding_model
+        try:
+            from config import LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR
+            cache_dir = LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR
+        except Exception:
+            cache_dir = '/app/model/e5-base-v2'
+
+        target = cache_dir if os.path.isdir(cache_dir) else model_name
+        logger.info('Loading embedding model %s (offline)', target)
+        # e5 is bundled inside /app/model/e5-base-v2; force offline so a
+        # misconfigured network can never trigger a download for this required model.
+        # ``low_cpu_mem_usage=False`` disables ``accelerate``'s meta-device
+        # lazy init that previously caused ``Tensor on device cpu is not on
+        # the expected device meta!`` errors when the search endpoint was
+        # called before the model was fully materialized.
+        tokenizer = AutoTokenizer.from_pretrained(str(target), local_files_only=True)
+        model = AutoModel.from_pretrained(
+            str(target), local_files_only=True, low_cpu_mem_usage=False)
+        # Defensive: explicitly move to CPU and eval mode. ``to('cpu')`` is a
+        # no-op when weights are already there, but it materializes any
+        # parameter still on ``meta`` (older transformers fallback).
+        try:
+            if torch is not None:
+                model = model.to('cpu')
+            model.eval()
+        except Exception as exc:
+            logger.warning('Could not finalize embedding model state: %s', exc)
+        _embedding_tokenizer = tokenizer
+        _embedding_model = model
+        _embedding_model_name = model_name
+        logger.info('Embedding model ready')
+        return _embedding_tokenizer, _embedding_model
 
 
 def _get_axis_embeddings():
@@ -340,11 +374,23 @@ def embed_query_text(text: str) -> Optional[np.ndarray]:
 
     Returns a normalized float32 vector of shape (LYRICS_EMBEDDING_DIMENSION,)
     suitable for nearest-neighbor search against the lyrics voyager index.
+    Returns ``None`` if the model is not yet ready or the embedding pass
+    fails for any reason; callers should treat that as "index/cache not
+    ready, retry later" rather than as a fatal error.
     """
     if not text or not text.strip():
         return None
-    tokenizer, model = load_topic_embedding_model()
-    vec = _embed_text(text.strip(), tokenizer, model)
+    try:
+        tokenizer, model = load_topic_embedding_model()
+    except Exception as exc:
+        logger.warning('Embedding model not ready (%s); returning no query vector',
+                       exc)
+        return None
+    try:
+        vec = _embed_text(text.strip(), tokenizer, model)
+    except Exception as exc:
+        logger.warning('Embedding pass failed for query %r: %s', text, exc)
+        return None
     if vec is None:
         return None
     return vec.astype(np.float32, copy=False)

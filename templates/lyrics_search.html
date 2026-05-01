@@ -95,7 +95,7 @@
         min-height: 1.6em;
     }
 
-    #search-form button, #axis-form button {
+    #search-form button, #axis-form button, #playlist-form button {
         width: 100%;
         padding: 0.75rem 1.5rem;
         font-size: 1rem;
@@ -107,10 +107,10 @@
         cursor: pointer;
         transition: background-color 0.2s;
     }
-    #search-form button:hover, #axis-form button:hover {
+    #search-form button:hover, #axis-form button:hover, #playlist-form button:hover {
         background-color: var(--color-primary-hover);
     }
-    #search-form button:disabled, #axis-form button:disabled {
+    #search-form button:disabled, #axis-form button:disabled, #playlist-form button:disabled {
         background-color: var(--text-muted);
         cursor: not-allowed;
     }
@@ -150,14 +150,24 @@
         border-radius: 8px;
         margin-top: 1rem;
     }
+
+    .axes-intro {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+        font-size: 0.95rem;
+        color: var(--text-muted);
+    }
+    .axes-intro-text { font-style: italic; }
 </style>
 {% endblock %}
 
 {% block content %}
 <section>
     <header class="page-header">
-        <h1>AudioMuse-AI - Lyrics Search</h1>
-        <p>Find songs by lyrical content. Use the axis sliders for thematic profiles, or type a free-form description.</p>
+        <h1>AudioMuse-AI - Lyrics Semantic Search</h1>
+        <p>Find songs by meaning. This focuses on the lyrics rather than on the groove of the song.</p>
     </header>
 
     {% if not lyrics_enabled %}
@@ -191,10 +201,17 @@
         <!-- Axis tab -->
         <div class="tab-pane active" id="tab-axes">
             <form id="axis-form">
+                <div class="axes-intro">
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Pick one value for one or more axes to compose your search. Each axis describes a different facet of the lyrics (setting, mood, narrative, ...). Leave an axis on “— None —” to ignore it. The more axes you set, the more specific the search.</span>
+                    </span>
+                    <span class="axes-intro-text">Select one value for one or more axes to compose your search.</span>
+                </div>
                 <div id="axes-container" class="axes-grid">
                     {% for axis_name, axis_meta in axes.items() %}
                     <div class="axis-block" data-axis="{{ axis_name }}">
-                        <h3>{{ axis_name }}</h3>
+                        <h3>{{ axis_name.split('_')[2:] | join(' ') | title }}</h3>
                         <p class="axis-desc">{{ axis_meta.description }}</p>
                         <select name="axis-{{ axis_name }}" data-axis="{{ axis_name }}">
                             <option value="" data-desc="">— None —</option>
@@ -208,7 +225,13 @@
                 </div>
 
                 <div class="param-group">
-                    <label for="axis-limit">Number of results:</label>
+                    <label for="axis-limit" class="label-with-tooltip">
+                        Number of results:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">How many songs to return. Higher numbers give more variety but include less-relevant matches. Try 50 for a full playlist or 10–20 for a tight selection.</span>
+                        </span>
+                    </label>
                     <input type="number" id="axis-limit" name="limit" value="50" min="1" max="500">
                 </div>
                 <button type="submit" {% if not cache_stats.axis_loaded %}disabled{% endif %}>
@@ -221,14 +244,26 @@
         <div class="tab-pane" id="tab-text">
             <form id="search-form">
                 <div class="param-group">
-                    <label for="search-query">Search Query:</label>
+                    <label for="search-query" class="label-with-tooltip">
+                        Search Query:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Type a free-form description of the lyrics you’re looking for. The search is semantic: matches are based on <em>meaning</em>, not exact words. “Songs about heartbreak in the city at night” will surface tracks even if those words never appear in their lyrics.</span>
+                        </span>
+                    </label>
                     <input type="text" id="search-query" name="query" class="search-box"
-                           placeholder="e.g., songs about heartbreak in the city at night"
+                           placeholder="e.g., love"
                            autocomplete="off" required
                            {% if not cache_stats.index_loaded %}disabled{% endif %}>
                 </div>
                 <div class="param-group">
-                    <label for="text-limit">Number of results:</label>
+                    <label for="text-limit" class="label-with-tooltip">
+                        Number of results:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">How many songs to return. Higher numbers give more variety but include less-relevant matches. Try 50 for a full playlist or 10–20 for a tight selection.</span>
+                        </span>
+                    </label>
                     <input type="number" id="text-limit" name="limit" value="50" min="1" max="500">
                 </div>
                 <button type="submit" {% if not cache_stats.index_loaded %}disabled{% endif %}>
