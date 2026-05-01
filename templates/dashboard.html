@@ -456,8 +456,8 @@
         const totalSongs = c.total_songs || 0;
         const musicnnIndexed = c.musicnn_indexed || 0;
         const clapIndexed = c.clap_indexed || 0;
-        const songIdxPct = totalSongs > 0 ? Math.round(100 * musicnnIndexed / totalSongs) : 0;
-        const clapPct = totalSongs > 0 ? Math.round(100 * clapIndexed / totalSongs) : 0;
+        const songIdxPct = totalSongs > 0 ? (100 * musicnnIndexed / totalSongs).toFixed(1) : '0.0';
+        const clapPct = totalSongs > 0 ? (100 * clapIndexed / totalSongs).toFixed(1) : '0.0';
         const totalArtists = c.distinct_artists || 0;
         const gmmIndexed = c.gmm_indexed || 0;
         const gmmPct = totalArtists > 0 ? Math.round(100 * gmmIndexed / totalArtists) : 0;

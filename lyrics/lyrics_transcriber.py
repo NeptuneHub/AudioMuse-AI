@@ -554,35 +554,11 @@ def _strip_lrc_timestamps(text: str) -> str:
 
 
 def _fetch_from_lrclib(artist: str, track: str, timeout: float) -> Optional[str]:
-    import requests
-    r = requests.get(
-        'https://lrclib.net/api/get',
-        params={'artist_name': artist, 'track_name': track},
-        timeout=timeout,
-        headers={'User-Agent': 'AudioMuse-AI/1.0'},
-    )
-    if not r.ok:
-        return None
-    data = r.json() or {}
-    plain = (data.get('plainLyrics') or '').strip()
-    if plain:
-        return plain
-    synced = (data.get('syncedLyrics') or '').strip()
-    if synced:
-        return _strip_lrc_timestamps(synced) or None
     return None
 
 
 def _fetch_from_lyrics_ovh(artist: str, track: str, timeout: float) -> Optional[str]:
-    import requests
-    from urllib.parse import quote
-    url = f'https://api.lyrics.ovh/v1/{quote(artist)}/{quote(track)}'
-    r = requests.get(url, timeout=timeout, headers={'User-Agent': 'AudioMuse-AI/1.0'})
-    if not r.ok:
-        return None
-    data = r.json() or {}
-    text = (data.get('lyrics') or '').strip()
-    return text or None
+    return None
 
 
 def fetch_remote_lyrics(artist: Optional[str], track: Optional[str],

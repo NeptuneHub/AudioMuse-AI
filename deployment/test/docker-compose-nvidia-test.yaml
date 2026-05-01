@@ -24,7 +24,7 @@ services:
   audiomuse-ai-flask:
     container_name: audiomuse-nvidia-test-flask
     build:
-      context: ..
+      context: ../..
       dockerfile: Dockerfile
       args:
         BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
@@ -58,8 +58,7 @@ services:
   audiomuse-ai-worker:
     container_name: audiomuse-nvidia-test-worker
     build:
-      context: ..
-      dockerfile: Dockerfile
+      context: ../..
       args:
         BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
     image: audiomuse-ai-local-nvidia-worker:latest
