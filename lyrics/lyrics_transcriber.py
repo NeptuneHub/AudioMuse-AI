@@ -1026,6 +1026,9 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         logger.info('STEP 2 end: transcript length=%s chars / %s words',
                     len(raw_text), len(raw_text.split()))
         logger.info('STEP 2 raw whisper output: %s', raw_text or '<empty>')
+        if len(raw_text.split()) < MIN_WORDS_FOR_CLEANUP:
+            logger.info('STEP 2 word count below %s — skipping STEPS 3-5', MIN_WORDS_FOR_CLEANUP)
+            raw_text = ''
 
     # ---- STEP 3: language detection ----
     logger.info('STEP 3 start: language detection')
