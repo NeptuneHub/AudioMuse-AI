@@ -598,6 +598,7 @@
 {% endblock %}
 
 {% block bodyAdditions %}
+<span id="mig-server-data" data-resume-session-id="{{ active_session_id or 0 }}" hidden></span>
 <script>
 (function() {
     // ---------- State ----------
@@ -1536,7 +1537,7 @@
     // Credentials are never sent back to the browser — they live in the DB
     // and the server uses them via session_id. We only re-show target_type
     // and jump the wizard to whichever step matches the persisted state.
-    const resumeSessionId = {{ (active_session_id or 0)|tojson }};
+    const resumeSessionId = parseInt(document.getElementById('mig-server-data').dataset.resumeSessionId, 10) || 0;
     async function resumeSession(sid) {
         try {
             const s = await jsonFetch(

@@ -19,6 +19,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
+import signal
 import tempfile
 import threading
 from pathlib import Path
@@ -554,35 +556,11 @@ def _strip_lrc_timestamps(text: str) -> str:
 
 
 def _fetch_from_lrclib(artist: str, track: str, timeout: float) -> Optional[str]:
-    import requests
-    r = requests.get(
-        'https://lrclib.net/api/get',
-        params={'artist_name': artist, 'track_name': track},
-        timeout=timeout,
-        headers={'User-Agent': 'AudioMuse-AI/1.0'},
-    )
-    if not r.ok:
-        return None
-    data = r.json() or {}
-    plain = (data.get('plainLyrics') or '').strip()
-    if plain:
-        return plain
-    synced = (data.get('syncedLyrics') or '').strip()
-    if synced:
-        return _strip_lrc_timestamps(synced) or None
     return None
 
 
 def _fetch_from_lyrics_ovh(artist: str, track: str, timeout: float) -> Optional[str]:
-    import requests
-    from urllib.parse import quote
-    url = f'https://api.lyrics.ovh/v1/{quote(artist)}/{quote(track)}'
-    r = requests.get(url, timeout=timeout, headers={'User-Agent': 'AudioMuse-AI/1.0'})
-    if not r.ok:
-        return None
-    data = r.json() or {}
-    text = (data.get('lyrics') or '').strip()
-    return text or None
+    return None
 
 
 def fetch_remote_lyrics(artist: Optional[str], track: Optional[str],
@@ -629,12 +607,39 @@ def fetch_remote_lyrics(artist: Optional[str], track: Optional[str],
 # ---------------------------------------------------------------------------
 
 _vad_model = None
+_VAD_CACHE_DIR = os.path.join(tempfile.gettempdir(), 'audiomuse-vad-cache')
 
 
 def _get_vad_model():
     global _vad_model
     if _vad_model is None and load_silero_vad is not None:
-        _vad_model = load_silero_vad()
+        # Ensure our private /tmp cache dir exists
+        try:
+            os.makedirs(_VAD_CACHE_DIR, exist_ok=True)
+        except Exception as exc:
+            logger.warning('VAD: could not create cache dir %s: %s', _VAD_CACHE_DIR, exc)
+        # Disable XetHub CDN (same fix as Marian translator) before any download
+        os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
+        os.environ.setdefault('HF_XET_DISABLE', '1')
+        # Point torch.hub to our writable /tmp dir
+        _prev_hub_dir = torch.hub.get_dir() if torch is not None else None
+        if torch is not None:
+            torch.hub.set_dir(_VAD_CACHE_DIR)
+        logger.info('VAD: loading silero from %s', _VAD_CACHE_DIR)
+        try:
+            _vad_model = load_silero_vad()
+        except Exception as exc:
+            logger.warning('VAD model load failed (%s); cleaning up %s', exc, _VAD_CACHE_DIR)
+            try:
+                shutil.rmtree(_VAD_CACHE_DIR, ignore_errors=True)  # shutil imported at module level
+                logger.info('VAD: deleted stale cache dir %s', _VAD_CACHE_DIR)
+            except Exception as cleanup_exc:
+                logger.warning('VAD cache cleanup failed: %s', cleanup_exc)
+            logger.warning('VAD disabled for this process — cache cleaned, will retry on next worker start')
+        finally:
+            # Restore the original torch.hub dir
+            if torch is not None and _prev_hub_dir is not None:
+                torch.hub.set_dir(_prev_hub_dir)
     return _vad_model
 
 
@@ -776,7 +781,12 @@ def _get_marian(source_lang: str):
         tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name, cache_dir=cache_dir)
     except Exception as exc:
-        logger.warning('Could not load Marian model %s: %s', model_name, exc)
+        logger.warning('Could not load Marian model %s: %s; cleaning up cache dir %s', model_name, exc, cache_dir)
+        try:
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            logger.info('Marian: deleted stale cache dir %s', cache_dir)
+        except Exception as cleanup_exc:
+            logger.warning('Marian cache cleanup failed: %s', cleanup_exc)
         return None, None
     _marian_cache[source_lang] = (tokenizer, model)
     return tokenizer, model
@@ -1020,14 +1030,38 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                         pre_vad_samples / sr, len(audio_clip) / sr)
 
         # ---- STEP 2: whisper transcription ----
-        logger.info('STEP 2 start: whisper transcription (threads=%s)', threads)
+        _WHISPER_TIMEOUT_S = 300  # 5 minutes
+        logger.info('STEP 2 start: whisper transcription (threads=%s, timeout=%ss)', threads, _WHISPER_TIMEOUT_S)
         whisper_model = load_whisper_model(num_threads=threads)
-        transcription = _transcribe(audio_clip, sr, whisper_model)
+
+        class _WhisperTimeout(Exception):
+            pass
+
+        def _alarm_handler(signum, frame):
+            raise _WhisperTimeout()
+
+        _old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+        signal.alarm(_WHISPER_TIMEOUT_S)
+        try:
+            transcription = _transcribe(audio_clip, sr, whisper_model)
+        except _WhisperTimeout:
+            logger.warning(
+                'STEP 2 timeout: Whisper exceeded %ss — returning empty transcript',
+                _WHISPER_TIMEOUT_S,
+            )
+            transcription = {'text': '', 'language': 'en', 'duration': len(audio_clip) / sr}
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, _old_handler)
+
         raw_text = _sanitize_lyrics_text((transcription.get('text') or '').strip())
         detected_lang = transcription.get('language') or 'en'
         logger.info('STEP 2 end: transcript length=%s chars / %s words',
                     len(raw_text), len(raw_text.split()))
         logger.info('STEP 2 raw whisper output: %s', raw_text or '<empty>')
+        if len(raw_text.split()) < MIN_WORDS_FOR_CLEANUP:
+            logger.info('STEP 2 word count below %s — skipping STEPS 3-5', MIN_WORDS_FOR_CLEANUP)
+            raw_text = ''
 
     # ---- STEP 3: language detection ----
     logger.info('STEP 3 start: language detection')
