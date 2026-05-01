@@ -46,11 +46,11 @@ argon2-cffi==25.1.0
 mistralai>=1.11.1,<2.0.0
 
 # Lyrics integration test dependencies (versions aligned with requirements/common.txt).
-# torch is pulled in transitively by openai-whisper. We install the CPU-only build
-# from PyPI defaults; if you need a smaller wheel for local Linux/Windows installs,
-# use `pip install --extra-index-url https://download.pytorch.org/whl/cpu torch==2.6.0+cpu`
-# before installing this requirements file.
-openai-whisper==20250625
+# The lyrics integration test does NOT use whisper or audio decoding: it feeds
+# a hand-written English text directly into the e5 embedding + axis-scoring
+# pipeline by mocking the external lyrics API. So we only need transformers +
+# torch (CPU). langdetect is required because the pipeline still runs the
+# language-detection step on the fake lyrics.
 langdetect==1.0.9
 torch==2.6.0
 

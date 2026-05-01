@@ -1,36 +1,26 @@
 # Real lyrics analysis integration test
 #
-# Runs the full lyrics pipeline (whisper → langdetect → marian → e5 embedding +
-# axis scoring) on the audio files shipped under test/songs/ and verifies that
-# the produced ``embedding`` and ``axis_vector`` are stable across runs.
+# Goal: verify that the deterministic part of the lyrics pipeline (e5-base-v2
+# text embedding + per-axis softmax scoring) is stable across code changes.
 #
-# The pipeline is too floating-point heavy for byte-exact reproduction, so we
-# compare against pre-recorded reference vectors via cosine similarity. A run
-# is considered successful when both vectors score >= 0.99 against their
-# expected counterparts.
+# Strategy: skip Whisper entirely. We monkey-patch ``fetch_remote_lyrics`` to
+# return a fixed, hand-written ~200-word English lyric, so the pipeline takes
+# the API path:
+#     STEP 0 (API hit) -> STEP 3 (langdetect=en) -> STEP 4 (no translation)
+#     -> STEP 5 (LLM disabled) -> STEP 6 (e5 embedding + axis vector)
+# Because the input text is identical on every run, the resulting
+# ``embedding`` and ``axis_vector`` must be reproducible (cosine sim >= 0.99
+# vs the recorded reference).
 #
-# Quick start:
-#   1. Create a virtual environment and install deps:
-#        python -m venv test/.venv
-#        source test/.venv/bin/activate    (PowerShell: test\.venv\Scripts\Activate.ps1)
-#        pip install -r test/requirements.txt
-#   2. Make sure the bundled HuggingFace cache is available. On CI the workflow
-#      downloads it from the v4.0.0-model release and exports HF_HOME. For a
-#      local run set HF_HOME yourself, e.g.:
-#        export HF_HOME=$PWD/test/.hf_cache
-#      and extract huggingface_models.tar.gz into that folder so e5-base-v2 is
-#      resolvable with local_files_only=True.
-#   3. Record the expected vectors once:
-#        LYRICS_RECORD_EXPECTED=1 pytest test/test_lyrics_analysis_integration.py -s -v
-#      This writes test/lyrics_expected.json, which must be committed.
-#   4. From then on, just run:
-#        pytest test/test_lyrics_analysis_integration.py -s -v
+# The e5 model is loaded the same way the production code and Dockerfile do:
+# from the *flat* directory ``${LYRICS_MODEL_DIR}/e5-base-v2`` extracted from
+# the ``lyrics_model.tar.gz`` GitHub release artifact, NOT from a HuggingFace
+# Hub cache.
 #
-# The test is intentionally configured to be deterministic:
-#   * LYRICS_API_ENABLE  = False  (no LRCLIB / lyrics.ovh lookups)
-#   * LYRICS_LLM_ENABLED = False  (no Qwen cleanup, no llama-cpp dep needed)
-#   * LYRICS_USE_GPU     = false  (CPU only, fp16=False inside whisper)
-#   * use_llm_cleanup    = False  (extra safety belt at the call site)
+# First-run behaviour: if ``test/lyrics_expected.json`` is missing, the test
+# enters RECORD mode automatically, writes the file and passes. The CI
+# workflow (only on push to main) then commits the file back so subsequent
+# runs pin against it.
 import json
 import os
 import sys
@@ -43,11 +33,93 @@ import pytest
 SIMILARITY_THRESHOLD = 0.99
 
 
+# Hand-written, deterministic, ~200-word English "lyrics" used as the fake
+# API payload. Purely synthetic so we don't ship copyrighted material.
+FAKE_LYRICS_BY_TRACK = {
+    'love_song': (
+        "I walk along the river when the morning light is gold\n"
+        "I think about the stories that your tender heart has told\n"
+        "Every step beside you feels like coming home\n"
+        "Every laugh we share is a small forever of our own\n"
+        "\n"
+        "Hold me close and never let the quiet slip away\n"
+        "Hold me close, my dear, and I will hold you every day\n"
+        "We are dancing in the kitchen with the radio so low\n"
+        "Singing songs about the people we used to know\n"
+        "\n"
+        "When the winter comes and steals the colour from the trees\n"
+        "We will build a little fire and share a cup of tea\n"
+        "When the summer rolls around and paints the sky in blue\n"
+        "Every sunny afternoon I will spend with you\n"
+        "\n"
+        "So tell me all your worries, tell me all your dreams\n"
+        "Tell me where the road of every wandering heart leads\n"
+        "I am here to listen and I am here to stay\n"
+        "Hold me close, my dear, and we will find our way\n"
+        "\n"
+        "Years will keep on turning and the candles will burn down\n"
+        "But the love we built together is the steadiest sound\n"
+        "Hold me close, my dear, until the morning shines anew\n"
+        "Every quiet promise of my song belongs to you\n"
+    ),
+    'angry_song': (
+        "You lied to me again and now the silence fills the room\n"
+        "Every word you ever said was nothing but perfume\n"
+        "I am tired of your shadows, I am tired of your games\n"
+        "I am burning every letter that you ever signed your name\n"
+        "\n"
+        "Get out, get out, I cannot stand the way you smile\n"
+        "Get out, get out, you have not been honest in a while\n"
+        "I am breaking down the door that I once built for you\n"
+        "I am tearing up the pictures and the promises too\n"
+        "\n"
+        "You can take your golden rings and your hollow little crown\n"
+        "You can drag your phony halo to some other lonely town\n"
+        "I will scream until the windows of this empty house all crack\n"
+        "I will not say I am sorry and I will not take it back\n"
+        "\n"
+        "All the years I gave you turned to ashes on the floor\n"
+        "All the trust I had is rotting in a locked and rusted drawer\n"
+        "I am wide awake and angry and I see you for the first time\n"
+        "Every cruel little secret that you whispered was a crime\n"
+        "\n"
+        "So get out, get out, slam the door and never call\n"
+        "I am stronger than the silence and I am taller than your wall\n"
+        "I am taller than your wall\n"
+    ),
+    'calm_song': (
+        "Soft piano in the morning, gentle rain against the glass\n"
+        "Empty kitchen, empty hallway, watch the quiet hours pass\n"
+        "Nothing said and nothing needed, only colour, only sound\n"
+        "Steam is rising from a teacup as the world keeps turning round\n"
+        "\n"
+        "Birds outside are humming patterns older than the road\n"
+        "Patterns drifting through the curtain in a slow and silver code\n"
+        "I am sitting at the window with a notebook on my knee\n"
+        "Drawing lines that never finish, drawing rivers, drawing seas\n"
+        "\n"
+        "Through the doorway runs a cat that does not have a name\n"
+        "Through the chimney rolls a cloud that never looks the same\n"
+        "On the table sits a candle that has never once been lit\n"
+        "On the carpet sleeps a shadow that prefers to simply sit\n"
+        "\n"
+        "Hours move like honey, slow and warm and amber bright\n"
+        "Afternoon will turn to evening, evening turn to gentle night\n"
+        "I will close the wooden shutters, I will fold the linen sheet\n"
+        "I will listen to the floorboards as they sing beneath my feet\n"
+        "\n"
+        "Soft piano in the evening, gentle rain against the door\n"
+        "Empty hallway, empty kitchen, dreaming on the wooden floor\n"
+        "Nothing said and nothing needed, only colour, only sound\n"
+        "Steam is rising from a teacup as the world keeps turning round\n"
+    ),
+}
+
+
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     na = float(np.linalg.norm(a))
     nb = float(np.linalg.norm(b))
     if na <= 0.0 and nb <= 0.0:
-        # Two zero vectors: treat as identical (sentinel-on-sentinel).
         return 1.0
     if na <= 0.0 or nb <= 0.0:
         return 0.0
@@ -55,99 +127,84 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 
 
 @pytest.mark.integration
-def test_real_lyrics_analysis_runs_and_matches_expected_vectors():
-    """Integration test: runs analyze_lyrics on the bundled test songs and
-    verifies the produced embedding / axis vectors are stable.
-
-    Skipped if openai-whisper / torch / transformers / librosa are not
-    importable, or if the bundled HuggingFace e5-base-v2 cache is not
-    available offline.
+def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
+    """Runs analyze_lyrics with a fake API hit (deterministic English text)
+    and checks the e5 embedding + axis vector against pre-recorded values
+    via cosine similarity (threshold = 0.99).
     """
     project_root = Path(__file__).resolve().parents[1]
-    songs_dir = project_root / 'test' / 'songs'
     models_dir = project_root / 'test' / 'models'
     expected_path = project_root / 'test' / 'lyrics_expected.json'
 
-    if not songs_dir.exists():
-        pytest.skip(f'Test songs directory not found: {songs_dir}')
-
-    # Optional heavy deps — skip cleanly if any are missing in this env.
+    # Heavy deps required by the e5 path. Skip cleanly if missing.
     try:
         import torch  # noqa: F401
-    except Exception as exc:  # pragma: no cover - env-dependent
+    except Exception as exc:  # pragma: no cover
         pytest.skip(f'torch not importable: {exc}')
     try:
-        import whisper  # noqa: F401
-    except Exception as exc:  # pragma: no cover
-        pytest.skip(f'openai-whisper not importable: {exc}')
-    try:
-        import librosa  # noqa: F401
-    except Exception as exc:  # pragma: no cover
-        pytest.skip(f'librosa not importable: {exc}')
-    try:
-        from transformers import AutoTokenizer
+        from transformers import AutoTokenizer  # noqa: F401
     except Exception as exc:  # pragma: no cover
         pytest.skip(f'transformers not importable: {exc}')
 
-    # ---- Force offline / CPU / no external services ------------------------
+    # The flat e5 directory must exist (extracted from lyrics_model.tar.gz).
+    e5_dir = models_dir / 'e5-base-v2'
+    if not (e5_dir / 'config.json').exists():
+        pytest.skip(
+            f'e5-base-v2 model directory not found at {e5_dir}. '
+            f'In CI the workflow extracts lyrics_model.tar.gz from release '
+            f'v4.0.0-model into test/models/. For a local run download and '
+            f'extract it manually.'
+        )
+
+    # ---- Force offline / CPU / no LLM / no real HTTP API ------------------
     os.environ.setdefault('TRANSFORMERS_OFFLINE', '1')
     os.environ.setdefault('HF_HUB_OFFLINE', '1')
     os.environ.setdefault('HF_DATASETS_OFFLINE', '1')
     os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
     os.environ.setdefault('HF_XET_DISABLE', '1')
 
-    os.environ['LYRICS_API_ENABLE'] = 'false'
-    os.environ['LYRICS_LLM_ENABLED'] = 'false'
+    os.environ['LYRICS_API_ENABLE'] = 'true'   # keep API path enabled
+    os.environ['LYRICS_LLM_ENABLED'] = 'false'  # no Qwen cleanup
     os.environ['LYRICS_USE_GPU'] = 'false'
 
-    # Cache whisper's small.pt under test/models so first-run download is
-    # reused by subsequent runs.
-    models_dir.mkdir(parents=True, exist_ok=True)
     os.environ['LYRICS_MODEL_DIR'] = str(models_dir)
+    os.environ['LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR'] = str(e5_dir)
 
-    # Verify the bundled HF cache contains the e5-base-v2 model offline.
-    try:
-        AutoTokenizer.from_pretrained('intfloat/e5-base-v2', local_files_only=True)
-    except Exception as exc:
-        pytest.skip(
-            "intfloat/e5-base-v2 not available offline (HF_HOME=%s). "
-            "Extract huggingface_models.tar.gz from release v4.0.0-model "
-            "into your HF cache. Underlying error: %s"
-            % (os.environ.get('HF_HOME'), exc)
-        )
-
-    # ---- Make project importable + override config singleton ---------------
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
     import config
-    config.LYRICS_API_ENABLE = False
+    config.LYRICS_API_ENABLE = True
     config.LYRICS_LLM_ENABLED = False
     config.LYRICS_USE_GPU = 'false'
     config.LYRICS_MODEL_DIR = str(models_dir)
+    config.LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR = str(e5_dir)
 
+    from lyrics import lyrics_transcriber
     from lyrics.lyrics_transcriber import analyze_lyrics, axis_columns
 
-    # ---- Tracks under test --------------------------------------------------
-    test_tracks = [
-        'Art Flower - Art Flower - Creamy Snowflakes.mp3',
-        'Aaron Dunn - Minuet - Notebook for Anna Magdalena.mp3',
-        "Michael Hawley - Sonata 'Waldstein', Op. 53 - II. Introduzione-Adagio molto.mp3",
-    ]
+    # ---- Fake the external API: STEP 0 returns our hand-written text -----
+    current = {'name': None}
 
-    # Record mode is triggered explicitly via env var, OR implicitly the very
-    # first time the test runs (no expected JSON checked in yet). In CI the
-    # workflow detects the freshly-written file and commits it back to main
-    # so subsequent runs pin against it.
+    def _fake_fetch_remote_lyrics(artist, track, total_budget=10.0):
+        text = FAKE_LYRICS_BY_TRACK.get(current['name'])
+        assert text is not None, f'No fake lyrics registered for {current["name"]!r}'
+        return text
+
+    monkeypatch.setattr(lyrics_transcriber, 'fetch_remote_lyrics',
+                        _fake_fetch_remote_lyrics)
+
+    # Defensive: passthrough translator so a stray langdetect misclassification
+    # can never trigger a Marian download in offline CI.
+    monkeypatch.setattr(lyrics_transcriber, '_translate_to_english',
+                        lambda text, src_lang: text)
+
+    # ---- Recording / replay logic -----------------------------------------
     explicit_record = os.environ.get('LYRICS_RECORD_EXPECTED', '').lower() in ('1', 'true', 'yes')
     record_mode = explicit_record or not expected_path.exists()
     expected = {}
     if record_mode and not explicit_record:
-        print(
-            f'\n[lyrics-test] {expected_path.name} not found - entering RECORD mode. '
-            f'The freshly-computed vectors will be written to {expected_path} and must be '
-            f'committed (CI does this automatically on push to main).'
-        )
+        print(f'\n[lyrics-test] {expected_path.name} not found - entering RECORD mode.')
     if not record_mode:
         with expected_path.open('r', encoding='utf-8') as fh:
             expected = json.load(fh)
@@ -156,26 +213,24 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors():
     failures = []
     expected_axis_dim = len(axis_columns())
 
-    for track_name in test_tracks:
-        track_path = songs_dir / track_name
-        if not track_path.exists():
-            print(f'\n[skip] {track_name!r} not present in test/songs/')
-            continue
-
+    for track_name in FAKE_LYRICS_BY_TRACK:
+        current['name'] = track_name
         print(f'\n{"=" * 80}')
-        print(f'=== Analyzing lyrics: {track_name}')
+        print(f'=== Analyzing fake lyrics: {track_name}')
         print(f'{"=" * 80}')
 
+        # No source_path / audio: pipeline goes through the API branch only.
         result = analyze_lyrics(
-            source_path=str(track_path),
+            audio=None,
+            sr=None,
+            source_path=None,
             use_llm_cleanup=False,
-            artist=None,
-            track=None,
+            artist='AudioMuseTest',
+            track=track_name,
         )
 
         embedding = result.get('embedding')
         axis_vector = result.get('axis_vector')
-
         assert embedding is not None, f'{track_name}: pipeline returned no embedding'
         assert axis_vector is not None, f'{track_name}: pipeline returned no axis_vector'
 

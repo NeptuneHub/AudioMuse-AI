@@ -79,21 +79,32 @@ jobs:
         # Expose HF_HOME to subsequent steps so transformers resolves the cache offline.
         echo "HF_HOME=$hf_cache_dir" >> "$GITHUB_ENV"
 
-    - name: Download Whisper small.pt model
+    - name: Download lyrics model bundle (release v4.0.0-model)
       run: |
-        # Pre-cache the openai-whisper "small" checkpoint so the lyrics
-        # integration test does not have to hit the OpenAI CDN every run.
-        # The checkpoint URL is the public one used internally by
-        # openai-whisper's _MODELS table for "small".
-        whisper_url="https://openaipublic.azureedge.net/main/whisper/models/9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794/small.pt"
+        # The Dockerfile downloads lyrics_model.tar.gz from the v4.0.0-model
+        # release and extracts its contents flat into /app/model/. The lyrics
+        # transcriber then loads e5-base-v2 from
+        # ${LYRICS_MODEL_DIR}/e5-base-v2/ (NOT from a HF Hub cache).
+        # We mirror that layout under test/models/.
+        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"
         mkdir -p test/models
-        if [ ! -f test/models/small.pt ]; then
-          echo "Downloading whisper small.pt (~466MB)..."
-          curl -L "$whisper_url" -o "test/models/small.pt"
+        if [ ! -d test/models/e5-base-v2 ]; then
+          echo "Downloading lyrics_model.tar.gz..."
+          curl -L "${base_url}/lyrics_model.tar.gz" -o /tmp/lyrics_model.tar.gz
+          rm -rf /tmp/lyrics_unpack
+          mkdir -p /tmp/lyrics_unpack
+          tar -xzf /tmp/lyrics_model.tar.gz -C /tmp/lyrics_unpack
+          if [ -d /tmp/lyrics_unpack/lyrics_model ]; then
+            cp -r /tmp/lyrics_unpack/lyrics_model/* test/models/
+          else
+            cp -r /tmp/lyrics_unpack/* test/models/
+          fi
+          rm -rf /tmp/lyrics_unpack /tmp/lyrics_model.tar.gz
         fi
-        ls -lh test/models/small.pt
-        # Expose to the lyrics test (it sets LYRICS_MODEL_DIR itself, but
-        # exporting here ensures any other consumer sees the same path).
+        echo "test/models/ after extraction:"
+        ls -la test/models/
+        echo "e5-base-v2/ contents:"
+        ls -la test/models/e5-base-v2/ || true
         echo "LYRICS_MODEL_DIR=${GITHUB_WORKSPACE}/test/models" >> "$GITHUB_ENV"
 
     - name: Verify test files exist
