@@ -45,6 +45,15 @@ google-genai==1.57.0
 argon2-cffi==25.1.0
 mistralai>=1.11.1,<2.0.0
 
+# Lyrics integration test dependencies (versions aligned with requirements/common.txt).
+# torch is pulled in transitively by openai-whisper. We install the CPU-only build
+# from PyPI defaults; if you need a smaller wheel for local Linux/Windows installs,
+# use `pip install --extra-index-url https://download.pytorch.org/whl/cpu torch==2.6.0+cpu`
+# before installing this requirements file.
+openai-whisper==20250625
+langdetect==1.0.9
+torch==2.6.0
+
 # Notes:
 # - ffmpeg (system binary) is NOT included here — keep pydub/ffmpeg calls stubbed or
 #   install ffmpeg separately on your machine if you want full fallback behavior.
