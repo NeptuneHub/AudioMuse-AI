@@ -8,6 +8,17 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # Signal to app.py that we are an RQ worker, so it should skip index loading and background threads
 os.environ['AUDIOMUSE_ROLE'] = 'worker'
 
+# Cap thread pools used by ML/numeric libraries (numpy/OpenBLAS/MKL/OMP) BEFORE
+# any of them get imported. This worker is the LIGHT scheduler ('high' queue),
+# but it still imports numpy via app_helper and forks children per job — without
+# this cap libgomp/OpenBLAS default to all CPUs and forked children spin
+# libgomp wait-loops at 100% CPU. Use cpu_count // 3 with floor 1.
+_cpu_count = os.cpu_count() or 1
+_max_threads = max(1, _cpu_count // 3)
+for _env_key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+    os.environ[_env_key] = str(_max_threads)
+print(f"High-priority worker CPU thread cap = {_max_threads} (cpu_count // 3, min 1)")
+
 from rq import Worker
 
 try:

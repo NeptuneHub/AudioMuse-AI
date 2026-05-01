@@ -93,7 +93,7 @@ def _get_jwt_secret():
 @app.context_processor
 def inject_globals():
     """Injects global variables into all templates."""
-    from config import CLAP_ENABLED, MULAN_ENABLED
+    from config import CLAP_ENABLED, MULAN_ENABLED, LYRICS_ENABLED
     # auth_role defaults to 'admin' (set by check_auth_needed), so when
     # AUTH_ENABLED is false or the barrier has not run yet (e.g. error
     # pages), is_admin will be True and the full UI is shown.
@@ -103,6 +103,7 @@ def inject_globals():
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
         mulan_enabled=MULAN_ENABLED,
+        lyrics_enabled=LYRICS_ENABLED,
         auth_enabled=config.AUTH_ENABLED,
         setup_saved=not check_setup_needed(),
         is_admin=(auth_role == 'admin'),
@@ -613,8 +614,21 @@ def listen_for_index_reloads():
             logger.info("Reloading MuLan embedding cache...")
             from tasks.mulan_text_search import refresh_mulan_cache
             mulan_success = refresh_mulan_cache()
-            
-            logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, MuLan {'✓' if mulan_success else '✗'}")
+
+            # Reload Lyrics cache (voyager index + axis matrix)
+            try:
+              from config import LYRICS_ENABLED
+              if LYRICS_ENABLED:
+                logger.info("Reloading Lyrics search cache...")
+                from tasks.lyrics_manager import refresh_lyrics_cache
+                lyrics_success = refresh_lyrics_cache()
+              else:
+                lyrics_success = False
+            except Exception as e:
+              logger.warning(f"Lyrics cache reload failed: {e}")
+              lyrics_success = False
+
+            logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, MuLan {'✓' if mulan_success else '✗'}, Lyrics {'✓' if lyrics_success else '✗'}")
           except Exception as e:
             logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
       elif message_data == 'reload-artist':
@@ -656,6 +670,7 @@ from app_waveform import waveform_bp
 from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
 from app_mulan_search import mulan_search_bp
+from app_lyrics import lyrics_search_bp
 from app_backup import backup_bp
 from app_dashboard import dashboard_bp
 from app_users import users_bp
@@ -675,6 +690,7 @@ app.register_blueprint(waveform_bp)
 app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
 app.register_blueprint(mulan_search_bp)
+app.register_blueprint(lyrics_search_bp)
 app.register_blueprint(backup_bp)
 app.register_blueprint(migration_bp)
 app.register_blueprint(dashboard_bp)
@@ -751,6 +767,17 @@ if not _is_worker:
           logger.info("No MuLan queries found in database (defaults inserted)")
     except Exception as e:
       logger.debug(f"MuLan cache not loaded at startup (may be disabled or failed): {e}")
+    # Load Lyrics search cache (voyager index over per-song e5 embeddings + axis-score matrix)
+    try:
+      from config import LYRICS_ENABLED
+      if LYRICS_ENABLED:
+        from tasks.lyrics_manager import load_lyrics_cache_from_db
+        if load_lyrics_cache_from_db():
+          logger.info("Lyrics search cache loaded at startup (voyager index + axis matrix).")
+        else:
+          logger.info("Lyrics search cache empty at startup (run analysis to populate).")
+    except Exception as e:
+      logger.debug(f"Lyrics cache not loaded at startup (may be disabled or failed): {e}")
 
     def _start_map_init_background():
       try:

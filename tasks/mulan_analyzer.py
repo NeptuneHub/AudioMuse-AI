@@ -97,7 +97,7 @@ def _load_mulan_models(load_text_models=False):
             
             # Load tokenizer from extracted directory (uses transformers for compatibility)
             logger.info(f"Loading tokenizer from: {config.MULAN_MODEL_DIR}")
-            _tokenizer = AutoTokenizer.from_pretrained(config.MULAN_MODEL_DIR)
+            _tokenizer = AutoTokenizer.from_pretrained(config.MULAN_MODEL_DIR, local_files_only=True)
             
             logger.info("✓ MuQ-MuLan ONNX models loaded successfully (audio + text)")
         else:
@@ -184,7 +184,7 @@ def initialize_mulan_text_models():
         )
         
         # Load tokenizer
-        _tokenizer = AutoTokenizer.from_pretrained(config.MULAN_MODEL_DIR)
+        _tokenizer = AutoTokenizer.from_pretrained(config.MULAN_MODEL_DIR, local_files_only=True)
         
         logger.info("✓ MuLan text encoder and tokenizer loaded for search")
         return True
