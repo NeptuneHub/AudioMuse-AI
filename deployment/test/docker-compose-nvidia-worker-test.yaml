@@ -1,0 +1,35 @@
+services:
+  audiomuse-ai-worker:
+    container_name: audiomuse-nvidia-test-worker
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+    image: audiomuse-ai-local-nvidia-worker:latest
+    environment:
+      SERVICE_TYPE: "worker"
+      TZ: "${TZ:-UTC}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+      POSTGRES_HOST: "${POSTGRES_HOST:-postgres}"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      NVIDIA_VISIBLE_DEVICES: "0"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+      USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
+      TEMP_DIR: "/app/temp_audio"
+    volumes:
+      - temp-audio-worker:/app/temp_audio
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  temp-audio-worker:

@@ -12,6 +12,14 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__))) # Adds the current d
 # Signal to app.py that we are an RQ worker, so it should skip index loading and background threads
 os.environ['AUDIOMUSE_ROLE'] = 'worker'
 
+# Cap thread pools used by ML libraries (whisper / torch / marian / numpy / blas) BEFORE
+# any of them are imported, so libgomp/MKL/OpenBLAS pick up the limit at first init.
+_cpu_count = os.cpu_count() or 2
+_max_lyrics_threads = max(2, _cpu_count // 2)
+for _env_key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+    os.environ[_env_key] = str(_max_lyrics_threads)
+print(f"Default worker CPU thread cap = {_max_lyrics_threads} (cpu_count // 2, min 2)")
+
 # Import Worker from rq
 from rq import Worker
 
@@ -23,6 +31,7 @@ try:
     # Import the specific queues we defined
     from app import app
     from app_helper import redis_conn
+    import config
     from config import APP_VERSION
 except ImportError as e:
     print(f"Error importing from app.py: {e}")
@@ -33,6 +42,15 @@ except ImportError as e:
 # The order is important! Workers will always check 'high' before 'default'.
 queues_to_listen = ['default']
 
+# NOTE: Do NOT preload Whisper / transformers / llama_cpp here in the parent
+# process. RQ uses os.fork() to spawn each job's child process. PyTorch and
+# OpenMP (libgomp / libomp) are NOT fork-safe: any thread pool initialized in
+# the parent becomes corrupted in the child and the first call into the model
+# deadlocks at 0% CPU. Models are lazy-loaded inside the child on first use
+# via the module-level caches in lyrics.lyrics_transcriber (so jobs 2..N in
+# the same child are free).
+
+
 if __name__ == '__main__':
     # The redis_conn is already initialized when imported from app.py.
     # The queues_to_listen are already configured with this connection.
@@ -40,17 +58,6 @@ if __name__ == '__main__':
     # Use the list of names directly for the log message
     print(f"DEFAULT RQ Worker starting. Version: {APP_VERSION}. Listening on queues: {queues_to_listen}")
     print(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
-
-    # Preload CLAP model to avoid loading delays on first text search
-    # NOTE: Disabled for GPU workers - CUDA context doesn't survive process fork()
-    # Model will lazy-load on first use in the forked worker process
-    # try:
-    #     print("Preloading CLAP model for this worker...")
-    #     from tasks.clap_analyzer import initialize_clap_model
-    #     initialize_clap_model()
-    #     print("✓ CLAP model preloaded successfully")
-    # except Exception as e:
-    #     print(f"⚠ CLAP model preload failed, will retry on first use: {e}")
 
     # Create a worker instance, explicitly passing the connection.
     # The 'app' object is passed to `with app.app_context():` within the tasks themselves
@@ -61,8 +68,8 @@ if __name__ == '__main__':
         queues_to_listen,
         connection=redis_conn,
         # --- Resilience Settings for Kubernetes ---
-        worker_ttl=30,  # Consider worker dead if no heartbeat for 30 seconds.
-        job_monitoring_interval=10 # Check for dead workers every 10 seconds.
+        worker_ttl=120,  # Consider worker dead if no heartbeat for 120 seconds.
+        job_monitoring_interval=30 # Check for dead workers every 30 seconds.
     )
 
     # Memory leak prevention: restart after N jobs

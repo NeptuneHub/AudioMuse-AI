@@ -245,8 +245,9 @@ def _load_tokenizer():
     
     logger.info("Loading RoBERTa tokenizer...")
     
-    # Use the same tokenizer as the CLAP model (roberta-base)
-    tokenizer = AutoTokenizer.from_pretrained("roberta-base")
+    # roberta-base is pre-baked into /app/.cache/huggingface; force offline so
+    # a misconfigured network can never trigger a download.
+    tokenizer = AutoTokenizer.from_pretrained("roberta-base", local_files_only=True)
     
     logger.info("✓ Tokenizer loaded successfully")
     return tokenizer

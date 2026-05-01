@@ -19,6 +19,11 @@ on:
       - mulan         # New branch also triggers for 'mulan' tag
     tags:
       - 'v*.*.*'      # Trigger for version tags like v1.0.0
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
   # Allow manual runs for debugging or manual pushes
   workflow_dispatch:
 
@@ -36,6 +41,7 @@ jobs:
   # Step 1: Compute image name and tags once (shared by all jobs)
   # ============================================================================
   prepare:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
     outputs:
       image: ${{ steps.repo_name.outputs.image }}
@@ -62,6 +68,11 @@ jobs:
           elif [[ "${{ github.ref }}" == refs/heads/mulan ]]; then
             TAGS="mulan"
             SUFFIX="mulan"
+          elif [[ "${{ github.event_name }}" == "pull_request" && "${{ github.event.pull_request.draft }}" == "false" ]]; then
+            PR_NUM="${{ github.event.pull_request.number }}"
+            TAGS="pr-${PR_NUM}"
+            SUFFIX="pr-${PR_NUM}"
+            echo "Building PR image tag: ${TAGS}"
           fi
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
           echo "suffix=${SUFFIX}" >> $GITHUB_OUTPUT

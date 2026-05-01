@@ -187,9 +187,11 @@ FROM base AS runner
 ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
-    HF_HOME=/app/.cache/huggingface \
-    HF_HUB_OFFLINE=1 \
-    TRANSFORMERS_OFFLINE=1
+    HF_HOME=/app/.cache/huggingface
+
+# Note: bundled HuggingFace models (RoBERTa, MuLan, ...) load with
+# local_files_only=True per call. Lyrics is force-disabled on this image
+# (see ENV LYRICS_ENABLED=false below), so Marian translator is never invoked.
 
 WORKDIR /app
 
@@ -392,6 +394,11 @@ ENV MKL_ENABLE_INSTRUCTIONS=AVX2 \
 
 # Prevent aggressive memory pre-allocation on newer CPUs
 ENV ORT_DISABLE_MEMORY_PATTERN_OPTIMIZATION=1
+
+# Lyrics analysis requires whisper / silero-vad / llama-cpp / torch which either
+# need AVX2 prebuilt wheels or are intentionally not shipped in the no-AVX2
+# image. Force-disable the feature here so the rest of the app starts cleanly.
+ENV LYRICS_ENABLED=false
 
 ENV PYTHONPATH=/usr/local/lib/python3/dist-packages:/app
 

@@ -1,0 +1,456 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    .search-container { max-width: 900px; margin: 0 auto; }
+    .search-container .param-group { margin-bottom: 1.5rem; }
+    .search-container label { display: block; margin-bottom: 0.5rem; }
+
+    .search-box {
+        width: 100%;
+        padding: 0.5rem;
+        font-size: 1rem;
+        border: 2px solid var(--border-color);
+        border-radius: 8px;
+    }
+    .search-box:focus { outline: none; border-color: var(--color-primary); }
+
+    .cache-stats {
+        background: var(--bg-code);
+        padding: 1rem;
+        border-radius: 8px;
+        margin-bottom: 1.5rem;
+        font-size: 0.9rem;
+    }
+    .cache-stats strong { color: var(--color-primary); }
+
+    /* Tabs */
+    .tabs {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1.5rem;
+        border-bottom: 2px solid var(--border-color);
+    }
+    .tab-btn {
+        padding: 0.6rem 1.2rem;
+        background: transparent;
+        border: none;
+        border-bottom: 3px solid transparent;
+        font-size: 1rem;
+        font-weight: 500;
+        cursor: pointer;
+        color: var(--text-muted);
+        transition: all 0.2s;
+    }
+    .tab-btn.active {
+        color: var(--color-primary);
+        border-bottom-color: var(--color-primary);
+        font-weight: 600;
+    }
+    .tab-btn:hover { color: var(--color-primary); }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+
+    /* Axis radio groups */
+    /* Axis grid (compact, no-scroll) */
+    .axes-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 0.75rem;
+        margin-bottom: 1rem;
+    }
+    .axis-block {
+        background: var(--bg-code);
+        padding: 0.75rem;
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+    }
+    .axis-block h3 {
+        margin: 0;
+        font-size: 0.92rem;
+        color: var(--color-primary);
+    }
+    .axis-block .axis-desc {
+        margin: 0;
+        font-size: 0.78rem;
+        color: var(--text-muted);
+        line-height: 1.25;
+    }
+    .axis-block select {
+        width: 100%;
+        padding: 0.4rem 0.5rem;
+        font-size: 0.88rem;
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        background: var(--bg-body);
+        color: inherit;
+    }
+    .axis-block select:focus { outline: none; border-color: var(--color-primary); }
+    .axis-block .label-help {
+        font-size: 0.78rem;
+        color: var(--text-muted);
+        line-height: 1.25;
+        min-height: 1.6em;
+    }
+
+    #search-form button, #axis-form button, #playlist-form button {
+        width: 100%;
+        padding: 0.75rem 1.5rem;
+        font-size: 1rem;
+        font-weight: 600;
+        background-color: var(--color-primary);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background-color 0.2s;
+    }
+    #search-form button:hover, #axis-form button:hover, #playlist-form button:hover {
+        background-color: var(--color-primary-hover);
+    }
+    #search-form button:disabled, #axis-form button:disabled, #playlist-form button:disabled {
+        background-color: var(--text-muted);
+        cursor: not-allowed;
+    }
+
+    .result-item {
+        padding: 1rem;
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .result-item:hover { background: var(--bg-body); }
+    .result-info { flex: 1; }
+    .result-title { font-weight: 600; font-size: 1.1rem; margin-bottom: 0.3rem; }
+    .result-artist { color: var(--text-muted); font-size: 0.9rem; }
+    .similarity-badge {
+        color: white;
+        padding: 0.4rem 0.8rem;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.9rem;
+    }
+    .similarity-badge.badge-high { background: var(--color-success); }
+    .similarity-badge.badge-medium { background: #d97706; }
+    .similarity-badge.badge-low { background: var(--text-muted); }
+
+    .loading-spinner {
+        text-align: center;
+        padding: 2rem;
+        font-size: 1.2rem;
+        color: var(--text-muted);
+    }
+    .error-message {
+        background: var(--status-failure-bg);
+        color: var(--status-failure-text);
+        padding: 1rem;
+        border-radius: 8px;
+        margin-top: 1rem;
+    }
+
+    .axes-intro {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+        font-size: 0.95rem;
+        color: var(--text-muted);
+    }
+    .axes-intro-text { font-style: italic; }
+</style>
+{% endblock %}
+
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Lyrics Semantic Search</h1>
+        <p>Find songs by meaning. This focuses on the lyrics rather than on the groove of the song.</p>
+    </header>
+
+    {% if not lyrics_enabled %}
+    <div class="error-message">
+        <strong>⚠️ Lyrics search is disabled.</strong>
+        <p>Set <code>LYRICS_ENABLED=true</code> and run analysis with lyrics enabled to populate the index.</p>
+    </div>
+    {% else %}
+
+    {% if cache_stats.loaded %}
+    <div class="cache-stats">
+        <strong>✓ Lyrics Search Ready</strong> |
+        <strong>{{ cache_stats.song_count }}</strong> songs |
+        index {{ 'loaded' if cache_stats.index_loaded else 'missing' }} |
+        axis matrix {{ 'loaded' if cache_stats.axis_loaded else 'missing' }} |
+        {{ cache_stats.memory_mb }} MB
+    </div>
+    {% else %}
+    <div class="error-message">
+        <strong>⚠️ No lyrics data found.</strong>
+        <p>Run analysis with lyrics enabled to populate the lyrics_embedding table and the search index.</p>
+    </div>
+    {% endif %}
+
+    <div class="search-container">
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="axes">By Axis</button>
+            <button class="tab-btn" data-tab="text">By Text</button>
+        </div>
+
+        <!-- Axis tab -->
+        <div class="tab-pane active" id="tab-axes">
+            <form id="axis-form">
+                <div class="axes-intro">
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Pick one value for one or more axes to compose your search. Each axis describes a different facet of the lyrics (setting, mood, narrative, ...). Leave an axis on “— None —” to ignore it. The more axes you set, the more specific the search.</span>
+                    </span>
+                    <span class="axes-intro-text">Select one value for one or more axes to compose your search.</span>
+                </div>
+                <div id="axes-container" class="axes-grid">
+                    {% for axis_name, axis_meta in axes.items() %}
+                    <div class="axis-block" data-axis="{{ axis_name }}">
+                        <h3>{{ axis_name.split('_')[2:] | join(' ') | title }}</h3>
+                        <p class="axis-desc">{{ axis_meta.description }}</p>
+                        <select name="axis-{{ axis_name }}" data-axis="{{ axis_name }}">
+                            <option value="" data-desc="">— None —</option>
+                            {% for label, label_desc in axis_meta.labels.items() %}
+                            <option value="{{ label }}" data-desc="{{ label_desc }}">{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="label-help" data-help-for="{{ axis_name }}"></div>
+                    </div>
+                    {% endfor %}
+                </div>
+
+                <div class="param-group">
+                    <label for="axis-limit" class="label-with-tooltip">
+                        Number of results:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">How many songs to return. Higher numbers give more variety but include less-relevant matches. Try 50 for a full playlist or 10–20 for a tight selection.</span>
+                        </span>
+                    </label>
+                    <input type="number" id="axis-limit" name="limit" value="50" min="1" max="500">
+                </div>
+                <button type="submit" {% if not cache_stats.axis_loaded %}disabled{% endif %}>
+                    🔍 Search by axes
+                </button>
+            </form>
+        </div>
+
+        <!-- Text tab -->
+        <div class="tab-pane" id="tab-text">
+            <form id="search-form">
+                <div class="param-group">
+                    <label for="search-query" class="label-with-tooltip">
+                        Search Query:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Type a free-form description of the lyrics you’re looking for. The search is semantic: matches are based on <em>meaning</em>, not exact words. “Songs about heartbreak in the city at night” will surface tracks even if those words never appear in their lyrics.</span>
+                        </span>
+                    </label>
+                    <input type="text" id="search-query" name="query" class="search-box"
+                           placeholder="e.g., love"
+                           autocomplete="off" required
+                           {% if not cache_stats.index_loaded %}disabled{% endif %}>
+                </div>
+                <div class="param-group">
+                    <label for="text-limit" class="label-with-tooltip">
+                        Number of results:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">How many songs to return. Higher numbers give more variety but include less-relevant matches. Try 50 for a full playlist or 10–20 for a tight selection.</span>
+                        </span>
+                    </label>
+                    <input type="number" id="text-limit" name="limit" value="50" min="1" max="500">
+                </div>
+                <button type="submit" {% if not cache_stats.index_loaded %}disabled{% endif %}>
+                    🔍 Search by text
+                </button>
+            </form>
+        </div>
+    </div>
+
+    {% endif %}
+</section>
+
+<section id="results-container" class="hidden">
+    <h2>Search Results</h2>
+    <div id="result-count" style="margin-bottom: 1rem; font-weight: 600;"></div>
+    <div id="results-list"></div>
+</section>
+
+<section id="playlist-creator" class="hidden">
+    <h3>Create a Playlist from Results</h3>
+    <form id="playlist-form">
+        <div class="param-group">
+            <label for="playlist_name">Playlist Name:</label>
+            <input type="text" id="playlist_name" name="playlist_name"
+                   placeholder="My Lyrics Search Playlist" required>
+        </div>
+        <button type="submit">Create Playlist on Media Server</button>
+    </form>
+    <div id="playlist-status"></div>
+</section>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const tabs = document.querySelectorAll('.tab-btn');
+    const panes = document.querySelectorAll('.tab-pane');
+    const resultsContainer = document.getElementById('results-container');
+    const resultsList = document.getElementById('results-list');
+    const resultCount = document.getElementById('result-count');
+    const playlistCreator = document.getElementById('playlist-creator');
+    const playlistForm = document.getElementById('playlist-form');
+
+    let currentResults = [];
+
+    // ----- Tabs -----
+    tabs.forEach(btn => {
+        btn.addEventListener('click', () => {
+            tabs.forEach(b => b.classList.remove('active'));
+            panes.forEach(p => p.classList.remove('active'));
+            btn.classList.add('active');
+            document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+        });
+    });
+
+    // ----- Axis selects: live description under each select -----
+    document.querySelectorAll('#axes-container select').forEach(sel => {
+        const axis = sel.dataset.axis;
+        const helpEl = document.querySelector(`.label-help[data-help-for="${axis}"]`);
+        const update = () => {
+            const opt = sel.options[sel.selectedIndex];
+            helpEl.textContent = opt && opt.dataset.desc ? opt.dataset.desc : '';
+        };
+        sel.addEventListener('change', update);
+        update();
+    });
+
+    // ----- Axis search submit -----
+    document.getElementById('axis-form').addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const targets = {};
+        document.querySelectorAll('#axes-container select').forEach(sel => {
+            if (sel.value) targets[sel.dataset.axis] = sel.value;
+        });
+
+        if (Object.keys(targets).length === 0) {
+            alert('Pick at least one label.');
+            return;
+        }
+
+        const limit = parseInt(document.getElementById('axis-limit').value, 10) || 50;
+        await runSearch("{{ url_for('lyrics_search_bp.lyrics_search_axes_api') }}",
+                        { targets, limit }, '');
+    });
+
+    // ----- Text search submit -----
+    document.getElementById('search-form').addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const query = document.getElementById('search-query').value.trim();
+        if (!query || query.length < 3) {
+            alert('Please enter at least 3 characters.');
+            return;
+        }
+        const limit = parseInt(document.getElementById('text-limit').value, 10) || 50;
+        await runSearch("{{ url_for('lyrics_search_bp.lyrics_search_text_api') }}",
+                        { query, limit }, query);
+    });
+
+    async function runSearch(url, body, queryLabel) {
+        resultsContainer.classList.remove('hidden');
+        resultsList.innerHTML = '<div class="loading-spinner">🔍 Searching...</div>';
+        playlistCreator.classList.add('hidden');
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Search failed');
+            currentResults = data.results || [];
+            displayResults(currentResults, queryLabel);
+        } catch (err) {
+            resultsList.innerHTML = `<div class="error-message">❌ ${err.message}</div>`;
+        }
+    }
+
+    function displayResults(results, queryLabel) {
+        if (!results.length) {
+            resultsList.innerHTML = '<p>No results. Try different inputs.</p>';
+            resultCount.textContent = '';
+            return;
+        }
+        resultCount.textContent = queryLabel
+            ? `Found ${results.length} matches for "${queryLabel}"`
+            : `Found ${results.length} matches`;
+
+        let html = '<div style="border:1px solid var(--border-color);border-radius:8px;overflow:hidden;">';
+        results.forEach((r, i) => {
+            const sim = Math.max(0, Math.min(1, r.similarity || 0));
+            const pct = Math.round(sim * 100);
+            const cls = pct > 70 ? 'badge-high' : pct > 50 ? 'badge-medium' : 'badge-low';
+            html += `
+                <div class="result-item">
+                    <div class="result-info">
+                        <div class="result-title">${i + 1}. ${escapeHtml(r.title || '')}</div>
+                        <div class="result-artist">${escapeHtml(r.author || '')}</div>
+                    </div>
+                    <div class="similarity-badge ${cls}">${pct}%</div>
+                </div>
+            `;
+        });
+        html += '</div>';
+        resultsList.innerHTML = html;
+        playlistCreator.classList.remove('hidden');
+    }
+
+    // ----- Playlist creation (re-uses voyager_bp endpoint, like CLAP/MuLan pages) -----
+    playlistForm.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const statusDiv = document.getElementById('playlist-status');
+        statusDiv.className = '';
+        if (!currentResults.length) {
+            statusDiv.textContent = 'No results to create playlist from';
+            statusDiv.className = 'status-error';
+            return;
+        }
+        const name = document.getElementById('playlist_name').value.trim();
+        if (!name) {
+            statusDiv.textContent = 'Please enter a playlist name';
+            statusDiv.className = 'status-error';
+            return;
+        }
+        statusDiv.textContent = 'Creating playlist...';
+        try {
+            const resp = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    playlist_name: name,
+                    track_ids: currentResults.map(r => r.item_id),
+                }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+            statusDiv.textContent = data.message;
+            statusDiv.className = 'status-success';
+        } catch (err) {
+            statusDiv.textContent = `Error: ${err.message}`;
+            statusDiv.className = 'status-error';
+        }
+    });
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+});
+</script>
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}
