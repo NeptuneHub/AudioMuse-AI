@@ -503,6 +503,27 @@ def get_last_played_time(item_id, user_creds=None):
         logger.error(f"Jellyfin get_last_played_time failed for item {item_id}, user {user_id}: {e}", exc_info=True)
         return None
 
+def get_lyrics(track_id: str, timeout: float = 2.5):
+    """Fetch embedded lyrics from Jellyfin for a given track ID.
+
+    Uses the Jellyfin Lyrics API (available since Jellyfin 10.8).
+    Returns plain text (newline-separated lines) or None.
+    """
+    try:
+        url = f"{config.JELLYFIN_URL}/Items/{track_id}/Lyrics"
+        r = requests.get(url, headers=config.HEADERS, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        # Response: {"Lyrics": [{"Text": "line", "Start": 0}, ...]}
+        lyrics_lines = data.get('Lyrics') or []
+        if not lyrics_lines:
+            return None
+        text = '\n'.join(line.get('Text', '') for line in lyrics_lines if line.get('Text'))
+        return text.strip() or None
+    except Exception as exc:
+        logger.debug('Jellyfin get_lyrics failed for %s: %s', track_id, exc)
+        return None
+
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     """Creates a new instant playlist on Jellyfin for a specific user."""
     # Treat empty token ("") as not provided and fall back to admin token from config

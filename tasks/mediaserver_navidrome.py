@@ -120,7 +120,7 @@ def get_navidrome_auth_params(username=None, password=None):
     hex_encoded_password = auth_pass.encode('utf-8').hex()
     return {"u": auth_user, "p": f"enc:{hex_encoded_password}", "v": "1.16.1", "c": "AudioMuse-AI", "f": "json"}
 
-def _navidrome_request(endpoint, params=None, method='get', stream=False, user_creds=None):
+def _navidrome_request(endpoint, params=None, method='get', stream=False, user_creds=None, timeout=None):
     """
     Helper to make Navidrome API requests. It sends all parameters in the URL's
     query string, which is the expected behavior for Subsonic APIs, but can cause
@@ -140,7 +140,7 @@ def _navidrome_request(endpoint, params=None, method='get', stream=False, user_c
     all_params = {**auth_params, **params}
 
     try:
-        r = requests.request(method, url, params=all_params, timeout=REQUESTS_TIMEOUT, stream=stream)
+        r = requests.request(method, url, params=all_params, timeout=timeout or REQUESTS_TIMEOUT, stream=stream)
         r.raise_for_status()
 
         if stream:
@@ -660,6 +660,28 @@ def get_last_played_time(item_id, user_creds):
     response = _navidrome_request("getSong", {"id": item_id}, user_creds=user_creds)
     if response and "song" in response: return response["song"].get("lastPlayed")
     return None
+
+def get_lyrics(track_id: str, timeout: float = 2.5):
+    """Fetch embedded lyrics from Navidrome via the OpenSubsonic getLyricsBySongId extension.
+
+    Requires Navidrome 0.49.0+ with OpenSubsonic support.
+    Returns plain text (newline-separated lines) or None.
+    """
+    try:
+        response = _navidrome_request('getLyricsBySongId', params={'id': track_id}, timeout=timeout)
+        if not response:
+            return None
+        structured = response.get('lyricsList', {}).get('structuredLyrics', [])
+        if not structured:
+            return None
+        # Prefer unsynced (plain) lyrics; fall back to any available
+        chosen = next((e for e in structured if not e.get('synced')), structured[0])
+        lines = [l.get('value', '') for l in chosen.get('line', []) if l.get('value')]
+        text = '\n'.join(lines)
+        return text.strip() or None
+    except Exception as exc:
+        logger.debug('Navidrome get_lyrics failed for %s: %s', track_id, exc)
+        return None
 
 def create_instant_playlist(playlist_name, item_ids, user_creds):
     """Creates a new instant playlist on Navidrome for a specific user, with batching."""

@@ -220,7 +220,9 @@ ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     TZ=UTC \
-    HF_HOME=/app/.cache/huggingface
+    HF_HOME=/app/.cache/huggingface \
+    HF_HUB_DISABLE_XET=1 \
+    HF_XET_DISABLE=1
 
 # Note: bundled HuggingFace models (e5, RoBERTa, MuLan, ...) load with
 # local_files_only=True per call. Marian translation models download on demand
