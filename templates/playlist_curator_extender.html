@@ -1,0 +1,120 @@
+{% extends 'includes/layout.html' %}
+
+{% block headAdditions %}
+<link rel="stylesheet" href="{{ url_for('static', filename='playlist_curator/curator.css') }}">
+{% endblock %}
+
+{% block content %}
+{% include 'includes/_curator_topbar.html' with context %}
+
+<div class="curator-layout">
+    <main class="curator-main">
+        <div class="curator-main-inner">
+            <header class="curator-page-header">
+                <div class="curator-eyebrow">Tool 2 of 2</div>
+                <h1>Playlist Extender</h1>
+                <p>Grow your Workbench by finding tracks that <em>sound</em> like the ones already in it. Pick a seed, set per-track Influence to steer the search, then Add or Skip each candidate.</p>
+            </header>
+
+            <div class="curator-card">
+                <div class="curator-extender-seed">
+                    <span style="font-size:12px;font-weight:600;color:var(--text-sub);">Seed</span>
+                    <select id="curator-seed-select" class="curator-select">
+                        <option value="">— Choose a seed —</option>
+                    </select>
+                    <button type="button" id="curator-tune-toggle" class="curator-tune-toggle">
+                        <span class="caret">
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                        </span>
+                        <span class="label">Tune the search</span>
+                    </button>
+                </div>
+                <div id="curator-seed-status" class="curator-status" style="min-height:0;margin-bottom:8px;"></div>
+
+                <div id="curator-tune-grid" class="curator-tune-grid">
+                    <div>
+                        <div class="curator-slider-row">
+                            <span class="curator-field-label">Similarity threshold</span>
+                            <span class="curator-slider-value" id="curator-similarity-value">0.50</span>
+                        </div>
+                        <input type="range" id="curator-similarity" class="curator-slider" min="0" max="1" step="0.05" value="0.50">
+                    </div>
+                    <div>
+                        <div class="curator-slider-row">
+                            <span class="curator-field-label">Minimum rating</span>
+                            <span class="curator-slider-value" id="curator-min-rating-value">Off</span>
+                        </div>
+                        <input type="range" id="curator-min-rating" class="curator-slider" min="0" max="5" step="0.5" value="0">
+                    </div>
+                    <div class="curator-field">
+                        <span class="curator-field-label">Maximum songs</span>
+                        <input type="number" id="curator-max-songs" class="curator-input" min="1" max="200" value="50">
+                    </div>
+                    <div>
+                        <div class="curator-slider-row">
+                            <span class="curator-field-label">Year range</span>
+                            <span class="curator-slider-value" id="curator-year-value">Off</span>
+                        </div>
+                        <div class="curator-dual-range-container">
+                            <input type="range" id="curator-year-min" class="curator-dual-range curator-dual-range-lower" min="1900" max="2030" step="1" value="1900">
+                            <input type="range" id="curator-year-max" class="curator-dual-range curator-dual-range-upper" min="1900" max="2030" step="1" value="2030">
+                            <div class="curator-dual-range-track" id="curator-year-track"></div>
+                        </div>
+                    </div>
+                    <div style="grid-column:1 / -1;">
+                        <span class="curator-field-label" style="display:block;margin-bottom:6px;">Search-result duplicates</span>
+                        <div class="curator-dup-row">
+                            <select id="curator-dup-mode" class="curator-select">
+                                <option value="off">Off</option>
+                                <option value="mark" selected>Mark</option>
+                                <option value="hide">Hide</option>
+                            </select>
+                            <div class="curator-field" id="curator-dup-sens">
+                                <div class="curator-slider-row">
+                                    <span class="curator-field-label">Sensitivity</span>
+                                    <span class="curator-slider-value" id="curator-dup-threshold-value">0.010</span>
+                                </div>
+                                <input type="range" id="curator-dup-threshold" class="curator-slider" min="0.005" max="0.050" step="0.005" value="0.010">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="curator-card-footer">
+                    <button type="button" id="curator-extender-run" class="curator-btn" data-kind="primary">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 4-2 2M19 8l-2 2M19 4l2 2M11 12l8-8M14 15l5 5M11 18l3 3M3 21l6-6"/></svg>
+                        Find similar songs
+                    </button>
+                </div>
+                <div id="curator-extender-status" class="curator-status" style="margin-top:10px;"></div>
+            </div>
+
+            <section id="curator-results-section" class="hidden">
+                <div class="curator-section-head">
+                    <div>
+                        <h2><span id="curator-results-count">0</span> candidates</h2>
+                        <div class="sub">Add the ones you like. Use Influence to steer the next pass.</div>
+                    </div>
+                </div>
+                <div id="curator-results-table-wrap" class="curator-table-wrap"></div>
+                <div id="curator-results-cards" class="curator-card-list"></div>
+            </section>
+
+            {% include 'includes/_curator_dedup.html' %}
+        </div>
+    </main>
+
+    {% include 'includes/_curator_workbench.html' %}
+</div>
+
+{% include 'includes/_curator_player.html' %}
+{% endblock %}
+
+{% block bodyAdditions %}
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+<script>
+    document.body.dataset.curatorPage = 'extender';
+</script>
+<script src="{{ url_for('static', filename='playlist_curator/curator-shared.js') }}"></script>
+<script src="{{ url_for('static', filename='playlist_curator/curator-extender.js') }}"></script>
+{% endblock %}

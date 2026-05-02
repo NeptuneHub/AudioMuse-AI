@@ -672,6 +672,7 @@ from app_clap_search import clap_search_bp
 from app_mulan_search import mulan_search_bp
 from app_lyrics import lyrics_search_bp
 from app_backup import backup_bp
+from app_playlist_curator import playlist_curator_bp
 from app_dashboard import dashboard_bp
 from app_users import users_bp
 
@@ -692,6 +693,7 @@ app.register_blueprint(clap_search_bp)
 app.register_blueprint(mulan_search_bp)
 app.register_blueprint(lyrics_search_bp)
 app.register_blueprint(backup_bp)
+app.register_blueprint(playlist_curator_bp)
 app.register_blueprint(migration_bp)
 app.register_blueprint(dashboard_bp)
 app.register_blueprint(users_bp)

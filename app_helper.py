@@ -1147,6 +1147,33 @@ def get_score_data_by_ids(item_ids_list):
     return [dict(row) for row in rows]
 
 
+def get_score_data_lite_by_ids(item_ids_list):
+    """
+    Slim version of get_score_data_by_ids — drops the large text columns
+    (mood_vector, other_features) and unused fields (key, scale, energy,
+    file_path) so list-style responses (e.g. paginated Smart Search) stay small.
+    """
+    if not item_ids_list:
+        return []
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    query = """
+        SELECT s.item_id, s.title, s.author, s.album, s.album_artist,
+               s.tempo, s.year, s.rating
+        FROM score s
+        WHERE s.item_id IN %s
+    """
+    try:
+        cur.execute(query, (tuple(item_ids_list),))
+        rows = cur.fetchall()
+    except Exception as e:
+        logger.error(f"Error fetching lite score data by IDs: {e}")
+        rows = []
+    finally:
+        cur.close()
+    return [dict(row) for row in rows]
+
+
 def save_alchemy_anchor(name, centroid):
     """Save a named anchor centroid into DB."""
     if not name or not centroid or not isinstance(centroid, list):

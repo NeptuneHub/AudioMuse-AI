@@ -14,6 +14,8 @@
 <li><a href="{{ url_for('map_bp.map_ui') }}" {% if active == 'map' %}class="active"{% endif %}>Music Map</a></li>
 <li><a href="{{ url_for('sonic_fingerprint_bp.sonic_fingerprint_page') }}" {% if active == 'sonic_fingerprint' %}class="active"{% endif %}>Sonic Fingerprint</a></li>
 <li><a href="{{ url_for('waveform_bp.waveform_page') }}" {% if active == 'waveform' %}class="active"{% endif %}>Waveform</a></li>
+<li><a href="{{ url_for('playlist_curator_bp.smart_search_page') }}" {% if active == 'smart_search' %}class="active"{% endif %}>Smart Search</a></li>
+<li><a href="{{ url_for('playlist_curator_bp.playlist_extender_page') }}" {% if active == 'playlist_extender' %}class="active"{% endif %}>Playlist Extender</a></li>
 <!-- <li><a href="{{ url_for('collection_bp.collection_page') }}" {% if active == 'collection' %}class="active"{% endif %}">Collection Sync</a></li> -->
 {% if is_admin or auth_enabled %}
 <li class="has-submenu{% if active in ('cleaning', 'cron', 'backup', 'provider_migration', 'setup', 'users') %} open{% endif %}">
