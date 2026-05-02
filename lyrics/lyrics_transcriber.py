@@ -642,7 +642,7 @@ def _fetch_from_configured_api(
         except Exception:
             pass
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-            raw = resp.read(512 * 1024).decode('utf-8', errors='replace')
+            raw = resp.read(512 * 1024).decode(resp.info().get_content_charset('utf-8'), errors='replace')
     except Exception as exc:
         logger.debug('Lyrics API slot %s HTTP error: %s', slot, exc)
         return None
