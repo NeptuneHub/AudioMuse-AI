@@ -593,12 +593,12 @@ def _fetch_from_configured_api(
     import urllib.request
     try:
         import config as _cfg
-        url_template   = getattr(_cfg, f'LYRICS_API_{slot}_URL_TEMPLATE',  '').strip()
-        artist_param   = getattr(_cfg, f'LYRICS_API_{slot}_ARTIST_PARAM',  'artist').strip()
-        title_param    = getattr(_cfg, f'LYRICS_API_{slot}_TITLE_PARAM',   'title').strip()
-        lyrics_field   = getattr(_cfg, f'LYRICS_API_{slot}_LYRICS_FIELD',  'lyrics').strip()
-        apikey_param   = getattr(_cfg, f'LYRICS_API_{slot}_APIKEY_PARAM',  '').strip()
-        apikey_value   = getattr(_cfg, f'LYRICS_API_{slot}_APIKEY_VALUE',  '').strip()
+        url_template   = str(getattr(_cfg, f'LYRICS_API_{slot}_URL_TEMPLATE',  '') or '').strip()
+        artist_param   = str(getattr(_cfg, f'LYRICS_API_{slot}_ARTIST_PARAM',  'artist') or 'artist').strip()
+        title_param    = str(getattr(_cfg, f'LYRICS_API_{slot}_TITLE_PARAM',   'title') or 'title').strip()
+        lyrics_field   = str(getattr(_cfg, f'LYRICS_API_{slot}_LYRICS_FIELD',  'lyrics') or 'lyrics').strip()
+        apikey_param   = str(getattr(_cfg, f'LYRICS_API_{slot}_APIKEY_PARAM',  '') or '').strip()
+        apikey_value   = str(getattr(_cfg, f'LYRICS_API_{slot}_APIKEY_VALUE',  '') or '').strip()
     except Exception:
         return None
 
