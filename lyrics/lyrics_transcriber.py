@@ -605,6 +605,29 @@ def _fetch_from_configured_api(
     if not url_template or not artist_param or not title_param or not lyrics_field:
         return None
 
+    # SSRF guard: reject private/loopback/link-local destinations.
+    # Validated on the template (hostname doesn't change after artist/title substitution).
+    try:
+        import ipaddress as _ipaddress
+        import socket as _socket
+        import urllib.parse as _up
+        _parsed_tpl = _up.urlparse(url_template)
+        _host = _parsed_tpl.hostname or ''
+        _host_l = _host.strip().lower()
+        if _host_l in ('localhost', '') or _host_l.endswith('.localhost') or _host_l.endswith('.local'):
+            logger.warning('Lyrics API slot %s blocked: local hostname %r', slot, _host)
+            return None
+        _port = _parsed_tpl.port or (443 if _parsed_tpl.scheme == 'https' else 80)
+        for _entry in _socket.getaddrinfo(_host, _port, type=_socket.SOCK_STREAM):
+            _ip = _ipaddress.ip_address(_entry[4][0])
+            if (_ip.is_private or _ip.is_loopback or _ip.is_link_local
+                    or _ip.is_multicast or _ip.is_reserved or _ip.is_unspecified):
+                logger.warning('Lyrics API slot %s blocked: %r resolves to non-public IP %s', slot, _host, _ip)
+                return None
+    except Exception as _ssrf_exc:
+        logger.warning('Lyrics API slot %s SSRF check failed: %s', slot, _ssrf_exc)
+        return None
+
     # Build query string
     params: dict = {
         artist_param: artist,
@@ -1077,13 +1100,21 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                    source_path: Optional[Union[str, Path]] = None,
                    use_llm_cleanup: bool = True,
                    artist: Optional[str] = None,
-                   track: Optional[str] = None) -> Dict[str, object]:
+                   track: Optional[str] = None,
+                   track_id: Optional[str] = None) -> Dict[str, object]:
     """Run the full lyrics pipeline.
 
     Either ``audio`` (mono float32 + ``sr``) or ``source_path`` must be supplied.
-    When ``LYRICS_API_ENABLE`` is true and ``artist``+``track`` are provided,
-    LRCLIB and lyrics.ovh are queried first; on a hit, STEPS 1, 1b and 2 are
-    skipped and the API text is fed straight into translation/cleanup/embedding.
+    Pipeline order:
+      STEP -1  media server embedded lyrics (Jellyfin/Emby/Navidrome/Lyrion, 2.5s timeout)
+      STEP  0  user-configured external APIs (slot 1 then slot 2)
+      STEP  1  load / clip audio
+      STEP  1b VAD pre-filter
+      STEP  2  Whisper transcription
+      STEP  3  language detection
+      STEP  4  MarianMT translation to English
+      STEP  5  Qwen LLM cleanup
+      STEP  6  e5 embedding + axis scoring
     Returns a dict with ``text``, ``cleaned_text``, ``language``, ``embedding``
     and ``axis_vector`` (float32 numpy array in canonical axis_columns() order).
     Raises if a required model/source is missing.
@@ -1095,24 +1126,48 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     raw_text = ''
     detected_lang = 'en'
 
+    # ---- STEP -1: media server embedded lyrics ----
+    logger.info('STEP -1 start: media server lyrics (track_id=%r)', track_id)
+    if track_id:
+        try:
+            from tasks.mediaserver import get_lyrics as _ms_get_lyrics
+            ms_text = _ms_get_lyrics(track_id, timeout=2.5)
+            if ms_text:
+                sanitized = _sanitize_api_lyrics(ms_text)
+                if sanitized:
+                    raw_text = sanitized
+                    logger.info('STEP -1 end: media server HIT (%s words) - skipping STEPS 0, 1, 1b, 2',
+                                len(raw_text.split()))
+                else:
+                    logger.info('STEP -1 end: media server returned content but sanitizer dropped it')
+            else:
+                logger.info('STEP -1 end: media server MISS')
+        except Exception as exc:
+            logger.warning('STEP -1 failed: %s', exc)
+    else:
+        logger.info('STEP -1 end: skipped (no track_id)')
+
     # ---- STEP 0 (API): try external lyrics services first ----
     try:
         from config import LYRICS_API_ENABLE
     except Exception:
         LYRICS_API_ENABLE = True
-    logger.info('STEP 0 start: external lyrics API (enabled=%s, artist=%r, track=%r)',
-                LYRICS_API_ENABLE, artist, track)
-    if LYRICS_API_ENABLE and artist and track:
-        api_text = fetch_remote_lyrics(artist, track)
-        if api_text:
-            raw_text = api_text
-            logger.info('STEP 0 end: API HIT (%s chars / %s words) - skipping STEPS 1, 1b, 2',
-                        len(raw_text), len(raw_text.split()))
-            logger.info('STEP 0 raw API output: %s', raw_text)
+    if not raw_text:
+        logger.info('STEP 0 start: external lyrics API (enabled=%s, artist=%r, track=%r)',
+                    LYRICS_API_ENABLE, artist, track)
+        if LYRICS_API_ENABLE and artist and track:
+            api_text = fetch_remote_lyrics(artist, track)
+            if api_text:
+                raw_text = api_text
+                logger.info('STEP 0 end: API HIT (%s chars / %s words) - skipping STEPS 1, 1b, 2',
+                            len(raw_text), len(raw_text.split()))
+                logger.info('STEP 0 raw API output: %s', raw_text)
+            else:
+                logger.info('STEP 0 end: API MISS - falling back to whisper')
         else:
-            logger.info('STEP 0 end: API MISS - falling back to whisper')
+            logger.info('STEP 0 end: API skipped (disabled or missing artist/track)')
     else:
-        logger.info('STEP 0 end: API skipped (disabled or missing artist/track)')
+        logger.info('STEP 0 skipped: already have lyrics from media server')
 
     if not raw_text:
         # ---- STEP 1: audio ----

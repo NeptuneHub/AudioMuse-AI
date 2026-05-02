@@ -348,6 +348,16 @@ def setup_api():
             if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == '********':
                 return jsonify({'error': 'Placeholder secret values are not accepted on save. Enter the real secret or leave the field blank.'}), 400
 
+        # Validate any Lyrics API URL templates before persisting them.
+        for slot in (1, 2):
+            url_key = f'LYRICS_API_{slot}_URL_TEMPLATE'
+            if url_key in filtered_values:
+                url_val = str(filtered_values[url_key] or '').strip()
+                if url_val:
+                    is_safe, reason = _is_public_http_url(url_val)
+                    if not is_safe:
+                        return jsonify({'error': f'Lyrics API slot {slot} URL is not allowed: {reason}'}), 400
+
     try:
         if is_test_connection:
             result = _test_media_server_connection(filtered_values)
