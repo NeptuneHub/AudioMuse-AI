@@ -127,8 +127,12 @@
         color: var(--status-pending-text, #7a5c1a);
         border-color: var(--status-pending-border, #ecd8a9);
     }
-    #advanced-config summary {
+    #advanced-config summary,
+    #lyrics-api-config summary {
         cursor: pointer;
+    }
+    #lyrics-api-config {
+        margin-top: 1.5rem;
     }
 </style>
 {% endblock %}
@@ -268,6 +272,72 @@
                 <div id="advanced-fields"></div>
             </details>
 
+            {% if lyrics_enabled %}
+            <details id="lyrics-api-config">
+                <summary>Lyrics API</summary>
+                <div class="notice" style="margin-top: 1rem;">
+                    These are the external APIs used to fetch lyrics before analysis.
+                    If no API is configured, or if all configured APIs fail or time out,
+                    AudioMuse-AI will fall back to local transcription with <strong>Whisper</strong>.
+                    <br><br>
+                    Paste a real example URL (with actual artist and track values) and click <strong>Analyze</strong>.
+                    AudioMuse-AI will call the URL, detect the parameters automatically, and show the JSON response
+                    so you can click the field that contains the lyrics.
+                </div>
+
+                <!-- API Slot 1 -->
+                <div class="section" style="margin-top: 1.5rem;">
+                    <h3 style="margin-bottom: 1rem;">API Slot 1</h3>
+                    <div id="lyrics-api-1-input-row" class="field-row inline" style="align-items:center;">
+                        <input id="lyrics-api-1-example-url" type="text" style="flex:1; min-width:200px; margin-bottom:0;">
+                        <button type="button" id="lyrics-api-1-analyze-btn" style="white-space:nowrap;">Analyze</button>
+                    </div>
+                    <div id="lyrics-api-1-analyze-status" class="field-row" style="display:none;">
+                        <p id="lyrics-api-1-status-msg" class="inline-feedback" style="margin:0; width:100%;"></p>
+                    </div>
+                    <div id="lyrics-api-1-analyze-area" style="display:none; margin-top:1rem;"></div>
+                    <div id="lyrics-api-1-config-summary" style="display:none; margin-top:1rem; padding:1rem; border-radius:10px; background:var(--bg-card,#f8f9fb); border:1px solid var(--border-color,#ccc);"></div>
+                    <div id="lyrics-api-1-timeout-row" class="field-row" style="display:none; margin-top:0.75rem; align-items:center; gap:0.75rem; flex-wrap:wrap;">
+                        <label for="LYRICS_API_1_TIMEOUT" style="margin-bottom:0; white-space:nowrap;">Timeout before falling back to Whisper (seconds)</label>
+                        <input id="LYRICS_API_1_TIMEOUT" name="LYRICS_API_1_TIMEOUT" type="number" min="1" step="0.5"
+                               style="width:100px; margin-bottom:0;" value="5">
+                    </div>
+                    <input type="hidden" id="LYRICS_API_1_URL_TEMPLATE" name="LYRICS_API_1_URL_TEMPLATE">
+                    <input type="hidden" id="LYRICS_API_1_ARTIST_PARAM" name="LYRICS_API_1_ARTIST_PARAM">
+                    <input type="hidden" id="LYRICS_API_1_TITLE_PARAM" name="LYRICS_API_1_TITLE_PARAM">
+                    <input type="hidden" id="LYRICS_API_1_LYRICS_FIELD" name="LYRICS_API_1_LYRICS_FIELD">
+                    <input type="hidden" id="LYRICS_API_1_APIKEY_PARAM" name="LYRICS_API_1_APIKEY_PARAM">
+                    <input type="hidden" id="LYRICS_API_1_APIKEY_VALUE" name="LYRICS_API_1_APIKEY_VALUE">
+                </div>
+
+                <!-- API Slot 2 -->
+                <div class="section" style="margin-top: 1.5rem; padding-top:1.5rem; border-top:1px solid var(--border-color,#eee);">
+                    <h3 style="margin-bottom: 1rem;">API Slot 2</h3>
+                    <div id="lyrics-api-2-input-row" class="field-row inline" style="align-items:center;">
+                        <input id="lyrics-api-2-example-url" type="text" style="flex:1; min-width:200px; margin-bottom:0;">
+                        <button type="button" id="lyrics-api-2-analyze-btn" style="white-space:nowrap;">Analyze</button>
+                    </div>
+                    <div id="lyrics-api-2-analyze-status" class="field-row" style="display:none;">
+                        <p id="lyrics-api-2-status-msg" class="inline-feedback" style="margin:0; width:100%;"></p>
+                    </div>
+                    <div id="lyrics-api-2-analyze-area" style="display:none; margin-top:1rem;"></div>
+                    <div id="lyrics-api-2-config-summary" style="display:none; margin-top:1rem; padding:1rem; border-radius:10px; background:var(--bg-card,#f8f9fb); border:1px solid var(--border-color,#ccc);"></div>
+                    <div id="lyrics-api-2-timeout-row" class="field-row" style="display:none; margin-top:0.75rem; align-items:center; gap:0.75rem; flex-wrap:wrap;">
+                        <label for="LYRICS_API_2_TIMEOUT" style="margin-bottom:0; white-space:nowrap;">Timeout before falling back to Whisper (seconds)</label>
+                        <input id="LYRICS_API_2_TIMEOUT" name="LYRICS_API_2_TIMEOUT" type="number" min="1" step="0.5"
+                               style="width:100px; margin-bottom:0;" value="5">
+                    </div>
+                    <input type="hidden" id="LYRICS_API_2_URL_TEMPLATE" name="LYRICS_API_2_URL_TEMPLATE">
+                    <input type="hidden" id="LYRICS_API_2_ARTIST_PARAM" name="LYRICS_API_2_ARTIST_PARAM">
+                    <input type="hidden" id="LYRICS_API_2_TITLE_PARAM" name="LYRICS_API_2_TITLE_PARAM">
+                    <input type="hidden" id="LYRICS_API_2_LYRICS_FIELD" name="LYRICS_API_2_LYRICS_FIELD">
+                    <input type="hidden" id="LYRICS_API_2_APIKEY_PARAM" name="LYRICS_API_2_APIKEY_PARAM">
+                    <input type="hidden" id="LYRICS_API_2_APIKEY_VALUE" name="LYRICS_API_2_APIKEY_VALUE">
+                </div>
+            </details>
+            {% endif %}
+
+            <div style="margin-top: 2rem;"></div>
             <div class="field-row">
                 <button id="save-button" type="submit">Save configuration</button>
             </div>

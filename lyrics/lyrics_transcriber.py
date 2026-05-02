@@ -26,6 +26,13 @@ import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
+# Disable the HuggingFace xet/XetHub Rust transport before any HF library is
+# imported. The xet log path ($HF_HOME/xet/logs = /app/.cache/huggingface/xet/logs)
+# is read-only in the container and causes noisy "Permission denied" errors.
+# HF_HOME itself stays at /app/.cache/huggingface so all bundled models resolve normally.
+os.environ['HF_HUB_DISABLE_XET'] = '1'
+os.environ['HF_XET_DISABLE'] = '1'
+
 import numpy as np
 
 try:
@@ -555,49 +562,147 @@ def _strip_lrc_timestamps(text: str) -> str:
     return '\n'.join(lines)
 
 
-def _fetch_from_lrclib(artist: str, track: str, timeout: float) -> Optional[str]:
-    return None
+def _resolve_nested_field(obj: dict, field_path: str) -> Optional[str]:
+    """Walk a dot-separated field path into a JSON object.
+
+    e.g. field_path='trackInfo.lyrics' resolves obj['trackInfo']['lyrics'].
+    Returns the string value, or None if any key is missing.
+    """
+    parts = field_path.split('.')
+    cur = obj
+    for part in parts:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return str(cur).strip() if cur is not None and str(cur).strip() else None
 
 
-def _fetch_from_lyrics_ovh(artist: str, track: str, timeout: float) -> Optional[str]:
-    return None
+def _fetch_from_configured_api(
+    slot: int,
+    artist: str,
+    track: str,
+    timeout: float,
+) -> Optional[str]:
+    """Call a user-configured lyrics API slot (1 or 2).
+
+    Reads URL template + field config from config module at call time so
+    changes saved via the setup wizard take effect without restarting.
+    Returns plain-text lyrics or None.
+    """
+    import urllib.parse
+    import urllib.request
+    try:
+        import config as _cfg
+        url_template   = getattr(_cfg, f'LYRICS_API_{slot}_URL_TEMPLATE',  '').strip()
+        artist_param   = getattr(_cfg, f'LYRICS_API_{slot}_ARTIST_PARAM',  'artist').strip()
+        title_param    = getattr(_cfg, f'LYRICS_API_{slot}_TITLE_PARAM',   'title').strip()
+        lyrics_field   = getattr(_cfg, f'LYRICS_API_{slot}_LYRICS_FIELD',  'lyrics').strip()
+        apikey_param   = getattr(_cfg, f'LYRICS_API_{slot}_APIKEY_PARAM',  '').strip()
+        apikey_value   = getattr(_cfg, f'LYRICS_API_{slot}_APIKEY_VALUE',  '').strip()
+    except Exception:
+        return None
+
+    if not url_template or not artist_param or not title_param or not lyrics_field:
+        return None
+
+    # Build query string
+    params: dict = {
+        artist_param: artist,
+        title_param:  track,
+    }
+    if apikey_param and apikey_value:
+        params[apikey_param] = apikey_value
+
+    # Replace {artist_param}/{title_param} placeholders if present in URL
+    # or append as query string — support both styles.
+    if '{artist}' in url_template or '{title}' in url_template:
+        # Template-style URL: user wrote {artist} and {title} directly
+        url = url_template.format(
+            artist=urllib.parse.quote(artist, safe=''),
+            title=urllib.parse.quote(track, safe=''),
+        )
+        if apikey_param and apikey_value:
+            sep = '&' if '?' in url else '?'
+            url += sep + urllib.parse.urlencode({apikey_param: apikey_value})
+    else:
+        # Param-style URL: append all params as query string
+        sep = '&' if '?' in url_template else '?'
+        url = url_template + sep + urllib.parse.urlencode(params)
+
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={'Accept': 'application/json'},
+        )
+        import socket
+        ctx = None
+        try:
+            import ssl
+            ctx = ssl.create_default_context()
+        except Exception:
+            pass
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            raw = resp.read(512 * 1024).decode('utf-8', errors='replace')
+    except Exception as exc:
+        logger.debug('Lyrics API slot %s HTTP error: %s', slot, exc)
+        return None
+
+    try:
+        import json as _json
+        data = _json.loads(raw)
+    except Exception:
+        return None
+
+    return _resolve_nested_field(data, lyrics_field)
 
 
 def fetch_remote_lyrics(artist: Optional[str], track: Optional[str],
-                        total_budget: float = 10.0) -> Optional[str]:
-    """Try LRCLIB then lyrics.ovh. Return plain-text lyrics or ``None``.
+                        total_budget: Optional[float] = None) -> Optional[str]:
+    """Try user-configured API slots 1 and 2. Return plain-text lyrics or None.
 
-    The combined wait across both providers is capped at ``total_budget`` seconds
-    (default 10s). If we can't get lyrics in that window, fall back to whisper.
+    ``total_budget`` defaults to the sum of both configured per-slot timeouts
+    (from config), so the overall deadline automatically reflects what the user
+    set in the setup wizard. Falls back to Whisper if no lyrics are found.
     """
+    if total_budget is None:
+        try:
+            import config as _cfg
+            total_budget = (
+                float(getattr(_cfg, 'LYRICS_API_1_TIMEOUT', 5.0) or 5.0) +
+                float(getattr(_cfg, 'LYRICS_API_2_TIMEOUT', 5.0) or 5.0)
+            )
+        except Exception:
+            total_budget = 10.0
     import time
     artist = (artist or '').strip()
     track = (track or '').strip()
     if not artist or not track:
         return None
     deadline = time.monotonic() + total_budget
-    providers = (('LRCLIB', _fetch_from_lrclib),
-                 ('lyrics.ovh', _fetch_from_lyrics_ovh))
-    for provider_name, provider in providers:
+    for slot in (1, 2):
         remaining = deadline - time.monotonic()
         if remaining <= 0.5:
-            logger.info('Lyrics API budget exhausted before %s', provider_name)
+            logger.info('Lyrics API budget exhausted before slot %s', slot)
             break
-        per_provider_timeout = min(5.0, remaining)
         try:
-            text = provider(artist, track, per_provider_timeout)
+            import config as _cfg
+            configured_timeout = float(getattr(_cfg, f'LYRICS_API_{slot}_TIMEOUT', 5.0) or 5.0)
+        except Exception:
+            configured_timeout = 5.0
+        per_slot_timeout = min(configured_timeout, remaining)
+        try:
+            text = _fetch_from_configured_api(slot, artist, track, per_slot_timeout)
         except Exception as exc:
-            logger.warning('%s lookup failed for %r/%r: %s',
-                           provider_name, artist, track, exc)
+            logger.warning('Lyrics API slot %s failed for %r/%r: %s', slot, artist, track, exc)
             continue
         if text:
             sanitized = _sanitize_api_lyrics(text)
             if not sanitized:
-                logger.warning('%s returned content but sanitizer dropped everything for %r/%r',
-                               provider_name, artist, track)
+                logger.warning('Lyrics API slot %s returned content but sanitizer dropped it for %r/%r',
+                               slot, artist, track)
                 continue
-            logger.info('%s returned lyrics for %r/%r (%s words)',
-                        provider_name, artist, track, len(sanitized.split()))
+            logger.info('Lyrics API slot %s returned %s words for %r/%r',
+                        slot, len(sanitized.split()), artist, track)
             return sanitized
     return None
 

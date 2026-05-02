@@ -315,8 +315,25 @@ CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # Lyrics analysis feature toggle. When false, the lyrics step is skipped entirely.
 LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
 LYRICS_LLM_ENABLED = os.environ.get("LYRICS_LLM_ENABLED", "false").lower() == "true"
-# When true, look up lyrics from external APIs (LRCLIB, Vagalume) before falling back to Whisper.
+# When true, look up lyrics from user-configured external APIs before falling back to Whisper.
 LYRICS_API_ENABLE = os.environ.get("LYRICS_API_ENABLE", "true").lower() == "true"
+# User-configurable lyrics API slots (up to 2).
+# Each slot stores: url_template, lyrics_field, artist_param, title_param, api_key_param, api_key_value
+# e.g. LYRICS_API_1_URL_TEMPLATE = "https://lrclib.net/api/get?{artist_param}={artist}&{title_param}={title}"
+LYRICS_API_1_URL_TEMPLATE  = os.environ.get("LYRICS_API_1_URL_TEMPLATE",  "")
+LYRICS_API_1_ARTIST_PARAM  = os.environ.get("LYRICS_API_1_ARTIST_PARAM",  "artist_name")
+LYRICS_API_1_TITLE_PARAM   = os.environ.get("LYRICS_API_1_TITLE_PARAM",   "track_name")
+LYRICS_API_1_LYRICS_FIELD  = os.environ.get("LYRICS_API_1_LYRICS_FIELD",  "plainLyrics")
+LYRICS_API_1_APIKEY_PARAM  = os.environ.get("LYRICS_API_1_APIKEY_PARAM",  "")
+LYRICS_API_1_APIKEY_VALUE  = os.environ.get("LYRICS_API_1_APIKEY_VALUE",  "")
+LYRICS_API_1_TIMEOUT       = float(os.environ.get("LYRICS_API_1_TIMEOUT",   "5.0"))
+LYRICS_API_2_URL_TEMPLATE  = os.environ.get("LYRICS_API_2_URL_TEMPLATE",  "")
+LYRICS_API_2_ARTIST_PARAM  = os.environ.get("LYRICS_API_2_ARTIST_PARAM",  "artist")
+LYRICS_API_2_TITLE_PARAM   = os.environ.get("LYRICS_API_2_TITLE_PARAM",   "title")
+LYRICS_API_2_LYRICS_FIELD  = os.environ.get("LYRICS_API_2_LYRICS_FIELD",  "lyrics")
+LYRICS_API_2_APIKEY_PARAM  = os.environ.get("LYRICS_API_2_APIKEY_PARAM",  "")
+LYRICS_API_2_APIKEY_VALUE  = os.environ.get("LYRICS_API_2_APIKEY_VALUE",  "")
+LYRICS_API_2_TIMEOUT       = float(os.environ.get("LYRICS_API_2_TIMEOUT",   "5.0"))
 # Run Whisper + Qwen on CUDA when available. "auto" probes torch.cuda.is_available()
 # at load time; "true" forces GPU; "false" forces CPU. Note: GPU Qwen also requires
 # a CUDA-enabled llama-cpp-python wheel (default PyPI wheel is CPU only).
