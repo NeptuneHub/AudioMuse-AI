@@ -588,8 +588,9 @@ def setup_lyrics_api_analyze():
             raw_bytes = resp.read(512 * 1024)
         elapsed_ms = (_time.monotonic() - _t0) * 1000
         raw_text = raw_bytes.decode('utf-8', errors='replace')
-    except Exception as exc:
-        http_error = str(exc)
+    except Exception:
+        app.logger.exception("Lyrics API analyze request failed")
+        http_error = 'request_failed'
 
     if raw_text:
         try:
@@ -622,5 +623,5 @@ def setup_lyrics_api_analyze():
         'json_obj':      json_obj,
         'raw_json':      display_raw,
         'elapsed_ms':    round(elapsed_ms) if elapsed_ms is not None else None,
-        'error':         http_error,
+        'error':         'Failed to fetch or parse the API response.' if http_error else None,
     }), 200
