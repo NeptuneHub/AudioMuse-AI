@@ -545,8 +545,8 @@ def setup_lyrics_api_analyze():
         parsed = urllib.parse.urlparse(example_url)
         qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         flat_params = {k: v[0] if len(v) == 1 else ','.join(v) for k, v in qs.items()}
-    except Exception as exc:
-        return jsonify({'error': f'Invalid URL: {exc}'}), 400
+    except Exception:
+        return jsonify({'error': 'Invalid URL'}), 400
 
     # Detect dynamic path segments for path-based APIs (e.g. /v1/Red Hot Chili Peppers/By the Way)
     path_parts = [p for p in parsed.path.split('/') if p]
