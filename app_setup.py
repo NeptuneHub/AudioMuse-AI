@@ -1,6 +1,8 @@
 import json
 import re
 import types
+import ipaddress
+import socket
 from flask import request, jsonify, render_template, make_response, after_this_request
 import config
 from app import app, setup_manager
@@ -14,9 +16,62 @@ BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
     for field in fields
 ]
 
+
+def _is_public_http_url(url):
+    """Return (True, None) if URL is safe for outbound HTTP(S), else (False, reason)."""
+    try:
+        parsed = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(url)
+    except Exception:
+        return False, "Invalid URL"
+
+    if parsed.scheme not in ("http", "https"):
+        return False, "Only http and https URLs are supported"
+
+    host = parsed.hostname
+    if not host:
+        return False, "URL host is required"
+
+    # Block obvious local hostnames early.
+    host_l = host.strip().lower()
+    if host_l == "localhost" or host_l.endswith(".localhost") or host_l.endswith(".local"):
+        return False, "Local network hosts are not allowed"
+
+    try:
+        addrinfo = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+    except Exception:
+        return False, "Could not resolve host"
+
+    for entry in addrinfo:
+        ip_text = entry[4][0]
+        try:
+            ip_obj = ipaddress.ip_address(ip_text)
+        except ValueError:
+            return False, "Resolved host to invalid IP"
+
+        if (
+            ip_obj.is_private
+            or ip_obj.is_loopback
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_reserved
+            or ip_obj.is_unspecified
+        ):
+            return False, "Target host resolves to a non-public IP address"
+
+    return True, None
+
 AUTH_FIELDS = ["AUTH_ENABLED", "AUDIOMUSE_USER", "AUDIOMUSE_PASSWORD", "API_TOKEN", "JWT_SECRET"]
-SECRET_FIELDS = {"AUDIOMUSE_PASSWORD", "API_TOKEN", "JELLYFIN_TOKEN", "EMBY_TOKEN", "NAVIDROME_PASSWORD", "JWT_SECRET", "AI_CHAT_DB_USER_PASSWORD"}
+SECRET_FIELDS = {"AUDIOMUSE_PASSWORD", "API_TOKEN", "JELLYFIN_TOKEN", "EMBY_TOKEN", "NAVIDROME_PASSWORD", "JWT_SECRET", "AI_CHAT_DB_USER_PASSWORD", "LYRICS_API_1_APIKEY_VALUE", "LYRICS_API_2_APIKEY_VALUE"}
 BASIC_FIELDS = set(BASIC_SERVER_FIELDS + AUTH_FIELDS)
+
+LYRICS_API_CONFIG_FIELDS = [
+    'LYRICS_API_1_URL_TEMPLATE', 'LYRICS_API_1_ARTIST_PARAM', 'LYRICS_API_1_TITLE_PARAM',
+    'LYRICS_API_1_LYRICS_FIELD', 'LYRICS_API_1_APIKEY_PARAM', 'LYRICS_API_1_APIKEY_VALUE',
+    'LYRICS_API_1_TIMEOUT',
+    'LYRICS_API_2_URL_TEMPLATE', 'LYRICS_API_2_ARTIST_PARAM', 'LYRICS_API_2_TITLE_PARAM',
+    'LYRICS_API_2_LYRICS_FIELD', 'LYRICS_API_2_APIKEY_PARAM', 'LYRICS_API_2_APIKEY_VALUE',
+    'LYRICS_API_2_TIMEOUT',
+]
 
 HIDDEN_ADVANCED_FIELDS = {
     'AI_CHAT_DB_USER_NAME',
@@ -81,6 +136,13 @@ HIDDEN_ADVANCED_FIELDS = {
     'LYRICS_SONGS_DIR',
     'LYRICS_SUPPORTED_AUDIO_EXTENSIONS',
     'LYRICS_WHISPER_MODEL',
+    # Lyrics API config fields are handled by the dedicated /api/setup/lyrics-api routes
+    'LYRICS_API_1_URL_TEMPLATE', 'LYRICS_API_1_ARTIST_PARAM', 'LYRICS_API_1_TITLE_PARAM',
+    'LYRICS_API_1_LYRICS_FIELD', 'LYRICS_API_1_APIKEY_PARAM', 'LYRICS_API_1_APIKEY_VALUE',
+    'LYRICS_API_1_TIMEOUT',
+    'LYRICS_API_2_URL_TEMPLATE', 'LYRICS_API_2_ARTIST_PARAM', 'LYRICS_API_2_TITLE_PARAM',
+    'LYRICS_API_2_LYRICS_FIELD', 'LYRICS_API_2_APIKEY_PARAM', 'LYRICS_API_2_APIKEY_VALUE',
+    'LYRICS_API_2_TIMEOUT',
 }
 
 TEST_CONFIG_KEYS = set(BASIC_SERVER_FIELDS + ['MUSIC_LIBRARIES'])
@@ -180,6 +242,9 @@ def _get_allowed_setup_keys():
     for f in setup_manager.get_all_fields(config):
         if f['name'] in BASIC_FIELDS or should_show_advanced(f['name']):
             allowed_keys.add(f['name'])
+    # Always allow the lyrics API config fields (hidden from advanced section
+    # but still user-editable via the dedicated Lyrics API section).
+    allowed_keys.update(LYRICS_API_CONFIG_FIELDS)
     return allowed_keys
 
 
@@ -198,7 +263,9 @@ def _has_admin_user():
 
 @app.route('/setup')
 def setup_page():
-    return render_template('setup.html', title='AudioMuse-AI - Setup Wizard', active='setup')
+    from config import LYRICS_ENABLED
+    return render_template('setup.html', title='AudioMuse-AI - Setup Wizard', active='setup',
+                           lyrics_enabled=LYRICS_ENABLED)
 
 @app.route('/api/setup', methods=['GET', 'POST'])
 def setup_api():
@@ -239,10 +306,23 @@ def setup_api():
                 advanced_fields.append(f)
 
         music_libraries_value = getattr(config, 'MUSIC_LIBRARIES', '') or ''
+
+        # Build lyrics API field dict: {name: {value, has_value, secret}}
+        lyrics_api_raw = setup_manager.get_raw_overrides(ensure_table=False)
+        lyrics_api_data = {}
+        for fname in LYRICS_API_CONFIG_FIELDS:
+            raw_val = lyrics_api_raw.get(fname) or str(getattr(config, fname, '') or '')
+            is_secret = fname in SECRET_FIELDS
+            if is_secret:
+                lyrics_api_data[fname] = {'has_value': bool(raw_val), 'value': '', 'secret': True}
+            else:
+                lyrics_api_data[fname] = {'has_value': bool(raw_val), 'value': raw_val, 'secret': False}
+
         return jsonify({
             'basic_fields': basic_fields,
             'advanced_fields': advanced_fields,
             'music_libraries': music_libraries_value,
+            'lyrics_api_fields': lyrics_api_data,
             'setup_saved': not check_setup_needed(),
             'has_admin_user': _has_admin_user(),
         })
@@ -267,6 +347,16 @@ def setup_api():
         for key, value in filtered_values.items():
             if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == '********':
                 return jsonify({'error': 'Placeholder secret values are not accepted on save. Enter the real secret or leave the field blank.'}), 400
+
+        # Validate any Lyrics API URL templates before persisting them.
+        for slot in (1, 2):
+            url_key = f'LYRICS_API_{slot}_URL_TEMPLATE'
+            if url_key in filtered_values:
+                url_val = str(filtered_values[url_key] or '').strip()
+                if url_val:
+                    is_safe, reason = _is_public_http_url(url_val)
+                    if not is_safe:
+                        return jsonify({'error': f'Lyrics API slot {slot} URL is not allowed: {reason}'}), 400
 
     try:
         if is_test_connection:
@@ -429,4 +519,119 @@ def setup_provider_libraries_api():
     return jsonify({
         'libraries': result.get('libraries', []),
         'unsupported': bool(result.get('unsupported', False)),
+    }), 200
+
+
+@app.route('/api/setup/lyrics-api/analyze', methods=['POST'])
+def setup_lyrics_api_analyze():
+    """Analyze a real example lyrics API URL: call it, detect query params, return JSON response.
+
+    Accepts JSON body: { "example_url": "https://api.example.com/lyrics?artist=RHCP&track=By+the+Way" }
+    Returns { params, guesses, json_obj, raw_json, error }
+    """
+    import urllib.parse
+    import urllib.request
+    import json as _json
+    import ssl
+
+    data = request.get_json(silent=True) or {}
+    example_url = str(data.get('example_url') or '').strip()
+    if not example_url:
+        return jsonify({'error': 'example_url is required'}), 400
+
+    # Validate scheme and destination safety (SSRF guard)
+    try:
+        parsed_check = urllib.parse.urlparse(example_url)
+    except Exception:
+        return jsonify({'error': 'Invalid URL'}), 400
+    if parsed_check.scheme not in ('http', 'https'):
+        return jsonify({'error': 'Only http and https URLs are supported'}), 400
+    is_safe_url, unsafe_reason = _is_public_http_url(example_url)
+    if not is_safe_url:
+        return jsonify({'error': unsafe_reason}), 400
+
+    # Parse query params
+    try:
+        parsed = urllib.parse.urlparse(example_url)
+        qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        flat_params = {k: v[0] if len(v) == 1 else ','.join(v) for k, v in qs.items()}
+    except Exception:
+        return jsonify({'error': 'Invalid URL'}), 400
+
+    # Detect dynamic path segments for path-based APIs (e.g. /v1/Red Hot Chili Peppers/By the Way)
+    path_parts = [p for p in parsed.path.split('/') if p]
+    path_segments = []
+    for idx, part in enumerate(path_parts):
+        decoded = urllib.parse.unquote_plus(part)
+        # Include if URL-encoded, contains spaces, or is long — i.e. looks like a dynamic value
+        if decoded != part or ' ' in decoded or len(decoded) > 10:
+            path_segments.append({'index': idx, 'value': decoded})
+
+    # Auto-detect likely roles for each query param
+    _ARTIST = {'artist', 'artist_name', 'artistname', 'ar', 'singer', 'performer', 'band'}
+    _TITLE  = {'track', 'track_name', 'trackname', 'title', 'song', 'song_name', 't', 'name', 's', 'q'}
+    _APIKEY = {'apikey', 'api_key', 'key', 'token', 'access_token', 'api_token', 'usertoken', 'user_token'}
+    guesses = {'artist_param': None, 'title_param': None, 'apikey_param': None, 'lyrics_field': None}
+    for pname in flat_params:
+        plow = pname.lower().replace('-', '_')
+        if plow in _ARTIST and not guesses['artist_param']:
+            guesses['artist_param'] = pname
+        elif plow in _TITLE and not guesses['title_param']:
+            guesses['title_param'] = pname
+        elif plow in _APIKEY and not guesses['apikey_param']:
+            guesses['apikey_param'] = pname
+
+    # Call the URL
+    http_error = None
+    raw_text = None
+    json_obj = None
+    elapsed_ms = None
+    try:
+        req = urllib.request.Request(example_url, headers={'Accept': 'application/json'})
+        try:
+            ctx = ssl.create_default_context()
+        except Exception:
+            ctx = None
+        import time as _time
+        _t0 = _time.monotonic()
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            raw_bytes = resp.read(512 * 1024)
+        elapsed_ms = (_time.monotonic() - _t0) * 1000
+        raw_text = raw_bytes.decode('utf-8', errors='replace')
+    except Exception:
+        app.logger.exception("Lyrics API analyze request failed")
+        http_error = 'request_failed'
+
+    if raw_text:
+        try:
+            json_obj = _json.loads(raw_text)
+        except Exception:
+            pass
+
+    # Auto-detect lyrics field by common names + string length heuristic
+    _LYRICS_NAMES = {'lyrics', 'plainlyrics', 'syncedlyrics', 'lyric', 'lyricbody',
+                     'text', 'words', 'content', 'translation'}
+    if isinstance(json_obj, dict):
+        def _find_lyrics(obj, prefix=''):
+            if guesses['lyrics_field'] or not isinstance(obj, dict):
+                return
+            for k, v in obj.items():
+                path = (prefix + '.' + k) if prefix else k
+                if k.lower().replace('_', '').replace('-', '') in _LYRICS_NAMES \
+                        and isinstance(v, str) and len(v) > 20:
+                    guesses['lyrics_field'] = path
+                    return
+                elif isinstance(v, dict):
+                    _find_lyrics(v, path)
+        _find_lyrics(json_obj)
+
+    display_raw = (raw_text or '')[:16384] + ('…' if raw_text and len(raw_text) > 16384 else '')
+    return jsonify({
+        'params':        flat_params,
+        'path_segments': path_segments,
+        'guesses':       guesses,
+        'json_obj':      json_obj,
+        'raw_json':      display_raw,
+        'elapsed_ms':    round(elapsed_ms) if elapsed_ms is not None else None,
+        'error':         'Failed to fetch or parse the API response.' if http_error else None,
     }), 200

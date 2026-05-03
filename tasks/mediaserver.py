@@ -8,6 +8,7 @@ import config  # Import the config module to access server type and settings
 from tasks.mediaserver_jellyfin import (
     resolve_user as jellyfin_resolve_user,
     get_all_playlists as jellyfin_get_all_playlists,
+    get_lyrics as jellyfin_get_lyrics,
     delete_playlist as jellyfin_delete_playlist,
     get_recent_albums as jellyfin_get_recent_albums,
     get_tracks_from_album as jellyfin_get_tracks_from_album,
@@ -24,6 +25,7 @@ from tasks.mediaserver_jellyfin import (
 )
 from tasks.mediaserver_navidrome import (
     get_all_playlists as navidrome_get_all_playlists,
+    get_lyrics as navidrome_get_lyrics,
     delete_playlist as navidrome_delete_playlist,
     get_recent_albums as navidrome_get_recent_albums,
     get_tracks_from_album as navidrome_get_tracks_from_album,
@@ -40,6 +42,7 @@ from tasks.mediaserver_navidrome import (
 )
 from tasks.mediaserver_lyrion import (
     get_all_playlists as lyrion_get_all_playlists,
+    get_lyrics as lyrion_get_lyrics,
     delete_playlist as lyrion_delete_playlist,
     get_recent_albums as lyrion_get_recent_albums,
     get_tracks_from_album as lyrion_get_tracks_from_album,
@@ -70,6 +73,7 @@ from tasks.mediaserver_mpd import (
 from tasks.mediaserver_emby import (
     resolve_user as emby_resolve_user,
     get_all_playlists as emby_get_all_playlists,
+    get_lyrics as emby_get_lyrics,
     delete_playlist as emby_delete_playlist,
     get_recent_albums as emby_get_recent_albums,
     get_recent_music_items as emby_get_recent_music_items,
@@ -365,5 +369,22 @@ def get_last_played_time(item_id, user_creds=None):
         return mpd_get_last_played_time(item_id, user_creds)
     if config.MEDIASERVER_TYPE == 'emby':
         return emby_get_last_played_time(item_id, user_creds)
+    return None
+
+def get_lyrics(track_id: str, timeout: float = 2.5):
+    """Fetch lyrics embedded in the media server for a given track ID.
+
+    Supported servers: Jellyfin, Emby, Navidrome, Lyrion.
+    MPD does not provide a lyrics API; always returns None.
+    Returns plain text or None.
+    """
+    if config.MEDIASERVER_TYPE == 'jellyfin':
+        return jellyfin_get_lyrics(track_id, timeout=timeout)
+    if config.MEDIASERVER_TYPE == 'emby':
+        return emby_get_lyrics(track_id, timeout=timeout)
+    if config.MEDIASERVER_TYPE == 'navidrome':
+        return navidrome_get_lyrics(track_id, timeout=timeout)
+    if config.MEDIASERVER_TYPE == 'lyrion':
+        return lyrion_get_lyrics(track_id, timeout=timeout)
     return None
 

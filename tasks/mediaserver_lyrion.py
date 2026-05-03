@@ -380,10 +380,11 @@ def _get_first_player():
         logger.error(f"Error getting Lyrion player: {e}")
         return "10.42.6.0"  # Use the player from your example as fallback
 
-def _jsonrpc_request(method, params, player_id="", user_creds=None):
+def _jsonrpc_request(method, params, player_id="", user_creds=None, timeout=None):
     """
     Helper to make a JSON-RPC request to the Lyrion server, optionally using override creds.
     Returns the 'result' field on success, or None on failure.
+    ``timeout`` overrides the default REQUESTS_TIMEOUT for time-sensitive calls.
     """
     base_url = (user_creds.get('url') if user_creds and user_creds.get('url') else config.LYRION_URL).rstrip('/')
     url = f"{base_url}/jsonrpc.js"
@@ -406,7 +407,7 @@ def _jsonrpc_request(method, params, player_id="", user_creds=None):
             with requests.Session() as s:
                 s.headers.update({"Content-Type": "application/json"})
                 # Use configured timeout so slow servers can be handled
-                r = s.post(url, json=payload, timeout=REQUESTS_TIMEOUT, auth=auth)
+                r = s.post(url, json=payload, timeout=timeout or REQUESTS_TIMEOUT, auth=auth)
 
             r.raise_for_status()
             response_data = r.json()
@@ -1312,6 +1313,28 @@ def get_last_played_time(item_id):
     """Fetches the last played time for a track for a specific user. Not supported by Lyrion JSON-RPC API."""
     logger.warning("Lyrion's JSON-RPC API does not provide a 'last played time' for individual tracks.")
     return None
+
+def get_lyrics(track_id: str, timeout: float = 2.5):
+    """Fetch embedded lyrics from Lyrion (LMS) for a given track ID.
+
+    Uses the LMS JSON-RPC ``songinfo`` command with the ``l`` (lyrics) tag.
+    Returns plain text or None.
+    """
+    try:
+        result = _jsonrpc_request(
+            'songinfo', [0, 100, f'track_id:{track_id}', 'tags:l'],
+            timeout=timeout,
+        )
+        if not result:
+            return None
+        for entry in result.get('songinfo_loop', []):
+            lyrics = entry.get('lyrics') or entry.get('Lyrics')
+            if lyrics:
+                return str(lyrics).strip() or None
+        return None
+    except Exception as exc:
+        logger.debug('Lyrion get_lyrics failed for %s: %s', track_id, exc)
+        return None
 
 def create_instant_playlist(playlist_name, item_ids):
     """Creates a new instant playlist on Lyrion for a specific user, with batching."""

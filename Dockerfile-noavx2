@@ -187,7 +187,9 @@ FROM base AS runner
 ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
-    HF_HOME=/app/.cache/huggingface
+    HF_HOME=/app/.cache/huggingface \
+    HF_HUB_DISABLE_XET=1 \
+    HF_XET_DISABLE=1
 
 # Note: bundled HuggingFace models (RoBERTa, MuLan, ...) load with
 # local_files_only=True per call. Lyrics is force-disabled on this image

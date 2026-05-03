@@ -218,7 +218,7 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Axes voyager index: build and persist (binary-friendly, ~27-dim Euclidean)
+# Axes voyager index: build and persist (~27-dim Cosine)
 # ---------------------------------------------------------------------------
 
 def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
@@ -262,7 +262,7 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
 
             logger.info(f"Building lyrics axes voyager index for {len(rows)} candidate items (dim={dim})...")
             builder = voyager.Index(
-                space=voyager.Space.Euclidean,
+                space=voyager.Space.Cosine,
                 num_dimensions=dim,
                 M=VOYAGER_M,
                 ef_construction=VOYAGER_EF_CONSTRUCTION,
@@ -748,10 +748,6 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
         logger.error(f"Lyrics axes voyager query failed: {e}", exc_info=True)
         return []
 
-    # Euclidean distance over a binary query of length k_selected has theoretical
-    # max sqrt(k_selected) (when the song is opposite on every selected slot).
-    max_dist = float(np.sqrt(len(selected_pairs))) or 1.0
-
     results: List[Dict] = []
     artist_counts: Dict[str, int] = {}
     for vid, dist in zip(neighbor_ids, distances):
@@ -767,7 +763,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
             if artist_counts.get(an, 0) >= artist_cap:
                 continue
             artist_counts[an] = artist_counts.get(an, 0) + 1
-        similarity = max(0.0, 1.0 - (float(dist) / max_dist))
+        similarity = 1.0 - float(dist)
         results.append({
             'item_id': item_id,
             'title': meta.get('title', ''),

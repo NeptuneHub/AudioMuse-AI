@@ -358,6 +358,7 @@ function loadSetupData() {
         serverValues = basicData; // keep the full current server-related values
         renderServerFields(mediaServerSelect.value, basicData, secretHasValue);
         renderAdvancedFields(visibleAdvancedData);
+        populateLyricsApiFields(data.lyrics_api_fields);
         updateAuthVisibility();
         // If the provider is already configured (server returned `has_value`
         // for the credential fields), auto-fetch the library list so the
@@ -827,4 +828,505 @@ document.getElementById('test-button').addEventListener('click', testConnection)
 serverConfigFields.addEventListener('input', updateTestButtonState);
 document.getElementById('MEDIASERVER_TYPE').addEventListener('change', updateServerFields);
 document.getElementById('AUTH_ENABLED').addEventListener('change', updateAuthVisibility);
+
+// ---------------------------------------------------------------------------
+// Lyrics API section — interactive analyze & configure
+// ---------------------------------------------------------------------------
+var lyricsApiState = {};
+[1, 2].forEach(function(s) {
+    lyricsApiState[s] = {exampleUrl: '', params: {}, paramRoles: {}, pathSegments: [], pathRoles: {}, jsonObj: null, selectedField: null};
+});
+
+function populateLyricsApiFields(lyricsApiData) {
+    if (!lyricsApiData) return;
+    [1, 2].forEach(function(slot) {
+        var pre = 'LYRICS_API_' + slot + '_';
+        var get = function(k) { return lyricsApiData[pre + k] || {}; };
+        var urlTemplate = get('URL_TEMPLATE').value || '';
+        var artistParam = get('ARTIST_PARAM').value || '';
+        var titleParam  = get('TITLE_PARAM').value  || '';
+        var lyricsField = get('LYRICS_FIELD').value || '';
+        var apikeyParam = get('APIKEY_PARAM').value || '';
+        var apikeyHasVal = get('APIKEY_VALUE').has_value || false;
+        var timeout     = get('TIMEOUT').value || '5';
+        function setHidden(name, val) {
+            var el = document.getElementById(name);
+            if (el) { el.value = val; el.dataset.originalValue = val; }
+        }
+        setHidden(pre + 'URL_TEMPLATE', urlTemplate);
+        setHidden(pre + 'ARTIST_PARAM', artistParam);
+        setHidden(pre + 'TITLE_PARAM',  titleParam);
+        setHidden(pre + 'LYRICS_FIELD', lyricsField);
+        setHidden(pre + 'APIKEY_PARAM', apikeyParam);
+        var akEl = document.getElementById(pre + 'APIKEY_VALUE');
+        if (akEl) { akEl.value = apikeyHasVal ? '********' : ''; akEl.dataset.originalValue = akEl.value; }
+        var toEl = document.getElementById(pre + 'TIMEOUT');
+        if (toEl) { toEl.value = timeout; toEl.dataset.originalValue = timeout; }
+        var isPathBased = urlTemplate.indexOf('{artist}') !== -1 && urlTemplate.indexOf('{title}') !== -1;
+        var configComplete = urlTemplate && lyricsField && (isPathBased || (artistParam && titleParam));
+        if (configComplete) {
+            showLyricsApiSlotSummary(slot, urlTemplate, artistParam, titleParam, lyricsField, apikeyParam, apikeyHasVal);
+            var inputRow = document.getElementById('lyrics-api-' + slot + '-input-row');
+            if (inputRow) inputRow.style.display = 'none';
+            var toRow = document.getElementById('lyrics-api-' + slot + '-timeout-row');
+            if (toRow) toRow.style.display = 'flex';
+        }
+    });
+}
+
+function showLyricsApiStatus(slot, type, msg) {
+    var row = document.getElementById('lyrics-api-' + slot + '-analyze-status');
+    var el  = document.getElementById('lyrics-api-' + slot + '-status-msg');
+    if (!row || !el) return;
+    row.style.display = 'block';
+    el.className = 'inline-feedback status-' + type;
+    el.textContent = msg;
+}
+
+function analyzeLyricsApiSlot(slot) {
+    var urlEl = document.getElementById('lyrics-api-' + slot + '-example-url');
+    var url = urlEl ? urlEl.value.trim() : '';
+    if (!url) { showLyricsApiStatus(slot, 'failure', 'Please enter an example URL.'); return; }
+    var btn = document.getElementById('lyrics-api-' + slot + '-analyze-btn');
+    if (btn) btn.disabled = true;
+    showLyricsApiStatus(slot, 'pending', 'Calling the API\u2026');
+    fetch('/api/setup/lyrics-api/analyze', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({example_url: url})
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (btn) btn.disabled = false;
+        if (data.error && !data.json_obj && !data.params) {
+            showLyricsApiStatus(slot, 'failure', '\u2715 ' + data.error);
+            return;
+        }
+        showLyricsApiStatus(slot, data.error ? 'pending' : 'success',
+            data.error ? ('\u26a0 HTTP error: ' + data.error) : '\u2713 API responded \u2014 select the lyrics field below.');
+        var state = lyricsApiState[slot];
+        state.exampleUrl    = url;
+        state.params        = data.params        || {};
+        state.pathSegments  = data.path_segments || [];
+        state.pathRoles     = {};
+        state.jsonObj       = (data.json_obj !== undefined) ? data.json_obj : null;
+        state.selectedField = (data.guesses && data.guesses.lyrics_field) || null;
+        state.paramRoles    = {};
+        var g = data.guesses || {};
+        Object.keys(state.params).forEach(function(pname) {
+            if      (pname === g.artist_param) state.paramRoles[pname] = 'artist';
+            else if (pname === g.title_param)  state.paramRoles[pname] = 'title';
+            else if (pname === g.apikey_param) state.paramRoles[pname] = 'apikey';
+            else                               state.paramRoles[pname] = 'none';
+        });
+        // Auto-suggest timeout: actual response time + 20%, minimum 2 extra seconds
+        if (data.elapsed_ms != null) {
+            var elapsed = data.elapsed_ms / 1000;
+            var suggested = Math.max(elapsed * 1.2, elapsed + 2);
+            suggested = Math.round(suggested * 2) / 2; // round to nearest 0.5s
+            state.suggestedTimeout = Math.max(suggested, 2);
+        } else {
+            state.suggestedTimeout = 5;
+        }
+        renderLyricsApiAnalysis(slot);
+    }).catch(function(err) {
+        if (btn) btn.disabled = false;
+        showLyricsApiStatus(slot, 'failure', '\u2715 ' + (err.message || err));
+    });
+}
+
+function renderLyricsApiAnalysis(slot) {
+    var area = document.getElementById('lyrics-api-' + slot + '-analyze-area');
+    if (!area) return;
+    area.innerHTML = '';
+    area.style.display = 'block';
+    var state = lyricsApiState[slot];
+    var paramNames = Object.keys(state.params);
+    if (paramNames.length > 0) {
+        var sec = document.createElement('div');
+        sec.style.marginBottom = '1.25rem';
+        var hdr = document.createElement('p');
+        hdr.style.cssText = 'font-weight:600; margin-bottom:0.5rem;';
+        hdr.textContent = 'URL parameters \u2014 assign the role of each:';
+        sec.appendChild(hdr);
+        var grid = document.createElement('div');
+        grid.style.cssText = 'display:grid; grid-template-columns:auto 1fr auto; gap:0.4rem 0.9rem; align-items:center;';
+        paramNames.forEach(function(pname) {
+            var nameEl = document.createElement('code');
+            nameEl.textContent = pname;
+            nameEl.style.cssText = 'background:var(--bg-card,#f0f0f0); padding:0.15rem 0.45rem; border-radius:4px; white-space:nowrap;';
+            var val = String(state.params[pname] || '');
+            var valEl = document.createElement('span');
+            valEl.textContent = val.length > 45 ? val.substring(0, 45) + '\u2026' : val;
+            valEl.style.cssText = 'color:var(--text-muted,#666); font-size:0.9rem; min-width:0; overflow:hidden;';
+            var sel = document.createElement('select');
+            sel.style.cssText = 'width:auto; margin-bottom:0; padding:0.35rem 0.55rem; font-size:0.88rem;';
+            [['none','\u2014 ignore \u2014'],['artist','Artist'],['title','Title'],['apikey','API key']].forEach(function(r) {
+                var opt = document.createElement('option');
+                opt.value = r[0]; opt.textContent = r[1]; sel.appendChild(opt);
+            });
+            sel.value = state.paramRoles[pname] || 'none';
+            (function(pn) {
+                sel.addEventListener('change', function() {
+                    state.paramRoles[pn] = sel.value;
+                    updateLyricsApiHiddenInputs(slot);
+                });
+            })(pname);
+            grid.appendChild(nameEl);
+            grid.appendChild(valEl);
+            grid.appendChild(sel);
+        });
+        sec.appendChild(grid);
+        area.appendChild(sec);
+    }
+    var pathSegs = state.pathSegments || [];
+    if (pathSegs.length > 0) {
+        var pathSec = document.createElement('div');
+        pathSec.style.marginBottom = '1.25rem';
+        var pathHdr = document.createElement('p');
+        pathHdr.style.cssText = 'font-weight:600; margin-bottom:0.5rem;';
+        pathHdr.textContent = 'URL path values \u2014 assign the role of each:';
+        pathSec.appendChild(pathHdr);
+        var pathGrid = document.createElement('div');
+        pathGrid.style.cssText = 'display:grid; grid-template-columns:auto 1fr auto; gap:0.4rem 0.9rem; align-items:center;';
+        pathSegs.forEach(function(seg) {
+            var nameEl = document.createElement('code');
+            nameEl.textContent = '/' + seg.value;
+            nameEl.style.cssText = 'background:var(--bg-card,#f0f0f0); padding:0.15rem 0.45rem; border-radius:4px; white-space:nowrap;';
+            var emptyEl = document.createElement('span');
+            var sel = document.createElement('select');
+            sel.style.cssText = 'width:auto; margin-bottom:0; padding:0.35rem 0.55rem; font-size:0.88rem;';
+            [['none','\u2014 ignore \u2014'],['artist','Artist'],['title','Title']].forEach(function(r) {
+                var opt = document.createElement('option');
+                opt.value = r[0]; opt.textContent = r[1]; sel.appendChild(opt);
+            });
+            sel.value = (state.pathRoles || {})[seg.index] || 'none';
+            (function(idx) {
+                sel.addEventListener('change', function() {
+                    state.pathRoles[idx] = sel.value;
+                    updateLyricsApiHiddenInputs(slot);
+                });
+            })(seg.index);
+            pathGrid.appendChild(nameEl);
+            pathGrid.appendChild(emptyEl);
+            pathGrid.appendChild(sel);
+        });
+        pathSec.appendChild(pathGrid);
+        area.appendChild(pathSec);
+    }
+    if (state.jsonObj !== null && typeof state.jsonObj === 'object') {
+        var treeHdr = document.createElement('p');
+        treeHdr.style.cssText = 'font-weight:600; margin-bottom:0.5rem;';
+        treeHdr.textContent = 'API response \u2014 click Select next to the field that contains the lyrics:';
+        area.appendChild(treeHdr);
+        var treeWrap = document.createElement('div');
+        treeWrap.id = 'lyrics-api-' + slot + '-tree';
+        treeWrap.style.cssText = 'font-family:monospace; font-size:0.87rem; background:var(--bg-card,#f8f9fb); border:1px solid var(--border-color,#ccc); border-radius:8px; padding:1rem; max-height:360px; overflow-y:auto;';
+        treeWrap.appendChild(buildJsonTreeEl(state.jsonObj, '', slot, 0));
+        area.appendChild(treeWrap);
+    } else if (state.jsonObj === null) {
+        var noJson = document.createElement('p');
+        noJson.style.cssText = 'color:var(--text-muted,#666); font-size:0.9rem; margin-top:0.5rem;';
+        noJson.textContent = 'The API did not return valid JSON. Check the URL and try again.';
+        area.appendChild(noJson);
+    }
+    var selRow = document.createElement('div');
+    selRow.id = 'lyrics-api-' + slot + '-selected-display';
+    selRow.style.cssText = 'margin-top:0.75rem; font-weight:500; font-size:0.95rem;';
+    if (state.selectedField) {
+        selRow.textContent = 'Lyrics field: ' + state.selectedField;
+        selRow.style.color = 'var(--status-success-text,#1f4f1f)';
+    } else {
+        selRow.textContent = 'No lyrics field selected yet \u2014 click Select on a field above.';
+        selRow.style.color = 'var(--text-muted,#666)';
+    }
+    area.appendChild(selRow);
+    updateLyricsApiHiddenInputs(slot);
+    highlightSelectedField(slot);
+    // Show timeout field and apply suggested value
+    var toRow = document.getElementById('lyrics-api-' + slot + '-timeout-row');
+    if (toRow) toRow.style.display = 'flex';
+    var toInput = document.getElementById('LYRICS_API_' + slot + '_TIMEOUT');
+    if (toInput && state.suggestedTimeout) {
+        toInput.value = state.suggestedTimeout;
+    }
+}
+
+function buildJsonTreeEl(obj, path, slot, depth) {
+    var el = document.createElement('div');
+    el.style.marginLeft = depth > 0 ? '1.2rem' : '0';
+    if (typeof obj !== 'object' || obj === null) { el.textContent = String(obj); return el; }
+    if (Array.isArray(obj)) {
+        var note = document.createElement('span');
+        note.style.color = '#888';
+        note.textContent = '[' + obj.length + ' items]';
+        el.appendChild(note);
+        obj.slice(0, 3).forEach(function(item, i) {
+            el.appendChild(buildJsonTreeEl(item, path + '[' + i + ']', slot, depth + 1));
+        });
+        return el;
+    }
+    Object.keys(obj).forEach(function(k) {
+        var childPath = path ? path + '.' + k : k;
+        var v = obj[k];
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex; align-items:flex-start; gap:0.4rem; margin-bottom:0.2rem; flex-wrap:wrap;';
+        var keyEl = document.createElement('span');
+        keyEl.style.cssText = 'color:var(--accent-color,#3675f1); font-weight:600; white-space:nowrap;';
+        keyEl.textContent = k + ': ';
+        row.appendChild(keyEl);
+        if (typeof v === 'object' && v !== null) {
+            var nested = document.createElement('div');
+            nested.style.flex = '1 1 100%';
+            nested.appendChild(buildJsonTreeEl(v, childPath, slot, depth + 1));
+            row.appendChild(nested);
+        } else {
+            var strVal = v === null ? 'null' : String(v);
+            var isText = typeof v === 'string' && v.length > 0;
+            var isLong = isText && (v.length > 30 || v.indexOf('\n') !== -1);
+            var valEl = document.createElement('span');
+            valEl.textContent = strVal.length > 80 ? strVal.substring(0, 80) + '\u2026' : strVal;
+            valEl.style.cssText = 'flex:1; min-width:0; word-break:break-word; color:' + (typeof v === 'string' ? 'var(--text-main,#111)' : '#888') + ';';
+            row.appendChild(valEl);
+            if (isText) {
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.textContent = 'Select';
+                btn.dataset.fieldPath = childPath;
+                btn.style.cssText = 'font-size:0.78rem; padding:0.15rem 0.55rem; white-space:nowrap; border-radius:5px; border:none; cursor:pointer; flex-shrink:0;' +
+                    (isLong ? 'background:var(--accent-color,#3675f1); color:#fff;' : 'background:var(--bg-card,#e0e0e0); color:var(--text-main,#333);');
+                (function(cp, s) {
+                    btn.addEventListener('click', function() { selectLyricsField(s, cp); });
+                })(childPath, slot);
+                row.appendChild(btn);
+            }
+        }
+        el.appendChild(row);
+    });
+    return el;
+}
+
+function selectLyricsField(slot, path) {
+    lyricsApiState[slot].selectedField = path;
+    var disp = document.getElementById('lyrics-api-' + slot + '-selected-display');
+    if (disp) { disp.textContent = 'Lyrics field: ' + path; disp.style.color = 'var(--status-success-text,#1f4f1f)'; }
+    highlightSelectedField(slot);
+    updateLyricsApiHiddenInputs(slot);
+}
+
+function highlightSelectedField(slot) {
+    var tree = document.getElementById('lyrics-api-' + slot + '-tree');
+    if (!tree) return;
+    var selectedPath = lyricsApiState[slot].selectedField;
+    tree.querySelectorAll('button[data-field-path]').forEach(function(btn) {
+        if (btn.dataset.fieldPath === selectedPath) {
+            btn.textContent = '\u2713 Selected';
+            btn.style.background = 'var(--status-success-bg,#e6f4ea)';
+            btn.style.color = 'var(--status-success-text,#1f4f1f)';
+        } else if (btn.textContent === '\u2713 Selected') {
+            btn.textContent = 'Select';
+            btn.style.background = 'var(--bg-card,#e0e0e0)';
+            btn.style.color = 'var(--text-main,#333)';
+        }
+    });
+}
+
+function buildUrlTemplate(exampleUrl, paramRoles, params, pathSegments, pathRoles) {
+    try {
+        var parsed = new URL(exampleUrl);
+        var artistParam = null, titleParam = null, apikeyParam = null, apikeyValue = null;
+        Object.keys(paramRoles).forEach(function(pname) {
+            var role = paramRoles[pname];
+            if      (role === 'artist') artistParam = pname;
+            else if (role === 'title')  titleParam  = pname;
+            else if (role === 'apikey') { apikeyParam = pname; apikeyValue = String(params[pname] || ''); }
+        });
+        var artistInPath = false, titleInPath = false;
+        (pathSegments || []).forEach(function(seg) {
+            var role = (pathRoles || {})[seg.index] || 'none';
+            if (role === 'artist') artistInPath = true;
+            if (role === 'title')  titleInPath  = true;
+        });
+        if ((!artistParam && !artistInPath) || (!titleParam && !titleInPath)) return null;
+        // Substitute dynamic path segments
+        var pathParts = parsed.pathname.split('/');
+        var segIdx = 0;
+        var allSegs = pathSegments || [];
+        for (var i = 0; i < pathParts.length; i++) {
+            if (!pathParts[i]) { continue; }
+            var thisSeg = null;
+            for (var j = 0; j < allSegs.length; j++) {
+                if (allSegs[j].index === segIdx) { thisSeg = allSegs[j]; break; }
+            }
+            if (thisSeg) {
+                var segRole = (pathRoles || {})[thisSeg.index] || 'none';
+                if      (segRole === 'artist') pathParts[i] = '{artist}';
+                else if (segRole === 'title')  pathParts[i] = '{title}';
+            }
+            segIdx++;
+        }
+        var newPath = pathParts.join('/');
+        var newParams = new URLSearchParams();
+        (new URLSearchParams(parsed.search)).forEach(function(val, key) {
+            var role = paramRoles[key] || 'none';
+            if      (role === 'artist') newParams.set(key, '{artist}');
+            else if (role === 'title')  newParams.set(key, '{title}');
+            else if (role === 'apikey') { /* omit from template */ }
+            else                        newParams.set(key, val);
+        });
+        var qs = newParams.toString()
+            .replace(/%7Bartist%7D/gi, '{artist}')
+            .replace(/%7Btitle%7D/gi,  '{title}');
+        var template = parsed.origin + newPath + (qs ? '?' + qs : '');
+        return {template: template, artistParam: artistParam, titleParam: titleParam, apikeyParam: apikeyParam, apikeyValue: apikeyValue};
+    } catch(e) { return null; }
+}
+
+function updateLyricsApiHiddenInputs(slot) {
+    var state = lyricsApiState[slot];
+    var result = buildUrlTemplate(state.exampleUrl, state.paramRoles, state.params, state.pathSegments, state.pathRoles);
+    var pre = 'LYRICS_API_' + slot + '_';
+    function setVal(id, val) { var el = document.getElementById(id); if (el) el.value = val; }
+    if (result) {
+        setVal(pre + 'URL_TEMPLATE', result.template);
+        setVal(pre + 'ARTIST_PARAM', result.artistParam || '');
+        setVal(pre + 'TITLE_PARAM',  result.titleParam  || '');
+        setVal(pre + 'APIKEY_PARAM', result.apikeyParam || '');
+        if (result.apikeyValue !== null) setVal(pre + 'APIKEY_VALUE', result.apikeyValue);
+    }
+    if (state.selectedField !== null) setVal(pre + 'LYRICS_FIELD', state.selectedField);
+    if (result && state.selectedField) {
+        showLyricsApiSlotSummary(slot, result.template, result.artistParam, result.titleParam,
+            state.selectedField, result.apikeyParam, !!(result.apikeyValue));
+    }
+}
+
+function showLyricsApiSlotSummary(slot, template, artistParam, titleParam, lyricsField, apikeyParam, apikeyHasVal) {
+    var summary = document.getElementById('lyrics-api-' + slot + '-config-summary');
+    if (!summary) return;
+    summary.style.display = 'block';
+    summary.innerHTML = '';
+    // Header row: title + delete button
+    var headerRow = document.createElement('div');
+    headerRow.style.cssText = 'display:flex; align-items:center; justify-content:space-between; margin-bottom:0.6rem;';
+    var title = document.createElement('p');
+    title.style.cssText = 'font-weight:700; margin:0; color:var(--status-success-text,#1f4f1f);';
+    title.textContent = '\u2713 Slot ' + slot + ' configured \u2014 will be saved with the form';
+    var deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.textContent = '\u2715 Delete';
+    deleteBtn.style.cssText = 'background:var(--status-failure-bg,#fdecea); color:var(--status-failure-text,#7a1f1f); border:1px solid var(--status-failure-border,#f5c2c0); font-weight:600; font-size:0.85rem; padding:0.3rem 0.7rem; border-radius:6px; cursor:pointer; white-space:nowrap;';
+    (function(s, tpl, ap, tp, lf, akp, akv) {
+        deleteBtn.addEventListener('click', function() { pendingDeleteLyricsApiSlot(s, tpl, ap, tp, lf, akp, akv); });
+    })(slot, template, artistParam, titleParam, lyricsField, apikeyParam, apikeyHasVal);
+    headerRow.appendChild(title);
+    headerRow.appendChild(deleteBtn);
+    summary.appendChild(headerRow);
+    var info = [['URL template', template]];
+    if (artistParam) info.push(['Artist param', artistParam]);
+    if (titleParam)  info.push(['Title param',  titleParam]);
+    info.push(['Lyrics field', lyricsField]);
+    if (apikeyParam) info.push(['API key param', apikeyParam]);
+    if (apikeyHasVal) info.push(['API key', '(set)']);
+    var dl = document.createElement('dl');
+    dl.style.cssText = 'margin:0; display:grid; grid-template-columns:auto 1fr; gap:0.2rem 1rem; font-size:0.92rem;';
+    info.forEach(function(pair) {
+        var dt = document.createElement('dt'); dt.style.fontWeight = '600'; dt.textContent = pair[0];
+        var dd = document.createElement('dd'); dd.style.cssText = 'margin:0; word-break:break-all;'; dd.textContent = pair[1];
+        dl.appendChild(dt); dl.appendChild(dd);
+    });
+    summary.appendChild(dl);
+    var editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.textContent = 'Re-analyze';
+    editBtn.style.cssText = 'margin-top:0.75rem; background:var(--bg-input,#fff); color:var(--text-main,#333); border:1px solid var(--border-color,#ccc); font-weight:400;';
+    (function(s) {
+        editBtn.addEventListener('click', function() {
+            var inputRow = document.getElementById('lyrics-api-' + s + '-input-row');
+            if (inputRow) inputRow.style.display = 'flex';
+            var analyzeArea = document.getElementById('lyrics-api-' + s + '-analyze-area');
+            if (analyzeArea && lyricsApiState[s].jsonObj) analyzeArea.style.display = 'block';
+        });
+    })(slot);
+    summary.appendChild(editBtn);
+}
+
+// Show a "pending deletion" warning — hidden inputs are cleared so the next Save
+// will commit the deletion, but the user can Undo before that.
+function pendingDeleteLyricsApiSlot(slot, template, artistParam, titleParam, lyricsField, apikeyParam, apikeyHasVal) {
+    var pre = 'LYRICS_API_' + slot + '_';
+    // Snapshot current values for Undo
+    var snapshot = {};
+    ['URL_TEMPLATE','ARTIST_PARAM','TITLE_PARAM','LYRICS_FIELD','APIKEY_PARAM','APIKEY_VALUE','TIMEOUT'].forEach(function(k) {
+        var el = document.getElementById(pre + k);
+        snapshot[k] = el ? el.value : '';
+    });
+    // Clear hidden inputs so Save will delete this slot
+    ['URL_TEMPLATE','ARTIST_PARAM','TITLE_PARAM','LYRICS_FIELD','APIKEY_PARAM','APIKEY_VALUE'].forEach(function(k) {
+        var el = document.getElementById(pre + k);
+        if (el) el.value = '';
+    });
+    var toInput = document.getElementById(pre + 'TIMEOUT');
+    if (toInput) toInput.value = '5';
+    // Replace summary with a warning banner
+    var summary = document.getElementById('lyrics-api-' + slot + '-config-summary');
+    if (!summary) return;
+    summary.style.display = 'block';
+    summary.style.background = 'var(--status-warning-bg,#fff8e1)';
+    summary.style.borderColor = 'var(--status-warning-border,#ffe082)';
+    summary.innerHTML = '';
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.5rem;';
+    var msg = document.createElement('span');
+    msg.style.cssText = 'font-weight:600; color:var(--status-warning-text,#7a5c00);';
+    msg.textContent = '\u26a0\ufe0f Slot ' + slot + ' will be deleted when you save the form.';
+    var undoBtn = document.createElement('button');
+    undoBtn.type = 'button';
+    undoBtn.textContent = 'Undo';
+    undoBtn.style.cssText = 'font-weight:600; font-size:0.85rem; padding:0.3rem 0.8rem; border-radius:6px; cursor:pointer;';
+    (function(s, snap, tpl, ap, tp, lf, akp, akv) {
+        undoBtn.addEventListener('click', function() {
+            // Restore hidden inputs
+            ['URL_TEMPLATE','ARTIST_PARAM','TITLE_PARAM','LYRICS_FIELD','APIKEY_PARAM','APIKEY_VALUE','TIMEOUT'].forEach(function(k) {
+                var el = document.getElementById('LYRICS_API_' + s + '_' + k);
+                if (el) el.value = snap[k] || '';
+            });
+            // Restore summary card
+            summary.style.background = '';
+            summary.style.borderColor = '';
+            showLyricsApiSlotSummary(s, tpl, ap, tp, lf, akp, akv);
+        });
+    })(slot, snapshot, template, artistParam, titleParam, lyricsField, apikeyParam, apikeyHasVal);
+    row.appendChild(msg);
+    row.appendChild(undoBtn);
+    summary.appendChild(row);
+}
+
+function clearLyricsApiSlot(slot) {
+    var state = lyricsApiState[slot];
+    state.exampleUrl = ''; state.params = {}; state.paramRoles = {};
+    state.pathSegments = []; state.pathRoles = {};
+    state.jsonObj = null; state.selectedField = null; state.suggestedTimeout = null;
+    var pre = 'LYRICS_API_' + slot + '_';
+    ['URL_TEMPLATE','ARTIST_PARAM','TITLE_PARAM','LYRICS_FIELD','APIKEY_PARAM','APIKEY_VALUE'].forEach(function(k) {
+        var el = document.getElementById(pre + k);
+        if (el) { el.value = ''; el.dataset.originalValue = ''; }
+    });
+    var toInput = document.getElementById(pre + 'TIMEOUT');
+    if (toInput) { toInput.value = '5'; toInput.dataset.originalValue = '5'; }
+    var summary = document.getElementById('lyrics-api-' + slot + '-config-summary');
+    if (summary) { summary.style.display = 'none'; summary.innerHTML = ''; summary.style.background = ''; summary.style.borderColor = ''; }
+    var analyzeArea = document.getElementById('lyrics-api-' + slot + '-analyze-area');
+    if (analyzeArea) { analyzeArea.style.display = 'none'; analyzeArea.innerHTML = ''; }
+    var statusRow = document.getElementById('lyrics-api-' + slot + '-analyze-status');
+    if (statusRow) statusRow.style.display = 'none';
+    var toRow = document.getElementById('lyrics-api-' + slot + '-timeout-row');
+    if (toRow) toRow.style.display = 'none';
+    var inputRow = document.getElementById('lyrics-api-' + slot + '-input-row');
+    if (inputRow) { inputRow.style.display = 'flex'; }
+    var urlInput = document.getElementById('lyrics-api-' + slot + '-example-url');
+    if (urlInput) urlInput.value = '';
+}
+
+document.getElementById('lyrics-api-1-analyze-btn').addEventListener('click', function() { analyzeLyricsApiSlot(1); });
+document.getElementById('lyrics-api-2-analyze-btn').addEventListener('click', function() { analyzeLyricsApiSlot(2); });
+
 loadSetupData();
