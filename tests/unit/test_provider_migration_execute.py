@@ -311,3 +311,129 @@ class TestExecuteProviderMigration:
         sqls = [c[0][0] for c in calls]
         upd_voyager = [s for s in sqls if 'UPDATE voyager_index_data' in s or 'UPDATE VOYAGER_INDEX_DATA' in s.upper()]
         assert len(upd_voyager) >= 1
+
+
+# ---------------------------------------------------------------------------
+# _write_provider_to_app_config — MUSIC_LIBRARIES handling
+# ---------------------------------------------------------------------------
+
+class TestWriteProviderToAppConfigMusicLibraries:
+    """The migration wizard stores the user's library checkbox selection in
+    ``migration_session.state['selected_libraries']`` and
+    ``_write_provider_to_app_config`` is responsible for translating it into
+    ``app_config.MUSIC_LIBRARIES`` at commit time.
+
+    The same write must also wipe the SOURCE provider's old filter value —
+    because ``MUSIC_LIBRARIES`` is a single shared key, overwriting/deleting
+    it implicitly removes whatever the source provider had set.
+    """
+
+    def _run(self, mig, selected_libraries):
+        """Invoke _write_provider_to_app_config with a fresh fake cursor.
+
+        Returns (executed_sqls, params_list) where each entry in
+        ``params_list`` is the params tuple passed to cur.execute (or None).
+        """
+        cur = MagicMock()
+        executed = []
+        params = []
+
+        def _execute(sql, p=None):
+            executed.append(sql.strip() if isinstance(sql, str) else str(sql))
+            params.append(p)
+            up = sql.upper() if isinstance(sql, str) else ''
+            if 'INFORMATION_SCHEMA' in up and 'APP_CONFIG' in up:
+                cur.fetchone.return_value = (True,)
+        cur.execute.side_effect = _execute
+
+        target_creds = {'url': 'http://nav.local', 'user': 'u', 'password': 'p'}
+        mig._write_provider_to_app_config(
+            cur, 'navidrome', target_creds,
+            selected_libraries=selected_libraries,
+        )
+        return executed, params
+
+    def test_none_selection_deletes_music_libraries_row(self, mig):
+        executed, params = self._run(mig, selected_libraries=None)
+        joined = '\n'.join(executed).upper()
+        assert "DELETE FROM APP_CONFIG WHERE KEY = 'MUSIC_LIBRARIES'" in joined, \
+            "None selection must DELETE the MUSIC_LIBRARIES row so post-migration scans use 'scan everything' (and the source provider's old filter is wiped)."
+
+    def test_empty_list_selection_also_deletes(self, mig):
+        executed, _ = self._run(mig, selected_libraries=[])
+        joined = '\n'.join(executed).upper()
+        assert "DELETE FROM APP_CONFIG WHERE KEY = 'MUSIC_LIBRARIES'" in joined
+
+    def test_non_empty_selection_upserts_comma_joined_value(self, mig):
+        executed, params = self._run(
+            mig, selected_libraries=['Main Music', 'Podcasts'],
+        )
+        # Find the MUSIC_LIBRARIES upsert
+        ml_upserts = [
+            (sql, p) for sql, p in zip(executed, params)
+            if 'MUSIC_LIBRARIES' in sql.upper() and 'INSERT' in sql.upper()
+        ]
+        assert len(ml_upserts) == 1, \
+            "Non-empty selection must UPSERT MUSIC_LIBRARIES, not delete it."
+        _, upsert_params = ml_upserts[0]
+        # params is a tuple (value,) for the INSERT statement
+        assert upsert_params == ('Main Music,Podcasts',)
+
+    def test_whitespace_only_entries_are_filtered(self, mig):
+        executed, params = self._run(
+            mig, selected_libraries=['Main Music', '  ', '', 'Podcasts'],
+        )
+        ml_upserts = [
+            (sql, p) for sql, p in zip(executed, params)
+            if 'MUSIC_LIBRARIES' in sql.upper() and 'INSERT' in sql.upper()
+        ]
+        assert len(ml_upserts) == 1
+        assert ml_upserts[0][1] == ('Main Music,Podcasts',)
+
+    def test_provider_creds_still_written_alongside(self, mig):
+        """Sanity: the existing behavior (writing MEDIASERVER_TYPE + creds) is
+        unchanged when selected_libraries is supplied."""
+        executed, _ = self._run(mig, selected_libraries=['A'])
+        joined = '\n'.join(executed).upper()
+        assert 'INSERT INTO APP_CONFIG' in joined
+        # MEDIASERVER_TYPE and NAVIDROME_* keys should all be written
+        # (exact statement text contains them as parameter values, not SQL,
+        # but the presence of multiple INSERT statements is sufficient).
+        insert_count = joined.count('INSERT INTO APP_CONFIG')
+        assert insert_count >= 2, "expected multiple app_config upserts (type + creds + MUSIC_LIBRARIES)"
+
+
+class TestExecuteProviderMigrationForwardsSelectedLibraries:
+    """``execute_provider_migration`` must pull ``selected_libraries`` from the
+    session state and forward it to ``_run_migration_transaction``, otherwise
+    the checkbox selection in the UI never lands in ``app_config``."""
+
+    def test_state_selected_libraries_reaches_write_provider(self, mig):
+        state = _session_state({'old_1': 'new_1'})
+        state['selected_libraries'] = ['Main', 'Extra']
+        session_row = _make_session_row(state=state)
+        _install_fake_psycopg2(mig, session_row)
+
+        # Spy on the transaction helper — we only care that selected_libraries
+        # arrives here.
+        with patch.object(mig, '_run_migration_transaction') as mock_tx:
+            mig.execute_provider_migration(42)
+
+        assert mock_tx.called
+        kwargs = mock_tx.call_args.kwargs
+        assert kwargs.get('selected_libraries') == ['Main', 'Extra']
+
+    def test_missing_state_selected_libraries_forwarded_as_none(self, mig):
+        """Pre-feature sessions have no ``selected_libraries`` key; the code
+        must not crash and must default to None (= DELETE MUSIC_LIBRARIES at
+        commit time, wiping any stale filter from the source provider)."""
+        state = _session_state({'old_1': 'new_1'})
+        # No 'selected_libraries' key
+        session_row = _make_session_row(state=state)
+        _install_fake_psycopg2(mig, session_row)
+
+        with patch.object(mig, '_run_migration_transaction') as mock_tx:
+            mig.execute_provider_migration(1)
+
+        kwargs = mock_tx.call_args.kwargs
+        assert kwargs.get('selected_libraries') is None

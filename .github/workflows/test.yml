@@ -10,8 +10,23 @@ jobs:
   integration-test:
     runs-on: ubuntu-latest
 
+    permissions:
+      # Allow the workflow to commit the auto-generated
+      # test/lyrics_expected.json back to main on first run.
+      contents: write
+
     steps:
     - uses: actions/checkout@v4
+      with:
+        # Need a real (non-detached) checkout so we can push back the
+        # auto-recorded test/lyrics_expected.json. On pull_request events
+        # we explicitly check out the PR head branch (not the merge ref)
+        # so `git push` lands on the PR branch and the change becomes
+        # visible in the PR before merge.
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+        ref: ${{ github.event.pull_request.head.ref || github.ref }}
+        repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -46,6 +61,57 @@ jobs:
         echo "Models downloaded successfully"
         ls -lh test/models/
 
+    - name: Download HuggingFace tokenizer cache (release v4.0.0-model)
+      run: |
+        # The CLAP analyzer loads roberta-base via AutoTokenizer.from_pretrained(..., local_files_only=True).
+        # Reuse the same huggingface_models.tar.gz bundled in the GitHub release that the
+        # Dockerfile uses, and extract it into an HF cache directory under test/.
+        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"
+        hf_cache_dir="${GITHUB_WORKSPACE}/test/.hf_cache"
+        mkdir -p "$hf_cache_dir"
+        echo "Downloading huggingface_models.tar.gz..."
+        curl -L "${base_url}/huggingface_models.tar.gz" -o /tmp/huggingface_models.tar.gz
+        echo "Extracting into ${hf_cache_dir}..."
+        tar -xzf /tmp/huggingface_models.tar.gz -C "$hf_cache_dir"
+        rm -f /tmp/huggingface_models.tar.gz
+        if [ ! -d "$hf_cache_dir/hub" ]; then
+          echo "ERROR: extraction did not produce a hub/ directory" >&2
+          ls -lah "$hf_cache_dir"
+          exit 1
+        fi
+        echo "HF cache ready:"
+        du -sh "$hf_cache_dir"
+        # Expose HF_HOME to subsequent steps so transformers resolves the cache offline.
+        echo "HF_HOME=$hf_cache_dir" >> "$GITHUB_ENV"
+
+    - name: Download lyrics model bundle (release v4.0.0-model)
+      run: |
+        # The Dockerfile downloads lyrics_model.tar.gz from the v4.0.0-model
+        # release and extracts its contents flat into /app/model/. The lyrics
+        # transcriber then loads e5-base-v2 from
+        # ${LYRICS_MODEL_DIR}/e5-base-v2/ (NOT from a HF Hub cache).
+        # We mirror that layout under test/models/.
+        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"
+        mkdir -p test/models
+        if [ ! -d test/models/e5-base-v2 ]; then
+          echo "Downloading lyrics_model.tar.gz..."
+          curl -L "${base_url}/lyrics_model.tar.gz" -o /tmp/lyrics_model.tar.gz
+          rm -rf /tmp/lyrics_unpack
+          mkdir -p /tmp/lyrics_unpack
+          tar -xzf /tmp/lyrics_model.tar.gz -C /tmp/lyrics_unpack
+          if [ -d /tmp/lyrics_unpack/lyrics_model ]; then
+            cp -r /tmp/lyrics_unpack/lyrics_model/* test/models/
+          else
+            cp -r /tmp/lyrics_unpack/* test/models/
+          fi
+          rm -rf /tmp/lyrics_unpack /tmp/lyrics_model.tar.gz
+        fi
+        echo "test/models/ after extraction:"
+        ls -la test/models/
+        echo "e5-base-v2/ contents:"
+        ls -la test/models/e5-base-v2/ || true
+        echo "LYRICS_MODEL_DIR=${GITHUB_WORKSPACE}/test/models" >> "$GITHUB_ENV"
+
     - name: Verify test files exist
       run: |
         echo "Checking for config.py..."
@@ -61,9 +127,49 @@ jobs:
       run: |
         # Run the MusiCNN integration test
         pytest test/test_analysis_integration.py -s -v --tb=short
-        
+
         # Run the CLAP integration test
         pytest test/test_clap_analysis_integration.py -s -v --tb=short
+
+    - name: Run lyrics integration test
+      run: |
+        # On first run test/lyrics_expected.json does not exist yet: the
+        # test enters RECORD mode automatically, writes the file and exits
+        # successfully. The next step then commits it back to main so
+        # subsequent runs pin against it (cosine similarity >= 0.99).
+        pytest test/test_lyrics_analysis_integration.py -s -v --tb=short
+
+    - name: Commit recorded lyrics expected vectors
+      # Push back the auto-recorded vectors on:
+      #   * push to main
+      #   * pull_request originating from the SAME repository (forks can't
+      #     get write permission via GITHUB_TOKEN, so we skip them).
+      if: |
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name == github.repository)
+      run: |
+        if [ ! -f test/lyrics_expected.json ]; then
+          echo "No test/lyrics_expected.json produced - nothing to commit."
+          exit 0
+        fi
+        # Only commit if the file is new or actually changed.
+        if git diff --quiet -- test/lyrics_expected.json && \
+           ! git status --porcelain test/lyrics_expected.json | grep -q '^??'; then
+          echo "test/lyrics_expected.json is unchanged - skipping commit."
+          exit 0
+        fi
+        git config user.name  "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add test/lyrics_expected.json
+        git commit -m "test(lyrics): record expected vectors for integration test"
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          target_branch="${{ github.event.pull_request.head.ref }}"
+        else
+          target_branch="main"
+        fi
+        echo "Pushing to branch: $target_branch"
+        git push origin "HEAD:${target_branch}"
 
     - name: Upload test results
       if: always()

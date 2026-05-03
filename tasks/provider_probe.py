@@ -105,7 +105,12 @@ def _normalize_provider_type(provider_type):
 
 def fetch_all_tracks(provider_type, creds):
     t = _normalize_provider_type(provider_type)
-    items = mediaserver.get_all_songs(user_creds=creds, provider_type=t)
+    # ``apply_filter=False``: ``config.MUSIC_LIBRARIES`` reflects the *source*
+    # provider's folder selection, not the target's, so applying it during a
+    # migration dry-run would falsely zero out the target catalog. The
+    # migration wizard collects the target's filter choice via its own
+    # checkbox UI and writes ``MUSIC_LIBRARIES`` post-execute.
+    items = mediaserver.get_all_songs(user_creds=creds, provider_type=t, apply_filter=False)
     return [_normalize_track(item) for item in items or []]
 
 
@@ -123,3 +128,13 @@ def get_album_tracks(provider_type, creds, album_id):
 def test_connection(provider_type, creds):
     t = _normalize_provider_type(provider_type)
     return mediaserver.test_connection(user_creds=creds, provider_type=t)
+
+
+def list_libraries(provider_type, creds):
+    """Return the target provider's music libraries as a list of {id, name}.
+
+    Used by the migration assistant to populate the library-selection
+    checkboxes in step 2 without mutating live config.
+    """
+    t = _normalize_provider_type(provider_type)
+    return mediaserver.list_libraries(user_creds=creds, provider_type=t)

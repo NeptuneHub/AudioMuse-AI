@@ -1,5 +1,6 @@
 #AudioMuse-AI/config.py
 import os
+import tempfile
 
 # --- Media Server Type ---
 MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, mpd, emby
@@ -25,6 +26,12 @@ MUSIC_LIBRARIES = os.environ.get("MUSIC_LIBRARIES", "")
 # Maximum number of items to fetch during the connection probe.
 # Set to 0 to scan all top-played items, or a small positive integer to keep the probe fast.
 PROBE_TOP_PLAYED_LIMIT = int(os.environ.get("PROBE_TOP_PLAYED_LIMIT", "1"))
+# Hard cap on the number of unmatched albums returned to the migration
+# wizard's step-4 review list. Real libraries can produce thousands of
+# unmatched groups (e.g. wrong path format) and the page becomes unusable
+# beyond a couple hundred entries. The full count is still surfaced as a
+# warning so the user knows the list is truncated.
+MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT = int(os.environ.get("MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT", "200"))
 TEMP_DIR = "/app/temp_audio"  # Always use /app/temp_audio
 
 
@@ -90,7 +97,7 @@ MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music"
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v1.0.4"
+APP_VERSION = "v1.1.0"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -305,6 +312,82 @@ EMBEDDING_DIMENSION = 200
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
+# Lyrics analysis feature toggle. When false, the lyrics step is skipped entirely.
+LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
+LYRICS_LLM_ENABLED = os.environ.get("LYRICS_LLM_ENABLED", "false").lower() == "true"
+# When true, look up lyrics from user-configured external APIs before falling back to Whisper.
+LYRICS_API_ENABLE = os.environ.get("LYRICS_API_ENABLE", "true").lower() == "true"
+# User-configurable lyrics API slots (up to 2).
+# Each slot stores: url_template, lyrics_field, artist_param, title_param, api_key_param, api_key_value
+# e.g. LYRICS_API_1_URL_TEMPLATE = "https://lrclib.net/api/get?{artist_param}={artist}&{title_param}={title}"
+LYRICS_API_1_URL_TEMPLATE  = os.environ.get("LYRICS_API_1_URL_TEMPLATE",  "")
+LYRICS_API_1_ARTIST_PARAM  = os.environ.get("LYRICS_API_1_ARTIST_PARAM",  "artist_name")
+LYRICS_API_1_TITLE_PARAM   = os.environ.get("LYRICS_API_1_TITLE_PARAM",   "track_name")
+LYRICS_API_1_LYRICS_FIELD  = os.environ.get("LYRICS_API_1_LYRICS_FIELD",  "plainLyrics")
+LYRICS_API_1_APIKEY_PARAM  = os.environ.get("LYRICS_API_1_APIKEY_PARAM",  "")
+LYRICS_API_1_APIKEY_VALUE  = os.environ.get("LYRICS_API_1_APIKEY_VALUE",  "")
+LYRICS_API_1_TIMEOUT       = float(os.environ.get("LYRICS_API_1_TIMEOUT",   "5.0"))
+LYRICS_API_2_URL_TEMPLATE  = os.environ.get("LYRICS_API_2_URL_TEMPLATE",  "")
+LYRICS_API_2_ARTIST_PARAM  = os.environ.get("LYRICS_API_2_ARTIST_PARAM",  "artist")
+LYRICS_API_2_TITLE_PARAM   = os.environ.get("LYRICS_API_2_TITLE_PARAM",   "title")
+LYRICS_API_2_LYRICS_FIELD  = os.environ.get("LYRICS_API_2_LYRICS_FIELD",  "lyrics")
+LYRICS_API_2_APIKEY_PARAM  = os.environ.get("LYRICS_API_2_APIKEY_PARAM",  "")
+LYRICS_API_2_APIKEY_VALUE  = os.environ.get("LYRICS_API_2_APIKEY_VALUE",  "")
+LYRICS_API_2_TIMEOUT       = float(os.environ.get("LYRICS_API_2_TIMEOUT",   "5.0"))
+# Run Whisper + Qwen on CUDA when available. "auto" probes torch.cuda.is_available()
+# at load time; "true" forces GPU; "false" forces CPU. Note: GPU Qwen also requires
+# a CUDA-enabled llama-cpp-python wheel (default PyPI wheel is CPU only).
+LYRICS_USE_GPU = os.environ.get("LYRICS_USE_GPU", "auto").lower()
+LYRICS_WHISPER_MODEL = os.environ.get("LYRICS_WHISPER_MODEL", "small")
+LYRICS_LLM_MODEL_PATH = os.environ.get("LYRICS_LLM_MODEL_PATH", "/app/model/qwen2.5-1.5b-instruct-q4_k_m.gguf")
+LYRICS_SONGS_DIR = os.environ.get("LYRICS_SONGS_DIR", "/app/songs")
+LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
+# Writable directory for on-demand Marian translator downloads. Kept separate
+# from the bundled HF cache so stale locks / restrictive perms there cannot
+# block the translator. Default lives under /tmp; mount a persistent volume
+# here in production to avoid re-downloading language packs on each restart.
+LYRICS_MARIAN_CACHE_DIR = os.environ.get(
+    "LYRICS_MARIAN_CACHE_DIR",
+    os.path.join(tempfile.gettempdir(), "audiomuse-marian-cache"),
+)
+LYRICS_LLM_MODEL_FILENAME = 'qwen2.5-1.5b-instruct-q4_k_m.gguf'
+LYRICS_LLM_MODEL_URL = 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf'
+LYRICS_MAX_SONGS_TO_ANALYZE = 1000
+LYRICS_SUPPORTED_AUDIO_EXTENSIONS = {
+    '.wav', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.aac', '.aiff', '.aif', '.mp4'
+}
+LYRICS_DEFAULT_SAMPLE_RATE = 16000
+LYRICS_DEFAULT_SEGMENT_DURATION = 60.0
+LYRICS_DEFAULT_ROBERTA_MIN_WORDS = 50
+LYRICS_DEFAULT_TOPIC_EMBEDDING_MODEL = 'intfloat/e5-base-v2'
+LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR = os.path.join(LYRICS_MODEL_DIR, 'e5-base-v2')
+LYRICS_DEFAULT_MARIAN_PREFIX = 'Helsinki-NLP/opus-mt-{}-en'
+# Dimension of the e5-base-v2 sentence embedding stored in lyrics_embedding.embedding
+# and used to build the lyrics voyager index.
+LYRICS_EMBEDDING_DIMENSION = int(os.environ.get("LYRICS_EMBEDDING_DIMENSION", "768"))
+
+# --- Sentinel vectors for tracks with no detectable lyrics ("instrumental") ---
+# These give us three things at once:
+#   1. analyze_lyrics() can still write a row, so future runs skip the track
+#      instead of re-attempting transcription every time.
+#   2. The vectors are non-zero so cosine similarity is always well-defined.
+#   3. Querying the index with the same sentinel lists every instrumental at
+#      the top, while real songs cannot match them: the e5 sentinel sits on
+#      a single basis axis (cosine to typical e5 embeddings is ~0), and the
+#      axis sentinel is uniformly negative, which a softmax-derived axis_vector
+#      can never produce.
+import numpy as _np
+
+LYRICS_INSTRUMENTAL_EMBEDDING = _np.zeros(LYRICS_EMBEDDING_DIMENSION, dtype=_np.float32)
+LYRICS_INSTRUMENTAL_EMBEDDING[0] = 1.0
+LYRICS_INSTRUMENTAL_EMBEDDING.flags.writeable = False
+
+# Fill value used for every entry of the instrumental axis_vector. Any negative
+# constant works because real axis_vectors come from softmax (always >= 0), so
+# they cannot occupy the negative orthant. Hardcoded so we never compute
+# sqrt() at runtime.
+LYRICS_INSTRUMENTAL_AXIS_FILL = -0.19245009  # = -1 / sqrt(27), precomputed
+
 # Split CLAP models: audio model for analysis, text model for search
 # Default points to the distilled student model (EfficientAT, epoch 36).
 # The companion external-data file (model_epoch_36.onnx.data) must sit next to it.

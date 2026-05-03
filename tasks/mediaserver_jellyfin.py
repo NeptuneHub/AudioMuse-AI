@@ -73,6 +73,31 @@ def _get_target_library_ids():
         return set()
 
 
+def list_libraries(user_creds=None):
+    """List all music libraries exposed by a Jellyfin server.
+
+    Unlike `_get_target_library_ids()`, this does NOT read `config.MUSIC_LIBRARIES`
+    and does NOT filter — it returns every music library the server reports, so the
+    UI can render a checkbox list. Accepts optional `user_creds` so the setup
+    wizard test flow and the migration assistant can probe a target without
+    mutating global config.
+    """
+    base_url = (user_creds.get('url') if user_creds and user_creds.get('url') else config.JELLYFIN_URL).rstrip('/')
+    url = f"{base_url}/Library/VirtualFolders"
+    try:
+        r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        all_libraries = r.json() or []
+        return [
+            {'id': lib.get('ItemId'), 'name': lib.get('Name')}
+            for lib in all_libraries
+            if isinstance(lib, dict) and lib.get('CollectionType') == 'music' and lib.get('ItemId') and lib.get('Name')
+        ]
+    except Exception as e:
+        logger.error(f"Jellyfin list_libraries failed at '{url}': {e}", exc_info=True)
+        return []
+
+
 def _jellyfin_base_url(user_creds=None):
     return (user_creds.get('url') if user_creds and user_creds.get('url') else config.JELLYFIN_URL).rstrip('/')
 
@@ -476,6 +501,27 @@ def get_last_played_time(item_id, user_creds=None):
         return r.json().get("UserData", {}).get("LastPlayedDate")
     except Exception as e:
         logger.error(f"Jellyfin get_last_played_time failed for item {item_id}, user {user_id}: {e}", exc_info=True)
+        return None
+
+def get_lyrics(track_id: str, timeout: float = 2.5):
+    """Fetch embedded lyrics from Jellyfin for a given track ID.
+
+    Uses the Jellyfin Lyrics API (available since Jellyfin 10.8).
+    Returns plain text (newline-separated lines) or None.
+    """
+    try:
+        url = f"{config.JELLYFIN_URL}/Items/{track_id}/Lyrics"
+        r = requests.get(url, headers=config.HEADERS, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        # Response: {"Lyrics": [{"Text": "line", "Start": 0}, ...]}
+        lyrics_lines = data.get('Lyrics') or []
+        if not lyrics_lines:
+            return None
+        text = '\n'.join(line.get('Text', '') for line in lyrics_lines if line.get('Text'))
+        return text.strip() or None
+    except Exception as exc:
+        logger.debug('Jellyfin get_lyrics failed for %s: %s', track_id, exc)
         return None
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):

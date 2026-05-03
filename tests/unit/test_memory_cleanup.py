@@ -258,7 +258,7 @@ class TestAnalyzeAlbumMemoryCleanup:
         mock_session = MagicMock()
         mock_ort.InferenceSession.return_value = mock_session
         
-        # Mock analyze_track to return results
+        # Mock analyze_track to return results including audio for lyrics analysis
         mock_analyze.return_value = (
             {
                 'tempo': 120.0,
@@ -273,7 +273,9 @@ class TestAnalyzeAlbumMemoryCleanup:
                 'relaxed': 0.4,
                 'sad': 0.2
             },
-            np.random.randn(200)
+            np.random.randn(200),
+            np.random.randn(16000),
+            16000
         )
         
         # Call function
