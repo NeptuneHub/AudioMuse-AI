@@ -82,7 +82,7 @@ From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be conf
    cp deployment/.env.example deployment/.env
    ```
 
-   You can customize the setup by editing `deployment/.env` before startup. As a minimum, it is suggested to change the default database password, but you can also override other PostgreSQL and Redis connection parameters if you want to reuse already existent deployment:
+   You can customize the setup by editing `deployment/.env` before startup. As a minimum, it is suggested to change the default database user and password, but you can also override other PostgreSQL and Redis connection parameters if needed:
 
    ```env
    POSTGRES_PASSWORD=your-secure-password
@@ -118,6 +118,8 @@ AudioMuse-AI has been tested on:
 * DISK: NVME SSD storage
 
 For more information about the GPU deployment requirements have a look to the [GPU](docs/GPU.md) page.
+
+> **IMPORTANT**: If you use virtualization (e.g. Proxmox), make sure to pass through the host CPU. QEMU's virtual CPU lacks AVX2 support, which will prevent AudioMuse-AI from starting.
 
 ## **Docker Image Tagging Strategy**
 

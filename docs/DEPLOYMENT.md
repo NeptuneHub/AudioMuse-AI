@@ -66,16 +66,23 @@ AudioMuse-AI provides Docker Compose files example:
    ```
    You can find the example here: [deployment/.env.example](../deployment/.env.example)
 
-2. **Edit `.env` with your environment values for **Database and Redis (mandatory; env-only):**
-   ```env
-   REDIS_URL=redis://localhost:6379/0
-   POSTGRES_USER=audiomuse
-   POSTGRES_PASSWORD=audiomusepassword
-   POSTGRES_HOST=postgres
-   POSTGRES_PORT=5432
-   POSTGRES_DB=audiomusedb
-   TZ=UTC
-   ```
+2. **Edit `.env`:**
+   * Set your timezone (optional, defaults to UTC):
+     ```env
+     TZ=UTC
+     ```
+   * Change credentials for security (mandatory):
+     ```env
+     POSTGRES_USER=audiomuse
+     POSTGRES_PASSWORD=audiomusepassword
+     ```
+   * Change host ports only if the defaults are already in use on your machine (optional):
+     ```env
+     POSTGRES_PORT=5432
+     REDIS_PORT=6379
+     FRONTEND_PORT=8000
+     ```
+   All other values (database name, internal ports, Redis URL) are hardcoded in the compose file and do not need to be set.
 
 3. **Start the services:**
    ```bash
