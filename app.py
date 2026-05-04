@@ -628,7 +628,16 @@ def listen_for_index_reloads():
               logger.warning(f"Lyrics cache reload failed: {e}")
               lyrics_success = False
 
-            logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, MuLan {'✓' if mulan_success else '✗'}, Lyrics {'✓' if lyrics_success else '✗'}")
+            # Reload SemGrove merged lyrics+audio index
+            try:
+              logger.info("Reloading SemGrove merged index...")
+              from tasks.sem_grove_manager import refresh_sem_grove_cache
+              sg_success = refresh_sem_grove_cache()
+            except Exception as e:
+              logger.warning(f"SemGrove cache reload failed: {e}")
+              sg_success = False
+
+            logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, MuLan {'✓' if mulan_success else '✗'}, Lyrics {'✓' if lyrics_success else '✗'}, SemGrove {'✓' if sg_success else '✗'}")
           except Exception as e:
             logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
       elif message_data == 'reload-artist':
@@ -671,6 +680,7 @@ from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
 from app_mulan_search import mulan_search_bp
 from app_lyrics import lyrics_search_bp
+from app_sem_grove import sem_grove_bp
 from app_backup import backup_bp
 from app_dashboard import dashboard_bp
 from app_users import users_bp
@@ -691,6 +701,7 @@ app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
 app.register_blueprint(mulan_search_bp)
 app.register_blueprint(lyrics_search_bp)
+app.register_blueprint(sem_grove_bp)
 app.register_blueprint(backup_bp)
 app.register_blueprint(migration_bp)
 app.register_blueprint(dashboard_bp)
@@ -778,6 +789,15 @@ if not _is_worker:
           logger.info("Lyrics search cache empty at startup (run analysis to populate).")
     except Exception as e:
       logger.debug(f"Lyrics cache not loaded at startup (may be disabled or failed): {e}")
+    # Load SemGrove merged lyrics+audio index
+    try:
+      from tasks.sem_grove_manager import load_sem_grove_cache_from_db
+      if load_sem_grove_cache_from_db():
+        logger.info("SemGrove merged index loaded at startup.")
+      else:
+        logger.info("SemGrove index not found at startup (build it after analysis completes).")
+    except Exception as e:
+      logger.debug(f"SemGrove cache not loaded at startup: {e}")
 
     def _start_map_init_background():
       try:

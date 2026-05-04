@@ -54,6 +54,7 @@ from .voyager_manager import build_and_store_voyager_index
 # Import CLAP index builder for persisted text search index storage
 from .clap_text_search import build_and_store_clap_index
 from .lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
+from .sem_grove_manager import build_and_store_sem_grove_index
 # Import artist GMM manager for artist similarity index
 from .artist_gmm_manager import build_and_store_artist_index
 # MODIFIED: The functions from mediaserver no longer need server-specific parameters.
@@ -283,7 +284,14 @@ def rebuild_all_indexes_task():
                 build_and_store_lyrics_axes_index(get_db())
             except Exception as e:
                 logger.warning(f"Failed to build/store Lyrics axes index: {e}")
-            
+
+            # Build SemGrove merged lyrics+audio index
+            try:
+                build_and_store_sem_grove_index(get_db())
+                logger.info('✓ SemGrove merged index rebuilt')
+            except Exception as e:
+                logger.warning(f"Failed to build/store SemGrove merged index: {e}")
+
             # Build artist similarity index
             try:
                 build_and_store_artist_index(get_db())
@@ -1429,6 +1437,12 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 build_and_store_lyrics_axes_index(get_db())
             except Exception as e:
                 logger.warning(f"Failed to build/store Lyrics axes index: {e}")
+
+            # Build SemGrove merged lyrics+audio index
+            try:
+                build_and_store_sem_grove_index(get_db())
+            except Exception as e:
+                logger.warning(f"Failed to build/store SemGrove merged index: {e}")
 
             # Build artist similarity index
             log_and_update_main("Building artist similarity index...", 97)
