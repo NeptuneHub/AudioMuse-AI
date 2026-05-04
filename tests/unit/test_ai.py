@@ -226,6 +226,115 @@ class TestGetOpenAICompatiblePlaylistName:
     @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.requests.post')
     @patch('ai.time.sleep')
+    def test_combined_content_and_finish_reason_chunk(self, mock_sleep, mock_post):
+        """Regression test for issue #467.
+
+        OpenRouter (and some providers behind it, notably Anthropic via Vertex)
+        can emit a single SSE chunk that contains both ``delta.content`` AND
+        ``finish_reason: "stop"``. The parser must extract the content from
+        such a chunk before terminating the loop. Short outputs (5-12 token
+        playlist titles) are particularly vulnerable because the entire
+        response can fit in one or two such combined chunks.
+        """
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = Mock()
+        mock_response.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"content":"Quiet Storm"},"finish_reason":"stop"}]}\n',
+            b'data: [DONE]\n',
+        ]
+        mock_post.return_value = mock_response
+
+        result = get_openai_compatible_playlist_name(
+            server_url="https://openrouter.ai/api/v1/chat/completions",
+            model_name="openai/gpt-4o-mini",
+            full_prompt="prompt",
+            api_key="test-key",
+        )
+
+        assert result == "Quiet Storm"
+        # Success path must not trigger the empty-content retry/backoff.
+        # The pre-call rate-limit delay calls time.sleep once with skip_delay=False;
+        # ensure no additional retry-backoff sleeps happened.
+        assert mock_sleep.call_count == 1
+
+    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
+    @patch('ai.requests.post')
+    @patch('ai.time.sleep')
+    def test_content_split_across_chunks_with_final_combined_chunk(self, mock_sleep, mock_post):
+        """Regression test for issue #467 (multi-chunk variant).
+
+        Some content arrives in early chunks and the LAST content fragment is
+        bundled with finish_reason='stop' in a single chunk. All fragments
+        (including the bundled one) must be captured.
+        """
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = Mock()
+        mock_response.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"content":"Quiet "}}]}\n',
+            b'data: {"choices":[{"delta":{"content":"Storm"},"finish_reason":"stop"}]}\n',
+            b'data: [DONE]\n',
+        ]
+        mock_post.return_value = mock_response
+
+        result = get_openai_compatible_playlist_name(
+            server_url="https://openrouter.ai/api/v1/chat/completions",
+            model_name="openai/gpt-4o-mini",
+            full_prompt="prompt",
+            api_key="test-key",
+        )
+
+        assert result == "Quiet Storm"
+        # Success path must not trigger the empty-content retry/backoff.
+        # Only the pre-call rate-limit delay (one sleep) is expected.
+        assert mock_sleep.call_count == 1
+
+    @patch('ai.AI_MODEL_PROVIDER', 'OLLAMA')
+    @patch('ai.requests.post')
+    @patch('ai.time.sleep')
+    def test_openai_format_detected_from_url_when_global_is_ollama(self, mock_sleep, mock_post):
+        """Regression test for issue #467 — provider-mismatch root cause.
+
+        When the global AI_MODEL_PROVIDER is set to OLLAMA (e.g. user's default
+        for cron jobs) but a clustering call hits OpenRouter with a real API
+        key, the parser must still treat the response as OpenAI chat-completion
+        format (delta.content / choice.text), not Ollama format (response/done).
+
+        Before the fix, the function read AI_MODEL_PROVIDER from the global
+        config and used it to decide both payload AND parser format, dropping
+        all chunks because they had `choices` instead of `response`.
+        """
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = Mock()
+        # Real OpenRouter-via-Bedrock chunk shape: choice.text (no delta).
+        mock_response.iter_lines.return_value = [
+            b':' + b' OPENROUTER PROCESSING\n',
+            b'data: {"choices":[{"index":0,"finish_reason":null,"text":"Late"}]}\n',
+            b'data: {"choices":[{"index":0,"finish_reason":null,"text":" Night Blues"}]}\n',
+            b'data: {"choices":[{"index":0,"finish_reason":"stop","text":""}]}\n',
+            b'data: [DONE]\n',
+        ]
+        mock_post.return_value = mock_response
+
+        result = get_openai_compatible_playlist_name(
+            server_url="https://openrouter.ai/api/v1/chat/completions",
+            model_name="anthropic/claude-sonnet-4.6",
+            full_prompt="prompt",
+            api_key="sk-or-v1-test",
+        )
+
+        assert result == "Late Night Blues"
+        # And the request body must use OpenAI's `messages` field, not Ollama's
+        # `prompt` field — i.e. the format detection also drove the payload.
+        sent_body = json.loads(mock_post.call_args[1]['data'])
+        assert 'messages' in sent_body
+        assert 'prompt' not in sent_body
+
+    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
+    @patch('ai.requests.post')
+    @patch('ai.time.sleep')
     def test_rate_limit_retry_with_exponential_backoff(self, mock_sleep, mock_post):
         """Test that rate limit errors (429) retry with exponential backoff"""
         # First call: 429 rate limit

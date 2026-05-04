@@ -60,8 +60,18 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
     Returns:
         str: The extracted playlist name from the model's response, or an error message.
     """
-    # Detect which format to use: OpenAI chat-completions (messages array) vs Ollama generate (prompt string). fix 360
-    is_openai_format = AI_MODEL_PROVIDER == "OPENAI"
+    # Detect format from per-call inputs (NOT the global AI_MODEL_PROVIDER):
+    # this function is shared between the Ollama wrapper (api_key="no-key-needed",
+    # ollama URL) and the OpenAI/OpenRouter caller (real API key, openai/openrouter
+    # URL). The global AI_MODEL_PROVIDER reflects the user's *default* provider for
+    # other code paths and may differ from the provider chosen for this specific
+    # call (e.g. user has AI_MODEL_PROVIDER=OLLAMA globally but kicks off
+    # clustering with provider=OPENAI). See issue #467.
+    is_openai_format = (
+        (api_key and api_key != "no-key-needed")
+        or "openai" in server_url.lower()
+        or "openrouter" in server_url.lower()
+    )
 
     headers = {
         "Content-Type": "application/json"
@@ -120,12 +130,14 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
             response = requests.post(server_url, headers=headers, data=json.dumps(payload), stream=True, timeout=960)
             response.raise_for_status()
             full_raw_response_content = ""
+            raw_sse_lines = []  # Captured for diagnostics if content ends up empty
 
             for line in response.iter_lines():
                 if not line:
                     continue
 
                 line_str = line.decode('utf-8', errors='ignore').strip()
+                raw_sse_lines.append(line_str)
 
                 # Skip SSE comments (lines starting with :)
                 if line_str.startswith(':'):
@@ -149,23 +161,28 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                         if 'choices' in chunk and len(chunk['choices']) > 0:
                             choice = chunk['choices'][0]
 
-                            # Check for finish
-                            finish_reason = choice.get('finish_reason')
-                            if finish_reason == 'stop':
-                                break
-                            elif finish_reason == 'length':
-                                logger.warning("Response truncated due to max_tokens limit")
-                                break
-
-                            # Extract text from delta.content or text field
-                            if 'delta' in choice:
-                                content = choice['delta'].get('content')
+                            # Extract content FIRST. OpenRouter (and some
+                            # providers behind it) may bundle delta.content
+                            # with finish_reason='stop' in a single chunk
+                            # (issue #467) - reading content after the break
+                            # would silently drop short outputs.
+                            delta = choice.get('delta')
+                            if isinstance(delta, dict):
+                                content = delta.get('content')
                                 if content is not None:
                                     full_raw_response_content += content
                             elif 'text' in choice:
                                 text = choice.get('text')
                                 if text is not None:
                                     full_raw_response_content += text
+
+                            # Then check for finish
+                            finish_reason = choice.get('finish_reason')
+                            if finish_reason == 'length':
+                                logger.warning("Response truncated due to max_tokens limit")
+                                break
+                            elif finish_reason in ('stop', 'tool_calls', 'content_filter', 'error'):
+                                break
                     else:
                         # Ollama format
                         if 'response' in chunk:
@@ -190,6 +207,7 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                 return extracted_text
             else:
                 logger.warning("OpenAI/OpenRouter returned empty content. Full raw response: %s", full_raw_response_content)
+                logger.debug("Raw SSE lines received (%d total, last 50): %s", len(raw_sse_lines), raw_sse_lines[-50:])
                 if attempt < max_retries:
                     sleep_time = base_delay * (2 ** attempt)
                     logger.info("Retrying in %s seconds due to empty content...", sleep_time)
