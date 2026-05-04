@@ -64,6 +64,9 @@ import types as _types
 _ah_stub = _types.ModuleType('app_helper')
 _ah_stub.get_score_data_by_ids = lambda item_ids: []  # overridden per-test
 _ah_stub.get_db = MagicMock()
+_ah_stub.load_map_projection = MagicMock(return_value=(None, None))  # needed by song_alchemy top-level import
+# Fallback: any other attribute yields a MagicMock so imports from other test files don't fail
+_ah_stub.__getattr__ = lambda name: MagicMock()
 sys.modules.setdefault('app_helper', _ah_stub)
 
 _sgm = _load_sem_grove()
