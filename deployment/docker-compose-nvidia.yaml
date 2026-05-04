@@ -1,95 +1,134 @@
-version: '3.8'
+################################################################################
+# YAML ANCHORS - Reusable Configuration Blocks
+################################################################################
+
+# Shared database credentials used by Postgres, Flask, and Worker
+x-db-env: &db-env
+  POSTGRES_USER: "${AUDIOMUSE_POSTGRES_USER:-audiomuse}"
+  POSTGRES_PASSWORD: "${AUDIOMUSE_POSTGRES_PASSWORD:-audiomusepassword}"
+  POSTGRES_DB: "${AUDIOMUSE_POSTGRES_DB:-audiomusedb}"
+
+## AUDIOMUSE
+x-audiomuse-env: &audiomuse-env
+  <<: *db-env
+  TZ: "${TZ:-UTC}"
+  POSTGRES_HOST: "audiomuse-postgres"
+  POSTGRES_PORT: "5432"
+  REDIS_URL: "redis://audiomuse-redis:6379/0"
+  TEMP_DIR: "/app/temp_audio"
+
+# Shared base configuration for AudioMuse-AI services
+x-audiomuse-common: &audiomuse-common
+  image: ghcr.io/neptunehub/audiomuse-ai:${AUDIOMUSE_VERSION:-latest-nvidia}
+  restart: unless-stopped
+  depends_on:
+    audiomuse-redis:
+      condition: service_healthy
+    audiomuse-postgres:
+      condition: service_healthy
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["0"]
+            capabilities: [gpu]
+
+################################################################################
+# SERVICES
+################################################################################
 services:
-  # Redis service for RQ (task queue)
-  redis:
+################################################################################
+### AUDIOMUSE AI - AI-powered music library management
+### https://github.com/NeptuneHub/AudioMuse-AI
+################################################################################
+  audiomuse-redis:
     image: redis:7-alpine
     container_name: audiomuse-redis
     ports:
-      - "${REDIS_PORT:-6379}:6379" # Expose Redis port to the host
-    volumes:
-      - redis-data:/data # Persistent storage for Redis data
+      - "${REDIS_PORT:-6379}:6379"
     restart: unless-stopped
+    networks:
+      - audiomuse
+    volumes:
+      - audiomuse-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # PostgreSQL database service
-  postgres:
+  audiomuse-postgres:
     image: postgres:15-alpine
     container_name: audiomuse-postgres
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
-      POSTGRES_DB: "audiomusedb"
+      <<: *db-env # Injects POSTGRES_USER, POSTGRES_PASSWORD, and POSTGRES_DB
     ports:
-      - "${POSTGRES_PORT:-5432}:5432" # Expose PostgreSQL port to the host
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data # Persistent storage for PostgreSQL data
+      - audiomuse-postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
+    networks:
+      - audiomuse
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # AudioMuse-AI Flask application service
   audiomuse-ai-flask:
-    image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
+    <<: *audiomuse-common
     container_name: audiomuse-ai-flask-app
     ports:
-      - "${FRONTEND_PORT:-8000}:8000" # Map host port 8000 to container port 8000
+      - "${FRONTEND_PORT:-8000}:8000"
     environment:
-      SERVICE_TYPE: "flask" # Tells the container to run the Flask app
-      TZ: "${TZ:-UTC}"
-      # DATABASE_URL is now constructed by config.py from the following:
-      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
-      POSTGRES_DB: "audiomusedb"
-      POSTGRES_HOST: "postgres" # Service name of the postgres container
-      POSTGRES_PORT: "5432" # Internal port — always 5432 inside the Docker network
-      REDIS_URL: "redis://redis:6379/0" # Connects to the 'redis' service
-      TEMP_DIR: "/app/temp_audio"
+      <<: *audiomuse-env
+      SERVICE_TYPE: "flask"
+    networks:
+      - audiomuse
+      # - music
+      # - proxy
+      # - ai
     volumes:
-      - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
-    depends_on:
-      - redis
-      - postgres
-    restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
+      - audiomuse-temp-audio-flask:/app/temp_audio
 
   # AudioMuse-AI RQ Worker service
   audiomuse-ai-worker:
-    image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
+    <<: *audiomuse-common
     container_name: audiomuse-ai-worker-instance
     environment:
-      SERVICE_TYPE: "worker" # Tells the container to run the RQ worker
-      TZ: "${TZ:-UTC}"
-      # DATABASE_URL is now constructed by config.py from the following:
-      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
-      POSTGRES_DB: "audiomusedb"
-      POSTGRES_HOST: "postgres" # Service name of the postgres container
-      POSTGRES_PORT: "5432" # Internal port — always 5432 inside the Docker network
-      REDIS_URL: "redis://redis:6379/0" # Connects to the 'redis' service
+      <<: *audiomuse-env
+      SERVICE_TYPE: "worker"
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
-      TEMP_DIR: "/app/temp_audio"
+    networks:
+      - audiomuse
+      # - music
+      # - ai
     volumes:
-      - temp-audio-worker:/app/temp_audio # Volume for temporary audio files
-    depends_on:
-      - redis
-      - postgres
-    restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
+      - audiomuse-temp-audio-worker:/app/temp_audio
 
-# Define volumes for persistent data and temporary files
+################################################################################
+# VOLUMES
+################################################################################
 volumes:
-  redis-data:
-  postgres-data:
-  temp-audio-flask: # Volume for Flask app's temporary audio
-  temp-audio-worker: # Volume for Worker's temporary audio
+  audiomuse-redis-data:
+    name: audiomuse-redis-data
+  audiomuse-postgres-data:
+    name: audiomuse-postgres-data
+  audiomuse-temp-audio-flask:
+    name: audiomuse-temp-audio-flask
+  audiomuse-temp-audio-worker:
+    name: audiomuse-temp-audio-worker
+  audiomuse-ai-cache:
+    name: audiomuse-ai-cache
+################################################################################
+# NETWORKS
+################################################################################
+networks:
+  # music: { external: true }
+  # proxy: { external: true }
+  # ai: { external: true }
+  audiomuse:
