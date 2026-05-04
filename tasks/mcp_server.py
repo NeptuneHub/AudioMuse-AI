@@ -1065,16 +1065,25 @@ def _database_genre_query_sync(
                 conditions.append("(" + " OR ".join(genre_conditions) + ")")
                 has_genre_filter = True
 
-            # Mood/other_features conditions (OR)
+            # Mood/other_features conditions (OR) - extract score with regex and apply threshold
+            # other_features format: "danceable:0.59,aggressive:0.61,happy:0.57,party:0.57,relaxed:0.55,sad:0.56"
+            # Every song contains all 6 labels (CLAP cosine similarity mapped to [0,1] via (sim+1)/2),
+            # so a bare LIKE matches the entire library. A threshold separates real matches from noise.
+            has_mood_filter = False
+            mood_confidence_threshold = 0.6
             if moods:
                 mood_conditions = []
                 for mood in moods:
-                    mood_conditions.append("other_features LIKE %s")
-                    params.append(f"%{mood}%")
+                    mood_conditions.append(
+                        "COALESCE(CAST(NULLIF(SUBSTRING(other_features FROM %s), '') AS NUMERIC), 0) >= %s"
+                    )
+                    params.append(f"(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
+                    params.append(mood_confidence_threshold)
                 if len(mood_conditions) == 1:
                     conditions.append(mood_conditions[0])
                 else:
                     conditions.append("(" + " OR ".join(mood_conditions) + ")")
+                has_mood_filter = True
 
             # Numeric filters (AND)
             if tempo_min is not None:
@@ -1131,27 +1140,42 @@ def _database_genre_query_sync(
             where_clause = " AND ".join(conditions) if conditions else "1=1"
             params.append(get_songs)
 
-            # Use relevance ranking when genre filter is active, otherwise random
-            if has_genre_filter:
-                # Build a scoring expression that sums confidence scores for matched genres
-                # For each requested genre, extract its score from mood_vector and sum them
+            # Use relevance ranking when genre or mood filter is active, otherwise random
+            if has_genre_filter or has_mood_filter:
+                # Build a scoring expression that sums confidence scores for matched genres/moods
                 score_parts = []
                 score_params = []
-                for genre in genres:
-                    # Extract the numeric score after 'genre:' using regex
-                    score_parts.append("""
-                        COALESCE(
-                            CAST(
-                                NULLIF(
-                                    SUBSTRING(mood_vector FROM %s),
-                                    ''
-                                ) AS NUMERIC
-                            ),
-                            0
-                        )
-                    """)
-                    # Regex to capture the score value: (?:^|,)\s*rock:(\d+\.?\d*)
-                    score_params.append(f"(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
+                if has_genre_filter:
+                    for genre in genres:
+                        # Extract the numeric score after 'genre:' from mood_vector
+                        score_parts.append("""
+                            COALESCE(
+                                CAST(
+                                    NULLIF(
+                                        SUBSTRING(mood_vector FROM %s),
+                                        ''
+                                    ) AS NUMERIC
+                                ),
+                                0
+                            )
+                        """)
+                        # Regex to capture the score value: (?:^|,)\s*rock:(\d+\.?\d*)
+                        score_params.append(f"(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
+                if has_mood_filter:
+                    for mood in moods:
+                        # Extract the numeric score after 'mood:' from other_features
+                        score_parts.append("""
+                            COALESCE(
+                                CAST(
+                                    NULLIF(
+                                        SUBSTRING(other_features FROM %s),
+                                        ''
+                                    ) AS NUMERIC
+                                ),
+                                0
+                            )
+                        """)
+                        score_params.append(f"(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
 
                 relevance_expr = " + ".join(score_parts)
                 all_params = score_params + params
@@ -1347,10 +1371,16 @@ Return the JSON now:"""
             conditions.append("mood_vector LIKE %s")
             params.append(f"%{genre}%")
         
-        # Add mood conditions
+        # Add mood conditions - extract score with regex and apply threshold (see _database_genre_query_sync)
+        # other_features format: "danceable:0.59,aggressive:0.61,..." - every song has all 6 labels,
+        # so a bare LIKE matches the entire library. A threshold separates real matches from noise.
+        mood_confidence_threshold = 0.6
         for mood in criteria.get('moods', []):
-            conditions.append("other_features LIKE %s")
-            params.append(f"%{mood}%")
+            conditions.append(
+                "COALESCE(CAST(NULLIF(SUBSTRING(other_features FROM %s), '') AS NUMERIC), 0) >= %s"
+            )
+            params.append(f"(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
+            params.append(mood_confidence_threshold)
         
         # Add energy/tempo conditions
         if 'energy_min' in criteria:

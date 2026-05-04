@@ -343,15 +343,40 @@ class TestDatabaseGenreQuery:
         sql = cur.execute.call_args[0][0]
         assert "rating >=" in sql
 
-    def test_mood_filter_uses_like(self):
+    def test_mood_filter_uses_score_threshold(self):
+        """Mood filter must extract per-mood score from other_features and apply a confidence
+        threshold. A bare LIKE would match every song (every row contains all 6 mood labels),
+        which is the bug from issue #472."""
         mod = _import_mcp_server()
         conn, cur = self._setup_mock_conn()
 
         with patch.object(mod, 'get_db_connection', return_value=conn):
-            mod._database_genre_query_sync(moods=["danceable"], get_songs=10)
+            mod._database_genre_query_sync(moods=["aggressive"], get_songs=10)
+
+        call_args = cur.execute.call_args
+        sql = call_args[0][0]
+        params = call_args[0][1] if len(call_args[0]) > 1 else []
+        # Score-extraction pattern (mirrors the genre filter)
+        assert "SUBSTRING(other_features FROM" in sql
+        # Threshold parameter present and meaningfully above the noise floor.
+        # CLAP-derived other_features scores cluster near 0.5; a threshold below ~0.5 would
+        # re-match the entire library (the bug from issue #472).
+        assert any(isinstance(p, float) and 0.5 <= p < 1 for p in params)
+        # Per-mood regex pattern present
+        assert any("aggressive:" in str(p) for p in params)
+        # And ordering must be by relevance (not RANDOM) so top mood matches come first
+        assert "relevance_score DESC" in sql
+
+    def test_mood_filter_does_not_use_bare_like(self):
+        """Regression guard for issue #472: bare LIKE on other_features matches every song."""
+        mod = _import_mcp_server()
+        conn, cur = self._setup_mock_conn()
+
+        with patch.object(mod, 'get_db_connection', return_value=conn):
+            mod._database_genre_query_sync(moods=["aggressive"], get_songs=10)
 
         sql = cur.execute.call_args[0][0]
-        assert "LIKE" in sql
+        assert "other_features LIKE" not in sql
 
     def test_combined_filters_use_and(self):
         mod = _import_mcp_server()
