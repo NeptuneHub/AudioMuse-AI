@@ -41,7 +41,9 @@ def sem_grove_search_api():
         limit = min(max(1, limit), 500)
 
         results = search_by_song(item_id, limit=limit)
-        if not results:
+        # results[0] is always the seed itself; if that's the only entry, no similar songs were found
+        similar_count = sum(1 for r in results if not r.get("is_seed"))
+        if not results or similar_count == 0:
             return jsonify({
                 "error": "No similar songs found. "
                          "The song may not be in the SemGrove index yet "

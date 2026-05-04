@@ -534,24 +534,28 @@ document.addEventListener('DOMContentLoaded', function () {
             resultCount.textContent = '';
             return;
         }
+        const visibleCount = results.filter(r => !r.is_seed).length;
         resultCount.textContent = queryLabel
-            ? `Found ${results.length} matches for "${queryLabel}"`
-            : `Found ${results.length} matches`;
+            ? `Found ${visibleCount} matches for "${queryLabel}"`
+            : `Found ${visibleCount} matches`;
 
         let html = '<div style="border:1px solid var(--border-color);border-radius:8px;overflow:hidden;">';
-        results.forEach((r, i) => {
+        let displayIndex = 1;
+        results.forEach((r) => {
+            if (r.is_seed) return; // seed is first in the array for playlist use, but hidden from the table
             const sim = Math.max(0, Math.min(1, r.similarity || 0));
             const pct = Math.round(sim * 100);
             const cls = pct > 70 ? 'badge-high' : pct > 50 ? 'badge-medium' : 'badge-low';
             html += `
                 <div class="result-item">
                     <div class="result-info">
-                        <div class="result-title">${i + 1}. ${escapeHtml(r.title || '')}</div>
+                        <div class="result-title">${displayIndex}. ${escapeHtml(r.title || '')}</div>
                         <div class="result-artist">${escapeHtml(r.author || '')}</div>
                     </div>
                     <div class="similarity-badge ${cls}">${pct}%</div>
                 </div>
             `;
+            displayIndex++;
         });
         html += '</div>';
         resultsList.innerHTML = html;

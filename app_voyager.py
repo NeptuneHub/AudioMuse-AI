@@ -132,8 +132,12 @@ def search_tracks_endpoint():
         try:
             from tasks.sem_grove_manager import get_sem_grove_item_ids
             item_id_filter = get_sem_grove_item_ids()
+            if not item_id_filter:
+                # Index not loaded yet — don't fall back to showing all songs
+                return jsonify([])
         except Exception as e:
             logger.warning(f"Could not load SemGrove item IDs for autocomplete filter: {e}")
+            return jsonify([])
 
     # Pagination: start / end (0-based). Defaults to first 20 results.
     start = request.args.get('start', 0, type=int)

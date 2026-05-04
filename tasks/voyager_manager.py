@@ -1789,11 +1789,17 @@ def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0,
         score_sql = " + ".join(score_clauses)
 
         # Optionally restrict to a specific set of item_ids (e.g. SemGrove index)
+        # IMPORTANT: id_filter params must be inserted *after* the WHERE token params
+        # but *before* the score/ORDER BY params so they match the SQL position.
         id_filter_sql = ""
+        id_filter_params: list = []
         if item_id_filter:
             id_placeholders = ",".join(["%s"] * len(item_id_filter))
             id_filter_sql = f" AND item_id IN ({id_placeholders})"
-            params.extend(list(item_id_filter))
+            id_filter_params = list(item_id_filter)
+
+        # Final param list order must mirror SQL: WHERE tokens → WHERE id filter → ORDER BY scores → LIMIT/OFFSET
+        all_params = params[:len(tokens)] + id_filter_params + params[len(tokens):]
 
         query = f"""
             SELECT item_id, title, author, album, album_artist
@@ -1806,10 +1812,10 @@ def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0,
             LIMIT %s OFFSET %s
         """
 
-        params.append(limit)
-        params.append(offset)
+        all_params.append(limit)
+        all_params.append(offset)
 
-        cur.execute(query, tuple(params))
+        cur.execute(query, tuple(all_params))
         results = [dict(row) for row in cur.fetchall()]
 
     except Exception as e:

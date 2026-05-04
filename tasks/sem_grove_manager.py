@@ -612,10 +612,14 @@ def search_by_song(seed_item_id: str, limit: int = 50) -> List[Dict]:
         logger.error("SemGrove: cannot fetch vector for seed '%s': %s", seed_item_id, exc)
         return []
 
-    from config import MAX_SONGS_PER_ARTIST
-    artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+    from config import MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_CHECK_LOOKBACK
+    import numpy as np
+
+    artist_cap    = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+    dist_threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE  # cosine dist < this → near-duplicate
+    lookback_n     = DUPLICATE_DISTANCE_CHECK_LOOKBACK if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 else 0
     # +1 because the seed itself may appear and will be skipped
-    fetch_size   = (limit + max(20, limit * 4) + 1) if artist_cap else (limit + 1)
+    fetch_size   = (limit + max(20, limit * 4) + 1) if (artist_cap or lookback_n) else (limit + 1)
     num_to_query = min(fetch_size, len(index))
     if num_to_query <= 0:
         return []
@@ -631,27 +635,72 @@ def search_by_song(seed_item_id: str, limit: int = 50) -> List[Dict]:
         for v in neighbor_ids
         if id_map.get(int(v)) and id_map.get(int(v)) != seed_item_id
     ]
-    metadata_map = _fetch_metadata(candidate_ids)
+    metadata_map = _fetch_metadata([seed_item_id] + candidate_ids)
 
-    results:       List[Dict]       = []
-    artist_counts: Dict[str, int]   = {}
+    # Prepend the seed song as the first entry so callers (playlist builders, API
+    # consumers) always receive it at position 0.  The frontend hides it.
+    seed_meta = metadata_map.get(seed_item_id, {"title": "", "author": ""})
+    results: List[Dict] = [{
+        "item_id":    seed_item_id,
+        "title":      seed_meta.get("title",  "") or "",
+        "author":     seed_meta.get("author", "") or "",
+        "similarity": 1.0,
+        "is_seed":    True,
+    }]
+    artist_counts:  Dict[str, int]   = {}
+    seen_names:     set               = set()   # (title_lower, author_lower) deduplication
+    lookback_vecs:  list              = []       # recent kept vectors for distance-based dedup
 
     for vid, dist in zip(neighbor_ids, distances):
-        if len(results) >= limit:
+        if len(results) - 1 >= limit:  # -1 to exclude the seed prepended at index 0
             break
         item_id = id_map.get(int(vid))
         if not item_id or item_id == seed_item_id:
             continue
         meta   = metadata_map.get(item_id, {"title": "", "author": ""})
         author = meta.get("author", "") or ""
+        title  = meta.get("title",  "") or ""
+
+        # Name-based deduplication (same title+artist = likely duplicate recording)
+        name_key = (title.strip().lower(), author.strip().lower())
+        if name_key in seen_names:
+            continue
+        seen_names.add(name_key)
+
         if artist_cap and author:
             an = author.strip().lower()
             if artist_counts.get(an, 0) >= artist_cap:
                 continue
             artist_counts[an] = artist_counts.get(an, 0) + 1
+
+        # Distance-based near-duplicate filter: skip if this song's merged vector is
+        # too close (cosine dist < dist_threshold) to any song in the lookback window.
+        if lookback_n and dist_threshold > 0:
+            try:
+                candidate_vec = np.array(index.get_vector(int(vid)), dtype=np.float32)
+                norm = np.linalg.norm(candidate_vec)
+                if norm > 0:
+                    candidate_vec = candidate_vec / norm
+                too_close = False
+                for lv in lookback_vecs[-lookback_n:]:
+                    cosine_dist = 1.0 - float(np.dot(candidate_vec, lv))
+                    if cosine_dist < dist_threshold:
+                        logger.debug(
+                            "SemGrove: dropping near-duplicate '%s' by '%s' "
+                            "(cosine dist %.4f < threshold %.4f).",
+                            title, author, cosine_dist, dist_threshold,
+                        )
+                        too_close = True
+                        break
+                if too_close:
+                    continue
+                lookback_vecs.append(candidate_vec)
+            except Exception as _vec_exc:
+                logger.debug("SemGrove: could not fetch vector for distance check: %s", _vec_exc)
+
         results.append({
             "item_id":    item_id,
-            "title":      meta.get("title", ""),
+            "title":      title,
             "author":     author,
             "similarity": max(0.0, 1.0 - float(dist)),
         })
