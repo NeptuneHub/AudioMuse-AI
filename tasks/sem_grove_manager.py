@@ -103,7 +103,7 @@ def _make_merged_vector(
         l = l / n
         l = l / (std_lyrics + 1e-8)
         n2 = np.linalg.norm(l)
-        if n2 == 0:
+        if n2 < 1e-8:
             return None
         l = l / n2
 
@@ -115,7 +115,7 @@ def _make_merged_vector(
         a = a / n
         a = a / (std_audio + 1e-8)
         n2 = np.linalg.norm(a)
-        if n2 == 0:
+        if n2 < 1e-8:
             return None
         a = a / n2
 
@@ -683,7 +683,7 @@ def search_by_song(seed_item_id: str, limit: int = 50) -> List[Dict]:
                     candidate_vec = candidate_vec / norm
                 too_close = False
                 for lv in lookback_vecs[-lookback_n:]:
-                    cosine_dist = 1.0 - float(np.dot(candidate_vec, lv))
+                    cosine_dist = float(np.clip(1.0 - np.dot(candidate_vec, lv), 0.0, 2.0))
                     if cosine_dist < dist_threshold:
                         logger.debug(
                             "SemGrove: dropping near-duplicate '%s' by '%s' "
