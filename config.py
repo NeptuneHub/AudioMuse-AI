@@ -340,7 +340,6 @@ LYRICS_API_2_TIMEOUT       = float(os.environ.get("LYRICS_API_2_TIMEOUT",   "5.0
 LYRICS_USE_GPU = os.environ.get("LYRICS_USE_GPU", "auto").lower()
 LYRICS_WHISPER_MODEL = os.environ.get("LYRICS_WHISPER_MODEL", "small")
 LYRICS_LLM_MODEL_PATH = os.environ.get("LYRICS_LLM_MODEL_PATH", "/app/model/qwen2.5-1.5b-instruct-q4_k_m.gguf")
-LYRICS_SONGS_DIR = os.environ.get("LYRICS_SONGS_DIR", "/app/songs")
 LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
 # Writable directory for on-demand Marian translator downloads. Kept separate
 # from the bundled HF cache so stale locks / restrictive perms there cannot

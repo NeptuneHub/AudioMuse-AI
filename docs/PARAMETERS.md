@@ -192,7 +192,6 @@ These are the default parameters used when launching analysis or clustering task
 | `LYRICS_USE_GPU`                            | Whether to run Whisper and the LLM on GPU. `auto` = probe CUDA at load time; `true` = force GPU; `false` = force CPU. | `auto`  |
 | `LYRICS_WHISPER_MODEL`                      | Whisper model size for transcription. Options: `tiny`, `base`, `small`, `medium`, `large`. | `small`                               |
 | `LYRICS_LLM_MODEL_PATH`                     | Path to the GGUF file for the local lyrics LLM (Qwen2.5-1.5B).                            | `/app/model/qwen2.5-1.5b-instruct-q4_k_m.gguf` |
-| `LYRICS_SONGS_DIR`                          | Directory where audio files are staged for Whisper transcription.                         | `/app/songs`                           |
 | `LYRICS_MODEL_DIR`                          | Directory where lyrics models (Whisper, e5, Marian) are cached.                           | `/app/model`                           |
 | `LYRICS_MARIAN_CACHE_DIR`                   | Writable directory for on-demand Marian translator downloads. Mount a persistent volume here to avoid re-downloading on restart. | `/tmp/audiomuse-marian-cache` |
 | `LYRICS_EMBEDDING_DIMENSION`                | Dimension of the e5-base-v2 sentence embedding. Do not change unless swapping the embedding model. | `768`                        |
