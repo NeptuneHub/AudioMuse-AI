@@ -74,6 +74,35 @@ def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
 
+def _reroute_mood_labels_from_genres(genres, moods):
+    """Move any OTHER_FEATURE_LABELS values mistakenly passed as `genres` into `moods`.
+
+    Small AI models often confuse moods (`danceable`, `aggressive`, `happy`, `party`,
+    `relaxed`, `sad`) with genres. These labels live in `other_features`, never in
+    `mood_vector`, so combining them as a genre filter with anything else will always
+    return zero matches.
+
+    Returns (new_genres, new_moods, log_message_or_None).
+    """
+    from config import OTHER_FEATURE_LABELS
+    if not genres:
+        return genres, moods, None
+    mood_set = {m.lower() for m in OTHER_FEATURE_LABELS}
+    rerouted = [g for g in genres if isinstance(g, str) and g.lower() in mood_set]
+    if not rerouted:
+        return genres, moods, None
+    kept = [g for g in genres if not (isinstance(g, str) and g.lower() in mood_set)]
+    new_moods = list(moods or [])
+    existing_lower = {m.lower() for m in new_moods if isinstance(m, str)}
+    for g in rerouted:
+        canonical = g.lower()
+        if canonical not in existing_lower:
+            new_moods.append(canonical)
+            existing_lower.add(canonical)
+    msg = f"⚠️ Rerouted from genres to moods (not real genres): {', '.join(rerouted)}"
+    return kept, new_moods, msg
+
+
 def get_library_context(force_refresh: bool = False) -> Dict:
     """Query the database once to build a summary of the user's music library.
 
@@ -1040,6 +1069,12 @@ def _database_genre_query_sync(
     db_conn = get_db_connection()
     log_messages = []
 
+    # Reroute mood labels (e.g. "aggressive") that the AI mistakenly passed as genres.
+    # Without this, AND-combining a non-genre into the genre filter returns 0 songs.
+    genres, moods, reroute_msg = _reroute_mood_labels_from_genres(genres, moods)
+    if reroute_msg:
+        log_messages.append(reroute_msg)
+
     try:
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
             # Build conditions
@@ -1361,11 +1396,20 @@ Return the JSON now:"""
         except Exception as e:
             log_messages.append(f"Failed to parse AI response: {str(e)}")
             return {"songs": [], "message": "\n".join(log_messages)}
-        
+
+        # Reroute mood labels mistakenly passed as genres (small AI models often confuse them).
+        rerouted_genres, rerouted_moods, reroute_msg = _reroute_mood_labels_from_genres(
+            criteria.get('genres'), criteria.get('moods')
+        )
+        if reroute_msg:
+            criteria['genres'] = rerouted_genres
+            criteria['moods'] = rerouted_moods
+            log_messages.append(reroute_msg)
+
         # Build SQL query from criteria
         conditions = []
         params = []
-        
+
         # Add genre conditions
         for genre in criteria.get('genres', []):
             conditions.append("mood_vector LIKE %s")

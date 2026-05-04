@@ -418,6 +418,74 @@ class TestDatabaseGenreQuery:
             mod._database_genre_query_sync(genres=["rock"], get_songs=50.0)
 
 
+@pytest.mark.unit
+class TestRerouteMoodLabelsFromGenres:
+    """The helper that fixes AI confusion: mood labels passed as genres -> rerouted to moods."""
+
+    def test_no_genres_is_noop(self):
+        mod = _import_mcp_server()
+        g, m, msg = mod._reroute_mood_labels_from_genres(None, ["happy"])
+        assert g is None
+        assert m == ["happy"]
+        assert msg is None
+
+    def test_only_real_genres_is_noop(self):
+        mod = _import_mcp_server()
+        g, m, msg = mod._reroute_mood_labels_from_genres(["rock", "metal"], None)
+        assert g == ["rock", "metal"]
+        assert m is None
+        assert msg is None
+
+    def test_mood_label_in_genres_gets_rerouted(self):
+        mod = _import_mcp_server()
+        g, m, msg = mod._reroute_mood_labels_from_genres(["aggressive"], None)
+        assert g == []
+        assert m == ["aggressive"]
+        assert msg is not None and "aggressive" in msg
+
+    def test_mixed_keeps_real_genres_reroutes_mood(self):
+        mod = _import_mcp_server()
+        g, m, msg = mod._reroute_mood_labels_from_genres(
+            ["rock", "aggressive", "metal"], None
+        )
+        assert g == ["rock", "metal"]
+        assert m == ["aggressive"]
+        assert msg is not None
+
+    def test_case_insensitive(self):
+        mod = _import_mcp_server()
+        g, m, msg = mod._reroute_mood_labels_from_genres(["Aggressive"], None)
+        assert g == []
+        assert m == ["aggressive"]  # canonicalized to lowercase
+
+    def test_no_duplicate_when_already_in_moods(self):
+        mod = _import_mcp_server()
+        g, m, msg = mod._reroute_mood_labels_from_genres(["aggressive"], ["aggressive"])
+        assert m == ["aggressive"]  # unchanged, no dup
+        assert g == []
+
+    def test_rerouting_applied_in_database_query(self):
+        """End-to-end: AI passes 'aggressive' as a genre, query treats it as a mood."""
+        mod = _import_mcp_server()
+        cur = MagicMock()
+        cur.__enter__ = Mock(return_value=cur)
+        cur.__exit__ = Mock(return_value=False)
+        cur.fetchall = Mock(return_value=[])
+        conn = _make_connection(cur)
+        conn.cursor = Mock(return_value=cur)
+
+        with patch.object(mod, 'get_db_connection', return_value=conn):
+            result = mod._database_genre_query_sync(genres=["aggressive"], get_songs=10)
+
+        sql = cur.execute.call_args[0][0]
+        # No genre regex against mood_vector should be built (genres list is empty after rerouting)
+        assert "SUBSTRING(mood_vector FROM" not in sql
+        # Mood regex against other_features SHOULD be built
+        assert "SUBSTRING(other_features FROM" in sql
+        # Reroute warning should appear in the output message
+        assert "Rerouted" in result["message"]
+
+
 # ---------------------------------------------------------------------------
 # ai_brainstorm normalization patterns (unit-testable without DB)
 # ---------------------------------------------------------------------------
