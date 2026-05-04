@@ -53,21 +53,12 @@ def _load_sem_grove():
     return sys.modules[mod_name]
 
 
-# ---------------------------------------------------------------------------
-# Stub app_helper so Flask is never imported during test collection or test
-# runs.  search_by_song calls _fetch_metadata which does
-#   ``from app_helper import get_score_data_by_ids``
-# at import time; if app_helper is already in sys.modules the real import is
-# skipped.
-# ---------------------------------------------------------------------------
-import types as _types
-_ah_stub = _types.ModuleType('app_helper')
-_ah_stub.get_score_data_by_ids = lambda item_ids: []  # overridden per-test
-_ah_stub.get_db = MagicMock()
-_ah_stub.load_map_projection = MagicMock(return_value=(None, None))  # needed by song_alchemy top-level import
-# Fallback: any other attribute yields a MagicMock so imports from other test files don't fail
-_ah_stub.__getattr__ = lambda name: MagicMock()
-sys.modules.setdefault('app_helper', _ah_stub)
+# sem_grove_manager.py has NO top-level app_helper import — it only calls
+# ``from app_helper import get_score_data_by_ids`` lazily inside
+# _fetch_metadata(), and every test that exercises that path patches
+# _fetch_metadata directly.  Therefore no stub needs to be installed at
+# module level; doing so would poison sys.modules for other test files
+# (e.g. test_string_sanitization.py) that need the real app_helper.
 
 _sgm = _load_sem_grove()
 
@@ -488,7 +479,16 @@ class TestSemGroveRoundTrip:
         mock_conn.cursor.return_value = mock_cur
         mock_conn.commit.return_value = None
 
-        with patch("app_helper.get_db", return_value=mock_conn), \
+        # build_and_store_sem_grove_index does ``from app_helper import get_db``
+        # at function entry even when db_conn is supplied.  Install a scoped stub
+        # via patch.dict so sys.modules is restored after this block and other
+        # test files (e.g. test_string_sanitization.py) still get the real module.
+        import types as _t
+        _ah_stub = _t.ModuleType('app_helper')
+        _ah_stub.get_db = MagicMock(return_value=mock_conn)
+        _ah_stub.get_score_data_by_ids = lambda item_ids: []
+
+        with patch.dict(sys.modules, {'app_helper': _ah_stub}), \
              patch("tasks.sem_grove_manager.LYRICS_EMBEDDING_DIMENSION", lyrics_dim, create=True), \
              patch("config.LYRICS_EMBEDDING_DIMENSION", lyrics_dim, create=True):
             from config import (
