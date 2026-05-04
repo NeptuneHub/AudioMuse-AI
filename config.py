@@ -340,7 +340,6 @@ LYRICS_API_2_TIMEOUT       = float(os.environ.get("LYRICS_API_2_TIMEOUT",   "5.0
 LYRICS_USE_GPU = os.environ.get("LYRICS_USE_GPU", "auto").lower()
 LYRICS_WHISPER_MODEL = os.environ.get("LYRICS_WHISPER_MODEL", "small")
 LYRICS_LLM_MODEL_PATH = os.environ.get("LYRICS_LLM_MODEL_PATH", "/app/model/qwen2.5-1.5b-instruct-q4_k_m.gguf")
-LYRICS_SONGS_DIR = os.environ.get("LYRICS_SONGS_DIR", "/app/songs")
 LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
 # Writable directory for on-demand Marian translator downloads. Kept separate
 # from the bundled HF cache so stale locks / restrictive perms there cannot
@@ -365,6 +364,15 @@ LYRICS_DEFAULT_MARIAN_PREFIX = 'Helsinki-NLP/opus-mt-{}-en'
 # Dimension of the e5-base-v2 sentence embedding stored in lyrics_embedding.embedding
 # and used to build the lyrics voyager index.
 LYRICS_EMBEDDING_DIMENSION = int(os.environ.get("LYRICS_EMBEDDING_DIMENSION", "768"))
+
+# --- SemGrove (Semantic + Groove) merged index weights ---
+# Controls how much each signal contributes to the merged cosine similarity.
+# Values are the squared scale factors so that:
+#   merged cosine = WEIGHT_LYRICS * cos(lyrics) + WEIGHT_AUDIO * cos(audio)
+# Both values must be in [0.0, 1.0]. They are baked into the index at build
+# time; changing them requires rebuilding the SemGrove index.
+SEM_GROVE_WEIGHT_LYRICS = float(os.environ.get("SEM_GROVE_WEIGHT_LYRICS", "0.75"))
+SEM_GROVE_WEIGHT_AUDIO  = float(os.environ.get("SEM_GROVE_WEIGHT_AUDIO",  "0.25"))
 
 # --- Sentinel vectors for tracks with no detectable lyrics ("instrumental") ---
 # These give us three things at once:

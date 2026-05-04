@@ -22,9 +22,11 @@ def lyrics_search_page():
     """Render the lyrics search page."""
     from config import APP_VERSION, LYRICS_ENABLED
     from tasks.lyrics_manager import get_axes_definition, get_cache_stats
+    from tasks.sem_grove_manager import get_sem_grove_stats
 
-    cache_stats = get_cache_stats()
-    axes = get_axes_definition() if LYRICS_ENABLED else {}
+    cache_stats      = get_cache_stats()
+    axes             = get_axes_definition() if LYRICS_ENABLED else {}
+    sem_grove_stats  = get_sem_grove_stats()
 
     return render_template(
         'lyrics_search.html',
@@ -34,6 +36,7 @@ def lyrics_search_page():
         lyrics_enabled=LYRICS_ENABLED,
         cache_stats=cache_stats,
         axes=axes,
+        sem_grove_stats=sem_grove_stats,
     )
 
 

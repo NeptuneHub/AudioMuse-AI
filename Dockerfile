@@ -433,6 +433,13 @@ ENV MKL_ENABLE_INSTRUCTIONS=AVX2 \
 # Prevent aggressive memory pre-allocation on newer CPUs
 ENV ORT_DISABLE_MEMORY_PATTERN_OPTIMIZATION=1
 
+# numba JIT cache must land in a writable directory.
+# When the container runs as a non-root user the system site-packages directory
+# (/usr/local/lib/python3.x/dist-packages/) is read-only, which causes librosa
+# to fail with: "cannot cache function: no locator available".
+# Point numba to /tmp so it always has write access (issue: NeptuneHub/AudioMuse-AI#479).
+ENV NUMBA_CACHE_DIR=/tmp/numba_cache
+
 ENV PYTHONPATH=/usr/local/lib/python3/dist-packages:/app
 
 EXPOSE 8000

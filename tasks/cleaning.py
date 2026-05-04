@@ -22,6 +22,7 @@ from .mediaserver import get_recent_albums, get_tracks_from_album
 from .voyager_manager import build_and_store_voyager_index
 from .artist_gmm_manager import build_and_store_artist_index
 from .lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
+from .sem_grove_manager import build_and_store_sem_grove_index
 
 from psycopg2 import OperationalError
 from redis.exceptions import TimeoutError as RedisTimeoutError
@@ -90,6 +91,10 @@ def identify_and_clean_orphaned_albums_task():
                         build_and_store_lyrics_axes_index(get_db())
                     except Exception as e:
                         logger.warning(f"Failed to build/store Lyrics axes index after cleaning: {e}")
+                    try:
+                        build_and_store_sem_grove_index(get_db())
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store SemGrove merged index after cleaning: {e}")
                     from app_helper import build_and_store_map_projection, build_and_store_artist_projection
                     build_and_store_map_projection('main_map')
                     build_and_store_artist_projection('artist_map')
@@ -205,6 +210,10 @@ def identify_and_clean_orphaned_albums_task():
                         build_and_store_lyrics_axes_index(get_db())
                     except Exception as e:
                         logger.warning(f"Failed to build/store Lyrics axes index after cleaning: {e}")
+                    try:
+                        build_and_store_sem_grove_index(get_db())
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store SemGrove merged index after cleaning: {e}")
                     from app_helper import build_and_store_map_projection, build_and_store_artist_projection
                     build_and_store_map_projection('main_map')
                     build_and_store_artist_projection('artist_map')
@@ -266,6 +275,10 @@ def identify_and_clean_orphaned_albums_task():
                         build_and_store_lyrics_axes_index(get_db())
                     except Exception as e:
                         logger.warning(f"Failed to build/store Lyrics axes index after cleaning: {e}")
+                    try:
+                        build_and_store_sem_grove_index(get_db())
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store SemGrove merged index after cleaning: {e}")
                     from app_helper import build_and_store_map_projection, build_and_store_artist_projection
                     build_and_store_map_projection('main_map')
                     build_and_store_artist_projection('artist_map')

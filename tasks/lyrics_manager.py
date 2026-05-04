@@ -68,6 +68,7 @@ def _fetch_lyrics_metadata(item_ids: List[str]) -> Dict[str, Dict[str, str]]:
             metadata_map[row['item_id']] = {
                 'title': row.get('title', '') or '',
                 'author': row.get('author', '') or '',
+                'album': row.get('album', '') or '',
             }
     except Exception as e:
         logger.warning(f"Failed to fetch lyrics metadata: {e}")
@@ -756,7 +757,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
         item_id = id_map.get(int(vid))
         if not item_id:
             continue
-        meta = metadata_map.get(item_id, {'title': '', 'author': ''})
+        meta = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
         author = meta.get('author', '') or ''
         if artist_cap and author:
             an = author.strip().lower()
@@ -768,6 +769,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
             'item_id': item_id,
             'title': meta.get('title', ''),
             'author': author,
+            'album': meta.get('album', ''),
             'similarity': similarity,
         })
 
@@ -825,7 +827,7 @@ def search_by_text(query_text: str, limit: int = 50) -> List[Dict]:
             item_id = id_map.get(int(vid))
             if not item_id:
                 continue
-            meta = metadata_map.get(item_id, {'title': '', 'author': ''})
+            meta = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
             author = meta.get('author', '') or ''
             if artist_cap and author:
                 an = author.strip().lower()
@@ -837,6 +839,7 @@ def search_by_text(query_text: str, limit: int = 50) -> List[Dict]:
                 'item_id': item_id,
                 'title': meta.get('title', ''),
                 'author': author,
+                'album': meta.get('album', ''),
                 'similarity': similarity,
             })
 
