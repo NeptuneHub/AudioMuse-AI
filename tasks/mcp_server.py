@@ -1095,7 +1095,10 @@ def _database_genre_query_sync(
                     genre_conditions.append(
                         "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
                     )
-                    params.append(f"(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
+                    # (?i) makes the regex case-insensitive: MOOD_LABELS contains mixed-case
+                    # entries ('Mellow', 'Hip-Hop', 'Progressive rock') so AI-supplied lowercase
+                    # values must still match the stored vector.
+                    params.append(f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
                     params.append(genre_confidence_threshold)
                 conditions.append("(" + " OR ".join(genre_conditions) + ")")
                 has_genre_filter = True
@@ -1112,7 +1115,7 @@ def _database_genre_query_sync(
                     mood_conditions.append(
                         "COALESCE(CAST(NULLIF(SUBSTRING(other_features FROM %s), '') AS NUMERIC), 0) >= %s"
                     )
-                    params.append(f"(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
+                    params.append(f"(?i)(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
                     params.append(mood_confidence_threshold)
                 if len(mood_conditions) == 1:
                     conditions.append(mood_conditions[0])
@@ -1194,8 +1197,9 @@ def _database_genre_query_sync(
                                 0
                             )
                         """)
-                        # Regex to capture the score value: (?:^|,)\s*rock:(\d+\.?\d*)
-                        score_params.append(f"(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
+                        # Regex to capture the score value: (?i)(?:^|,)\s*rock:(\d+\.?\d*)
+                        # (?i) for case-insensitive — must mirror the WHERE-clause regex above.
+                        score_params.append(f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
                 if has_mood_filter:
                     for mood in moods:
                         # Extract the numeric score after 'mood:' from other_features
@@ -1210,7 +1214,7 @@ def _database_genre_query_sync(
                                 0
                             )
                         """)
-                        score_params.append(f"(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
+                        score_params.append(f"(?i)(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
 
                 relevance_expr = " + ".join(score_parts)
                 all_params = score_params + params
@@ -1410,11 +1414,17 @@ Return the JSON now:"""
         conditions = []
         params = []
 
-        # Add genre conditions
+        # Add genre conditions - extract score with regex and apply threshold (mirrors
+        # _database_genre_query_sync). A bare LIKE %genre% causes substring false positives
+        # (e.g. "rock" matching "indie rock") and ignores confidence scores.
+        genre_confidence_threshold = 0.55
         for genre in criteria.get('genres', []):
-            conditions.append("mood_vector LIKE %s")
-            params.append(f"%{genre}%")
-        
+            conditions.append(
+                "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
+            )
+            params.append(f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
+            params.append(genre_confidence_threshold)
+
         # Add mood conditions - extract score with regex and apply threshold (see _database_genre_query_sync)
         # other_features format: "danceable:0.59,aggressive:0.61,..." - every song has all 6 labels,
         # so a bare LIKE matches the entire library. A threshold separates real matches from noise.
@@ -1423,7 +1433,7 @@ Return the JSON now:"""
             conditions.append(
                 "COALESCE(CAST(NULLIF(SUBSTRING(other_features FROM %s), '') AS NUMERIC), 0) >= %s"
             )
-            params.append(f"(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
+            params.append(f"(?i)(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
             params.append(mood_confidence_threshold)
         
         # Add energy/tempo conditions

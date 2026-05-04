@@ -87,9 +87,14 @@ class TestGenreRegexPattern:
     """Test the regex pattern used in _database_genre_query_sync for genre matching."""
 
     def _matches(self, genre, mood_vector):
-        """Check if the genre regex pattern matches the mood_vector string."""
-        pattern = f"(^|,)\\s*{re.escape(genre)}:"
-        return bool(re.search(pattern, mood_vector, re.IGNORECASE))
+        """Check if the actual mcp_server regex pattern (with (?i) inline flag) matches.
+
+        Mirrors the param built in _database_genre_query_sync — the (?i) prefix is
+        what PostgreSQL POSIX regex uses; Python re also honors it as an inline flag,
+        so this test exercises the exact pattern the SQL layer receives.
+        """
+        pattern = f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)"
+        return bool(re.search(pattern, mood_vector))
 
     def test_genre_at_start_matches(self):
         assert self._matches("rock", "rock:0.82,pop:0.45")
@@ -131,6 +136,16 @@ class TestGenreRegexPattern:
 
     def test_pop_matches_at_start(self):
         assert self._matches("pop", "pop:0.55,rock:0.82")
+
+    def test_lowercase_input_matches_titlecase_label(self):
+        """MOOD_LABELS contains 'Mellow' / 'Hip-Hop' / 'Progressive rock' — AI sends
+        these lowercased, so the regex must be case-insensitive to find them."""
+        assert self._matches("mellow", "Mellow:0.74,pop:0.45")
+        assert self._matches("hip-hop", "Hip-Hop:0.61,rock:0.20")
+        assert self._matches("progressive rock", "Progressive rock:0.55")
+
+    def test_uppercase_input_matches_lowercase_stored(self):
+        assert self._matches("ROCK", "rock:0.82,pop:0.45")
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +290,11 @@ class TestDatabaseGenreQuery:
         return conn, cur
 
     def test_genre_filter_builds_regex_condition(self):
-        """Verify the SQL uses SUBSTRING with regex pattern for genre matching."""
+        """Verify the SQL uses SUBSTRING with regex pattern for genre matching.
+
+        Also asserts the (?i) inline flag is present so case-mismatched MOOD_LABELS
+        like 'Mellow', 'Hip-Hop', 'Progressive rock' still match user-supplied lowercase.
+        """
         mod = _import_mcp_server()
         conn, cur = self._setup_mock_conn()
 
@@ -288,6 +307,8 @@ class TestDatabaseGenreQuery:
         assert "SUBSTRING(mood_vector FROM" in sql  # PostgreSQL regex extraction
         found_regex = any("rock:" in str(p) for p in params) if params else False
         assert found_regex or "rock" in sql
+        # Case-insensitive flag: required for mixed-case stored labels.
+        assert any("(?i)" in str(p) for p in params), "genre regex must use (?i)"
 
     def test_tempo_range_filter(self):
         mod = _import_mcp_server()
@@ -364,6 +385,8 @@ class TestDatabaseGenreQuery:
         assert any(isinstance(p, float) and 0.5 <= p < 1 for p in params)
         # Per-mood regex pattern present
         assert any("aggressive:" in str(p) for p in params)
+        # Case-insensitive flag must be present (defense against AI returning "Aggressive")
+        assert any("(?i)" in str(p) for p in params), "mood regex must use (?i)"
         # And ordering must be by relevance (not RANDOM) so top mood matches come first
         assert "relevance_score DESC" in sql
 
@@ -1413,3 +1436,71 @@ class TestTextSearchSync:
 
         assert result["songs"] == []
         assert "error" in result["message"].lower()
+
+
+# ---------------------------------------------------------------------------
+# _vibe_match_sync — genre filter must use threshold-based regex (not LIKE)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestVibeMatchGenreFilter:
+    """Regression guard for PR #480 review: _vibe_match_sync's genre filter previously
+    used `mood_vector LIKE %{genre}%` which (a) substring-matches "rock" against
+    "indie rock" and (b) ignores confidence scores. It must now use the same
+    SUBSTRING-with-regex-and-threshold approach as _database_genre_query_sync.
+    """
+
+    def _setup(self, ai_response: str):
+        mod = _import_mcp_server()
+        cur = MagicMock()
+        cur.__enter__ = Mock(return_value=cur)
+        cur.__exit__ = Mock(return_value=False)
+        cur.fetchall = Mock(return_value=[])
+        conn = _make_connection(cur)
+        conn.cursor = Mock(return_value=cur)
+
+        ai_config = {
+            'provider': 'ollama',
+            'ollama_url': 'http://x',
+            'ollama_model': 'm',
+        }
+        return mod, cur, conn, ai_config, ai_response
+
+    def _run(self, mod, conn, ai_config, ai_response):
+        # `from ai import call_ai_for_chat` is inside the function, so patch the
+        # source module attribute (not a binding inside mcp_server).
+        fake_ai = MagicMock()
+        fake_ai.call_ai_for_chat = Mock(return_value=ai_response)
+        with patch.object(mod, 'get_db_connection', return_value=conn), \
+             patch.dict(sys.modules, {'ai': fake_ai}):
+            return mod._vibe_match_sync("workout vibe", ai_config, 10)
+
+    def test_genre_uses_substring_regex_not_like(self):
+        """Genre filter must build SUBSTRING(mood_vector FROM regex) with threshold."""
+        ai_response = json.dumps({"genres": ["rock"], "moods": []})
+        mod, cur, conn, ai_config, resp = self._setup(ai_response)
+
+        self._run(mod, conn, ai_config, resp)
+
+        sql = cur.execute.call_args[0][0]
+        params = cur.execute.call_args[0][1]
+        assert "SUBSTRING(mood_vector FROM" in sql
+        # The substring-LIKE bug must not return.
+        assert "mood_vector LIKE" not in sql
+        # rock: regex param emitted
+        assert any("rock:" in str(p) for p in params)
+        # Case-insensitive flag — matches MOOD_LABELS like 'Mellow', 'Hip-Hop'.
+        assert any("(?i)" in str(p) for p in params), "vibe genre regex must use (?i)"
+        # A meaningful confidence threshold (above the noise floor) is supplied.
+        assert any(isinstance(p, float) and 0.5 <= p < 1 for p in params)
+
+    def test_genre_and_mood_both_use_threshold(self):
+        ai_response = json.dumps({"genres": ["rock"], "moods": ["aggressive"]})
+        mod, cur, conn, ai_config, resp = self._setup(ai_response)
+
+        self._run(mod, conn, ai_config, resp)
+
+        sql = cur.execute.call_args[0][0]
+        assert "SUBSTRING(mood_vector FROM" in sql
+        assert "SUBSTRING(other_features FROM" in sql
+        assert "mood_vector LIKE" not in sql
