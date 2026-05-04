@@ -95,7 +95,7 @@
         min-height: 1.6em;
     }
 
-    #search-form button, #axis-form button, #playlist-form button {
+    #search-form button, #axis-form button, #song-form button, #playlist-form button {
         width: 100%;
         padding: 0.75rem 1.5rem;
         font-size: 1rem;
@@ -107,10 +107,10 @@
         cursor: pointer;
         transition: background-color 0.2s;
     }
-    #search-form button:hover, #axis-form button:hover, #playlist-form button:hover {
+    #search-form button:hover, #axis-form button:hover, #song-form button:hover, #playlist-form button:hover {
         background-color: var(--color-primary-hover);
     }
-    #search-form button:disabled, #axis-form button:disabled, #playlist-form button:disabled {
+    #search-form button:disabled, #axis-form button:disabled, #song-form button:disabled, #playlist-form button:disabled {
         background-color: var(--text-muted);
         cursor: not-allowed;
     }
@@ -196,6 +196,7 @@
         <div class="tabs">
             <button class="tab-btn active" data-tab="axes">By Axis</button>
             <button class="tab-btn" data-tab="text">By Text</button>
+            <button class="tab-btn" data-tab="song">By Song</button>
         </div>
 
         <!-- Axis tab -->
@@ -268,6 +269,59 @@
                 </div>
                 <button type="submit" {% if not cache_stats.index_loaded %}disabled{% endif %}>
                     🔍 Search by text
+                </button>
+            </form>
+        </div>
+
+        <!-- Song tab -->
+        <div class="tab-pane" id="tab-song">
+            {% if sem_grove_stats.loaded %}
+            <div class="cache-stats" style="margin-bottom:1rem;">
+                <strong>✓ SemGrove Index Ready</strong> |
+                <strong>{{ sem_grove_stats.song_count }}</strong> songs |
+                lyrics {{ sem_grove_stats.w_lyrics * 100 | int }}% /
+                audio {{ sem_grove_stats.w_audio * 100 | int }}% |
+                {{ sem_grove_stats.memory_mb }} MB
+            </div>
+            {% else %}
+            <div class="error-message" style="margin-bottom:1rem;">
+                <strong>⚠️ SemGrove index not built yet.</strong>
+                <p>Run analysis (lyrics + audio) and then trigger a SemGrove index build to enable this search.</p>
+            </div>
+            {% endif %}
+
+            <form id="song-form">
+                <div class="param-group">
+                    <label for="sg-search-query" class="label-with-tooltip">
+                        Seed Song:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Type to find a song in your library. Select it, then search for songs that share both its lyrical meaning (75%) and its acoustic sound (25%). Lyrics dominate — the audio component prevents jumps across distant genres.</span>
+                        </span>
+                    </label>
+                    <div class="autocomplete-container" id="sg-autocomplete-container">
+                        <input type="text" id="sg-search-query" class="search-box"
+                               placeholder="Start typing a song or artist…"
+                               autocomplete="off"
+                               {% if not sem_grove_stats.loaded %}disabled{% endif %}>
+                        <input type="hidden" id="sg-selected-item-id">
+                        <div id="sg-selected-display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                        <div id="sg-autocomplete-results" class="autocomplete-results hidden"></div>
+                    </div>
+                </div>
+                <div class="param-group">
+                    <label for="song-limit" class="label-with-tooltip">
+                        Number of results:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">How many songs to return. Higher numbers give more variety but include less-relevant matches.</span>
+                        </span>
+                    </label>
+                    <input type="number" id="song-limit" name="limit" value="50" min="1" max="500"
+                           {% if not sem_grove_stats.loaded %}disabled{% endif %}>
+                </div>
+                <button type="submit" {% if not sem_grove_stats.loaded %}disabled{% endif %}>
+                    🎵 Find Similar Songs
                 </button>
             </form>
         </div>
@@ -346,6 +400,101 @@ document.addEventListener('DOMContentLoaded', function () {
         await runSearch("{{ url_for('lyrics_search_bp.lyrics_search_axes_api') }}",
                         { targets, limit }, '');
     });
+
+    // ----- SemGrove autocomplete -----
+    (function () {
+        const sgInput      = document.getElementById('sg-search-query');
+        const sgResults    = document.getElementById('sg-autocomplete-results');
+        const sgDisplay    = document.getElementById('sg-selected-display');
+        const sgItemId     = document.getElementById('sg-selected-item-id');
+        if (!sgInput) return;
+
+        const PAGE_SIZE = 20;
+        let sgOffset = 0, sgQuery = '', sgTimeout, sgLoadingMore = false;
+
+        const sgHide = () => sgResults.classList.add('hidden');
+
+        const sgSelect = (track) => {
+            sgItemId.value     = track.item_id || '';
+            sgDisplay.textContent = `${escapeHtml(track.title || 'Unknown')} — ${escapeHtml(track.author || 'Unknown')}`;
+            sgHide();
+        };
+
+        const sgShow = (tracks, append) => {
+            if (!append) sgResults.innerHTML = '';
+            const sentinel = sgResults.querySelector('.autocomplete-load-more');
+            if (sentinel) sentinel.remove();
+
+            if (!tracks.length && !append) {
+                sgResults.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
+            } else {
+                tracks.forEach(t => {
+                    const d = document.createElement('div');
+                    d.className = 'autocomplete-item';
+                    d.innerHTML = `<div class="title">${escapeHtml(t.title||'N/A')}</div><div class="artist">${escapeHtml(t.author||'N/A')}</div><div class="album">Album: ${escapeHtml(t.album||'Unknown')}</div>`;
+                    d.addEventListener('click', () => sgSelect(t));
+                    sgResults.appendChild(d);
+                });
+                if (tracks.length >= PAGE_SIZE) {
+                    const more = document.createElement('div');
+                    more.className = 'autocomplete-load-more autocomplete-item';
+                    more.innerHTML = '<em>Loading more…</em>';
+                    sgResults.appendChild(more);
+                    const obs = new IntersectionObserver(entries => {
+                        if (entries[0].isIntersecting) {
+                            obs.disconnect();
+                            if (sgLoadingMore) return;
+                            sgLoadingMore = true;
+                            const p = new URLSearchParams({ search_query: sgQuery, start: sgOffset, end: sgOffset + PAGE_SIZE, index: 'sem_grove' });
+                            fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${p}`)
+                                .then(r => r.json())
+                                .then(ts => { sgOffset += ts.length; sgShow(ts, true); })
+                                .finally(() => { sgLoadingMore = false; });
+                        }
+                    }, { root: sgResults });
+                    obs.observe(more);
+                }
+            }
+            sgResults.classList.remove('hidden');
+        };
+
+        sgInput.addEventListener('input', () => {
+            clearTimeout(sgTimeout);
+            sgTimeout = setTimeout(async () => {
+                const q = sgInput.value.trim();
+                if (q.length < 3) { sgHide(); return; }
+                sgQuery = q; sgOffset = 0;
+                try {
+                    const p = new URLSearchParams({ search_query: q, start: 0, end: PAGE_SIZE, index: 'sem_grove' });
+                    const r = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${p}`);
+                    const ts = await r.json();
+                    sgOffset = ts.length;
+                    sgShow(ts, false);
+                } catch (err) { sgHide(); }
+            }, 300);
+        });
+
+        document.addEventListener('click', e => {
+            if (!e.target.closest('#sg-autocomplete-container')) sgHide();
+        });
+    })();
+
+    // ----- Song search submit -----
+    const sgForm = document.getElementById('song-form');
+    if (sgForm) {
+        sgForm.addEventListener('submit', async function (e) {
+            e.preventDefault();
+            const item_id = document.getElementById('sg-selected-item-id').value.trim();
+            if (!item_id) {
+                alert('Please select a song from the autocomplete list first.');
+                return;
+            }
+            const limit = parseInt(document.getElementById('song-limit').value, 10) || 50;
+            const seedText = document.getElementById('sg-selected-display').textContent || item_id;
+            await runSearch("{{ url_for('sem_grove_bp.sem_grove_search_api') }}",
+                            { item_id, limit }, seedText);
+        });
+    }
 
     // ----- Text search submit -----
     document.getElementById('search-form').addEventListener('submit', async function (e) {

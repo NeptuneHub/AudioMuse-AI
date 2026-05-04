@@ -366,6 +366,15 @@ LYRICS_DEFAULT_MARIAN_PREFIX = 'Helsinki-NLP/opus-mt-{}-en'
 # and used to build the lyrics voyager index.
 LYRICS_EMBEDDING_DIMENSION = int(os.environ.get("LYRICS_EMBEDDING_DIMENSION", "768"))
 
+# --- SemGrove (Semantic + Groove) merged index weights ---
+# Controls how much each signal contributes to the merged cosine similarity.
+# Values are the squared scale factors so that:
+#   merged cosine = WEIGHT_LYRICS * cos(lyrics) + WEIGHT_AUDIO * cos(audio)
+# Both values must be in [0.0, 1.0]. They are baked into the index at build
+# time; changing them requires rebuilding the SemGrove index.
+SEM_GROVE_WEIGHT_LYRICS = float(os.environ.get("SEM_GROVE_WEIGHT_LYRICS", "0.75"))
+SEM_GROVE_WEIGHT_AUDIO  = float(os.environ.get("SEM_GROVE_WEIGHT_AUDIO",  "0.25"))
+
 # --- Sentinel vectors for tracks with no detectable lyrics ("instrumental") ---
 # These give us three things at once:
 #   1. analyze_lyrics() can still write a row, so future runs skip the track

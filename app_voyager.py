@@ -125,6 +125,16 @@ def search_tracks_endpoint():
     if len(search_query) < 3:
         return jsonify([])
 
+    # Optional index filter: 'musicnn' (default) or 'sem_grove'
+    index_param = request.args.get('index', 'musicnn', type=str).strip().lower()
+    item_id_filter = None
+    if index_param == 'sem_grove':
+        try:
+            from tasks.sem_grove_manager import get_sem_grove_item_ids
+            item_id_filter = get_sem_grove_item_ids()
+        except Exception as e:
+            logger.warning(f"Could not load SemGrove item IDs for autocomplete filter: {e}")
+
     # Pagination: start / end (0-based). Defaults to first 20 results.
     start = request.args.get('start', 0, type=int)
     end = request.args.get('end', None, type=int)
@@ -136,7 +146,8 @@ def search_tracks_endpoint():
     offset = start
 
     try:
-        raw_results = search_tracks_unified(search_query, limit=limit, offset=offset)
+        raw_results = search_tracks_unified(search_query, limit=limit, offset=offset,
+                                             item_id_filter=item_id_filter)
         results = []
         for r in raw_results:
             # Be defensive in case the source returns non-dict entries

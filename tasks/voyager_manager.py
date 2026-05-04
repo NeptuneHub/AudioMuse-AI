@@ -1739,13 +1739,15 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
     finally:
         cur.close()
 
-def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0):
+def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0,
+                          item_id_filter: set = None):
     """
     Deterministic substring search over title, author and album.
 
     - Accent and case insensitive
     - Each token must match title, author or album
     - Ranking priority: title > author > album
+    - item_id_filter: optional set of item_ids to restrict results to
     """
 
     from app_helper import get_db
@@ -1786,10 +1788,17 @@ def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0):
         where_sql = " AND ".join(where_clauses)
         score_sql = " + ".join(score_clauses)
 
+        # Optionally restrict to a specific set of item_ids (e.g. SemGrove index)
+        id_filter_sql = ""
+        if item_id_filter:
+            id_placeholders = ",".join(["%s"] * len(item_id_filter))
+            id_filter_sql = f" AND item_id IN ({id_placeholders})"
+            params.extend(list(item_id_filter))
+
         query = f"""
             SELECT item_id, title, author, album, album_artist
             FROM score
-            WHERE {where_sql}
+            WHERE {where_sql}{id_filter_sql}
             ORDER BY ({score_sql}) DESC,
                      title,
                      author,
