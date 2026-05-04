@@ -129,6 +129,12 @@
         font-size: 0.9rem;
     }
 
+    .result-album {
+        color: var(--text-muted);
+        font-size: 0.85rem;
+        margin-top: 0.15rem;
+    }
+
     .similarity-badge {
         color: white;
         padding: 0.4rem 0.8rem;
@@ -395,6 +401,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     <div class="result-info">
                         <div class="result-title">${index + 1}. ${escapeHtml(result.title)}</div>
                         <div class="result-artist">${escapeHtml(result.author)}</div>
+                        ${result.album ? `<div class="result-album">Album: ${escapeHtml(result.album)}</div>` : ''}
                     </div>
                     <div class="similarity-badge ${badgeClass}">
                         ${similarityPercent}%

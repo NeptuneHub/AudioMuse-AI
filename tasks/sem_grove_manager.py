@@ -135,6 +135,7 @@ def _fetch_metadata(item_ids: List[str]) -> Dict[str, Dict]:
             r["item_id"]: {
                 "title":  r.get("title",  "") or "",
                 "author": r.get("author", "") or "",
+                "album":  r.get("album",  "") or "",
             }
             for r in rows
         }
@@ -639,11 +640,12 @@ def search_by_song(seed_item_id: str, limit: int = 50) -> List[Dict]:
 
     # Prepend the seed song as the first entry so callers (playlist builders, API
     # consumers) always receive it at position 0.  The frontend hides it.
-    seed_meta = metadata_map.get(seed_item_id, {"title": "", "author": ""})
+    seed_meta = metadata_map.get(seed_item_id, {"title": "", "author": "", "album": ""})
     results: List[Dict] = [{
         "item_id":    seed_item_id,
         "title":      seed_meta.get("title",  "") or "",
         "author":     seed_meta.get("author", "") or "",
+        "album":      seed_meta.get("album",  "") or "",
         "similarity": 1.0,
         "is_seed":    True,
     }]
@@ -657,7 +659,7 @@ def search_by_song(seed_item_id: str, limit: int = 50) -> List[Dict]:
         item_id = id_map.get(int(vid))
         if not item_id or item_id == seed_item_id:
             continue
-        meta   = metadata_map.get(item_id, {"title": "", "author": ""})
+        meta   = metadata_map.get(item_id, {"title": "", "author": "", "album": ""})
         author = meta.get("author", "") or ""
         title  = meta.get("title",  "") or ""
 
@@ -702,6 +704,7 @@ def search_by_song(seed_item_id: str, limit: int = 50) -> List[Dict]:
             "item_id":    item_id,
             "title":      title,
             "author":     author,
+            "album":      meta.get("album", "") or "",
             "similarity": max(0.0, 1.0 - float(dist)),
         })
 

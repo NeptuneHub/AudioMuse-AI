@@ -126,6 +126,7 @@
     .result-info { flex: 1; }
     .result-title { font-weight: 600; font-size: 1.1rem; margin-bottom: 0.3rem; }
     .result-artist { color: var(--text-muted); font-size: 0.9rem; }
+    .result-album { color: var(--text-muted); font-size: 0.85rem; margin-top: 0.15rem; }
     .similarity-badge {
         color: white;
         padding: 0.4rem 0.8rem;
@@ -305,7 +306,9 @@
                                autocomplete="off"
                                {% if not sem_grove_stats.loaded %}disabled{% endif %}>
                         <input type="hidden" id="sg-selected-item-id">
-                        <div id="sg-selected-display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                        <div id="sg-selected-title-display" style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-muted);"></div>
+                        <div id="sg-selected-artist-display" style="font-size:0.9rem; color:var(--text-muted);"></div>
+                        <div id="sg-selected-album-display" style="font-size:0.9rem; color:var(--text-muted);"></div>
                         <div id="sg-autocomplete-results" class="autocomplete-results hidden"></div>
                     </div>
                 </div>
@@ -405,7 +408,7 @@ document.addEventListener('DOMContentLoaded', function () {
     (function () {
         const sgInput      = document.getElementById('sg-search-query');
         const sgResults    = document.getElementById('sg-autocomplete-results');
-        const sgDisplay    = document.getElementById('sg-selected-display');
+        const sgDisplay    = document.getElementById('sg-selected-title-display');
         const sgItemId     = document.getElementById('sg-selected-item-id');
         if (!sgInput) return;
 
@@ -415,8 +418,10 @@ document.addEventListener('DOMContentLoaded', function () {
         const sgHide = () => sgResults.classList.add('hidden');
 
         const sgSelect = (track) => {
-            sgItemId.value     = track.item_id || '';
-            sgDisplay.textContent = `${escapeHtml(track.title || 'Unknown')} — ${escapeHtml(track.author || 'Unknown')}`;
+            sgItemId.value = track.item_id || '';
+            sgDisplay.textContent = 'Title: ' + (track.title || 'Unknown');
+            document.getElementById('sg-selected-artist-display').textContent = 'Artist: ' + (track.author || 'Unknown');
+            document.getElementById('sg-selected-album-display').textContent  = track.album ? 'Album: ' + track.album : '';
             sgHide();
         };
 
@@ -490,7 +495,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
             const limit = parseInt(document.getElementById('song-limit').value, 10) || 50;
-            const seedText = document.getElementById('sg-selected-display').textContent || item_id;
+            const seedText = document.getElementById('sg-selected-title-display').textContent || item_id;
             await runSearch("{{ url_for('sem_grove_bp.sem_grove_search_api') }}",
                             { item_id, limit }, seedText);
         });
@@ -551,6 +556,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     <div class="result-info">
                         <div class="result-title">${displayIndex}. ${escapeHtml(r.title || '')}</div>
                         <div class="result-artist">${escapeHtml(r.author || '')}</div>
+                        ${r.album ? `<div class="result-album">Album: ${escapeHtml(r.album)}</div>` : ''}
                     </div>
                     <div class="similarity-badge ${cls}">${pct}%</div>
                 </div>
