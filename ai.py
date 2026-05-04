@@ -60,18 +60,24 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
     Returns:
         str: The extracted playlist name from the model's response, or an error message.
     """
-    # Detect format from per-call inputs (NOT the global AI_MODEL_PROVIDER):
-    # this function is shared between the Ollama wrapper (api_key="no-key-needed",
-    # ollama URL) and the OpenAI/OpenRouter caller (real API key, openai/openrouter
-    # URL). The global AI_MODEL_PROVIDER reflects the user's *default* provider for
-    # other code paths and may differ from the provider chosen for this specific
-    # call (e.g. user has AI_MODEL_PROVIDER=OLLAMA globally but kicks off
-    # clustering with provider=OPENAI). See issue #467.
-    is_openai_format = (
-        (api_key and api_key != "no-key-needed")
-        or "openai" in server_url.lower()
-        or "openrouter" in server_url.lower()
+    # Detect format from the URL (NOT the global AI_MODEL_PROVIDER):
+    # this function is shared between the Ollama wrapper and the
+    # OpenAI/OpenRouter caller. The global AI_MODEL_PROVIDER reflects the
+    # user's *default* provider for other code paths and may differ from the
+    # provider chosen for this specific call (e.g. user has
+    # AI_MODEL_PROVIDER=OLLAMA globally but kicks off clustering with
+    # provider=OPENAI). See issue #467.
+    #
+    # Ollama exposes distinctive paths (/api/generate, /api/chat); every
+    # OpenAI-compatible server uses /v1/chat/completions or similar. Keying
+    # off the URL means an authenticated Ollama deployment (real bearer
+    # token + ollama URL) is still correctly detected as Ollama.
+    server_url_lower = server_url.lower()
+    is_ollama_format = (
+        "/api/generate" in server_url_lower
+        or "/api/chat" in server_url_lower
     )
+    is_openai_format = not is_ollama_format
 
     headers = {
         "Content-Type": "application/json"

@@ -290,6 +290,38 @@ class TestGetOpenAICompatiblePlaylistName:
         # Only the pre-call rate-limit delay (one sleep) is expected.
         assert mock_sleep.call_count == 1
 
+    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
+    @patch('ai.requests.post')
+    @patch('ai.time.sleep')
+    def test_authenticated_ollama_url_uses_ollama_format(self, mock_sleep, mock_post):
+        """Detection must use the URL, not the api_key, so a real bearer token
+        passed to an Ollama deployment (e.g. Ollama behind a reverse proxy or
+        LiteLLM with auth) still uses Ollama's request/response format.
+        """
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = Mock()
+        # Ollama-format response chunks (response/done keys, not delta/text).
+        mock_response.iter_lines.return_value = [
+            b'{"response":"Quiet","done":false}\n',
+            b'{"response":" Storm","done":false}\n',
+            b'{"response":"","done":true}\n',
+        ]
+        mock_post.return_value = mock_response
+
+        result = get_openai_compatible_playlist_name(
+            server_url="http://ollama-proxy.example.com:11434/api/generate",
+            model_name="llama3.1:8b",
+            full_prompt="prompt",
+            api_key="real-bearer-token",
+        )
+
+        assert result == "Quiet Storm"
+        # And the request body must use Ollama's `prompt` field, not OpenAI's `messages`.
+        sent_body = json.loads(mock_post.call_args[1]['data'])
+        assert 'prompt' in sent_body
+        assert 'messages' not in sent_body
+
     @patch('ai.AI_MODEL_PROVIDER', 'OLLAMA')
     @patch('ai.requests.post')
     @patch('ai.time.sleep')
