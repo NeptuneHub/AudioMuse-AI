@@ -735,7 +735,7 @@ class TestModuleConstants:
         assert 'API_TOKEN' in AUTH_FIELDS
 
     def test_server_required_fields_matches_config(self):
-        """SetupManager.SERVER_REQUIRED_FIELDS should reference config.MEDIASERVER_FIELDS_BY_TYPE."""
+        """SetupManager.SERVER_REQUIRED_FIELDS should equal config.MEDIASERVER_FIELDS_BY_TYPE."""
         import config
         mgr = _mgr()
-        assert mgr.SERVER_REQUIRED_FIELDS is config.MEDIASERVER_FIELDS_BY_TYPE
+        assert mgr.SERVER_REQUIRED_FIELDS == config.MEDIASERVER_FIELDS_BY_TYPE

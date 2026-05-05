@@ -59,7 +59,6 @@ These parameters can be left as-is:
 
 | Parameter               | Description                                  | Default Value     |
 |-------------------------|----------------------------------------------|-------------------|
-| `TEMP_DIR`              | Temp directory for audio files              | `/app/temp_audio` |
 | `CLEANING_SAFETY_LIMIT` | Max number of albums deleted during cleaning | `100`             |
 | `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names. | `""` (empty - scan all) |
 | `ENABLE_PROXY_FIX` | Enable Proxy Fix for Flask when behind a reverse proxy. Example Nginx configuration: [config.py](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/config.py#L346) | `false` |
@@ -80,7 +79,6 @@ These are the default parameters used when launching analysis or clustering task
 | `NUM_RECENT_ALBUMS`                         | Number of recent albums to scan (0 for all).                                                                              | `0`             |
 | `TOP_N_MOODS`                               | Number of top moods per track for feature vector.                                                                         | `5`             |
 | `CLAP_ENABLED`                              | Enable or disable CLAP model for text-to-audio search capabilities.                                                       | `true`          |
-| `MULAN_ENABLED`                             | Enable or disable MuLan (MuQ) model for text-to-audio search capabilities.  **STILL IN DEVELOPING**                       | `false`          |
 | `CLAP_PYTHON_MULTITHREADS`                  | CPU threading for CLAP analysis. False (default) = Use ONNX internal threading (recommended). True = Use Python ThreadPoolExecutor  | `false`         |
 | **Clustering General**                      |                                                                                                                            |                 |
 | `ENABLE_CLUSTERING_EMBEDDINGS`              | Whether to use audio embeddings (True) or score-based features (False) for clustering.                                    | `true`          |
@@ -92,7 +90,6 @@ These are the default parameters used when launching analysis or clustering task
 | `TOP_N_PLAYLISTS`                           | POST Clustering it keep only the top N diverse playlist.                                                                  | `8`             |
 | `USE_GPU_CLUSTERING`                        | When true enalbe the use of GPU on K-Means, DBSCAN and PCA                                                                | `false`         |
 | **Similarity General**                      |                                                                                                                           |                 |
-| `INDEX_NAME`                                | Name of the index, no need to change.                                                                                     | `music_library` |
 | `VOYAGER_EF_CONSTRUCTION`                   | Number of element analyzed to create the neighbor list in the index.                                                      | `1024`          |
 | `VOYAGER_M`                                 | Number of neighbore More = higher accuracy.                                                                               | `64`            |
 | `VOYAGER_QUERY_EF`                          | Number neighbor analyzed during the query.                                                                                | `1024`          |
@@ -133,7 +130,6 @@ These are the default parameters used when launching analysis or clustering task
 | **K-Means Ranges**                          |                                                                                            |                                        |
 | `NUM_CLUSTERS_MIN`                          | Min $K$ for K-Means.                                                                      | `40`                                   |
 | `NUM_CLUSTERS_MAX`                          | Max $K$ for K-Means.                                                                      | `100`                                  |
-| `USE_MINIBATCH_KMEANS`                      | Whether to use MiniBatchKMeans (True) or standard KMeans (False) when clustering embeddings. | `false`                            |
 | **DBSCAN Ranges**                           |                                                                                            |                                        |
 | `DBSCAN_EPS_MIN`                            | Min epsilon for DBSCAN.                                                                   | `0.1`                                  |
 | `DBSCAN_EPS_MAX`                            | Max epsilon for DBSCAN.                                                                   | `0.5`                                  |
@@ -189,12 +185,6 @@ These are the default parameters used when launching analysis or clustering task
 | `LYRICS_API_2_APIKEY_PARAM`                 | Query parameter name for the API key in slot 2.                                            | `""`                                   |
 | `LYRICS_API_2_APIKEY_VALUE`                 | API key value for slot 2.                                                                  | `""`                                   |
 | `LYRICS_API_2_TIMEOUT`                      | HTTP timeout in seconds for API slot 2.                                                    | `5.0`                                  |
-| `LYRICS_USE_GPU`                            | Whether to run Whisper and the LLM on GPU. `auto` = probe CUDA at load time; `true` = force GPU; `false` = force CPU. | `auto`  |
-| `LYRICS_WHISPER_MODEL`                      | Whisper model size for transcription. Options: `tiny`, `base`, `small`, `medium`, `large`. | `small`                               |
-| `LYRICS_LLM_MODEL_PATH`                     | Path to the GGUF file for the local lyrics LLM (Qwen2.5-1.5B).                            | `/app/model/qwen2.5-1.5b-instruct-q4_k_m.gguf` |
-| `LYRICS_MODEL_DIR`                          | Directory where lyrics models (Whisper, e5, Marian) are cached.                           | `/app/model`                           |
-| `LYRICS_MARIAN_CACHE_DIR`                   | Writable directory for on-demand Marian translator downloads. Mount a persistent volume here to avoid re-downloading on restart. | `/tmp/audiomuse-marian-cache` |
-| `LYRICS_EMBEDDING_DIMENSION`                | Dimension of the e5-base-v2 sentence embedding. Do not change unless swapping the embedding model. | `768`                        |
 | `SEM_GROVE_WEIGHT_LYRICS`                   | Contribution of the lyrics embedding to the merged SemGrove cosine similarity (squared scale factor, [0.0–1.0]). Requires index rebuild after change. | `0.75` |
 | `SEM_GROVE_WEIGHT_AUDIO`                    | Contribution of the MusicNN audio embedding to the merged SemGrove cosine similarity (squared scale factor, [0.0–1.0]). Requires index rebuild after change. | `0.25` |
 
